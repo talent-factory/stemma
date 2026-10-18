@@ -446,7 +446,8 @@ impl Index {
                     line: line_number,
                     code: code.to_owned(),
                 })?;
-            // Every entry of the index is a file, so the ID names a blob.
+            // Every entry of the index is a file, so the ID is claimed as a blob. No store has
+            // confirmed it; the claim has to be checked where it is relied on (ADR-005, Open).
             let id = ObjectId::from_str(id).map(BlobId::new).map_err(|source| {
                 IndexParseError::InvalidObjectId {
                     line: line_number,

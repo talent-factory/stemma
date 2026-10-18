@@ -250,9 +250,12 @@ pub trait ObjectStore: sealed::Sealed {
     fn contains(&self, id: &ObjectId) -> Result<bool, StoreError>;
 
     /// Returns the ID as a [`BlobId`] if the store has an object with this ID and it is a blob,
-    /// and `None` if the store does not have it. This is the way from an untyped ID, for example
-    /// one that was read from text, to a typed one. The object is read and checked completely,
-    /// like in [`get`](Self::get), because that is the only way the store learns its kind.
+    /// and `None` if the store does not have it. This is the checked way from an untyped ID, for
+    /// example one that was read from text, to a typed one. The object is read and its content is
+    /// checked as in [`get`](Self::get) (canonical header, hash), because the kind is known only
+    /// from the stored object. The body is not decoded, so a typed ID does not mean that a tree or
+    /// a commit is in canonical form. The result holds at the time of the call: it says that the
+    /// object existed with this kind then, not that it stays in the store.
     ///
     /// # Errors
     ///
@@ -898,16 +901,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_reports_a_damaged_object_and_does_not_hide_it_as_absent() {
+    fn resolve_reports_a_damaged_object_for_every_kind_and_does_not_hide_it_as_absent() {
         let dir = TempDir::new();
         let store = dir.store();
-        let stored = store.put_blob(&Blob::new("hello")).unwrap();
-        overwrite(
-            &store.object_path(&ObjectId::from(stored)),
-            b"blob 5\0other",
-        );
-        let error = store.resolve_blob(&ObjectId::from(stored)).unwrap_err();
-        assert!(matches!(error, StoreError::Corrupt { .. }), "{error}");
+        let stored = ObjectId::from(store.put_blob(&Blob::new("hello")).unwrap());
+        overwrite(&store.object_path(&stored), b"blob 5\0other");
+        let is_corrupt = |error: StoreError| matches!(error, StoreError::Corrupt { .. });
+        // The content is checked before the kind is compared, so the damage is reported even when
+        // the caller asks for another kind than the object has.
+        assert!(is_corrupt(store.resolve_blob(&stored).unwrap_err()));
+        assert!(is_corrupt(store.resolve_tree(&stored).unwrap_err()));
+        assert!(is_corrupt(store.resolve_commit(&stored).unwrap_err()));
     }
 
     #[test]
