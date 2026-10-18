@@ -1,8 +1,7 @@
 //! Content-addressed objects: blobs, trees, and commits.
 //!
-//! Object IDs use BLAKE3 with the `b3:` prefix, following the proposal in ADR-001; the choice
-//! is provisional until that ADR is accepted. Commits record their author as an [`Actor`]
-//! (ADR-002). ADR-005 records the decisions behind the rules for names, actor fields,
+//! Object IDs use BLAKE3 with the `b3:` prefix (ADR-001). Commits record their author as an
+//! [`Actor`] (ADR-002). ADR-005 records the decisions behind the rules for names, actor fields,
 //! timestamps, and versioning.
 //!
 //! The canonical encodings are defined in this module and pinned by the golden-vector tests at
