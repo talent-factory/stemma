@@ -11,6 +11,8 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
+use unicode_general_category::{get_general_category, GeneralCategory};
+
 use crate::Actor;
 
 /// Algorithm prefix of BLAKE3 object IDs (ADR-001).
@@ -169,6 +171,10 @@ pub enum NameProblem {
     /// including NUL and newline. The tree encoding is line-based, so a newline would make it
     /// ambiguous; the other control characters are rejected for hygiene.
     ControlCharacter,
+    /// The name contains an invisible format character (Unicode category Cf), such as a
+    /// zero-width space or a bidirectional override. Such characters let two names look
+    /// identical on screen.
+    FormatCharacter,
 }
 
 impl fmt::Display for NameProblem {
@@ -178,6 +184,7 @@ impl fmt::Display for NameProblem {
             Self::DotName => "the name is `.` or `..`",
             Self::PathSeparator => "the name contains `/`",
             Self::ControlCharacter => "the name contains a control character",
+            Self::FormatCharacter => "the name contains an invisible format character",
         })
     }
 }
@@ -259,7 +266,7 @@ impl TreeEntry {
     /// # Errors
     ///
     /// Returns [`TreeError::InvalidName`] if the name is empty, is `.` or `..`, or contains
-    /// `/` or a control character.
+    /// `/` or a control or format character.
     pub fn new(name: impl Into<String>, mode: EntryMode, id: ObjectId) -> Result<Self, TreeError> {
         let name = name.into();
         if let Some(problem) = name_problem(&name) {
@@ -284,11 +291,18 @@ impl TreeEntry {
     }
 }
 
+/// Whether the character is an invisible format character (Unicode general category Cf).
+fn is_format_character(c: char) -> bool {
+    get_general_category(c) == GeneralCategory::Format
+}
+
 /// Returns the first naming rule the name violates, if any.
 ///
 /// Every accepted name must encode unambiguously in [`Tree::encode`]; for that, only the
 /// absence of `\n` is strictly needed. `/` is rejected because names are single path components.
-/// Names are compared as given: there is no Unicode normalization and no case folding.
+/// Control and invisible format characters are rejected so that names cannot hide their
+/// content. Names are compared as given: there is no Unicode normalization and no case
+/// folding.
 fn name_problem(name: &str) -> Option<NameProblem> {
     if name.is_empty() {
         Some(NameProblem::Empty)
@@ -298,6 +312,8 @@ fn name_problem(name: &str) -> Option<NameProblem> {
         Some(NameProblem::PathSeparator)
     } else if name.chars().any(char::is_control) {
         Some(NameProblem::ControlCharacter)
+    } else if name.chars().any(is_format_character) {
+        Some(NameProblem::FormatCharacter)
     } else {
         None
     }
@@ -352,9 +368,10 @@ impl Tree {
 /// Reasons why a commit is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError {
-    /// An author field is empty or contains whitespace or control characters. The commit
-    /// encoding separates fields by whitespace and lines, so such a value would make it
-    /// ambiguous. Carries the name of the field: `id`, `model`, `session`, or `sponsor`.
+    /// An author field is empty or contains a character outside printable ASCII
+    /// (U+0021 to U+007E). Whitespace and control characters would make the line-based
+    /// encoding ambiguous; invisible and look-alike characters would let identities be
+    /// spoofed. Carries the name of the field: `id`, `model`, `session`, or `sponsor`.
     InvalidActorField(&'static str),
     /// The same parent is listed twice.
     DuplicateParent(ObjectId),
@@ -365,7 +382,7 @@ impl fmt::Display for CommitError {
         match self {
             Self::InvalidActorField(field) => write!(
                 f,
-                "author field `{field}` must be non-empty without whitespace or control characters"
+                "author field `{field}` must be non-empty printable ASCII without spaces"
             ),
             Self::DuplicateParent(id) => write!(f, "duplicate parent {id}"),
         }
@@ -392,7 +409,7 @@ impl Commit {
     ///
     /// # Errors
     ///
-    /// Returns [`CommitError::InvalidActorField`] if an author field is unsafe to encode, and
+    /// Returns [`CommitError::InvalidActorField`] if an author field is not printable ASCII, and
     /// [`CommitError::DuplicateParent`] if a parent is listed twice. The message is not
     /// validated: it comes last in the encoding and cannot interfere with the headers.
     pub fn new(
@@ -479,11 +496,12 @@ fn actor_fields(actor: &Actor) -> (&'static str, Vec<(&'static str, &str)>) {
     }
 }
 
-/// Checks that every field of the actor can be written into a header line unambiguously. The
-/// first invalid field in the order of [`actor_fields`] is reported.
+/// Checks that every field of the actor is non-empty printable ASCII. That makes the header
+/// line unambiguous and keeps identities free of invisible and look-alike characters. The first
+/// invalid field in the order of [`actor_fields`] is reported.
 fn validate_actor(actor: &Actor) -> Result<(), CommitError> {
     for (field, value) in actor_fields(actor).1 {
-        if value.is_empty() || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        if value.is_empty() || !value.chars().all(|c| c.is_ascii_graphic()) {
             return Err(CommitError::InvalidActorField(field));
         }
     }
@@ -493,8 +511,8 @@ fn validate_actor(actor: &Actor) -> Result<(), CommitError> {
 /// Encodes an actor on one line: `human <id>` or
 /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`.
 ///
-/// The fields are not escaped. [`validate_actor`] guarantees that none is empty or contains
-/// whitespace, so the line splits unambiguously at spaces. A value may still contain `=`, so a
+/// The fields are not escaped. [`validate_actor`] guarantees that none is empty or contains a
+/// space, so the line splits unambiguously at spaces. A value may still contain `=`, so a
 /// parser must split each `key=value` token at its first `=`.
 fn actor_line(actor: &Actor) -> String {
     let (label, fields) = actor_fields(actor);
@@ -778,6 +796,14 @@ mod tests {
             ("a\0b", NameProblem::ControlCharacter),
             ("a\u{7f}b", NameProblem::ControlCharacter),
             ("a\u{85}b", NameProblem::ControlCharacter),
+            ("READ\u{200b}ME", NameProblem::FormatCharacter),
+            ("a\u{200d}b", NameProblem::FormatCharacter),
+            ("a\u{202e}b", NameProblem::FormatCharacter),
+            ("a\u{feff}", NameProblem::FormatCharacter),
+            ("a\u{ad}b", NameProblem::FormatCharacter),
+            ("a\u{e0001}", NameProblem::FormatCharacter),
+            // A control character is reported before a format character.
+            ("\u{200b}\n", NameProblem::ControlCharacter),
             // The first violated rule wins: a separator is reported before a control character.
             ("a/\n", NameProblem::PathSeparator),
             ("/.", NameProblem::PathSeparator),
@@ -1015,6 +1041,32 @@ mod tests {
                 },
                 "id",
             ),
+            (
+                Actor::Human {
+                    id: "dan\u{200b}iel".into(),
+                },
+                "id",
+            ),
+            (
+                Actor::Human {
+                    id: "dani\u{202e}el".into(),
+                },
+                "id",
+            ),
+            (
+                Actor::Human {
+                    id: "d\u{e4}niel".into(),
+                },
+                "id",
+            ),
+            // Cyrillic small a looks like the Latin one.
+            (
+                Actor::Human {
+                    id: "d\u{430}niel".into(),
+                },
+                "id",
+            ),
+            (with_agent("a", "m", "s", "p\u{1f600}"), "sponsor"),
             // With several invalid fields, the first in field order is reported.
             (with_agent("a b", "m c", "", "p\n"), "id"),
             (with_agent("a", "m c", "", "p\n"), "model"),
