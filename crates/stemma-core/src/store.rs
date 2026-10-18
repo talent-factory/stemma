@@ -248,6 +248,45 @@ pub trait ObjectStore: sealed::Sealed {
     ///
     /// Returns [`StoreError::Io`] if the storage fails.
     fn contains(&self, id: &ObjectId) -> Result<bool, StoreError>;
+
+    /// Returns the ID as a [`BlobId`] if the store has an object with this ID and it is a blob,
+    /// and `None` if the store does not have it. This is the way from an untyped ID, for example
+    /// one that was read from text, to a typed one. The object is read and checked completely,
+    /// like in [`get`](Self::get), because that is the only way the store learns its kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::KindMismatch`] if the object is not a blob, and the errors of
+    /// [`get`](Self::get).
+    fn resolve_blob(&self, id: &ObjectId) -> Result<Option<BlobId>, StoreError> {
+        Ok(self
+            .get_expecting(id, Kind::Blob)?
+            .map(|_| BlobId::new(*id)))
+    }
+
+    /// Like [`resolve_blob`](Self::resolve_blob), for a tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::KindMismatch`] if the object is not a tree, and the errors of
+    /// [`get`](Self::get).
+    fn resolve_tree(&self, id: &ObjectId) -> Result<Option<TreeId>, StoreError> {
+        Ok(self
+            .get_expecting(id, Kind::Tree)?
+            .map(|_| TreeId::new(*id)))
+    }
+
+    /// Like [`resolve_blob`](Self::resolve_blob), for a commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::KindMismatch`] if the object is not a commit, and the errors of
+    /// [`get`](Self::get).
+    fn resolve_commit(&self, id: &ObjectId) -> Result<Option<CommitId>, StoreError> {
+        Ok(self
+            .get_expecting(id, Kind::Commit)?
+            .map(|_| CommitId::new(*id)))
+    }
 }
 
 /// Counter that keeps temporary file names unique within a process.
@@ -781,6 +820,94 @@ mod tests {
             .get_expecting(&ObjectId::from(absent), Kind::Tree)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn resolve_returns_the_typed_id_only_for_the_matching_kind() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = store.put_blob(&Blob::new("hello")).unwrap();
+        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let author = Actor::Human {
+            id: "daniel".into(),
+        };
+        let commit = store
+            .put_commit(&Commit::new(tree, vec![], author, 1_700_000_000, "m").unwrap())
+            .unwrap();
+        let (blob_raw, tree_raw, commit_raw) = (
+            ObjectId::from(blob),
+            ObjectId::from(tree),
+            ObjectId::from(commit),
+        );
+
+        assert_eq!(store.resolve_blob(&blob_raw).unwrap(), Some(blob));
+        assert_eq!(store.resolve_tree(&tree_raw).unwrap(), Some(tree));
+        assert_eq!(store.resolve_commit(&commit_raw).unwrap(), Some(commit));
+
+        // Every other pairing of an ID and a kind is a mismatch that names both kinds.
+        let mismatch = |error: StoreError, expected: Kind, found: Kind| {
+            assert!(
+                matches!(
+                    error,
+                    StoreError::KindMismatch { expected: e, found: f, .. }
+                        if e == expected && f == found
+                ),
+                "{error}"
+            );
+        };
+        mismatch(
+            store.resolve_tree(&blob_raw).unwrap_err(),
+            Kind::Tree,
+            Kind::Blob,
+        );
+        mismatch(
+            store.resolve_commit(&blob_raw).unwrap_err(),
+            Kind::Commit,
+            Kind::Blob,
+        );
+        mismatch(
+            store.resolve_blob(&tree_raw).unwrap_err(),
+            Kind::Blob,
+            Kind::Tree,
+        );
+        mismatch(
+            store.resolve_commit(&tree_raw).unwrap_err(),
+            Kind::Commit,
+            Kind::Tree,
+        );
+        mismatch(
+            store.resolve_blob(&commit_raw).unwrap_err(),
+            Kind::Blob,
+            Kind::Commit,
+        );
+        mismatch(
+            store.resolve_tree(&commit_raw).unwrap_err(),
+            Kind::Tree,
+            Kind::Commit,
+        );
+    }
+
+    #[test]
+    fn resolve_of_an_absent_object_is_none_for_every_kind() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let absent = ObjectId::from(Blob::new("absent").id());
+        assert_eq!(store.resolve_blob(&absent).unwrap(), None);
+        assert_eq!(store.resolve_tree(&absent).unwrap(), None);
+        assert_eq!(store.resolve_commit(&absent).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_reports_a_damaged_object_and_does_not_hide_it_as_absent() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let stored = store.put_blob(&Blob::new("hello")).unwrap();
+        overwrite(
+            &store.object_path(&ObjectId::from(stored)),
+            b"blob 5\0other",
+        );
+        let error = store.resolve_blob(&ObjectId::from(stored)).unwrap_err();
+        assert!(matches!(error, StoreError::Corrupt { .. }), "{error}");
     }
 
     #[test]

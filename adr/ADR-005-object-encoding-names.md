@@ -193,7 +193,11 @@ definition of the byte-level encodings. This ADR records the decisions behind th
       index entry holds a `BlobId`. The types only help while code is written: the kind is hashed
       into the ID but not recorded in it, so an ID read from text or from a store is untyped until
       the code knows its kind. No encoding and no ID changes.
-- [ ] Check the kind when a typed ID is resolved from a store (`WrongKind`), so that an ID read
-      from text cannot be claimed as the wrong kind unnoticed.
+- [x] Check the kind when a typed ID is resolved from a store, so that an ID read from text
+      cannot be claimed as the wrong kind unnoticed. Done in ADR-007: `resolve_blob`,
+      `resolve_tree`, and `resolve_commit` return a typed ID or a `KindMismatch`.
+- [ ] The index reader claims every ID as a blob without asking a store, as a tree or commit
+      reader will claim the kinds named by headers and modes. Check the claims where a tree is
+      built from the index or an object is followed, once those operations exist.
 - [ ] Validate `Actor` in its own type, so that other consumers, such as the authorization
       hook, never see an actor that a commit would reject.

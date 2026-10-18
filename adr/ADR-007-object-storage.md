@@ -51,11 +51,15 @@ server will later keep objects elsewhere (API-first). The implementation is
   read detects it.
 - **Interface.** `ObjectStore` is a sealed trait: only this crate implements it. It has
   `put_blob`, `put_tree`, and `put_commit`, which return the same ID as the object's own `id()`,
-  `get`, `get_expecting`, and `contains`. The store computes the ID from the kind and the body,
+  `get`, `get_expecting`, `contains`, and `resolve_blob`, `resolve_tree`, and `resolve_commit`.
+  The store computes the ID from the kind and the body,
   so a caller cannot store an object under another ID. Writing a raw body of any kind is
   internal to the crate, because the body of a tree or a commit has to come from a value that
   was checked. `get` returns the kind and the encoded body of an object whose content hashes to
-  the ID; `get_expecting` fails with a `KindMismatch` if the kind differs. The store does not
+  the ID; `get_expecting` fails with a `KindMismatch` if the kind differs. The `resolve_*`
+  methods return a typed ID for an object that exists and has the kind, `None` for a missing
+  object, and a `KindMismatch` for another kind; they read and check the whole object, because
+  that is how the store learns its kind. The store does not
   decode objects. `FsObjectStore` is the file system implementation.
 - **Authorization** is not a store concern. The authorization hook of ADR-002 has to be called
   by the layer above the store, which knows the actor and the operation.
@@ -94,5 +98,6 @@ server will later keep objects elsewhere (API-first). The implementation is
       existing or read-only file, replacing a damaged object (it is reported as an error for
       now), and flushing directory entries. Decide what the store promises on each platform
       and test it.
-- [ ] Type object IDs per kind, so that a caller does not have to compare the kind of the
-      result of `get` itself (ADR-005). `get_expecting` covers this until then.
+- [x] Type object IDs per kind, so that a caller does not have to compare the kind of the
+      result of `get` itself (ADR-005). Done: `resolve_blob`, `resolve_tree`, and `resolve_commit`
+      turn an untyped ID into a typed one if the object exists and has that kind.
