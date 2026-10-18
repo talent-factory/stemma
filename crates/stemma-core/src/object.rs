@@ -36,7 +36,8 @@ const HEX_LEN: usize = 64;
 /// Identifies a stored object by the hash of its canonical encoding.
 ///
 /// The textual form is `b3:` followed by 64 lowercase hexadecimal digits. Values are produced
-/// only by [`Blob::id`], [`Tree::id`], [`Commit::id`], or by parsing a string.
+/// only by [`BlobId`], [`TreeId`], and [`CommitId`] (from [`Blob::id`], [`Tree::id`],
+/// [`Commit::id`]), or by parsing a string. It does not record the kind of object it names.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectId([u8; 32]);
 
@@ -62,6 +63,64 @@ impl fmt::Debug for ObjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ObjectId({self})")
     }
+}
+
+/// Defines the ID of one kind of object: a wrapper around [`ObjectId`] that the type system keeps
+/// apart from the IDs of the other kinds. The kind is not part of the ID bytes (it is hashed into
+/// them, but not recorded), so these types only help while the program is written; an untyped
+/// [`ObjectId`] that is read from text or from storage becomes a typed one only where the kind
+/// is known.
+macro_rules! typed_id {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub struct $name(ObjectId);
+
+        impl $name {
+            /// Claims that the ID names an object of this kind. The caller has to know the kind.
+            pub(crate) fn new(id: ObjectId) -> Self {
+                Self(id)
+            }
+
+            /// Returns the untyped ID, for a lookup in a store.
+            pub fn object_id(self) -> ObjectId {
+                self.0
+            }
+        }
+
+        impl From<$name> for ObjectId {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, concat!(stringify!($name), "({})"), self.0)
+            }
+        }
+    };
+}
+
+typed_id! {
+    /// The ID of a [`Blob`].
+    BlobId
+}
+
+typed_id! {
+    /// The ID of a [`Tree`].
+    TreeId
+}
+
+typed_id! {
+    /// The ID of a [`Commit`].
+    CommitId
 }
 
 /// Reasons why a string is not a valid object ID.
@@ -200,8 +259,8 @@ impl Blob {
     }
 
     /// Returns the object ID of this blob.
-    pub fn id(&self) -> ObjectId {
-        hash_encoding(Kind::Blob, &self.content)
+    pub fn id(&self) -> BlobId {
+        BlobId(hash_encoding(Kind::Blob, &self.content))
     }
 }
 
@@ -290,9 +349,10 @@ impl Error for TreeError {}
 
 /// File mode of a tree entry.
 ///
-/// The entry ID of a [`Directory`](Self::Directory) is meant to refer to a tree; the ID of
-/// every other mode refers to a blob. This module does not verify it, because an [`ObjectId`]
-/// does not record the kind of object it names.
+/// The entry ID of a [`Directory`](Self::Directory) refers to a tree; the ID of every other mode
+/// refers to a blob. [`TreeEntry::file`] and [`TreeEntry::directory`] take the matching typed ID,
+/// so an entry cannot be built with the wrong kind. An entry that is read back from storage has
+/// to be checked against the stored object kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EntryMode {
@@ -330,6 +390,40 @@ impl EntryMode {
     }
 }
 
+/// File mode of a file entry, in a tree or in the index. A directory is not a file, so there is
+/// no directory mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMode {
+    /// A regular file.
+    File,
+    /// A regular file with the executable bit set.
+    Executable,
+    /// A symbolic link. The blob holds the link target.
+    Symlink,
+}
+
+impl FileMode {
+    /// Returns the file mode for a tree entry mode, or `None` for a directory.
+    pub fn from_entry_mode(mode: EntryMode) -> Option<Self> {
+        match mode {
+            EntryMode::File => Some(Self::File),
+            EntryMode::Executable => Some(Self::Executable),
+            EntryMode::Symlink => Some(Self::Symlink),
+            EntryMode::Directory => None,
+        }
+    }
+}
+
+impl From<FileMode> for EntryMode {
+    fn from(mode: FileMode) -> Self {
+        match mode {
+            FileMode::File => Self::File,
+            FileMode::Executable => Self::Executable,
+            FileMode::Symlink => Self::Symlink,
+        }
+    }
+}
+
 /// One named entry of a tree.
 ///
 /// Names are UTF-8 strings, so a file whose name is not valid UTF-8 cannot be stored; the
@@ -344,14 +438,27 @@ pub struct TreeEntry {
 }
 
 impl TreeEntry {
-    /// Creates an entry.
+    /// Creates an entry for a file or a symbolic link. The ID is the ID of the blob that holds the
+    /// content, or for a symbolic link the link target.
     ///
     /// # Errors
     ///
     /// Returns [`TreeError::InvalidName`] if the name is empty, consists only of dots and
     /// spaces, contains `/` or a control or invisible character, or is a reserved name.
-    pub fn new(name: impl Into<String>, mode: EntryMode, id: ObjectId) -> Result<Self, TreeError> {
-        let name = name.into();
+    pub fn file(name: impl Into<String>, mode: FileMode, blob: BlobId) -> Result<Self, TreeError> {
+        Self::checked(name.into(), mode.into(), blob.object_id())
+    }
+
+    /// Creates an entry for a subdirectory. The ID is the ID of the tree of the directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError::InvalidName`] under the same conditions as [`file`](Self::file).
+    pub fn directory(name: impl Into<String>, tree: TreeId) -> Result<Self, TreeError> {
+        Self::checked(name.into(), EntryMode::Directory, tree.object_id())
+    }
+
+    fn checked(name: String, mode: EntryMode, id: ObjectId) -> Result<Self, TreeError> {
         if let Some(problem) = name_problem(&name) {
             return Err(TreeError::InvalidName { name, problem });
         }
@@ -368,7 +475,8 @@ impl TreeEntry {
         self.mode
     }
 
-    /// Returns the ID of the referenced object.
+    /// Returns the ID of the referenced object: a blob unless the mode is
+    /// [`EntryMode::Directory`], in which case it is a tree.
     pub fn id(&self) -> ObjectId {
         self.id
     }
@@ -506,7 +614,7 @@ impl Tree {
     /// # Errors
     ///
     /// Returns [`TreeError::DuplicateName`] if two entries share a name. Names were already
-    /// validated by [`TreeEntry::new`].
+    /// validated by [`TreeEntry::file`] and [`TreeEntry::directory`].
     pub fn new(mut entries: Vec<TreeEntry>) -> Result<Self, TreeError> {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         if let Some(pair) = entries.windows(2).find(|pair| pair[0].name == pair[1].name) {
@@ -534,8 +642,8 @@ impl Tree {
     }
 
     /// Returns the object ID of this tree.
-    pub fn id(&self) -> ObjectId {
-        hash_encoding(Kind::Tree, &self.encode())
+    pub fn id(&self) -> TreeId {
+        TreeId(hash_encoding(Kind::Tree, &self.encode()))
     }
 }
 
@@ -550,7 +658,7 @@ pub enum CommitError {
     /// possible). Carries the name of the field: `id`, `model`, `session`, or `sponsor`.
     InvalidActorField(&'static str),
     /// The same parent is listed twice.
-    DuplicateParent(ObjectId),
+    DuplicateParent(CommitId),
 }
 
 impl fmt::Display for CommitError {
@@ -574,8 +682,8 @@ impl Error for CommitError {}
 /// Two commits that differ only in the timestamp are different objects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
-    tree: ObjectId,
-    parents: Vec<ObjectId>,
+    tree: TreeId,
+    parents: Vec<CommitId>,
     author: Actor,
     timestamp: i64,
     message: String,
@@ -591,8 +699,8 @@ impl Commit {
     /// [`CommitError::DuplicateParent`] if a parent is listed twice. The message is not
     /// validated: it comes last in the encoding and cannot interfere with the headers.
     pub fn new(
-        tree: ObjectId,
-        parents: Vec<ObjectId>,
+        tree: TreeId,
+        parents: Vec<CommitId>,
         author: Actor,
         timestamp: i64,
         message: impl Into<String>,
@@ -613,12 +721,12 @@ impl Commit {
     }
 
     /// Returns the ID of the tree this commit snapshots.
-    pub fn tree(&self) -> ObjectId {
+    pub fn tree(&self) -> TreeId {
         self.tree
     }
 
     /// Returns the parents in the order given at creation.
-    pub fn parents(&self) -> &[ObjectId] {
+    pub fn parents(&self) -> &[CommitId] {
         &self.parents
     }
 
@@ -655,8 +763,8 @@ impl Commit {
     }
 
     /// Returns the object ID of this commit.
-    pub fn id(&self) -> ObjectId {
-        hash_encoding(Kind::Commit, &self.encode())
+    pub fn id(&self) -> CommitId {
+        CommitId(hash_encoding(Kind::Commit, &self.encode()))
     }
 }
 
@@ -756,8 +864,24 @@ mod tests {
         text.parse().expect("test ID must be valid")
     }
 
+    fn tree_id_of(text: &str) -> TreeId {
+        TreeId::new(id(text))
+    }
+
+    fn commit_id(text: &str) -> CommitId {
+        CommitId::new(id(text))
+    }
+
+    /// Builds an entry from a mode and an untyped ID, which the tests write as literals.
+    fn tree_entry(name: &str, mode: EntryMode, target: ObjectId) -> Result<TreeEntry, TreeError> {
+        match FileMode::from_entry_mode(mode) {
+            Some(file_mode) => TreeEntry::file(name, file_mode, BlobId::new(target)),
+            None => TreeEntry::directory(name, TreeId::new(target)),
+        }
+    }
+
     fn entry(name: &str, mode: EntryMode, target: ObjectId) -> TreeEntry {
-        TreeEntry::new(name, mode, target).expect("test entry must be valid")
+        tree_entry(name, mode, target).expect("test entry must be valid")
     }
 
     fn sample_tree() -> Tree {
@@ -768,11 +892,11 @@ mod tests {
         .expect("valid tree")
     }
 
-    fn empty_tree_id() -> ObjectId {
+    fn empty_tree_id() -> TreeId {
         Tree::new(vec![]).expect("empty tree is valid").id()
     }
 
-    fn commit(parents: Vec<ObjectId>, author: Actor, message: &str) -> Commit {
+    fn commit(parents: Vec<CommitId>, author: Actor, message: &str) -> Commit {
         Commit::new(empty_tree_id(), parents, author, TIME, message).expect("valid commit")
     }
 
@@ -811,9 +935,15 @@ mod tests {
     #[test]
     fn kind_is_part_of_the_hash_for_real_objects() {
         let tree = sample_tree();
-        assert_ne!(Blob::new(tree.encode()).id(), tree.id());
+        assert_ne!(
+            Blob::new(tree.encode()).id().object_id(),
+            tree.id().object_id()
+        );
         let commit = commit(vec![], human(), "m");
-        assert_ne!(Blob::new(commit.encode()).id(), commit.id());
+        assert_ne!(
+            Blob::new(commit.encode()).id().object_id(),
+            commit.id().object_id()
+        );
         assert_ne!(
             hash_encoding(Kind::Tree, &commit.encode()),
             hash_encoding(Kind::Commit, &commit.encode())
@@ -822,7 +952,7 @@ mod tests {
 
     #[test]
     fn object_id_roundtrips_through_text() {
-        let original = Blob::new("data").id();
+        let original = Blob::new("data").id().object_id();
         let parsed: ObjectId = original.to_string().parse().expect("own output must parse");
         assert_eq!(parsed, original);
         assert_eq!(id(HELLO_ID).to_string(), HELLO_ID);
@@ -1087,7 +1217,7 @@ mod tests {
         ];
         for (name, problem) in cases {
             assert_eq!(
-                TreeEntry::new(name, EntryMode::File, id(HELLO_ID)),
+                tree_entry(name, EntryMode::File, id(HELLO_ID)),
                 Err(TreeError::InvalidName {
                     name: name.into(),
                     problem
@@ -1111,7 +1241,7 @@ mod tests {
             ".stemmas",
             "_.stemma",
         ] {
-            let built = TreeEntry::new(name, EntryMode::File, id(HELLO_ID));
+            let built = tree_entry(name, EntryMode::File, id(HELLO_ID));
             assert!(built.is_ok(), "name {name:?} should be accepted");
         }
         assert_eq!(METADATA_DIR, ".stemma");
@@ -1155,9 +1285,42 @@ mod tests {
             "\u{8fba}\u{e0100}",
             "\u{1820}\u{180b}",
         ] {
-            let built = TreeEntry::new(name, EntryMode::File, id(HELLO_ID));
+            let built = tree_entry(name, EntryMode::File, id(HELLO_ID));
             assert!(built.is_ok(), "name {name:?} should be accepted");
         }
+    }
+
+    #[test]
+    fn file_and_directory_entries_fix_the_mode_and_take_the_matching_id() {
+        let blob = Blob::new("hello").id();
+        let tree = sample_tree().id();
+        let file = TreeEntry::file("run.sh", FileMode::Executable, blob).unwrap();
+        assert_eq!(
+            (file.mode(), file.id()),
+            (EntryMode::Executable, blob.object_id())
+        );
+        let directory = TreeEntry::directory("src", tree).unwrap();
+        assert_eq!(
+            (directory.mode(), directory.id()),
+            (EntryMode::Directory, tree.object_id())
+        );
+        // The same name rules apply to both constructors.
+        assert!(matches!(
+            TreeEntry::directory("a/b", tree),
+            Err(TreeError::InvalidName { .. })
+        ));
+    }
+
+    #[test]
+    fn typed_ids_print_like_the_untyped_id_and_name_their_kind_in_debug() {
+        let blob = Blob::new("hello").id();
+        assert_eq!(blob.to_string(), HELLO_ID);
+        assert_eq!(ObjectId::from(blob).to_string(), HELLO_ID);
+        assert_eq!(format!("{blob:?}"), format!("BlobId({HELLO_ID})"));
+        let tree = sample_tree().id();
+        assert!(format!("{tree:?}").starts_with("TreeId(b3:"));
+        let commit = commit(vec![], human(), "m").id();
+        assert!(format!("{commit:?}").starts_with("CommitId(b3:"));
     }
 
     #[test]
@@ -1192,7 +1355,7 @@ mod tests {
 
     #[test]
     fn tree_error_message_escapes_control_characters() {
-        let err = TreeEntry::new("a\nb", EntryMode::File, id(HELLO_ID)).unwrap_err();
+        let err = tree_entry("a\nb", EntryMode::File, id(HELLO_ID)).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("a\\nb") && !text.contains('\n'), "{text}");
     }
@@ -1202,8 +1365,8 @@ mod tests {
     #[test]
     fn human_commit_encoding_and_id_match_golden_vectors() {
         let commit = Commit::new(
-            id(TREE_ID),
-            vec![id(EMPTY_ID)],
+            tree_id_of(TREE_ID),
+            vec![commit_id(EMPTY_ID)],
             human(),
             TIME,
             "first change",
@@ -1218,7 +1381,8 @@ mod tests {
 
     #[test]
     fn agent_commit_encoding_and_id_match_golden_vectors() {
-        let commit = Commit::new(id(TREE_ID), vec![], agent(), TIME, "work").expect("valid commit");
+        let commit =
+            Commit::new(tree_id_of(TREE_ID), vec![], agent(), TIME, "work").expect("valid commit");
         let expected = format!(
             "tree {TREE_ID}\nauthor agent agent-1 model=claude-haiku-5-5 session=s1 sponsor=daniel\ntime 1700000000\n\nwork"
         );
@@ -1229,8 +1393,8 @@ mod tests {
     #[test]
     fn merge_commit_encoding_and_id_match_golden_vectors() {
         let commit = Commit::new(
-            id(TREE_ID),
-            vec![id(HELLO_ID), id(EMPTY_ID)],
+            tree_id_of(TREE_ID),
+            vec![commit_id(HELLO_ID), commit_id(EMPTY_ID)],
             human(),
             TIME,
             "merge",
@@ -1265,7 +1429,7 @@ mod tests {
 
     #[test]
     fn headers_come_in_the_fixed_order_tree_parent_author_time() {
-        let c = commit(vec![id(HELLO_ID)], human(), "m");
+        let c = commit(vec![commit_id(HELLO_ID)], human(), "m");
         let text = String::from_utf8(c.encode()).expect("encoding is UTF-8");
         let order: Vec<&str> = text
             .split("\n\n")
@@ -1314,7 +1478,7 @@ mod tests {
 
     #[test]
     fn parent_order_is_part_of_the_id_and_merges_list_every_parent() {
-        let (a, b) = (id(HELLO_ID), id(EMPTY_ID));
+        let (a, b) = (commit_id(HELLO_ID), commit_id(EMPTY_ID));
         let forward = commit(vec![a, b], human(), "merge");
         let backward = commit(vec![b, a], human(), "merge");
         assert_ne!(forward.id(), backward.id());
@@ -1342,10 +1506,10 @@ mod tests {
 
     #[test]
     fn commit_rejects_duplicate_parents() {
-        let p = id(HELLO_ID);
+        let p = commit_id(HELLO_ID);
         let result = Commit::new(
             empty_tree_id(),
-            vec![p, id(EMPTY_ID), p],
+            vec![p, commit_id(EMPTY_ID), p],
             human(),
             TIME,
             "m",
@@ -1467,9 +1631,10 @@ mod tests {
     #[test]
     fn commit_exposes_its_fields() {
         let tree = empty_tree_id();
-        let c = Commit::new(tree, vec![id(HELLO_ID)], agent(), TIME, "msg").expect("valid commit");
+        let c = Commit::new(tree, vec![commit_id(HELLO_ID)], agent(), TIME, "msg")
+            .expect("valid commit");
         assert_eq!(c.tree(), tree);
-        assert_eq!(c.parents(), [id(HELLO_ID)]);
+        assert_eq!(c.parents(), [commit_id(HELLO_ID)]);
         assert_eq!(c.author(), &agent());
         assert_eq!(c.message(), "msg");
         assert_eq!(c.timestamp(), TIME);
@@ -1612,7 +1777,7 @@ mod tests {
 
     #[test]
     fn the_id_parts_are_the_algorithm_and_lowercase_hex() {
-        let stored = Blob::new("hello").id();
+        let stored = Blob::new("hello").id().object_id();
         assert_eq!(stored.algorithm(), "b3");
         assert_eq!(
             stored.hex(),

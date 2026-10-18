@@ -186,7 +186,14 @@ definition of the byte-level encodings. This ADR records the decisions behind th
       assumes it is not.
 - [x] The store has to record the object kind, because the version is part of the kind name.
       Done in ADR-007 (proposal): a stored object starts with its kind name.
-- [ ] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a
+- [x] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a
       directory entry cannot point at a blob and a commit cannot take a blob as its tree.
+      Done: `BlobId`, `TreeId`, and `CommitId` wrap `ObjectId`. `TreeEntry::file` takes a `BlobId`,
+      `TreeEntry::directory` a `TreeId`, a commit takes a `TreeId` and `CommitId` parents, and an
+      index entry holds a `BlobId`. The types only help while code is written: the kind is hashed
+      into the ID but not recorded in it, so an ID read from text or from a store is untyped until
+      the code knows its kind. No encoding and no ID changes.
+- [ ] Check the kind when a typed ID is resolved from a store (`WrongKind`), so that an ID read
+      from text cannot be claimed as the wrong kind unnoticed.
 - [ ] Validate `Actor` in its own type, so that other consumers, such as the authorization
       hook, never see an actor that a commit would reject.
