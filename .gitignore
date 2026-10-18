@@ -19,5 +19,8 @@ target/
 texmf-cache/
 *-error.log
 
+# Figures are versioned (English directory name, see CLAUDE.md)
+!docs/images/*
+
 # Werkzeuge
 .serena/
