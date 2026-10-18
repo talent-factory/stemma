@@ -5,4 +5,4 @@ edition.workspace = true
 
 [dependencies]
 blake3 = "1"
-unicode-general-category = "1.1.0"
+unicode-general-category = "=1.1.0"

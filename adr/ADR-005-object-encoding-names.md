@@ -1,86 +1,110 @@
 # ADR-005: Object Encoding, Names, and Identity Characters
 
-**Status:** Proposal, partially confirmed.
+**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed; the others
+are proposals.
 
 ## Context
 
 Object IDs are hashes of canonical encodings (ADR-001). Any change to an encoding changes the ID
 of every affected object, so the rules for what may appear in an encoding have to be settled
-before the first object is stored. This ADR covers the character rules for tree entry names and
-actor fields. The implementation is `crates/stemma-core/src/object.rs`.
+before the first object is stored. This ADR covers the rules for tree entry names, actor fields,
+commit timestamps, and format versions. The implementation is
+`crates/stemma-core/src/object.rs`; together with its golden-vector tests it is the normative
+definition of the byte-level encodings. This ADR records the decisions behind them.
 
 ## Decision (proposal)
 
-- **Actor fields** (`id`, `model`, `session`, `sponsor`) are non-empty printable ASCII
-  (U+0021 to U+007E). They are identifiers, not display names. Whitespace, control characters,
-  invisible characters, and look-alike characters such as a Cyrillic `а` are rejected, so an
-  identity cannot be spoofed in the provenance chain of ADR-002. A display name, if needed,
-  belongs in a separate field.
-- **Tree entry names** are UTF-8 strings. They must not be empty, must not be `.` or `..`, and
-  must not contain `/`, control characters (`char::is_control`), or invisible format characters
-  (Unicode category Cf).
-- **Reserved name.** The metadata directory is `.stemma`. No tree entry may use that name or an
-  alias of it on a common file system: the name in any letter case (including look-alikes such
-  as the long s U+017F), with trailing dots or spaces (Windows drops them), or its 8.3 short
-  name `STEMMA~1`. Without this rule a checkout could overwrite repository data, as in
-  CVE-2014-9390 for `.git`. Only the exact entry name is reserved: `.stemma-notes` and
-  `a.stemma` are allowed. The constant is `METADATA_DIR`.
-- **No normalization.** Names are compared and hashed as given. `é` in NFC and in NFD are two
-  distinct names, and `README` and `readme` are two distinct names. Mapping them onto a
-  file system is the job of the checkout layer.
-- **Names are encoded as raw UTF-8 bytes.** A file whose name is not valid UTF-8 cannot be
-  stored. The layer that reads files has to report that as an error and must not convert the
-  name silently.
+- **Actor fields** *(confirmed)* (`id`, `model`, `session`, `sponsor`) are non-empty visible
+  ASCII (U+0021 to U+007E, no space). They are identifiers, not display names. Whitespace,
+  control characters, invisible characters, and letters from other scripts that look like ASCII
+  letters, such as a Cyrillic `а`, are rejected, so an identity cannot be spoofed with them in
+  the provenance chain of ADR-002. Look-alikes within ASCII, such as `l` and `I` or `O` and `0`,
+  remain possible. A display name, if needed, belongs in a separate field.
+- **Tree entry names** *(confirmed)* are UTF-8 strings. They must not be empty, must not consist
+  only of dots and spaces (`.`, `..`, and names such as `...` or `. ` that Windows reduces to
+  them), and must not contain `/`, control characters (`char::is_control`), or format
+  characters (Unicode category Cf). Most Cf characters are invisible, such as the zero-width
+  space and the bidirectional overrides. The set is defined by the Unicode version of the
+  `unicode-general-category` crate, which is pinned to an exact version (Unicode 16.0 for 1.1.0)
+  so that the same name is valid on every build. Raising the version needs a review of the
+  names it newly rejects.
+- **Reserved name** *(confirmed)*. The metadata directory is `.stemma`. No tree entry may use
+  that name or an alias of it on a common file system: the name in any letter case (including
+  look-alikes such as the long s U+017F), with trailing dots or spaces (Windows drops them), or
+  its 8.3 short name `STEMMA~N` for any number N. Without this rule a checkout could overwrite
+  repository data, as in CVE-2014-9390 for `.git`. Only the name and these aliases are reserved:
+  `.stemma-notes`, `a.stemma`, and `.stemma~1` are allowed. The constant is `METADATA_DIR`.
+- **Checkout responsibility** *(confirmed)*. The tree format allows `\` and `:` in names,
+  because they are valid on Linux and macOS and common in real file names. Where they are
+  dangerous, on Windows, the checkout layer has to reject or escape them: `\` as a path
+  separator, `:` for drive letters and NTFS alternate data streams
+  (`.stemma::$INDEX_ALLOCATION`), and device names such as `CON` and `NUL`. The checkout also
+  has to detect names that collide on a case-insensitive or normalizing file system.
+- **No normalization** *(confirmed)*. Names are compared and hashed as given. `é` in NFC and in
+  NFD are two distinct names, and `README` and `readme` are two distinct names. The
+  reserved-name check is the only place that folds case.
+- **Names are encoded as raw UTF-8 bytes** *(confirmed)*. A file whose name is not valid UTF-8
+  cannot be stored. The layer that reads files has to report that as an error and must not
+  convert the name silently.
 - **Sort order** of tree entries is UTF-8 byte order of the name. Directories get no special
-  treatment, unlike in Git.
-- **Commit timestamp.** A commit carries one timestamp, the time the author claims, as
-  `time <seconds>` after the `author` header. The value is a decimal integer of seconds since the
-  Unix epoch in UTC, without a plus sign or leading zeros, and without a time zone. The
-  interface decides how to display it. The timestamp is self-reported and proves nothing; only
-  signatures make it trustworthy (ADR-003, ADR-004). There is no separate committer. The
-  operation log stays local and is not exchanged with the history, so the commit has to carry
-  its own date.
-- **Format version.** The encodings in this ADR are version 1. An incompatible change does not
-  reuse an object kind name: it introduces a new one, for example `commit2`, together with an
-  ADR, so that old and new objects can exist side by side. The hash algorithm is versioned
-  separately by the ID prefix (ADR-001).
+  treatment, unlike in Git, where a directory sorts as if its name ended in `/`.
+- **Commit timestamp** *(confirmed)*. A commit carries one timestamp, the time the author
+  claims, as `time <seconds>` after the `author` header. The value is a decimal integer of
+  seconds since the Unix epoch in UTC, without a plus sign, without leading zeros, and without a
+  time zone. Negative values (before 1970) are allowed; `-0` is not canonical. The interface
+  decides how to display it. The timestamp is self-reported and proves nothing; only signatures
+  make it trustworthy (ADR-003, ADR-004). There is no separate committer. This rule assumes that
+  the operation log stays local and is not exchanged with the history, so the commit has to
+  carry its own date (see Open).
+- **Format version** *(confirmed)*. The encodings in this ADR are version 1. An incompatible
+  change does not reuse an object kind name: it introduces a new one, for example `commit2`,
+  together with an ADR, so that old and new objects can exist side by side. The hash algorithm
+  is versioned separately by the ID prefix (ADR-001).
 - **Strict reading.** A reader rejects what it does not recognize: an unknown or repeated
-  header, a header out of order, a number with a plus sign or leading zeros, or any other
+  header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any other
   non-canonical form. Otherwise one logical object could have several encodings and several
   IDs. The commit headers are, in this order, `tree`, `parent` (zero or more), `author`, `time`.
-- **Parent and author rules.** A commit lists each parent at most once, and the order of the
-  parents is part of its ID.
+  The rule applies to the reader, which does not exist yet; the module only writes encodings.
+- **Parent rule.** A commit lists each parent at most once, and the order of the parents is part
+  of its ID.
 - **Golden vectors** in the test module pin the hash input and every encoding. A change to
   them is a format change and needs an ADR.
 
 ## Consequences
 
-- Two commits with the same tree, parents, author, and message but different times are
-  different objects. A rebase that keeps the original time reproduces the same ID.
+- Two commits with the same tree, parents, author, message, and time have the same ID, and a
+  different time gives a different ID. A rebase changes the parents and so every ID; only
+  re-creating a commit from identical inputs reproduces its ID.
 - A timestamp gives a reader a date for foreign history without the operation log, but it can be
   set to any value. Nothing in the core may depend on its accuracy or its order.
 - Adding a header later, such as `committer`, is a format change and needs a new kind name.
 - A switch from UTF-8 strings to byte-string names later is compatible with existing data: a
   UTF-8 name encodes to the same bytes, so no tree ID changes. The opposite direction is not
-  possible once a repository holds a name that is not valid UTF-8. This is why strings are the
-  low-regret choice.
-- Rejecting format characters also rejects the zero-width joiners U+200C and U+200D. Some
-  scripts (for example Persian and several Indic scripts) and composite emoji such as 👨‍👩‍👧 need
-  them, so file names in those scripts are rejected. See the open points.
+  possible once a repository holds a name that is not valid UTF-8.
+- Rejecting format characters also rejects the zero-width joiners U+200C and U+200D and the
+  directional marks U+200E and U+200F. Some scripts (for example Persian and several Indic
+  scripts) and composite emoji such as 👨‍👩‍👧 need them, so file names in those scripts are
+  rejected. See Open.
+- The Cf rule does not cover every invisible character. The Hangul fillers (U+115F, U+3164),
+  the combining grapheme joiner (U+034F), variation selectors, and the line and paragraph
+  separators (U+2028, U+2029) are accepted in names.
 - Actor identifiers cannot contain umlauts or other non-ASCII letters. An identifier derived
   from a person's name has to be transliterated.
-- Names that differ only in case or normalization form can coexist in one tree. A checkout on a
-  case-insensitive or normalizing file system has to detect the collision.
-- Control and format characters are rejected in names for safety and are not needed for the
-  line-based encoding. Only the newline is. A later relaxation changes no ID, because it only
-  admits names that were not storable before.
+- Names that differ only in case or normalization form can coexist in one tree. Windows aliases
+  other than those listed in the reserved-name rule are the checkout's job.
+- Control and format characters are rejected in names as a hygiene rule. The line-based
+  encoding needs only the absence of the newline. Relaxing a rule later changes no ID, because
+  it only admits names that were not storable before. Tightening a rule makes stored names
+  invalid, so the rules should be settled before the first store.
 
 ## Open
 
-- [ ] Allow U+200C and U+200D in tree names as an exception to the Cf rule?
-- [ ] Reject further aliases of `.stemma` on other file systems, such as NTFS alternate data
-      streams (`.stemma::$INDEX_ALLOCATION`) and HFS+ ignorable code points, or leave them to the
-      checkout layer, which has to guard the file system anyway.
+- [ ] Allow U+200C, U+200D, U+200E, and U+200F in tree names as an exception to the Cf rule?
+- [ ] Replace the Cf rule with the Unicode property `Default_Ignorable_Code_Point`, which fits
+      the goal that names cannot hide their content better, and reject U+2028 and U+2029?
+- [ ] Reject further aliases of `.stemma`, such as NTFS alternate data streams and HFS+
+      ignorable code points, in the tree, or leave them to the checkout layer. The HFS+
+      ignorable code points of Git's list are Cf characters and already rejected.
 - [ ] Add a committer and a second timestamp, if rebasing and cherry-picking need to keep the
       original author time apart from the time of the rewrite.
 - [ ] Decide whether the operation log is exchanged with the history. The timestamp rule
@@ -88,5 +112,5 @@ actor fields. The implementation is `crates/stemma-core/src/object.rs`.
 - [ ] The store has to record the object kind, because the version is part of the kind name.
 - [ ] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a
       directory entry cannot point at a blob and a commit cannot take a blob as its tree.
-- [ ] Reject Windows device names (`CON`, `NUL`, ...) in names, or leave it to the checkout
-      layer.
+- [ ] Validate `Actor` in its own type, so that other consumers, such as the authorization
+      hook, never see an actor that a commit would reject.

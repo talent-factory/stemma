@@ -2,16 +2,17 @@
 //!
 //! Object IDs use BLAKE3 with the `b3:` prefix, following the proposal in ADR-001; the choice
 //! is provisional until that ADR is accepted. Commits record their author as an [`Actor`]
-//! (ADR-002). The character rules for names and actor fields are in ADR-005. The canonical
-//! encodings are defined in this module. They are persistent
-//! formats: any change to them changes the ID of every affected object, and stored data
-//! written under the old encoding no longer matches. The golden-vector tests at the end of
-//! this file guard them.
+//! (ADR-002). ADR-005 records the decisions behind the rules for names, actor fields,
+//! timestamps, and versioning.
+//!
+//! The canonical encodings are defined in this module and pinned by the golden-vector tests at
+//! the end of this file. They are persistent formats: any change to them changes the ID of
+//! every affected object, and stored data written under the old encoding no longer matches.
 //!
 //! The encodings described here are version 1. An incompatible change must not reuse an object
 //! kind name: it introduces a new one (for example `commit2`) together with an ADR, so that
-//! old and new objects can exist side by side. A reader has to reject what it does not
-//! recognize: an unknown or repeated header, a header out of order, or a malformed value.
+//! old and new objects can exist side by side. A future reader has to reject what it does not
+//! recognize (ADR-005); this module only writes encodings and has no reader yet.
 
 use std::error::Error;
 use std::fmt;
@@ -24,8 +25,9 @@ use crate::Actor;
 /// Algorithm prefix of BLAKE3 object IDs (ADR-001).
 const PREFIX: &str = "b3:";
 
-/// Name of Stemma's own metadata directory. A tree entry must not use it (see
-/// [`NameProblem::ReservedName`]), so that a checkout can never overwrite repository data.
+/// Name of Stemma's own metadata directory. A tree entry must not use it or the aliases listed
+/// at [`NameProblem::ReservedName`], so that a checkout does not overwrite repository data
+/// through them. Other aliases are left to the checkout layer (ADR-005).
 pub const METADATA_DIR: &str = ".stemma";
 
 /// Number of hexadecimal characters in a BLAKE3 digest (32 bytes, two characters per byte).
@@ -54,6 +56,7 @@ impl fmt::Debug for ObjectId {
 ///
 /// A string is checked for the prefix first, then the length, then the characters.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ObjectIdParseError {
     /// The string does not start with the algorithm prefix `b3:`.
     MissingPrefix,
@@ -133,8 +136,8 @@ impl Kind {
 }
 
 /// Hashes an encoded object. The hashed input is the ASCII header `<kind> <body length in
-/// decimal>`, a NUL byte, and the body. The kind in the header gives identical bytes stored as
-/// different kinds different IDs.
+/// decimal>`, a NUL byte, and the body. Because the kind is part of the hashed header,
+/// identical bodies of different kinds get different IDs.
 fn hash_encoding(kind: Kind, body: &[u8]) -> ObjectId {
     let header = format!("{} {}\0", kind.name(), body.len());
     let mut hasher = blake3::Hasher::new();
@@ -170,10 +173,12 @@ impl Blob {
 
 /// The rule that a rejected tree entry name violates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NameProblem {
     /// The name is empty.
     Empty,
-    /// The name is `.` or `..`.
+    /// The name consists only of dots and spaces: `.` and `..`, and names such as `...` or
+    /// `. ` that Windows reduces to them.
     DotName,
     /// The name contains `/`.
     PathSeparator,
@@ -181,12 +186,14 @@ pub enum NameProblem {
     /// including NUL and newline. The tree encoding is line-based, so a newline would make it
     /// ambiguous; the other control characters are rejected for hygiene.
     ControlCharacter,
-    /// The name contains an invisible format character (Unicode category Cf), such as a
-    /// zero-width space or a bidirectional override. Such characters let two names look
-    /// identical on screen.
+    /// The name contains a format character (Unicode category Cf), such as a zero-width space
+    /// or a bidirectional override. Most of them are invisible and let two names look
+    /// identical on screen. The category follows the Unicode version of the pinned
+    /// `unicode-general-category` crate (ADR-005).
     FormatCharacter,
     /// The name is [`METADATA_DIR`] or resolves to it on a common file system: it differs only
-    /// in case, has trailing dots or spaces (Windows), or is its 8.3 short name `STEMMA~1`.
+    /// in case (including look-alike letters such as the long s), has trailing dots or spaces
+    /// (Windows drops them), or is a short name `STEMMA~N` with one or more digits.
     ReservedName,
 }
 
@@ -194,10 +201,10 @@ impl fmt::Display for NameProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Empty => "the name is empty",
-            Self::DotName => "the name is `.` or `..`",
+            Self::DotName => "the name consists only of dots and spaces",
             Self::PathSeparator => "the name contains `/`",
             Self::ControlCharacter => "the name contains a control character",
-            Self::FormatCharacter => "the name contains an invisible format character",
+            Self::FormatCharacter => "the name contains a format character",
             Self::ReservedName => "the name is reserved for the metadata directory",
         })
     }
@@ -205,6 +212,7 @@ impl fmt::Display for NameProblem {
 
 /// Reasons why a tree entry or a set of tree entries is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TreeError {
     /// An entry name violates a naming rule.
     InvalidName {
@@ -284,8 +292,8 @@ impl TreeEntry {
     ///
     /// # Errors
     ///
-    /// Returns [`TreeError::InvalidName`] if the name is empty, is `.` or `..`, or contains
-    /// `/`, a control or format character, or is a reserved name.
+    /// Returns [`TreeError::InvalidName`] if the name is empty, consists only of dots and
+    /// spaces, contains `/` or a control or format character, or is a reserved name.
     pub fn new(name: impl Into<String>, mode: EntryMode, id: ObjectId) -> Result<Self, TreeError> {
         let name = name.into();
         if let Some(problem) = name_problem(&name) {
@@ -317,27 +325,31 @@ fn is_format_character(c: char) -> bool {
 
 /// Whether the name is the metadata directory or an alias of it on a common file system.
 ///
-/// Trailing dots and spaces are ignored because Windows drops them, and the comparison ignores
-/// case under both Unicode lowercase and uppercase mapping, which also catches look-alikes such
-/// as the long s (U+017F). Invisible characters are rejected before this check.
+/// Trailing dots and spaces are ignored because Windows drops them. The comparison folds case
+/// by Unicode uppercase mapping, which also catches look-alikes such as the long s (U+017F).
+/// The 8.3 short name of `.stemma` is `STEMMA~N`, where N is a number. Format characters are
+/// rejected before this check.
 fn is_reserved_name(name: &str) -> bool {
-    let trimmed = name.trim_end_matches(['.', ' ']);
-    [METADATA_DIR, "stemma~1"].iter().any(|reserved| {
-        trimmed.to_lowercase() == *reserved || trimmed.to_uppercase() == reserved.to_uppercase()
-    })
+    let folded = name.trim_end_matches(['.', ' ']).to_uppercase();
+    folded == METADATA_DIR.to_uppercase()
+        || folded
+            .strip_prefix("STEMMA~")
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Returns the first naming rule the name violates, if any.
+/// Returns the first naming rule the name violates, if any. The rules are checked in the order
+/// of the [`NameProblem`] variants.
 ///
-/// Every accepted name must encode unambiguously in [`Tree::encode`]; for that, only the
-/// absence of `\n` is strictly needed. `/` is rejected because names are single path components.
-/// Control and invisible format characters are rejected so that names cannot hide their
-/// content, and so is the name of the metadata directory. Names are compared as given: there is no Unicode normalization and no case
-/// folding.
+/// Only the absence of `\n` is needed for the line-based [`Tree::encode`] to be unambiguous.
+/// The other rules protect checkouts and readers: `/` is rejected because names are single path
+/// components, dot-only names because Windows reduces them to `.` or `..`, and control and
+/// format characters so that names do not hide their content. Names are compared and hashed as
+/// given: there is no Unicode normalization, and no case folding for uniqueness. The
+/// reserved-name check is the one place that folds case, on purpose.
 fn name_problem(name: &str) -> Option<NameProblem> {
     if name.is_empty() {
         Some(NameProblem::Empty)
-    } else if name == "." || name == ".." {
+    } else if name.chars().all(|c| c == '.' || c == ' ') {
         Some(NameProblem::DotName)
     } else if name.contains('/') {
         Some(NameProblem::PathSeparator)
@@ -400,11 +412,13 @@ impl Tree {
 
 /// Reasons why a commit is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommitError {
-    /// An author field is empty or contains a character outside printable ASCII
-    /// (U+0021 to U+007E). Whitespace and control characters would make the line-based
-    /// encoding ambiguous; invisible and look-alike characters would let identities be
-    /// spoofed. Carries the name of the field: `id`, `model`, `session`, or `sponsor`.
+    /// An author field is empty or contains a character outside visible ASCII
+    /// (U+0021 to U+007E, no space). Whitespace and control characters would make the line-based
+    /// encoding ambiguous; invisible characters and look-alike letters from other scripts
+    /// would let identities be spoofed (look-alikes within ASCII, such as `l` and `I`, remain
+    /// possible). Carries the name of the field: `id`, `model`, `session`, or `sponsor`.
     InvalidActorField(&'static str),
     /// The same parent is listed twice.
     DuplicateParent(ObjectId),
@@ -415,7 +429,7 @@ impl fmt::Display for CommitError {
         match self {
             Self::InvalidActorField(field) => write!(
                 f,
-                "author field `{field}` must be non-empty printable ASCII without spaces"
+                "author field `{field}` must be non-empty visible ASCII (U+0021 to U+007E)"
             ),
             Self::DuplicateParent(id) => write!(f, "duplicate parent {id}"),
         }
@@ -440,10 +454,11 @@ pub struct Commit {
 
 impl Commit {
     /// Creates a commit. Parents are kept in the given order, and the order is part of the ID.
+    /// Any `i64` is accepted as the timestamp, including negative values (before 1970).
     ///
     /// # Errors
     ///
-    /// Returns [`CommitError::InvalidActorField`] if an author field is not printable ASCII, and
+    /// Returns [`CommitError::InvalidActorField`] if an author field is empty or not visible ASCII, and
     /// [`CommitError::DuplicateParent`] if a parent is listed twice. The message is not
     /// validated: it comes last in the encoding and cannot interfere with the headers.
     pub fn new(
@@ -495,7 +510,7 @@ impl Commit {
 
     /// Returns the canonical encoding: the headers `tree <id>`, zero or more `parent <id>`,
     /// `author <actor line>`, and `time <seconds>`, in this order and each on its own line, then
-    /// a blank line, then the message verbatim without a trailing newline. IDs are in textual
+    /// a blank line, then the message verbatim, with nothing appended. IDs are in textual
     /// form, the seconds are a decimal integer without a plus sign or leading zeros, and the
     /// actor line is described at `actor_line`.
     pub fn encode(&self) -> Vec<u8> {
@@ -539,9 +554,10 @@ fn actor_fields(actor: &Actor) -> (&'static str, Vec<(&'static str, &str)>) {
     }
 }
 
-/// Checks that every field of the actor is non-empty printable ASCII. That makes the header
-/// line unambiguous and keeps identities free of invisible and look-alike characters. The first
-/// invalid field in the order of [`actor_fields`] is reported.
+/// Checks that every field of the actor is non-empty visible ASCII (U+0021 to U+007E). That
+/// makes the header line unambiguous and keeps identities free of invisible characters and of
+/// look-alike letters from other scripts. The first invalid field in the order of
+/// [`actor_fields`] is reported.
 fn validate_actor(actor: &Actor) -> Result<(), CommitError> {
     for (field, value) in actor_fields(actor).1 {
         if value.is_empty() || !value.chars().all(|c| c.is_ascii_graphic()) {
@@ -574,8 +590,9 @@ fn actor_line(actor: &Actor) -> String {
 mod tests {
     use super::*;
 
-    // Golden vectors. Each ID was computed independently of this module: the encoding was
-    // assembled by hand as `<kind> <length>\0<body>` and hashed with `blake3::hash`.
+    // Golden vectors. The body of each was assembled by hand as `<kind> <length>\0<body>` and
+    // hashed with `blake3::hash` in a throwaway program, not through this module. To check one,
+    // rebuild the body from the expected encoding asserted in the tests below.
     const TIME: i64 = 1_700_000_000;
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
     const EMPTY_ID: &str = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65";
@@ -812,6 +829,19 @@ mod tests {
     }
 
     #[test]
+    fn directories_sort_like_files_not_as_if_they_ended_in_a_slash() {
+        // Git sorts the directory `a` as `a/`, after `a-b` and `a.txt`. Stemma does not.
+        let tree = Tree::new(vec![
+            entry("a.txt", EntryMode::File, id(HELLO_ID)),
+            entry("a-b", EntryMode::File, id(HELLO_ID)),
+            entry("a", EntryMode::Directory, id(TREE_ID)),
+        ])
+        .expect("valid tree");
+        let names: Vec<&str> = tree.entries().iter().map(TreeEntry::name).collect();
+        assert_eq!(names, ["a", "a-b", "a.txt"]);
+    }
+
+    #[test]
     fn tree_order_is_utf8_byte_order_not_utf16() {
         // U+FF5E is EF BD 9E in UTF-8 and U+1F600 is F0 9F 98 80, so U+FF5E sorts first. In
         // UTF-16 the order would be reversed (D83D DE00 before FF5E).
@@ -859,6 +889,12 @@ mod tests {
             ("a\u{feff}", NameProblem::FormatCharacter),
             ("a\u{ad}b", NameProblem::FormatCharacter),
             ("a\u{e0001}", NameProblem::FormatCharacter),
+            ("...", NameProblem::DotName),
+            (" ", NameProblem::DotName),
+            (". ", NameProblem::DotName),
+            (".. ", NameProblem::DotName),
+            (" . . ", NameProblem::DotName),
+            ("a\u{200c}b", NameProblem::FormatCharacter),
             (".stemma", NameProblem::ReservedName),
             (".STEMMA", NameProblem::ReservedName),
             (".Stemma", NameProblem::ReservedName),
@@ -866,6 +902,12 @@ mod tests {
             (".stemma ", NameProblem::ReservedName),
             (".stemma. .", NameProblem::ReservedName),
             ("stemma~1", NameProblem::ReservedName),
+            ("stemma~2", NameProblem::ReservedName),
+            ("STEMMA~10", NameProblem::ReservedName),
+            ("STEMMA~1.", NameProblem::ReservedName),
+            ("stemma~1 .", NameProblem::ReservedName),
+            // A format character is reported before the reserved name it would hide.
+            (".stem\u{200b}ma", NameProblem::FormatCharacter),
             ("STEMMA~1", NameProblem::ReservedName),
             (".\u{17f}temma", NameProblem::ReservedName),
             // A control character is reported before a format character.
@@ -893,8 +935,10 @@ mod tests {
             ".stemma.bak",
             "a.stemma",
             "stemma",
-            "stemma~2",
-            "stemma~10",
+            "stemma~",
+            "stemma~x",
+            "stemma~1x",
+            ".stemma~1",
             ".stemmas",
             "_.stemma",
         ] {
@@ -908,12 +952,21 @@ mod tests {
     fn tree_entry_accepts_unusual_but_valid_names() {
         for name in [
             ".hidden",
-            "...",
             "a b",
             "tab\u{a0}nbsp",
             "日本語",
             "e\u{301}",
-            " ",
+            "a.",
+            ".a",
+            "..a",
+            // Valid on Linux and macOS. The checkout layer has to guard Windows (ADR-005).
+            "report:final.txt",
+            "back\\slash",
+            "x\\..\\.stemma\\config",
+            "a:b:c",
+            // Line and paragraph separators are not control or format characters.
+            "a\u{2028}b",
+            "a\u{2029}b",
         ] {
             let built = TreeEntry::new(name, EntryMode::File, id(HELLO_ID));
             assert!(built.is_ok(), "name {name:?} should be accepted");
@@ -1067,8 +1120,8 @@ mod tests {
 
     #[test]
     fn commit_id_changes_with_parent() {
-        let root = commit(vec![], human(), "first");
-        let child = commit(vec![root.id()], human(), "second");
+        let root = commit(vec![], human(), "same message");
+        let child = commit(vec![root.id()], human(), "same message");
         assert_ne!(root.id(), child.id());
     }
 
@@ -1114,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_rejects_author_fields_that_would_make_the_encoding_ambiguous() {
+    fn commit_rejects_author_fields_that_are_not_visible_ascii() {
         let with_agent = |id: &str, model: &str, session: &str, sponsor: &str| Actor::Agent {
             id: id.into(),
             model: model.into(),
@@ -1210,6 +1263,18 @@ mod tests {
                 "author {author:?}"
             );
         }
+    }
+
+    #[test]
+    fn actor_fields_accept_the_whole_visible_ascii_range() {
+        let all: String = ('\u{21}'..='\u{7e}').collect();
+        let author = Actor::Agent {
+            id: all.clone(),
+            model: "!".into(),
+            session: "~".into(),
+            sponsor: all,
+        };
+        assert!(Commit::new(empty_tree_id(), vec![], author, TIME, "m").is_ok());
     }
 
     #[test]
