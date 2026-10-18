@@ -746,9 +746,7 @@ mod tests {
     fn a_commit_is_stored_under_its_own_id() {
         let dir = TempDir::new();
         let store = dir.store();
-        let author = Actor::Human {
-            id: "daniel".into(),
-        };
+        let author = Actor::human("daniel").unwrap();
         let commit = Commit::new(
             TreeId::new(id(EMPTY_TREE_ID)),
             vec![],
@@ -831,9 +829,7 @@ mod tests {
         let store = dir.store();
         let blob = store.put_blob(&Blob::new("hello")).unwrap();
         let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
-        let author = Actor::Human {
-            id: "daniel".into(),
-        };
+        let author = Actor::human("daniel").unwrap();
         let commit = store
             .put_commit(&Commit::new(tree, vec![], author, 1_700_000_000, "m").unwrap())
             .unwrap();
@@ -952,9 +948,7 @@ mod tests {
     fn a_commit_file_is_the_header_and_the_encoding() {
         let dir = TempDir::new();
         let store = dir.store();
-        let author = Actor::Human {
-            id: "daniel".into(),
-        };
+        let author = Actor::human("daniel").unwrap();
         let commit = Commit::new(
             TreeId::new(id(EMPTY_TREE_ID)),
             vec![],

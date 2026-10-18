@@ -1,23 +1,12 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
 //! index, and object storage.
 
+mod actor;
 pub mod index;
 pub mod object;
 pub mod store;
 
-/// Actor of an operation. Agents carry model version, session, and sponsor.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Actor {
-    Human {
-        id: String,
-    },
-    Agent {
-        id: String,
-        model: String,
-        session: String,
-        sponsor: String,
-    },
-}
+pub use actor::{Actor, ActorError, ActorRef};
 
 /// Result of an authorization check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,15 +35,8 @@ mod tests {
 
     #[test]
     fn allow_all_allows_human_and_agent() {
-        let human = Actor::Human {
-            id: "daniel".into(),
-        };
-        let agent = Actor::Agent {
-            id: "agent-1".into(),
-            model: "claude-haiku-5-5".into(),
-            session: "s1".into(),
-            sponsor: "daniel".into(),
-        };
+        let human = Actor::human("daniel").unwrap();
+        let agent = Actor::agent("agent-1", "claude-haiku-5-5", "s1", "daniel").unwrap();
         assert_eq!(
             AllowAll.authorize(&human, "commit", "main"),
             Decision::Allow

@@ -204,5 +204,9 @@ definition of the byte-level encodings. This ADR records the decisions behind th
       `claim`, so that each call site reads as an assertion. A lookup of the kind from the object
       header alone, or a read that returns the body together with the typed ID, would avoid the
       full read of `resolve_*`, at the price of a weaker check or a second API.
-- [ ] Validate `Actor` in its own type, so that other consumers, such as the authorization
-      hook, never see an actor that a commit would reject.
+- [x] Validate `Actor` in its own type, so that other consumers, such as the authorization
+      hook, never see an actor that a commit would reject. Done: `Actor` has private fields and
+      is built by `Actor::human` and `Actor::agent`, which check every field and return an
+      `ActorError`. `Actor::view` gives an `ActorRef` to match on. `Commit::new` no longer
+      checks the author, and `CommitError::InvalidActorField` is gone. No encoding and no ID
+      changes.
