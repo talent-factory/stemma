@@ -15,10 +15,13 @@
 //!
 //! The encoding is version 1 and starts with the line `stemma-index 1`. Each entry is one line
 //! `<mode> <id> <path>`, for example `100644 b3:9db8…75ad src/main.rs`, where `<mode>` is
-//! `100644`, `100755`, or `120000` and `<id>` is the textual object ID. Entries are sorted by
-//! path in UTF-8 byte order, comparing the whole path string and not component by component:
-//! `a-b`, `a.b`, and `a/z` appear in this order, while a tree orders the names of one directory
-//! only. A tree builder therefore has to group the entries by directory. The path comes last
+//! `100644`, `100755`, or `120000` and `<id>` is the textual object ID. Entries are sorted
+//! component by component: the path is split at `/` and the components are compared in UTF-8 byte
+//! order, so a shorter path that is a prefix of another comes first. `a/z`, `a-b`, and `a.b`
+//! appear in this order, because the component `a` sorts before `a-b`. That is the order of a
+//! depth-first walk through trees, which sort the names of one directory in UTF-8 byte order
+//! (ADR-005), so an index and a tree can be compared in one pass. The sort of the whole path
+//! string would put `a-b` and `a.b` before `a/z`, and is not used. The path comes last
 //! because it may contain spaces; it cannot contain a newline. The reader is strict: it rejects
 //! anything that [`Index::encode`] would not have written, so one index has exactly one
 //! encoding.
@@ -28,6 +31,7 @@
 //! it as version 1. The index is a file, not an object, so the kind-name rule for objects does
 //! not apply to it.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -279,10 +283,33 @@ impl IndexEntry {
     }
 }
 
-/// The staging area: staged files by path, sorted by path in UTF-8 byte order.
+/// Compares two paths component by component: the components, split at `/`, are compared in
+/// UTF-8 byte order, and a path that is a prefix of another comes first. This is the order of a
+/// depth-first walk through trees (ADR-005).
+fn compare_paths(a: &str, b: &str) -> Ordering {
+    a.split('/').cmp(b.split('/'))
+}
+
+/// A path as a map key, ordered by [`compare_paths`] and not by the bytes of the string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PathKey(String);
+
+impl Ord for PathKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_paths(&self.0, &other.0)
+    }
+}
+
+impl PartialOrd for PathKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The staging area: staged files by path, sorted component by component.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Index {
-    entries: BTreeMap<String, IndexEntry>,
+    entries: BTreeMap<PathKey, IndexEntry>,
 }
 
 /// Returns the first path rule the path violates, if any.
@@ -339,27 +366,29 @@ impl Index {
         let staged_parent = path
             .match_indices('/')
             .map(|(end, _)| &path[..end])
-            .find(|parent| self.entries.contains_key(*parent))
+            .find(|parent| self.entries.contains_key(&PathKey((*parent).to_owned())))
             .map(str::to_owned);
         if let Some(parent) = staged_parent {
             return Err(IndexError::ParentIsFile { path, parent });
         }
-        // The path must not be a directory that holds staged files. The first key from
-        // `<path>/` onwards starts with it exactly if there is such a file.
+        // The path must not be a directory that holds staged files. The files below a directory
+        // follow it directly in the component order, so the first key after the path starts
+        // with `<path>/` exactly if there is such a file.
         let prefix = format!("{path}/");
-        let first_from_prefix = self
+        let key = PathKey(path);
+        let first_after = self
             .entries
-            .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
+            .range((Bound::Excluded(&key), Bound::Unbounded))
             .next();
-        if let Some((child, _)) = first_from_prefix {
-            if child.starts_with(&prefix) {
+        if let Some((child, _)) = first_after {
+            if child.0.starts_with(&prefix) {
                 return Err(IndexError::HasChildren {
-                    child: child.clone(),
-                    path,
+                    child: child.0.clone(),
+                    path: key.0,
                 });
             }
         }
-        self.entries.insert(path, IndexEntry { mode, id });
+        self.entries.insert(key, IndexEntry { mode, id });
         Ok(())
     }
 
@@ -367,12 +396,12 @@ impl Index {
     /// at exactly this path; a directory name is not a path in the index, so removing one
     /// removes nothing.
     pub fn remove(&mut self, path: &str) -> Option<IndexEntry> {
-        self.entries.remove(path)
+        self.entries.remove(&PathKey(path.to_owned()))
     }
 
     /// Returns the entry at the path.
     pub fn get(&self, path: &str) -> Option<&IndexEntry> {
-        self.entries.get(path)
+        self.entries.get(&PathKey(path.to_owned()))
     }
 
     /// Returns the number of staged files.
@@ -385,12 +414,12 @@ impl Index {
         self.entries.is_empty()
     }
 
-    /// Iterates over the entries in path order, comparing whole paths. This is not the order of
-    /// a tree; see the module documentation.
+    /// Iterates over the entries in path order, component by component; see the module
+    /// documentation.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &IndexEntry)> {
         self.entries
             .iter()
-            .map(|(path, entry)| (path.as_str(), entry))
+            .map(|(path, entry)| (path.0.as_str(), entry))
     }
 
     /// Returns the canonical encoding: the header line, then one line
@@ -399,7 +428,7 @@ impl Index {
         let mut out = String::from(HEADER);
         for (path, entry) in &self.entries {
             let mode = EntryMode::from(entry.mode);
-            out.push_str(&format!("{} {} {}\n", mode.code(), entry.id, path));
+            out.push_str(&format!("{} {} {}\n", mode.code(), entry.id, path.0));
         }
         out.into_bytes()
     }
@@ -461,7 +490,9 @@ impl Index {
                     line: line_number,
                     source,
                 })?;
-            if let Some(previous) = previous.filter(|previous| *previous >= path) {
+            if let Some(previous) =
+                previous.filter(|previous| compare_paths(previous, path).is_ge())
+            {
                 return Err(IndexParseError::OutOfOrder {
                     line: line_number,
                     previous: previous.to_owned(),
@@ -759,17 +790,17 @@ mod tests {
     // Encoding
 
     #[test]
-    fn the_order_is_by_whole_path_bytes_and_shows_in_the_encoding() {
+    fn the_order_is_by_component_and_shows_in_the_encoding() {
         let index = index_of(&["b", "a/z", "a-b", "a.b"]);
         let paths: Vec<&str> = index.iter().map(|(path, _)| path).collect();
-        assert_eq!(paths, ["a-b", "a.b", "a/z", "b"]);
+        assert_eq!(paths, ["a/z", "a-b", "a.b", "b"]);
         let encoded = String::from_utf8(index.encode()).unwrap();
         let encoded_paths: Vec<&str> = encoded
             .lines()
             .skip(1)
             .map(|line| line.splitn(3, ' ').nth(2).unwrap())
             .collect();
-        assert_eq!(encoded_paths, ["a-b", "a.b", "a/z", "b"]);
+        assert_eq!(encoded_paths, ["a/z", "a-b", "a.b", "b"]);
     }
 
     #[test]
@@ -790,9 +821,9 @@ mod tests {
         index.insert("a-b", FileMode::File, hello()).unwrap();
         let golden = format!(
             "stemma-index 1\n\
+             120000 {HELLO_ID} a/z\n\
              100644 {HELLO_ID} a-b\n\
              100755 {EMPTY_ID} a.b\n\
-             120000 {HELLO_ID} a/z\n\
              100644 {EMPTY_ID} b c\n"
         );
         assert_eq!(index.encode(), golden.as_bytes());
@@ -933,13 +964,13 @@ mod tests {
                     path: "a".into(),
                 },
             ),
-            // `-` sorts before `/`, so a directory must not come before its look-alike `a-b`.
+            // The component `a` sorts before `a-b`, so the whole-path order is not accepted.
             (
-                input(&format!("100644 {HELLO_ID} a/z\n100644 {HELLO_ID} a-b\n")),
+                input(&format!("100644 {HELLO_ID} a-b\n100644 {HELLO_ID} a/z\n")),
                 IndexParseError::OutOfOrder {
                     line: 3,
-                    previous: "a/z".into(),
-                    path: "a-b".into(),
+                    previous: "a-b".into(),
+                    path: "a/z".into(),
                 },
             ),
             // Line endings and control characters in the path reach the path rules.

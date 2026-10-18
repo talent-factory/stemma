@@ -84,8 +84,13 @@ definition of the byte-level encodings. This ADR records the decisions behind th
 - **Names are encoded as raw UTF-8 bytes** *(confirmed)*. A file whose name is not valid UTF-8
   cannot be stored. The layer that reads files has to report that as an error and must not
   convert the name silently.
-- **Sort order** of tree entries is UTF-8 byte order of the name. Directories get no special
-  treatment, unlike in Git, where a directory sorts as if its name ended in `/`.
+- **Sort order** *(confirmed)* of tree entries is UTF-8 byte order of the name. Directories get no
+  special treatment, unlike in Git, where a directory sorts as if its name ended in `/`. The
+  position of an entry depends on its name only, so a file that becomes a directory keeps its place,
+  and the order can be checked without the mode. The cost is that a depth-first walk through trees
+  does not list the paths in the order of the path strings: `a/z` comes before `a-b`. The index
+  therefore uses the same walk order (see below). An import from Git sorts anew, because the IDs are
+  new anyway.
 - **Commit timestamp** *(confirmed)*. A commit carries one timestamp, the time the author
   claims, as `time <seconds>` after the `author` header. The value is a decimal integer of
   seconds since the Unix epoch in UTC, without a plus sign, without leading zeros, and without a
@@ -104,21 +109,23 @@ definition of the byte-level encodings. This ADR records the decisions behind th
   IDs. The commit headers are, in this order, `tree`, `parent` (zero or more), `author`, `time`.
   The index reader (see below) applies the rule. The reader for objects does not exist yet;
   `object.rs` only writes encodings.
-- **Index file** *(proposal)*. The index (staging area) is persisted as a text file and is a
-  second format next to the objects. It is a file, not an object, so it is versioned by its
-  first line, `stemma-index 1`, and not by an object kind name. An incompatible change raises
-  the number, and a reader reports another number as an unsupported version and never reads it
-  as version 1. Each following line is `<mode> <id> <path>` with one space between the fields:
-  the mode is `100644`, `100755`, or `120000`, the ID is the textual object ID, and the path is
-  everything after the second space. The index holds files and symbolic links only; the tree
-  mode `040000` is an unknown mode in an index. Paths use `/` and satisfy the tree name rules
-  for every component. Entries are sorted by the whole path string in UTF-8 byte order, which
-  is not the order of a tree: `a-b`, `a.b`, and `a/z` appear in this order, while a tree orders
-  only the names of one directory. A tree builder has to group the entries by directory. The
-  reader follows the strict-reading rule: it rejects anything the writer would not have
-  written, including a missing final newline, `\r\n`, any separator other than one space, and
-  paths that are not strictly ascending. A path cannot be both a file and a directory, and the
-  check is byte-exact like all name comparisons, so `Foo` and `foo/bar` do not conflict. The
+- **Index file** *(proposal)*. The index (staging area) is persisted as a text file and is a second
+  format next to the objects. It is a file, not an object, so it is versioned by its first line,
+  `stemma-index 1`, and not by an object kind name. An incompatible change raises the number, and a
+  reader reports another number as an unsupported version and never reads it as version 1. Each
+  following line is `<mode> <id> <path>` with one space between the fields: the mode is `100644`,
+  `100755`, or `120000`, the ID is the textual object ID, and the path is everything after the
+  second space. The index holds files and symbolic links only; the tree mode `040000` is an unknown
+  mode in an index. Paths use `/` and satisfy the tree name rules for every component. Entries are
+  sorted component by component: the path is split at `/`, the components are compared in UTF-8 byte
+  order, and a path that is a prefix of another comes first. `a/z`, `a-b`, and `a.b` appear in this
+  order, because the component `a` sorts before `a-b`. This is the order of a depth-first walk
+  through trees, so an index and a tree can be compared in one pass and a tree builder can read the
+  entries in order. The sort of the whole path string would put `a-b` and `a.b` before `a/z` and is
+  not used. The reader follows the strict-reading rule: it rejects anything the writer would not
+  have written, including a missing final newline, `\r\n`, any separator other than one space, and
+  paths that are not strictly ascending in this order. A path cannot be both a file and a directory,
+  and the check is byte-exact like all name comparisons, so `Foo` and `foo/bar` do not conflict. The
   encoding is defined by `crates/stemma-core/src/index.rs` and its golden-vector test.
 - **Parent rule.** A commit lists each parent at most once, and the order of the parents is part
   of its ID.
