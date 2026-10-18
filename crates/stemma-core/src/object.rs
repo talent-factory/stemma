@@ -1,6 +1,7 @@
 //! Content-addressed objects: blobs, trees, and commits.
 //!
-//! Object IDs use BLAKE3 with the `b3:` prefix (ADR-001). Commits record their author as an [`Actor`]
+//! Object IDs use BLAKE3 with the `b3:` prefix, following the proposal in ADR-001; the choice
+//! is provisional until that ADR is accepted. Commits record their author as an [`Actor`]
 //! (ADR-002). ADR-005 records the decisions behind the rules for names, actor fields,
 //! timestamps, and versioning.
 //!
@@ -24,8 +25,8 @@ use crate::Actor;
 /// Algorithm prefix of BLAKE3 object IDs (ADR-001).
 const PREFIX: &str = "b3:";
 
-/// Name of Stemma's own metadata directory. A tree entry must not use it or the aliases listed
-/// at [`NameProblem::ReservedName`], so that a checkout does not overwrite repository data
+/// Name of Stemma's own metadata directory. A tree entry name or an index path component must
+/// not use it or the aliases listed at [`NameProblem::ReservedName`], so that a checkout does not overwrite repository data
 /// through them. Other aliases are left to the checkout layer (ADR-005).
 pub const METADATA_DIR: &str = ".stemma";
 
@@ -170,7 +171,8 @@ impl Blob {
     }
 }
 
-/// The rule that a rejected tree entry name violates.
+/// The rule that a rejected name violates. The rules apply to tree entry names and to the
+/// components of index paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NameProblem {
@@ -182,8 +184,8 @@ pub enum NameProblem {
     /// The name contains `/`.
     PathSeparator,
     /// The name contains a control character in the sense of `char::is_control` (C0, DEL, C1),
-    /// including NUL and newline. The tree encoding is line-based, so a newline would make it
-    /// ambiguous; the other control characters are rejected for hygiene.
+    /// including NUL and newline. The tree and index encodings are line-based, so a newline would
+    /// make them ambiguous; the other control characters are rejected for hygiene.
     ControlCharacter,
     /// The name contains a format character (Unicode category Cf), such as a zero-width space
     /// or a bidirectional override. Most of them are invisible and let two names look
@@ -262,7 +264,8 @@ pub enum EntryMode {
 }
 
 impl EntryMode {
-    /// Mode string written into the tree encoding. It is part of the object ID.
+    /// Mode string written into the tree and index encodings. In a tree it is part of the
+    /// object ID, and in the index file it is part of the file format.
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::File => "100644",
@@ -348,9 +351,11 @@ fn is_reserved_name(name: &str) -> bool {
 }
 
 /// Returns the first naming rule the name violates, if any. The rules are checked in the order
-/// of the [`NameProblem`] variants.
+/// of the [`NameProblem`] variants. The name is a tree entry name or one component of an index
+/// path.
 ///
-/// Only the absence of `\n` is needed for the line-based [`Tree::encode`] to be unambiguous.
+/// Only the absence of `\n` is needed for the line-based tree and index encodings to be
+/// unambiguous.
 /// The other rules protect checkouts and readers: `/` is rejected because names are single path
 /// components, dot-only names because Windows reduces them to `.` or `..`, and control and
 /// format characters so that names do not hide their content. Names are compared and hashed as
@@ -1296,5 +1301,23 @@ mod tests {
         assert_eq!(c.author(), &agent());
         assert_eq!(c.message(), "msg");
         assert_eq!(c.timestamp(), TIME);
+    }
+
+    #[test]
+    fn mode_codes_are_pinned_and_roundtrip() {
+        for (mode, code) in [
+            (EntryMode::File, "100644"),
+            (EntryMode::Executable, "100755"),
+            (EntryMode::Symlink, "120000"),
+            (EntryMode::Directory, "040000"),
+        ] {
+            assert_eq!(mode.code(), code);
+            assert_eq!(EntryMode::from_code(code), Some(mode));
+        }
+        for unknown in [
+            "", "100666", "0100644", "40000", "100644 ", " 100644", "file",
+        ] {
+            assert_eq!(EntryMode::from_code(unknown), None, "{unknown:?}");
+        }
     }
 }

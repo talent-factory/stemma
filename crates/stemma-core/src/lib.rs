@@ -1,4 +1,5 @@
-//! Stemma core: actors and authorization hook (ADR-002), objects, and the index.
+//! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, and the
+//! index.
 
 pub mod index;
 pub mod object;
