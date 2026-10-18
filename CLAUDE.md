@@ -7,7 +7,8 @@ Version control system in Rust. See `README.md` for the project overview and `ad
 - Directory names, file names, and all source code are written in English (academic level). This covers identifiers, comments, doc comments, log and CLI output, and error messages.
 - Commit messages and pull request titles and descriptions are written in English as well. Keep the emoji conventional commit format of the skill below (`<emoji> <type>: <description>`, imperative mood, 72 characters or fewer in the first line).
 - Example: `docs/images/`, not `docs/bilder/`.
-- Exception for now: the book text (`docs/main.tex`) and the root `README.md` stay in German. The book will be translated to English at a later date; do not translate it before then.
+- Exception for now: the prose content of the book (`docs/main.tex` and all chapter files under `docs/chapters/`) and the root `README.md` are written in German, because the author drafts the content in German first. The book will be translated to English at a later date; do not translate it before then.
+- The exception covers the prose only. File names, directory names, and ConTeXt code (macros, labels, comments) stay English.
 
 ## Commands
 
