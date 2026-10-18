@@ -651,12 +651,6 @@ impl Tree {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommitError {
-    /// An author field is empty or contains a character outside visible ASCII
-    /// (U+0021 to U+007E, no space). Whitespace and control characters would make the line-based
-    /// encoding ambiguous; invisible characters and look-alike letters from other scripts
-    /// would let identities be spoofed (look-alikes within ASCII, such as `l` and `I`, remain
-    /// possible). Carries the name of the field: `id`, `model`, `session`, or `sponsor`.
-    InvalidActorField(&'static str),
     /// The same parent is listed twice.
     DuplicateParent(CommitId),
 }
@@ -664,10 +658,6 @@ pub enum CommitError {
 impl fmt::Display for CommitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidActorField(field) => write!(
-                f,
-                "author field `{field}` must be non-empty visible ASCII (U+0021 to U+007E)"
-            ),
             Self::DuplicateParent(id) => write!(f, "duplicate parent {id}"),
         }
     }
@@ -695,9 +685,9 @@ impl Commit {
     ///
     /// # Errors
     ///
-    /// Returns [`CommitError::InvalidActorField`] if an author field is empty or not visible ASCII, and
-    /// [`CommitError::DuplicateParent`] if a parent is listed twice. The message is not
-    /// validated: it comes last in the encoding and cannot interfere with the headers.
+    /// Returns [`CommitError::DuplicateParent`] if a parent is listed twice. The author needs no
+    /// check here, because an [`Actor`] is valid by construction. The message is not validated: it
+    /// comes last in the encoding and cannot interfere with the headers.
     pub fn new(
         tree: TreeId,
         parents: Vec<CommitId>,
@@ -705,7 +695,6 @@ impl Commit {
         timestamp: i64,
         message: impl Into<String>,
     ) -> Result<Self, CommitError> {
-        validate_actor(&author)?;
         for (i, parent) in parents.iter().enumerate() {
             if parents[..i].contains(parent) {
                 return Err(CommitError::DuplicateParent(*parent));
@@ -768,50 +757,14 @@ impl Commit {
     }
 }
 
-/// Returns the label and the fields of an actor, the identifier first. This is the single list
-/// from which both [`validate_actor`] and [`actor_line`] work, so a new field is always
-/// checked and always encoded.
-fn actor_fields(actor: &Actor) -> (&'static str, Vec<(&'static str, &str)>) {
-    match actor {
-        Actor::Human { id } => ("human", vec![("id", id)]),
-        Actor::Agent {
-            id,
-            model,
-            session,
-            sponsor,
-        } => (
-            "agent",
-            vec![
-                ("id", id),
-                ("model", model),
-                ("session", session),
-                ("sponsor", sponsor),
-            ],
-        ),
-    }
-}
-
-/// Checks that every field of the actor is non-empty visible ASCII (U+0021 to U+007E). That
-/// makes the header line unambiguous and keeps identities free of invisible characters and of
-/// look-alike letters from other scripts. The first invalid field in the order of
-/// [`actor_fields`] is reported.
-fn validate_actor(actor: &Actor) -> Result<(), CommitError> {
-    for (field, value) in actor_fields(actor).1 {
-        if value.is_empty() || !value.chars().all(|c| c.is_ascii_graphic()) {
-            return Err(CommitError::InvalidActorField(field));
-        }
-    }
-    Ok(())
-}
-
 /// Encodes an actor on one line: `human <id>` or
 /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`.
 ///
-/// The fields are not escaped. [`validate_actor`] guarantees that none is empty or contains a
-/// space, so the line splits unambiguously at spaces. A value may still contain `=`, so a
-/// parser must split each `key=value` token at its first `=`.
+/// The fields are not escaped. [`Actor`] guarantees that no field is empty or contains a space, so
+/// the line splits unambiguously at spaces. A value may still contain `=`, so a parser must split
+/// each `key=value` token at its first `=`.
 fn actor_line(actor: &Actor) -> String {
-    let (label, fields) = actor_fields(actor);
+    let (label, fields) = actor.fields();
     let mut line = label.to_owned();
     for (i, (name, value)) in fields.into_iter().enumerate() {
         if i == 0 {
@@ -846,18 +799,11 @@ mod tests {
         "b3:8cb48a697fe25a78eeb950e011e7dc9897e8216d13e21f3210db70ce2d9db3e8";
 
     fn human() -> Actor {
-        Actor::Human {
-            id: "daniel".into(),
-        }
+        Actor::human("daniel").expect("valid actor")
     }
 
     fn agent() -> Actor {
-        Actor::Agent {
-            id: "agent-1".into(),
-            model: "claude-haiku-5-5".into(),
-            session: "s1".into(),
-            sponsor: "daniel".into(),
-        }
+        Actor::agent("agent-1", "claude-haiku-5-5", "s1", "daniel").expect("valid actor")
     }
 
     fn id(text: &str) -> ObjectId {
@@ -1443,12 +1389,7 @@ mod tests {
 
     #[test]
     fn equals_sign_inside_a_value_is_allowed_and_encoded_verbatim() {
-        let author = Actor::Agent {
-            id: "a".into(),
-            model: "m=1".into(),
-            session: "s".into(),
-            sponsor: "p".into(),
-        };
+        let author = Actor::agent("a", "m=1", "s", "p").expect("valid actor");
         let c = commit(vec![], author, "m");
         let text = String::from_utf8(c.encode()).expect("encoding is UTF-8");
         assert!(text.contains("\nauthor agent a model=m=1 session=s sponsor=p\n"));
@@ -1456,13 +1397,8 @@ mod tests {
 
     #[test]
     fn human_and_agent_with_the_same_id_differ() {
-        let as_human = Actor::Human { id: "x".into() };
-        let as_agent = Actor::Agent {
-            id: "x".into(),
-            model: "m".into(),
-            session: "s".into(),
-            sponsor: "p".into(),
-        };
+        let as_human = Actor::human("x").expect("valid actor");
+        let as_agent = Actor::agent("x", "m", "s", "p").expect("valid actor");
         assert_ne!(
             commit(vec![], as_human, "m").id(),
             commit(vec![], as_agent, "m").id()
@@ -1515,117 +1451,6 @@ mod tests {
             "m",
         );
         assert_eq!(result, Err(CommitError::DuplicateParent(p)));
-    }
-
-    #[test]
-    fn commit_rejects_author_fields_that_are_not_visible_ascii() {
-        let with_agent = |id: &str, model: &str, session: &str, sponsor: &str| Actor::Agent {
-            id: id.into(),
-            model: model.into(),
-            session: session.into(),
-            sponsor: sponsor.into(),
-        };
-        let cases = [
-            (Actor::Human { id: String::new() }, "id"),
-            (Actor::Human { id: "x\n".into() }, "id"),
-            (
-                Actor::Human {
-                    id: "x\n\nfake".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "two words".into(),
-                },
-                "id",
-            ),
-            (with_agent("a", "m session=s", "t", "p"), "model"),
-            (with_agent("a", "m", "s sponsor=q", "p"), "session"),
-            (with_agent("a", "m", "s", "p\r"), "sponsor"),
-            (with_agent("a", "m", "s", ""), "sponsor"),
-            (with_agent("a\0", "m", "s", "p"), "id"),
-            (with_agent("a", "", "s", "p"), "model"),
-            (with_agent("a", "m", "", "p"), "session"),
-            (
-                Actor::Human {
-                    id: "a\u{7f}".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "a\u{85}".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "a\u{a0}b".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "a\u{2028}b".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "a\u{2003}b".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "dan\u{200b}iel".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "dani\u{202e}el".into(),
-                },
-                "id",
-            ),
-            (
-                Actor::Human {
-                    id: "d\u{e4}niel".into(),
-                },
-                "id",
-            ),
-            // Cyrillic small a looks like the Latin one.
-            (
-                Actor::Human {
-                    id: "d\u{430}niel".into(),
-                },
-                "id",
-            ),
-            (with_agent("a", "m", "s", "p\u{1f600}"), "sponsor"),
-            // With several invalid fields, the first in field order is reported.
-            (with_agent("a b", "m c", "", "p\n"), "id"),
-            (with_agent("a", "m c", "", "p\n"), "model"),
-        ];
-        for (author, field) in cases {
-            assert_eq!(
-                Commit::new(empty_tree_id(), vec![], author.clone(), TIME, "m"),
-                Err(CommitError::InvalidActorField(field)),
-                "author {author:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn actor_fields_accept_the_whole_visible_ascii_range() {
-        let all: String = ('\u{21}'..='\u{7e}').collect();
-        let author = Actor::Agent {
-            id: all.clone(),
-            model: "!".into(),
-            session: "~".into(),
-            sponsor: all,
-        };
-        assert!(Commit::new(empty_tree_id(), vec![], author, TIME, "m").is_ok());
     }
 
     #[test]

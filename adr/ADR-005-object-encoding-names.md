@@ -5,12 +5,13 @@ are proposals.
 
 ## Context
 
-Object IDs are hashes of canonical encodings (ADR-001). Any change to an encoding changes the ID
-of every affected object, so the rules for what may appear in an encoding have to be settled
-before the first object is stored. This ADR covers the rules for tree entry names, actor fields,
-commit timestamps, and format versions. The implementation is
-`crates/stemma-core/src/object.rs`; together with its golden-vector tests it is the normative
-definition of the byte-level encodings. This ADR records the decisions behind them.
+Object IDs are hashes of canonical encodings (ADR-001). Any change to an encoding changes the ID of
+every affected object, so the rules for what may appear in an encoding have to be settled before the
+first object is stored. This ADR covers the rules for tree entry names, actor fields, commit
+timestamps, and format versions. The implementation is `crates/stemma-core/src/object.rs`; together
+with its golden-vector tests it is the normative definition of the byte-level encodings. The check
+of the actor fields is in `crates/stemma-core/src/actor.rs`. This ADR records the decisions behind
+them.
 
 ## Decision (proposal)
 
@@ -204,5 +205,9 @@ definition of the byte-level encodings. This ADR records the decisions behind th
       `claim`, so that each call site reads as an assertion. A lookup of the kind from the object
       header alone, or a read that returns the body together with the typed ID, would avoid the
       full read of `resolve_*`, at the price of a weaker check or a second API.
-- [ ] Validate `Actor` in its own type, so that other consumers, such as the authorization
-      hook, never see an actor that a commit would reject.
+- [x] Validate `Actor` in its own type, so that other consumers, such as the authorization
+      hook, never see an actor that a commit would reject. Done: `Actor` has private fields and
+      is built by `Actor::human` and `Actor::agent`, which check every field and return an
+      `ActorError`. `Actor::view` gives an `ActorRef` to match on. `Commit::new` no longer
+      checks the author, and `CommitError::InvalidActorField` is gone. No encoding and no ID
+      changes.

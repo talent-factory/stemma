@@ -9,8 +9,12 @@
 - Authorization in the core goes through `authorize(actor, operation, target)`. Phase 1: everything is allowed, but the call is mandatory.
 - The CLI, API, and MCP server call the same core.
 - Roles belong to the policy model, not to the core code.
+- An actor is valid by construction *(confirmed)*: `Actor::human` and `Actor::agent` check every
+  field (the rules are in ADR-005), so the authorization hook and the commit encoding never see an
+  invalid actor.
 
-Implementation: `crates/stemma-core/src/lib.rs`.
+Implementation: `crates/stemma-core/src/actor.rs` (actors) and `crates/stemma-core/src/lib.rs`
+(authorization hook).
 
 ## Open
 
