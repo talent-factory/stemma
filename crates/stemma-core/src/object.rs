@@ -24,6 +24,10 @@ use crate::Actor;
 /// Algorithm prefix of BLAKE3 object IDs (ADR-001).
 const PREFIX: &str = "b3:";
 
+/// Name of Stemma's own metadata directory. A tree entry must not use it (see
+/// [`NameProblem::ReservedName`]), so that a checkout can never overwrite repository data.
+pub const METADATA_DIR: &str = ".stemma";
+
 /// Number of hexadecimal characters in a BLAKE3 digest (32 bytes, two characters per byte).
 const HEX_LEN: usize = 64;
 
@@ -181,6 +185,9 @@ pub enum NameProblem {
     /// zero-width space or a bidirectional override. Such characters let two names look
     /// identical on screen.
     FormatCharacter,
+    /// The name is [`METADATA_DIR`] or resolves to it on a common file system: it differs only
+    /// in case, has trailing dots or spaces (Windows), or is its 8.3 short name `STEMMA~1`.
+    ReservedName,
 }
 
 impl fmt::Display for NameProblem {
@@ -191,6 +198,7 @@ impl fmt::Display for NameProblem {
             Self::PathSeparator => "the name contains `/`",
             Self::ControlCharacter => "the name contains a control character",
             Self::FormatCharacter => "the name contains an invisible format character",
+            Self::ReservedName => "the name is reserved for the metadata directory",
         })
     }
 }
@@ -277,7 +285,7 @@ impl TreeEntry {
     /// # Errors
     ///
     /// Returns [`TreeError::InvalidName`] if the name is empty, is `.` or `..`, or contains
-    /// `/` or a control or format character.
+    /// `/`, a control or format character, or is a reserved name.
     pub fn new(name: impl Into<String>, mode: EntryMode, id: ObjectId) -> Result<Self, TreeError> {
         let name = name.into();
         if let Some(problem) = name_problem(&name) {
@@ -307,12 +315,24 @@ fn is_format_character(c: char) -> bool {
     get_general_category(c) == GeneralCategory::Format
 }
 
+/// Whether the name is the metadata directory or an alias of it on a common file system.
+///
+/// Trailing dots and spaces are ignored because Windows drops them, and the comparison ignores
+/// case under both Unicode lowercase and uppercase mapping, which also catches look-alikes such
+/// as the long s (U+017F). Invisible characters are rejected before this check.
+fn is_reserved_name(name: &str) -> bool {
+    let trimmed = name.trim_end_matches(['.', ' ']);
+    [METADATA_DIR, "stemma~1"].iter().any(|reserved| {
+        trimmed.to_lowercase() == *reserved || trimmed.to_uppercase() == reserved.to_uppercase()
+    })
+}
+
 /// Returns the first naming rule the name violates, if any.
 ///
 /// Every accepted name must encode unambiguously in [`Tree::encode`]; for that, only the
 /// absence of `\n` is strictly needed. `/` is rejected because names are single path components.
 /// Control and invisible format characters are rejected so that names cannot hide their
-/// content. Names are compared as given: there is no Unicode normalization and no case
+/// content, and so is the name of the metadata directory. Names are compared as given: there is no Unicode normalization and no case
 /// folding.
 fn name_problem(name: &str) -> Option<NameProblem> {
     if name.is_empty() {
@@ -325,6 +345,8 @@ fn name_problem(name: &str) -> Option<NameProblem> {
         Some(NameProblem::ControlCharacter)
     } else if name.chars().any(is_format_character) {
         Some(NameProblem::FormatCharacter)
+    } else if is_reserved_name(name) {
+        Some(NameProblem::ReservedName)
     } else {
         None
     }
@@ -837,6 +859,15 @@ mod tests {
             ("a\u{feff}", NameProblem::FormatCharacter),
             ("a\u{ad}b", NameProblem::FormatCharacter),
             ("a\u{e0001}", NameProblem::FormatCharacter),
+            (".stemma", NameProblem::ReservedName),
+            (".STEMMA", NameProblem::ReservedName),
+            (".Stemma", NameProblem::ReservedName),
+            (".stemma.", NameProblem::ReservedName),
+            (".stemma ", NameProblem::ReservedName),
+            (".stemma. .", NameProblem::ReservedName),
+            ("stemma~1", NameProblem::ReservedName),
+            ("STEMMA~1", NameProblem::ReservedName),
+            (".\u{17f}temma", NameProblem::ReservedName),
             // A control character is reported before a format character.
             ("\u{200b}\n", NameProblem::ControlCharacter),
             // The first violated rule wins: a separator is reported before a control character.
@@ -853,6 +884,24 @@ mod tests {
                 "name {name:?}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_metadata_directory_itself_is_reserved() {
+        for name in [
+            ".stemma-notes",
+            ".stemma.bak",
+            "a.stemma",
+            "stemma",
+            "stemma~2",
+            "stemma~10",
+            ".stemmas",
+            "_.stemma",
+        ] {
+            let built = TreeEntry::new(name, EntryMode::File, id(HELLO_ID));
+            assert!(built.is_ok(), "name {name:?} should be accepted");
+        }
+        assert_eq!(METADATA_DIR, ".stemma");
     }
 
     #[test]

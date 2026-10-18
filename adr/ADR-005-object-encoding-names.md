@@ -19,6 +19,12 @@ actor fields. The implementation is `crates/stemma-core/src/object.rs`.
 - **Tree entry names** are UTF-8 strings. They must not be empty, must not be `.` or `..`, and
   must not contain `/`, control characters (`char::is_control`), or invisible format characters
   (Unicode category Cf).
+- **Reserved name.** The metadata directory is `.stemma`. No tree entry may use that name or an
+  alias of it on a common file system: the name in any letter case (including look-alikes such
+  as the long s U+017F), with trailing dots or spaces (Windows drops them), or its 8.3 short
+  name `STEMMA~1`. Without this rule a checkout could overwrite repository data, as in
+  CVE-2014-9390 for `.git`. Only the exact entry name is reserved: `.stemma-notes` and
+  `a.stemma` are allowed. The constant is `METADATA_DIR`.
 - **No normalization.** Names are compared and hashed as given. `é` in NFC and in NFD are two
   distinct names, and `README` and `readme` are two distinct names. Mapping them onto a
   file system is the job of the checkout layer.
@@ -72,8 +78,9 @@ actor fields. The implementation is `crates/stemma-core/src/object.rs`.
 ## Open
 
 - [ ] Allow U+200C and U+200D in tree names as an exception to the Cf rule?
-- [ ] Reserve the name of Stemma's own metadata directory, as Git does for `.git`, including its
-      case-insensitive and normalization variants.
+- [ ] Reject further aliases of `.stemma` on other file systems, such as NTFS alternate data
+      streams (`.stemma::$INDEX_ALLOCATION`) and HFS+ ignorable code points, or leave them to the
+      checkout layer, which has to guard the file system anyway.
 - [ ] Add a committer and a second timestamp, if rebasing and cherry-picking need to keep the
       original author time apart from the time of the rewrite.
 - [ ] Decide whether the operation log is exchanged with the history. The timestamp rule
@@ -81,5 +88,5 @@ actor fields. The implementation is `crates/stemma-core/src/object.rs`.
 - [ ] The store has to record the object kind, because the version is part of the kind name.
 - [ ] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a
       directory entry cannot point at a blob and a commit cannot take a blob as its tree.
-- [ ] Reject Windows device names and trailing dots or spaces in names, or leave it to the
-      checkout layer.
+- [ ] Reject Windows device names (`CON`, `NUL`, ...) in names, or leave it to the checkout
+      layer.
