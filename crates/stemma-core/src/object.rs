@@ -224,7 +224,9 @@ pub enum NameProblem {
     ControlCharacter,
     /// The name contains an invisible character: a format character (Unicode category Cf) or a
     /// default-ignorable code point (property `Default_Ignorable_Code_Point`). Examples are the
-    /// zero-width space, a bidirectional override, a Hangul filler, and a variation selector.
+    /// zero-width space, a bidirectional override, and a Hangul filler. A variation selector is
+    /// allowed only directly after a non-ASCII character that is not a selector itself, so it is
+    /// rejected at the start, after an ASCII character, and after another selector.
     /// Such characters let two names look identical on screen. Both sets follow Unicode 16.0,
     /// which the pinned `unicode-general-category` crate and the table in this module share
     /// (ADR-005).
@@ -414,6 +416,27 @@ fn is_invisible_character(c: char) -> bool {
             .is_ok()
 }
 
+/// Whether the character has the Unicode property `Variation_Selector`: the Mongolian free
+/// variation selectors, the variation selectors U+FE00 to U+FE0F, and the supplementary ones.
+/// All are default-ignorable. The Mongolian vowel separator U+180E is not one of them.
+fn is_variation_selector(c: char) -> bool {
+    matches!(c, '\u{180B}'..='\u{180D}' | '\u{180F}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
+/// Whether the name contains an invisible character that the rules do not allow in that place.
+/// A variation selector is allowed directly after a non-ASCII character that is not itself a
+/// variation selector, as in `\u{26A0}\u{FE0F}`. After an ASCII character, at the start, or after
+/// another selector it stays rejected, so `READ\u{FE0F}ME` does not look like `README` (ADR-005).
+fn has_invisible_character(name: &str) -> bool {
+    let mut previous: Option<char> = None;
+    name.chars().any(|c| {
+        let allowed = is_variation_selector(c)
+            && previous.is_some_and(|p| !p.is_ascii() && !is_variation_selector(p));
+        previous = Some(c);
+        is_invisible_character(c) && !allowed
+    })
+}
+
 /// Whether the character is a control character (`char::is_control`) or a line or paragraph
 /// separator (U+2028 and U+2029), which break a line in a listing like a newline.
 fn is_control_or_separator(c: char) -> bool {
@@ -461,7 +484,7 @@ pub(crate) fn name_problem(name: &str) -> Option<NameProblem> {
         Some(NameProblem::PathSeparator)
     } else if name.chars().any(is_control_or_separator) {
         Some(NameProblem::ControlCharacter)
-    } else if name.chars().any(is_invisible_character) {
+    } else if has_invisible_character(name) {
         Some(NameProblem::InvisibleCharacter)
     } else if is_reserved_name(name) {
         Some(NameProblem::ReservedName)
@@ -1002,9 +1025,13 @@ mod tests {
             ("\u{3164}", NameProblem::InvisibleCharacter),
             ("\u{ffa0}", NameProblem::InvisibleCharacter),
             ("READ\u{fe0f}ME", NameProblem::InvisibleCharacter),
-            ("\u{2764}\u{fe0f}", NameProblem::InvisibleCharacter),
             ("a\u{e0100}b", NameProblem::InvisibleCharacter),
             ("a\u{180b}", NameProblem::InvisibleCharacter),
+            // A variation selector at the start, after another selector, or after a joiner.
+            ("\u{fe0f}\u{2764}", NameProblem::InvisibleCharacter),
+            ("\u{2764}\u{fe0f}\u{fe0f}", NameProblem::InvisibleCharacter),
+            ("\u{2764}\u{fe0f}\u{e0100}", NameProblem::InvisibleCharacter),
+            ("\u{2764}\u{200d}\u{fe0f}", NameProblem::InvisibleCharacter),
             ("a\u{17b4}", NameProblem::InvisibleCharacter),
             // Format characters that are visible are rejected too: Cf is part of the rule.
             ("a\u{600}b", NameProblem::InvisibleCharacter),
@@ -1120,6 +1147,13 @@ mod tests {
             "a\u{2800}b",
             "\u{3163}\u{3165}",
             "a\u{fdff}b",
+            // A variation selector directly after a non-ASCII character.
+            "\u{26a0}\u{fe0f} TODO.md",
+            "\u{2764}\u{fe0f}",
+            "\u{2764}\u{fe0f}x",
+            "\u{e9}\u{fe0f}",
+            "\u{8fba}\u{e0100}",
+            "\u{1820}\u{180b}",
         ] {
             let built = TreeEntry::new(name, EntryMode::File, id(HELLO_ID));
             assert!(built.is_ok(), "name {name:?} should be accepted");
@@ -1545,6 +1579,8 @@ mod tests {
             name_problem("1\u{fe0f}\u{20e3}"),
             Some(NameProblem::InvisibleCharacter)
         );
+        // An emoji with a presentation selector is accepted in both.
+        assert_eq!(name_problem("\u{26a0}\u{fe0f}"), None);
         // The emoji itself and the keycap sign alone are fine.
         assert_eq!(name_problem("\u{20e3}"), None);
         assert_eq!(name_problem("\u{2764}"), None);

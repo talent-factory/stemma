@@ -21,19 +21,23 @@ definition of the byte-level encodings. This ADR records the decisions behind th
   the provenance chain of ADR-002. Look-alikes within ASCII, such as `l` and `I` or `O` and `0`,
   remain possible. A display name, if needed, belongs in a separate field.
 - **Tree entry names** *(confirmed)* are UTF-8 strings. They must not be empty, must not consist
-  only of dots and spaces (`.`, `..`, and names such as `...` or `. ` that Windows reduces to
-  them), and must not contain `/`, control characters (`char::is_control`, plus the line and
-  paragraph separators U+2028 and U+2029), or invisible characters. Invisible characters are
-  the format characters (Unicode category Cf) and the default-ignorable code points (property
-  `Default_Ignorable_Code_Point`), together. Examples are the zero-width space, the
-  bidirectional overrides, the Hangul fillers, the combining grapheme joiner, and the variation
-  selectors. The two sets overlap, and neither contains the other: Cf holds visible characters
-  such as the Arabic number sign U+0600, and the default-ignorable set holds the variation
-  selectors and the Hangul fillers. Both follow Unicode 16.0. The Cf set comes from the
-  `unicode-general-category` crate, which is pinned to an exact version, and the
-  default-ignorable set is a table in `object.rs` built from `DerivedCoreProperties.txt` of
-  Unicode 16.0, so that the same name is valid on every build. A new Unicode version needs a
-  review of the table and of the names it newly rejects.
+  only of dots and spaces (`.`, `..`, and names such as `...` or `. ` that Windows reduces to them),
+  and must not contain `/`, control characters (`char::is_control`, plus the line and paragraph
+  separators U+2028 and U+2029), or invisible characters. Invisible characters are the format
+  characters (Unicode category Cf) and the default-ignorable code points (property
+  `Default_Ignorable_Code_Point`), together. Examples are the zero-width space, the bidirectional
+  overrides, the Hangul fillers, and the combining grapheme joiner. Variation selectors are
+  invisible too, but allowed in one position (see below). The two sets overlap, and neither contains
+  the other: Cf holds visible characters such as the Arabic number sign U+0600, and the
+  default-ignorable set holds the variation selectors and the Hangul fillers. Both follow Unicode
+  16.0. The Cf set comes from the `unicode-general-category` crate, which is pinned to an exact
+  version, and the default-ignorable set is a table in `object.rs` built from
+  `DerivedCoreProperties.txt` of Unicode 16.0, so that the same name is valid on every build. A new
+  Unicode version needs a review of the table and of the names it newly rejects.
+- **Variation selectors** *(confirmed)*. A variation selector is allowed directly after a
+  non-ASCII character that is not a selector itself. Everywhere else it is invisible and
+  rejected like the rest of the default-ignorable code points; see Consequences. Allowing it
+  admits names that were not storable before and changes no ID.
 - **Joiners** *(confirmed)*. The zero-width joiners U+200C and U+200D stay rejected, like the
   rest of Cf. Persian and other languages written in Arabic script, Indic scripts, and composite
   emoji need them, so names in those scripts cannot be stored for now. Two reasons: they are
@@ -141,13 +145,16 @@ definition of the byte-level encodings. This ADR records the decisions behind th
   scripts (for example Persian and several Indic
   scripts) and composite emoji such as 👨‍👩‍👧 need them, so file names in those scripts are
   rejected. See Open.
-- The variation selectors (U+FE00 to U+FE0F and U+E0100 to U+E01EF) are rejected as
-  default-ignorable. Emoji with a presentation selector, such as `❤️` and `⚠️`, the ideographic
-  variation sequences used for variants of Japanese names, and the Mongolian free variation
-  selectors cannot be stored for now. Plain emoji such as `😀` and `❤` without the selector
-  can. The planned relaxation, if a need arises, is: a variation selector is allowed only
-  directly after a non-ASCII character. That keeps `READ\uFE0FME` rejected. The keycap emoji,
-  such as `1️⃣`, start with an ASCII digit and would stay rejected.
+- The variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF, and the Mongolian free variation
+  selectors U+180B to U+180D and U+180F) are default-ignorable, but a name may contain one directly
+  after a non-ASCII character that is not itself a selector. So `⚠️ TODO.md`, `❤️`, and the
+  ideographic variation sequences of Japanese names can be stored. A selector at the start of a
+  name, after an ASCII character, or after another selector is rejected, so `READ\uFE0FME` stays
+  rejected and no selector can occur in an ASCII name or an alias of `.stemma`. The rule checks the
+  neighbour only and does not check that Unicode defines the sequence, so `é\uFE0F` is accepted and
+  looks like `é`, like the other look-alikes below. The keycap emoji, such as `1️⃣`, start with an
+  ASCII digit and stay rejected. The Mongolian vowel separator U+180E is not a variation selector
+  and stays rejected.
 - The rule does not cover look-alikes made of visible characters: letters from other scripts
   that look like ASCII letters, the braille blank U+2800, the no-break space and other space
   characters, and look-alikes within ASCII such as `l` and `I`. Names are not normalized.
