@@ -101,12 +101,20 @@ them.
   seconds since the Unix epoch in UTC, without a plus sign, without leading zeros, and without a
   time zone. Negative values (before 1970) are allowed; `-0` is not canonical. The interface
   decides how to display it. The timestamp is self-reported and proves nothing; only signatures
-  make it trustworthy (ADR-003, ADR-004). There is no separate committer. This rule assumes that
-  the operation log stays local and is not exchanged with the history, so the commit has to
-  carry its own date (see Open). A rewrite, such as a rebase, a cherry-pick, or an amend, creates
-  a new commit that keeps the author and the time of the original change. Who rewrote it, and
-  when, is recorded only in the operation log. The first open item below decides later whether
-  that is enough.
+  make it trustworthy (ADR-003, ADR-004). There is no separate committer. The operation log stays
+  local and is not exchanged with the history (see the next decision), so the commit carries its
+  own date. A rewrite, such as a rebase, a cherry-pick, or an amend, creates a new commit that
+  keeps the author and the time of the original change. Who rewrote it, and when, is recorded in
+  the local operation log and, for other readers, in the record of ref updates of a hub (ADR-003).
+- **Operation log** *(confirmed)*. The operation log is local. It is not an object of the repository
+  and is not exchanged with the history. Three reasons: it keeps every earlier state reachable, so a
+  secret that was committed by mistake could not be removed by rewriting; it holds local paths and
+  discarded attempts that are nobody else's business; and the commit format stays as it is. The
+  choice can be reversed in one direction only: an exchange can be added later as a new object kind
+  without invalidating stored objects, but a log that was once exchanged cannot be withdrawn. For
+  readers who do not have the local log, the answer to who rewrote a branch is the record of ref
+  updates of a hub (ADR-003), not the commit. The format and the place of the log belong to a later
+  ADR.
 - **Format version** *(confirmed)*. The encodings in this ADR are version 1. An incompatible
   change does not reuse an object kind name: it introduces a new one, for example `commit2`,
   together with an ADR, so that old and new objects can exist side by side. The hash algorithm
@@ -184,15 +192,15 @@ them.
 
 ## Open
 
-- [ ] Add a committer and a second timestamp, if rebasing and cherry-picking need to keep the
-      original author time apart from the time of the rewrite. Not added for now: no object has been
-      stored yet, and no use case needs it. A header can be added later as a new kind name
-      (`commit2`), but a stored header cannot be removed. Decide this together with the next item.
-      If the operation log stays local and other readers must see who rewrote a commit, add
-      `committer` and a second time as one change, since the committer is a second actor and not
-      only a second time. If the log is exchanged, neither is needed.
-- [ ] Decide whether the operation log is exchanged with the history. The timestamp rule assumes it
-      is not. This decides the previous item.
+- [x] Add a committer and a second timestamp, if rebasing and cherry-picking need to keep the
+      original author time apart from the time of the rewrite. Decided not to add them: the
+      operation log is local (see the decision above), a rewrite keeps the author and the time, and
+      who rewrote it is answered by the local log and the ref updates of a hub. Revisit if
+      repositories are exchanged peer to peer without a hub (ADR-003, open). Then `committer` and a
+      second time are added as one change under a new kind name (`commit2`), because the committer
+      is a second actor.
+- [x] Decide whether the operation log is exchanged with the history. Decided: it is not (see the
+      decision above).
 - [x] The store has to record the object kind, because the version is part of the kind name.
       Done in ADR-007 (proposal): a stored object starts with its kind name.
 - [x] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a

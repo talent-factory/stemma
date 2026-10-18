@@ -12,6 +12,7 @@
 
 - [ ] Agreement with the proposal?
 - [ ] Peer-to-peer sync as a phase 4 goal, or deliberately excluded?
+- [ ] Record of ref updates on the hub: who set which branch to which commit, and when, signed (proposal). It tells readers who do not have the local operation log who rewrote a branch (ADR-005).
 
 ## Consequences
 
