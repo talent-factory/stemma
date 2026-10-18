@@ -1,18 +1,24 @@
 name: CI
 
-# ADR-006: `main` is always green. The checks run for every pull request and again for every
-# push to `main`, so that a merge that is only broken in combination with a newer `main` shows.
+# The workflow runs only when someone starts it by hand, for example before a larger merge:
+#
+#   gh workflow run ci.yml --ref <branch>
+#
+# ADR-006 wants `main` to be green at all times. For now that rests on `just ci` locally and on
+# discipline, and this workflow gives an independent run on Linux, macOS, and Windows on request.
+# To run it for every pull request and every push to `main` again, add these triggers:
+#
+#   pull_request:
+#     branches: [main]
+#   push:
+#     branches: [main]
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
 
-# A newer push to a pull request makes the older run obsolete. Runs on `main` are never cancelled.
+# A second run for the same ref waits for the first instead of running beside it.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
