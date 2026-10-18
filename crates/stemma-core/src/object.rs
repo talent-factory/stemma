@@ -7,6 +7,11 @@
 //! formats: any change to them changes the ID of every affected object, and stored data
 //! written under the old encoding no longer matches. The golden-vector tests at the end of
 //! this file guard them.
+//!
+//! The encodings described here are version 1. An incompatible change must not reuse an object
+//! kind name: it introduces a new one (for example `commit2`) together with an ADR, so that
+//! old and new objects can exist side by side. A reader has to reject what it does not
+//! recognize: an unknown or repeated header, a header out of order, or a malformed value.
 
 use std::error::Error;
 use std::fmt;
@@ -399,14 +404,15 @@ impl Error for CommitError {}
 
 /// A snapshot of a tree with its parents, its author, and a message.
 ///
-/// A commit carries no timestamp, so two commits with the same tree, parents, author, and
-/// message are the same object. Whether to add one is an open decision about the persistent
-/// format; no ADR covers it yet.
+/// The timestamp is the time the author claims, in seconds since the Unix epoch (UTC). It is
+/// self-reported and proves nothing; only signatures make it trustworthy (ADR-003, ADR-004).
+/// Two commits that differ only in the timestamp are different objects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     tree: ObjectId,
     parents: Vec<ObjectId>,
     author: Actor,
+    timestamp: i64,
     message: String,
 }
 
@@ -422,6 +428,7 @@ impl Commit {
         tree: ObjectId,
         parents: Vec<ObjectId>,
         author: Actor,
+        timestamp: i64,
         message: impl Into<String>,
     ) -> Result<Self, CommitError> {
         validate_actor(&author)?;
@@ -434,6 +441,7 @@ impl Commit {
             tree,
             parents,
             author,
+            timestamp,
             message: message.into(),
         })
     }
@@ -453,21 +461,28 @@ impl Commit {
         &self.author
     }
 
+    /// Returns the claimed time of the commit in seconds since the Unix epoch (UTC).
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+
     /// Returns the message.
     pub fn message(&self) -> &str {
         &self.message
     }
 
-    /// Returns the canonical encoding: the headers `tree <id>`, zero or more `parent <id>`, and
-    /// `author <actor line>`, each on its own line, then a blank line, then the message verbatim
-    /// without a trailing newline. IDs are in textual form; the actor line is described at
-    /// `actor_line`.
+    /// Returns the canonical encoding: the headers `tree <id>`, zero or more `parent <id>`,
+    /// `author <actor line>`, and `time <seconds>`, in this order and each on its own line, then
+    /// a blank line, then the message verbatim without a trailing newline. IDs are in textual
+    /// form, the seconds are a decimal integer without a plus sign or leading zeros, and the
+    /// actor line is described at `actor_line`.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = format!("tree {}\n", self.tree);
         for parent in &self.parents {
             out.push_str(&format!("parent {parent}\n"));
         }
         out.push_str(&format!("author {}\n", actor_line(&self.author)));
+        out.push_str(&format!("time {}\n", self.timestamp));
         out.push('\n');
         out.push_str(&self.message);
         out.into_bytes()
@@ -539,19 +554,20 @@ mod tests {
 
     // Golden vectors. Each ID was computed independently of this module: the encoding was
     // assembled by hand as `<kind> <length>\0<body>` and hashed with `blake3::hash`.
+    const TIME: i64 = 1_700_000_000;
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
     const EMPTY_ID: &str = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65";
     const TREE_ID: &str = "b3:0eec8324e510a63821fcbfda90ce4ed54b01a4db9efd829f7440967808796eb6";
     const HUMAN_COMMIT_ID: &str =
-        "b3:df6547b0e420552fbef53cc6f31a83c0ee88838e4fa8065fdd598f197c72e781";
+        "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
     const AGENT_COMMIT_ID: &str =
-        "b3:45401d23555f571cb26b85f43188ed412bdc537ca038baf1b4391ffd99600c7f";
+        "b3:4feb2d73a2c706e33c2a71f6f03cbfb48f0a20b48567936fca293159e7e3b32c";
     const EMPTY_TREE_ID: &str =
         "b3:06b8469ad46d7051ad63f82809ef66c6d738d08cc3f1a5c842f3d66c05f64cf7";
     const ALL_MODES_TREE_ID: &str =
         "b3:7550c6d417278c76a35d3399bd4d18fab9fac01132b48cc1825b52c287450d3a";
     const MERGE_COMMIT_ID: &str =
-        "b3:775cd6d4466cfd87ed1188de85a00902145a3c71ca702a0b492713c36b998864";
+        "b3:8cb48a697fe25a78eeb950e011e7dc9897e8216d13e21f3210db70ce2d9db3e8";
 
     fn human() -> Actor {
         Actor::Human {
@@ -589,7 +605,7 @@ mod tests {
     }
 
     fn commit(parents: Vec<ObjectId>, author: Actor, message: &str) -> Commit {
-        Commit::new(empty_tree_id(), parents, author, message).expect("valid commit")
+        Commit::new(empty_tree_id(), parents, author, TIME, message).expect("valid commit")
     }
 
     // Object IDs
@@ -896,19 +912,26 @@ mod tests {
 
     #[test]
     fn human_commit_encoding_and_id_match_golden_vectors() {
-        let commit = Commit::new(id(TREE_ID), vec![id(EMPTY_ID)], human(), "first change")
-            .expect("valid commit");
-        let expected =
-            format!("tree {TREE_ID}\nparent {EMPTY_ID}\nauthor human daniel\n\nfirst change");
+        let commit = Commit::new(
+            id(TREE_ID),
+            vec![id(EMPTY_ID)],
+            human(),
+            TIME,
+            "first change",
+        )
+        .expect("valid commit");
+        let expected = format!(
+            "tree {TREE_ID}\nparent {EMPTY_ID}\nauthor human daniel\ntime 1700000000\n\nfirst change"
+        );
         assert_eq!(commit.encode(), expected.as_bytes());
         assert_eq!(commit.id().to_string(), HUMAN_COMMIT_ID);
     }
 
     #[test]
     fn agent_commit_encoding_and_id_match_golden_vectors() {
-        let commit = Commit::new(id(TREE_ID), vec![], agent(), "work").expect("valid commit");
+        let commit = Commit::new(id(TREE_ID), vec![], agent(), TIME, "work").expect("valid commit");
         let expected = format!(
-            "tree {TREE_ID}\nauthor agent agent-1 model=claude-haiku-5-5 session=s1 sponsor=daniel\n\nwork"
+            "tree {TREE_ID}\nauthor agent agent-1 model=claude-haiku-5-5 session=s1 sponsor=daniel\ntime 1700000000\n\nwork"
         );
         assert_eq!(commit.encode(), expected.as_bytes());
         assert_eq!(commit.id().to_string(), AGENT_COMMIT_ID);
@@ -920,14 +943,49 @@ mod tests {
             id(TREE_ID),
             vec![id(HELLO_ID), id(EMPTY_ID)],
             human(),
+            TIME,
             "merge",
         )
         .expect("valid commit");
         let expected = format!(
-            "tree {TREE_ID}\nparent {HELLO_ID}\nparent {EMPTY_ID}\nauthor human daniel\n\nmerge"
+            "tree {TREE_ID}\nparent {HELLO_ID}\nparent {EMPTY_ID}\nauthor human daniel\ntime 1700000000\n\nmerge"
         );
         assert_eq!(commit.encode(), expected.as_bytes());
         assert_eq!(commit.id().to_string(), MERGE_COMMIT_ID);
+    }
+
+    #[test]
+    fn timestamp_is_part_of_the_id_and_written_as_a_plain_decimal() {
+        let at = |time: i64| {
+            Commit::new(empty_tree_id(), vec![], human(), time, "m").expect("valid commit")
+        };
+        assert_ne!(at(1).id(), at(2).id());
+        for (time, text) in [
+            (0, "time 0\n"),
+            (7, "time 7\n"),
+            (-1, "time -1\n"),
+            (i64::MAX, "time 9223372036854775807\n"),
+            (i64::MIN, "time -9223372036854775808\n"),
+        ] {
+            let commit = at(time);
+            let encoded = String::from_utf8(commit.encode()).expect("encoding is UTF-8");
+            assert!(encoded.contains(text), "{time}: {encoded}");
+            assert_eq!(commit.timestamp(), time);
+        }
+    }
+
+    #[test]
+    fn headers_come_in_the_fixed_order_tree_parent_author_time() {
+        let c = commit(vec![id(HELLO_ID)], human(), "m");
+        let text = String::from_utf8(c.encode()).expect("encoding is UTF-8");
+        let order: Vec<&str> = text
+            .split("\n\n")
+            .next()
+            .expect("headers precede the blank line")
+            .lines()
+            .map(|line| line.split(' ').next().expect("every line has a key"))
+            .collect();
+        assert_eq!(order, ["tree", "parent", "author", "time"]);
     }
 
     #[test]
@@ -996,7 +1054,13 @@ mod tests {
     #[test]
     fn commit_rejects_duplicate_parents() {
         let p = id(HELLO_ID);
-        let result = Commit::new(empty_tree_id(), vec![p, id(EMPTY_ID), p], human(), "m");
+        let result = Commit::new(
+            empty_tree_id(),
+            vec![p, id(EMPTY_ID), p],
+            human(),
+            TIME,
+            "m",
+        );
         assert_eq!(result, Err(CommitError::DuplicateParent(p)));
     }
 
@@ -1092,7 +1156,7 @@ mod tests {
         ];
         for (author, field) in cases {
             assert_eq!(
-                Commit::new(empty_tree_id(), vec![], author.clone(), "m"),
+                Commit::new(empty_tree_id(), vec![], author.clone(), TIME, "m"),
                 Err(CommitError::InvalidActorField(field)),
                 "author {author:?}"
             );
@@ -1102,10 +1166,11 @@ mod tests {
     #[test]
     fn commit_exposes_its_fields() {
         let tree = empty_tree_id();
-        let c = Commit::new(tree, vec![id(HELLO_ID)], agent(), "msg").expect("valid commit");
+        let c = Commit::new(tree, vec![id(HELLO_ID)], agent(), TIME, "msg").expect("valid commit");
         assert_eq!(c.tree(), tree);
         assert_eq!(c.parents(), [id(HELLO_ID)]);
         assert_eq!(c.author(), &agent());
         assert_eq!(c.message(), "msg");
+        assert_eq!(c.timestamp(), TIME);
     }
 }
