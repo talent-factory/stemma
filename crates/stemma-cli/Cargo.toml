@@ -1,0 +1,11 @@
+[package]
+name = "stemma-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "stemma"
+path = "src/main.rs"
+
+[dependencies]
+stemma-core = { path = "../stemma-core" }
