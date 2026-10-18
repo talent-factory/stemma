@@ -6,3 +6,4 @@
 | [ADR-002](ADR-002-actors.md) | Actor model and authorization hook | Proposal, partially confirmed |
 | [ADR-003](ADR-003-permissions.md) | Location of permissions | Proposal, open |
 | [ADR-004](ADR-004-branch-ownership-review.md) | Branch ownership, review, and risk levels | Proposal, open for decision |
+| [ADR-005](ADR-005-object-encoding-names.md) | Object encoding, names, and identity characters | Proposal, partially confirmed |

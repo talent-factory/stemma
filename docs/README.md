@@ -1,3 +1,3 @@
-# Buch (ConTeXt)
+# Book (ConTeXt)
 
-Quellen des Buches folgen. Der Text wird im selben Repository versioniert, damit das Buch das System mitdokumentiert.
+The book sources will follow. The text is versioned in the same repository so that the book documents the system alongside it.

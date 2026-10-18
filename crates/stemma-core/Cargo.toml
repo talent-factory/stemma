@@ -2,3 +2,7 @@
 name = "stemma-core"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+blake3 = "1"
+unicode-general-category = "=1.1.0"
