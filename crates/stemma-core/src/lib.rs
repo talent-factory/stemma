@@ -41,14 +41,22 @@ mod tests {
 
     #[test]
     fn allow_all_allows_human_and_agent() {
-        let human = Actor::Human { id: "daniel".into() };
+        let human = Actor::Human {
+            id: "daniel".into(),
+        };
         let agent = Actor::Agent {
             id: "agent-1".into(),
             model: "claude-haiku-5-5".into(),
             session: "s1".into(),
             sponsor: "daniel".into(),
         };
-        assert_eq!(AllowAll.authorize(&human, "commit", "main"), Decision::Allow);
-        assert_eq!(AllowAll.authorize(&agent, "commit", "feature/x"), Decision::Allow);
+        assert_eq!(
+            AllowAll.authorize(&human, "commit", "main"),
+            Decision::Allow
+        );
+        assert_eq!(
+            AllowAll.authorize(&agent, "commit", "feature/x"),
+            Decision::Allow
+        );
     }
 }

@@ -2,3 +2,22 @@ target/
 .DS_Store
 .claude/
 .headroom/
+
+# Rust
+**/*.rs.bk
+*.pdb
+
+# ConTeXt (Zwischendateien und Ausgabe)
+*.log
+*.pdf
+*.tuc
+*.tua
+*.top
+*.tmp
+*.synctex.gz
+*.synctex
+texmf-cache/
+*-error.log
+
+# Werkzeuge
+.serena/
