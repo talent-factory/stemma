@@ -40,6 +40,18 @@ const HEX_LEN: usize = 64;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectId([u8; 32]);
 
+impl ObjectId {
+    /// Returns the algorithm prefix without the colon, for example `b3`.
+    pub(crate) fn algorithm(&self) -> &'static str {
+        PREFIX.trim_end_matches(':')
+    }
+
+    /// Returns the digest as 64 lowercase hexadecimal digits, without the prefix.
+    pub(crate) fn hex(&self) -> String {
+        blake3::Hash::from_bytes(self.0).to_hex().to_string()
+    }
+}
+
 impl fmt::Display for ObjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{PREFIX}{}", blake3::Hash::from_bytes(self.0).to_hex())
@@ -116,30 +128,52 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-/// The three kinds of stored objects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+/// The kinds of stored objects. An incompatible change to an encoding adds a kind with a new name
+/// (ADR-005), so the enum is not exhaustive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Kind {
+    /// File content ([`Blob`]).
     Blob,
+    /// A directory ([`Tree`]).
     Tree,
+    /// A snapshot with history ([`Commit`]).
     Commit,
 }
 
 impl Kind {
-    /// These names are hashed into the object ID. Changing them invalidates all existing IDs.
-    fn name(self) -> &'static str {
+    /// Returns the kind name. These names are hashed into the object ID and written at the start
+    /// of every stored object file. Changing them invalidates all existing IDs and files.
+    pub fn name(self) -> &'static str {
         match self {
             Self::Blob => "blob",
             Self::Tree => "tree",
             Self::Commit => "commit",
         }
     }
+
+    /// Inverse of [`name`](Self::name). Accepts exactly the canonical names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "blob" => Some(Self::Blob),
+            "tree" => Some(Self::Tree),
+            "commit" => Some(Self::Commit),
+            _ => None,
+        }
+    }
+
+    /// Returns the ASCII header that precedes the body in the hashed input and in a stored
+    /// object: `<kind> <body length in decimal>` and a NUL byte.
+    pub(crate) fn header(self, body_len: usize) -> String {
+        format!("{} {}\0", self.name(), body_len)
+    }
 }
 
 /// Hashes an encoded object. The hashed input is the ASCII header `<kind> <body length in
 /// decimal>`, a NUL byte, and the body. Because the kind is part of the hashed header,
 /// identical bodies of different kinds get different IDs.
-fn hash_encoding(kind: Kind, body: &[u8]) -> ObjectId {
-    let header = format!("{} {}\0", kind.name(), body.len());
+pub(crate) fn hash_encoding(kind: Kind, body: &[u8]) -> ObjectId {
+    let header = kind.header(body.len());
     let mut hasher = blake3::Hasher::new();
     hasher.update(header.as_bytes());
     hasher.update(body);
@@ -1514,5 +1548,40 @@ mod tests {
         // The emoji itself and the keycap sign alone are fine.
         assert_eq!(name_problem("\u{20e3}"), None);
         assert_eq!(name_problem("\u{2764}"), None);
+    }
+
+    #[test]
+    fn kind_names_roundtrip_and_only_the_canonical_ones_parse() {
+        for (kind, name) in [
+            (Kind::Blob, "blob"),
+            (Kind::Tree, "tree"),
+            (Kind::Commit, "commit"),
+        ] {
+            assert_eq!(kind.name(), name);
+            assert_eq!(Kind::from_name(name), Some(kind));
+        }
+        for unknown in [
+            "", "Blob", "BLOB", "blob ", " blob", "blob\0", "commit2", "tag",
+        ] {
+            assert_eq!(Kind::from_name(unknown), None, "{unknown:?}");
+        }
+    }
+
+    #[test]
+    fn the_header_is_the_kind_the_decimal_length_and_a_nul_byte() {
+        assert_eq!(Kind::Blob.header(5), "blob 5\0");
+        assert_eq!(Kind::Tree.header(0), "tree 0\0");
+        assert_eq!(Kind::Commit.header(1234), "commit 1234\0");
+    }
+
+    #[test]
+    fn the_id_parts_are_the_algorithm_and_lowercase_hex() {
+        let stored = Blob::new("hello").id();
+        assert_eq!(stored.algorithm(), "b3");
+        assert_eq!(
+            stored.hex(),
+            "9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad"
+        );
+        assert_eq!(stored.to_string(), format!("b3:{}", stored.hex()));
     }
 }

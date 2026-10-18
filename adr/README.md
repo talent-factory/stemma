@@ -8,3 +8,4 @@
 | [ADR-004](ADR-004-branch-ownership-review.md) | Branch ownership, review, and risk levels | Proposal, open for decision |
 | [ADR-005](ADR-005-object-encoding-names.md) | Object encoding, names, and identity characters | Proposal, partially confirmed |
 | [ADR-006](ADR-006-trunk-based-development.md) | Trunk-based development | Proposal, open for confirmation |
+| [ADR-007](ADR-007-object-storage.md) | Object storage | Proposal, partially confirmed |
