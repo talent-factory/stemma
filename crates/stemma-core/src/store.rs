@@ -23,7 +23,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::object::{hash_encoding, Blob, Commit, Kind, ObjectId, Tree};
+use crate::object::{hash_encoding, Blob, BlobId, Commit, CommitId, Kind, ObjectId, Tree, TreeId};
 
 /// Why a stored object is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,21 +199,21 @@ pub trait ObjectStore: sealed::Sealed {
     ///
     /// Returns [`StoreError::Io`] if the storage fails, and [`StoreError::Corrupt`] if an entry
     /// that is not a regular file blocks the path of the object.
-    fn put_blob(&self, blob: &Blob) -> Result<ObjectId, StoreError>;
+    fn put_blob(&self, blob: &Blob) -> Result<BlobId, StoreError>;
 
     /// Stores a tree and returns its ID, which equals [`Tree::id`].
     ///
     /// # Errors
     ///
     /// See [`put_blob`](Self::put_blob).
-    fn put_tree(&self, tree: &Tree) -> Result<ObjectId, StoreError>;
+    fn put_tree(&self, tree: &Tree) -> Result<TreeId, StoreError>;
 
     /// Stores a commit and returns its ID, which equals [`Commit::id`].
     ///
     /// # Errors
     ///
     /// See [`put_blob`](Self::put_blob).
-    fn put_commit(&self, commit: &Commit) -> Result<ObjectId, StoreError>;
+    fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError>;
 
     /// Returns the object with the ID, or `None` if the store does not have it. The content has
     /// been checked: its header is canonical and it hashes to the ID.
@@ -386,16 +386,17 @@ impl FsObjectStore {
 }
 
 impl ObjectStore for FsObjectStore {
-    fn put_blob(&self, blob: &Blob) -> Result<ObjectId, StoreError> {
-        self.put_raw(Kind::Blob, blob.content())
+    fn put_blob(&self, blob: &Blob) -> Result<BlobId, StoreError> {
+        self.put_raw(Kind::Blob, blob.content()).map(BlobId::new)
     }
 
-    fn put_tree(&self, tree: &Tree) -> Result<ObjectId, StoreError> {
-        self.put_raw(Kind::Tree, &tree.encode())
+    fn put_tree(&self, tree: &Tree) -> Result<TreeId, StoreError> {
+        self.put_raw(Kind::Tree, &tree.encode()).map(TreeId::new)
     }
 
-    fn put_commit(&self, commit: &Commit) -> Result<ObjectId, StoreError> {
+    fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError> {
         self.put_raw(Kind::Commit, &commit.encode())
+            .map(CommitId::new)
     }
 
     fn get(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
@@ -581,7 +582,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::object::{EntryMode, TreeEntry};
+    use crate::object::{FileMode, TreeEntry};
     use crate::Actor;
 
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
@@ -669,7 +670,10 @@ mod tests {
         let stored = store.put_blob(&blob).unwrap();
         assert_eq!(stored, blob.id());
         assert_eq!(stored.to_string(), HELLO_ID);
-        let object = store.get(&stored).unwrap().expect("object exists");
+        let object = store
+            .get(&ObjectId::from(stored))
+            .unwrap()
+            .expect("object exists");
         assert_eq!(object.kind(), Kind::Blob);
         assert_eq!(object.body(), b"hello");
         assert_eq!(object.into_body(), b"hello");
@@ -679,13 +683,16 @@ mod tests {
     fn a_tree_with_entries_is_stored_under_its_own_id() {
         let dir = TempDir::new();
         let store = dir.store();
-        let tree = Tree::new(vec![
-            TreeEntry::new("a.txt", EntryMode::File, id(HELLO_ID)).unwrap()
-        ])
+        let tree = Tree::new(vec![TreeEntry::file(
+            "a.txt",
+            FileMode::File,
+            BlobId::new(id(HELLO_ID)),
+        )
+        .unwrap()])
         .unwrap();
         let stored = store.put_tree(&tree).unwrap();
         assert_eq!(stored, tree.id());
-        let object = store.get(&stored).unwrap().unwrap();
+        let object = store.get(&ObjectId::from(stored)).unwrap().unwrap();
         assert_eq!(object.kind(), Kind::Tree);
         assert_eq!(
             object.body(),
@@ -700,10 +707,17 @@ mod tests {
         let author = Actor::Human {
             id: "daniel".into(),
         };
-        let commit = Commit::new(id(EMPTY_TREE_ID), vec![], author, 1_700_000_000, "m").unwrap();
+        let commit = Commit::new(
+            TreeId::new(id(EMPTY_TREE_ID)),
+            vec![],
+            author,
+            1_700_000_000,
+            "m",
+        )
+        .unwrap();
         let stored = store.put_commit(&commit).unwrap();
         assert_eq!(stored, commit.id());
-        let object = store.get(&stored).unwrap().unwrap();
+        let object = store.get(&ObjectId::from(stored)).unwrap().unwrap();
         assert_eq!(object.kind(), Kind::Commit);
         assert_eq!(object.body(), commit.encode());
     }
@@ -742,9 +756,14 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = store.put_blob(&Blob::new("hello")).unwrap();
-        let object = store.get_expecting(&stored, Kind::Blob).unwrap().unwrap();
+        let object = store
+            .get_expecting(&ObjectId::from(stored), Kind::Blob)
+            .unwrap()
+            .unwrap();
         assert_eq!(object.body(), b"hello");
-        let error = store.get_expecting(&stored, Kind::Tree).unwrap_err();
+        let error = store
+            .get_expecting(&ObjectId::from(stored), Kind::Tree)
+            .unwrap_err();
         assert!(matches!(
             error,
             StoreError::KindMismatch {
@@ -758,7 +777,10 @@ mod tests {
             "{error}"
         );
         let absent = Blob::new("absent").id();
-        assert!(store.get_expecting(&absent, Kind::Tree).unwrap().is_none());
+        assert!(store
+            .get_expecting(&ObjectId::from(absent), Kind::Tree)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -766,10 +788,10 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let absent = Blob::new("absent").id();
-        assert!(store.get(&absent).unwrap().is_none());
-        assert!(!store.contains(&absent).unwrap());
+        assert!(store.get(&ObjectId::from(absent)).unwrap().is_none());
+        assert!(!store.contains(&ObjectId::from(absent)).unwrap());
         store.put_blob(&Blob::new("absent")).unwrap();
-        assert!(store.contains(&absent).unwrap());
+        assert!(store.contains(&ObjectId::from(absent)).unwrap());
     }
 
     // On-disk format
@@ -802,12 +824,19 @@ mod tests {
         let author = Actor::Human {
             id: "daniel".into(),
         };
-        let commit = Commit::new(id(EMPTY_TREE_ID), vec![], author, 1_700_000_000, "m").unwrap();
+        let commit = Commit::new(
+            TreeId::new(id(EMPTY_TREE_ID)),
+            vec![],
+            author,
+            1_700_000_000,
+            "m",
+        )
+        .unwrap();
         let stored = store.put_commit(&commit).unwrap();
         let body = format!("tree {EMPTY_TREE_ID}\nauthor human daniel\ntime 1700000000\n\nm");
         let content = format!("commit {}\0{body}", body.len());
         // The ID is the hash of the file content, computed here without the code under test.
-        assert_eq!(stored, id_of(content.as_bytes()));
+        assert_eq!(stored, CommitId::new(id_of(content.as_bytes())));
         let hex = blake3::hash(content.as_bytes()).to_hex().to_string();
         let path = dir
             .path()
@@ -823,7 +852,7 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = store.put_blob(&Blob::new("fixed")).unwrap();
-        let metadata = fs::metadata(store.object_path(&stored)).unwrap();
+        let metadata = fs::metadata(store.object_path(&ObjectId::from(stored))).unwrap();
         assert!(metadata.permissions().readonly());
     }
 
@@ -857,7 +886,7 @@ mod tests {
             (
                 b"blob 3\0abc",
                 CorruptReason::HashMismatch {
-                    actual: Blob::new("abc").id(),
+                    actual: Blob::new("abc").id().object_id(),
                 },
             ),
             // The length in the header.
@@ -942,8 +971,12 @@ mod tests {
             let dir = TempDir::new();
             let store = dir.store();
             store.put_blob(&Blob::new("hello")).unwrap();
-            overwrite(&store.object_path(&hello), bytes);
-            assert_eq!(reason(store.get(&hello)), expected, "{bytes:?}");
+            overwrite(&store.object_path(&ObjectId::from(hello)), bytes);
+            assert_eq!(
+                reason(store.get(&ObjectId::from(hello))),
+                expected,
+                "{bytes:?}"
+            );
         }
     }
 
@@ -952,9 +985,9 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = store.put_blob(&Blob::new("hello")).unwrap();
-        overwrite(&store.object_path(&stored), b"");
-        assert!(store.contains(&stored).unwrap());
-        assert!(store.get(&stored).is_err());
+        overwrite(&store.object_path(&ObjectId::from(stored)), b"");
+        assert!(store.contains(&ObjectId::from(stored)).unwrap());
+        assert!(store.get(&ObjectId::from(stored)).is_err());
     }
 
     #[test]
@@ -962,9 +995,12 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = Blob::new("hello").id();
-        fs::create_dir_all(store.object_path(&stored)).unwrap();
-        assert_eq!(reason(store.get(&stored)), CorruptReason::NotARegularFile);
-        assert!(!store.contains(&stored).unwrap());
+        fs::create_dir_all(store.object_path(&ObjectId::from(stored))).unwrap();
+        assert_eq!(
+            reason(store.get(&ObjectId::from(stored))),
+            CorruptReason::NotARegularFile
+        );
+        assert!(!store.contains(&ObjectId::from(stored)).unwrap());
     }
 
     #[cfg(unix)]
@@ -974,11 +1010,14 @@ mod tests {
         let store = dir.store();
         let other = store.put_blob(&Blob::new("other")).unwrap();
         let stored = Blob::new("hello").id();
-        let path = store.object_path(&stored);
+        let path = store.object_path(&ObjectId::from(stored));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(store.object_path(&other), &path).unwrap();
-        assert_eq!(reason(store.get(&stored)), CorruptReason::NotARegularFile);
-        assert!(!store.contains(&stored).unwrap());
+        std::os::unix::fs::symlink(store.object_path(&ObjectId::from(other)), &path).unwrap();
+        assert_eq!(
+            reason(store.get(&ObjectId::from(stored))),
+            CorruptReason::NotARegularFile
+        );
+        assert!(!store.contains(&ObjectId::from(stored)).unwrap());
         assert!(matches!(
             store.put_blob(&Blob::new("hello")),
             Err(StoreError::Corrupt {
@@ -996,9 +1035,9 @@ mod tests {
         // A file where a directory should be: the path below it cannot be looked up.
         fs::write(dir.path().join("objects"), b"not a directory").unwrap();
         let stored = Blob::new("hello").id();
-        let error = store.get(&stored).unwrap_err();
+        let error = store.get(&ObjectId::from(stored)).unwrap_err();
         assert!(matches!(error, StoreError::Io { .. }), "{error:?}");
-        assert!(store.contains(&stored).is_err());
+        assert!(store.contains(&ObjectId::from(stored)).is_err());
     }
 
     // The store directory
@@ -1010,8 +1049,8 @@ mod tests {
         let store = FsObjectStore::new(&root);
         let stored = Blob::new("hello").id();
         for error in [
-            store.get(&stored).unwrap_err(),
-            store.contains(&stored).unwrap_err(),
+            store.get(&ObjectId::from(stored)).unwrap_err(),
+            store.contains(&ObjectId::from(stored)).unwrap_err(),
             store.put_blob(&Blob::new("hello")).unwrap_err(),
         ] {
             assert!(
@@ -1030,7 +1069,7 @@ mod tests {
         fs::write(&root, b"x").unwrap();
         let store = FsObjectStore::new(&root);
         assert!(store.put_blob(&Blob::new("hello")).is_err());
-        assert!(store.get(&Blob::new("hello").id()).is_err());
+        assert!(store.get(&ObjectId::from(Blob::new("hello").id())).is_err());
     }
 
     // Writing
@@ -1052,9 +1091,13 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = store.put_blob(&Blob::new("same")).unwrap();
-        let before = fs::metadata(store.object_path(&stored)).unwrap().ino();
+        let before = fs::metadata(store.object_path(&ObjectId::from(stored)))
+            .unwrap()
+            .ino();
         store.put_blob(&Blob::new("same")).unwrap();
-        let after = fs::metadata(store.object_path(&stored)).unwrap().ino();
+        let after = fs::metadata(store.object_path(&ObjectId::from(stored)))
+            .unwrap()
+            .ino();
         assert_eq!(before, after, "the file was replaced");
     }
 
@@ -1065,11 +1108,14 @@ mod tests {
             let dir = TempDir::new();
             let store = dir.store();
             let stored = store.put_blob(&Blob::new("hello")).unwrap();
-            overwrite(&store.object_path(&stored), damage);
-            assert!(store.get(&stored).is_err());
+            overwrite(&store.object_path(&ObjectId::from(stored)), damage);
+            assert!(store.get(&ObjectId::from(stored)).is_err());
             assert_eq!(store.put_blob(&Blob::new("hello")).unwrap(), stored);
-            assert_eq!(store.get(&stored).unwrap().unwrap().body(), b"hello");
-            let metadata = fs::metadata(store.object_path(&stored)).unwrap();
+            assert_eq!(
+                store.get(&ObjectId::from(stored)).unwrap().unwrap().body(),
+                b"hello"
+            );
+            let metadata = fs::metadata(store.object_path(&ObjectId::from(stored))).unwrap();
             assert!(metadata.permissions().readonly());
             assert_eq!(temp_entries(&dir), 0);
         }
@@ -1080,7 +1126,7 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = Blob::new("hello").id();
-        fs::create_dir_all(store.object_path(&stored)).unwrap();
+        fs::create_dir_all(store.object_path(&ObjectId::from(stored))).unwrap();
         let error = store.put_blob(&Blob::new("hello")).unwrap_err();
         assert!(
             matches!(
@@ -1092,7 +1138,7 @@ mod tests {
             ),
             "{error:?}"
         );
-        assert!(store.object_path(&stored).is_dir());
+        assert!(store.object_path(&ObjectId::from(stored)).is_dir());
     }
 
     #[test]
@@ -1101,14 +1147,18 @@ mod tests {
         let store = dir.store();
         // A file where the fan-out directory should be.
         let stored = Blob::new("hello").id();
-        let fan_out = store.object_path(&stored).parent().unwrap().to_path_buf();
+        let fan_out = store
+            .object_path(&ObjectId::from(stored))
+            .parent()
+            .unwrap()
+            .to_path_buf();
         fs::create_dir_all(fan_out.parent().unwrap()).unwrap();
         fs::write(&fan_out, b"in the way").unwrap();
         let error = store.put_blob(&Blob::new("hello")).unwrap_err();
         assert!(matches!(error, StoreError::Io { .. }), "{error:?}");
         assert!(error.to_string().contains("objects"), "{error}");
         assert!(error.source().is_some());
-        assert!(!store.object_path(&stored).exists());
+        assert!(!store.object_path(&ObjectId::from(stored)).exists());
         assert_eq!(temp_entries(&dir), 0);
     }
 
@@ -1119,7 +1169,9 @@ mod tests {
         fs::write(dir.path().join("tmp"), b"in the way").unwrap();
         let error = store.put_blob(&Blob::new("hello")).unwrap_err();
         assert!(matches!(error, StoreError::Io { .. }), "{error:?}");
-        assert!(!store.contains(&Blob::new("hello").id()).unwrap());
+        assert!(!store
+            .contains(&ObjectId::from(Blob::new("hello").id()))
+            .unwrap());
     }
 
     #[cfg(unix)]
@@ -1129,7 +1181,11 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = Blob::new("hello").id();
-        let fan_out = store.object_path(&stored).parent().unwrap().to_path_buf();
+        let fan_out = store
+            .object_path(&ObjectId::from(stored))
+            .parent()
+            .unwrap()
+            .to_path_buf();
         fs::create_dir_all(&fan_out).unwrap();
         fs::set_permissions(&fan_out, fs::Permissions::from_mode(0o555)).unwrap();
         // A process with the right to write anyway (root) cannot provoke the failure.
@@ -1149,7 +1205,7 @@ mod tests {
             other => panic!("expected an I/O error, got {other:?}"),
         }
         assert_eq!(temp_entries(&dir), 0);
-        assert!(!store.contains(&stored).unwrap());
+        assert!(!store.contains(&ObjectId::from(stored)).unwrap());
     }
 
     #[test]
@@ -1227,7 +1283,14 @@ mod tests {
                 assert_eq!(handle.join().unwrap().unwrap(), expected);
             }
         });
-        assert_eq!(store.get(&expected).unwrap().unwrap().body(), b"raced");
+        assert_eq!(
+            store
+                .get(&ObjectId::from(expected))
+                .unwrap()
+                .unwrap()
+                .body(),
+            b"raced"
+        );
         assert_eq!(temp_entries(&dir), 0);
     }
 
@@ -1252,7 +1315,7 @@ mod tests {
         });
         for n in 0..16 {
             let blob = Blob::new(format!("object {n}"));
-            let object = store.get(&blob.id()).unwrap().unwrap();
+            let object = store.get(&ObjectId::from(blob.id())).unwrap().unwrap();
             assert_eq!(object.body(), blob.content());
         }
         assert_eq!(temp_entries(&dir), 0);
@@ -1269,7 +1332,7 @@ mod tests {
             let reader = scope.spawn(|| {
                 let mut seen = 0;
                 while !done.load(Ordering::Relaxed) {
-                    match store.get(&expected) {
+                    match store.get(&ObjectId::from(expected)) {
                         Ok(None) => {}
                         Ok(Some(object)) => {
                             assert_eq!(object.body(), blob.content());
@@ -1289,7 +1352,7 @@ mod tests {
             done.store(true, Ordering::Relaxed);
             reader.join().unwrap();
         });
-        assert!(store.get(&expected).unwrap().is_some());
+        assert!(store.get(&ObjectId::from(expected)).unwrap().is_some());
     }
 
     // Errors
@@ -1299,9 +1362,9 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = store.put_blob(&Blob::new("hello")).unwrap();
-        let path = store.object_path(&stored);
+        let path = store.object_path(&ObjectId::from(stored));
         overwrite(&path, b"blob 5\0jello");
-        let error = store.get(&stored).unwrap_err();
+        let error = store.get(&ObjectId::from(stored)).unwrap_err();
         let text = error.to_string();
         assert!(text.contains(&stored.to_string()), "{text}");
         assert!(text.contains(&path.display().to_string()), "{text}");

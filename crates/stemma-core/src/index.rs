@@ -38,7 +38,8 @@ use std::fmt;
 use std::ops::Bound;
 use std::str::FromStr;
 
-use crate::object::{name_problem, EntryMode, NameProblem, ObjectId, ObjectIdParseError};
+pub use crate::object::FileMode;
+use crate::object::{name_problem, BlobId, EntryMode, NameProblem, ObjectId, ObjectIdParseError};
 
 /// First line of the encoding. It carries the format version.
 const HEADER: &str = "stemma-index 1\n";
@@ -48,39 +49,6 @@ const HEADER_PREFIX: &str = "stemma-index ";
 
 /// Shape of an entry line, used in error messages.
 const ENTRY_SHAPE: &str = "expected `<mode> <id> <path>`";
-
-/// File mode of an index entry. The index holds no directories, so there is no directory mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileMode {
-    /// A regular file.
-    File,
-    /// A regular file with the executable bit set.
-    Executable,
-    /// A symbolic link. The blob holds the link target.
-    Symlink,
-}
-
-impl FileMode {
-    /// Returns the file mode for a tree entry mode, or `None` for a directory.
-    pub fn from_entry_mode(mode: EntryMode) -> Option<Self> {
-        match mode {
-            EntryMode::File => Some(Self::File),
-            EntryMode::Executable => Some(Self::Executable),
-            EntryMode::Symlink => Some(Self::Symlink),
-            EntryMode::Directory => None,
-        }
-    }
-}
-
-impl From<FileMode> for EntryMode {
-    fn from(mode: FileMode) -> Self {
-        match mode {
-            FileMode::File => Self::File,
-            FileMode::Executable => Self::Executable,
-            FileMode::Symlink => Self::Symlink,
-        }
-    }
-}
 
 /// The rule that a rejected index path violates.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,7 +236,7 @@ impl Error for IndexParseError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexEntry {
     mode: FileMode,
-    id: ObjectId,
+    id: BlobId,
 }
 
 impl IndexEntry {
@@ -278,7 +246,7 @@ impl IndexEntry {
     }
 
     /// Returns the ID of the content blob.
-    pub fn id(&self) -> ObjectId {
+    pub fn id(&self) -> BlobId {
         self.id
     }
 }
@@ -342,9 +310,7 @@ impl Index {
         Self::default()
     }
 
-    /// Stages a file, replacing the entry at the same path if there is one. The ID is meant to
-    /// be the ID of a blob; the index cannot check that, because an [`ObjectId`] does not record
-    /// the kind of object it names.
+    /// Stages a file, replacing the entry at the same path if there is one.
     ///
     /// # Errors
     ///
@@ -356,7 +322,7 @@ impl Index {
         &mut self,
         path: impl Into<String>,
         mode: FileMode,
-        id: ObjectId,
+        id: BlobId,
     ) -> Result<(), IndexError> {
         let path = path.into();
         if let Some(problem) = path_problem(&path) {
@@ -480,9 +446,12 @@ impl Index {
                     line: line_number,
                     code: code.to_owned(),
                 })?;
-            let id = ObjectId::from_str(id).map_err(|source| IndexParseError::InvalidObjectId {
-                line: line_number,
-                source,
+            // Every entry of the index is a file, so the ID names a blob.
+            let id = ObjectId::from_str(id).map(BlobId::new).map_err(|source| {
+                IndexParseError::InvalidObjectId {
+                    line: line_number,
+                    source,
+                }
             })?;
             index
                 .insert(path, mode, id)
@@ -514,11 +483,11 @@ mod tests {
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
     const EMPTY_ID: &str = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65";
 
-    fn id(text: &str) -> ObjectId {
-        text.parse().expect("test ID must be valid")
+    fn id(text: &str) -> BlobId {
+        BlobId::new(text.parse().expect("test ID must be valid"))
     }
 
-    fn hello() -> ObjectId {
+    fn hello() -> BlobId {
         id(HELLO_ID)
     }
 
