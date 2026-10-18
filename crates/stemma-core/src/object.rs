@@ -2,7 +2,8 @@
 //!
 //! Object IDs use BLAKE3 with the `b3:` prefix, following the proposal in ADR-001; the choice
 //! is provisional until that ADR is accepted. Commits record their author as an [`Actor`]
-//! (ADR-002). The canonical encodings are defined in this module. They are persistent
+//! (ADR-002). The character rules for names and actor fields are in ADR-005. The canonical
+//! encodings are defined in this module. They are persistent
 //! formats: any change to them changes the ID of every affected object, and stored data
 //! written under the old encoding no longer matches. The golden-vector tests at the end of
 //! this file guard them.
