@@ -69,6 +69,16 @@ format-check:
 [group('Quality')]
 ci: format-check lint test
 
+# Test coverage summary (needs `cargo install cargo-llvm-cov --locked`).
+[group('Quality')]
+coverage:
+    cargo llvm-cov --workspace
+
+# Test coverage as an HTML report in target/llvm-cov/html, opened in the browser.
+[group('Quality')]
+coverage-html:
+    cargo llvm-cov --workspace --html --open
+
 # ─────────────────────────── Documentation ─────────────────────────────────
 
 # Build API documentation (rustdoc) and open it in the browser.
