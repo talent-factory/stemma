@@ -2,3 +2,6 @@
 name = "stemma-core"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+blake3 = "1"

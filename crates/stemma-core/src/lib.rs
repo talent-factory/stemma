@@ -1,5 +1,7 @@
 //! Stemma core: actors and authorization hook (ADR-002).
 
+pub mod object;
+
 /// Actor of an operation. Agents carry model version, session, and sponsor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
