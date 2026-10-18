@@ -23,3 +23,9 @@
 | 1 | Neue CLI-Befehle, Ausgabeformate, Logik ohne Persistenz | Zwei unabhängige Agenten, Merge durch Agent |
 | 2 | Objektformat, Hash, Ref-Updates, Lease, Merge, Netzwerk, Migrationen, neue Abhängigkeiten | Zwei Agenten plus menschlicher Maintainer |
 | 3 | RBAC, Signaturen und Schlüssel, Namespace-Trennung, CI/Release, Policy-Dateien | Nur menschlicher Owner, zusätzlich ADR |
+
+## Offene Punkte
+
+- [ ] Firmenkunden könnten strengere Böden verlangen. Erst relevant, sobald es konkrete Kunden gibt.
+- [ ] Konkrete Pfadlisten je Stufe festlegen. Die Kategorien stehen, die Verzeichnisse noch nicht.
+- [ ] Agenten-Identitäten: eigene Rolle oder Rolle mit menschlichem Sponsor.

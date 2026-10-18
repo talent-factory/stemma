@@ -12,3 +12,9 @@
 
 - [ ] Zustimmung zum Vorschlag?
 - [ ] Peer-to-Peer-Sync als Phase-4-Ziel oder bewusst ausgeschlossen?
+
+## Konsequenzen
+
+- Ab Phase 2 ist ein Hub nötig, weil dort geschützte Branches durchgesetzt werden.
+- Lokales Arbeiten bleibt möglich. Schreiben auf geschützte Branches braucht den Server.
+- Peer-to-Peer-Sync ist später denkbar, ohne die Durchsetzung zu verlieren, weil die Signaturen im Repository liegen.

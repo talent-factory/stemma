@@ -15,3 +15,8 @@ Umsetzung im Code: `crates/stemma-core/src/lib.rs`.
 ## Offen
 
 - [ ] Agenten-Identitäten: eigene Rolle oder Rolle mit menschlichem Sponsor (siehe ADR-004).
+
+## Konsequenzen
+
+- Akteur-Felder gibt es ab dem ersten Commit. Ein späteres Nachrüsten wäre ein Formatbruch.
+- Ein Agent handelt für einen Menschen, der dessen Handlungen verantwortet.
