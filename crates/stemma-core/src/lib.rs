@@ -1,6 +1,6 @@
-//! Kern von Stemma: Akteure und Autorisierungs-Hook (ADR-002).
+//! Stemma core: actors and authorization hook (ADR-002).
 
-/// Akteur einer Operation. Agenten führen Modellversion, Session und Sponsor mit.
+/// Actor of an operation. Agents carry model version, session, and sponsor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
     Human {
@@ -14,19 +14,19 @@ pub enum Actor {
     },
 }
 
-/// Ergebnis einer Autorisierungsprüfung.
+/// Result of an authorization check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Allow,
     Deny,
 }
 
-/// Autorisierungs-Hook. Jede Operation im Kern ruft ihn auf (ADR-002).
+/// Authorization hook. Every operation in the core calls it (ADR-002).
 pub trait Authorizer {
     fn authorize(&self, actor: &Actor, operation: &str, target: &str) -> Decision;
 }
 
-/// Phase 1: alles ist erlaubt. Der Aufruf ist trotzdem Pflicht.
+/// Phase 1: everything is allowed. The call is mandatory nonetheless.
 pub struct AllowAll;
 
 impl Authorizer for AllowAll {

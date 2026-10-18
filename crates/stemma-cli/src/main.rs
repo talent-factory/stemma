@@ -1,6 +1,6 @@
 fn main() {
     println!(
-        "stemma {} (Grundgeruest, noch ohne Befehle)",
+        "stemma {} (skeleton, no commands yet)",
         env!("CARGO_PKG_VERSION")
     );
 }

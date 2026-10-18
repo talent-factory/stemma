@@ -1,31 +1,31 @@
-# ADR-004: Branch-Ownership, Review und Risikostufen
+# ADR-004: Branch Ownership, Review, and Risk Levels
 
-**Status:** Vorschlag, offen zur Entscheidung.
+**Status:** Proposal, open for decision.
 
-## Entscheidung
+## Decision
 
-1. Jeder Branch hat genau einen Schreibeigentümer (Mensch oder Agent). Der Server erzwingt das über einen Lease mit Heartbeat und Ablaufzeit.
-2. Owner-Override nur für die Rolle Owner, mit Begründung und Audit-Eintrag. Der Override umgeht nie das Merge-Gate.
-3. Geschützte Branches wie `main` werden nur über PRs verändert.
-4. Agenten dürfen reviewen und freigeben. Keine Selbstfreigabe. Freigaben sind signiert.
-5. Risikostufen 0 bis 3 nach Wirkung der Änderung. Die Stufe ergibt sich aus allen berührten Pfaden. Die Policy-Datei ist selbst Stufe 3.
-6. Diff-Anzeige Stufe 1, Diff-Berechnung im Merge-Pfad Stufe 2.
-7. Neue direkte Laufzeitabhängigkeiten Stufe 2. Automatisierte Patch-Updates Stufe 1 mit `cargo-audit`, `cargo-deny` und Lockfile-Diff. Kryptografie-Crates Stufe 3.
-8. Jeder Namespace hat eine eigene Policy mit nicht unterschreitbarem Boden für Stufe 3.
-9. Owner-Override in Kursen nur mit unlöschbarem, für Studierende sichtbarem Audit-Eintrag.
-10. Lockerung oder Löschung bestehender Assertions eskaliert automatisch auf Stufe 2.
+1. Every branch has exactly one write owner (human or agent). The server enforces this through a lease with heartbeat and expiry.
+2. Owner override is available only to the owner role, with a justification and an audit entry. The override never bypasses the merge gate.
+3. Protected branches such as `main` change only through pull requests.
+4. Agents may review and approve. No self-approval. Approvals are signed.
+5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths. The policy file is itself level 3.
+6. Diff display is level 1, diff computation in the merge path is level 2.
+7. New direct runtime dependencies are level 2. Automated patch updates are level 1 with `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
+8. Every namespace has its own policy with a floor at level 3 that cannot be lowered.
+9. Owner override in courses only with an undeletable audit entry that is visible to students.
+10. Relaxing or deleting existing assertions automatically escalates to level 2.
 
-## Risikostufen
+## Risk Levels
 
-| Stufe | Beispiele | Freigabe |
+| Level | Examples | Approval |
 |---|---|---|
-| 0 | Doku, Beispiele, Formatierung, reine Tests | Ein unabhängiger Agent, Merge durch Agent |
-| 1 | Neue CLI-Befehle, Ausgabeformate, Logik ohne Persistenz | Zwei unabhängige Agenten, Merge durch Agent |
-| 2 | Objektformat, Hash, Ref-Updates, Lease, Merge, Netzwerk, Migrationen, neue Abhängigkeiten | Zwei Agenten plus menschlicher Maintainer |
-| 3 | RBAC, Signaturen und Schlüssel, Namespace-Trennung, CI/Release, Policy-Dateien | Nur menschlicher Owner, zusätzlich ADR |
+| 0 | Docs, examples, formatting, tests only | One independent agent, merge by agent |
+| 1 | New CLI commands, output formats, logic without persistence | Two independent agents, merge by agent |
+| 2 | Object format, hash, ref updates, lease, merge, network, migrations, new dependencies | Two agents plus a human maintainer |
+| 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files | Human owner only, plus an ADR |
 
-## Offene Punkte
+## Open Points
 
-- [ ] Firmenkunden könnten strengere Böden verlangen. Erst relevant, sobald es konkrete Kunden gibt.
-- [ ] Konkrete Pfadlisten je Stufe festlegen. Die Kategorien stehen, die Verzeichnisse noch nicht.
-- [ ] Agenten-Identitäten: eigene Rolle oder Rolle mit menschlichem Sponsor.
+- [ ] Corporate customers might demand stricter floors. Relevant only once there are concrete customers.
+- [ ] Define concrete path lists per level. The categories exist, the directories do not yet.
+- [ ] Agent identities: a dedicated role, or a role with a human sponsor.

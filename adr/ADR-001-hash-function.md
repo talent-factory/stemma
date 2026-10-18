@@ -1,14 +1,14 @@
-# ADR-001: Hash-Funktion und Hash-Agilität
+# ADR-001: Hash Function and Hash Agility
 
-**Status:** Vorschlag, offen.
+**Status:** Proposal, open.
 
-## Entscheidung (Vorschlag)
+## Decision (proposal)
 
-- BLAKE3 als Standard-Hash. Schnell, parallelisierbar, ausgereifte Rust-Implementierung.
-- SHA-256 als Alternative, falls Standardisierung oder Zertifizierung gefordert wird.
-- Jede Objekt-ID trägt den Algorithmus als Präfix, zum Beispiel `b3:…`.
+- BLAKE3 is the default hash. It is fast, parallelizable, and has a mature Rust implementation.
+- SHA-256 is the alternative if standardization or certification is required.
+- Every object ID carries the algorithm as a prefix, for example `b3:…`.
 
-## Offen
+## Open
 
-- [ ] Endgültig: BLAKE3 oder SHA-256?
-- [ ] Werden Standard-Signaturformate oder Zertifizierung verlangt?
+- [ ] Final choice: BLAKE3 or SHA-256?
+- [ ] Are standard signature formats or certification required?

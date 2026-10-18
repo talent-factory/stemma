@@ -1,104 +1,104 @@
-# Stemma — Task Runner (Versionskontrollsystem in Rust)
+# Stemma — task runner (version control system in Rust)
 #
 # Prereqs:
-#   just ≥ 1.18 (brew install just)   ·   Rust-Toolchain (rustup)   ·   ConTeXt (für das Buch)
+#   just ≥ 1.18 (brew install just)   ·   Rust toolchain (rustup)   ·   ConTeXt (for the book)
 #
-# Alle Recipes gruppiert auflisten:   `just`
-# Nur eine Gruppe:                     `just --list | grep -A99 '\[Qualität\]'`
+# List all recipes by group:   `just`
+# Single group:                `just --list | grep -A99 '\[Quality\]'`
 
-set dotenv-load            # lädt .env in die Recipe-Umgebung (falls vorhanden)
+set dotenv-load            # loads .env into the recipe environment (if present)
 set shell := ["bash", "-uc"]
 set positional-arguments
 
 docs_dir := "docs"
 
-# Default: gruppierte Recipe-Liste (Dateireihenfolge erhalten).
+# Default: grouped recipe list (file order preserved).
 default:
     @just --list --unsorted
 
 # ─────────────────────────── Development ───────────────────────────────────
 
-# Gesamten Workspace bauen (Debug).
+# Build the whole workspace (debug).
 [group('Development')]
 build:
     cargo build --workspace
 
-# Gesamten Workspace bauen (Release).
+# Build the whole workspace (release).
 [group('Development')]
 build-release:
     cargo build --workspace --release
 
-# CLI ausführen.  Usage:  just run init
+# Run the CLI.  Usage:  just run init
 [group('Development')]
 run *args:
     cargo run -p stemma-cli -- "$@"
 
-# CLI als `stemma` ins Cargo-bin-Verzeichnis installieren.
+# Install the CLI as `stemma` into the Cargo bin directory.
 [group('Development')]
 install:
     cargo install --path crates/stemma-cli --locked
 
-# Schnelle Typprüfung ohne Codegenerierung.
+# Fast type check without code generation.
 [group('Development')]
 check:
     cargo check --workspace --all-targets
 
-# ─────────────────────────── Qualität ──────────────────────────────────────
+# ─────────────────────────── Quality ──────────────────────────────────────
 
-# Tests ausführen.
-[group('Qualität')]
+# Run tests.
+[group('Quality')]
 test:
     cargo test --workspace
 
-# Linter ausführen (clippy, Warnungen als Fehler).
-[group('Qualität')]
+# Run the linter (clippy, warnings as errors).
+[group('Quality')]
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# Code formatieren (rustfmt).
-[group('Qualität')]
+# Format code (rustfmt).
+[group('Quality')]
 format:
     cargo fmt --all
 
-# Formatierung prüfen, ohne Dateien zu ändern.
-[group('Qualität')]
+# Check formatting without modifying files.
+[group('Quality')]
 format-check:
     cargo fmt --all -- --check
 
-# Alle CI-Checks: Format, Lint, Tests.
-[group('Qualität')]
+# All CI checks: format, lint, tests.
+[group('Quality')]
 ci: format-check lint test
 
-# ─────────────────────────── Dokumentation ─────────────────────────────────
+# ─────────────────────────── Documentation ─────────────────────────────────
 
-# API-Dokumentation bauen (rustdoc) und im Browser öffnen.
-[group('Dokumentation')]
+# Build API documentation (rustdoc) and open it in the browser.
+[group('Documentation')]
 rustdoc:
     cargo doc --workspace --no-deps --open
 
-# Buch bauen (ConTeXt → docs/main.pdf).
-[group('Dokumentation')]
+# Build the book (ConTeXt → docs/main.pdf).
+[group('Documentation')]
 book:
     cd {{docs_dir}} && context --nonstopmode main.tex
 
-# Buch bauen und PDF öffnen.
-[group('Dokumentation')]
+# Build the book and open the PDF.
+[group('Documentation')]
 book-open: book
     open {{docs_dir}}/main.pdf
 
-# Buch bei Änderungen automatisch neu bauen (benötigt fswatch).
-[group('Dokumentation')]
+# Rebuild the book on changes (requires fswatch).
+[group('Documentation')]
 book-watch:
     fswatch -o {{docs_dir}}/main.tex | xargs -n1 -I{} just book
 
-# ConTeXt-Zwischendateien des Buches entfernen.
-[group('Dokumentation')]
+# Remove ConTeXt intermediate files of the book.
+[group('Documentation')]
 book-clean:
     cd {{docs_dir}} && rm -f *.log *.tuc *.tua *.top *.pdf
 
-# ─────────────────────────── Sonstiges ─────────────────────────────────────
+# ─────────────────────────── Misc ─────────────────────────────────────
 
-# Build-Artefakte und Caches aufräumen.
-[group('Sonstiges')]
+# Clean build artifacts and caches.
+[group('Misc')]
 clean: book-clean
     cargo clean

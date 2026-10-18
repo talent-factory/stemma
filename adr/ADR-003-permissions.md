@@ -1,20 +1,20 @@
-# ADR-003: Ort der Berechtigungen
+# ADR-003: Location of Permissions
 
-**Status:** Vorschlag, offen.
+**Status:** Proposal, open.
 
-## Entscheidung (Vorschlag)
+## Decision (proposal)
 
-- Rollen und Policies liegen auf dem Server und werden dort durchgesetzt.
-- Signaturen von Commits und Freigaben liegen im Repository und lassen sich unabhängig vom Server prüfen.
-- Policy-Dateien sind pro Namespace und selbst Stufe 3 (ADR-004). Sie werden signiert.
+- Roles and policies reside on the server and are enforced there.
+- Signatures of commits and approvals reside in the repository and can be verified independently of the server.
+- Policy files are per namespace and are themselves level 3 (ADR-004). They are signed.
 
-## Offen
+## Open
 
-- [ ] Zustimmung zum Vorschlag?
-- [ ] Peer-to-Peer-Sync als Phase-4-Ziel oder bewusst ausgeschlossen?
+- [ ] Agreement with the proposal?
+- [ ] Peer-to-peer sync as a phase 4 goal, or deliberately excluded?
 
-## Konsequenzen
+## Consequences
 
-- Ab Phase 2 ist ein Hub nötig, weil dort geschützte Branches durchgesetzt werden.
-- Lokales Arbeiten bleibt möglich. Schreiben auf geschützte Branches braucht den Server.
-- Peer-to-Peer-Sync ist später denkbar, ohne die Durchsetzung zu verlieren, weil die Signaturen im Repository liegen.
+- From phase 2 onwards a hub is required, because protected branches are enforced there.
+- Local work remains possible. Writing to protected branches requires the server.
+- Peer-to-peer sync is conceivable later without losing enforcement, because the signatures reside in the repository.

@@ -1,22 +1,22 @@
-# ADR-002: Akteur-Modell und Autorisierungs-Hook
+# ADR-002: Actor Model and Authorization Hook
 
-**Status:** Vorschlag, teilweise bestätigt.
+**Status:** Proposal, partially confirmed.
 
-## Entscheidung (Vorschlag)
+## Decision (proposal)
 
-- Akteur ist Mensch oder Agent. Agenten führen Modellversion, Session und Sponsor mit.
-- Jeder Commit und jeder Operation-Log-Eintrag trägt den Akteur.
-- Autorisierung im Core über `authorize(actor, operation, target)`. Phase 1: alles erlaubt, Aufruf trotzdem Pflicht.
-- CLI, API und MCP-Server rufen denselben Core auf.
-- Rollen gehören zum Policy-Modell, nicht in den Core-Code.
+- An actor is a human or an agent. Agents carry model version, session, and sponsor.
+- Every commit and every operation log entry records the actor.
+- Authorization in the core goes through `authorize(actor, operation, target)`. Phase 1: everything is allowed, but the call is mandatory.
+- The CLI, API, and MCP server call the same core.
+- Roles belong to the policy model, not to the core code.
 
-Umsetzung im Code: `crates/stemma-core/src/lib.rs`.
+Implementation: `crates/stemma-core/src/lib.rs`.
 
-## Offen
+## Open
 
-- [ ] Agenten-Identitäten: eigene Rolle oder Rolle mit menschlichem Sponsor (siehe ADR-004).
+- [ ] Agent identities: a dedicated role, or a role with a human sponsor (see ADR-004).
 
-## Konsequenzen
+## Consequences
 
-- Akteur-Felder gibt es ab dem ersten Commit. Ein späteres Nachrüsten wäre ein Formatbruch.
-- Ein Agent handelt für einen Menschen, der dessen Handlungen verantwortet.
+- Actor fields exist from the first commit. Adding them later would break the format.
+- An agent acts on behalf of a human, who is accountable for its actions.
