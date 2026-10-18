@@ -1,0 +1,76 @@
+name: CI
+
+# ADR-006: `main` is always green. The checks run for every pull request and again for every
+# push to `main`, so that a merge that is only broken in combination with a newer `main` shows.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to a pull request makes the older run obsolete. Runs on `main` are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The same checks as `just ci`: formatting, clippy with warnings as errors, and the tests.
+  check:
+    name: Check (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --no-self-update
+      - uses: extractions/setup-just@v4
+        with:
+          just-version: "1.49.0"
+      - name: Show the versions
+        run: |
+          rustc --version
+          cargo --version
+          just --version
+      - name: Check that Cargo.lock is up to date
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: Format, lint, and test
+        run: just ci
+
+  # The object store has code that depends on the platform (ADR-007): flushing directories,
+  # replacing a file by a rename, and the file system rules for names. Linux alone cannot show
+  # that it builds and passes elsewhere.
+  portability:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy --no-self-update
+      - name: Show the versions
+        run: |
+          rustc --version
+          cargo --version
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
