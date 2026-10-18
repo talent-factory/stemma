@@ -62,15 +62,22 @@ definition of the byte-level encodings. This ADR records the decisions behind th
 - **Reserved name** *(confirmed)*. The metadata directory is `.stemma`. No tree entry may use
   that name or an alias of it on a common file system: the name in any letter case (including
   look-alikes such as the long s U+017F), with trailing dots or spaces (Windows drops them), or
-  its 8.3 short name `STEMMA~N` for any number N. Without this rule a checkout could overwrite
-  repository data, as in CVE-2014-9390 for `.git`. Only the name and these aliases are reserved:
-  `.stemma-notes`, `a.stemma`, and `.stemma~1` are allowed. The constant is `METADATA_DIR`.
+  its 8.3 short name `STEMMA~N` for any number N. Two more forms are covered, because they
+  reach the directory on Windows. The first is the stream syntax of NTFS: only the part of a
+  name before its first `:` is the file name, so `.stemma::$INDEX_ALLOCATION`, which NTFS reads
+  as the directory itself, and `.stemma:x` are reserved. The second is the backslash: Windows
+  reads it as a path separator, so a name is reserved if any segment between backslashes is
+  reserved, as in `x\..\.stemma\config`. Without these rules a checkout could overwrite
+  repository data, as in CVE-2014-9390 for `.git`. Only these forms are reserved: `.stemma-notes`,
+  `a.stemma`, `.stemma~1`, `a:.stemma`, `back\slash`, and `report:final.txt` are allowed. The
+  constant is `METADATA_DIR`.
 - **Checkout responsibility** *(confirmed)*. The tree format allows `\` and `:` in names,
-  because they are valid on Linux and macOS and common in real file names. Where they are
-  dangerous, on Windows, the checkout layer has to reject or escape them: `\` as a path
-  separator, `:` for drive letters and NTFS alternate data streams
-  (`.stemma::$INDEX_ALLOCATION`), and device names such as `CON` and `NUL`. The checkout also
-  has to detect names that collide on a case-insensitive or normalizing file system.
+  because they are valid on Linux and macOS and common in real file names; only the forms of the
+  reserved name above are rejected. Where they are dangerous, on Windows, the checkout layer has
+  to reject or escape them: `\` as a path separator, `:` for drive letters and NTFS alternate
+  data streams, and device names such as `CON` and `NUL`. The checkout also has to detect names
+  that collide on a case-insensitive or normalizing file system, and it must never write
+  through a symbolic link.
 - **No normalization** *(confirmed)*. Names are compared and hashed as given. `é` in NFC and in
   NFD are two distinct names, and `README` and `readme` are two distinct names. The
   reserved-name check is the only place that folds case.
@@ -144,6 +151,9 @@ definition of the byte-level encodings. This ADR records the decisions behind th
 - The rule does not cover look-alikes made of visible characters: letters from other scripts
   that look like ASCII letters, the braille blank U+2800, the no-break space and other space
   characters, and look-alikes within ASCII such as `l` and `I`. Names are not normalized.
+- The reserved-name rule cannot list every alias. Windows derives short names from a hash when
+  many similar names exist, and other file systems have their own rules. The checkout stays
+  responsible for the file system it writes to.
 - Actor identifiers cannot contain umlauts or other non-ASCII letters. An identifier derived
   from a person's name has to be transliterated.
 - Names that differ only in case or normalization form can coexist in one tree. Windows aliases
@@ -155,9 +165,6 @@ definition of the byte-level encodings. This ADR records the decisions behind th
 
 ## Open
 
-- [ ] Reject further aliases of `.stemma`, such as NTFS alternate data streams and HFS+
-      ignorable code points, in the tree, or leave them to the checkout layer. The HFS+
-      ignorable code points of Git's list are Cf characters and already rejected.
 - [ ] Add a committer and a second timestamp, if rebasing and cherry-picking need to keep the
       original author time apart from the time of the rewrite.
 - [ ] Decide whether the operation log is exchanged with the history. The timestamp rule

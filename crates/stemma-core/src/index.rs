@@ -602,6 +602,14 @@ mod tests {
             ("a/.../b", name("...", NameProblem::DotName)),
             ("a/.stemma/x", name(".stemma", NameProblem::ReservedName)),
             (".stemma", name(".stemma", NameProblem::ReservedName)),
+            (
+                "src/.stemma::$INDEX_ALLOCATION",
+                name(".stemma::$INDEX_ALLOCATION", NameProblem::ReservedName),
+            ),
+            (
+                "a/x\\..\\.stemma\\config",
+                name("x\\..\\.stemma\\config", NameProblem::ReservedName),
+            ),
             ("a/STEMMA~1", name("STEMMA~1", NameProblem::ReservedName)),
             (
                 "a/\u{200b}/b",
@@ -627,11 +635,11 @@ mod tests {
     }
 
     #[test]
-    fn windows_separators_and_case_variants_are_the_checkouts_business() {
+    fn windows_separators_are_the_checkouts_business_except_in_the_reserved_name() {
         // Valid on Linux and macOS and accepted here, as in trees (ADR-005).
         let index = index_of(&[
             "back\\slash",
-            "x\\..\\.stemma\\config",
+            "x\\.stemma-notes\\config",
             "report:final.txt",
             "C:",
             "Foo",

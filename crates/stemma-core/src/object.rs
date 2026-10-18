@@ -25,8 +25,9 @@ use crate::Actor;
 const PREFIX: &str = "b3:";
 
 /// Name of Stemma's own metadata directory. A tree entry name or an index path component must
-/// not use it or the aliases listed at [`NameProblem::ReservedName`], so that a checkout does not overwrite repository data
-/// through them. Other aliases are left to the checkout layer (ADR-005).
+/// not use it or the aliases listed at [`NameProblem::ReservedName`], so that a checkout does
+/// not overwrite repository data through them. Other aliases are left to the checkout layer
+/// (ADR-005).
 pub const METADATA_DIR: &str = ".stemma";
 
 /// Number of hexadecimal characters in a BLAKE3 digest (32 bytes, two characters per byte).
@@ -194,9 +195,13 @@ pub enum NameProblem {
     /// which the pinned `unicode-general-category` crate and the table in this module share
     /// (ADR-005).
     InvisibleCharacter,
-    /// The name is [`METADATA_DIR`] or resolves to it on a common file system: it differs only
-    /// in case (including look-alike letters such as the long s), has trailing dots or spaces
-    /// (Windows drops them), or is a short name `STEMMA~N` with one or more digits.
+    /// The name is [`METADATA_DIR`] or resolves to it on a common file system, alone or as one
+    /// part of the name. It differs only in case (including look-alike letters such as the long
+    /// s), has trailing dots or spaces (Windows drops them), or is a short name `STEMMA~N` with
+    /// one or more digits. It may also be followed by a colon and a stream name, as in
+    /// `.stemma::$INDEX_ALLOCATION`, which NTFS reads as the directory itself. And it may stand
+    /// between backslashes, as in `x\.stemma\config`, which Windows reads as a path. The other
+    /// uses of `:` and `\` in names are not rejected (ADR-005).
     ReservedName,
 }
 
@@ -381,18 +386,25 @@ fn is_control_or_separator(c: char) -> bool {
     c.is_control() || c == '\u{2028}' || c == '\u{2029}'
 }
 
-/// Whether the name is the metadata directory or an alias of it on a common file system.
+/// Whether the name is the metadata directory or an alias of it on a common file system, or
+/// contains it as a backslash-separated segment.
 ///
-/// Trailing dots and spaces are ignored because Windows drops them. The comparison folds case
-/// by Unicode uppercase mapping, which also catches look-alikes such as the long s (U+017F).
-/// The 8.3 short name of `.stemma` is `STEMMA~N`, where N is a number. Invisible characters are
-/// rejected before this check.
+/// Windows reads `\` as a path separator, so each segment between backslashes is checked on its
+/// own. The part of a segment before the first `:` is the file name, and the rest is an NTFS
+/// stream, so only that part is compared. Trailing dots and spaces are ignored because Windows
+/// drops them. The comparison folds case by Unicode uppercase mapping, which also catches
+/// look-alikes such as the long s (U+017F). The 8.3 short name of `.stemma` is `STEMMA~N`, where
+/// N is a number. Invisible characters are rejected before this check. Short names that
+/// Windows derives from a hash, as it does when many similar names exist, cannot be listed.
 fn is_reserved_name(name: &str) -> bool {
-    let folded = name.trim_end_matches(['.', ' ']).to_uppercase();
-    folded == METADATA_DIR.to_uppercase()
-        || folded
-            .strip_prefix("STEMMA~")
-            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    name.split('\\').any(|segment| {
+        let file_name = segment.split(':').next().unwrap_or(segment);
+        let folded = file_name.trim_end_matches(['.', ' ']).to_uppercase();
+        folded == METADATA_DIR.to_uppercase()
+            || folded.strip_prefix("STEMMA~").is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            })
+    })
 }
 
 /// Returns the first naming rule the name violates, if any. The rules are checked in the order
@@ -982,6 +994,24 @@ mod tests {
             ("stemma~1", NameProblem::ReservedName),
             ("stemma~2", NameProblem::ReservedName),
             ("STEMMA~10", NameProblem::ReservedName),
+            // NTFS streams: the part before the first colon is the file name.
+            (".stemma:x", NameProblem::ReservedName),
+            (".stemma::$INDEX_ALLOCATION", NameProblem::ReservedName),
+            (".STEMMA::$DATA", NameProblem::ReservedName),
+            (".stemma .:x", NameProblem::ReservedName),
+            (".stemma:", NameProblem::ReservedName),
+            ("STEMMA~1:x", NameProblem::ReservedName),
+            ("stemma~2::$INDEX_ALLOCATION", NameProblem::ReservedName),
+            // Windows reads a backslash as a path separator.
+            ("x\\.stemma", NameProblem::ReservedName),
+            (".stemma\\x", NameProblem::ReservedName),
+            ("x\\.stemma\\config", NameProblem::ReservedName),
+            ("x\\..\\.stemma\\config", NameProblem::ReservedName),
+            ("a\\STEMMA~1\\b", NameProblem::ReservedName),
+            ("a\\.stemma. \\b", NameProblem::ReservedName),
+            ("a\\.stemma:x", NameProblem::ReservedName),
+            ("C:\\.stemma", NameProblem::ReservedName),
+            (".\\.stemma", NameProblem::ReservedName),
             ("STEMMA~1.", NameProblem::ReservedName),
             ("stemma~1 .", NameProblem::ReservedName),
             // An invisible character is reported before the reserved name it would hide.
@@ -1040,8 +1070,14 @@ mod tests {
             // Valid on Linux and macOS. The checkout layer has to guard Windows (ADR-005).
             "report:final.txt",
             "back\\slash",
-            "x\\..\\.stemma\\config",
+            "x\\.stemma-notes\\config",
             "a:b:c",
+            // Only the part before the first colon is the file name.
+            "a:.stemma",
+            "a:b\\c",
+            "C:\\Users",
+            ".stemma-notes:x",
+            "stemma:x",
             // Visible marks and letters next to the ranges of invisible characters.
             "a\u{ac}b",
             "a\u{ae}b",
