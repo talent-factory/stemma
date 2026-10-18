@@ -1,8 +1,11 @@
 //! Content-addressed objects: blobs, trees, and commits.
 //!
-//! Object IDs use BLAKE3 with the `b3:` prefix (ADR-001). Commits record their author as an
-//! [`Actor`] (ADR-002). The canonical encodings are defined in this module; they are
-//! persistent formats, so any change to them changes the ID of every affected object.
+//! Object IDs use BLAKE3 with the `b3:` prefix, following the proposal in ADR-001; the choice
+//! is provisional until that ADR is accepted. Commits record their author as an [`Actor`]
+//! (ADR-002). The canonical encodings are defined in this module. They are persistent
+//! formats: any change to them changes the ID of every affected object, and stored data
+//! written under the old encoding no longer matches. The golden-vector tests at the end of
+//! this file guard them.
 
 use std::error::Error;
 use std::fmt;
@@ -18,8 +21,8 @@ const HEX_LEN: usize = 64;
 
 /// Identifies a stored object by the hash of its canonical encoding.
 ///
-/// The textual form is `b3:` followed by 64 lowercase hexadecimal digits. A value can only be
-/// created by hashing or by parsing, so every `ObjectId` is well-formed.
+/// The textual form is `b3:` followed by 64 lowercase hexadecimal digits. Values are produced
+/// only by [`Blob::id`], [`Tree::id`], [`Commit::id`], or by parsing a string.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectId([u8; 32]);
 
@@ -37,7 +40,7 @@ impl fmt::Debug for ObjectId {
 
 /// Reasons why a string is not a valid object ID.
 ///
-/// The checks run in the order of the variants: prefix, length, then characters.
+/// A string is checked for the prefix first, then the length, then the characters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObjectIdParseError {
     /// The string does not start with the algorithm prefix `b3:`.
@@ -45,7 +48,7 @@ pub enum ObjectIdParseError {
     /// The digest is not 64 bytes long. Carries the length found, in bytes.
     WrongLength(usize),
     /// The digest contains a character other than a lowercase hexadecimal digit. Carries the
-    /// byte offset of the first offending character within the digest.
+    /// byte offset of the first offending character within the digest, not counting the prefix.
     NotHex(usize),
 }
 
@@ -55,11 +58,11 @@ impl fmt::Display for ObjectIdParseError {
             Self::MissingPrefix => write!(f, "object ID lacks the prefix `{PREFIX}`"),
             Self::WrongLength(found) => write!(
                 f,
-                "object ID digest must have {HEX_LEN} characters, found {found} bytes"
+                "object ID digest must be {HEX_LEN} bytes long, found {found}"
             ),
             Self::NotHex(position) => write!(
                 f,
-                "object ID digest must be lowercase hexadecimal (offending byte at offset {position})"
+                "object ID digest must be lowercase hexadecimal (offending byte at digest offset {position})"
             ),
         }
     }
@@ -88,7 +91,8 @@ impl FromStr for ObjectId {
     }
 }
 
-/// Value of a lowercase hexadecimal digit.
+/// Returns the value of a lowercase hexadecimal digit, or `None` for any other byte. Uppercase
+/// is rejected on purpose, so that every ID has exactly one textual form.
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -116,9 +120,9 @@ impl Kind {
     }
 }
 
-/// Hashes an encoded object. The hashed input is the ASCII header `<kind> <body length>`, a
-/// NUL byte, and the body. The header makes the same bytes stored as different kinds get
-/// different IDs.
+/// Hashes an encoded object. The hashed input is the ASCII header `<kind> <body length in
+/// decimal>`, a NUL byte, and the body. The kind in the header gives identical bytes stored as
+/// different kinds different IDs.
 fn hash_encoding(kind: Kind, body: &[u8]) -> ObjectId {
     let header = format!("{} {}\0", kind.name(), body.len());
     let mut hasher = blake3::Hasher::new();
@@ -161,8 +165,9 @@ pub enum NameProblem {
     DotName,
     /// The name contains `/`.
     PathSeparator,
-    /// The name contains a control character, including NUL and newline. The tree encoding is
-    /// line-based, so a newline would make it ambiguous.
+    /// The name contains a control character in the sense of `char::is_control` (C0, DEL, C1),
+    /// including NUL and newline. The tree encoding is line-based, so a newline would make it
+    /// ambiguous; the other control characters are rejected for hygiene.
     ControlCharacter,
 }
 
@@ -201,7 +206,9 @@ impl fmt::Display for TreeError {
                     name.escape_debug()
                 )
             }
-            Self::DuplicateName(name) => write!(f, "duplicate tree entry name `{name}`"),
+            Self::DuplicateName(name) => {
+                write!(f, "duplicate tree entry name `{}`", name.escape_debug())
+            }
         }
     }
 }
@@ -210,8 +217,9 @@ impl Error for TreeError {}
 
 /// File mode of a tree entry.
 ///
-/// The entry ID of a [`Directory`](Self::Directory) refers to a tree; the ID of every other
-/// mode refers to a blob. The object store has to enforce this once it exists.
+/// The entry ID of a [`Directory`](Self::Directory) is meant to refer to a tree; the ID of
+/// every other mode refers to a blob. This module does not verify it, because an [`ObjectId`]
+/// does not record the kind of object it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EntryMode {
@@ -278,8 +286,9 @@ impl TreeEntry {
 
 /// Returns the first naming rule the name violates, if any.
 ///
-/// The rules must stay in sync with the line-based tree encoding. Names are compared as given:
-/// there is no Unicode normalization and no case folding.
+/// Every accepted name must encode unambiguously in [`Tree::encode`]; for that, only the
+/// absence of `\n` is strictly needed. `/` is rejected because names are single path components.
+/// Names are compared as given: there is no Unicode normalization and no case folding.
 fn name_problem(name: &str) -> Option<NameProblem> {
     if name.is_empty() {
         Some(NameProblem::Empty)
@@ -294,7 +303,8 @@ fn name_problem(name: &str) -> Option<NameProblem> {
     }
 }
 
-/// A directory: a list of named entries, sorted by name in UTF-8 byte order.
+/// A directory: a list of named entries, sorted by name in UTF-8 byte order. Unlike in Git,
+/// directories get no special treatment in the order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree {
     entries: Vec<TreeEntry>,
@@ -305,7 +315,8 @@ impl Tree {
     ///
     /// # Errors
     ///
-    /// Returns [`TreeError::DuplicateName`] if two entries share a name.
+    /// Returns [`TreeError::DuplicateName`] if two entries share a name. Names were already
+    /// validated by [`TreeEntry::new`].
     pub fn new(mut entries: Vec<TreeEntry>) -> Result<Self, TreeError> {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         if let Some(pair) = entries.windows(2).find(|pair| pair[0].name == pair[1].name) {
@@ -319,7 +330,9 @@ impl Tree {
         &self.entries
     }
 
-    /// Returns the canonical encoding. Each entry is `<mode> <name>\n<id>\n`.
+    /// Returns the canonical encoding. Each entry is `<mode> <name>\n<id>\n`, where `<mode>` is
+    /// the code of the [`EntryMode`] and `<id>` is the textual form (`b3:` plus hex), not raw
+    /// bytes.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for entry in &self.entries {
@@ -341,7 +354,7 @@ impl Tree {
 pub enum CommitError {
     /// An author field is empty or contains whitespace or control characters. The commit
     /// encoding separates fields by whitespace and lines, so such a value would make it
-    /// ambiguous. Carries the name of the field.
+    /// ambiguous. Carries the name of the field: `id`, `model`, `session`, or `sponsor`.
     InvalidActorField(&'static str),
     /// The same parent is listed twice.
     DuplicateParent(ObjectId),
@@ -364,7 +377,8 @@ impl Error for CommitError {}
 /// A snapshot of a tree with its parents, its author, and a message.
 ///
 /// A commit carries no timestamp, so two commits with the same tree, parents, author, and
-/// message are the same object.
+/// message are the same object. Whether to add one is an open decision about the persistent
+/// format; no ADR covers it yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     tree: ObjectId,
@@ -379,7 +393,8 @@ impl Commit {
     /// # Errors
     ///
     /// Returns [`CommitError::InvalidActorField`] if an author field is unsafe to encode, and
-    /// [`CommitError::DuplicateParent`] if a parent is listed twice.
+    /// [`CommitError::DuplicateParent`] if a parent is listed twice. The message is not
+    /// validated: it comes last in the encoding and cannot interfere with the headers.
     pub fn new(
         tree: ObjectId,
         parents: Vec<ObjectId>,
@@ -420,8 +435,10 @@ impl Commit {
         &self.message
     }
 
-    /// Returns the canonical encoding: the headers `tree`, zero or more `parent`, and
-    /// `author`, each on its own line, then a blank line, then the message verbatim.
+    /// Returns the canonical encoding: the headers `tree <id>`, zero or more `parent <id>`, and
+    /// `author <actor line>`, each on its own line, then a blank line, then the message verbatim
+    /// without a trailing newline. IDs are in textual form; the actor line is described at
+    /// `actor_line`.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = format!("tree {}\n", self.tree);
         for parent in &self.parents {
@@ -439,23 +456,33 @@ impl Commit {
     }
 }
 
-/// Checks that every field of the actor can be written into a header line unambiguously.
-fn validate_actor(actor: &Actor) -> Result<(), CommitError> {
-    let fields: Vec<(&'static str, &str)> = match actor {
-        Actor::Human { id } => vec![("id", id)],
+/// Returns the label and the fields of an actor, the identifier first. This is the single list
+/// from which both [`validate_actor`] and [`actor_line`] work, so a new field is always
+/// checked and always encoded.
+fn actor_fields(actor: &Actor) -> (&'static str, Vec<(&'static str, &str)>) {
+    match actor {
+        Actor::Human { id } => ("human", vec![("id", id)]),
         Actor::Agent {
             id,
             model,
             session,
             sponsor,
-        } => vec![
-            ("id", id),
-            ("model", model),
-            ("session", session),
-            ("sponsor", sponsor),
-        ],
-    };
-    for (field, value) in fields {
+        } => (
+            "agent",
+            vec![
+                ("id", id),
+                ("model", model),
+                ("session", session),
+                ("sponsor", sponsor),
+            ],
+        ),
+    }
+}
+
+/// Checks that every field of the actor can be written into a header line unambiguously. The
+/// first invalid field in the order of [`actor_fields`] is reported.
+fn validate_actor(actor: &Actor) -> Result<(), CommitError> {
+    for (field, value) in actor_fields(actor).1 {
         if value.is_empty() || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
             return Err(CommitError::InvalidActorField(field));
         }
@@ -463,26 +490,31 @@ fn validate_actor(actor: &Actor) -> Result<(), CommitError> {
     Ok(())
 }
 
-/// Encodes an actor on one line. Agents also carry model, session, and sponsor.
+/// Encodes an actor on one line: `human <id>` or
+/// `agent <id> model=<model> session=<session> sponsor=<sponsor>`.
 ///
-/// The fields are not escaped. [`validate_actor`] guarantees that none contains whitespace, so
-/// the line splits unambiguously at spaces.
+/// The fields are not escaped. [`validate_actor`] guarantees that none is empty or contains
+/// whitespace, so the line splits unambiguously at spaces. A value may still contain `=`, so a
+/// parser must split each `key=value` token at its first `=`.
 fn actor_line(actor: &Actor) -> String {
-    match actor {
-        Actor::Human { id } => format!("human {id}"),
-        Actor::Agent {
-            id,
-            model,
-            session,
-            sponsor,
-        } => format!("agent {id} model={model} session={session} sponsor={sponsor}"),
+    let (label, fields) = actor_fields(actor);
+    let mut line = label.to_owned();
+    for (i, (name, value)) in fields.into_iter().enumerate() {
+        if i == 0 {
+            line.push_str(&format!(" {value}"));
+        } else {
+            line.push_str(&format!(" {name}={value}"));
+        }
     }
+    line
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // Golden vectors. Each ID was computed independently of this module: the encoding was
+    // assembled by hand as `<kind> <length>\0<body>` and hashed with `blake3::hash`.
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
     const EMPTY_ID: &str = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65";
     const TREE_ID: &str = "b3:0eec8324e510a63821fcbfda90ce4ed54b01a4db9efd829f7440967808796eb6";
@@ -490,6 +522,12 @@ mod tests {
         "b3:df6547b0e420552fbef53cc6f31a83c0ee88838e4fa8065fdd598f197c72e781";
     const AGENT_COMMIT_ID: &str =
         "b3:45401d23555f571cb26b85f43188ed412bdc537ca038baf1b4391ffd99600c7f";
+    const EMPTY_TREE_ID: &str =
+        "b3:06b8469ad46d7051ad63f82809ef66c6d738d08cc3f1a5c842f3d66c05f64cf7";
+    const ALL_MODES_TREE_ID: &str =
+        "b3:7550c6d417278c76a35d3399bd4d18fab9fac01132b48cc1825b52c287450d3a";
+    const MERGE_COMMIT_ID: &str =
+        "b3:775cd6d4466cfd87ed1188de85a00902145a3c71ca702a0b492713c36b998864";
 
     fn human() -> Actor {
         Actor::Human {
@@ -540,8 +578,12 @@ mod tests {
 
     #[test]
     fn hashed_input_is_kind_length_nul_and_body() {
-        let expected = blake3::hash(b"blob 1\0x");
-        assert_eq!(hash_encoding(Kind::Blob, b"x").0, *expected.as_bytes());
+        // A body of 12 bytes shows that the length is written in decimal.
+        let expected = blake3::hash(b"blob 12\0hello, world");
+        assert_eq!(
+            hash_encoding(Kind::Blob, b"hello, world").0,
+            *expected.as_bytes()
+        );
     }
 
     #[test]
@@ -633,6 +675,9 @@ mod tests {
         assert!(ObjectIdParseError::NotHex(7)
             .to_string()
             .contains("offset 7"));
+        assert!(ObjectIdParseError::MissingPrefix
+            .to_string()
+            .contains("b3:"));
     }
 
     // Trees
@@ -646,8 +691,27 @@ mod tests {
     }
 
     #[test]
-    fn empty_tree_encodes_to_nothing() {
-        assert_eq!(empty_tree_id(), hash_encoding(Kind::Tree, b""));
+    fn empty_tree_encodes_to_nothing_and_matches_its_golden_id() {
+        let tree = Tree::new(vec![]).expect("empty tree is valid");
+        assert!(tree.encode().is_empty());
+        assert_eq!(tree.id().to_string(), EMPTY_TREE_ID);
+    }
+
+    #[test]
+    fn tree_with_all_four_modes_matches_its_golden_vector() {
+        let tree = Tree::new(vec![
+            entry("d-run", EntryMode::Executable, id(EMPTY_ID)),
+            entry("c-link", EntryMode::Symlink, id(HELLO_ID)),
+            entry("b-file", EntryMode::File, id(HELLO_ID)),
+            entry("a-dir", EntryMode::Directory, id(TREE_ID)),
+        ])
+        .expect("valid tree");
+        let expected = format!(
+            "040000 a-dir\n{TREE_ID}\n100644 b-file\n{HELLO_ID}\n\
+             120000 c-link\n{HELLO_ID}\n100755 d-run\n{EMPTY_ID}\n"
+        );
+        assert_eq!(tree.encode(), expected.as_bytes());
+        assert_eq!(tree.id().to_string(), ALL_MODES_TREE_ID);
     }
 
     #[test]
@@ -670,6 +734,20 @@ mod tests {
         .expect("valid tree");
         let names: Vec<&str> = tree.entries().iter().map(TreeEntry::name).collect();
         assert_eq!(names, ["B", "a", "a-b", "a.txt", "é"]);
+    }
+
+    #[test]
+    fn tree_order_is_utf8_byte_order_not_utf16() {
+        // U+FF5E is EF BD 9E in UTF-8 and U+1F600 is F0 9F 98 80, so U+FF5E sorts first. In
+        // UTF-16 the order would be reversed (D83D DE00 before FF5E).
+        let tree = Tree::new(
+            ["\u{1f600}", "\u{ff5e}"]
+                .map(|name| entry(name, EntryMode::File, id(HELLO_ID)))
+                .to_vec(),
+        )
+        .expect("valid tree");
+        let names: Vec<&str> = tree.entries().iter().map(TreeEntry::name).collect();
+        assert_eq!(names, ["\u{ff5e}", "\u{1f600}"]);
     }
 
     #[test]
@@ -698,6 +776,11 @@ mod tests {
             ("x\n100755 evil", NameProblem::ControlCharacter),
             ("a\rb", NameProblem::ControlCharacter),
             ("a\0b", NameProblem::ControlCharacter),
+            ("a\u{7f}b", NameProblem::ControlCharacter),
+            ("a\u{85}b", NameProblem::ControlCharacter),
+            // The first violated rule wins: a separator is reported before a control character.
+            ("a/\n", NameProblem::PathSeparator),
+            ("/.", NameProblem::PathSeparator),
         ];
         for (name, problem) in cases {
             assert_eq!(
@@ -787,6 +870,35 @@ mod tests {
     }
 
     #[test]
+    fn merge_commit_encoding_and_id_match_golden_vectors() {
+        let commit = Commit::new(
+            id(TREE_ID),
+            vec![id(HELLO_ID), id(EMPTY_ID)],
+            human(),
+            "merge",
+        )
+        .expect("valid commit");
+        let expected = format!(
+            "tree {TREE_ID}\nparent {HELLO_ID}\nparent {EMPTY_ID}\nauthor human daniel\n\nmerge"
+        );
+        assert_eq!(commit.encode(), expected.as_bytes());
+        assert_eq!(commit.id().to_string(), MERGE_COMMIT_ID);
+    }
+
+    #[test]
+    fn equals_sign_inside_a_value_is_allowed_and_encoded_verbatim() {
+        let author = Actor::Agent {
+            id: "a".into(),
+            model: "m=1".into(),
+            session: "s".into(),
+            sponsor: "p".into(),
+        };
+        let c = commit(vec![], author, "m");
+        let text = String::from_utf8(c.encode()).expect("encoding is UTF-8");
+        assert!(text.contains("\nauthor agent a model=m=1 session=s sponsor=p\n"));
+    }
+
+    #[test]
     fn human_and_agent_with_the_same_id_differ() {
         let as_human = Actor::Human { id: "x".into() };
         let as_agent = Actor::Agent {
@@ -871,6 +983,41 @@ mod tests {
             (with_agent("a", "m", "s", "p\r"), "sponsor"),
             (with_agent("a", "m", "s", ""), "sponsor"),
             (with_agent("a\0", "m", "s", "p"), "id"),
+            (with_agent("a", "", "s", "p"), "model"),
+            (with_agent("a", "m", "", "p"), "session"),
+            (
+                Actor::Human {
+                    id: "a\u{7f}".into(),
+                },
+                "id",
+            ),
+            (
+                Actor::Human {
+                    id: "a\u{85}".into(),
+                },
+                "id",
+            ),
+            (
+                Actor::Human {
+                    id: "a\u{a0}b".into(),
+                },
+                "id",
+            ),
+            (
+                Actor::Human {
+                    id: "a\u{2028}b".into(),
+                },
+                "id",
+            ),
+            (
+                Actor::Human {
+                    id: "a\u{2003}b".into(),
+                },
+                "id",
+            ),
+            // With several invalid fields, the first in field order is reported.
+            (with_agent("a b", "m c", "", "p\n"), "id"),
+            (with_agent("a", "m c", "", "p\n"), "model"),
         ];
         for (author, field) in cases {
             assert_eq!(
