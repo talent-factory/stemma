@@ -5,12 +5,13 @@ are proposals.
 
 ## Context
 
-Object IDs are hashes of canonical encodings (ADR-001). Any change to an encoding changes the ID
-of every affected object, so the rules for what may appear in an encoding have to be settled
-before the first object is stored. This ADR covers the rules for tree entry names, actor fields,
-commit timestamps, and format versions. The implementation is
-`crates/stemma-core/src/object.rs`; together with its golden-vector tests it is the normative
-definition of the byte-level encodings. This ADR records the decisions behind them.
+Object IDs are hashes of canonical encodings (ADR-001). Any change to an encoding changes the ID of
+every affected object, so the rules for what may appear in an encoding have to be settled before the
+first object is stored. This ADR covers the rules for tree entry names, actor fields, commit
+timestamps, and format versions. The implementation is `crates/stemma-core/src/object.rs`; together
+with its golden-vector tests it is the normative definition of the byte-level encodings. The check
+of the actor fields is in `crates/stemma-core/src/actor.rs`. This ADR records the decisions behind
+them.
 
 ## Decision (proposal)
 

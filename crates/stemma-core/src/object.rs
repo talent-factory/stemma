@@ -760,8 +760,9 @@ impl Commit {
 /// Encodes an actor on one line: `human <id>` or
 /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`.
 ///
-/// The fields are not escaped. [`Actor`] guarantees that none is empty or contains a space, so the line splits unambiguously at spaces. A value may still contain `=`, so a
-/// parser must split each `key=value` token at its first `=`.
+/// The fields are not escaped. [`Actor`] guarantees that no field is empty or contains a space, so
+/// the line splits unambiguously at spaces. A value may still contain `=`, so a parser must split
+/// each `key=value` token at its first `=`.
 fn actor_line(actor: &Actor) -> String {
     let (label, fields) = actor.fields();
     let mut line = label.to_owned();
