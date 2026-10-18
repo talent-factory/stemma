@@ -40,6 +40,18 @@ const HEX_LEN: usize = 64;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectId([u8; 32]);
 
+impl ObjectId {
+    /// Returns the algorithm prefix without the colon, for example `b3`.
+    pub(crate) fn algorithm(&self) -> &'static str {
+        PREFIX.trim_end_matches(':')
+    }
+
+    /// Returns the digest as 64 lowercase hexadecimal digits, without the prefix.
+    pub(crate) fn hex(&self) -> String {
+        blake3::Hash::from_bytes(self.0).to_hex().to_string()
+    }
+}
+
 impl fmt::Display for ObjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{PREFIX}{}", blake3::Hash::from_bytes(self.0).to_hex())
@@ -118,28 +130,48 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 /// The three kinds of stored objects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub enum Kind {
+    /// File content ([`Blob`]).
     Blob,
+    /// A directory ([`Tree`]).
     Tree,
+    /// A snapshot with history ([`Commit`]).
     Commit,
 }
 
 impl Kind {
-    /// These names are hashed into the object ID. Changing them invalidates all existing IDs.
-    fn name(self) -> &'static str {
+    /// Returns the kind name. These names are hashed into the object ID. Changing them
+    /// invalidates all existing IDs.
+    pub fn name(self) -> &'static str {
         match self {
             Self::Blob => "blob",
             Self::Tree => "tree",
             Self::Commit => "commit",
         }
     }
+
+    /// Inverse of [`name`](Self::name). Accepts exactly the three canonical names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "blob" => Some(Self::Blob),
+            "tree" => Some(Self::Tree),
+            "commit" => Some(Self::Commit),
+            _ => None,
+        }
+    }
+
+    /// Returns the ASCII header that precedes the body in the hashed input and in a stored
+    /// object: `<kind> <body length in decimal>` and a NUL byte.
+    pub(crate) fn header(self, body_len: usize) -> String {
+        format!("{} {}\0", self.name(), body_len)
+    }
 }
 
 /// Hashes an encoded object. The hashed input is the ASCII header `<kind> <body length in
 /// decimal>`, a NUL byte, and the body. Because the kind is part of the hashed header,
 /// identical bodies of different kinds get different IDs.
-fn hash_encoding(kind: Kind, body: &[u8]) -> ObjectId {
-    let header = format!("{} {}\0", kind.name(), body.len());
+pub(crate) fn hash_encoding(kind: Kind, body: &[u8]) -> ObjectId {
+    let header = kind.header(body.len());
     let mut hasher = blake3::Hasher::new();
     hasher.update(header.as_bytes());
     hasher.update(body);

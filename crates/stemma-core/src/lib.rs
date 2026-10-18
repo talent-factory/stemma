@@ -1,8 +1,9 @@
-//! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, and the
-//! index.
+//! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
+//! index, and object storage.
 
 pub mod index;
 pub mod object;
+pub mod store;
 
 /// Actor of an operation. Agents carry model version, session, and sponsor.
 #[derive(Debug, Clone, PartialEq, Eq)]

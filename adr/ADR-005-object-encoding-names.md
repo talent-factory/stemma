@@ -169,7 +169,8 @@ definition of the byte-level encodings. This ADR records the decisions behind th
       original author time apart from the time of the rewrite.
 - [ ] Decide whether the operation log is exchanged with the history. The timestamp rule
       assumes it is not.
-- [ ] The store has to record the object kind, because the version is part of the kind name.
+- [x] The store has to record the object kind, because the version is part of the kind name.
+      Done in ADR-007: a stored object starts with its kind name.
 - [ ] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a
       directory entry cannot point at a blob and a commit cannot take a blob as its tree.
 - [ ] Validate `Actor` in its own type, so that other consumers, such as the authorization
