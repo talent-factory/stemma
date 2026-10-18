@@ -6,6 +6,7 @@ Version control system in Rust. See `README.md` for the project overview and `ad
 
 - Directory names, file names, and all source code are written in English (academic level). This covers identifiers, comments, doc comments, log and CLI output, error messages, and commit-relevant naming.
 - Example: `docs/images/`, not `docs/bilder/`.
+- Exception for now: the book text (`docs/main.tex`) and the root `README.md` stay in German. The book will be translated to English at a later date; do not translate it before then.
 
 ## Commands
 
