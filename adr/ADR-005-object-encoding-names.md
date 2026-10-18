@@ -103,7 +103,10 @@ them.
   decides how to display it. The timestamp is self-reported and proves nothing; only signatures
   make it trustworthy (ADR-003, ADR-004). There is no separate committer. This rule assumes that
   the operation log stays local and is not exchanged with the history, so the commit has to
-  carry its own date (see Open).
+  carry its own date (see Open). A rewrite, such as a rebase, a cherry-pick, or an amend, creates
+  a new commit that keeps the author and the time of the original change. Who rewrote it, and
+  when, is recorded only in the operation log. The first open item below decides later whether
+  that is enough.
 - **Format version** *(confirmed)*. The encodings in this ADR are version 1. An incompatible
   change does not reuse an object kind name: it introduces a new one, for example `commit2`,
   together with an ADR, so that old and new objects can exist side by side. The hash algorithm
@@ -182,9 +185,14 @@ them.
 ## Open
 
 - [ ] Add a committer and a second timestamp, if rebasing and cherry-picking need to keep the
-      original author time apart from the time of the rewrite.
-- [ ] Decide whether the operation log is exchanged with the history. The timestamp rule
-      assumes it is not.
+      original author time apart from the time of the rewrite. Not added for now: no object has been
+      stored yet, and no use case needs it. A header can be added later as a new kind name
+      (`commit2`), but a stored header cannot be removed. Decide this together with the next item.
+      If the operation log stays local and other readers must see who rewrote a commit, add
+      `committer` and a second time as one change, since the committer is a second actor and not
+      only a second time. If the log is exchanged, neither is needed.
+- [ ] Decide whether the operation log is exchanged with the history. The timestamp rule assumes it
+      is not. This decides the previous item.
 - [x] The store has to record the object kind, because the version is part of the kind name.
       Done in ADR-007 (proposal): a stored object starts with its kind name.
 - [x] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a
