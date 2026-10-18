@@ -7,7 +7,7 @@ target/
 **/*.rs.bk
 *.pdb
 
-# ConTeXt (Zwischendateien und Ausgabe)
+# ConTeXt (intermediate files and output)
 *.log
 *.pdf
 *.tuc
@@ -22,6 +22,6 @@ texmf-cache/
 # Figures are versioned (English directory name, see CLAUDE.md)
 !docs/images/*
 
-# Werkzeuge
+# Tooling
 .serena/
 .vscode/
