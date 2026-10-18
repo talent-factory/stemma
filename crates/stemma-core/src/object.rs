@@ -128,8 +128,10 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-/// The three kinds of stored objects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The kinds of stored objects. An incompatible change to an encoding adds a kind with a new name
+/// (ADR-005), so the enum is not exhaustive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Kind {
     /// File content ([`Blob`]).
     Blob,
@@ -140,8 +142,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Returns the kind name. These names are hashed into the object ID. Changing them
-    /// invalidates all existing IDs.
+    /// Returns the kind name. These names are hashed into the object ID and written at the start
+    /// of every stored object file. Changing them invalidates all existing IDs and files.
     pub fn name(self) -> &'static str {
         match self {
             Self::Blob => "blob",
@@ -150,7 +152,7 @@ impl Kind {
         }
     }
 
-    /// Inverse of [`name`](Self::name). Accepts exactly the three canonical names.
+    /// Inverse of [`name`](Self::name). Accepts exactly the canonical names.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "blob" => Some(Self::Blob),
@@ -1546,5 +1548,40 @@ mod tests {
         // The emoji itself and the keycap sign alone are fine.
         assert_eq!(name_problem("\u{20e3}"), None);
         assert_eq!(name_problem("\u{2764}"), None);
+    }
+
+    #[test]
+    fn kind_names_roundtrip_and_only_the_canonical_ones_parse() {
+        for (kind, name) in [
+            (Kind::Blob, "blob"),
+            (Kind::Tree, "tree"),
+            (Kind::Commit, "commit"),
+        ] {
+            assert_eq!(kind.name(), name);
+            assert_eq!(Kind::from_name(name), Some(kind));
+        }
+        for unknown in [
+            "", "Blob", "BLOB", "blob ", " blob", "blob\0", "commit2", "tag",
+        ] {
+            assert_eq!(Kind::from_name(unknown), None, "{unknown:?}");
+        }
+    }
+
+    #[test]
+    fn the_header_is_the_kind_the_decimal_length_and_a_nul_byte() {
+        assert_eq!(Kind::Blob.header(5), "blob 5\0");
+        assert_eq!(Kind::Tree.header(0), "tree 0\0");
+        assert_eq!(Kind::Commit.header(1234), "commit 1234\0");
+    }
+
+    #[test]
+    fn the_id_parts_are_the_algorithm_and_lowercase_hex() {
+        let stored = Blob::new("hello").id();
+        assert_eq!(stored.algorithm(), "b3");
+        assert_eq!(
+            stored.hex(),
+            "9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad"
+        );
+        assert_eq!(stored.to_string(), format!("b3:{}", stored.hex()));
     }
 }
