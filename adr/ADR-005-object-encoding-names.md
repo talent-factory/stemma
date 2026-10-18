@@ -28,6 +28,18 @@ definition of the byte-level encodings. This ADR records the decisions behind th
   `unicode-general-category` crate, which is pinned to an exact version (Unicode 16.0 for 1.1.0)
   so that the same name is valid on every build. Raising the version needs a review of the
   names it newly rejects.
+- **Joiners** *(confirmed)*. The zero-width joiners U+200C and U+200D stay rejected, like the
+  rest of Cf. Persian and other languages written in Arabic script, Indic scripts, and composite
+  emoji need them, so names in those scripts cannot be stored for now. Two reasons: they are
+  invisible, so `README` and `READ\u200dME` look alike in a listing, and HFS+ ignores U+200C to
+  U+200F when it resolves names, so `.stem\u200cma` would be `.stemma` there. Relaxing a rule
+  changes no ID, while withdrawing a permission would invalidate stored names, so the stricter
+  rule stays until someone needs the names. The planned relaxation, if a need arises, is:
+  U+200C and U+200D are allowed only between two non-ASCII characters, not at the start or the
+  end of a name, and not next to another joiner. That keeps them out of ASCII names and so out
+  of every alias of `.stemma`. It does not stop look-alikes inside non-ASCII Latin words, such
+  as `é\u200dé`; the standard rule (RFC 5892, CONTEXTJ) would, at the cost of more Unicode data
+  and without emoji.
 - **Reserved name** *(confirmed)*. The metadata directory is `.stemma`. No tree entry may use
   that name or an alias of it on a common file system: the name in any letter case (including
   look-alikes such as the long s U+017F), with trailing dots or spaces (Windows drops them), or
@@ -99,7 +111,8 @@ definition of the byte-level encodings. This ADR records the decisions behind th
   UTF-8 name encodes to the same bytes, so no tree ID changes. The opposite direction is not
   possible once a repository holds a name that is not valid UTF-8.
 - Rejecting format characters also rejects the zero-width joiners U+200C and U+200D and the
-  directional marks U+200E and U+200F. Some scripts (for example Persian and several Indic
+  directional marks U+200E and U+200F; the joiners are a confirmed decision, see above. Some
+  scripts (for example Persian and several Indic
   scripts) and composite emoji such as 👨‍👩‍👧 need them, so file names in those scripts are
   rejected. See Open.
 - The Cf rule does not cover every invisible character. The Hangul fillers (U+115F, U+3164),
@@ -116,7 +129,8 @@ definition of the byte-level encodings. This ADR records the decisions behind th
 
 ## Open
 
-- [ ] Allow U+200C, U+200D, U+200E, and U+200F in tree names as an exception to the Cf rule?
+- [ ] Allow the directional marks U+200E and U+200F in tree names as an exception to the Cf
+      rule? Right-to-left file names use them.
 - [ ] Replace the Cf rule with the Unicode property `Default_Ignorable_Code_Point`, which fits
       the goal that names cannot hide their content better, and reject U+2028 and U+2029?
 - [ ] Reject further aliases of `.stemma`, such as NTFS alternate data streams and HFS+
