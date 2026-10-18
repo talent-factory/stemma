@@ -1,7 +1,6 @@
 //! Content-addressed objects: blobs, trees, and commits.
 //!
-//! Object IDs use BLAKE3 with the `b3:` prefix, following the proposal in ADR-001; the choice
-//! is provisional until that ADR is accepted. Commits record their author as an [`Actor`]
+//! Object IDs use BLAKE3 with the `b3:` prefix (ADR-001). Commits record their author as an [`Actor`]
 //! (ADR-002). ADR-005 records the decisions behind the rules for names, actor fields,
 //! timestamps, and versioning.
 //!
@@ -264,12 +263,23 @@ pub enum EntryMode {
 
 impl EntryMode {
     /// Mode string written into the tree encoding. It is part of the object ID.
-    fn code(self) -> &'static str {
+    pub(crate) fn code(self) -> &'static str {
         match self {
             Self::File => "100644",
             Self::Executable => "100755",
             Self::Symlink => "120000",
             Self::Directory => "040000",
+        }
+    }
+
+    /// Inverse of [`code`](Self::code). Accepts exactly the four canonical codes.
+    pub(crate) fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "100644" => Some(Self::File),
+            "100755" => Some(Self::Executable),
+            "120000" => Some(Self::Symlink),
+            "040000" => Some(Self::Directory),
+            _ => None,
         }
     }
 }
@@ -346,7 +356,7 @@ fn is_reserved_name(name: &str) -> bool {
 /// format characters so that names do not hide their content. Names are compared and hashed as
 /// given: there is no Unicode normalization, and no case folding for uniqueness. The
 /// reserved-name check is the one place that folds case, on purpose.
-fn name_problem(name: &str) -> Option<NameProblem> {
+pub(crate) fn name_problem(name: &str) -> Option<NameProblem> {
     if name.is_empty() {
         Some(NameProblem::Empty)
     } else if name.chars().all(|c| c == '.' || c == ' ') {
