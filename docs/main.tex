@@ -1,0 +1,127 @@
+% Stemma: Grundlagendokument (ConTeXt, MkIV)
+% Kompilieren: context main.tex
+
+\setupbodyfont[modern,11pt]
+\mainlanguage[de]
+\setuppapersize[A4][A4]
+\setuplayout[
+  width=middle, height=middle,
+  header=1.2cm, footer=1.2cm,
+  topspace=2.2cm, bottomspace=2.2cm,
+  backspace=2.5cm, margin=2cm]
+\setupheadertexts[\getmarking[chapter]][\pagenumber]
+\setupfootertexts[][\pagenumber]
+\setuphead[chapter][before={\blank[2*big]}, after={\blank[big]}]
+
+\starttext
+
+% ------------------------------------------------------------------
+% Titelblatt
+% ------------------------------------------------------------------
+\startalign[center]
+\blank[4*big]
+{\tfd Stemma}\par
+\blank[big]
+{\tfa Ein API-first Versionskontrollsystem für Menschen und Agenten}\par
+\blank[2*big]
+Grundlagendokument, Entwurf\par
+\blank[4*big]
+Daniel Senften\par
+Talent Factory GmbH\par
+\blank[big]
+Version 0.1 · 18. Oktober 2026\par
+\stopalign
+\page
+
+% ------------------------------------------------------------------
+% Inhaltsverzeichnis
+% ------------------------------------------------------------------
+\title{Inhaltsverzeichnis}
+\placecontent
+\page
+
+% ------------------------------------------------------------------
+% Einleitung
+% ------------------------------------------------------------------
+\chapter{Einleitung}
+
+\section{Ausgangslage}
+
+Versionskontrollsysteme wurden für Entwicklerinnen und Entwickler entworfen, die wenige Änderungen pro Tag einbringen und für jede Aufgabe einen eigenen Branch anlegen. Diese Annahme gilt nicht mehr überall. Agenten erzeugen Änderungen in kurzer Folge, oft parallel und in grosser Zahl.
+
+Laut Presseberichten vom Oktober 2026 hat Anthropic für den eigenen Monorepo-Betrieb ein internes Versionskontrollsystem namens Scion eingeführt. Die Berichte nennen einen Anstieg der täglichen Merges von rund 2500 im Mai auf über 30000 im September 2026. Scion ist nach diesen Berichten nicht öffentlich verfügbar. Der Originalbeitrag im Engineering-Blog ist vor einer Veröffentlichung dieses Dokuments zu prüfen.
+
+\section{GitHub und verwandte Plattformen}
+
+Git wurde 2005 von Linus Torvalds entwickelt. Es ist ein verteiltes System: Jeder Klon enthält die vollständige Historie. GitHub, GitLab und vergleichbare Plattformen ergänzen Git um Hosting, Pull Requests, Code-Reviews, Issue-Tracking und Continuous Integration. Microsoft hat GitHub 2018 übernommen.
+
+Die Trennung ist wichtig. Das Datenmodell von Git ist dezentral. Die Arbeitsabläufe, die auf Git aufbauen, sind häufig zentral organisiert, weil ein Hub Berechtigungen, Prüfungen und Suche bereitstellt.
+
+\section{Stärken im agentischen Kontext}
+
+\startitemize
+\item \textbf{Verbreitung:} Entwicklerinnen, Entwickler, Werkzeuge und Integrationen sind vorhanden. Agenten beherrschen die Git-Befehle gut.
+\item \textbf{Pull Requests als Prüfpunkt:} Jede Änderung liegt in einem klar abgegrenzten Rahmen mit Diskussion und Freigabe.
+\item \textbf{Schutzregeln:} Plattformen erzwingen Freigaben auf geschützten Branches.
+\item \textbf{Ausgereiftes Ökosystem:} CI-Pipelines, Berechtigungsmodelle und Audit-Funktionen sind erprobt.
+\stopitemize
+
+\section{Grenzen im agentischen Kontext}
+
+Die folgende Tabelle fasst die wichtigsten Grenzen zusammen. Sie beruhen auf der Analyse der Arbeitsabläufe und nicht auf Messungen.
+
+\starttable[|lw(3.5cm)|lw(10.5cm)|]
+\HL
+\NC {\bf Aspekt} \NC {\bf Beobachtung} \NC \NR
+\HL
+\NC Review \NC Pull Requests werden zum Engpass, wenn Agenten schneller produzieren, als Menschen prüfen können. \NC \NR
+\NC Branches \NC Ein Branch pro Aufgabe führt zu vielen kurzlebigen Branches, die verwaltet werden müssen. \NC \NR
+\NC Worktrees \NC Git erlaubt einen Branch zu einem Zeitpunkt nur in einem Worktree. Parallele Agenten brauchen deshalb eigene Regeln. \NC \NR
+\NC Durchsetzung \NC Schreibrechte auf Branches werden durch Konvention und Plattformregeln gesteuert, nicht durch das Datenmodell. \NC \NR
+\NC Herkunft \NC Commits tragen Autor und Zeitstempel, aber keine strukturierte Angabe zu Modell, Session und auftraggebendem Menschen. \NC \NR
+\NC Konflikte \NC Textbasierte Konflikte stoppen den Vorgang und müssen sofort gelöst werden. \NC \NR
+\NC Abhängigkeit \NC Repositories, Berechtigungen und Prüfungen liegen bei einem Anbieter. \NC \NR
+\HL
+\stoptable
+
+\section{Kernaussagen}
+
+Das Grundlagendokument stützt sich auf fünf Aussagen:
+
+\startitemize[n]
+\item Das Datenmodell von Git ist für Agenten geeignet. Inhalte sind über Hashes adressiert, und Historien bilden einen unveränderlichen Graphen. Die Schwächen liegen in Arbeitsabläufen und Durchsetzung.
+\item Schreibhoheit gehört pro Branch zu genau einem Akteur und wird vom Server erzwungen. Stille Überschreibungen sind damit ausgeschlossen.
+\item Herkunft gehört in die Daten. Akteur, Modellversion, Session und Sponsor tragen jede Änderung und jeden Eintrag im Operation Log.
+\item Freigaben prüfen Absicht und Wirkung, nicht nur einzelne Zeilen. Risikostufen bestimmen, wie viele unabhängige Prüfungen nötig sind.
+\item Das Vorhaben beginnt mit einem lokalen, Git-artigen Kommandozeilenwerkzeug. Kompatibilität mit bestehenden Repositories ist kein Ziel.
+\stopitemize
+
+\section{Warum dieses Projekt}
+
+\startitemize
+\item Die Talent Factory GmbH arbeitet an AI-assisted Software Engineering. Ein eigenes Versionskontrollsystem ist dafür ein konkreter Lerngegenstand.
+\item Dezentralität ist für die Talent Factory ein Grundprinzip. Die Praxis braucht aber durchsetzbare Regeln. Das Projekt verbindet beides über Risikostufen und Policies.
+\item Die Lehre profitiert, weil Datenstrukturen, Algorithmen und Agenten-Workflows am selben Gegenstand gezeigt werden können.
+\item Der Umfang bleibt bewusst klein: zuerst ein Nutzer, dann Mitarbeitende, danach Studierende.
+\stopitemize
+
+\section{Aufbau des Dokuments}
+
+Das Dokument ist als Grundgerüst angelegt. Kapitel zu Konzepten, Architektur und Lehre folgen mit den einzelnen Projektphasen. Die Architekturentscheidungen liegen im Repository unter \type{adr/} und werden hier referenziert, sobald sie abgeschlossen sind.
+
+% ------------------------------------------------------------------
+% Anhang
+% ------------------------------------------------------------------
+\title{Abbildungsverzeichnis}
+Abbildungen werden ergänzt, sobald sie vorliegen.
+\placelistoffigures
+\page
+
+\title{Literatur}
+Die Quellen folgen dem IEEE-Format. Einträge werden ergänzt, sobald die Quellen feststehen. Das Format für einen Eintrag lautet:
+
+\starttyping
+[1] A. Autor, „Titel der Quelle,“ Verlag, Ort, Jahr.
+\stoptyping
+
+\stoptext
