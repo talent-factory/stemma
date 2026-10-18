@@ -34,6 +34,12 @@ own design supports.
 - Feature flags add temporary code that has to be removed once a feature is complete.
 - Until the server enforces the rules of ADR-004, protection of `main` relies on the GitHub
   branch protection settings and on discipline.
+- The workflow `.github/workflows/ci.yml` runs only when someone starts it by hand
+  (`gh workflow run ci.yml --ref <branch>`). It checks formatting, clippy, and the tests on
+  Linux, macOS, and Windows. For now, "`main` is always green" rests on `just ci` locally and on
+  discipline, and the workflow gives an independent run on all three systems on request. Nothing
+  checks a pull request on the server, and the platform-dependent code (ADR-007) is only
+  tested on the system of the person who works on it unless someone starts the workflow.
 
 ## Open
 
@@ -41,3 +47,5 @@ own design supports.
 - [ ] Maximum lifetime of a branch before it counts as too long.
 - [ ] Which GitHub branch protection settings are enabled while the repository is hosted there
       (required checks, required review, no direct pushes).
+- [ ] When to run the workflow for every pull request and every push to `main` again, and to
+      make its jobs required checks. The triggers are in a comment at the top of the file.

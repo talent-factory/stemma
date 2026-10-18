@@ -1,0 +1,82 @@
+name: CI
+
+# The workflow runs only when someone starts it by hand, for example before a larger merge:
+#
+#   gh workflow run ci.yml --ref <branch>
+#
+# ADR-006 wants `main` to be green at all times. For now that rests on `just ci` locally and on
+# discipline, and this workflow gives an independent run on Linux, macOS, and Windows on request.
+# To run it for every pull request and every push to `main` again, add these triggers:
+#
+#   pull_request:
+#     branches: [main]
+#   push:
+#     branches: [main]
+on:
+  workflow_dispatch:
+
+# A second run for the same ref waits for the first instead of running beside it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The same checks as `just ci`: formatting, clippy with warnings as errors, and the tests.
+  check:
+    name: Check (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --no-self-update
+      - uses: extractions/setup-just@v4
+        with:
+          just-version: "1.49.0"
+      - name: Show the versions
+        run: |
+          rustc --version
+          cargo --version
+          just --version
+      - name: Check that Cargo.lock is up to date
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: Format, lint, and test
+        run: just ci
+
+  # The object store has code that depends on the platform (ADR-007): flushing directories,
+  # replacing a file by a rename, and the file system rules for names. Linux alone cannot show
+  # that it builds and passes elsewhere.
+  portability:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy --no-self-update
+      - name: Show the versions
+        run: |
+          rustc --version
+          cargo --version
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked

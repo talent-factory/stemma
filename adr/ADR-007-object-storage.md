@@ -88,10 +88,11 @@ server will later keep objects elsewhere (API-first). The implementation is
       memory.
 - [ ] A repository format file (`.stemma/format`, planned for `stemma init`) should be checked
       before a store opens a repository; the store does not check it yet.
-- [ ] Windows and other platforms: the behavior of a rename over an existing or read-only file,
-      replacing a damaged object (it is reported as an error there for now), and flushing
-      directory entries. The code for these platforms is not built or tested anywhere yet.
-- [ ] A build and test run for Linux, macOS, and Windows on the server, so that `main` stays
-      green on every supported platform (ADR-006).
+- [ ] Windows and other platforms: the code builds and its tests pass on Windows (a CI run,
+      ADR-006),
+      but five tests run on Unix only, and the behavior there is not known: a rename over an
+      existing or read-only file, replacing a damaged object (it is reported as an error for
+      now), and flushing directory entries. Decide what the store promises on each platform
+      and test it.
 - [ ] Type object IDs per kind, so that a caller does not have to compare the kind of the
       result of `get` itself (ADR-005). `get_expecting` covers this until then.
