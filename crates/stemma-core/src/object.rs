@@ -253,6 +253,11 @@ impl EntryMode {
 }
 
 /// One named entry of a tree.
+///
+/// Names are UTF-8 strings, so a file whose name is not valid UTF-8 cannot be stored; the
+/// layer that reads files has to report that as an error. The encoding writes a name as its
+/// raw UTF-8 bytes. A later switch to byte-string names would therefore leave the ID of every
+/// existing tree unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeEntry {
     name: String,
@@ -752,6 +757,19 @@ mod tests {
         .expect("valid tree");
         let names: Vec<&str> = tree.entries().iter().map(TreeEntry::name).collect();
         assert_eq!(names, ["B", "a", "a-b", "a.txt", "é"]);
+    }
+
+    #[test]
+    fn names_are_encoded_as_raw_utf8_bytes() {
+        let tree =
+            Tree::new(vec![entry("\u{e9}", EntryMode::File, id(HELLO_ID))]).expect("valid tree");
+        let expected = [
+            b"100644 ".as_slice(),
+            &[0xc3, 0xa9],
+            format!("\n{HELLO_ID}\n").as_bytes(),
+        ]
+        .concat();
+        assert_eq!(tree.encode(), expected);
     }
 
     #[test]
