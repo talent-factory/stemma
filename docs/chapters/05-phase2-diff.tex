@@ -1,0 +1,22 @@
+\chapter{Phase 2: Diff und Ausgabe}
+
+\section{Ziel}
+
+Änderungen zwischen Arbeitskopie, Index und Commits werden lesbar angezeigt.
+
+\section{Umfang}
+
+\startitemize
+\item Eigene Implementierung des Myers-Diff-Algorithmus mit Tests gegen bekannte Fälle.
+\item Gruppierung in Hunks und Darstellung mit Kontextzeilen.
+\item Farbausgabe und Einbindung eines Pagers.
+\item Trennung nach Stufe 1 (Darstellung) und Stufe 2 (Berechnung im Merge-Pfad) gemäss ADR-004.
+\stopitemize
+
+\section{Offene Fragen}
+
+\startitemize
+\item Heuristiken für bessere Hunks bei verschobenen Zeilen.
+\item Umgang mit Binärdateien und sehr großen Dateien.
+\item Ausgabeformat für Maschinen, etwa für Agenten, zusätzlich zur Darstellung für Menschen.
+\stopitemize

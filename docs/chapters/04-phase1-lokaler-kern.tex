@@ -1,0 +1,24 @@
+\chapter{Phase 1: Lokaler Kern}
+
+\section{Ziel}
+
+Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden gespeichert, Commits erzeugt und der Status angezeigt.
+
+\section{Umfang}
+
+\startitemize
+\item Objektspeicher mit Blobs, Trees und Commits, adressiert über BLAKE3 mit Präfix nach ADR-001.
+\item Referenzen für den Branch \type{main} und HEAD.
+\item Index als Staging-Bereich.
+\item Befehle \type{init}, \type{add}, \type{commit} und \type{status}.
+\item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
+\stopitemize
+
+\section{Offene Fragen}
+
+\startitemize
+\item Format des Index: eigenes Binärformat oder lesbares Textformat für Debugging?
+\item Ausführbare Dateien und Dateirechte: Welche Metadaten werden gespeichert?
+\item Symbolische Links: Speichern oder ablehnen?
+\item Arbeitskopie als Commit, wie bei Jujutsu, oder klassischer Index?
+\stopitemize

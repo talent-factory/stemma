@@ -1,0 +1,22 @@
+\chapter{Phase 3: Branches und Merge}
+
+\section{Ziel}
+
+Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und zusammenführen.
+
+\section{Umfang}
+
+\startitemize
+\item Befehle \type{branch}, \type{checkout} und \type{log}.
+\item Drei-Wege-Merge über den gemeinsamen Vorfahren.
+\item Konflikte als Daten im Commit oder als Markierung in der Arbeitskopie. Die Entscheidung folgt aus Kapitel 2.
+\item Berechnung des Merges ist Stufe 2 nach ADR-004.
+\stopitemize
+
+\section{Offene Fragen}
+
+\startitemize
+\item Konfliktmodell: Daten im Commit oder klassische Markierung?
+\item Rebase: Ja oder nein in Phase 3?
+\item Verhalten bei einem Branch, der in einem anderen Worktree ausgecheckt ist.
+\stopitemize

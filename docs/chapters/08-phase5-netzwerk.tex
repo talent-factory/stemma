@@ -1,0 +1,23 @@
+\chapter{Phase 5: Netzwerk und Hub}
+
+\section{Ziel}
+
+Repositories werden zwischen Klonen und einem Server synchronisiert. Der Server setzt Berechtigungen durch.
+
+\section{Umfang}
+
+\startitemize
+\item Protokoll zur Übertragung einzelner Objekte über HTTP, adressiert über ihren Hash.
+\item Remote-Referenzen und Push mit Prüfung der Schreibhoheit auf dem Server.
+\item Server mit Speicherung der Objekte und Referenzen.
+\item Namespaces für Organisationen, Kurse und Projekte.
+\item Durchsetzung der Policies nach ADR-003.
+\stopitemize
+
+\section{Offene Fragen}
+
+\startitemize
+\item Übertragungsformat: Einzelobjekte oder Pakete mit Deltas?
+\item Authentifizierung für Menschen und Agenten.
+\item Peer-to-Peer-Sync als Phase-7-Ziel oder bewusst ausgeschlossen?
+\stopitemize

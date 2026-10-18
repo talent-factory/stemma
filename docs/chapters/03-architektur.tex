@@ -1,0 +1,43 @@
+\chapter{Architektur}
+
+Dieses Kapitel beschreibt die Schichten des Systems und die Verteilung der Verantwortung. Es setzt die Entscheidungen aus ADR-002 und ADR-003 um.
+
+\section{Schichtenmodell}
+
+Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff, Merge und Autorisierung. Alle Oberflächen rufen denselben Kern auf.
+
+\startitemize
+\item \textbf{stemma-core:} Bibliothek mit Objekten, Referenzen, Autorisierung.
+\item \textbf{stemma-cli:} Kommandozeile mit Befehlen wie \type{init}, \type{commit} und \type{log}.
+\item \textbf{API-Server:} Schnittstelle für Hub und Clients, folgt in Phase 5.
+\item \textbf{MCP-Server:} Adapter für Agenten, folgt in Phase 6.
+\stopitemize
+
+Prüfungen gehören in den Kern, nicht in die Adapter. Ein Aufruf über die CLI, die API oder den MCP-Server muss dieselbe Entscheidung erhalten.
+
+\section{Akteure}
+
+Jede Operation hat einen Akteur. Ein Mensch wird durch seine Identität beschrieben. Ein Agent führt zusätzlich Modellversion, Session und einen auftraggebenden Menschen mit, den Sponsor. Der Sponsor verantwortet die Handlungen des Agenten.
+
+\section{Autorisierung}
+
+Der Kern ruft bei jeder Operation die Funktion \type{authorize(actor, operation, target)} auf. In Phase 1 erlaubt sie alles. Der Aufruf ist trotzdem Pflicht, damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
+
+\section{Ort der Berechtigungen}
+
+Rollen und Policies liegen auf dem Server und werden dort durchgesetzt. Signaturen von Commits und Freigaben liegen im Repository und lassen sich unabhängig vom Server prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
+
+\section{Phasenübersicht}
+
+\starttable[|lw(2.2cm)|lw(6.3cm)|lw(6.3cm)|]
+\HL
+\NC {\bf Phase} \NC {\bf Inhalt} \NC {\bf Ergebnis} \NC \NR
+\HL
+\NC 1 \NC Lokaler Kern: Objekte, \type{init}, \type{add}, \type{commit}, \type{status} \NC Ein Repository mit einem Nutzer \NC \NR
+\NC 2 \NC Diff und Ausgabe \NC Änderungen werden angezeigt \NC \NR
+\NC 3 \NC Branches, \type{checkout}, \type{log}, Merge \NC Parallele Arbeit lokal \NC \NR
+\NC 4 \NC Akteure und Zusammenarbeit: Lease, PR, Freigaben, Risikostufen \NC Schreibhoheit und Freigaben werden erzwungen \NC \NR
+\NC 5 \NC Netzwerk und Hub: Sync, Server, Berechtigungen \NC Teamarbeit über einen Server \NC \NR
+\NC 6 \NC Agenten-Schnittstellen: API und MCP \NC Agenten arbeiten über definierte Werkzeuge \NC \NR
+\HL
+\stoptable

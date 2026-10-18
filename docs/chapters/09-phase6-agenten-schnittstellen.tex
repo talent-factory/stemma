@@ -1,0 +1,22 @@
+\chapter{Phase 6: Agenten-Schnittstellen}
+
+\section{Ziel}
+
+Agenten arbeiten über definierte Werkzeuge. Jeder Aufruf ist autorisiert und protokolliert.
+
+\section{Umfang}
+
+\startitemize
+\item API-Server auf dem Kern, mit denselben Operationen wie die CLI.
+\item MCP-Server als Adapter, der die API als Werkzeuge bereitstellt.
+\item Protokollierung jedes Aufrufs mit Akteur, Modellversion und Session.
+\item Begrenzung der Aufrufe pro Akteur.
+\stopitemize
+
+\section{Offene Fragen}
+
+\startitemize
+\item Auswahl der Werkzeuge: Wie grob oder fein sind die Operationen?
+\item Authentifizierung und Ablauf von Zugriffstoken für Agenten.
+\item Verhalten bei Konflikten zwischen parallelen Agenten.
+\stopitemize

@@ -1,0 +1,30 @@
+\chapter{Grundlagen}
+
+Dieses Kapitel fasst die Konzepte zusammen, auf denen das System aufbaut. Es ist ein Entwurf und wird mit den Phasen präzisiert.
+
+\section{Datenmodell}
+
+Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden. Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse und Commits für Snapshots mit Verweis auf Vorgänger. Die Historie bildet damit einen azyklischen Graphen aus unveränderlichen Knoten. Dieser Aufbau ist die Stärke des Modells, weil identische Inhalte nur einmal gespeichert werden und Änderungen nachträglich nicht unbemerkt verändert werden können.
+
+\section{Referenzen}
+
+Branches und Tags sind Zeiger auf Commits. HEAD zeigt auf den aktuellen Branch. Diese Trennung zwischen unveränderlichen Objekten und veränderlichen Zeigern ist für das Projekt wichtig: Schreibhoheit betrifft die Zeiger, nicht die Objekte.
+
+\section{Arbeitskopie und Index}
+
+Git trennt drei Zustände: die Arbeitskopie, den Index als Staging-Bereich und den letzten Commit. Der Index ist eine Zwischenstufe, die Entwicklerinnen und Entwickler bewusst füllen. Für Agenten ist diese Stufe eine Fehlerquelle, wenn unvollständige Zustände committet werden. Ein alternativer Ansatz betrachtet die Arbeitskopie selbst als Commit, wie es Jujutsu tut. Die Entscheidung ist offen und wird in Phase 1 geprüft.
+
+\section{Konflikte und Operation Log}
+
+Git bricht einen Vorgang ab, wenn ein Konflikt entsteht. Jujutsu speichert Konflikte dagegen im Commit selbst. Ein Agent kann so weiterarbeiten und den Konflikt später lösen. Ein Operation Log protokolliert jeden Schritt und ermöglicht das Zurücksetzen beliebiger Operationen. Beide Ideen passen gut zu Agenten, die viele Schritte ausführen.
+
+\section{Ideen aus anderen Systemen}
+
+\startitemize
+\item \textbf{Jujutsu (jj):} Stabile Change-IDs, Konflikte als Daten, Operation Log und Git als Speicher.
+\item \textbf{Pijul:} Ein Modell auf Basis von Patches statt Snapshots. Es zeigt eine andere Grundannahme.
+\item \textbf{Sapling:} Ein System für grosse Monorepos mit Fokus auf Skalierung.
+\item \textbf{Scion (Anthropic):} Laut Presseberichten ein zentrales System mit API-basierten Abfragen ohne lokalen Klon. Es ist nicht öffentlich verfügbar, und das Projekt übernimmt keinen Code.
+\stopitemize
+
+Das Projekt nutzt diese Systeme als Ideengeber. Text und Code entstehen neu.

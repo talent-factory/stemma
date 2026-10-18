@@ -1,0 +1,26 @@
+\chapter{Phase 4: Akteure und Zusammenarbeit}
+
+\section{Ziel}
+
+Schreibhoheit, Pull Requests und Freigaben werden im System erzwungen, nicht nur empfohlen. Dieses Kapitel setzt ADR-002 und ADR-004 um.
+
+\section{Umfang}
+
+\startitemize
+\item Lease pro Branch mit Heartbeat und Ablaufzeit.
+\item Owner-Override nur mit Begründung und Audit-Eintrag, ohne Umgehung des Merge-Gates.
+\item Pull Request als Objekt mit Reviewern, Prüfungen und Merge-Regeln.
+\item Freigaben mit Akteur, Modellversion, geprüftem Commit und Ergebnis, signiert.
+\item Verbot der Selbstfreigabe.
+\item Risikostufen 0 bis 3, festgelegt in einer Policy-Datei, die selbst Stufe 3 ist.
+\item Automatische Eskalation bei Lockerung bestehender Tests.
+\stopitemize
+
+\section{Offene Fragen}
+
+\startitemize
+\item Dauer des Leases und Verhalten bei abgestürzten Agenten.
+\item Agenten-Identitäten: eigene Rolle oder Rolle mit menschlichem Sponsor.
+\item Schnellweg für triviale Änderungen: Wer darf ihn nutzen?
+\item Konkrete Pfadlisten je Risikostufe.
+\stopitemize

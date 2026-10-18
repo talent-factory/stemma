@@ -1,0 +1,102 @@
+\chapter{Einleitung}
+
+\section{Ausgangslage}
+
+Versionskontrollsysteme gehören zu den ältesten Werkzeugen der Softwareentwicklung. Sie speichern Änderungen, machen frühere Zustände wiederherstellbar und erlauben mehreren Personen, am selben Code zu arbeiten. Ihre heutige Form entstand für menschliche Arbeitsrhythmen: wenige Änderungen pro Tag, ein Branch pro Aufgabe, eine Person pro Branch und eine Prüfung durch einen Menschen vor dem Zusammenführen.
+
+Diese Annahmen verschieben sich. Agenten erzeugen Änderungen in kurzer Folge, parallel und in grosser Zahl. Sie arbeiten ohne Pausen, verwenden mehrere Branches gleichzeitig und hinterlassen Spuren, die sich nicht einfach einer Person zuordnen lassen. Die Werkzeuge müssen darauf reagieren, und die Frage ist, wo die Anpassung ansetzen soll.
+
+Laut Presseberichten vom Oktober 2026 hat Anthropic für den eigenen Monorepo-Betrieb ein internes Versionskontrollsystem namens Scion eingeführt. Die Berichte nennen einen Anstieg der täglichen Merges von rund 2500 im Mai auf über 30000 im September 2026. Scion ist nach diesen Berichten nicht öffentlich verfügbar, und Anthropic hat weder Code noch Repository veröffentlicht. Der Originalbeitrag im Engineering-Blog ist vor einer Veröffentlichung dieses Dokuments zu prüfen.
+
+\section{Problemstellung}
+
+Drei Verschiebungen sind für das Projekt zentral:
+
+\startitemize
+\item \textbf{Volumen:} Die Zahl der Änderungen wächst schneller als die Zahl der Prüfenden. Die Prüfung wird zum Engpass.
+\item \textbf{Parallelität:} Mehrere Akteure arbeiten gleichzeitig an überlappendem Code. Die Frage ist nicht nur, wie Konflikte gelöst werden, sondern vorher, wer überhaupt schreiben darf.
+\item \textbf{Herkunft:} Eine Änderung entsteht oft aus einem Auftrag, einem Modell, einer Session und einem Menschen, der dafür einsteht. Git speichert davon nur Autor und Zeitstempel.
+\stopitemize
+
+Die Frage lautet deshalb nicht, ob Git für Agenten funktioniert. Sie lautet, welche Teile des Modells bestehen bleiben können und welche Schichten neu gebaut werden müssen.
+
+\section{GitHub und verwandte Plattformen}
+
+Git wurde 2005 von Linus Torvalds entwickelt. Es ist ein verteiltes System: Jeder Klon enthält die vollständige Historie, und Änderungen sind über ihren Inhalt adressiert. GitHub, GitLab, Bitbucket sowie Gitea und Forgejo ergänzen Git um Hosting, Pull Requests, Code-Reviews, Issue-Tracking, Continuous Integration, Berechtigungen und Suche. Microsoft hat GitHub 2018 übernommen.
+
+Diese Plattformen beruhen auf einer einfachen Übereinkunft. Das Repository ist der Ort der Wahrheit, der Pull Request ist die Einheit der Zusammenarbeit, und die Plattform ist der Ort der Prüfung. Die Übereinkunft funktioniert, solange Menschen die Prüfung leisten und Änderungen in überschaubarer Zahl eintreffen.
+
+\section{Vorteile im agentischen Kontext}
+
+\startitemize
+\item \textbf{Verbreitung:} Entwicklerinnen, Entwickler, Werkzeuge und Integrationen sind vorhanden. Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
+\item \textbf{Pull Request als Einheit:} Er bündelt Diff, Diskussion, Prüfungen und Freigaben in einem Objekt, das Menschen und Agenten gleichermassen lesen können.
+\item \textbf{Schutzregeln:} Plattformen erzwingen Freigaben auf geschützten Branches, ohne dass jeder Client dies selbst umsetzen muss.
+\item \textbf{Ökosystem:} CI-Pipelines, Berechtigungsmodelle, Audit-Funktionen und Integrationen sind erprobt und dokumentiert.
+\stopitemize
+
+\section{Grenzen im agentischen Kontext}
+
+Die folgende Tabelle beschreibt Beobachtungen aus der Analyse der Arbeitsabläufe. Sie beruhen nicht auf Messungen.
+
+\starttable[|lw(3.5cm)|lw(10.5cm)|]
+\HL
+\NC {\bf Aspekt} \NC {\bf Beobachtung} \NC \NR
+\HL
+\NC Review \NC Pull Requests werden zum Engpass, wenn Agenten schneller produzieren, als Menschen prüfen können. \NC \NR
+\NC Branches \NC Ein Branch pro Aufgabe führt zu vielen kurzlebigen Branches, die verwaltet werden müssen. \NC \NR
+\NC Worktrees \NC Git erlaubt einen Branch zu einem Zeitpunkt nur in einem Worktree. Parallele Agenten brauchen deshalb eigene Regeln. \NC \NR
+\NC Durchsetzung \NC Schreibrechte auf Branches werden durch Konvention und Plattformregeln gesteuert, nicht durch das Datenmodell. \NC \NR
+\NC Herkunft \NC Commits tragen Autor und Zeitstempel, aber keine strukturierte Angabe zu Modell, Session und auftraggebendem Menschen. \NC \NR
+\NC Konflikte \NC Textbasierte Konflikte stoppen den Vorgang und müssen sofort gelöst werden, auch wenn die Lösung eine Entscheidung wäre, die später getroffen werden könnte. \NC \NR
+\NC Abhängigkeit \NC Repositories, Berechtigungen und Prüfungen liegen bei einem Anbieter. Ein Wechsel ist aufwendig. \NC \NR
+\HL
+\stoptable
+
+Die Grenzen sind teils Folgen des Datenmodells, etwa bei der Herkunft und den Konflikten. Teils sind sie Folgen der Plattform, etwa bei der Durchsetzung und der Abhängigkeit. Die beiden Ursachen verlangen unterschiedliche Antworten.
+
+\section{Kernaussagen}
+
+Das Grundlagendokument stützt sich auf fünf Aussagen:
+
+\startitemize[n]
+\item Das Datenmodell von Git ist für Agenten geeignet. Inhalte sind über Hashes adressiert, und Historien bilden einen unveränderlichen Graphen. Die Schwächen liegen in Arbeitsabläufen und Durchsetzung.
+\item Schreibhoheit gehört pro Branch zu genau einem Akteur und wird vom Server erzwungen. Stille Überschreibungen sind damit ausgeschlossen.
+\item Herkunft gehört in die Daten. Akteur, Modellversion, Session und Sponsor tragen jede Änderung und jeden Eintrag im Operation Log.
+\item Freigaben prüfen Absicht und Wirkung, nicht nur einzelne Zeilen. Risikostufen bestimmen, wie viele unabhängige Prüfungen nötig sind.
+\item Das Vorhaben beginnt mit einem lokalen, Git-artigen Kommandozeilenwerkzeug. Kompatibilität mit bestehenden Repositories ist kein Ziel.
+\stopitemize
+
+\section{Warum dieses Projekt}
+
+\startitemize
+\item Die Talent Factory GmbH arbeitet an AI-assisted Software Engineering. Ein eigenes Versionskontrollsystem ist dafür ein konkreter Lerngegenstand, der Entscheidungen sichtbar macht.
+\item Dezentralität ist für die Talent Factory ein Grundprinzip. Die Praxis braucht aber durchsetzbare Regeln. Das Projekt verbindet beides über Risikostufen, Policies und den Ort der Berechtigungen.
+\item Die Lehre profitiert, weil Datenstrukturen, Algorithmen und Agenten-Workflows am selben Gegenstand gezeigt werden können.
+\item Der Umfang bleibt bewusst klein: zuerst ein Nutzer, dann Mitarbeitende, danach Studierende und weitere Nutzer.
+\stopitemize
+
+\section{Ziele und Nicht-Ziele}
+
+\subsection{Ziele}
+
+\startitemize
+\item Ein lokal lauffähiger Kern mit den wichtigsten Befehlen, die aus Git bekannt sind.
+\item Agenten sind von Anfang an Akteure mit eigener Identität und Herkunft.
+\item Schreibhoheit pro Branch wird durchgesetzt, nicht nur empfohlen.
+\item Entscheidungen werden als ADR festgehalten und mit dem Code versioniert.
+\item Das Dokumentationsbuch entsteht im selben Repository wie das System.
+\stopitemize
+
+\subsection{Nicht-Ziele}
+
+\startitemize
+\item Kompatibilität mit bestehenden Git-Repositories. Die CLI ist kompatibel, das Format nicht.
+\item Eine Weboberfläche für Code-Reviews. Administrative Oberflächen sind später denkbar.
+\item Ein Blockchain-Konsens für Versionskontrolle. Content-Adressierung und signierte Commits decken den Nutzen weitgehend ab.
+\item Ein Ersatz für GitHub im Alltag, bevor der Hub aus Phase 5 steht.
+\stopitemize
+
+\section{Aufbau des Dokuments}
+
+Kapitel 2 und 3 legen die Grundlagen und die Architektur fest. Die Kapitel 4 bis 9 folgen den Projektphasen. Kapitel 10 beschreibt den Lehrbezug, Kapitel 11 sammelt offene Fragen. Die Architekturentscheidungen liegen im Repository unter \type{adr/} und werden in den Kapiteln referenziert.
