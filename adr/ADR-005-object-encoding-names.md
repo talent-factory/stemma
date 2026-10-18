@@ -22,12 +22,18 @@ definition of the byte-level encodings. This ADR records the decisions behind th
   remain possible. A display name, if needed, belongs in a separate field.
 - **Tree entry names** *(confirmed)* are UTF-8 strings. They must not be empty, must not consist
   only of dots and spaces (`.`, `..`, and names such as `...` or `. ` that Windows reduces to
-  them), and must not contain `/`, control characters (`char::is_control`), or format
-  characters (Unicode category Cf). Most Cf characters are invisible, such as the zero-width
-  space and the bidirectional overrides. The set is defined by the Unicode version of the
-  `unicode-general-category` crate, which is pinned to an exact version (Unicode 16.0 for 1.1.0)
-  so that the same name is valid on every build. Raising the version needs a review of the
-  names it newly rejects.
+  them), and must not contain `/`, control characters (`char::is_control`, plus the line and
+  paragraph separators U+2028 and U+2029), or invisible characters. Invisible characters are
+  the format characters (Unicode category Cf) and the default-ignorable code points (property
+  `Default_Ignorable_Code_Point`), together. Examples are the zero-width space, the
+  bidirectional overrides, the Hangul fillers, the combining grapheme joiner, and the variation
+  selectors. The two sets overlap, and neither contains the other: Cf holds visible characters
+  such as the Arabic number sign U+0600, and the default-ignorable set holds the variation
+  selectors and the Hangul fillers. Both follow Unicode 16.0. The Cf set comes from the
+  `unicode-general-category` crate, which is pinned to an exact version, and the
+  default-ignorable set is a table in `object.rs` built from `DerivedCoreProperties.txt` of
+  Unicode 16.0, so that the same name is valid on every build. A new Unicode version needs a
+  review of the table and of the names it newly rejects.
 - **Joiners** *(confirmed)*. The zero-width joiners U+200C and U+200D stay rejected, like the
   rest of Cf. Persian and other languages written in Arabic script, Indic scripts, and composite
   emoji need them, so names in those scripts cannot be stored for now. Two reasons: they are
@@ -123,27 +129,32 @@ definition of the byte-level encodings. This ADR records the decisions behind th
 - A switch from UTF-8 strings to byte-string names later is compatible with existing data: a
   UTF-8 name encodes to the same bytes, so no tree ID changes. The opposite direction is not
   possible once a repository holds a name that is not valid UTF-8.
-- Rejecting format characters also rejects the zero-width joiners U+200C and U+200D and the
+- Rejecting invisible characters also rejects the zero-width joiners U+200C and U+200D and the
   directional marks U+200E and U+200F; both are confirmed decisions, see above. Some
   scripts (for example Persian and several Indic
   scripts) and composite emoji such as 👨‍👩‍👧 need them, so file names in those scripts are
   rejected. See Open.
-- The Cf rule does not cover every invisible character. The Hangul fillers (U+115F, U+3164),
-  the combining grapheme joiner (U+034F), variation selectors, and the line and paragraph
-  separators (U+2028, U+2029) are accepted in names.
+- The variation selectors (U+FE00 to U+FE0F and U+E0100 to U+E01EF) are rejected as
+  default-ignorable. Emoji with a presentation selector, such as `❤️` and `⚠️`, the ideographic
+  variation sequences used for variants of Japanese names, and the Mongolian free variation
+  selectors cannot be stored for now. Plain emoji such as `😀` and `❤` without the selector
+  can. The planned relaxation, if a need arises, is: a variation selector is allowed only
+  directly after a non-ASCII character. That keeps `READ\uFE0FME` rejected. The keycap emoji,
+  such as `1️⃣`, start with an ASCII digit and would stay rejected.
+- The rule does not cover look-alikes made of visible characters: letters from other scripts
+  that look like ASCII letters, the braille blank U+2800, the no-break space and other space
+  characters, and look-alikes within ASCII such as `l` and `I`. Names are not normalized.
 - Actor identifiers cannot contain umlauts or other non-ASCII letters. An identifier derived
   from a person's name has to be transliterated.
 - Names that differ only in case or normalization form can coexist in one tree. Windows aliases
   other than those listed in the reserved-name rule are the checkout's job.
-- Control and format characters are rejected in names as a hygiene rule. The line-based
+- Control and invisible characters are rejected in names as a hygiene rule. The line-based
   encoding needs only the absence of the newline. Relaxing a rule later changes no ID, because
   it only admits names that were not storable before. Tightening a rule makes stored names
   invalid, so the rules should be settled before the first store.
 
 ## Open
 
-- [ ] Replace the Cf rule with the Unicode property `Default_Ignorable_Code_Point`, which fits
-      the goal that names cannot hide their content better, and reject U+2028 and U+2029?
 - [ ] Reject further aliases of `.stemma`, such as NTFS alternate data streams and HFS+
       ignorable code points, in the tree, or leave them to the checkout layer. The HFS+
       ignorable code points of Git's list are Cf characters and already rejected.

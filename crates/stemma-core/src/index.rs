@@ -605,7 +605,7 @@ mod tests {
             ("a/STEMMA~1", name("STEMMA~1", NameProblem::ReservedName)),
             (
                 "a/\u{200b}/b",
-                name("\u{200b}", NameProblem::FormatCharacter),
+                name("\u{200b}", NameProblem::InvisibleCharacter),
             ),
             ("a\nb", name("a\nb", NameProblem::ControlCharacter)),
             ("a/b\0", name("b\0", NameProblem::ControlCharacter)),

@@ -183,14 +183,17 @@ pub enum NameProblem {
     /// The name contains `/`.
     PathSeparator,
     /// The name contains a control character in the sense of `char::is_control` (C0, DEL, C1),
-    /// including NUL and newline. The tree and index encodings are line-based, so a newline would
+    /// including NUL and newline, and also the line and paragraph separators U+2028 and U+2029.
+    /// The tree and index encodings are line-based, so a newline would
     /// make them ambiguous; the other control characters are rejected for hygiene.
     ControlCharacter,
-    /// The name contains a format character (Unicode category Cf), such as a zero-width space
-    /// or a bidirectional override. Most of them are invisible and let two names look
-    /// identical on screen. The category follows the Unicode version of the pinned
-    /// `unicode-general-category` crate (ADR-005).
-    FormatCharacter,
+    /// The name contains an invisible character: a format character (Unicode category Cf) or a
+    /// default-ignorable code point (property `Default_Ignorable_Code_Point`). Examples are the
+    /// zero-width space, a bidirectional override, a Hangul filler, and a variation selector.
+    /// Such characters let two names look identical on screen. Both sets follow Unicode 16.0,
+    /// which the pinned `unicode-general-category` crate and the table in this module share
+    /// (ADR-005).
+    InvisibleCharacter,
     /// The name is [`METADATA_DIR`] or resolves to it on a common file system: it differs only
     /// in case (including look-alike letters such as the long s), has trailing dots or spaces
     /// (Windows drops them), or is a short name `STEMMA~N` with one or more digits.
@@ -204,7 +207,7 @@ impl fmt::Display for NameProblem {
             Self::DotName => "the name consists only of dots and spaces",
             Self::PathSeparator => "the name contains `/`",
             Self::ControlCharacter => "the name contains a control character",
-            Self::FormatCharacter => "the name contains a format character",
+            Self::InvisibleCharacter => "the name contains an invisible character",
             Self::ReservedName => "the name is reserved for the metadata directory",
         })
     }
@@ -305,7 +308,7 @@ impl TreeEntry {
     /// # Errors
     ///
     /// Returns [`TreeError::InvalidName`] if the name is empty, consists only of dots and
-    /// spaces, contains `/` or a control or format character, or is a reserved name.
+    /// spaces, contains `/` or a control or invisible character, or is a reserved name.
     pub fn new(name: impl Into<String>, mode: EntryMode, id: ObjectId) -> Result<Self, TreeError> {
         let name = name.into();
         if let Some(problem) = name_problem(&name) {
@@ -330,16 +333,59 @@ impl TreeEntry {
     }
 }
 
-/// Whether the character is an invisible format character (Unicode general category Cf).
-fn is_format_character(c: char) -> bool {
+/// Code points with the Unicode property `Default_Ignorable_Code_Point` as inclusive ranges in
+/// ascending order, merged where adjacent. The data is `DerivedCoreProperties.txt` of Unicode
+/// 16.0, the version of the pinned `unicode-general-category` crate. The set includes code points
+/// that are not assigned yet, such as U+2065 and U+FFF0 to U+FFF8, because Unicode reserves them
+/// as ignorable. A new Unicode version needs a review of this table together with the crate.
+const DEFAULT_IGNORABLE: &[(char, char)] = &[
+    ('\u{AD}', '\u{AD}'),
+    ('\u{34F}', '\u{34F}'),
+    ('\u{61C}', '\u{61C}'),
+    ('\u{115F}', '\u{1160}'),
+    ('\u{17B4}', '\u{17B5}'),
+    ('\u{180B}', '\u{180F}'),
+    ('\u{200B}', '\u{200F}'),
+    ('\u{202A}', '\u{202E}'),
+    ('\u{2060}', '\u{206F}'),
+    ('\u{3164}', '\u{3164}'),
+    ('\u{FE00}', '\u{FE0F}'),
+    ('\u{FEFF}', '\u{FEFF}'),
+    ('\u{FFA0}', '\u{FFA0}'),
+    ('\u{FFF0}', '\u{FFF8}'),
+    ('\u{1BCA0}', '\u{1BCA3}'),
+    ('\u{1D173}', '\u{1D17A}'),
+    ('\u{E0000}', '\u{E0FFF}'),
+];
+
+/// Whether the character is invisible: a format character (Unicode general category Cf) or a
+/// default-ignorable code point. The two sets overlap but neither contains the other.
+fn is_invisible_character(c: char) -> bool {
     get_general_category(c) == GeneralCategory::Format
+        || DEFAULT_IGNORABLE
+            .binary_search_by(|&(first, last)| {
+                if c < first {
+                    std::cmp::Ordering::Greater
+                } else if c > last {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .is_ok()
+}
+
+/// Whether the character is a control character (`char::is_control`) or a line or paragraph
+/// separator (U+2028 and U+2029), which break a line in a listing like a newline.
+fn is_control_or_separator(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
 }
 
 /// Whether the name is the metadata directory or an alias of it on a common file system.
 ///
 /// Trailing dots and spaces are ignored because Windows drops them. The comparison folds case
 /// by Unicode uppercase mapping, which also catches look-alikes such as the long s (U+017F).
-/// The 8.3 short name of `.stemma` is `STEMMA~N`, where N is a number. Format characters are
+/// The 8.3 short name of `.stemma` is `STEMMA~N`, where N is a number. Invisible characters are
 /// rejected before this check.
 fn is_reserved_name(name: &str) -> bool {
     let folded = name.trim_end_matches(['.', ' ']).to_uppercase();
@@ -357,7 +403,7 @@ fn is_reserved_name(name: &str) -> bool {
 /// unambiguous.
 /// The other rules protect checkouts and readers: `/` is rejected because names are single path
 /// components, dot-only names because Windows reduces them to `.` or `..`, and control and
-/// format characters so that names do not hide their content. Names are compared and hashed as
+/// invisible characters so that names do not hide their content. Names are compared and hashed as
 /// given: there is no Unicode normalization, and no case folding for uniqueness. The
 /// reserved-name check is the one place that folds case, on purpose.
 pub(crate) fn name_problem(name: &str) -> Option<NameProblem> {
@@ -367,10 +413,10 @@ pub(crate) fn name_problem(name: &str) -> Option<NameProblem> {
         Some(NameProblem::DotName)
     } else if name.contains('/') {
         Some(NameProblem::PathSeparator)
-    } else if name.chars().any(char::is_control) {
+    } else if name.chars().any(is_control_or_separator) {
         Some(NameProblem::ControlCharacter)
-    } else if name.chars().any(is_format_character) {
-        Some(NameProblem::FormatCharacter)
+    } else if name.chars().any(is_invisible_character) {
+        Some(NameProblem::InvisibleCharacter)
     } else if is_reserved_name(name) {
         Some(NameProblem::ReservedName)
     } else {
@@ -897,18 +943,36 @@ mod tests {
             ("a\0b", NameProblem::ControlCharacter),
             ("a\u{7f}b", NameProblem::ControlCharacter),
             ("a\u{85}b", NameProblem::ControlCharacter),
-            ("READ\u{200b}ME", NameProblem::FormatCharacter),
-            ("a\u{200d}b", NameProblem::FormatCharacter),
-            ("a\u{202e}b", NameProblem::FormatCharacter),
-            ("a\u{feff}", NameProblem::FormatCharacter),
-            ("a\u{ad}b", NameProblem::FormatCharacter),
-            ("a\u{e0001}", NameProblem::FormatCharacter),
+            ("READ\u{200b}ME", NameProblem::InvisibleCharacter),
+            ("a\u{200d}b", NameProblem::InvisibleCharacter),
+            ("a\u{202e}b", NameProblem::InvisibleCharacter),
+            ("a\u{feff}", NameProblem::InvisibleCharacter),
+            ("a\u{ad}b", NameProblem::InvisibleCharacter),
+            ("a\u{e0001}", NameProblem::InvisibleCharacter),
+            // Default-ignorable code points that are not format characters.
+            ("a\u{34f}b", NameProblem::InvisibleCharacter),
+            ("a\u{115f}", NameProblem::InvisibleCharacter),
+            ("a\u{1160}", NameProblem::InvisibleCharacter),
+            ("\u{3164}", NameProblem::InvisibleCharacter),
+            ("\u{ffa0}", NameProblem::InvisibleCharacter),
+            ("READ\u{fe0f}ME", NameProblem::InvisibleCharacter),
+            ("\u{2764}\u{fe0f}", NameProblem::InvisibleCharacter),
+            ("a\u{e0100}b", NameProblem::InvisibleCharacter),
+            ("a\u{180b}", NameProblem::InvisibleCharacter),
+            ("a\u{17b4}", NameProblem::InvisibleCharacter),
+            // Format characters that are visible are rejected too: Cf is part of the rule.
+            ("a\u{600}b", NameProblem::InvisibleCharacter),
+            ("a\u{70f}b", NameProblem::InvisibleCharacter),
+            // Line and paragraph separators count as control characters.
+            ("a\u{2028}b", NameProblem::ControlCharacter),
+            ("a\u{2029}b", NameProblem::ControlCharacter),
+            ("\u{2028}\u{200b}", NameProblem::ControlCharacter),
             ("...", NameProblem::DotName),
             (" ", NameProblem::DotName),
             (". ", NameProblem::DotName),
             (".. ", NameProblem::DotName),
             (" . . ", NameProblem::DotName),
-            ("a\u{200c}b", NameProblem::FormatCharacter),
+            ("a\u{200c}b", NameProblem::InvisibleCharacter),
             (".stemma", NameProblem::ReservedName),
             (".STEMMA", NameProblem::ReservedName),
             (".Stemma", NameProblem::ReservedName),
@@ -920,11 +984,11 @@ mod tests {
             ("STEMMA~10", NameProblem::ReservedName),
             ("STEMMA~1.", NameProblem::ReservedName),
             ("stemma~1 .", NameProblem::ReservedName),
-            // A format character is reported before the reserved name it would hide.
-            (".stem\u{200b}ma", NameProblem::FormatCharacter),
+            // An invisible character is reported before the reserved name it would hide.
+            (".stem\u{200b}ma", NameProblem::InvisibleCharacter),
             ("STEMMA~1", NameProblem::ReservedName),
             (".\u{17f}temma", NameProblem::ReservedName),
-            // A control character is reported before a format character.
+            // A control character is reported before an invisible character.
             ("\u{200b}\n", NameProblem::ControlCharacter),
             // The first violated rule wins: a separator is reported before a control character.
             ("a/\n", NameProblem::PathSeparator),
@@ -978,9 +1042,14 @@ mod tests {
             "back\\slash",
             "x\\..\\.stemma\\config",
             "a:b:c",
-            // Line and paragraph separators are not control or format characters.
-            "a\u{2028}b",
-            "a\u{2029}b",
+            // Visible marks and letters next to the ranges of invisible characters.
+            "a\u{ac}b",
+            "a\u{ae}b",
+            "\u{1f600}",
+            "\u{2764}",
+            "a\u{2800}b",
+            "\u{3163}\u{3165}",
+            "a\u{fdff}b",
         ] {
             let built = TreeEntry::new(name, EntryMode::File, id(HELLO_ID));
             assert!(built.is_ok(), "name {name:?} should be accepted");
@@ -1318,5 +1387,96 @@ mod tests {
         ] {
             assert_eq!(EntryMode::from_code(unknown), None, "{unknown:?}");
         }
+    }
+
+    #[test]
+    fn the_default_ignorable_table_is_sorted_disjoint_and_not_adjacent() {
+        for pair in DEFAULT_IGNORABLE.windows(2) {
+            let (_, last) = pair[0];
+            let (first, _) = pair[1];
+            assert!(
+                (last as u32) + 1 < first as u32,
+                "ranges must be ascending, disjoint, and merged: {pair:?}"
+            );
+        }
+        for &(first, last) in DEFAULT_IGNORABLE {
+            assert!(first <= last, "{first:?}..{last:?}");
+        }
+    }
+
+    #[test]
+    fn every_range_of_the_table_is_rejected_at_both_ends_and_its_neighbours_are_not_listed() {
+        for &(first, last) in DEFAULT_IGNORABLE {
+            assert!(is_invisible_character(first), "{first:?}");
+            assert!(is_invisible_character(last), "{last:?}");
+            // The code point just outside each range is not in the table.
+            for outside in [(first as u32).checked_sub(1), Some(last as u32 + 1)]
+                .into_iter()
+                .flatten()
+                .filter_map(char::from_u32)
+            {
+                let in_table = DEFAULT_IGNORABLE
+                    .iter()
+                    .any(|&(a, b)| a <= outside && outside <= b);
+                assert!(!in_table, "{outside:?} next to {first:?}..{last:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_format_character_is_rejected() {
+        // Cf is part of the rule, not only the default-ignorable table.
+        let mut count = 0;
+        for c in ('\0'..=char::MAX).filter(|&c| get_general_category(c) == GeneralCategory::Format)
+        {
+            assert!(is_invisible_character(c), "{c:?}");
+            count += 1;
+        }
+        assert!(
+            count > 100,
+            "Cf should hold more than 100 code points, found {count}"
+        );
+    }
+
+    #[test]
+    fn the_rule_is_the_union_of_cf_and_default_ignorable() {
+        let mut only_cf = 0;
+        let mut only_default_ignorable = 0;
+        for c in '\0'..=char::MAX {
+            let cf = get_general_category(c) == GeneralCategory::Format;
+            let default_ignorable = DEFAULT_IGNORABLE
+                .iter()
+                .any(|&(first, last)| first <= c && c <= last);
+            assert_eq!(is_invisible_character(c), cf || default_ignorable, "{c:?}");
+            only_cf += usize::from(cf && !default_ignorable);
+            only_default_ignorable += usize::from(default_ignorable && !cf);
+        }
+        // Neither set contains the other: the visible Arabic number sign U+0600 is only in Cf,
+        // and the variation selectors are only default-ignorable.
+        assert!(only_cf > 0 && only_default_ignorable > 0);
+        assert!(is_invisible_character('\u{600}') && !is_default_ignorable('\u{600}'));
+        assert!(is_invisible_character('\u{fe0f}') && !is_format('\u{fe0f}'));
+    }
+
+    fn is_default_ignorable(c: char) -> bool {
+        DEFAULT_IGNORABLE
+            .iter()
+            .any(|&(first, last)| first <= c && c <= last)
+    }
+
+    fn is_format(c: char) -> bool {
+        get_general_category(c) == GeneralCategory::Format
+    }
+
+    #[test]
+    fn index_paths_and_tree_names_share_the_invisible_character_rule() {
+        // Keycap emoji start with an ASCII digit and use U+FE0F; they are rejected for now.
+        assert_eq!(
+            name_problem("1\u{fe0f}\u{20e3}"),
+            Some(NameProblem::InvisibleCharacter)
+        );
+        // The emoji itself and the keycap sign alone are fine.
+        assert_eq!(name_problem("\u{20e3}"), None);
+        assert_eq!(name_problem("\u{2764}"), None);
     }
 }
