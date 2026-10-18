@@ -1,0 +1,68 @@
+\chapter{Architektur}
+
+Dieses Kapitel beschreibt die Schichten des Systems und die Verteilung der Verantwortung. Es setzt die Entscheidungen aus ADR-002 und ADR-003 um.
+
+\section{Schichtenmodell}
+
+Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff, Merge und Autorisierung. Alle Oberflächen rufen denselben Kern auf.
+
+\startitemize
+\item {\bf stemma-core:} Bibliothek mit Objekten, Referenzen, Autorisierung.
+\item {\bf stemma-cli:} Kommandozeile mit Befehlen wie \type{init}, \type{commit} und \type{log}.
+\item {\bf API-Server:} Schnittstelle für Hub und Clients, folgt in Phase 5.
+\item {\bf MCP-Server:} Adapter für Agenten, folgt in Phase 6.
+\stopitemize
+
+Prüfungen gehören in den Kern, nicht in die Adapter. Ein Aufruf über die CLI, die API oder den MCP-Server muss dieselbe Entscheidung erhalten.
+
+\section{Akteure}
+
+Jede Operation hat einen Akteur. Ein Mensch wird durch seine Identität beschrieben. Ein Agent führt zusätzlich Modellversion, Session und einen auftraggebenden Menschen mit, den Sponsor. Der Sponsor verantwortet die Handlungen des Agenten.
+
+\section{Autorisierung}
+
+Der Kern ruft bei jeder Operation die Funktion \type{authorize(actor, operation, target)} auf. In Phase 1 erlaubt sie alles. Der Aufruf ist trotzdem Pflicht, damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
+
+\section{Ort der Berechtigungen}
+
+Rollen und Policies liegen auf dem Server und werden dort durchgesetzt. Signaturen von Commits und Freigaben liegen im Repository und lassen sich unabhängig vom Server prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
+
+\section{Phasenübersicht}
+
+\startxtable[frame=off,split=yes,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Phase} \stopxcell
+\startxcell {\bf Inhalt} \stopxcell
+\startxcell {\bf Ergebnis} \stopxcell
+\stopxrow
+\startxrow
+\startxcell 1 \stopxcell
+\startxcell Lokaler Kern: Objekte, \type{init}, \type{add}, \type{commit}, \type{status} \stopxcell
+\startxcell Ein Repository mit einem Nutzer \stopxcell
+\stopxrow
+\startxrow
+\startxcell 2 \stopxcell
+\startxcell Diff und Ausgabe \stopxcell
+\startxcell Änderungen werden angezeigt \stopxcell
+\stopxrow
+\startxrow
+\startxcell 3 \stopxcell
+\startxcell Branches, \type{checkout}, \type{log}, Merge \stopxcell
+\startxcell Parallele Arbeit lokal \stopxcell
+\stopxrow
+\startxrow
+\startxcell 4 \stopxcell
+\startxcell Akteure und Zusammenarbeit: Lease, PR, Freigaben, Risikostufen \stopxcell
+\startxcell Schreibhoheit und Freigaben werden erzwungen \stopxcell
+\stopxrow
+\startxrow
+\startxcell 5 \stopxcell
+\startxcell Netzwerk und Hub: Sync, Server, Berechtigungen \stopxcell
+\startxcell Teamarbeit über einen Server \stopxcell
+\stopxrow
+\startxrow[topframe=on,bottomframe=on]
+\startxcell 6 \stopxcell
+\startxcell Agenten-Schnittstellen: API und MCP \stopxcell
+\startxcell Agenten arbeiten über definierte Werkzeuge \stopxcell
+\stopxrow
+\stopxtable

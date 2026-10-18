@@ -13,9 +13,9 @@ Laut Presseberichten vom Oktober 2026 hat Anthropic für den eigenen Monorepo-Be
 Drei Verschiebungen sind für das Projekt zentral:
 
 \startitemize
-\item \textbf{Volumen:} Die Zahl der Änderungen wächst schneller als die Zahl der Prüfenden. Die Prüfung wird zum Engpass.
-\item \textbf{Parallelität:} Mehrere Akteure arbeiten gleichzeitig an überlappendem Code. Die Frage ist nicht nur, wie Konflikte gelöst werden, sondern vorher, wer überhaupt schreiben darf.
-\item \textbf{Herkunft:} Eine Änderung entsteht oft aus einem Auftrag, einem Modell, einer Session und einem Menschen, der dafür einsteht. Git speichert davon nur Autor und Zeitstempel.
+\item {\bf Volumen:} Die Zahl der Änderungen wächst schneller als die Zahl der Prüfenden. Die Prüfung wird zum Engpass.
+\item {\bf Parallelität:} Mehrere Akteure arbeiten gleichzeitig an überlappendem Code. Die Frage ist nicht nur, wie Konflikte gelöst werden, sondern vorher, wer überhaupt schreiben darf.
+\item {\bf Herkunft:} Eine Änderung entsteht oft aus einem Auftrag, einem Modell, einer Session und einem Menschen, der dafür einsteht. Git speichert davon nur Autor und Zeitstempel.
 \stopitemize
 
 Die Frage lautet deshalb nicht, ob Git für Agenten funktioniert. Sie lautet, welche Teile des Modells bestehen bleiben können und welche Schichten neu gebaut werden müssen.
@@ -29,29 +29,50 @@ Diese Plattformen beruhen auf einer einfachen Übereinkunft. Das Repository ist 
 \section{Vorteile im agentischen Kontext}
 
 \startitemize
-\item \textbf{Verbreitung:} Entwicklerinnen, Entwickler, Werkzeuge und Integrationen sind vorhanden. Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
-\item \textbf{Pull Request als Einheit:} Er bündelt Diff, Diskussion, Prüfungen und Freigaben in einem Objekt, das Menschen und Agenten gleichermassen lesen können.
-\item \textbf{Schutzregeln:} Plattformen erzwingen Freigaben auf geschützten Branches, ohne dass jeder Client dies selbst umsetzen muss.
-\item \textbf{Ökosystem:} CI-Pipelines, Berechtigungsmodelle, Audit-Funktionen und Integrationen sind erprobt und dokumentiert.
+\item {\bf Verbreitung:} Entwicklerinnen, Entwickler, Werkzeuge und Integrationen sind vorhanden. Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
+\item {\bf Pull Request als Einheit:} Er bündelt Diff, Diskussion, Prüfungen und Freigaben in einem Objekt, das Menschen und Agenten gleichermassen lesen können.
+\item {\bf Schutzregeln:} Plattformen erzwingen Freigaben auf geschützten Branches, ohne dass jeder Client dies selbst umsetzen muss.
+\item {\bf Ökosystem:} CI-Pipelines, Berechtigungsmodelle, Audit-Funktionen und Integrationen sind erprobt und dokumentiert.
 \stopitemize
 
 \section{Grenzen im agentischen Kontext}
 
 Die folgende Tabelle beschreibt Beobachtungen aus der Analyse der Arbeitsabläufe. Sie beruhen nicht auf Messungen.
 
-\starttable[|lw(3.5cm)|lw(10.5cm)|]
-\HL
-\NC {\bf Aspekt} \NC {\bf Beobachtung} \NC \NR
-\HL
-\NC Review \NC Pull Requests werden zum Engpass, wenn Agenten schneller produzieren, als Menschen prüfen können. \NC \NR
-\NC Branches \NC Ein Branch pro Aufgabe führt zu vielen kurzlebigen Branches, die verwaltet werden müssen. \NC \NR
-\NC Worktrees \NC Git erlaubt einen Branch zu einem Zeitpunkt nur in einem Worktree. Parallele Agenten brauchen deshalb eigene Regeln. \NC \NR
-\NC Durchsetzung \NC Schreibrechte auf Branches werden durch Konvention und Plattformregeln gesteuert, nicht durch das Datenmodell. \NC \NR
-\NC Herkunft \NC Commits tragen Autor und Zeitstempel, aber keine strukturierte Angabe zu Modell, Session und auftraggebendem Menschen. \NC \NR
-\NC Konflikte \NC Textbasierte Konflikte stoppen den Vorgang und müssen sofort gelöst werden, auch wenn die Lösung eine Entscheidung wäre, die später getroffen werden könnte. \NC \NR
-\NC Abhängigkeit \NC Repositories, Berechtigungen und Prüfungen liegen bei einem Anbieter. Ein Wechsel ist aufwendig. \NC \NR
-\HL
-\stoptable
+\startxtable[frame=off,split=yes,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Aspekt} \stopxcell
+\startxcell {\bf Beobachtung} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Review \stopxcell
+\startxcell Pull Requests werden zum Engpass, wenn Agenten schneller produzieren, als Menschen prüfen können. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Branches \stopxcell
+\startxcell Ein Branch pro Aufgabe führt zu vielen kurzlebigen Branches, die verwaltet werden müssen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Worktrees \stopxcell
+\startxcell Git erlaubt einen Branch zu einem Zeitpunkt nur in einem Worktree. Parallele Agenten brauchen deshalb eigene Regeln. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Durchsetzung \stopxcell
+\startxcell Schreibrechte auf Branches werden durch Konvention und Plattformregeln gesteuert, nicht durch das Datenmodell. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Herkunft \stopxcell
+\startxcell Commits tragen Autor und Zeitstempel, aber keine strukturierte Angabe zu Modell, Session und auftraggebendem Menschen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Konflikte \stopxcell
+\startxcell Textbasierte Konflikte stoppen den Vorgang und müssen sofort gelöst werden, auch wenn die Lösung eine Entscheidung wäre, die später getroffen werden könnte. \stopxcell
+\stopxrow
+\startxrow[topframe=on,bottomframe=on]
+\startxcell Abhängigkeit \stopxcell
+\startxcell Repositories, Berechtigungen und Prüfungen liegen bei einem Anbieter. Ein Wechsel ist aufwendig. \stopxcell
+\stopxrow
+\stopxtable
 
 Die Grenzen sind teils Folgen des Datenmodells, etwa bei der Herkunft und den Konflikten. Teils sind sie Folgen der Plattform, etwa bei der Durchsetzung und der Abhängigkeit. Die beiden Ursachen verlangen unterschiedliche Antworten.
 

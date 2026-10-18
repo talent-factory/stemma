@@ -1,8 +1,9 @@
 % Stemma: Grundlagendokument (ConTeXt, MkIV)
-% Kompilieren im Ordner docs: context main.tex
+% Kompilieren: context main.tex
 
 \setupbodyfont[modern,11pt]
 \mainlanguage[de]
+\setupalign[verytolerant,stretch]
 \setuppapersize[A4][A4]
 \setuplayout[
   width=middle, height=middle,
@@ -15,6 +16,9 @@
 
 \starttext
 
+% ------------------------------------------------------------------
+% Titelblatt
+% ------------------------------------------------------------------
 \startalign[center]
 \blank[4*big]
 {\tfd Stemma}\par
@@ -30,22 +34,31 @@ Version 0.2 · 18. Oktober 2026\par
 \stopalign
 \page
 
+% ------------------------------------------------------------------
+% Inhaltsverzeichnis
+% ------------------------------------------------------------------
 \title{Inhaltsverzeichnis}
 \placecontent
 \page
 
-\input chapters/01-einleitung
-\input chapters/02-grundlagen
-\input chapters/03-architektur
-\input chapters/04-phase1-lokaler-kern
+% ------------------------------------------------------------------
+% Kapitel
+% ------------------------------------------------------------------
+\input chapters/01-introduction
+\input chapters/02-foundations
+\input chapters/03-architecture
+\input chapters/04-phase1-local-core
 \input chapters/05-phase2-diff
 \input chapters/06-phase3-branches-merge
-\input chapters/07-phase4-zusammenarbeit
-\input chapters/08-phase5-netzwerk
-\input chapters/09-phase6-agenten-schnittstellen
-\input chapters/10-lehre
-\input chapters/11-ausblick
+\input chapters/07-phase4-collaboration
+\input chapters/08-phase5-network
+\input chapters/09-phase6-agent-interfaces
+\input chapters/10-teaching
+\input chapters/11-outlook
 
+% ------------------------------------------------------------------
+% Anhang
+% ------------------------------------------------------------------
 \title{Abbildungsverzeichnis}
 Abbildungen werden ergänzt, sobald sie vorliegen.
 \placelistoffigures
