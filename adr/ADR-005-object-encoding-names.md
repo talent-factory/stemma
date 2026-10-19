@@ -259,5 +259,10 @@ them.
       `FromStr` reads back. `ActorRef` stays as the public type to match on, because a borrowed
       view with public fields cannot come from the same list without indexing. No encoding and no
       ID changes.
-- [ ] A tree builder from the index (`write-tree`) should verify inside: `Index::write_tree(&store)`
-      calls `Index::verify` itself and returns a `TreeId`, so that no caller can forget the check.
+- [x] A tree builder from the index (`write-tree`) should verify inside. Done:
+      `Index::write_tree(&store)` calls `Index::verify` itself, writes the trees from the innermost
+      directory outwards, and returns the root `TreeId`. No tree is written if the check fails.
+      `WriteTreeError` separates a failed check, a store that cannot write, and a tree that cannot
+      be built (ruled out by the index rules). The work is a loop over a stack of open directories
+      and not a recursion. The blobs are not read again after the check, so a change of the store
+      after it goes unnoticed.
