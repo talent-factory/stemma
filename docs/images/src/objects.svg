@@ -3,7 +3,7 @@
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
 </defs>
-<rect x="30" y="40" width="200" height="140" rx="8" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.8"/>
+<rect x="30" y="40" width="200" height="162" rx="8" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.8"/>
 <path d="M30,66 V48 Q30,40 38,40 H222 Q230,40 230,48 V66 Z" fill="#7C3AED"/>
 <text x="42" y="57" font-size="13" font-weight="bold" fill="#FFFFFF">Commit</text>
 <text x="218" y="57" font-size="11" font-family="Courier, monospace" fill="#FFFFFF" text-anchor="end">b3:9f2c…</text>
@@ -11,12 +11,14 @@
 <text x="216" y="78" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal" font-family="Courier, monospace">b3:7d10…</text>
 <text x="44" y="100" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">parent</text>
 <text x="216" y="100" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal" font-family="Courier, monospace">b3:41ab…</text>
-<text x="44" y="122" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">Akteur</text>
-<text x="216" y="122" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal">Mensch oder Agent</text>
-<text x="44" y="144" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">Zeit</text>
-<text x="216" y="144" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal">Sekunden</text>
-<text x="44" y="166" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">Nachricht</text>
-<text x="216" y="166" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal">Text</text>
+<text x="44" y="122" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">Change-ID</text>
+<text x="216" y="122" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal" font-family="Courier, monospace">ch:7a41…</text>
+<text x="44" y="144" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">Akteur</text>
+<text x="216" y="144" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal">Mensch oder Agent</text>
+<text x="44" y="166" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">Zeit</text>
+<text x="216" y="166" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal">Sekunden</text>
+<text x="44" y="188" font-size="12" fill="#0F172A" text-anchor="start" font-weight="normal">Nachricht</text>
+<text x="216" y="188" font-size="11" fill="#64748B" text-anchor="end" font-weight="normal">Text</text>
 <rect x="30" y="236" width="200" height="56" rx="8" fill="#FFFFFF" stroke="#64748B" stroke-width="1.8" stroke-dasharray="6 4"/>
 <text x="42" y="258" font-size="13" font-weight="bold" fill="#64748B">Commit</text>
 <text x="218" y="258" font-size="11" font-family="Courier, monospace" fill="#64748B" text-anchor="end">b3:41ab…</text>
@@ -49,7 +51,7 @@
 <text x="658" y="253" font-size="11" font-family="Courier, monospace" fill="#FFFFFF" text-anchor="end">b3:5b92…</text>
 <text x="532" y="280" font-size="11" fill="#64748B" text-anchor="start" font-weight="normal">Dateiinhalt</text>
 <path d="M232,74 H278" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" fill="none"/>
-<path d="M130,180 V234" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" fill="none"/>
+<path d="M130,202 V234" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" fill="none"/>
 <path d="M470,84 L518,68" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" fill="none"/>
 <path d="M470,112 L518,160" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" fill="none"/>
 <path d="M595,200 V234" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)" fill="none"/>

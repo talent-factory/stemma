@@ -21,9 +21,12 @@
 //! [`store::StoreError::io_error`] for the store, and `store_error()` on [`store::ReadError`],
 //! [`index::WriteTreeError`], [`refs::RefError`], and [`verify::VerifyError`] (the error of a
 //! check of an index, a tree, or a commit) for the error of the store
-//! inside. A program that only reports an error prints it with `{}` and does not walk the chain.
+//! inside. [`repository::InitError`], [`repository::OpenError`], and [`change::GenerateError`]
+//! have an `io_error()` for the error of the file system or of the operating system. A program
+//! that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
+pub mod change;
 pub mod index;
 pub mod object;
 #[cfg(test)]

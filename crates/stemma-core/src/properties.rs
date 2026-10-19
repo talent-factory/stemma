@@ -20,6 +20,7 @@
 use std::error::Error;
 use std::io;
 
+use crate::change::{sample_change, ChangeId};
 use crate::index::{FileMode, Index, IndexParseError};
 use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
@@ -146,6 +147,9 @@ const PIECES: &[&str] = &[
     "tree ",
     "parent ",
     "author ",
+    "change ",
+    "ch:",
+    "ch:00112233445566778899AABBCCDDEEFF",
     "time ",
     "human ",
     "agent ",
@@ -184,6 +188,16 @@ const NUMBERS: &[&str] = &[
     "-9223372036854775809",
     "99999999999999999999",
     "",
+    // Change IDs with a near miss: another case, another length, a bad digit, a wrong prefix, and
+    // multi-byte characters that make 32 bytes of 16 characters.
+    "ch:00112233445566778899AABBCCDDEEFF",
+    "ch:00112233445566778899aabbccddee",
+    "ch:00112233445566778899aabbccddeeff0",
+    "ch:00112233445566778899aabbccddeefg",
+    "CH:00112233445566778899aabbccddeeff",
+    "00112233445566778899aabbccddeeff",
+    "ch:\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}",
+    "ch:",
     // Modes and keywords with a near miss: the token that has to be replaced is a whole word.
     "100775",
     "0120000",
@@ -301,13 +315,28 @@ fn random_actor(rng: &mut Rng) -> Actor {
     }
 }
 
+fn random_change(rng: &mut Rng) -> ChangeId {
+    let mut bytes = [0u8; 16];
+    for chunk in bytes.chunks_mut(8) {
+        chunk.copy_from_slice(&rng.next().to_le_bytes()[..chunk.len()]);
+    }
+    ChangeId::from_bytes(bytes)
+}
+
 fn random_commit(rng: &mut Rng) -> Commit {
     let tree: TreeId = random_tree(rng).id();
     let mut parents: Vec<CommitId> = Vec::new();
     for n in 0..rng.below(4) {
-        let parent = Commit::new(tree, vec![], random_actor(rng), n as i64, format!("p{n}"))
-            .expect("no parents")
-            .id();
+        let parent = Commit::new(
+            tree,
+            vec![],
+            sample_change(),
+            random_actor(rng),
+            n as i64,
+            format!("p{n}"),
+        )
+        .expect("no parents")
+        .id();
         if !parents.contains(&parent) {
             parents.push(parent);
         }
@@ -321,7 +350,15 @@ fn random_commit(rng: &mut Rng) -> Commit {
         }
         message
     };
-    Commit::new(tree, parents, random_actor(rng), time, message).expect("distinct parents")
+    Commit::new(
+        tree,
+        parents,
+        random_change(rng),
+        random_actor(rng),
+        time,
+        message,
+    )
+    .expect("distinct parents")
 }
 
 /// A branch name made of a few parts, some of them invalid; the names that the rule rejects are
@@ -368,7 +405,8 @@ fn random_index(rng: &mut Rng) -> Index {
 fn mutate(rng: &mut Rng, bytes: &[u8]) -> Vec<u8> {
     let mut out = bytes.to_vec();
     for _ in 0..1 + rng.below(4) {
-        match rng.below(14) {
+        match rng.below(15) {
+            14 => edit_change_value(rng, &mut out),
             8 | 9 => replace_token(rng, &mut out),
             10 => edit_line_end(rng, &mut out),
             11 => extra_separator(rng, &mut out),
@@ -445,6 +483,39 @@ fn replace_token(rng: &mut Rng, bytes: &mut Vec<u8>) {
     bytes.splice(start..end, replacement.bytes());
 }
 
+/// Changes the value of a `change` header by one character: another case, a bad digit, a missing
+/// or an extra digit, or a doubled prefix. This reaches the spellings of a change ID that a strict
+/// reader has to reject, which a change of a random byte seldom produces. It does nothing if the
+/// input has no such header.
+fn edit_change_value(rng: &mut Rng, bytes: &mut Vec<u8>) {
+    const HEADER: &[u8] = b"change ";
+    let Some(found) = bytes
+        .windows(HEADER.len())
+        .position(|window| window == HEADER)
+        .filter(|&at| at == 0 || bytes[at - 1] == b'\n')
+    else {
+        return;
+    };
+    let start = found + HEADER.len();
+    let end = bytes[start..]
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(bytes.len(), |offset| start + offset);
+    if start >= end {
+        return;
+    }
+    let at = start + rng.below(end - start);
+    match rng.below(5) {
+        0 => bytes[at] = bytes[at].to_ascii_uppercase(),
+        1 => bytes[at] = b'g',
+        2 => {
+            bytes.remove(end - 1);
+        }
+        3 => bytes.insert(end, b'0'),
+        _ => bytes.splice(start..start, "ch:".bytes()).for_each(drop),
+    }
+}
+
 /// Adds a space, a tab, or a carriage return before a line end, or at the end of the input.
 fn edit_line_end(rng: &mut Rng, bytes: &mut Vec<u8>) {
     let ends: Vec<usize> = (0..bytes.len()).filter(|&at| bytes[at] == b'\n').collect();
@@ -513,6 +584,8 @@ fn insert_line(rng: &mut Rng, bytes: &mut Vec<u8>) {
         "parent \n",
         "time 0\n",
         "tree \n",
+        "change ch:00112233445566778899aabbccddeeff\n",
+        "change \n",
     ]);
     bytes.splice(at..at, line.bytes());
 }
@@ -631,6 +704,7 @@ fn commit_line(error: &CommitParseError) -> Option<usize> {
         CommitParseError::NotUtf8 { .. } | CommitParseError::Commit(_) => None,
         CommitParseError::Malformed { line, .. }
         | CommitParseError::InvalidObjectId { line, .. }
+        | CommitParseError::InvalidChangeId { line, .. }
         | CommitParseError::InvalidTime { line, .. }
         | CommitParseError::InvalidAuthor { line, .. }
         | CommitParseError::DuplicateParent { line, .. } => Some(*line),
@@ -961,7 +1035,15 @@ fn every_error_that_wraps_another_prints_the_cause_once_and_goes_on_below_it() {
     let mut index = Index::new();
     index.insert("a", FileMode::File, blob).unwrap();
     let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
-    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
+    let commit = Commit::new(
+        empty,
+        vec![],
+        sample_change(),
+        Actor::human("daniel").unwrap(),
+        0,
+        "m",
+    )
+    .unwrap();
 
     let reading = FaultyStore::new(dir.store(), true, false);
     let writing = FaultyStore::new(dir.store(), false, true);
@@ -1015,7 +1097,15 @@ fn the_error_of_the_file_system_is_reached_through_every_wrapper() {
     let mut index = Index::new();
     index.insert("a", FileMode::File, blob).unwrap();
     let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
-    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
+    let commit = Commit::new(
+        empty,
+        vec![],
+        sample_change(),
+        Actor::human("daniel").unwrap(),
+        0,
+        "m",
+    )
+    .unwrap();
     let reading = FaultyStore::new(dir.store(), true, false);
     let writing = FaultyStore::new(dir.store(), false, true);
 

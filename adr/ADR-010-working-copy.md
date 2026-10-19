@@ -33,8 +33,15 @@ are prior art, not a template.
 - **Every commit has a change ID** *(confirmed)*. A snapshot gives a new commit a new ID, because
   the content differs. The change ID stays the same through every snapshot and rewrite, so that
   a review, a pull request (phase 4), and a rebase (phase 3) can name "the same change". The
-  `Commit` type gets the field `change`. This is cheapest now, because no repository contains a
-  commit: `commit` is not implemented yet.
+  `Commit` type has the field `change`, written as the header `change <id>` (ADR-005).
+- **The change ID is `ch:` and 32 lowercase hexadecimal digits** *(confirmed)*. It has 128 bits and
+  comes from the random source of the operating system (the crate `getrandom`); the standard
+  library has none meant for it. `ChangeId::generate` never falls back to a weaker source and
+  reports a failure instead, because two changes that share an ID would be joined, and it refuses
+  a source that returns only zeros. A rewrite takes the ID of the commit it replaces, a new change
+  gets a new one, and **a merge commit gets a new change ID** *(confirmed)*: it joins two changes
+  and continues neither. `Commit::new` takes the ID as an input and does not decide which case
+  applies. A short form for people can be derived from the long one later, for display only.
 - **Untracked files are not saved until they are confirmed** *(confirmed)*. A file that is not in
   the tree of the working-copy commit is *untracked*. A snapshot saves a tracked file that
   changed or was deleted. It does not save an untracked file; `stemma track <path>` confirms
@@ -56,11 +63,10 @@ are prior art, not a template.
 
 ## Consequences
 
-- **The format of `commit` changes** *(confirmed)*. The field `change` is new. ADR-005 says an
-  incompatible format gets a new object name, but no repository holds a commit, so the proposal
-  is to change `commit` in place and to move the golden vectors. If a prerelease build wrote
-  commits somewhere, it needs `commit2`; this has to be settled before the first merge of the
-  code.
+- **The format of `commit` changes in place** *(confirmed)*. The field `change` is new. ADR-005
+  says an incompatible format gets a new object name, and makes one exception: no repository holds
+  a commit, so `commit` is changed in place and the golden vectors were computed again. The
+  exception ends with the first commit that a command writes.
 - **`stemma add` (STEMMA-2) becomes `stemma track`.** `stemma commit` (STEMMA-3) names the
   working-copy commit and starts a new one. `stemma status` (STEMMA-4) compares the working
   directory with the working-copy commit and lists the untracked files.
@@ -74,12 +80,14 @@ are prior art, not a template.
 
 ## Open items
 
-- [ ] The format of the change ID: its length, its encoding, a prefix that sets it apart from
-      object IDs, and the source of its randomness (the standard library offers none that is
-      meant for it).
+- [ ] `Commit::rewrite`, which takes the change ID from the commit it replaces, and a struct of
+      named parts instead of six positional arguments of `Commit::new`. They belong with the first
+      command that creates commits (STEMMA-3), because that is the first real caller.
+- [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
+      does when the working-copy commit has one (phase 3).
+
 - [ ] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
       which tier of ADR-004 it belongs to.
-- [ ] Changing `commit` in place or adding `commit2` (see the consequences).
 - [ ] The operation log: the format, what an entry holds, and how long it keeps replaced
       commits. A first design is STEMMA-5.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the log and
