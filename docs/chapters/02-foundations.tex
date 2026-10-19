@@ -18,20 +18,20 @@ Branches und Tags sind Zeiger auf Commits. HEAD zeigt auf den aktuellen Branch. 
 
 \section{Arbeitskopie und Index}
 
-Git trennt drei Zustände: die Arbeitskopie, den Index als Staging-Bereich und den letzten Commit. Der Index ist eine Zwischenstufe, die Entwicklerinnen und Entwickler bewusst füllen. Für Agenten ist diese Stufe eine Fehlerquelle, wenn unvollständige Zustände committet werden. Ein anderer Ansatz betrachtet die Arbeitskopie selbst als Commit, wie es Jujutsu tut. Stemma folgt ihm (ADR-010, Entwurf, teilweise bestätigt): Bei jedem Befehl wird der Arbeitsordner als Commit gesichert, sodass der Zustand eines Agenten nicht verloren geht, auch wenn er nichts bestätigt hat. Jeder Commit trägt dafür eine Change-ID, die bei jedem Umschreiben derselben Änderung gleich bleibt. Ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue. Neue Dateien kommen erst in den Verlauf, wenn ein Befehl sie bestätigt, und eine Ausschlussdatei hält Pfade wie Build-Ausgaben und Geheimnisse heraus. Zwischen zwei Aufrufen kann Stemma nichts sichern, einen Dateiwächter gibt es in Phase 1 nicht.
+Git trennt drei Zustände: die Arbeitskopie, den Index als Staging-Bereich und den letzten Commit. Der Index ist eine Zwischenstufe, die Entwicklerinnen und Entwickler bewusst füllen. Für Agenten ist diese Stufe eine Fehlerquelle, wenn unvollständige Zustände committet werden. Ein anderer Ansatz betrachtet die Arbeitskopie selbst als Commit, wie es Jujutsu tut \cite[jujutsu]. Stemma folgt ihm (ADR-010, Entwurf, teilweise bestätigt): Bei jedem Befehl wird der Arbeitsordner als Commit gesichert, sodass der Zustand eines Agenten nicht verloren geht, auch wenn er nichts bestätigt hat. Jeder Commit trägt dafür eine Change-ID, die bei jedem Umschreiben derselben Änderung gleich bleibt. Ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue. Neue Dateien kommen erst in den Verlauf, wenn ein Befehl sie bestätigt, und eine Ausschlussdatei hält Pfade wie Build-Ausgaben und Geheimnisse heraus. Zwischen zwei Aufrufen kann Stemma nichts sichern, einen Dateiwächter gibt es in Phase 1 nicht.
 
 \section{Konflikte und Operation Log}
 
-Git bricht einen Vorgang ab, wenn ein Konflikt entsteht. Jujutsu speichert Konflikte dagegen im Commit selbst. Ein Agent kann so weiterarbeiten und den Konflikt später lösen. Ein Operation Log protokolliert jeden Schritt und ermöglicht das Zurücksetzen beliebiger Operationen. Beide Ideen passen gut zu Agenten, die viele Schritte ausführen.
+Git bricht einen Vorgang ab, wenn ein Konflikt entsteht. Jujutsu speichert Konflikte dagegen im Commit selbst \cite[jujutsu]. Ein Agent kann so weiterarbeiten und den Konflikt später lösen. Ein Operation Log protokolliert jeden Schritt und ermöglicht das Zurücksetzen beliebiger Operationen. Beide Ideen passen gut zu Agenten, die viele Schritte ausführen.
 
 In Stemma ist das Log lokal und gehört nicht zur Historie (ADR-005, ADR-011). Es hält fest, welche Zeiger eine Operation von welchem auf welchen Wert gesetzt hat, wer sie ausgeführt hat und wann. Damit bleibt jeder ersetzte Commit erreichbar, auch der Arbeitskopie-Commit, den ein Snapshot ablöst. Der Eintrag wird geschrieben, bevor der Zeiger sich bewegt: Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log. Jeder Eintrag ist eine eigene Datei mit fortlaufender Nummer, sodass mehrere Agenten gleichzeitig schreiben können, ohne sich zu sperren, und ein einzelner Eintrag sich ersetzen lässt, wenn ein Geheimnis entfernt werden muss.
 
 \section{Ideen aus anderen Systemen}
 
 \startitemize
-\item {\bf Jujutsu (jj):} Stabile Change-IDs, Konflikte als Daten, Operation Log und Git als Speicher.
-\item {\bf Pijul:} Ein Modell auf Basis von Patches statt Snapshots. Es zeigt eine andere Grundannahme.
-\item {\bf Sapling:} Ein System für grosse Monorepos mit Fokus auf Skalierung.
+\item {\bf Jujutsu (jj):} Stabile Change-IDs, Konflikte als Daten, Operation Log und Git als Speicher \cite[jujutsu].
+\item {\bf Pijul:} Ein Modell auf Basis von Patches statt Snapshots. Es zeigt eine andere Grundannahme \cite[pijul].
+\item {\bf Sapling:} Ein System für grosse Monorepos mit Fokus auf Skalierung \cite[sapling].
 \item {\bf Scion (Anthropic):} Laut dem Engineering-Blog von Anthropic \cite[anthropic2026redesigning] ein zentrales System mit API-basierten Abfragen ohne lokalen Klon. Der Beitrag nennt keine öffentliche Verfügbarkeit, und das Projekt übernimmt keinen Code.
 \stopitemize
 
