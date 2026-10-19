@@ -28,9 +28,12 @@ build:
 build-release:
     cargo build --workspace --release
 
-# Run the CLI.  Usage:  just run init
+# Run the CLI.  Usage:  just run init   (without arguments it shows the help)
 [group('Development')]
 run *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$#" -eq 0 ]; then set -- --help; fi
     cargo run -p stemma-cli -- "$@"
 
 # Install the CLI as `stemma` into the Cargo bin directory.
