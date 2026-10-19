@@ -159,13 +159,14 @@ fn the_json_form_is_one_object_per_line() {
             "{{\"number\":2,\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"head\":null,\
              \"working_copy\":{{\"old\":null,\"new\":\"{A}\"}},\
-             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}]}}"
+             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
+             \"took_effect\":false}}"
         )
     );
     assert!(
         lines[1].starts_with("{\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
-            && lines[1].ends_with("\"branches\":[]}"),
+            && lines[1].ends_with("\"branches\":[],\"took_effect\":true}"),
         "{}",
         lines[1]
     );
@@ -308,4 +309,86 @@ fn without_a_limit_the_twenty_newest_entries_are_shown() {
     );
     let more = run(dir.path(), &["op", "log", "-n", "100"]);
     assert_eq!(numbers_of(&more.stdout).len(), 21);
+}
+
+/// An entry that moves only the branch `main`, so that its outcome can be decided.
+fn branch_move(dir: &Path, number: u64, old: &str, new: &str) {
+    write_entry(
+        dir,
+        number,
+        &format!(
+            "time 1700000000\nactor human daniel\noperation commit\nbranch main {old} {new}\n"
+        ),
+    );
+}
+
+fn set_branch(dir: &Path, commit: &str) {
+    fs::write(dir.join(".stemma/refs/heads/main"), format!("{commit}\n")).unwrap();
+}
+
+#[test]
+fn an_entry_whose_move_took_effect_has_no_marker() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    set_branch(dir.path(), A);
+    let text = run(dir.path(), &["op", "log"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert!(
+        !text.stdout.contains('!') && !text.stdout.contains('?'),
+        "{}",
+        text.stdout
+    );
+    let json = run(dir.path(), &["op", "log", "--json"]);
+    assert!(
+        json.stdout
+            .lines()
+            .all(|line| line.ends_with("\"took_effect\":true}")),
+        "{}",
+        json.stdout
+    );
+}
+
+#[test]
+fn an_entry_whose_move_never_happened_is_marked_in_both_forms() {
+    // The entry 2 was written, but the branch did not move: entry 3 starts from the old value.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, "-", B);
+    set_branch(dir.path(), B);
+    let text = run(dir.path(), &["op", "log"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    let marker = "    ! the move did not take effect\n";
+    let lines: Vec<_> = text.stdout.split_inclusive('\n').collect();
+    let position = lines.iter().position(|l| l.starts_with("2  ")).unwrap();
+    assert_eq!(lines[position + 2], marker, "{}", text.stdout);
+    assert_eq!(text.stdout.matches(marker).count(), 1, "{}", text.stdout);
+    let json = run(dir.path(), &["op", "log", "--json"]);
+    let flags: Vec<_> = json
+        .stdout
+        .lines()
+        .map(|line| line.rsplit(":").next().unwrap().trim_end_matches('}'))
+        .collect();
+    assert_eq!(flags, ["true", "false", "true"]);
+}
+
+#[test]
+fn an_outcome_that_is_not_known_is_null_and_marked_with_a_question_mark() {
+    // The branch has a value that is neither the old nor the new one of the last entry.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    set_branch(dir.path(), B);
+    let text = run(dir.path(), &["op", "log"]);
+    assert!(
+        text.stdout
+            .contains("    ? it is not known whether the move took effect\n"),
+        "{}",
+        text.stdout
+    );
+    let json = run(dir.path(), &["op", "log", "--json"]);
+    assert!(json
+        .stdout
+        .lines()
+        .next()
+        .unwrap()
+        .ends_with("\"took_effect\":null}"));
 }

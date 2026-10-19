@@ -1282,6 +1282,113 @@ fn parse_file_name(name: &str) -> Option<u64> {
     name.parse().ok().filter(|number| *number >= 1)
 }
 
+/// Whether the move of an entry took effect. An entry is written before the pointer moves, so
+/// an entry can name a move that never happened (ADR-011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Every pointer of the entry moved to its new value.
+    Took,
+    /// At least one pointer of the entry did not move to its new value.
+    NotTaken,
+    /// The log and the references do not decide it.
+    Unknown,
+}
+
+/// The values that the pointers have now, for [`outcomes`]. The working-copy commit has no place
+/// in the references yet (ADR-010), so it is not part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Current {
+    head: Head,
+    branches: Vec<(BranchName, CommitId)>,
+}
+
+impl Current {
+    /// The value of HEAD and all branches with their commits.
+    pub fn new(head: Head, branches: Vec<(BranchName, CommitId)>) -> Self {
+        Self { head, branches }
+    }
+
+    fn branch(&self, name: &BranchName) -> Option<&CommitId> {
+        self.branches
+            .iter()
+            .find(|(branch, _)| branch == name)
+            .map(|(_, commit)| commit)
+    }
+}
+
+/// The outcome of one pointer. `next` is the move of the same pointer in the next entry that
+/// changes it, if there is one; `current` is the value the pointer has now, if it is known (the
+/// outer `Option`), and it can be absent (the inner one).
+fn judge<T: PartialEq>(
+    moved: &Moved<T>,
+    next: Option<&Moved<T>>,
+    current: Option<Option<&T>>,
+) -> Outcome {
+    if let Some(next) = next {
+        // The next move started from the value that this one claims to have made, or it did not.
+        return if next.old == moved.new {
+            Outcome::Took
+        } else {
+            Outcome::NotTaken
+        };
+    }
+    match current {
+        Some(now) if now == moved.new.as_ref() => Outcome::Took,
+        Some(now) if now == moved.old.as_ref() => Outcome::NotTaken,
+        _ => Outcome::Unknown,
+    }
+}
+
+/// Reads from the log whether the move of each entry took effect, in the order of `entries`.
+///
+/// An entry is an intent (ADR-011). A pointer that an entry moves is confirmed by the next entry
+/// that changes the same pointer, if its old value is the new value of this one, and refuted if it
+/// is not. The last entry of a pointer is compared with the value the pointer has now: equal to
+/// the new value confirms, equal to the old value refutes, anything else (or a working-copy
+/// commit, which `current` does not hold) leaves it unknown. An entry took effect if all its
+/// pointers did, it did not if one did not, and otherwise it is unknown.
+///
+/// `entries` must be in ascending order and end with the newest entry of the log, because an entry
+/// that is the last of its pointer is compared with `current`. `current` should be read after the
+/// entries. A writer that works in between can make the newest entry unknown or, if it moves a
+/// pointer back to the old value, wrong; that is a narrow window.
+pub fn outcomes(entries: &[Entry], current: &Current) -> Vec<Outcome> {
+    use std::collections::HashMap;
+
+    let mut next_head: Option<&Moved<Head>> = None;
+    let mut next_working_copy: Option<&Moved<CommitId>> = None;
+    let mut next_branch: HashMap<&BranchName, &Moved<CommitId>> = HashMap::new();
+    let mut result = vec![Outcome::Unknown; entries.len()];
+    for (index, entry) in entries.iter().enumerate().rev() {
+        let change = entry.change();
+        let mut judged = Vec::new();
+        if let Some(moved) = change.head() {
+            judged.push(judge(moved, next_head, Some(Some(&current.head))));
+        }
+        if let Some(moved) = change.working_copy() {
+            judged.push(judge(moved, next_working_copy, None));
+        }
+        for (name, moved) in change.branches() {
+            let now = Some(current.branch(name));
+            judged.push(judge(moved, next_branch.get(name).copied(), now));
+        }
+        result[index] = if judged.contains(&Outcome::NotTaken) {
+            Outcome::NotTaken
+        } else if judged.iter().all(|outcome| *outcome == Outcome::Took) {
+            Outcome::Took
+        } else {
+            Outcome::Unknown
+        };
+        // This entry is the next one for the entries before it.
+        next_head = change.head().or(next_head);
+        next_working_copy = change.working_copy().or(next_working_copy);
+        for (name, moved) in change.branches() {
+            next_branch.insert(name, moved);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1328,6 +1435,106 @@ mod tests {
 
     fn moved(old: Option<&str>, new: Option<&str>) -> Moved<CommitId> {
         Moved::from_to(old.map(commit), new.map(commit))
+    }
+
+    fn entry(
+        number: u64,
+        head: Option<Moved<Head>>,
+        branches: Vec<(BranchName, Moved<CommitId>)>,
+    ) -> Entry {
+        let change = Change::new(TIME, human(), operation("snapshot"), head, None, branches)
+            .expect("valid change");
+        Entry::new(number, change).expect("valid entry")
+    }
+
+    fn moves(name: &str, old: Option<&str>, new: Option<&str>) -> (BranchName, Moved<CommitId>) {
+        (branch(name), moved(old, new))
+    }
+
+    fn now(branches: &[(&str, &str)]) -> Current {
+        Current::new(
+            Head::Branch(branch("main")),
+            branches
+                .iter()
+                .map(|(n, c)| (branch(n), commit(c)))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn the_last_entry_of_a_pointer_is_compared_with_its_value_now() {
+        let entries = [entry(1, None, vec![moves("main", None, Some(A))])];
+        assert_eq!(outcomes(&entries, &now(&[("main", A)])), [Outcome::Took]);
+        assert_eq!(outcomes(&entries, &now(&[])), [Outcome::NotTaken]);
+        assert_eq!(outcomes(&entries, &now(&[("main", B)])), [Outcome::Unknown]);
+    }
+
+    #[test]
+    fn a_later_entry_confirms_or_refutes_the_one_before() {
+        let entries = [
+            entry(1, None, vec![moves("main", None, Some(A))]),
+            entry(2, None, vec![moves("main", Some(A), Some(B))]),
+            // Entry 2 did not move: entry 3 starts from A again.
+            entry(3, None, vec![moves("main", Some(A), Some(C))]),
+        ];
+        assert_eq!(
+            outcomes(&entries, &now(&[("main", C)])),
+            [Outcome::Took, Outcome::NotTaken, Outcome::Took]
+        );
+    }
+
+    #[test]
+    fn other_pointers_do_not_confirm_a_branch_and_one_failed_pointer_fails_the_entry() {
+        let entries = [
+            entry(
+                1,
+                None,
+                vec![moves("a", None, Some(A)), moves("b", None, Some(B))],
+            ),
+            entry(2, None, vec![moves("a", Some(A), Some(C))]),
+        ];
+        // Entry 1: `a` is confirmed by entry 2, `b` is not on the branch list any more.
+        assert_eq!(
+            outcomes(&entries, &now(&[("a", C)])),
+            [Outcome::NotTaken, Outcome::Took]
+        );
+        assert_eq!(
+            outcomes(&entries, &now(&[("a", C), ("b", B)])),
+            [Outcome::Took, Outcome::Took]
+        );
+    }
+
+    #[test]
+    fn head_is_judged_by_its_own_chain_and_a_working_copy_is_unknown_at_the_end() {
+        let head = |old: Option<Head>, new: Option<Head>| Some(Moved::from_to(old, new));
+        let entries = [
+            entry(1, head(None, Some(Head::Branch(branch("main")))), vec![]),
+            entry(
+                2,
+                head(
+                    Some(Head::Branch(branch("main"))),
+                    Some(Head::Detached(commit(A))),
+                ),
+                vec![],
+            ),
+        ];
+        // HEAD is `main` now: entry 2 is refuted, entry 1 is confirmed by entry 2.
+        assert_eq!(
+            outcomes(&entries, &now(&[])),
+            [Outcome::Took, Outcome::NotTaken]
+        );
+        let change = Change::new(
+            TIME,
+            human(),
+            operation("snapshot"),
+            None,
+            Some(moved(None, Some(A))),
+            vec![],
+        )
+        .unwrap();
+        let alone = [Entry::new(1, change).unwrap()];
+        assert_eq!(outcomes(&alone, &now(&[])), [Outcome::Unknown]);
+        assert_eq!(outcomes(&[], &now(&[])), []);
     }
 
     /// The change of the golden vector below.

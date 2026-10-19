@@ -3,7 +3,7 @@
 
 use std::fmt::{self, Display, Write};
 
-use stemma_core::oplog::{Entry, Moved};
+use stemma_core::oplog::{Entry, Moved, Outcome};
 use stemma_core::refs::Head;
 
 /// The value of a pointer as the log writes it: `-` if it does not exist.
@@ -51,8 +51,9 @@ fn utc(seconds: i64) -> String {
 }
 
 /// An entry for a person: a line with the number, the time, the actor, and the operation, then
-/// one indented line for each pointer that moved.
-pub fn text(entry: &Entry) -> String {
+/// one indented line for each pointer that moved, and a last line if the move did not take effect
+/// or if that is not known.
+pub fn text(entry: &Entry, outcome: Outcome) -> String {
     let change = entry.change();
     let mut out = format!(
         "{}  {}  {}  {}\n",
@@ -85,6 +86,11 @@ pub fn text(entry: &Entry) -> String {
             value(moved.before()),
             value(moved.after()),
         );
+    }
+    match outcome {
+        Outcome::Took => {}
+        Outcome::NotTaken => out.push_str("    ! the move did not take effect\n"),
+        Outcome::Unknown => out.push_str("    ? it is not known whether the move took effect\n"),
     }
     out
 }
@@ -120,10 +126,16 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
     )
 }
 
-/// An entry for a program: one line of JSON. `head` and `working_copy` are `null` if the
+/// An entry for a program: one line of JSON. `took_effect` is `true`, `false`, or `null` if it is
+/// not known (see [`stemma_core::oplog::outcomes`]). `head` and `working_copy` are `null` if the
 /// operation did not change them, and `branches` is a list, empty if no branch changed. A pointer
 /// that did not exist or does not exist any more has `null` as its old or new value.
-pub fn json(entry: &Entry) -> String {
+pub fn json(entry: &Entry, outcome: Outcome) -> String {
+    let took_effect = match outcome {
+        Outcome::Took => "true",
+        Outcome::NotTaken => "false",
+        Outcome::Unknown => "null",
+    };
     let change = entry.change();
     let head = change.head().map_or_else(
         || "null".to_owned(),
@@ -152,7 +164,7 @@ pub fn json(entry: &Entry) -> String {
         .collect();
     format!(
         "{{\"number\":{},\"time\":{},\"actor\":{},\"operation\":{},\"head\":{head},\
-         \"working_copy\":{working_copy},\"branches\":[{}]}}",
+         \"working_copy\":{working_copy},\"branches\":[{}],\"took_effect\":{took_effect}}}",
         entry.number(),
         change.time(),
         quote(&change.actor().to_string()),

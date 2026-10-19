@@ -20,8 +20,8 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::op_log;
 use stemma_core::object::METADATA_DIR;
-use stemma_core::oplog::OpLogError;
-use stemma_core::refs::BranchName;
+use stemma_core::oplog::{self, OpLogError};
+use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{InitError, InitOptions, OpenError, Repository};
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -104,6 +104,8 @@ enum CliError {
     Open(OpenError),
     /// The operation log cannot be read.
     OpLog(OpLogError),
+    /// The references cannot be read, so the outcome of the entries is not known.
+    Refs(RefError),
     /// The entries were read, but the output could not be written.
     Write(io::Error),
     /// The command has done its work, but the result could not be written to the output.
@@ -126,6 +128,7 @@ impl CliError {
             | Self::Init(_)
             | Self::Open(_)
             | Self::OpLog(_)
+            | Self::Refs(_)
             | Self::Write(_) => ExitCode::FAILURE,
         }
     }
@@ -148,6 +151,7 @@ impl fmt::Display for CliError {
             Self::Init(error) => error.fmt(f),
             Self::Open(error) => error.fmt(f),
             Self::OpLog(error) => error.fmt(f),
+            Self::Refs(error) => error.fmt(f),
             Self::Write(source) => write!(f, "could not write the result: {source}"),
             Self::Output { created, source } => write!(
                 f,
@@ -178,18 +182,26 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = Repository::open(&args.path).map_err(CliError::Open)?;
     let log = repository.oplog();
     let numbers = log.numbers().map_err(CliError::OpLog)?;
-    let entries = numbers
+    // The shown entries are the newest ones, so every later entry of a pointer is among them, and
+    // only the last entry of a pointer needs its value now. The references are read after the
+    // entries (see `oplog::outcomes`).
+    let shown = &numbers[numbers.len().saturating_sub(args.limit.get())..];
+    let entries = shown
         .iter()
-        .rev()
-        .take(args.limit.get())
         .map(|number| log.read(*number))
         .collect::<Result<Vec<_>, _>>()
         .map_err(CliError::OpLog)?;
-    for entry in &entries {
+    let refs = repository.refs();
+    let current = oplog::Current::new(
+        refs.head().map_err(CliError::Refs)?,
+        refs.branches().map_err(CliError::Refs)?,
+    );
+    let outcomes = oplog::outcomes(&entries, &current);
+    for (entry, outcome) in entries.iter().zip(outcomes).rev() {
         let written = if args.json {
-            writeln!(out, "{}", op_log::json(entry))
+            writeln!(out, "{}", op_log::json(entry, outcome))
         } else {
-            write!(out, "{}", op_log::text(entry))
+            write!(out, "{}", op_log::text(entry, outcome))
         };
         match written {
             // The reader of a pipe, such as `head`, has had enough: that is not a failure.
