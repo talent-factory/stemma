@@ -13,6 +13,15 @@
   field (the rules are in ADR-005), so the authorization hook and the commit encoding never see an
   invalid actor.
 
+- **The command line takes the actor from `--actor` or `STEMMA_ACTOR`** *(confirmed)*. The text is
+  the actor line of a commit (`human <id>` or
+  `agent <id> model=<model> session=<session> sponsor=<sponsor>`), read by `Actor::from_str`. The
+  flag goes before the variable, and an empty variable counts as not set. Without an actor a
+  command fails with exit code 1 and creates nothing. There is no default such as the name of the
+  operating system user: an agent must never act as a human without saying so. The text is not
+  checked beyond the actor rules, so it proves nothing about who runs the command (see
+  ADR-003 and ADR-004 for what does).
+
 Implementation: `crates/stemma-core/src/actor.rs` (actors) and `crates/stemma-core/src/lib.rs`
 (authorization hook).
 

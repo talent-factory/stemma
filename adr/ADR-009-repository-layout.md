@@ -42,9 +42,9 @@ Implementation: `crates/stemma-core/src/repository.rs`.
   the error is `NotDurable`, not a plain I/O error, so that a retry does not meet an
   unexplained `AlreadyExists`.
 - **The initial branch** *(confirmed)*. `init` takes it as an option (`InitOptions`), and `main`
-  is the default. The command line will offer `--initial-branch` with the command `stemma init`
-  (not implemented yet). There is no configuration file in phase 1. The
-  name goes through `BranchName`, so an invalid name stops `init` before anything is created.
+  is the default. `stemma init` offers it as `--initial-branch`. There is no configuration file in
+  phase 1. The name goes through `BranchName`, so an invalid name stops `init` before anything is
+  created; on the command line the argument parser rejects it with exit code 2.
   HEAD points to the branch with `branch <name>`; the branch does not exist until the first
   commit (an unborn branch, as ADR-008 allows).
 - **`init` has an actor and an authorizer** *(confirmed)*. `Repository::init(path, options, actor,
@@ -75,8 +75,7 @@ Implementation: `crates/stemma-core/src/repository.rs`.
 - [ ] Finding the repository from a subdirectory (searching upwards for `.stemma`), which `add`,
       `commit`, and `status` need.
 - [ ] Removing a stale `.stemma-init-*` directory, by `init` or by a repair command.
-- [ ] The place of the actor of the command line (a flag, an environment variable, or a
-      configuration file) is open for `add` and `commit`.
+- [ ] A configuration file as a third place for the actor of the command line (ADR-002).
 - [ ] A configuration file, and the user-level default branch it would allow.
 - [ ] On Unix, an empty `.stemma` that another process creates between the check in `init` and
       the rename is replaced, because `rename` replaces an empty directory. Closing it needs
