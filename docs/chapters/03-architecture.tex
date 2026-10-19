@@ -4,7 +4,7 @@ Dieses Kapitel beschreibt die Schichten des Systems und die Verteilung der Veran
 
 \section{Schichtenmodell}
 
-Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff, Merge und Autorisierung. Alle Oberflächen rufen denselben Kern auf.
+Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff, Merge und Autorisierung. Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
 
 \startitemize
 \item {\bf stemma-core:} Bibliothek mit Objekten, Referenzen, Autorisierung.
@@ -12,6 +12,10 @@ Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff, Me
 \item {\bf API-Server:} Schnittstelle für Hub und Clients, folgt in Phase 5.
 \item {\bf MCP-Server:} Adapter für Agenten, folgt in Phase 6.
 \stopitemize
+
+\startplacefigure[title={Schichtenmodell von Stemma},reference=fig:layers,location=here]
+\externalfigure[images/layers.pdf][width=\textwidth]
+\stopplacefigure
 
 Prüfungen gehören in den Kern, nicht in die Adapter. Ein Aufruf über die CLI, die API oder den MCP-Server muss dieselbe Entscheidung erhalten.
 

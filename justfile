@@ -86,9 +86,19 @@ coverage-html:
 rustdoc:
     cargo doc --workspace --no-deps --open
 
+# Convert the SVG figures of the book to PDF (needs rsvg-convert: brew install librsvg).
+[group('Documentation')]
+figures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for svg in {{docs_dir}}/images/src/*.svg; do
+        [ -e "$svg" ] || continue
+        rsvg-convert --format=pdf --output="{{docs_dir}}/images/$(basename "${svg%.svg}").pdf" "$svg"
+    done
+
 # Build the book (ConTeXt → docs/main.pdf).
 [group('Documentation')]
-book:
+book: figures
     cd {{docs_dir}} && context --nonstopmode main.tex
 
 # Build the book and open the PDF.

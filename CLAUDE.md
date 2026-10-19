@@ -16,7 +16,7 @@ All routine tasks run through `just` (see `justfile`, list with `just`):
 
 - `just ci`: format check, clippy (`-D warnings`), tests. Must pass before every commit.
 - `just coverage`: test coverage summary (needs `cargo install cargo-llvm-cov --locked`). Informational, not part of `just ci`.
-- `just book`: build the ConTeXt book (`docs/main.tex`). Must compile without errors or warnings.
+- `just book`: build the ConTeXt book (`docs/main.tex`). Must compile without errors or warnings. It first runs `just figures`, which converts the SVG sources in `docs/images/src/` to PDF (needs `brew install librsvg`).
 
 ## Commits
 
