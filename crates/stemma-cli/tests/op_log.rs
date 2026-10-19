@@ -200,6 +200,24 @@ fn a_gap_is_reported_and_nothing_is_listed() {
 }
 
 #[test]
+fn an_empty_log_is_reported_and_nothing_is_listed() {
+    let dir = repository();
+    fs::remove_file(dir.path().join(".stemma/oplog/000000000001")).unwrap();
+    for args in [&["op", "log"][..], &["op", "log", "--json"][..]] {
+        let result = run(dir.path(), args);
+        assert_eq!(result.code, 1);
+        assert!(
+            result
+                .stderr
+                .starts_with("stemma: the operation log is empty"),
+            "{}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "");
+    }
+}
+
+#[test]
 fn a_damaged_entry_is_reported_and_nothing_is_listed() {
     let dir = repository();
     snapshot(dir.path(), 2, "-", A);

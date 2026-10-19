@@ -105,8 +105,16 @@ enum CliError {
     Open(OpenError),
     /// The operation log cannot be read.
     OpLog(OpLogError),
+    /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
+    /// repository was tampered with.
+    EmptyLog,
     /// The entries were read, but the output could not be written.
-    Write(io::Error),
+    Write {
+        /// The number of the entry that was being written.
+        entry: u64,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The command has done its work, but the result could not be written to the output.
     Output {
         /// What the command made.
@@ -127,7 +135,8 @@ impl CliError {
             | Self::Init(_)
             | Self::Open(_)
             | Self::OpLog(_)
-            | Self::Write(_) => ExitCode::FAILURE,
+            | Self::EmptyLog
+            | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
 }
@@ -149,7 +158,15 @@ impl fmt::Display for CliError {
             Self::Init(error) => error.fmt(f),
             Self::Open(error) => error.fmt(f),
             Self::OpLog(error) => error.fmt(f),
-            Self::Write(source) => write!(f, "could not write the result: {source}"),
+            Self::EmptyLog => write!(
+                f,
+                "the operation log is empty: `init` always writes entry 1, so entries were lost \
+                 or the repository was tampered with"
+            ),
+            Self::Write { entry, source } => write!(
+                f,
+                "could not write entry {entry} to standard output: {source}"
+            ),
             Self::Output { created, source } => write!(
                 f,
                 "created `{}`, but could not write the result: {source}",
@@ -186,6 +203,9 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = Repository::open(&args.path).map_err(CliError::Open)?;
     let log = repository.oplog();
     let numbers = log.numbers().map_err(CliError::OpLog)?;
+    if numbers.is_empty() {
+        return Err(CliError::EmptyLog);
+    }
     // The shown entries are the newest ones, so every later entry of a pointer is among them, and
     // only the last entry of a pointer needs its value now.
     let shown = &numbers[numbers.len().saturating_sub(args.limit.get())..];
@@ -236,7 +256,12 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         match written {
             // The reader of a pipe, such as `head`, has had enough: that is not a failure.
             Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
-            Err(error) => return Err(CliError::Write(error)),
+            Err(source) => {
+                return Err(CliError::Write {
+                    entry: entry.number(),
+                    source,
+                });
+            }
             Ok(()) => {}
         }
     }
@@ -380,7 +405,11 @@ mod tests {
                 path: PathBuf::from("."),
             }),
             CliError::OpLog(OpLogError::Gap { missing: 2 }),
-            CliError::Write(io_error()),
+            CliError::EmptyLog,
+            CliError::Write {
+                entry: 1,
+                source: io_error(),
+            },
             CliError::Init(InitError::AlreadyExists {
                 path: PathBuf::from(".stemma"),
             }),
@@ -423,8 +452,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(closed.is_ok(), "{closed:?}");
         let error = full.unwrap_err();
-        assert!(matches!(error, CliError::Write(_)), "{error}");
-        assert!(error.to_string().contains("disk full"), "{error}");
+        assert!(matches!(error, CliError::Write { entry: 1, .. }), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "could not write entry 1 to standard output: disk full"
+        );
     }
 
     #[test]
