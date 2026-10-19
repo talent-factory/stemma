@@ -289,7 +289,10 @@ them.
       `CommitParseError`, `IndexParseError`, and `ActorParseError` carries an enum instead of a
       `&'static str`: `TreeMalformed`, `CommitMalformed`, `IndexMalformed`, and `ActorMalformed`.
       A caller can match on the reason; the `Display` form of each variant is the message that
-      the string had, and the tests pin it. The time of a commit has its own two reasons,
-      `TimeForm` and `TimeRange`. A cut-off last line is `CutOff` in all readers but the actor
-      line, which has no lines. The enums are `#[non_exhaustive]`, so a new reason is not a
+      the string had, and the tests pin it. The enums describe the shape of the lines. A value
+      that is rejected has its own variant, as for the object IDs and the author: the time of a
+      commit is `CommitParseError::InvalidTime` with a `TimeError` (`NotCanonical`,
+      `OutOfRange`). A cut-off last line is `CutOff` in the tree, commit, and index readers, also
+      where a commit expects its empty line, and not the header or line that it should have been;
+      the actor line has no lines. The enums are `#[non_exhaustive]`, so a new reason is not a
       breaking change.

@@ -585,6 +585,7 @@ fn commit_line(error: &CommitParseError) -> Option<usize> {
         CommitParseError::NotUtf8 { .. } | CommitParseError::Commit(_) => None,
         CommitParseError::Malformed { line, .. }
         | CommitParseError::InvalidObjectId { line, .. }
+        | CommitParseError::InvalidTime { line, .. }
         | CommitParseError::InvalidAuthor { line, .. }
         | CommitParseError::DuplicateParent { line, .. } => Some(*line),
     }
