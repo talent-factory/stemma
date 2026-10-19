@@ -230,6 +230,14 @@ Der nächste Schritt ist die Repository-Schicht mit `stemma init`; die Referenze
 1. Stand prüfen: aktuellen `main` holen, `ls adr` und `git log --oneline -15` lesen, offene PRs auf dem Mac ansehen.
 2. ~~Referenzen~~ erledigt (ADR-008): `refs/heads/<name>`, HEAD, Regel für Branch-Namen, Compare-and-Swap mit Sperrdatei.
 3. Repository-Schicht und `stemma init`: legt `.stemma/` an mit `format`, `objects/`, `tmp/`, `refs/heads/` und `HEAD`. Der Standard-Branch ist **konfigurierbar** (so hat Daniel entschieden), zum Beispiel über `--initial-branch`; ohne Angabe `main`. Ein zweites `init` im selben Ordner meldet einen Fehler und ändert nichts. Der Speicher soll die Formatdatei prüfen (ADR-007).
+
+   **Entwurfsvorschläge, noch nicht mit Daniel besprochen** (Stand nach PR #32; zuerst klären, dann umsetzen):
+
+   - *Ort der Schicht:* ein Typ `Repository` in `stemma-core`, der `FsObjectStore` und `FsRefStore` bündelt; `stemma-cli` enthält nur den Befehl. Das behebt auch den Review-Befund, dass `update_branch` den Objektspeicher eines anderen Repositories annehmen kann.
+   - *Atomares `init`:* alles in einem temporären Ordner neben `.stemma/` aufbauen und mit einem Rename an Ort und Stelle bringen, damit ein Abbruch kein halbes Repository hinterlässt. Ist `.stemma/` schon da, bricht `init` ab, ohne etwas zu ändern.
+   - *Formatdatei:* trägt eine Versionsnummer; `Repository::open` lehnt eine unbekannte Version ab.
+   - *Standard-Branch:* `HEAD` zeigt auf den gewählten Branch (`branch <name>`), der Branch selbst existiert bis zum ersten Commit nicht (ungeborener Branch). Der Name läuft durch `BranchName`.
+   - *Autorisierung:* offen, ob `init` schon einen Akteur braucht oder erst die Operationen auf einem bestehenden Repository.
 4. `stemma add`, danach `commit`, `status`, `log` als weitere Scheiben. Jede Repository-Operation ruft den Autorisierungs-Hook auf.
 5. Status-Zeilen der ADRs nachziehen (siehe Abschnitt Entscheidungen) und ADR-Entwürfe für das, was dabei neu entschieden wird.
 6. Buch nachführen: Kapitel 04 (Phase 1) zum aktuellen Stand, den Abschnitt «Der Name» in die Einleitung übernehmen (angeboten, noch nicht beantwortet), eine zitierfähige Quelle zur Stemmatologie ergänzen. Danach `just book`.
@@ -245,6 +253,7 @@ Der nächste Schritt ist die Repository-Schicht mit `stemma init`; die Referenze
 | Lease-Dauer, Fast-Track für triviale Änderungen | nicht behandelt |
 | Pfadlisten je Risikostufe | Kategorien da, Verzeichnisse nicht (ADR-004) |
 | Packfiles, Garbage Collection, Streaming | offen (ADR-007) |
+| Offene Punkte der Referenzen | Branch löschen, gepackte Refs, Tags, Prüfung der Refs gegen den Speicher, `set_head` mit Compare-and-Swap, `Expected`-Enum, Regel für veraltete Sperren, Windows-Rename, Reflog, Remote-Refs (Liste in `adr/ADR-008-references.md`, «Open items») |
 | Verhalten des Speichers unter Windows | fünf Tests laufen nur unter Unix (ADR-007) |
 | Squash als einzige Merge-Methode, Branch-Lebensdauer, Branch-Protection | offen (ADR-006) |
 
