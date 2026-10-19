@@ -25,3 +25,6 @@ texmf-cache/
 # Tooling
 .serena/
 .vscode/
+
+# Figures converted from docs/images/src/*.svg by `just figures`
+docs/images/*.pdf
