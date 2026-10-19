@@ -26,6 +26,11 @@
 //! anything that [`Index::encode`] would not have written, so one index has exactly one
 //! encoding.
 //!
+//! Reading and encoding use no store. [`Index::verify`] is the one operation that takes one: it
+//! checks that every ID names a blob that the store has. The reader claims each ID as a blob,
+//! because every entry of the index is a file, but it cannot know; a caller that relies on the
+//! claim, such as a builder of trees from the index, has to call `verify` first.
+//!
 //! An incompatible change to the encoding raises the number in the header line. A reader reports
 //! a header with another number as [`IndexParseError::UnsupportedVersion`] instead of reading
 //! it as version 1. The index is a file, not an object, so the kind-name rule for objects does
@@ -40,6 +45,7 @@ use std::str::FromStr;
 
 pub use crate::object::FileMode;
 use crate::object::{name_problem, BlobId, EntryMode, NameProblem, ObjectId, ObjectIdParseError};
+use crate::store::{ObjectStore, StoreError};
 
 /// First line of the encoding. It carries the format version.
 const HEADER: &str = "stemma-index 1\n";
@@ -228,6 +234,48 @@ impl Error for IndexParseError {
             Self::InvalidObjectId { source, .. } => Some(source),
             Self::Entry { source, .. } => Some(source),
             _ => None,
+        }
+    }
+}
+
+/// Why an index does not name stored blobs only. Carries the path of the first entry, in index
+/// order, that fails.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum IndexVerifyError {
+    /// The store has no object with the ID of the entry. The blob may not have been stored yet.
+    Missing {
+        /// The path of the entry.
+        path: String,
+        /// The ID the entry names.
+        id: BlobId,
+    },
+    /// The store could not resolve the ID as a blob: the object has another kind
+    /// ([`StoreError::KindMismatch`]), it is damaged, or the storage failed.
+    Store {
+        /// The path of the entry.
+        path: String,
+        /// What the store reported. Boxed to keep the error small.
+        source: Box<StoreError>,
+    },
+}
+
+impl fmt::Display for IndexVerifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing { path, id } => {
+                write!(f, "`{}`: the store has no object {id}", path.escape_debug())
+            }
+            Self::Store { path, source } => write!(f, "`{}`: {source}", path.escape_debug()),
+        }
+    }
+}
+
+impl Error for IndexVerifyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Store { source, .. } => Some(source.as_ref()),
+            Self::Missing { .. } => None,
         }
     }
 }
@@ -472,6 +520,39 @@ impl Index {
             previous = Some(path);
         }
         Ok(index)
+    }
+
+    /// Checks that every entry names a blob that the store has. A parsed index only claims this
+    /// (see the module documentation), and an entry staged with the ID of a blob that was never
+    /// stored does not make it true either.
+    ///
+    /// The result holds at the time of the call. The check reads and verifies each blob completely
+    /// (see [`ObjectStore::resolve_blob`]), so its cost grows with the size of the staged files.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first problem in index order: [`IndexVerifyError::Missing`] if the store has no
+    /// such object, and [`IndexVerifyError::Store`] if the object is not a blob, is damaged, or the
+    /// storage fails.
+    pub fn verify(&self, store: &dyn ObjectStore) -> Result<(), IndexVerifyError> {
+        for (path, entry) in &self.entries {
+            match store.resolve_blob(&ObjectId::from(entry.id)) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return Err(IndexVerifyError::Missing {
+                        path: path.0.clone(),
+                        id: entry.id,
+                    })
+                }
+                Err(source) => {
+                    return Err(IndexVerifyError::Store {
+                        path: path.0.clone(),
+                        source: Box::new(source),
+                    })
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1087,5 +1168,104 @@ mod tests {
         )))
         .unwrap_err();
         assert!(error.to_string().contains("strictly ascending"), "{error}");
+    }
+
+    // Verification against a store
+
+    #[test]
+    fn verify_accepts_an_empty_index_and_one_of_stored_blobs() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        assert!(Index::new().verify(&store).is_ok());
+
+        let mut index = Index::new();
+        for (path, content) in [("a.txt", "one"), ("src/b.rs", "two"), ("src/c.rs", "")] {
+            let blob = store.put_blob(&crate::object::Blob::new(content)).unwrap();
+            index.insert(path, FileMode::File, blob).unwrap();
+        }
+        assert!(index.verify(&store).is_ok());
+    }
+
+    #[test]
+    fn verify_reports_a_blob_that_was_never_stored_with_its_path() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        // The ID is right for the content, but the blob is not in the store.
+        let blob = crate::object::Blob::new("not stored").id();
+        let mut index = Index::new();
+        index.insert("docs/new.md", FileMode::File, blob).unwrap();
+        match index.verify(&store).unwrap_err() {
+            IndexVerifyError::Missing { path, id } => {
+                assert_eq!((path.as_str(), id), ("docs/new.md", blob));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn verify_reports_an_id_that_the_reader_accepted_as_a_blob_but_names_a_tree() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let tree = store
+            .put_tree(&crate::object::Tree::new(vec![]).unwrap())
+            .unwrap();
+        // The reader claims every ID as a blob and cannot tell; the store can.
+        let text = format!("stemma-index 1\n100644 {tree} a.txt\n");
+        let index = Index::parse(text.as_bytes()).expect("the reader accepts the claim");
+        let error = index.verify(&store).unwrap_err();
+        match &error {
+            IndexVerifyError::Store { path, source } => {
+                assert_eq!(path, "a.txt");
+                assert!(
+                    matches!(
+                        source.as_ref(),
+                        StoreError::KindMismatch {
+                            expected: crate::object::Kind::Blob,
+                            found: crate::object::Kind::Tree,
+                            ..
+                        }
+                    ),
+                    "{source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(error.source().is_some());
+        assert!(
+            error.to_string().contains("is a tree, not a blob"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn verify_reports_the_first_problem_in_index_order() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let stored = store.put_blob(&crate::object::Blob::new("ok")).unwrap();
+        let absent = crate::object::Blob::new("absent").id();
+        let mut index = Index::new();
+        index.insert("c", FileMode::File, absent).unwrap();
+        index.insert("b", FileMode::File, absent).unwrap();
+        index.insert("a", FileMode::File, stored).unwrap();
+        match index.verify(&store).unwrap_err() {
+            IndexVerifyError::Missing { path, .. } => assert_eq!(path, "b"),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn verify_errors_name_the_path_escaped_and_the_cause() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let absent = crate::object::Blob::new("absent").id();
+        let mut index = Index::new();
+        index.insert("quote\"d", FileMode::File, absent).unwrap();
+        let error = index.verify(&store).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.starts_with("`quote\\\"d`: the store has no object b3:"),
+            "{text}"
+        );
+        assert!(error.source().is_none());
     }
 }
