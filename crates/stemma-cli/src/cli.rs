@@ -222,6 +222,12 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let refs = repository.refs();
         let locked_before = refs.is_locked()?;
         let head = refs.head()?;
+        // A repository without the file is older than the working-copy commit: it has none.
+        let working_copy = match refs.working_copy() {
+            Ok(commit) => Some(commit),
+            Err(RefError::NoWorkingCopy { .. }) => None,
+            Err(error) => return Err(error),
+        };
         let mut branches = Vec::new();
         for name in &names {
             if let Some(commit) = refs.branch(name)? {
@@ -229,12 +235,15 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
             }
         }
         let locked_after = refs.is_locked()?;
-        Ok((head, branches, locked_before || locked_after))
+        Ok((head, working_copy, branches, locked_before || locked_after))
     };
     let current = match read() {
-        Ok((head, branches, locked)) => {
+        Ok((head, working_copy, branches, locked)) => {
             let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
-            Some(oplog::Current::new(head, branches, !locked && unchanged))
+            Some(
+                oplog::Current::new(head, branches, !locked && unchanged)
+                    .with_working_copy(working_copy),
+            )
         }
         Err(error) => {
             // A warning that cannot be written is dropped on purpose, as in `main`.

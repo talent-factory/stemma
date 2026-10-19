@@ -399,6 +399,19 @@ pub enum RefError {
         /// The file that does not exist.
         path: PathBuf,
     },
+    /// There is no working-copy commit. `init` records one, so the file was removed or the
+    /// repository is older than the working-copy commit (ADR-010).
+    NoWorkingCopy {
+        /// The file that does not exist.
+        path: PathBuf,
+    },
+    /// The working-copy commit is not where the caller saw it: another change came first.
+    StaleWorkingCopy {
+        /// The commit the caller expected.
+        expected: CommitId,
+        /// The commit the working copy has.
+        found: CommitId,
+    },
 }
 
 /// What stands in the way of a new branch name.
@@ -472,6 +485,16 @@ impl fmt::Display for RefError {
                 path.display()
             ),
             Self::NoHead { path } => write!(f, "there is no HEAD at `{}`", path.display()),
+            Self::NoWorkingCopy { path } => write!(
+                f,
+                "there is no working-copy commit at `{}`; `init` records one",
+                path.display()
+            ),
+            Self::StaleWorkingCopy { expected, found } => write!(
+                f,
+                "the working-copy commit has moved: it was expected to be at {expected}, but it \
+                 is at {found}"
+            ),
         }
     }
 }
@@ -508,7 +531,9 @@ impl Error for RefError {
             | Self::MissingCommit(_)
             | Self::NotACommit { .. }
             | Self::Locked { .. }
-            | Self::NoHead { .. } => None,
+            | Self::NoHead { .. }
+            | Self::NoWorkingCopy { .. }
+            | Self::StaleWorkingCopy { .. } => None,
         }
     }
 }
@@ -664,6 +689,10 @@ impl FsRefStore {
         name.as_str()
             .split('/')
             .fold(self.heads_dir(), |path, component| path.join(component))
+    }
+
+    fn working_copy_path(&self) -> PathBuf {
+        self.root.join("working-copy")
     }
 
     fn lock_path(&self) -> PathBuf {
@@ -1106,6 +1135,61 @@ impl FsRefStore {
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
         let moved = self.write_replacing(&self.head_path(), &head.encode(), &self.root);
+        Ok(Self::after_move(done, moved))
+    }
+
+    /// The working-copy commit (ADR-010), recorded in the file `working-copy` in the form of a
+    /// branch file. `init` writes it, so a missing file is [`RefError::NoWorkingCopy`] and not
+    /// "no commit yet".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::NoWorkingCopy`] if the file is missing, [`RefError::Corrupt`] if it is
+    /// not in canonical form, and [`RefError::Io`] if the storage fails.
+    pub fn working_copy(&self) -> Result<CommitId, RefError> {
+        self.require_root()?;
+        let path = self.working_copy_path();
+        let bytes = self
+            .read_reference(&path)?
+            .ok_or_else(|| RefError::NoWorkingCopy { path: path.clone() })?;
+        parse_branch(&bytes).map_err(|source| RefError::Corrupt { path, source })
+    }
+
+    /// Moves the working-copy commit from `expected` to `new`, and runs `step` after the checks and
+    /// before the move, all under the lock of the references, as
+    /// [`update_branch_after`](Self::update_branch_after) does for a branch. The commit has to be
+    /// in `objects`, and it is looked up under the lock. If `expected` is `new`, so that the working
+    /// copy is at `new` already, `step` does not run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
+    /// does not have, [`RefError::NoWorkingCopy`] and [`RefError::Corrupt`] for a file that cannot
+    /// be read, [`RefError::StaleWorkingCopy`] if the working-copy commit is not `expected`, and [`RefError::Locked`]. Once `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn update_working_copy_after<T, E>(
+        &self,
+        expected: CommitId,
+        new: CommitId,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let _lock = self.lock()?;
+        Self::require_commit(&new, objects)?;
+        let found = self.working_copy()?;
+        if found != expected {
+            return Err(RefError::StaleWorkingCopy { expected, found });
+        }
+        if expected == new {
+            return Ok(Logged::Unchanged);
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let moved =
+            self.write_replacing(&self.working_copy_path(), &encode_branch(&new), &self.root);
         Ok(Self::after_move(done, moved))
     }
 

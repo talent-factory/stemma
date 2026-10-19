@@ -69,7 +69,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   has not grown meanwhile). A writer between its entry and its move looks the same as a crash
   there, so while one is at work the outcome is unknown. Any other value is a change outside the
   log and leaves the outcome unknown, as does the working-copy commit and a pointer whose value
-  cannot be read. A lock that a crashed writer left makes the newest entries unknown until
+  cannot be read. The working-copy commit has its place in the references since STEMMA-22
+  (`.stemma/working-copy`); a caller that does not give its value to `oplog::Current` leaves the
+  last entry that moves it unknown. A lock that a crashed writer left makes the newest entries unknown until
   someone removes it. A separate marker can come with a later version of the entry encoding
   (`stemma-oplog 2`) if a use appears.
 - **Only a change writes an entry** *(implemented for pointers; the snapshot is not built)*. A snapshot of an unchanged directory creates no
@@ -158,15 +160,15 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   is therefore in the log until it is purged (STEMMA-26), which is why the log is local.
 - A hub never sees the log. What a hub keeps is its own record of ref updates (ADR-003).
 - `Repository::init` creates `oplog/` and writes entry 1, so the order "entry, then move" holds
-  from the first pointer on.
+  from the first pointer on. Entry 1 moves HEAD and the working-copy commit (ADR-010).
 
 ## Open items
 
 - [x] A function that reads the outcome of an entry from the chain of its pointer
       (`oplog::outcomes`, STEMMA-34); `stemma op log` marks an entry that did not take effect
-      (`!`, `took_effect: false`) or whose outcome is not known (`?`, `null`). The working-copy commit has no
-      place in the references yet (ADR-010), so the last entry that moves it stays unknown until
-      the snapshot exists.
+      (`!`, `took_effect: false`) or whose outcome is not known (`?`, `null`). The working-copy commit has its
+      place in the references since STEMMA-22, and `oplog::Current::with_working_copy` hands its
+      value to `outcomes`.
 - [ ] Every `append` lists the directory to find the end of the log, which costs time in a long
       log. Measure it, and keep the number of the last entry if it matters.
 - [ ] `Moved` can be built with an old and a new value that are equal, and `Change::new` rejects
