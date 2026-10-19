@@ -11,3 +11,4 @@
 | [ADR-007](ADR-007-object-storage.md) | Object storage | Proposal, partially confirmed |
 | [ADR-008](ADR-008-references.md) | References: branches and HEAD | Proposal, partially confirmed |
 | [ADR-009](ADR-009-repository-layout.md) | Repository layout and `init` | Proposal, partially confirmed |
+| [ADR-010](ADR-010-working-copy.md) | The working copy is a commit | Proposal, partially confirmed |
