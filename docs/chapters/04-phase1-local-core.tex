@@ -24,12 +24,12 @@ Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. Di
     HEAD          branch main
     objects/      lose Objekte
     refs/heads/   Branches
-    tmp/          temporäre Dateien des Objektspeichers
+    tmp/          temporäre Dateien des Objektspeichers und der Referenzen
 \stoptyping
 
 Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende, eine nicht kanonische und jede andere Version ab. Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
 
-Der Befehl \type{init} baut den Ordner unter einem temporären Namen neben \type{.stemma} auf und benennt ihn am Ende um. Ein Abbruch hinterlässt so kein halbes Repository. Existiert \type{.stemma} bereits, bricht \type{init} ab und ändert nichts. Der Standard-Branch ist \type{main} und lässt sich mit \type{--initial-branch} wählen. HEAD zeigt auf ihn, der Branch selbst entsteht erst mit dem ersten Commit. Wie jede Operation ruft \type{init} zuerst \type{authorize} mit dem Akteur auf.
+Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben \type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht, nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben. Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen. Für den Befehl \type{stemma init} ist der Schalter \type{--initial-branch} geplant. HEAD zeigt auf den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Wie jede Operation ruft \type{init} zuerst \type{authorize} mit dem Akteur auf.
 
 \section{Offene Fragen}
 
