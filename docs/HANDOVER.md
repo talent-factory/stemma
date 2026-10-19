@@ -125,14 +125,14 @@ Trunk-based Development: `main` ist geschützt und immer grün. Jede Arbeitssche
 
 ## Phasen und Aufgaben
 
-Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell ist fertig, die Befehle fehlen noch. Die Aufgaben stammen aus den Buchkapiteln 04 bis 09, Phase 1 ist feiner zerlegt. Der Status beruht auf dem Code, nicht auf Absichten.
+Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell steht, `stemma init` und das Operation Log sind gebaut, die übrigen Befehle fehlen noch. Die Aufgaben stammen aus den Buchkapiteln 04 bis 09, Phase 1 ist feiner zerlegt. Der Status beruht auf dem Code, nicht auf Absichten.
 
 **Überblick**
 
 | Phase | Ziel | Aufgaben | Erledigt | Status |
 | --- | --- | --- | --- | --- |
 | Fundament | Repository, Regeln, Werkzeuge, ADRs | 6 | 6 | Erledigt |
-| 1 Lokaler Kern | Ein lokales Repository mit einem Nutzer: anlegen, speichern, committen, Status | 15 | 7 (1 teilweise) | In Arbeit |
+| 1 Lokaler Kern | Ein lokales Repository mit einem Nutzer: anlegen, speichern, committen, Status | 15 | 9 (3 teilweise) | In Arbeit |
 | 2 Diff und Ausgabe | Änderungen zwischen Arbeitskopie, Index und Commits lesbar anzeigen | 4 | 0 | Nicht begonnen |
 | 3 Branches und Merge | Parallele Arbeit lokal: Branches, Wechsel, Drei-Wege-Merge | 4 | 0 | Nicht begonnen |
 | 4 Akteure und Zusammenarbeit | Schreibhoheit, PRs und Freigaben werden erzwungen | 7 | 0 | Nicht begonnen |
@@ -156,13 +156,13 @@ Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell ist fertig, die Befehle f
 | 1 | Index als Datenmodell: Kodierung, Pfadregeln, `verify` | Erledigt | PR #3, #11, #20; Format `stemma-index 1` entschieden |
 | 1 | Objekt aus dem Speicher lesen und decodieren, Arten prüfen | Erledigt | PR #26: `get_tree`, `get_commit`, `Tree::verify`, `Commit::verify` |
 | 1 | `Index::write_tree(&store)` | Erledigt | PR #25: ruft `verify` selbst auf |
-| 1 | Autorisierungs-Hook `authorize` | Teilweise | Trait und `AllowAll` vorhanden, aber noch keine Operation ruft ihn auf |
+| 1 | Autorisierungs-Hook `authorize` | Teilweise | `init`, `update_branch` und `set_head` rufen ihn auf, ebenso die Befehle; `add`, `commit` und der Snapshot fehlen noch |
 | 1 | Referenzen für `main` und HEAD | Erledigt | `refs.rs`, ADR-008; Löschen von Branches, gepackte Refs und Tags offen |
 | 1 | Repository-Schicht und `stemma init` | Erledigt | PR #41, #42; ADR-009; `Repository::init` und `open`, Befehl `stemma init` mit `--initial-branch` und `--actor` |
 | 1 | `stemma add` | Offen | Dateien lesen, Blobs schreiben, Index speichern |
 | 1 | `stemma commit` | Offen | Zeitstempel ist im Commit vorgesehen |
 | 1 | `stemma status` | Offen | braucht Arbeitskopie, Index und HEAD |
-| 1 | Operation Log | Teilweise | ADR-011, PR #47: Kern mit Schreiber und strengem Leser, `init`, `update_branch` und `set_head` schreiben den Eintrag vor dem Zug unter der Sperre; `stemma op log` (STEMMA-27) und `op restore` (STEMMA-28) offen |
+| 1 | Operation Log | Teilweise | ADR-011, PR #47: Kern mit Schreiber und strengem Leser, `init` schreibt Eintrag 1 (ohne Sperre, niemand sieht das Verzeichnis), `update_branch` und `set_head` schreiben ihn vor dem Zug unter der Sperre; `stemma op log` (STEMMA-27) und `op restore` (STEMMA-28) offen |
 | 1 | Entscheidung Arbeitskopie als Commit (wie jj) oder klassischer Index | Teilweise | ADR-010: Arbeitskopie ist ein Commit, Snapshot bei jedem Befehl; Vorschläge noch zu bestätigen (STEMMA-25) |
 | 2 | Myers-Diff mit Tests gegen bekannte Fälle | Nicht begonnen | |
 | 2 | Hunks mit Kontextzeilen | Nicht begonnen | |

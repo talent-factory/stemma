@@ -43,7 +43,7 @@
 //! the number is taken, another writer was faster; the writer then looks for the end of the log
 //! again and tries the next free number. [`Repository`](crate::repository::Repository) writes
 //! under the lock of the references, so its writers do not meet here; the retry is for any other
-//! writer, and for a crash that left a number half taken.
+//! writer.
 //!
 //! The numbers have no gap: a gap means that an entry is lost, and the reader reports it. A
 //! directory listing is not a snapshot while a writer adds files, so the reader lists the directory
@@ -51,8 +51,21 @@
 //! largest number and checks nothing else. Names that start with a dot are skipped, as in the
 //! references, because file managers and editors leave such files; any other name is reported.
 //!
-//! Only the repository writes. [`FsOpLog::append`] and [`Entry::new`] are visible inside this crate
+//! Only the repository writes. `FsOpLog::append` and `Entry::new` are visible inside this crate
 //! only, so no caller can add an entry past the authorizer or invent one that was never in the log.
+//!
+//! A writer takes the number after the largest one and checks nothing else, so a gap does not stop
+//! it: the reader reports the gap. A lost *last* entry is not noticed by anyone, and the next
+//! writer takes its number again. A tip file that holds the number of the last entry would catch
+//! that; it is an open item of ADR-011.
+//!
+//! `tmp/` holds scratch files. A temporary name is removed after the entry is published, on a best
+//! effort basis: a name that stays is harmless and costs only space, and no operation of this slice
+//! empties `tmp/` (ADR-011).
+//!
+//! An entry is at most 64 KiB. The writer refuses a larger one before it writes anything, so the
+//! reader never meets a file that the writer made and cannot read; the actor and the names in it
+//! have no limit of their own.
 
 use std::error::Error;
 use std::fmt;
@@ -75,7 +88,7 @@ const HEADER_PREFIX: &str = "stemma-oplog ";
 /// The number of digits of a file name.
 const NUMBER_WIDTH: usize = 12;
 
-/// The largest number of an entry, the largest value of [`NUMBER_WIDTH`] digits.
+/// The largest number of an entry: the largest value of twelve decimal digits.
 pub const MAX_NUMBER: u64 = 999_999_999_999;
 
 /// The largest size of an entry that is read, in bytes. An entry is a few hundred bytes; a file much
@@ -104,7 +117,8 @@ pub enum OperationNameError {
     /// The name is empty.
     Empty,
     /// The name is longer than 32 bytes, which is 32 characters for a name that is valid. Carries
-    /// its length in bytes.
+    /// its length in bytes. The length is checked before the characters, so a long name with a
+    /// character that is not allowed is reported as too long.
     TooLong(usize),
     /// The name does not start with a lowercase letter.
     BadStart,
@@ -118,8 +132,8 @@ impl fmt::Display for OperationNameError {
             Self::Empty => f.write_str("the name of an operation is empty"),
             Self::TooLong(length) => write!(
                 f,
-                "the name of an operation has at most {MAX_OPERATION_LEN} characters, not \
-                 {length} bytes"
+                "the name of an operation has at most {MAX_OPERATION_LEN} bytes, which is {MAX_OPERATION_LEN} \
+                 characters of a valid name, not {length} bytes"
             ),
             Self::BadStart => {
                 f.write_str("the name of an operation starts with a lowercase letter")
@@ -765,7 +779,7 @@ pub enum EntryParseError {
         name: String,
     },
     /// The lines are well formed, but the entry is rejected as a whole. Every rule of
-    /// [`Change::new`] and [`Entry::new`] is already checked while the lines are read, so this does
+    /// [`Change::new`] and `Entry::new` is already checked while the lines are read, so this does
     /// not occur today; it is here for a rule that is added later.
     Entry(EntryError),
 }
@@ -876,25 +890,19 @@ pub enum OpLogError {
     /// it may not survive a crash. A caller that orders "entry, then move" must not move: the
     /// entry is not known to be safe. The entry stays; a second attempt writes another one.
     NotFlushed {
-        /// The number of the entry that is in the log.
-        number: u64,
+        /// The entry that is in the log.
+        entry: Box<Entry>,
         /// The directory that could not be flushed.
         path: PathBuf,
         /// The error of the file system.
         source: io::Error,
     },
-    /// The entry is in the log, whole and flushed, but its temporary name in `tmp/` could not be
-    /// removed. Nothing is lost; the name can be removed by hand.
-    Leftover {
-        /// The entry that was written.
-        entry: Box<Entry>,
-        /// The temporary name that stays.
-        path: PathBuf,
-        /// The error of the file system.
-        source: io::Error,
+    /// The entry would be larger than an entry can be. Nothing was written. The actor or a name in
+    /// it is too long.
+    EntryTooLarge {
+        /// The size of the entry in bytes.
+        size: usize,
     },
-    /// The object store failed in a way that is not a failure of the file system.
-    Store(Box<StoreError>),
     /// The change is rejected.
     Entry(EntryError),
 }
@@ -911,6 +919,8 @@ impl OpLogError {
         }
     }
 
+    /// The error of a helper of the object store. They fail only with a failure of the file system;
+    /// any other error is kept as text in an I/O error, so that no cause is dropped.
     fn from_store(error: StoreError) -> Self {
         match error {
             StoreError::Io {
@@ -922,19 +932,20 @@ impl OpLogError {
                 path,
                 source,
             },
-            other => Self::Store(Box::new(other)),
+            other => Self::Io {
+                operation: "use the object store",
+                path: PathBuf::new(),
+                source: io::Error::other(other.to_string()),
+            },
         }
     }
 
     /// Returns the error of the file system for [`OpLogError::Io`] and
-    /// [`OpLogError::NotFlushed`], and for a [`StoreError::Io`] inside. The chain of
-    /// [`Error::source`] does not lead to it (see the crate documentation).
+    /// [`OpLogError::NotFlushed`]. The chain of [`Error::source`] does not lead to it (see the
+    /// crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Io { source, .. }
-            | Self::NotFlushed { source, .. }
-            | Self::Leftover { source, .. } => Some(source),
-            Self::Store(error) => error.io_error(),
+            Self::Io { source, .. } | Self::NotFlushed { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -972,33 +983,31 @@ impl fmt::Display for OpLogError {
                 path.display()
             ),
             Self::Missing { number } => write!(f, "the operation log has no entry {number}"),
-            Self::Full => write!(f, "the operation log is full: it holds {MAX_NUMBER} entries"),
+            Self::Full => write!(
+                f,
+                "the operation log is full: it holds {MAX_NUMBER} entries"
+            ),
             Self::Contended { attempts } => write!(
                 f,
                 "the operation log is busy: every one of {attempts} numbers that were tried was \
                  taken by another writer"
             ),
             Self::NotFlushed {
-                number,
-                path,
-                source,
-            } => write!(
-                f,
-                "entry {number} was written, but flushing `{}` failed: {source}; it may not \
-                 survive a crash",
-                path.display()
-            ),
-            Self::Leftover {
                 entry,
                 path,
                 source,
             } => write!(
                 f,
-                "entry {} is in the log, but its temporary name `{}` could not be removed: {source}",
+                "entry {} was written, but flushing `{}` failed: {source}; it may not survive a \
+                 crash",
                 entry.number,
                 path.display()
             ),
-            Self::Store(error) => error.fmt(f),
+            Self::EntryTooLarge { size } => write!(
+                f,
+                "the entry would be {size} bytes, but an entry holds at most {MAX_ENTRY_LEN}; the \
+                 actor or a name in it is too long, and nothing was written"
+            ),
             Self::Entry(error) => error.fmt(f),
         }
     }
@@ -1008,11 +1017,8 @@ impl Error for OpLogError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             // The message includes that of the I/O error, so the source is its own cause.
-            Self::Io { source, .. }
-            | Self::NotFlushed { source, .. }
-            | Self::Leftover { source, .. } => source.source(),
+            Self::Io { source, .. } | Self::NotFlushed { source, .. } => source.source(),
             Self::Corrupt { source, .. } => source.source(),
-            Self::Store(error) => error.source(),
             Self::Entry(error) => error.source(),
             _ => None,
         }
@@ -1048,7 +1054,9 @@ impl FsOpLog {
         for item in fs::read_dir(&dir).map_err(OpLogError::io("read the directory", &dir))? {
             let item = item.map_err(OpLogError::io("read the directory", &dir))?;
             let name = item.file_name();
-            if name.to_str().is_some_and(|name| name.starts_with('.')) {
+            // Names with a dot: file managers and editors leave them. The first byte is looked at,
+            // so a name that is not UTF-8 is skipped as well.
+            if name.as_encoded_bytes().first() == Some(&b'.') {
                 continue;
             }
             let number = name
@@ -1161,16 +1169,18 @@ impl FsOpLog {
     /// and published with a hard link, which fails if the number is taken. If it is taken, another
     /// writer was faster, and the end of the log is looked up again.
     ///
-    /// Only [`Repository`](crate::repository::Repository) calls this, in the order of ADR-011: the
-    /// entry first, then the move of the pointer, under the lock of the references.
+    /// `Repository::update_branch` and `set_head` call this in the order of ADR-011, under the lock
+    /// of the references: the entry first, then the move of the pointer. `init` calls it for the
+    /// first entry, in a directory that no other writer can see yet.
     ///
     /// # Errors
     ///
-    /// Returns [`OpLogError::Full`] if the log is full, [`OpLogError::Contended`] if every number
-    /// that was tried was taken, [`OpLogError::NotFlushed`] if the entry is in place but not known
-    /// to be flushed, [`OpLogError::Leftover`] if the entry is in place and flushed but its
-    /// temporary name could not be removed, and [`OpLogError::Io`] if the storage fails, among
-    /// others if the file system has no hard links, or if the directory of the log does not exist.
+    /// Returns [`OpLogError::EntryTooLarge`] if the entry would be larger than an entry can be
+    /// (nothing is written), [`OpLogError::Full`] if the log is full, [`OpLogError::Contended`] if
+    /// every number that was tried was taken, [`OpLogError::NotFlushed`] if the entry is in place
+    /// but not known to be flushed, [`OpLogError::UnexpectedFile`] for a name in the directory that
+    /// is not an entry, and [`OpLogError::Io`] if the storage fails, among others if the file
+    /// system has no hard links, or if the directory of the log does not exist.
     pub(crate) fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
         let start = self.next_number()?;
         self.publish(
@@ -1178,7 +1188,11 @@ impl FsOpLog {
             start,
             &mut |_| {},
             &|from, to| fs::hard_link(from, to),
-            &sync_directory,
+            &|dir| match sync_directory(dir) {
+                Ok(()) => Ok(()),
+                Err(StoreError::Io { source, .. }) => Err(source),
+                Err(other) => Err(io::Error::other(other.to_string())),
+            },
         )
     }
 
@@ -1193,17 +1207,27 @@ impl FsOpLog {
         start: u64,
         before_link: &mut dyn FnMut(u64),
         link: &dyn Fn(&Path, &Path) -> io::Result<()>,
-        sync: &dyn Fn(&Path) -> Result<(), StoreError>,
+        sync: &dyn Fn(&Path) -> io::Result<()>,
     ) -> Result<Entry, OpLogError> {
         let dir = self.dir();
         let temp_dir = self.root.join("tmp");
         let mut number = start;
         for _ in 0..ATTEMPTS {
-            // The change was valid when it was built; only the number can be out of range.
-            let entry = Entry::new(number, change.clone()).map_err(|_| OpLogError::Full)?;
-            let (mut file, mut temp) =
+            let entry = match Entry::new(number, change.clone()) {
+                Ok(entry) => entry,
+                Err(EntryError::NumberOutOfRange(_)) => return Err(OpLogError::Full),
+                Err(other) => return Err(OpLogError::Entry(other)),
+            };
+            let encoded = entry.encode();
+            // The reader refuses a file larger than this, so the writer must not make one.
+            if encoded.len() as u64 > MAX_ENTRY_LEN {
+                return Err(OpLogError::EntryTooLarge {
+                    size: encoded.len(),
+                });
+            }
+            let (mut file, temp) =
                 create_temp(&temp_dir, &mut unique_temp_name).map_err(OpLogError::from_store)?;
-            file.write_all(&entry.encode())
+            file.write_all(&encoded)
                 .map_err(OpLogError::io("write the temporary file", &temp.path))?;
             file.sync_all()
                 .map_err(OpLogError::io("flush the temporary file", &temp.path))?;
@@ -1212,24 +1236,15 @@ impl FsOpLog {
             let path = self.path_of(number);
             match link(&temp.path, &path) {
                 Ok(()) => {
-                    // The entry is in place under its own name. The temporary name is removed on
-                    // purpose, and a failure is reported: the entry is complete, but a name stays
-                    // in `tmp/`.
-                    temp.disarm();
-                    let removed = fs::remove_file(&temp.path);
-                    if let Err(error) = sync(&dir) {
-                        return Err(OpLogError::NotFlushed {
-                            number,
-                            path: dir,
-                            source: store_io(error),
-                        });
-                    }
-                    return match removed {
+                    // The entry is in place under its own name. The temporary name is removed when
+                    // `temp` is dropped, on a best effort basis: a name that stays in `tmp/` is
+                    // scratch and harmless, and it must not stop a move whose entry is whole.
+                    drop(temp);
+                    return match sync(&dir) {
                         Ok(()) => Ok(entry),
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(entry),
-                        Err(source) => Err(OpLogError::Leftover {
+                        Err(source) => Err(OpLogError::NotFlushed {
                             entry: Box::new(entry),
-                            path: temp.path.clone(),
+                            path: dir,
                             source,
                         }),
                     };
@@ -1250,15 +1265,6 @@ impl FsOpLog {
             }
         }
         Err(OpLogError::Contended { attempts: ATTEMPTS })
-    }
-}
-
-/// The error of the file system inside a [`StoreError::Io`], or an error of its own for another
-/// kind of store error, which a flush cannot give.
-fn store_io(error: StoreError) -> io::Error {
-    match error {
-        StoreError::Io { source, .. } => source,
-        other => io::Error::other(other.to_string()),
     }
 }
 
@@ -2215,8 +2221,12 @@ mod tests {
         fs::hard_link(from, to)
     }
 
-    fn sync(dir: &Path) -> Result<(), StoreError> {
-        sync_directory(dir)
+    fn sync(dir: &Path) -> io::Result<()> {
+        match sync_directory(dir) {
+            Ok(()) => Ok(()),
+            Err(StoreError::Io { source, .. }) => Err(source),
+            Err(other) => Err(io::Error::other(other.to_string())),
+        }
     }
 
     #[test]
@@ -2307,24 +2317,20 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_flush_leaves_the_entry_and_says_which_one_it_is() {
+    fn a_failing_flush_leaves_the_entry_and_carries_it() {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("main", None, A)).unwrap();
-        let failing = |_: &Path| {
-            Err(StoreError::Io {
-                operation: "flush the directory",
-                path: PathBuf::from("oplog"),
-                source: io::Error::other("disk"),
-            })
-        };
+        let failing = |_: &Path| Err(io::Error::other("disk"));
         let error = log
             .publish(&change("main", Some(A), B), 2, &mut |_| {}, &link, &failing)
             .unwrap_err();
-        assert!(
-            matches!(&error, OpLogError::NotFlushed { number: 2, .. }),
-            "{error}"
-        );
+        let OpLogError::NotFlushed { entry, .. } = &error else {
+            panic!("not a failed flush: {error}");
+        };
+        // The error carries the whole entry, not only its number.
+        assert_eq!(entry.number(), 2);
+        assert_eq!(entry.change().branches()[0].0, branch("main"));
         let message = error.to_string();
         assert!(
             message.starts_with("entry 2 was written") && message.contains("disk"),
@@ -2333,7 +2339,7 @@ mod tests {
         assert!(error.io_error().is_some());
         // The entry is in the log, whole, and the temporary name is gone.
         assert_eq!(log.numbers().unwrap(), [1, 2]);
-        assert!(log.read(2).is_ok());
+        assert_eq!(&log.read(2).unwrap(), entry.as_ref());
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
     }
 
@@ -2367,6 +2373,7 @@ mod tests {
         let error = log.append(&change("main", None, A));
         fs::set_permissions(&oplog, fs::Permissions::from_mode(0o755)).unwrap();
         if writable {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
             return;
         }
         let error = error.unwrap_err();
@@ -2380,20 +2387,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_temporary_name_that_cannot_be_removed_is_reported_and_the_entry_is_kept() {
+    fn a_temporary_name_that_cannot_be_removed_does_not_stop_a_whole_entry() {
+        // `tmp/` holds scratch files. If the name cannot be removed after the link, the entry is
+        // still whole and flushed, and the write succeeds: a cleanup must not stop a move.
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let log = log_in(&dir);
         let tmp = dir.path().join("tmp");
-        let mut make_tmp_read_only = |_: u64| {
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
-        };
-        let probe_writable = {
+        let probe = {
             fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
             let writable = fs::File::create(tmp.join("probe")).is_ok();
             fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
             let _ = fs::remove_file(tmp.join("probe"));
             writable
+        };
+        if probe {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
+            return;
+        }
+        let mut make_tmp_read_only = |_: u64| {
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
         };
         let result = log.publish(
             &change("main", None, A),
@@ -2402,25 +2415,56 @@ mod tests {
             &link,
             &sync,
         );
+        let left = files(&tmp);
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
-        if probe_writable {
-            return;
-        }
-        let error = result.unwrap_err();
-        match &error {
-            OpLogError::Leftover { entry, path, .. } => {
-                assert_eq!(entry.number(), 1);
-                assert!(path.starts_with(&tmp));
-            }
-            other => panic!("not a leftover: {other}"),
-        }
+        let entry = result.expect("the entry is whole, so the write succeeds");
+        assert_eq!(entry.number(), 1);
+        assert_eq!(log.numbers().unwrap(), [1]);
+        assert_eq!(log.read(1).unwrap(), entry);
+        // The name stays in `tmp/` and is scratch; the entry has its own name.
+        assert_eq!(left.len(), 1);
+        assert!(!left[0].starts_with('0'), "{left:?}");
+    }
+
+    #[test]
+    fn an_entry_that_is_larger_than_an_entry_can_be_is_refused_and_nothing_is_written() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let size_of = |id_len: usize| {
+            let actor = Actor::human("a".repeat(id_len)).unwrap();
+            let change = Change::new(
+                TIME,
+                actor,
+                operation("commit"),
+                None,
+                None,
+                vec![(branch("main"), moved(None, Some(A)))],
+            )
+            .unwrap();
+            (
+                change.clone(),
+                Entry::new(1, change).unwrap().encode().len(),
+            )
+        };
+        // Find the id length that gives exactly the largest entry.
+        let (_, base) = size_of(1);
+        let fit = MAX_ENTRY_LEN as usize - base + 1;
+        let (change_fit, size) = size_of(fit);
+        assert_eq!(size as u64, MAX_ENTRY_LEN);
+        // The largest entry that the writer makes can be read back.
+        let entry = log.append(&change_fit).unwrap();
+        assert_eq!(log.read(1).unwrap(), entry);
+        // One byte more is refused before anything is written.
+        let (change_over, size) = size_of(fit + 1);
+        assert_eq!(size as u64, MAX_ENTRY_LEN + 1);
+        let error = log.append(&change_over).unwrap_err();
         assert!(
-            error.to_string().contains("entry 1 is in the log"),
+            matches!(error, OpLogError::EntryTooLarge { size } if size as u64 == MAX_ENTRY_LEN + 1),
             "{error}"
         );
-        assert!(error.io_error().is_some());
+        assert!(error.to_string().contains("nothing was written"), "{error}");
         assert_eq!(log.numbers().unwrap(), [1]);
-        assert!(log.read(1).is_ok());
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
     }
 
     #[test]
@@ -2458,7 +2502,7 @@ mod tests {
         assert_eq!(io_error.source().unwrap().to_string(), "deepest");
         assert_eq!(io_error.io_error().unwrap().to_string(), "outer");
         let not_flushed = OpLogError::NotFlushed {
-            number: 7,
+            entry: Box::new(Entry::new(7, change("main", None, A)).unwrap()),
             path: PathBuf::from("/x/oplog"),
             source: io::Error::other(Outer),
         };
@@ -2474,6 +2518,7 @@ mod tests {
             (OpLogError::Missing { number: 3 }, "no entry 3"),
             (OpLogError::Full, "full"),
             (OpLogError::Contended { attempts: 64 }, "64 numbers"),
+            (OpLogError::EntryTooLarge { size: 70_000 }, "70000 bytes"),
             (OpLogError::Gap { missing: 2 }, "lost"),
             (
                 OpLogError::UnexpectedFile { path: path.clone() },

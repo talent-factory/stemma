@@ -65,9 +65,15 @@ format:
 format-check:
     cargo fmt --all -- --check
 
-# All CI checks: format, lint, tests.
+# Check that the documentation of the crates builds without a warning (broken links, links to
+# private items).
 [group('Quality')]
-ci: format-check lint test
+doc-check:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# All CI checks: format, lint, documentation, tests.
+[group('Quality')]
+ci: format-check lint doc-check test
 
 # Test coverage summary (needs `cargo install cargo-llvm-cov --locked`).
 [group('Quality')]

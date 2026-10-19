@@ -979,13 +979,16 @@ fn join_name(prefix: &str, component: &str) -> String {
 impl crate::store::sealed::Sealed for FsRefStore {}
 
 /// The outcome of a change of a pointer that a step precedes, such as the entry of the operation
-/// log (ADR-011). `T` is what the step returned, `E` is how it can fail.
+/// log (ADR-011). `T` is what the step returned, `E` is how it can fail. Every variant is the only
+/// record of what happened, so a caller must look at it.
+#[must_use]
 pub(crate) enum Logged<T, E> {
     /// The pointer has the value already. The step did not run and nothing changed.
     Unchanged,
     /// The step ran and the pointer moved.
     Moved(T),
-    /// The step failed. The pointer has not moved.
+    /// The step failed. The pointer has not moved. The step can have left an effect of its own,
+    /// which `E` says (a log entry that was written and is not known to be safe).
     StepFailed(E),
     /// The step ran, but the pointer did not move: the file system failed. The step stays done.
     MoveFailed(T, RefError),
@@ -1001,13 +1004,17 @@ impl FsRefStore {
     /// The checks are the ones of [`RefStore::update_branch`]: a name that is in the way is a
     /// [`RefError::Conflict`], a branch that is not at `expected` is [`RefError::Stale`], and the
     /// commit has to be in `objects`. They run under the lock, so no other change can come between
-    /// them and the move, and `step` runs only for a move that is going to be made. If the branch
-    /// is at `new` already, `step` does not run.
+    /// them and the move, and `step` runs only for a move that is going to be made. The commit is
+    /// looked up under the lock as well. If `expected` is `Some(new)`, so that the branch is at
+    /// `new` already, `step` does not run; any other branch that is not at `expected` is stale.
     ///
     /// # Errors
     ///
-    /// Returns the errors of the checks. Once `step` has run, nothing is an error of this call:
-    /// the outcome says what happened, so the caller can tell a step that ran from one that did not.
+    /// Returns the errors of the checks, among them [`RefError::Locked`] if another change holds the
+    /// lock. Once `step` has run, nothing is an error of this call: the outcome says what happened,
+    /// so the caller can tell a step that ran from one that did not. An empty directory that a
+    /// stopped change left is removed before the step; if that fails the error is returned and no
+    /// step has run.
     pub(crate) fn update_branch_after<T, E>(
         &self,
         name: &BranchName,
@@ -1017,8 +1024,8 @@ impl FsRefStore {
         step: impl FnOnce() -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        Self::require_commit(&new, objects)?;
         let _lock = self.lock()?;
+        Self::require_commit(&new, objects)?;
         let current = self.current(name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
@@ -1037,21 +1044,20 @@ impl FsRefStore {
         if expected == Some(new) {
             return Ok(Logged::Unchanged);
         }
+        if let Some(empty) = &current.empty_directory {
+            // Nothing is below it, and the lock is held, so no branch is lost. It goes before the
+            // step, so that a failure here leaves no entry that names a move that cannot be made.
+            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
         let done = match step() {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
-        let moved = (|| {
-            if let Some(empty) = &current.empty_directory {
-                // Nothing is below it, and the lock is held, so no branch is lost.
-                fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
-            }
-            self.write_replacing(
-                &self.branch_path(name),
-                &encode_branch(&new),
-                &self.heads_dir(),
-            )
-        })();
+        let moved = self.write_replacing(
+            &self.branch_path(name),
+            &encode_branch(&new),
+            &self.heads_dir(),
+        );
         Ok(Self::after_move(done, moved))
     }
 
@@ -1075,10 +1081,10 @@ impl FsRefStore {
         step: impl FnOnce(&Head) -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
+        let _lock = self.lock()?;
         if let Head::Detached(commit) = head {
             Self::require_commit(commit, objects)?;
         }
-        let _lock = self.lock()?;
         let old = self.head()?;
         if &old == head {
             return Ok(Logged::Unchanged);
@@ -2336,5 +2342,239 @@ mod tests {
         })
         .unwrap();
         assert!(target.is_file());
+    }
+
+    // ---- update_branch_after and set_head_after (the lock over a step, ADR-011)
+
+    /// A step that records that it ran and returns its number.
+    fn counted(ran: &std::cell::Cell<u32>) -> impl FnOnce() -> Result<u32, &'static str> + '_ {
+        move || {
+            ran.set(ran.get() + 1);
+            Ok(ran.get())
+        }
+    }
+
+    #[test]
+    fn a_step_runs_only_for_a_move_that_is_made_and_the_pointer_moves_after_it() {
+        let (_dir, objects, refs) = setup();
+        let (a, b) = (commit(&objects, "a"), commit(&objects, "b"));
+        let ran = std::cell::Cell::new(0);
+        let outcome = refs
+            .update_branch_after(&name("main"), None, a, &objects, || {
+                // The step runs before the pointer moves.
+                assert_eq!(refs.branch(&name("main")).unwrap(), None);
+                counted(&ran)()
+            })
+            .unwrap();
+        assert!(matches!(outcome, Logged::Moved(1)));
+        assert_eq!(refs.branch(&name("main")).unwrap(), Some(a));
+        // At the value already: the step does not run.
+        let outcome = refs
+            .update_branch_after(&name("main"), Some(a), a, &objects, counted(&ran))
+            .unwrap();
+        assert!(matches!(outcome, Logged::Unchanged));
+        assert_eq!(ran.get(), 1);
+        // Not at the value that the caller expected, even if that is the new value: stale. The
+        // check for "already there" comes after the check for "where the caller saw it".
+        for expected in [None, Some(b)] {
+            let error = refs
+                .update_branch_after(&name("main"), expected, a, &objects, counted(&ran))
+                .map(|_| ())
+                .unwrap_err();
+            assert!(
+                matches!(&error, RefError::Stale { found: Some(f), .. } if *f == a),
+                "{expected:?}: {error}"
+            );
+        }
+        assert_eq!(ran.get(), 1);
+    }
+
+    #[test]
+    fn the_lock_is_held_while_the_step_runs_and_released_after_every_outcome() {
+        let (dir, objects, refs) = setup();
+        let (a, b) = (commit(&objects, "a"), commit(&objects, "b"));
+        refs.set_head(&Head::Branch(name("main")), &objects)
+            .unwrap();
+        let lock_file = dir.path().join("refs.lock");
+        // While the step runs, the lock file exists, and a second change meets the lock.
+        let outcome = refs
+            .update_branch_after(&name("main"), None, a, &objects, || {
+                assert!(lock_file.exists());
+                let inner = refs.update_branch(&name("other"), None, b, &objects);
+                assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
+                let inner = refs.set_head(&Head::Branch(name("x")), &objects);
+                assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(matches!(outcome, Logged::Moved(())));
+        assert!(!lock_file.exists());
+        // The same for the step of HEAD.
+        let outcome = refs
+            .set_head_after(&Head::Branch(name("dev")), &objects, |old| {
+                assert_eq!(old, &Head::Branch(name("main")));
+                assert!(lock_file.exists());
+                let inner = refs.update_branch(&name("other"), None, b, &objects);
+                assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(matches!(outcome, Logged::Moved(())));
+        assert!(!lock_file.exists());
+        // Released after a step that failed, after "at the value already", and after a refusal.
+        let failed = refs
+            .update_branch_after(&name("main"), Some(a), b, &objects, || Err::<(), _>("no"))
+            .unwrap();
+        assert!(matches!(failed, Logged::StepFailed("no")));
+        assert!(!lock_file.exists());
+        assert_eq!(refs.branch(&name("main")).unwrap(), Some(a));
+        let same = refs
+            .update_branch_after(&name("main"), Some(a), a, &objects, || Ok::<(), ()>(()))
+            .unwrap();
+        assert!(matches!(same, Logged::Unchanged));
+        assert!(!lock_file.exists());
+        let stale = refs.update_branch_after(&name("main"), None, b, &objects, || Ok::<(), ()>(()));
+        assert!(matches!(stale, Err(RefError::Stale { .. })));
+        assert!(!lock_file.exists());
+        // A lock that another writer holds is not taken, and its file is not removed.
+        fs::write(&lock_file, b"other").unwrap();
+        let ran = std::cell::Cell::new(0);
+        let held = refs.update_branch_after(&name("main"), Some(a), b, &objects, counted(&ran));
+        assert!(matches!(held, Err(RefError::Locked { .. })));
+        assert_eq!(ran.get(), 0);
+        assert_eq!(fs::read(&lock_file).unwrap(), b"other");
+    }
+
+    #[test]
+    fn the_commit_and_the_name_are_checked_under_the_lock_before_the_step() {
+        let (_dir, objects, refs) = setup();
+        let a = commit(&objects, "a");
+        let ran = std::cell::Cell::new(0);
+        let absent = CommitId::new(ID_A.parse().unwrap());
+        let error = refs
+            .update_branch_after(&name("main"), None, absent, &objects, counted(&ran))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
+        refs.update_branch(&name("main"), None, a, &objects)
+            .unwrap();
+        let error = refs
+            .update_branch_after(&name("main/x"), None, a, &objects, counted(&ran))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Conflict { .. }), "{error}");
+        let error = refs
+            .set_head_after(&Head::Detached(absent), &objects, |_| counted(&ran)())
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
+        assert_eq!(ran.get(), 0, "no step ran for a change that was refused");
+    }
+
+    #[test]
+    fn an_empty_directory_that_a_stopped_change_left_is_removed_before_the_step() {
+        let (dir, objects, refs) = setup();
+        let a = commit(&objects, "a");
+        let leftover = dir.path().join("refs/heads/feat/deeper");
+        fs::create_dir_all(&leftover).unwrap();
+        let outcome = refs
+            .update_branch_after(&name("feat"), None, a, &objects, || {
+                // The directory is gone when the step runs, so a failure to remove it could never
+                // leave a step that names a move that cannot be made.
+                assert!(!leftover.exists());
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(matches!(outcome, Logged::Moved(())));
+        assert_eq!(refs.branch(&name("feat")).unwrap(), Some(a));
+        assert!(dir.path().join("refs/heads/feat").is_file());
+    }
+
+    #[test]
+    fn a_head_that_is_missing_or_damaged_is_an_error_and_no_step_runs() {
+        let (dir, objects, refs) = setup();
+        let ran = std::cell::Cell::new(0);
+        let head = dir.path().join("HEAD");
+        let error = refs
+            .set_head_after(&Head::Branch(name("x")), &objects, |_| counted(&ran)())
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(error, RefError::NoHead { .. }), "{error}");
+        assert!(!head.exists());
+        fs::write(&head, b"damaged\n").unwrap();
+        let error = refs
+            .set_head_after(&Head::Branch(name("x")), &objects, |_| counted(&ran)())
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Corrupt { .. }), "{error}");
+        assert_eq!(fs::read(&head).unwrap(), b"damaged\n");
+        assert_eq!(ran.get(), 0);
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn the_outcome_of_a_move_says_whether_the_pointer_moved() {
+        let disk = || io::Error::other("disk");
+        let flushed = || RefError::NotFlushed {
+            path: PathBuf::from("/x"),
+            source: disk(),
+        };
+        let io_failure = || RefError::Io {
+            operation: "write the reference",
+            path: PathBuf::from("/x/main"),
+            source: disk(),
+        };
+        type Outcome = Logged<u8, ()>;
+        // The pointer moved: the flush of its directory is the only thing that failed.
+        assert!(matches!(
+            FsRefStore::after_move::<u8, ()>(5, Ok(())),
+            Outcome::Moved(5)
+        ));
+        assert!(matches!(
+            FsRefStore::after_move::<u8, ()>(5, Err(flushed())),
+            Outcome::NotFlushed(5, RefError::NotFlushed { .. })
+        ));
+        // The pointer did not move: any other error of the move.
+        assert!(matches!(
+            FsRefStore::after_move::<u8, ()>(5, Err(io_failure())),
+            Outcome::MoveFailed(5, RefError::Io { .. })
+        ));
+        assert!(matches!(
+            FsRefStore::after_move::<u8, ()>(
+                5,
+                Err(RefError::Locked {
+                    path: PathBuf::from("l")
+                })
+            ),
+            Outcome::MoveFailed(5, RefError::Locked { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_move_that_fails_after_the_step_leaves_the_step_done_and_the_pointer_where_it_was() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, objects, refs) = setup();
+        let a = commit(&objects, "a");
+        let heads = dir.path().join("refs/heads");
+        fs::create_dir_all(&heads).unwrap();
+        fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = fs::File::create(heads.join("probe")).is_ok();
+        let ran = std::cell::Cell::new(0);
+        let outcome = refs.update_branch_after(&name("main"), None, a, &objects, counted(&ran));
+        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_file(heads.join("probe"));
+        if writable {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
+            return;
+        }
+        let outcome = outcome.unwrap();
+        assert!(
+            matches!(outcome, Logged::MoveFailed(1, RefError::Io { .. })),
+            "the step ran once and the move failed"
+        );
+        assert_eq!(ran.get(), 1);
+        assert_eq!(refs.branch(&name("main")).unwrap(), None);
+        assert!(!dir.path().join("refs.lock").exists());
     }
 }

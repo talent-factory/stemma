@@ -50,7 +50,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
 - **`init` has an actor and an authorizer** *(confirmed)*. `Repository::init(path, options, actor,
   authorizer)` calls `authorize(actor, "init", <directory>)` first (ADR-002). No policy can live
   in a repository that does not exist yet, so the caller supplies the authorizer; in phase 1 it
-  is `AllowAll`. The actor is stored in the first entry of the operation log (ADR-011), and nowhere else.
+  is `AllowAll`. `init` records the actor in the first entry of the operation log (ADR-011); the actor is not stored in the format file or in HEAD.
 - **The directory is created if it does not exist**, as `git init` does.
 
 ## Consequences

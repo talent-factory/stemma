@@ -84,7 +84,8 @@ impl Default for InitOptions {
     }
 }
 
-/// An open repository: the directory that contains `.stemma/`, with its two stores.
+/// An open repository: the directory that contains `.stemma/`, with its object store, its
+/// references, and its operation log.
 ///
 /// The value holds paths only and no handle, so a clone is as good as the original. That is a
 /// promise of this type: a field that makes a clone wrong, such as an open lock, has to remove
@@ -117,6 +118,10 @@ impl Repository {
     /// On Unix, an *empty* `.stemma` that appears in that window is replaced, because `rename`
     /// replaces an empty directory.
     ///
+    /// The first entry of the operation log is written here: operation `init`, HEAD from nothing to
+    /// the initial branch, and the actor. It is the only place where an entry is written without the
+    /// lock of the references, because no other writer can see the directory yet.
+    ///
     /// Everything that is created is flushed to disk, including missing parent directories.
     /// Platforms that cannot flush a directory give the atomicity but not the durability.
     ///
@@ -124,9 +129,11 @@ impl Repository {
     ///
     /// Returns [`InitError::Denied`] if the authorizer refuses, [`InitError::AlreadyExists`] if
     /// `.stemma` exists in `path` (nothing is changed), [`InitError::Io`] if the storage fails
-    /// (the temporary directory is removed), [`InitError::Leftover`] if it fails and the
-    /// temporary directory could not be removed, and [`InitError::NotDurable`] if the repository
-    /// is complete but the final flush failed. After `NotDurable`, [`Repository::open`] works.
+    /// (the temporary directory is removed), [`InitError::Log`] if the first entry could not be
+    /// written (among others an actor that is too long for an entry), [`InitError::Leftover`] if a
+    /// failure is followed by one to remove the temporary directory, and [`InitError::NotDurable`]
+    /// if the repository is complete but the final flush failed. After `NotDurable`,
+    /// [`Repository::open`] works.
     pub fn init(
         path: impl AsRef<Path>,
         options: &InitOptions,
@@ -254,9 +261,11 @@ impl Repository {
     /// `expected`, a commit that is not in the object store of this repository), the entry is
     /// written and flushed, and only then does the branch move. No other change can come between
     /// the checks and the move, so a refusal, a conflict, a stale branch, or a missing commit write
-    /// no entry, and an entry always describes a move that was going to be made. The one case in
-    /// which an entry names a move that did not happen is a failure of the file system between
-    /// the entry and the move; [`UpdateError::MoveFailed`] says so and carries the entry.
+    /// no entry, and an entry always describes a move that was going to be made. An entry can still
+    /// name a move that did not happen: when the file system fails between the entry and the move
+    /// ([`UpdateError::MoveFailed`]), and when the entry is not known to be flushed, so that the
+    /// move is refused (`UpdateError::Log` with [`OpLogError::NotFlushed`]). Both carry the entry,
+    /// and the pointer has not moved. The commit is looked up under the lock as well.
     ///
     /// Returns the entry, or `None` if `expected` is `Some(new)`, so that the branch is at `new`
     /// already: only a change writes an entry.
@@ -266,8 +275,10 @@ impl Repository {
     /// Returns [`UpdateError::Denied`] if the authorizer refuses, and [`UpdateError::Refs`] for what
     /// the checks find or for a failure of the references before an entry was written, among them
     /// [`RefError::Locked`] (another change is in progress: try again). If the entry could not be
-    /// written the error is [`UpdateError::Log`], and the branch has not moved. An entry that was
-    /// written belongs to [`UpdateError::MoveFailed`] and [`UpdateError::NotDurable`].
+    /// written the error is [`UpdateError::Log`], and the branch has not moved; an entry that is
+    /// too large (the actor or a name is too long) is such an error, and nothing is written. An
+    /// entry that was written belongs to [`UpdateError::MoveFailed`], [`UpdateError::NotDurable`],
+    /// and [`UpdateError::Log`] with [`OpLogError::NotFlushed`].
     pub fn update_branch(
         &self,
         operation: &OperationName,
@@ -403,10 +414,11 @@ fn now() -> i64 {
     }
 }
 
-/// Reasons why [`Repository::update_branch`] and [`Repository::set_head`] fail. Whether an entry
-/// of the log was written tells the variant: only [`MoveFailed`](Self::MoveFailed),
-/// [`NotDurable`](Self::NotDurable), and a [`Log`](Self::Log) error with
-/// [`OpLogError::NotFlushed`] or [`OpLogError::Leftover`] leave one.
+/// Reasons why [`Repository::update_branch`] and [`Repository::set_head`] fail. Two questions tell
+/// them apart: is there an entry in the log (`entry()`), and did the pointer move? An entry exists
+/// for [`MoveFailed`](Self::MoveFailed) (the pointer did not move), [`NotDurable`](Self::NotDurable)
+/// (it moved), and a [`Log`](Self::Log) error with [`OpLogError::NotFlushed`] (it did not move).
+/// [`pointer_moved`](Self::pointer_moved) answers the second question.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum UpdateError {
@@ -422,8 +434,9 @@ pub enum UpdateError {
     /// an unreadable HEAD, a lock that is held. No entry was written and nothing moved.
     Refs(RefError),
     /// The entry could not be written, and the pointer has not moved. If the error is
-    /// [`OpLogError::NotFlushed`] or [`OpLogError::Leftover`], the entry is in the log anyway;
-    /// it names a move that did not happen, and a second attempt writes another entry.
+    /// [`OpLogError::NotFlushed`], the entry is in the log anyway and `entry()` returns it: it names
+    /// a move that did not happen, and a second attempt writes another entry. Any other error
+    /// means that no entry was written.
     Log(OpLogError),
     /// The entry was written, but the move failed. The file system failed after the checks, so the
     /// entry names a move that did not happen; the old value in it was true when it was written.
@@ -456,11 +469,18 @@ impl UpdateError {
         }
     }
 
+    /// Whether the pointer moved although the call failed. Only [`NotDurable`](Self::NotDurable)
+    /// moved it; in every other case the pointer is where it was, and the change can be repeated
+    /// (with a second entry if the first one stays).
+    pub fn pointer_moved(&self) -> bool {
+        matches!(self, Self::NotDurable { .. })
+    }
+
     /// The entry that was written, if the error leaves one in the log.
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::MoveFailed { entry, .. } | Self::NotDurable { entry, .. } => Some(entry),
-            Self::Log(OpLogError::Leftover { entry, .. }) => Some(entry),
+            Self::Log(OpLogError::NotFlushed { entry, .. }) => Some(entry),
             _ => None,
         }
     }
@@ -505,6 +525,17 @@ impl fmt::Display for UpdateError {
                 write!(f, "not allowed to {operation} `{target}`")
             }
             Self::Refs(error) => error.fmt(f),
+            Self::Log(OpLogError::NotFlushed {
+                entry,
+                path,
+                source,
+            }) => write!(
+                f,
+                "entry {} of the operation log was written, but flushing `{}` failed: {source}; the \
+                 pointer did not move, and repeating the change writes another entry",
+                entry.number(),
+                path.display()
+            ),
             Self::Log(error) => error.fmt(f),
             Self::MoveFailed { entry, source } => write!(
                 f,
@@ -681,7 +712,13 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
         vec![],
     )
     .map_err(|error| InitError::Log(OpLogError::Entry(error)))?;
-    FsOpLog::new(dir).append(&change).map_err(InitError::Log)?;
+    match FsOpLog::new(dir).append(&change) {
+        Ok(_) => {}
+        // The directory of the log is flushed below, with the others, and the staging directory is
+        // renamed as a whole; an entry that is not known to be flushed yet is no reason to stop.
+        Err(OpLogError::NotFlushed { .. }) => {}
+        Err(error) => return Err(InitError::Log(error)),
+    }
     write_new(&dir.join("HEAD"), &head.encode())?;
     for flushed in [&refs, &heads, &oplog, dir] {
         sync_directory(flushed).map_err(InitError::io("flush the directory", flushed))?;
@@ -775,8 +812,8 @@ impl InitError {
         }
     }
 
-    /// Returns the error of the file system if this is [`InitError::Io`], [`InitError::NotDurable`]
-    /// or the error of a [`InitError::Leftover`]. The chain of [`Error::source`] does not lead to
+    /// Returns the error of the file system if this is [`InitError::Io`], [`InitError::NotDurable`],
+    /// the error of a [`InitError::Log`], or the error of a [`InitError::Leftover`]. The chain of [`Error::source`] does not lead to
     /// it (see the crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
@@ -1158,6 +1195,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch = TempDir::new();
         if !permissions_are_enforced(scratch.path()) {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
             return;
         }
         let parent = scratch.path().join("readonly");
@@ -1323,6 +1361,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         if !permissions_are_enforced(dir.path()) {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
             return;
         }
         let staging = dir.path().join("staging");
@@ -1908,6 +1947,7 @@ mod tests {
         fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
         let _ = fs::remove_file(heads.join("probe"));
         if writable {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
             return;
         }
         let error = result.unwrap_err();
@@ -1996,13 +2036,29 @@ mod tests {
             "{message}"
         );
         assert!(durable.io_error().is_some());
-        // An entry that stays because a temporary name could not be removed is an entry too.
-        let leftover = UpdateError::Log(OpLogError::Leftover {
+        // An entry that is not known to be flushed is in the log, and the pointer did not move.
+        let unflushed = UpdateError::Log(OpLogError::NotFlushed {
             entry: Box::new(entry()),
-            path: PathBuf::from("/x/tmp/t"),
+            path: PathBuf::from("/x/oplog"),
             source: disk(),
         });
-        assert_eq!(leftover.entry().map(Entry::number), Some(9));
+        assert_eq!(unflushed.entry().map(Entry::number), Some(9));
+        assert!(!unflushed.pointer_moved());
+        let message = unflushed.to_string();
+        assert!(
+            message.contains("entry 9")
+                && message.contains("pointer did not move")
+                && message.contains("repeating the change writes another entry"),
+            "{message}"
+        );
+        assert!(unflushed.io_error().is_some());
+        // The answers to the two questions for every outcome.
+        assert!(durable.pointer_moved() && !move_failed.pointer_moved() && !failed.pointer_moved());
+        // Any other error of the log means that no entry was written.
+        assert!(UpdateError::Log(OpLogError::Full).entry().is_none());
+        assert!(UpdateError::Log(OpLogError::EntryTooLarge { size: 70_000 })
+            .entry()
+            .is_none());
         assert!(UpdateError::Denied {
             operation: "x".into(),
             target: "y".into()
@@ -2049,14 +2105,14 @@ mod tests {
                     let (repository, barrier) = (&repository, &barrier);
                     scope.spawn(move || {
                         barrier.wait();
-                        loop {
+                        for _ in 0..100_000 {
                             match repository.set_head(
                                 &op("checkout"),
                                 &Head::Branch(name.clone()),
                                 &actor(),
                                 &AllowAll,
                             ) {
-                                Ok(entry) => break entry.expect("every value is new"),
+                                Ok(entry) => return entry.expect("every value is new"),
                                 // Another writer holds the lock: try again.
                                 Err(UpdateError::Refs(RefError::Locked { .. })) => {
                                     std::thread::yield_now();
@@ -2064,6 +2120,7 @@ mod tests {
                                 Err(error) => panic!("{error}"),
                             }
                         }
+                        panic!("the lock was never free: a lock file may have leaked");
                     })
                 })
                 .collect();
@@ -2119,8 +2176,12 @@ mod tests {
         fs::remove_dir_all(&log).unwrap();
         fs::write(&log, b"not a directory").unwrap();
         let error = update(&repository, "main", None, a).unwrap_err();
-        assert!(matches!(error, UpdateError::Log(_)), "{error}");
+        assert!(
+            matches!(error, UpdateError::Log(OpLogError::Io { .. })),
+            "{error}"
+        );
         assert!(error.io_error().is_some());
+        assert!(error.entry().is_none() && !error.pointer_moved());
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
         let error = repository
             .set_head(
@@ -2302,5 +2363,42 @@ mod tests {
             "{log}"
         );
         assert!(log.io_error().is_none() && log.source().is_none());
+    }
+
+    #[test]
+    fn the_constants_that_init_relies_on_are_valid() {
+        assert_eq!(OperationName::new("init").unwrap().as_str(), "init");
+        assert_eq!(InitOptions::default().initial_branch().as_str(), "main");
+    }
+
+    #[test]
+    fn an_actor_that_is_too_long_for_an_entry_is_refused_and_nothing_is_created() {
+        // The reader refuses an entry above its limit, so the writer must refuse it first, or a
+        // log would hold an entry that nobody can read.
+        let dir = TempDir::new();
+        let path = dir.path().join("new");
+        let actor = Actor::human("a".repeat(70_000)).unwrap();
+        let error =
+            Repository::init(&path, &InitOptions::default(), &actor, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, InitError::Log(OpLogError::EntryTooLarge { .. })),
+            "{error}"
+        );
+        assert!(!path.join(".stemma").exists());
+        assert_eq!(names(&path), Vec::<String>::new());
+        // The same for a move of an existing repository: no entry, and the pointer stays.
+        let repository = init(&dir.path().join("ok")).unwrap();
+        let a = store_commit(&repository, "a");
+        let error = repository
+            .update_branch(&op("commit"), &branch("main"), None, a, &actor, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Log(OpLogError::EntryTooLarge { .. })),
+            "{error}"
+        );
+        assert!(error.entry().is_none() && !error.pointer_moved());
+        assert_eq!(numbers(&repository), [1]);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+        assert!(repository.oplog().entries().is_ok());
     }
 }

@@ -64,7 +64,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   this one confirms the move, and the current value of the pointer confirms the last one. The case
   that this cannot decide is a pointer that returns to an earlier value; it is rare, and a marker
   can come with a later version of the entry encoding (`stemma-oplog 2`) if a use appears.
-- **Only a change writes an entry** *(implemented)*. A snapshot of an unchanged directory creates no
+- **Only a change writes an entry** *(implemented for pointers; the snapshot is not built)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
 - **Nothing is deleted** *(implemented; no operation deletes)*. No operation removes an entry, and no garbage collection
@@ -78,9 +78,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again.
-- **The first slice** *(confirmed)*. The core writes and strictly reads entries; `init` and every
-  operation that changes a pointer write one; `stemma op log` lists them (STEMMA-27). Restoring
-  and undoing come as commands of their own (STEMMA-28).
+- **The first slice** *(confirmed)*. The core writes and strictly reads entries, and `init` and every
+  operation that changes a pointer write one. The commands that show and use the log are slices of
+  their own: `stemma op log` (STEMMA-27), and restoring and undoing (STEMMA-28).
 - **Only `Repository` writes the log and moves a pointer** *(confirmed)*. `Repository::update_branch`
   and `set_head` order "check, write the entry, flush, move" under the lock, `Repository::refs()`
   returns a view for reading, and `Repository::oplog()` can read the log. `FsOpLog::append` and
@@ -91,10 +91,17 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   the same directory is not stopped. A refusal by the authorizer, a name that is in the way, a
   branch that is not where the caller saw it (seen under the lock), and a commit that is not in the
   store write no entry. A move to the value that a pointer has writes none either.
-- **The caller is told whether an entry exists** *(implemented)*. An error that leaves an entry
-  carries it: `UpdateError::MoveFailed` (the move failed after the entry), `NotDurable` (the move
-  was made, a directory could not be flushed; do not repeat it), and `Log` with `NotFlushed` or
-  `Leftover` (the entry is in the log; a second attempt writes another one).
+- **The caller is told whether an entry exists, and whether the pointer moved** *(implemented)*. An
+  error that leaves an entry carries it (`UpdateError::entry()`): `MoveFailed` (the move failed
+  after the entry; the pointer did not move), `NotDurable` (the move was made, a directory could
+  not be flushed; do not repeat it), and `Log` with `NotFlushed` (the entry is in the log but is
+  not known to be flushed, so the move is refused; the pointer did not move, and a second attempt
+  writes another entry). `UpdateError::pointer_moved()` answers the second question. Any other
+  error of the log means that no entry was written.
+- **An entry has a size limit that the writer keeps** *(implemented)*. The reader refuses an entry
+  above 64 KiB, so the writer refuses it before it writes anything (`EntryTooLarge`). The actor
+  and the names in an entry have no limit of their own, so this is the only bound; without it, an
+  actor of 70 000 characters would make a log that cannot be read from its first entry.
 - **An entry is published with a hard link** *(implemented)*. The writer writes the entry to a
   temporary file in `tmp/`, flushes it, and links it to the name of the next free number. The link
   fails if the name exists, so the entry is whole from the first moment it can be seen, and a
@@ -103,10 +110,14 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   file system that has no hard links cannot hold a log; that is reported as an I/O error that
   names the hard link. The numbers are twelve digits, so the log holds up to 999 999 999 999
   entries and then reports that it is full (`Full`); a writer that is overtaken 64 times gives up
-  (`Contended`). A temporary name that cannot be removed after the link is reported
-  (`Leftover`), and the entry stays.
+  (`Contended`).
+- **`tmp/` is scratch** *(confirmed)*. A temporary name is removed after the link on a best effort
+  basis. If the removal fails, the entry is whole and flushed, so the write succeeds and the move
+  goes ahead; a failure of a cleanup must not stop a move, and it must not leave an entry that
+  names a move that was never made. A name that stays costs only space. No operation of this
+  slice empties `tmp/`; a cleanup is an open item.
 
-### Sketch of an entry *(proposal)*
+### Sketch of an entry
 
 ```text
 stemma-oplog 1
@@ -129,9 +140,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 
 ## Consequences
 
-- Every operation that changes a pointer goes through one function of `Repository`, which orders
-  "read, write the entry, flush, move" (see STEMMA-3 and STEMMA-22). The stores alone must not move
-  pointers in production code.
+- Every operation that changes a pointer goes through a function of `Repository`
+  (`update_branch`, `set_head`), which orders "check, write the entry, flush, move" under the lock.
+  The operations that move several pointers in one entry (`commit`, the snapshot) need a function
+  of their own (STEMMA-3, STEMMA-22). The stores alone must not move pointers in production code.
 - The log grows with every change, and a snapshot at every command makes many entries. Nothing
   removes them in phase 1; the open items name the measure that decides about retention.
 - The log keeps commits that a rewrite or a purge would otherwise drop. A secret in a tracked file
@@ -160,7 +172,11 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - [ ] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
       audited without keeping the secret (STEMMA-26).
 - [ ] A recovery when the highest number is missing: the next writer takes the number after the
-      largest that is left, so a lost last entry is not noticed by a gap.
+      largest that is left, so a lost *last* entry is not noticed by a gap, and its number is
+      used again. A tip file that holds the number of the last entry would catch it. The writer
+      also does not refuse a log that has a gap; the reader does.
+- [ ] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of
+      the references.
 - [ ] Restoring: what `stemma op restore` does when the working directory has changed since, and
       the entry that the restore writes (STEMMA-28).
 - [ ] Who may read the log (ADR-003): it holds IDs and the actor, no paths, but it makes

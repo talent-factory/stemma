@@ -1014,10 +1014,13 @@ fn the_entry_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
     }
     assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
     // A run that reaches few kinds of rejection would not notice a reader that reports the wrong
-    // one, so it has to reach most of them (there are ten, and one cannot occur).
+    // one, so it has to reach most of them (there are twelve, and one cannot occur).
+    // The default run reaches ten or eleven; a short run, such as the one of a fast check, only
+    // a few, so the threshold depends on how many cases there were.
+    let needed = if cases() >= 2_000 { 9 } else { 3 };
     assert!(
-        variants.len() >= 6,
-        "the run reached only {} kinds of rejection",
+        variants.len() >= needed,
+        "the run reached only {} kinds of rejection, and {needed} were needed",
         variants.len()
     );
 }
