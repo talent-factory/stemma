@@ -51,17 +51,21 @@ server will later keep objects elsewhere (API-first). The implementation is
   read detects it.
 - **Interface.** `ObjectStore` is a sealed trait: only this crate implements it. It has `put_blob`,
   `put_tree`, and `put_commit`, each of which returns the same ID as the object's own `id()`; `get`,
-  `get_expecting`, and `contains`; and `resolve_blob`, `resolve_tree`, and `resolve_commit`. The
-  store computes the ID from the kind and the body, so a caller cannot store an object under another
-  ID. Writing a raw body of any kind is internal to the crate, because the body of a tree or a
+  `get_expecting`, and `contains`; `resolve_blob`, `resolve_tree`, and `resolve_commit`; and
+  `get_tree` and `get_commit`. The store computes the ID from the kind and the body, so a caller
+  cannot store an object under another ID. Writing a raw body of any kind is internal to the crate, because the body of a tree or a
   commit has to come from a value that was checked. `get` returns the kind and the encoded body of
   an object whose content hashes to the ID; `get_expecting` fails with a `KindMismatch` if the kind
   differs. The `resolve_*` methods return a typed ID for an object that exists and has the kind,
   `None` for a missing object, and a `KindMismatch` for another kind. They check the content like
   `get` does, which means a full read, because the kind is known only from the stored object, and a
   damaged object is reported as `Corrupt` whichever kind was asked for. A resolved ID says that the
-  object existed with that kind when it was resolved, not that it stays in the store. The store does
-  not decode objects. `FsObjectStore` is the file system implementation.
+  object existed with that kind when it was resolved, not that it stays in the store.
+  `get_tree` and `get_commit` take a typed ID, confirm the kind, and return the value that
+  `Tree::parse` or `Commit::parse` reads from the body. A body that is not canonical is a
+  `ReadError::Tree` or `ReadError::Commit` with the ID, apart from `ReadError::Store`, which wraps
+  the errors of the store. The store never decodes a body for any other method. `FsObjectStore` is
+  the file system implementation.
 - **Authorization** is not a store concern. The authorization hook of ADR-002 has to be called
   by the layer above the store, which knows the actor and the operation.
 
@@ -72,7 +76,9 @@ server will later keep objects elsewhere (API-first). The implementation is
   is repaired and not mistaken for a stored object.
 - A valid ID does not mean a valid object. The store checks that the content hashes to the ID, not
   that a tree or a commit is in canonical form. The readers `Tree::parse` and `Commit::parse` apply
-  the strict reading of ADR-005; the store does not call them, and a caller has to.
+  the strict reading of ADR-005; `get_tree` and `get_commit` call them, and the other methods do
+  not. The IDs inside a decoded tree or commit are claims about other objects: `Tree::verify` and
+  `Commit::verify` check them against a store, one level deep.
 - Many small files are slow on some file systems and large repositories. Pack files are the
   planned answer.
 - Stale files can remain in `tmp/` after a crash. Their names are never reused, so they are
