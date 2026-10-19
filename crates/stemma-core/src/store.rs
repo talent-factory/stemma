@@ -287,7 +287,8 @@ impl RawObject {
 }
 
 pub(crate) mod sealed {
-    /// Keeps [`ObjectStore`](super::ObjectStore) from being implemented outside this crate.
+    /// Keeps [`ObjectStore`](super::ObjectStore) and [`RefStore`](crate::refs::RefStore) from
+    /// being implemented outside this crate.
     pub trait Sealed {}
 }
 
@@ -564,7 +565,7 @@ impl FsObjectStore {
         drop(file);
 
         match fs::rename(&temp.path, path) {
-            Ok(()) => temp.armed = false,
+            Ok(()) => temp.disarm(),
             Err(error) => {
                 // Another writer may have stored the object in the meantime. Only an object that
                 // reads back correctly counts; the temporary file is removed on drop.
@@ -665,9 +666,16 @@ impl ObjectStore for FsObjectStore {
 
 /// A temporary file that is removed on drop unless it was moved into place. The guard exists only
 /// for a file that this call created, so it can never remove the file of another writer.
-struct TempFile {
-    path: PathBuf,
+pub(crate) struct TempFile {
+    pub(crate) path: PathBuf,
     armed: bool,
+}
+
+impl TempFile {
+    /// Keeps the file: it has been moved, or is meant to stay.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
 }
 
 impl Drop for TempFile {
@@ -683,7 +691,7 @@ impl Drop for TempFile {
 /// Returns a temporary name that is unique in this process and, with overwhelming probability,
 /// across processes: the process ID, a counter, and a random number from the per-process random
 /// state of the standard library. It is not meant to be unguessable.
-fn unique_temp_name() -> String {
+pub(crate) fn unique_temp_name() -> String {
     let random = RandomState::new().build_hasher().finish();
     format!(
         "{}-{}-{random:016x}",
@@ -694,7 +702,7 @@ fn unique_temp_name() -> String {
 
 /// Creates a new file in `dir` under a name from `next_name`. If the name is taken, it asks for
 /// the next one, up to [`TEMP_ATTEMPTS`] times. A file that already exists is never touched.
-fn create_temp(
+pub(crate) fn create_temp(
     dir: &Path,
     next_name: &mut dyn FnMut() -> String,
 ) -> Result<(File, TempFile), StoreError> {
@@ -720,7 +728,7 @@ fn create_temp(
 
 /// Creates `dir` and every missing directory above it, and flushes the new directory entries.
 /// `root` has to exist and `dir` has to be below it.
-fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreError> {
+pub(crate) fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreError> {
     let mut missing: Vec<&Path> = Vec::new();
     let mut current = dir;
     loop {
@@ -761,7 +769,7 @@ fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreError> {
 
 /// Flushes a directory so that a rename or a new entry in it survives a crash.
 #[cfg(unix)]
-fn sync_directory(dir: &Path) -> Result<(), StoreError> {
+pub(crate) fn sync_directory(dir: &Path) -> Result<(), StoreError> {
     File::open(dir)
         .and_then(|directory| directory.sync_all())
         .map_err(io_error("flush the directory", dir))
@@ -769,7 +777,7 @@ fn sync_directory(dir: &Path) -> Result<(), StoreError> {
 
 /// No-op on platforms that cannot flush a directory: the rename is atomic but not made durable.
 #[cfg(not(unix))]
-fn sync_directory(_dir: &Path) -> Result<(), StoreError> {
+pub(crate) fn sync_directory(_dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
