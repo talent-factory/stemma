@@ -921,13 +921,13 @@ impl Commit {
     /// `author <actor line>`, and `time <seconds>`, in this order and each on its own line, then
     /// a blank line, then the message verbatim, with nothing appended. IDs are in textual
     /// form, the seconds are a decimal integer without a plus sign or leading zeros, and the
-    /// actor line is described at `actor_line`.
+    /// actor line is the [`Display`](std::fmt::Display) form of [`Actor`].
     pub fn encode(&self) -> Vec<u8> {
         let mut out = format!("tree {}\n", self.tree);
         for parent in &self.parents {
             out.push_str(&format!("parent {parent}\n"));
         }
-        out.push_str(&format!("author {}\n", actor_line(&self.author)));
+        out.push_str(&format!("author {}\n", self.author));
         out.push_str(&format!("time {}\n", self.timestamp));
         out.push('\n');
         out.push_str(&self.message);
@@ -1148,25 +1148,6 @@ impl Commit {
         }
         Commit::new(tree, parents, author, timestamp, rest).map_err(CommitParseError::Commit)
     }
-}
-
-/// Encodes an actor on one line: `human <id>` or
-/// `agent <id> model=<model> session=<session> sponsor=<sponsor>`.
-///
-/// The fields are not escaped. [`Actor`] guarantees that no field is empty or contains a space, so
-/// the line splits unambiguously at spaces. A value may still contain `=`; [`Actor::from_str`]
-/// splits each `key=value` token at its first `=`.
-fn actor_line(actor: &Actor) -> String {
-    let (label, fields) = actor.fields();
-    let mut line = label.to_owned();
-    for (i, (name, value)) in fields.into_iter().enumerate() {
-        if i == 0 {
-            line.push_str(&format!(" {value}"));
-        } else {
-            line.push_str(&format!(" {name}={value}"));
-        }
-    }
-    line
 }
 
 #[cfg(test)]
@@ -2496,23 +2477,23 @@ mod tests {
     #[test]
     fn an_actor_line_is_read_back_and_accepts_no_second_spelling() {
         for actor in [human(), agent(), with_equals()] {
-            let line = actor_line(&actor);
+            let line = actor.to_string();
             assert_eq!(line.parse::<Actor>(), Ok(actor));
             let accepted = accepted_changes_encode_back(line.as_bytes(), |bytes| {
                 let text = std::str::from_utf8(bytes).ok()?;
                 text.parse::<Actor>()
                     .ok()
-                    .map(|actor| actor_line(&actor).into_bytes())
+                    .map(|actor| actor.to_string().into_bytes())
             });
             assert!(!accepted.is_empty(), "the check reached no valid actor");
         }
         // A valid change of a field is reached, and so is a change at the very end of the line.
-        let golden = actor_line(&agent()).into_bytes();
+        let golden = agent().to_string().into_bytes();
         let accepted = accepted_changes_encode_back(&golden, |bytes| {
             let text = std::str::from_utf8(bytes).ok()?;
             text.parse::<Actor>()
                 .ok()
-                .map(|actor| actor_line(&actor).into_bytes())
+                .map(|actor| actor.to_string().into_bytes())
         });
         assert!(accepted.contains(&with_replaced(&golden, "sponsor=daniel", "sponsor=daniea")));
         assert!(accepted.contains(&with_replaced(&golden, "sponsor=daniel", "sponsor=daniel9")));

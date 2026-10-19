@@ -8,7 +8,7 @@ pub mod store;
 #[cfg(test)]
 mod testutil;
 
-pub use actor::{Actor, ActorError, ActorParseError, ActorRef};
+pub use actor::{Actor, ActorError, ActorField, ActorParseError, ActorRef};
 
 /// Result of an authorization check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
