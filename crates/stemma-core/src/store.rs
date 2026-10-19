@@ -84,7 +84,8 @@ impl fmt::Display for CorruptReason {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum StoreError {
-    /// The underlying storage failed. The cause is available through [`Error::source`].
+    /// The underlying storage failed. The cause is the field `source`, and its message ends the
+    /// message of this error. Use [`StoreError::io_error`] to reach it through a wrapper.
     Io {
         /// What the store was doing, for example "read the object file".
         operation: &'static str,
@@ -134,6 +135,18 @@ impl fmt::Display for StoreError {
                 found.name(),
                 expected.name()
             ),
+        }
+    }
+}
+
+impl StoreError {
+    /// Returns the error of the file system if this is [`StoreError::Io`]. The chain of
+    /// [`Error::source`] does not lead to it (see the crate documentation); this does, for a
+    /// caller that maps [`io::ErrorKind`] to a result such as an exit code.
+    pub fn io_error(&self) -> Option<&io::Error> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Corrupt { .. } | Self::KindMismatch { .. } => None,
         }
     }
 }
@@ -195,6 +208,17 @@ impl fmt::Display for ReadError {
                 "object {requested} was read as a value with the ID {parsed}: \
                  the reader accepted a body that is not canonical"
             ),
+        }
+    }
+}
+
+impl ReadError {
+    /// Returns the error of the store if the object could not be returned: the storage failed,
+    /// the object is damaged, or it has another kind. `None` for a body that is not canonical.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Store(source) => Some(source),
+            Self::Tree { .. } | Self::Commit { .. } | Self::IdMismatch { .. } => None,
         }
     }
 }
@@ -262,7 +286,7 @@ impl RawObject {
     }
 }
 
-mod sealed {
+pub(crate) mod sealed {
     /// Keeps [`ObjectStore`](super::ObjectStore) from being implemented outside this crate.
     pub trait Sealed {}
 }
@@ -386,7 +410,7 @@ pub trait ObjectStore: sealed::Sealed {
     /// tree, and with the other errors of [`get`](Self::get). Returns [`ReadError::Tree`] if the
     /// body is not canonical, and [`ReadError::IdMismatch`] if the reader returned a tree with
     /// another ID, which a correct reader never does. To get the [`StoreError`] out of
-    /// [`ReadError::Store`], match on the variant: [`Error::source`] gives its cause.
+    /// [`ReadError::Store`], use [`ReadError::store_error`].
     fn get_tree(&self, id: &TreeId) -> Result<Option<Tree>, ReadError> {
         let Some(object) = self
             .get_expecting(&id.object_id(), Kind::Tree)
@@ -1889,37 +1913,29 @@ mod tests {
 
     #[test]
     fn a_storage_failure_shows_through_the_transparent_store_variant() {
+        use crate::testutil::{FaultyStore, DISK_MESSAGE};
         let dir = TempDir::new();
-        let store = dir.store();
-        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
-        // The directory that should hold the object is a file, so reading it fails in the
-        // file system and the object is neither found nor reported as damaged.
-        let path = store.object_path(&ObjectId::from(tree));
-        let fan_out = path.parent().expect("an object file has a directory");
-        fs::remove_dir_all(fan_out).unwrap();
-        fs::write(fan_out, b"in the way").unwrap();
+        let tree = dir.store().put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        // The store fails the same way on every system (see `FaultyStore`).
+        let store = FaultyStore::new(dir.store(), true, false);
         let error = store.get_tree(&tree).unwrap_err();
-        match &error {
-            ReadError::Store(source) => {
-                assert!(matches!(**source, StoreError::Io { .. }), "{source}")
-            }
-            other => panic!("unexpected error: {other}"),
-        }
         let ReadError::Store(inner) = &error else {
-            unreachable!("matched above");
+            panic!("unexpected error: {error}");
         };
-        let StoreError::Io { source, .. } = &**inner else {
-            unreachable!("matched above");
-        };
+        assert!(matches!(**inner, StoreError::Io { .. }), "{inner}");
         // The message is that of the store error, including the one of the I/O error.
         assert_eq!(
             error.to_string(),
-            format!(
-                "could not inspect the object file `{}`: {source}",
-                path.display()
-            )
+            format!("could not read the object file `objects/b3/00/faulty`: {DISK_MESSAGE}")
         );
-        assert!(error.source().is_none());
+        // The chain goes on below the I/O error, whose message the text has.
+        assert_eq!(
+            error.source().map(ToString::to_string).as_deref(),
+            Some("the deepest cause")
+        );
+        // The typed error is reached by the accessors.
+        let io = error.store_error().and_then(StoreError::io_error).unwrap();
+        assert_eq!(io.kind(), io::ErrorKind::Other);
     }
 
     #[test]

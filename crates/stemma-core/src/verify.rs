@@ -50,6 +50,16 @@ impl fmt::Display for TreeVerifyError {
     }
 }
 
+impl TreeVerifyError {
+    /// Returns the error of the store, unless the store has no such object.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Store { source, .. } => Some(source),
+            Self::Missing { .. } => None,
+        }
+    }
+}
+
 impl Error for TreeVerifyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -150,6 +160,16 @@ impl fmt::Display for CommitVerifyError {
                 write!(f, "{reference}: the store has no object {id}")
             }
             Self::Store { reference, source } => write!(f, "{reference}: {source}"),
+        }
+    }
+}
+
+impl CommitVerifyError {
+    /// Returns the error of the store, unless the store has no such object.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Store { source, .. } => Some(source),
+            Self::Missing { .. } => None,
         }
     }
 }

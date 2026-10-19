@@ -300,9 +300,17 @@ them.
       the message of its cause, so `to_string()` is enough for a log, a command line, or an agent;
       `Error::source` returns the cause of the cause and never the cause itself, so that a program
       that walks the chain shows each message once. The cause stays available as a typed field of
-      the variant. `StoreError::Io` now has the message of the I/O error. The rule is in the crate
-      documentation, `properties.rs` checks every rejection of the readers and builds the wrapping
-      errors from a real I/O failure (store, index, tree, and commit verification, `write_tree`),
-      and the old behavior of any of them fails a test. What is still open: the three verification
+      the variant. `StoreError::Io` now has the message of the I/O error. The usual split (each
+      error prints its own text, a reporter prints the chain) was not chosen: a complete message
+      is what tests, logs, and agents read, and no code has to know how to print a chain. The
+      price is that a walk of `source()` no longer leads to the typed cause, so
+      `downcast_ref::<io::Error>()` on a source finds nothing. `StoreError::io_error()` and
+      `store_error()` on `ReadError`, `IndexVerifyError`, `WriteTreeError`, `TreeVerifyError`, and
+      `CommitVerifyError` reach it, and a program that only reports an error prints it with `{}`.
+      The rule is in the crate documentation. `properties.rs` checks every rejection of the
+      readers, and builds the wrapping errors from a failure that has a cause of its own, the same
+      on every system (`FaultyStore`; the same failure of a real file system has another error
+      kind on Windows than on Unix): the message ends in the message of the I/O error once, and
+      the chain goes on with the link below it. What is still open: the three verification
       errors (`IndexVerifyError`, `TreeVerifyError`, `CommitVerifyError`) have the same two cases,
       missing and store error, and could share one type.

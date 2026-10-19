@@ -18,14 +18,15 @@
 //! a failure prints both values.
 
 use std::error::Error;
+use std::io;
 
 use crate::index::{FileMode, Index, IndexParseError};
 use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
     TreeParseError,
 };
-use crate::store::{FsObjectStore, ObjectStore, StoreError};
-use crate::testutil::TempDir;
+use crate::store::{ObjectStore, StoreError};
+use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
 use crate::{Actor, ActorParseError};
 
 /// The seed when `STEMMA_PROPERTY_SEED` is not set.
@@ -911,58 +912,117 @@ fn names_and_fields_that_the_rules_forbid_are_rejected_everywhere() {
     }
 }
 
-/// Every error that wraps another one, built from a real failure: an object whose file cannot be
-/// looked at, because the directory that should hold it is a file. The message of each has the
-/// message of the I/O error at the bottom, once, and the chain does not repeat it.
+/// Every error that wraps another one, built from a failure of the file system that has a cause
+/// of its own (the same on every system, see `FaultyStore`). The message of each ends in the
+/// message of the I/O error, once, and the chain of causes goes on with the one link below that,
+/// which the message does not print, and nothing after it.
 #[test]
-fn every_error_that_wraps_another_prints_the_cause_once() {
+fn every_error_that_wraps_another_prints_the_cause_once_and_goes_on_below_it() {
     let dir = TempDir::new();
-    let store: FsObjectStore = dir.store();
-    let blob = store.put_blob(&Blob::new("hello")).unwrap();
+    let working = dir.store();
+    let blob = working.put_blob(&Blob::new("hello")).unwrap();
     let id = ObjectId::from(blob);
-    let fan_out = store.object_path(&id).parent().unwrap().to_path_buf();
-    std::fs::remove_dir_all(&fan_out).unwrap();
-    std::fs::write(&fan_out, b"in the way").unwrap();
-
-    let io_text = match store.get(&id).unwrap_err() {
-        StoreError::Io { source, .. } => source.to_string(),
-        other => panic!("unexpected error: {other}"),
-    };
+    let empty = working.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
     let mut index = Index::new();
     index.insert("a", FileMode::File, blob).unwrap();
     let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
-    let commit = Commit::new(
-        TreeId::new(id),
-        vec![],
-        Actor::human("daniel").unwrap(),
-        0,
-        "m",
-    )
-    .unwrap();
+    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
 
+    let reading = FaultyStore::new(dir.store(), true, false);
+    let writing = FaultyStore::new(dir.store(), false, true);
     let errors: Vec<(&str, Box<dyn Error>)> = vec![
-        ("store", Box::new(store.get(&id).unwrap_err())),
+        ("get", Box::new(reading.get(&id).unwrap_err())),
+        ("get_tree", Box::new(reading.get_tree(&empty).unwrap_err())),
         (
-            "get_tree",
-            Box::new(store.get_tree(&TreeId::new(id)).unwrap_err()),
+            "get_commit",
+            Box::new(reading.get_commit(&commit.id()).unwrap_err()),
         ),
-        ("index verify", Box::new(index.verify(&store).unwrap_err())),
         (
-            "write_tree",
-            Box::new(index.write_tree(&store).unwrap_err()),
+            "index verify",
+            Box::new(index.verify(&reading).unwrap_err()),
         ),
-        ("tree verify", Box::new(tree.verify(&store).unwrap_err())),
+        (
+            "write_tree, check",
+            Box::new(index.write_tree(&reading).unwrap_err()),
+        ),
+        (
+            "write_tree, write",
+            Box::new(index.write_tree(&writing).unwrap_err()),
+        ),
+        ("tree verify", Box::new(tree.verify(&reading).unwrap_err())),
         (
             "commit verify",
-            Box::new(commit.verify(&store).unwrap_err()),
+            Box::new(commit.verify(&reading).unwrap_err()),
         ),
     ];
     for (name, error) in &errors {
         let text = error.to_string();
-        assert_eq!(text.matches(&io_text).count(), 1, "{name}: {text}");
-        assert!(text.ends_with(&io_text), "{name}: {text}");
+        assert!(text.ends_with(DISK_MESSAGE), "{name}: {text}");
+        assert_eq!(text.matches(DISK_MESSAGE).count(), 1, "{name}: {text}");
+        assert!(!text.contains("deepest"), "{name}: {text}");
+        // One link: the cause below the I/O error, whose message the text does not print.
+        let first = error
+            .source()
+            .unwrap_or_else(|| panic!("{name}: no source"));
+        assert_eq!(first.to_string(), "the deepest cause", "{name}");
+        assert!(first.source().is_none(), "{name}");
         assert_no_message_twice(error.as_ref(), name);
     }
+}
+
+/// The typed error of the file system stays reachable through the wrappers, by the accessors.
+#[test]
+fn the_error_of_the_file_system_is_reached_through_every_wrapper() {
+    let dir = TempDir::new();
+    let working = dir.store();
+    let blob = working.put_blob(&Blob::new("hello")).unwrap();
+    let empty = working.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+    let mut index = Index::new();
+    index.insert("a", FileMode::File, blob).unwrap();
+    let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
+    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
+    let reading = FaultyStore::new(dir.store(), true, false);
+    let writing = FaultyStore::new(dir.store(), false, true);
+
+    let kind = |store_error: Option<&StoreError>| {
+        store_error
+            .and_then(StoreError::io_error)
+            .map(io::Error::kind)
+    };
+    let kinds = [
+        reading
+            .get(&ObjectId::from(blob))
+            .unwrap_err()
+            .io_error()
+            .map(io::Error::kind),
+        kind(reading.get_tree(&empty).unwrap_err().store_error()),
+        kind(index.verify(&reading).unwrap_err().store_error()),
+        kind(index.write_tree(&reading).unwrap_err().store_error()),
+        kind(index.write_tree(&writing).unwrap_err().store_error()),
+        kind(tree.verify(&reading).unwrap_err().store_error()),
+        kind(commit.verify(&reading).unwrap_err().store_error()),
+    ];
+    assert!(
+        kinds.iter().all(|kind| *kind == Some(io::ErrorKind::Other)),
+        "{kinds:?}"
+    );
+
+    // A rejection that is not an error of the store has none.
+    let mut missing = Index::new();
+    missing
+        .insert("a", FileMode::File, Blob::new("absent").id())
+        .unwrap();
+    assert!(missing
+        .verify(&dir.store())
+        .unwrap_err()
+        .store_error()
+        .is_none());
+    let store = dir.store();
+    let body = store
+        .put_raw(crate::object::Kind::Tree, b"100644 a\nnot-an-id\n")
+        .unwrap();
+    let error = store.get_tree(&TreeId::new(body)).unwrap_err();
+    assert!(error.store_error().is_none(), "{error}");
 }
 
 /// A chain in which a wrapper returns its cause although the message has it is the defect that

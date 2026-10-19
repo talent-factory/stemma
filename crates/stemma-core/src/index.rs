@@ -297,6 +297,16 @@ impl fmt::Display for IndexVerifyError {
     }
 }
 
+impl IndexVerifyError {
+    /// Returns the error of the store, unless the store has no such object.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Store { source, .. } => Some(source),
+            Self::Missing { .. } => None,
+        }
+    }
+}
+
 impl Error for IndexVerifyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -328,6 +338,18 @@ impl fmt::Display for WriteTreeError {
             Self::Verify(source) => write!(f, "the index does not verify: {source}"),
             Self::Store(source) => write!(f, "cannot write a tree: {source}"),
             Self::Tree(source) => write!(f, "cannot build a tree: {source}"),
+        }
+    }
+}
+
+impl WriteTreeError {
+    /// Returns the error of the store, whether it failed the check of the index or the writing of
+    /// a tree.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Verify(source) => source.store_error(),
+            Self::Store(source) => Some(source),
+            Self::Tree(_) => None,
         }
     }
 }
