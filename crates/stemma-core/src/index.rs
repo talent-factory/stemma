@@ -1,8 +1,8 @@
 //! The index: the set of files the next commit will contain.
 //!
 //! The index maps a relative path to a file mode and the ID of the blob that holds the content.
-//! It is a plain in-memory model with a canonical text encoding. This module touches neither the
-//! file system nor an object store.
+//! It is a plain in-memory model with a canonical text encoding. It never touches the file system.
+//! Only [`Index::verify`] reads from an object store.
 //!
 //! Paths are `/`-separated and relative. Each component must satisfy the same rules as a tree
 //! entry name (ADR-005). Names that are dangerous on Windows, such as `\` and `:`, are accepted
@@ -26,10 +26,11 @@
 //! anything that [`Index::encode`] would not have written, so one index has exactly one
 //! encoding.
 //!
-//! Reading and encoding use no store. [`Index::verify`] is the one operation that takes one: it
-//! checks that every ID names a blob that the store has. The reader claims each ID as a blob,
-//! because every entry of the index is a file, but it cannot know; a caller that relies on the
-//! claim, such as a builder of trees from the index, has to call `verify` first.
+//! Reading and encoding use no store. The reader claims each ID as a blob, because every entry of
+//! the index is a file, but it cannot know; [`Index::insert`] trusts the [`BlobId`] it is given.
+//! [`Index::verify`] checks the claim against a store. A caller that relies on it, such as a
+//! builder of trees from the index, has to call `verify` first, and has to treat a later failure
+//! to read a blob as an error anyway, because the store can change after the check.
 //!
 //! An incompatible change to the encoding raises the number in the header line. A reader reports
 //! a header with another number as [`IndexParseError::UnsupportedVersion`] instead of reading
@@ -238,12 +239,13 @@ impl Error for IndexParseError {
     }
 }
 
-/// Why an index does not name stored blobs only. Carries the path of the first entry, in index
-/// order, that fails.
+/// Why an index fails [`Index::verify`]. Carries the path of the first failing entry in index
+/// order.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum IndexVerifyError {
-    /// The store has no object with the ID of the entry. The blob may not have been stored yet.
+    /// The store has no object with the ID of the entry, for example because the blob was never
+    /// stored.
     Missing {
         /// The path of the entry.
         path: String,
@@ -255,7 +257,8 @@ pub enum IndexVerifyError {
     Store {
         /// The path of the entry.
         path: String,
-        /// What the store reported. Boxed to keep the error small.
+        /// What the store reported. Boxed because the unboxed error is too large for clippy's
+        /// `result_large_err` lint.
         source: Box<StoreError>,
     },
 }
@@ -293,7 +296,8 @@ impl IndexEntry {
         self.mode
     }
 
-    /// Returns the ID of the content blob.
+    /// Returns the ID of the content blob. In a parsed index it is only a claim that the ID names a
+    /// blob, until [`Index::verify`] has checked it against a store.
     pub fn id(&self) -> BlobId {
         self.id
     }
@@ -413,7 +417,7 @@ impl Index {
         self.entries.remove(&PathKey(path.to_owned()))
     }
 
-    /// Returns the entry at the path.
+    /// Returns the entry at the path. Its ID is unverified until [`Index::verify`].
     pub fn get(&self, path: &str) -> Option<&IndexEntry> {
         self.entries.get(&PathKey(path.to_owned()))
     }
@@ -429,7 +433,7 @@ impl Index {
     }
 
     /// Iterates over the entries in path order, component by component; see the module
-    /// documentation.
+    /// documentation. The IDs are unverified until [`Index::verify`].
     pub fn iter(&self) -> impl Iterator<Item = (&str, &IndexEntry)> {
         self.entries
             .iter()
@@ -495,7 +499,7 @@ impl Index {
                     code: code.to_owned(),
                 })?;
             // Every entry of the index is a file, so the ID is claimed as a blob. No store has
-            // confirmed it; the claim has to be checked where it is relied on (ADR-005, Open).
+            // confirmed it; `Index::verify` does.
             let id = ObjectId::from_str(id).map(BlobId::new).map_err(|source| {
                 IndexParseError::InvalidObjectId {
                     line: line_number,
@@ -522,9 +526,9 @@ impl Index {
         Ok(index)
     }
 
-    /// Checks that every entry names a blob that the store has. A parsed index only claims this
-    /// (see the module documentation), and an entry staged with the ID of a blob that was never
-    /// stored does not make it true either.
+    /// Checks that every entry names a blob that the store has. The index cannot guarantee this
+    /// itself: [`Index::parse`] only claims each ID as a blob, and [`Index::insert`] trusts the
+    /// [`BlobId`] it is given, which may be the ID of a blob that was never stored.
     ///
     /// The result holds at the time of the call. The check reads and verifies each blob completely
     /// (see [`ObjectStore::resolve_blob`]), so its cost grows with the size of the staged files.
@@ -1248,9 +1252,85 @@ mod tests {
         index.insert("b", FileMode::File, absent).unwrap();
         index.insert("a", FileMode::File, stored).unwrap();
         match index.verify(&store).unwrap_err() {
-            IndexVerifyError::Missing { path, .. } => assert_eq!(path, "b"),
+            IndexVerifyError::Missing { path, id } => {
+                assert_eq!((path.as_str(), id), ("b", absent))
+            }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn verify_follows_the_component_order_and_not_the_order_of_the_path_strings() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let in_dir = crate::object::Blob::new("in the directory").id();
+        let dashed = crate::object::Blob::new("with a dash").id();
+        let mut index = Index::new();
+        // As strings `a-b` sorts before `a/z`; as components `a/z` comes first.
+        index.insert("a-b", FileMode::File, dashed).unwrap();
+        index.insert("a/z", FileMode::File, in_dir).unwrap();
+        match index.verify(&store).unwrap_err() {
+            IndexVerifyError::Missing { path, id } => {
+                assert_eq!((path.as_str(), id), ("a/z", in_dir));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn verify_reports_a_damaged_blob_as_a_store_error_and_not_as_missing() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let blob = store.put_blob(&crate::object::Blob::new("hello")).unwrap();
+        let file = store.object_path(&ObjectId::from(blob));
+        crate::testutil::overwrite(&file, b"blob 5\0other");
+        let mut index = Index::new();
+        index.insert("src/lib.rs", FileMode::File, blob).unwrap();
+        match index.verify(&store).unwrap_err() {
+            IndexVerifyError::Store { path, source } => {
+                assert_eq!(path, "src/lib.rs");
+                assert!(matches!(*source, StoreError::Corrupt { .. }), "{source}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn verify_reports_a_wrong_kind_before_a_later_missing_blob_and_the_reverse() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let tree = store
+            .put_tree(&crate::object::Tree::new(vec![]).unwrap())
+            .unwrap();
+        let absent = crate::object::Blob::new("absent").id();
+        let parse = |first: &dyn std::fmt::Display, second: &dyn std::fmt::Display| {
+            let text = format!("stemma-index 1\n100644 {first} a\n100644 {second} b\n");
+            Index::parse(text.as_bytes()).expect("the reader accepts the claims")
+        };
+        match parse(&tree, &absent).verify(&store).unwrap_err() {
+            IndexVerifyError::Store { path, .. } => assert_eq!(path, "a"),
+            other => panic!("unexpected error: {other}"),
+        }
+        match parse(&absent, &tree).verify(&store).unwrap_err() {
+            IndexVerifyError::Missing { path, .. } => assert_eq!(path, "a"),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn verify_prints_the_escaped_path_before_the_message_of_the_store() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let tree = store
+            .put_tree(&crate::object::Tree::new(vec![]).unwrap())
+            .unwrap();
+        let text = format!("stemma-index 1\n100644 {tree} say\"hi\n");
+        let index = Index::parse(text.as_bytes()).expect("the reader accepts the claim");
+        let error = index.verify(&store).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("`say\\\"hi`: object {tree} is a tree, not a blob")
+        );
     }
 
     #[test]

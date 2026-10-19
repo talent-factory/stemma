@@ -329,7 +329,7 @@ impl FsObjectStore {
     }
 
     /// Returns the path of the file for the object ID.
-    fn object_path(&self, id: &ObjectId) -> PathBuf {
+    pub(crate) fn object_path(&self, id: &ObjectId) -> PathBuf {
         let hex = id.hex();
         self.root
             .join("objects")
@@ -625,7 +625,7 @@ mod tests {
 
     use super::*;
     use crate::object::{FileMode, TreeEntry};
-    use crate::testutil::TempDir;
+    use crate::testutil::{overwrite, TempDir};
     use crate::Actor;
 
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
@@ -642,12 +642,6 @@ mod tests {
 
     fn id(text: &str) -> ObjectId {
         text.parse().expect("valid ID")
-    }
-
-    /// Replaces a read-only object file with other content.
-    fn overwrite(path: &Path, bytes: &[u8]) {
-        fs::remove_file(path).expect("remove object");
-        fs::write(path, bytes).expect("write object");
     }
 
     /// The number of files in `tmp`; a missing directory holds none.

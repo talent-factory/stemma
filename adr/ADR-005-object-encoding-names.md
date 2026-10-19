@@ -215,7 +215,8 @@ them.
 - [x] Check the kind when a typed ID is resolved from a store, so that an ID read from text cannot
       be claimed as the wrong kind unnoticed. Available in ADR-007: `resolve_blob`, `resolve_tree`,
       and `resolve_commit` return a typed ID or a `KindMismatch`. The check is available, not
-      enforced: the claims of the next item are still unchecked.
+      enforced: a caller has to use it where it relies on a kind, as the next item does for the
+      index.
 - [x] The index reader claims every ID as a blob without asking a store, as a tree or commit reader
       will claim the kinds named by headers and modes. Done for the index: `Index::verify` takes an
       object store and checks every entry with `resolve_blob`. It reports an ID that the store does

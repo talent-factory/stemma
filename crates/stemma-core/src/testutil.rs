@@ -37,3 +37,9 @@ impl Drop for TempDir {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+
+/// Replaces a read-only object file with other content.
+pub(crate) fn overwrite(path: &Path, bytes: &[u8]) {
+    fs::remove_file(path).expect("remove object");
+    fs::write(path, bytes).expect("write object");
+}
