@@ -276,9 +276,12 @@ them.
       index, and actor line that the code can build, `parse(encode(x))` gives `x` back; for every
       input that a reader accepts, encoding the result gives the input, which is the rule above
       checked on generated input. The inputs are valid encodings changed in several places at
-      once (including whole tokens replaced by numbers and signs), splices of two encodings,
-      pieces of the format glued together, and raw bytes. Every rejection must have a message, a
-      cause chain that ends, and a line number inside the input. The seed is fixed, so a failure is
-      reproducible; `STEMMA_PROPERTY_SEED` and `STEMMA_PROPERTY_CASES` explore further. What it
-      cannot find: a rule that the encoder and the reader share, such as a name rule, because both
-      agree on it. Those stay with the unit tests and the golden vectors.
+      once (whole tokens replaced by numbers, signs, and near-miss modes, characters added at the
+      ends of lines, separators doubled, tokens swapped, whole lines inserted), splices of two
+      encodings, pieces of the format glued together, and raw bytes. Every rejection must have a
+      message, a cause chain that ends, and, where it names a line, a line inside the input (the
+      commit reader reports a missing header at the line after the last). The seed is fixed, so a
+      failure is reproducible; `STEMMA_PROPERTY_SEED` and `STEMMA_PROPERTY_CASES` explore further.
+      A round trip cannot see a rule that the encoder and the reader share, such as a name rule,
+      because both agree on it. A separate list of forbidden names and actor fields, written apart
+      from the rules, has to be rejected by every entry point.

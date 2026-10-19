@@ -8,7 +8,8 @@
 //!    result gives exactly the input. A reader that accepted a second spelling, or an encoder that
 //!    wrote something that its reader rejects, breaks one of the two.
 //! 2. **Total readers.** A reader never panics, and every rejection has a message, a cause chain
-//!    that ends, and a line number inside the input.
+//!    that ends, and, where it names a line, a line inside the input. The commit reader reports a
+//!    missing header at the line where it was expected, which is the line after the last one.
 //!
 //! The inputs come from a small generator with a fixed seed, so a failure is reproducible and the
 //! test is not flaky. Inputs are built from valid encodings that are changed in several places at
@@ -50,10 +51,16 @@ struct Rng(u64);
 
 impl Rng {
     fn new(seed: u64, stream: u64) -> Self {
-        // Mix the stream in, so that each property sees other numbers; never start at zero.
-        let mut rng = Self(seed ^ stream.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        rng.next();
-        rng
+        // One step of splitmix64 over the seed and the stream, so that every seed and every
+        // property starts from another state, and the state is never zero.
+        const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut z = seed
+            .wrapping_add(stream.wrapping_mul(GOLDEN))
+            .wrapping_add(GOLDEN);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        Self(if z == 0 { GOLDEN } else { z })
     }
 
     fn next(&mut self) -> u64 {
@@ -120,6 +127,13 @@ const PIECES: &[&str] = &[
     "b3:",
     "b3:0000000000000000000000000000000000000000000000000000000000000000",
     "100644 ",
+    "100775 ",
+    "0120000 ",
+    "+100644 ",
+    "x-foo bar\n",
+    "committer human a\n",
+    "encoding utf-8\n",
+    "\u{2028}",
     "100755 ",
     "120000 ",
     "040000 ",
@@ -140,8 +154,8 @@ const PIECES: &[&str] = &[
     "9223372036854775808",
 ];
 
-/// Numbers and near-numbers, spelled in ways that a strict reader has to reject: signs, leading
-/// zeros, other digits, and values at and beyond the limit of `i64`.
+/// Numbers, modes, and keywords, spelled in ways that a strict reader has to reject: signs,
+/// leading zeros, other digits, values at and beyond the limit of `i64`, and near-miss modes.
 const NUMBERS: &[&str] = &[
     "0",
     "-0",
@@ -162,6 +176,20 @@ const NUMBERS: &[&str] = &[
     "-9223372036854775809",
     "99999999999999999999",
     "",
+    // Modes and keywords with a near miss: the token that has to be replaced is a whole word.
+    "100775",
+    "0120000",
+    "100664",
+    "160000",
+    "+100644",
+    "Human",
+    "HUMAN",
+    "agent",
+    "human",
+    "tree",
+    "parent",
+    "author",
+    "time",
 ];
 
 /// Names, some of them invalid; the generators keep what the constructors accept.
@@ -306,8 +334,12 @@ fn random_index(rng: &mut Rng) -> Index {
 fn mutate(rng: &mut Rng, bytes: &[u8]) -> Vec<u8> {
     let mut out = bytes.to_vec();
     for _ in 0..1 + rng.below(4) {
-        match rng.below(10) {
+        match rng.below(14) {
             8 | 9 => replace_token(rng, &mut out),
+            10 => edit_line_end(rng, &mut out),
+            11 => extra_separator(rng, &mut out),
+            12 => swap_tokens(rng, &mut out),
+            13 => insert_line(rng, &mut out),
             0 => {
                 let at = rng.below(out.len() + 1);
                 let piece = rng.pick(PIECES).as_bytes().to_vec();
@@ -379,6 +411,78 @@ fn replace_token(rng: &mut Rng, bytes: &mut Vec<u8>) {
     bytes.splice(start..end, replacement.bytes());
 }
 
+/// Adds a space, a tab, or a carriage return before a line end, or at the end of the input.
+fn edit_line_end(rng: &mut Rng, bytes: &mut Vec<u8>) {
+    let ends: Vec<usize> = (0..bytes.len()).filter(|&at| bytes[at] == b'\n').collect();
+    let at = if ends.is_empty() {
+        bytes.len()
+    } else {
+        *rng.pick(&ends)
+    };
+    let piece = *rng.pick(&[" ", "\r", " \r", "\t"]);
+    bytes.splice(at..at, piece.bytes());
+}
+
+/// Doubles a separator, or puts a tab next to one.
+fn extra_separator(rng: &mut Rng, bytes: &mut Vec<u8>) {
+    let spaces: Vec<usize> = (0..bytes.len()).filter(|&at| bytes[at] == b' ').collect();
+    if spaces.is_empty() {
+        return;
+    }
+    let at = *rng.pick(&spaces) + usize::from(rng.one_in(2));
+    let piece = *rng.pick(&[" ", "\t"]);
+    bytes.splice(at..at, piece.bytes());
+}
+
+/// Swaps two space-separated tokens of one line, for example the keys of an actor line.
+fn swap_tokens(rng: &mut Rng, bytes: &mut Vec<u8>) {
+    let mut lines: Vec<Vec<u8>> = bytes
+        .split_inclusive(|&byte| byte == b'\n')
+        .map(<[u8]>::to_vec)
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    let at = rng.below(lines.len());
+    let ended = lines[at].last() == Some(&b'\n');
+    let content = if ended {
+        &lines[at][..lines[at].len() - 1]
+    } else {
+        &lines[at][..]
+    };
+    let mut tokens: Vec<Vec<u8>> = content
+        .split(|&byte| byte == b' ')
+        .map(<[u8]>::to_vec)
+        .collect();
+    let (a, b) = (rng.below(tokens.len()), rng.below(tokens.len()));
+    tokens.swap(a, b);
+    let mut line = tokens.join(&b' ');
+    if ended {
+        line.push(b'\n');
+    }
+    lines[at] = line;
+    *bytes = lines.concat();
+}
+
+/// Inserts a whole line, an unknown header or a blank one, at the start of a line.
+fn insert_line(rng: &mut Rng, bytes: &mut Vec<u8>) {
+    let starts: Vec<usize> = (0..=bytes.len())
+        .filter(|&at| at == 0 || bytes[at - 1] == b'\n')
+        .collect();
+    let at = *rng.pick(&starts);
+    let line = *rng.pick(&[
+        "x-foo bar\n",
+        "committer human a\n",
+        "encoding utf-8\n",
+        "\n",
+        " \n",
+        "parent \n",
+        "time 0\n",
+        "tree \n",
+    ]);
+    bytes.splice(at..at, line.bytes());
+}
+
 /// Joins the first part of one encoding to the last part of another.
 fn splice(rng: &mut Rng, first: &[u8], second: &[u8]) -> Vec<u8> {
     let mut out = first[..rng.below(first.len() + 1)].to_vec();
@@ -437,7 +541,13 @@ fn line_count(bytes: &[u8]) -> usize {
 
 /// Checks the rules for every rejection: the message is not empty, the chain of causes ends, and
 /// the line, if there is one, is inside the input.
-fn check_rejection(error: &dyn Error, line: Option<usize>, input: &[u8], context: &str) {
+fn check_rejection(
+    error: &dyn Error,
+    line: Option<usize>,
+    last_line: usize,
+    input: &[u8],
+    context: &str,
+) {
     assert!(
         !error.to_string().is_empty(),
         "{context}: empty message for {input:?}"
@@ -451,10 +561,9 @@ fn check_rejection(error: &dyn Error, line: Option<usize>, input: &[u8], context
         cause = next.source();
     }
     if let Some(line) = line {
-        let lines = line_count(input);
         assert!(
-            (1..=lines + 1).contains(&line),
-            "{context}: line {line} of {lines} for {:?}",
+            (1..=last_line).contains(&line),
+            "{context}: line {line} of {last_line} for {:?}",
             String::from_utf8_lossy(input)
         );
     }
@@ -578,7 +687,13 @@ fn the_tree_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
             }
             Err(error) => {
                 tally.rejected += 1;
-                check_rejection(&error, tree_line(&error), &input, &context);
+                check_rejection(
+                    &error,
+                    tree_line(&error),
+                    line_count(&input),
+                    &input,
+                    &context,
+                );
             }
         }
     }
@@ -605,7 +720,14 @@ fn the_commit_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
             }
             Err(error) => {
                 tally.rejected += 1;
-                check_rejection(&error, commit_line(&error), &input, &context);
+                // A missing header is reported at the line where it was expected: the one after the end.
+                check_rejection(
+                    &error,
+                    commit_line(&error),
+                    line_count(&input) + 1,
+                    &input,
+                    &context,
+                );
             }
         }
     }
@@ -632,7 +754,13 @@ fn the_index_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
             }
             Err(error) => {
                 tally.rejected += 1;
-                check_rejection(&error, index_line(&error), &input, &context);
+                check_rejection(
+                    &error,
+                    index_line(&error),
+                    line_count(&input),
+                    &input,
+                    &context,
+                );
             }
         }
     }
@@ -661,9 +789,108 @@ fn the_actor_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
             Err(error) => {
                 tally.rejected += 1;
                 let error: &ActorParseError = &error;
-                check_rejection(error, None, input.as_bytes(), &context);
+                check_rejection(error, None, 1, input.as_bytes(), &context);
             }
         }
     }
     assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+}
+
+#[test]
+fn every_seed_and_every_property_starts_from_another_state() {
+    let mut firsts = std::collections::HashSet::new();
+    for seed in 0..64 {
+        for stream in 1..=8 {
+            let mut rng = Rng::new(seed, stream);
+            assert_ne!(rng.0, 0, "seed {seed}, stream {stream}");
+            firsts.insert(rng.next());
+        }
+    }
+    // Consecutive seeds do not repeat each other, and the properties do not share a sequence.
+    assert_eq!(firsts.len(), 64 * 8);
+}
+
+/// The round trip cannot see a rule that the encoder and the reader share: if a name rule were
+/// loosened, both would agree and the property would still hold. This list is written down apart
+/// from the rules (ADR-005), and every entry point has to reject all of it.
+#[test]
+fn names_and_fields_that_the_rules_forbid_are_rejected_everywhere() {
+    let id = Blob::new("x").id();
+    for name in [
+        "",
+        ".",
+        "..",
+        " ",
+        "...",
+        "a\0b",
+        "a\u{7f}",
+        "a\r",
+        "a\t",
+        "a\u{85}",
+        "a\u{2028}",
+        "a\u{200b}",
+        "a\u{202e}",
+        "a\u{feff}",
+        "a/b",
+        "a\nb",
+        ".stemma",
+    ] {
+        assert!(
+            TreeEntry::file(name, FileMode::File, id).is_err(),
+            "TreeEntry::file accepts {name:?}"
+        );
+        let body = format!("100644 {name}\n{id}\n");
+        assert!(
+            Tree::parse(body.as_bytes()).is_err(),
+            "Tree::parse accepts {name:?}"
+        );
+        // A path may contain `/`, and a path with a line feed is cut into lines.
+        if name != "a/b" {
+            let text = format!("stemma-index 1\n100644 {id} {name}\n");
+            assert!(
+                Index::parse(text.as_bytes()).is_err(),
+                "Index::parse accepts {name:?}"
+            );
+            assert!(
+                Index::new().insert(name, FileMode::File, id).is_err(),
+                "Index::insert accepts {name:?}"
+            );
+        }
+    }
+    for field in [
+        "",
+        "a b",
+        "a\tb",
+        "\u{e9}",
+        "a\0",
+        "a\u{7f}",
+        "a\r",
+        "a\n",
+        "\u{2028}",
+        "a\u{200b}",
+        "\u{fe0f}",
+    ] {
+        assert!(Actor::human(field).is_err(), "human accepts {field:?}");
+        assert!(
+            Actor::agent("i", field, "s", "p").is_err(),
+            "agent accepts model {field:?}"
+        );
+        assert!(
+            Actor::agent("i", "m", field, "p").is_err(),
+            "agent accepts session {field:?}"
+        );
+        assert!(
+            Actor::agent("i", "m", "s", field).is_err(),
+            "agent accepts sponsor {field:?}"
+        );
+        for line in [
+            format!("human {field}"),
+            format!("agent {field} model=m session=s sponsor=p"),
+            format!("agent i model={field} session=s sponsor=p"),
+            format!("agent i model=m session={field} sponsor=p"),
+            format!("agent i model=m session=s sponsor={field}"),
+        ] {
+            assert!(line.parse::<Actor>().is_err(), "{line:?} is accepted");
+        }
+    }
 }
