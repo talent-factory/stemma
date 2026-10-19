@@ -260,11 +260,11 @@ them.
       `Actor::agent`. A malformed line (`ActorParseError::Malformed`) is reported apart from a
       rejected field (`ActorParseError::Invalid`).
 - [x] Clean up the actor type. Done: the check and the writing of the actor line work from one
-      list (`Repr::fields`; the reader, `Actor::agent`, and `ActorRef` remain separate lists), `ActorError::InvalidField` carries an `ActorField` instead of a string, and
-      `Actor` has `Hash` and `Display`; the commit encoding uses the `Display` form, which
-      `FromStr` reads back. `ActorRef` stays as the public type to match on, because a borrowed
-      view with public fields cannot come from the same list without indexing. No encoding and no
-      ID changes.
+      list (`Repr::fields`; the reader, `Actor::agent`, and `ActorRef` remain separate lists),
+      `ActorError::InvalidField` carries an `ActorField` instead of a string, and `Actor` has `Hash`
+      and `Display`; the commit encoding uses the `Display` form, which `FromStr` reads back.
+      `ActorRef` stays as the public type to match on, because a borrowed view with public fields
+      cannot come from the same list without indexing. No encoding and no ID changes.
 - [x] A tree builder from the index (`write-tree`) should verify inside. Done:
       `Index::write_tree(&store)` calls `Index::verify` itself, writes the trees from the innermost
       directory outwards, and returns the root `TreeId`. No tree is written if the check fails.
@@ -272,3 +272,16 @@ them.
       be built (ruled out by the index rules). The work is a loop over a stack of open directories
       and not a recursion. The blobs are not read again after the check, so a change of the store
       after it goes unnoticed.
+- [x] Property tests of the readers and encoders (`properties.rs`). Done: for every tree, commit,
+      index, and actor line that the code can build, `parse(encode(x))` gives `x` back; for every
+      input that a reader accepts, encoding the result gives the input, which is the rule above
+      checked on generated input. The inputs are valid encodings changed in several places at
+      once (whole tokens replaced by numbers, signs, and near-miss modes, characters added at the
+      ends of lines, separators doubled, tokens swapped, whole lines inserted), splices of two
+      encodings, pieces of the format glued together, and raw bytes. Every rejection must have a
+      message, a cause chain that ends, and, where it names a line, a line inside the input (the
+      commit reader reports a missing header at the line after the last). The seed is fixed, so a
+      failure is reproducible; `STEMMA_PROPERTY_SEED` and `STEMMA_PROPERTY_CASES` explore further.
+      A round trip cannot see a rule that the encoder and the reader share, such as a name rule,
+      because both agree on it. A separate list of forbidden names and actor fields, written apart
+      from the rules, has to be rejected by every entry point.

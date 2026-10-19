@@ -4,6 +4,8 @@
 mod actor;
 pub mod index;
 pub mod object;
+#[cfg(test)]
+mod properties;
 pub mod store;
 #[cfg(test)]
 mod testutil;
