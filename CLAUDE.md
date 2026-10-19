@@ -26,3 +26,17 @@ All routine tasks run through `just` (see `justfile`, list with `just`):
 ## ConTeXt
 
 The book uses ConTeXt MkIV, not LaTeX. Use `{\bf ...}` instead of `\textbf`, and `\startxtable` instead of `\starttable`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in the Plane project Stemma (`STEMMA-n`), accessed through the `plane-tf` MCP server. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` at the root, ADRs in `adr/`. See `docs/agents/domain.md`.
