@@ -14,6 +14,11 @@
 \setupfootertexts[][\pagenumber]
 \setuphead[chapter][before={\blank[2*big]}, after={\blank[big]}]
 
+% Literatur: BibTeX-Datei, numerische Zitate
+\usebtxdataset[references.bib]
+\usebtxdefinitions[aps]
+\setupbtx[aps][alternative=num]
+
 \starttext
 
 % ------------------------------------------------------------------
@@ -65,10 +70,6 @@ Abbildungen werden ergänzt, sobald sie vorliegen.
 \page
 
 \title{Literatur}
-Die Quellen folgen dem IEEE-Format. Einträge werden ergänzt, sobald die Quellen feststehen. Das Format für einen Eintrag lautet:
-
-\starttyping
-[1] A. Autor, „Titel der Quelle,“ Verlag, Ort, Jahr.
-\stoptyping
+\placelistofpublications
 
 \stoptext
