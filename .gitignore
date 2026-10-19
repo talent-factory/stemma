@@ -2,6 +2,7 @@ target/
 .DS_Store
 .claude/
 .headroom/
+.stemma/
 
 # Rust
 **/*.rs.bk
