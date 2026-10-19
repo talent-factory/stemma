@@ -81,7 +81,7 @@ pub fn text(entry: &Entry) -> String {
     }
     for (name, moved) in change.branches() {
         line(
-            format!("branch {name}"),
+            format!("branch {}", name.to_string().escape_debug()),
             value(moved.before()),
             value(moved.after()),
         );

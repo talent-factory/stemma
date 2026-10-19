@@ -41,7 +41,7 @@ struct Cli {
 enum Command {
     /// Create an empty repository
     Init(InitArgs),
-    /// Show and use the operation log
+    /// Show the operation log
     Op {
         #[command(subcommand)]
         command: OpCommand,
@@ -60,7 +60,7 @@ struct OpLogArgs {
     #[arg(default_value = ".")]
     path: PathBuf,
 
-    /// The number of entries to show; only these are read from disk
+    /// The number of entries to show; only their files are read, but all file names are listed
     #[arg(short = 'n', long, value_name = "N", default_value = "20")]
     limit: NonZeroUsize,
 
@@ -164,14 +164,14 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
         Command::Init(args) => init(args, out),
         Command::Op {
             command: OpCommand::Log(args),
-        } => op_log(args, out),
+        } => show_op_log(args, out),
     }
 }
 
-/// Lists the newest entries. Only the names of the files are read for all of them, which finds a
-/// gap; the files are read for the entries that are shown. Everything is read before anything is
+/// Lists the newest entries. The names of all files are listed, which finds a gap; only the files
+/// of the entries that are shown are read. Everything is read before anything is
 /// written, so an entry that is damaged gives an error and no partial list.
-fn op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
+fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = Repository::open(&args.path).map_err(CliError::Open)?;
     let log = repository.oplog();
     let numbers = log.numbers().map_err(CliError::OpLog)?;
@@ -183,12 +183,17 @@ fn op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(CliError::OpLog)?;
     for entry in &entries {
-        if args.json {
+        let written = if args.json {
             writeln!(out, "{}", op_log::json(entry))
         } else {
             write!(out, "{}", op_log::text(entry))
+        };
+        match written {
+            // The reader of a pipe, such as `head`, has had enough: that is not a failure.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(error) => return Err(CliError::Write(error)),
+            Ok(()) => {}
         }
-        .map_err(CliError::Write)?;
     }
     Ok(())
 }
@@ -313,6 +318,11 @@ mod tests {
             CliError::MissingActor,
             CliError::EmptyActor,
             CliError::Actor("human".parse::<Actor>().unwrap_err()),
+            CliError::Open(OpenError::NotARepository {
+                path: PathBuf::from("."),
+            }),
+            CliError::OpLog(OpLogError::Gap { missing: 2 }),
+            CliError::Write(io_error()),
             CliError::Init(InitError::AlreadyExists {
                 path: PathBuf::from(".stemma"),
             }),
@@ -338,6 +348,21 @@ mod tests {
         for error in made {
             assert_eq!(error.exit_code(), ExitCode::from(3), "{error}");
         }
+    }
+
+    #[test]
+    fn a_closed_pipe_ends_the_list_quietly() {
+        let dir = std::env::temp_dir().join(format!("stemma-cli-unit-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.to_str().unwrap();
+        run(
+            parse(&["init", path, "--actor", "human daniel"]),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let listed = run(parse(&["op", "log", path]), &mut Closed);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(listed.is_ok(), "{listed:?}");
     }
 
     #[test]
