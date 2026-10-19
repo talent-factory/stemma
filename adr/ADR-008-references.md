@@ -105,6 +105,6 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       it counts as stale, instead of a message that tells a person to remove the file.
 - [ ] The behavior of the replacing rename on Windows is tested only by the CI workflow run by
       hand (see ADR-007 for the same question about objects).
-- [ ] The log of changes of a reference (a reflog) is part of the operation log (ADR-005), which
-      is not designed yet.
+- [x] The log of changes of a reference (a reflog) is part of the operation log (ADR-005), which
+      ADR-011 designs: one entry for each change of a pointer, with the old and the new value.
 - [ ] Remote references and the record of a ref update on a hub (ADR-003).

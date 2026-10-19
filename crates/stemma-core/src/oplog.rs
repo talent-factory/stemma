@@ -14,7 +14,7 @@
 //!
 //! # The encoding
 //!
-//! Version 1 is strict text. A reader accepts what [`Entry::encode`] writes and nothing else, so
+//! Version 1 of the entry encoding is strict text. A reader accepts what [`Entry::encode`] writes and nothing else, so
 //! one entry has exactly one encoding (ADR-005):
 //!
 //! ```text
@@ -23,12 +23,13 @@
 //! time 1700000000
 //! actor human daniel
 //! operation snapshot
-//! head branch:main branch:main
+//! head branch:main commit:b3:0eec…6eb6
 //! working-copy b3:1d71…eed9 b3:4feb…b32c
 //! branch main b3:8cb4…b3e8 b3:b5f2…e662
 //! ```
 //!
-//! The first five lines come in this order, each once. Then come the lines of the pointers that
+//! The `…` stands for digits that are left out here; a real ID has all 64. The first five lines come
+//! in this order, each once. Then come the lines of the pointers that
 //! changed, at least one: `head`, then `working-copy`, then one `branch <name>` for each branch,
 //! sorted by name in UTF-8 byte order and each name once. Each has the old and the new value, which
 //! differ. `-` means that the pointer did not exist, or does not exist any more. A branch and the
@@ -39,14 +40,24 @@
 //!
 //! A writer takes the next number that is free and publishes the file with a hard link, which
 //! fails if the number is taken, so the entry is whole from the first moment it can be seen. If
-//! the number is taken, another writer was faster, and the writer looks for the end of the log again
-//! and tries the next free number. This orders writers without a lock. The numbers have no gap: a gap means that an entry is lost, and the
-//! reader reports it.
+//! the number is taken, another writer was faster; the writer then looks for the end of the log
+//! again and tries the next free number. [`Repository`](crate::repository::Repository) writes
+//! under the lock of the references, so its writers do not meet here; the retry is for any other
+//! writer, and for a crash that left a number half taken.
+//!
+//! The numbers have no gap: a gap means that an entry is lost, and the reader reports it. A
+//! directory listing is not a snapshot while a writer adds files, so the reader lists the directory
+//! again before it reports a gap, and a writer that only needs the end of the log looks at the
+//! largest number and checks nothing else. Names that start with a dot are skipped, as in the
+//! references, because file managers and editors leave such files; any other name is reported.
+//!
+//! Only the repository writes. [`FsOpLog::append`] and [`Entry::new`] are visible inside this crate
+//! only, so no caller can add an entry past the authorizer or invent one that was never in the log.
 
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -67,9 +78,13 @@ const NUMBER_WIDTH: usize = 12;
 /// The largest number of an entry, the largest value of [`NUMBER_WIDTH`] digits.
 pub const MAX_NUMBER: u64 = 999_999_999_999;
 
-/// How many times a writer tries again before it gives up. A try fails only because another writer
-/// took the number, which means that the other one made progress, so the limit is reached only by
-/// a writer that is overtaken again and again.
+/// The largest size of an entry that is read, in bytes. An entry is a few hundred bytes; a file much
+/// larger is not one.
+const MAX_ENTRY_LEN: u64 = 64 * 1024;
+
+/// How many numbers a writer tries before it gives up. A writer tries the next number only because
+/// another writer took the one before, which means that the other one made progress, so the limit is
+/// reached only by a writer that is overtaken again and again. Any other failure returns at once.
 const ATTEMPTS: usize = 64;
 
 /// The longest name of an operation, in characters.
@@ -88,7 +103,8 @@ pub struct OperationName(String);
 pub enum OperationNameError {
     /// The name is empty.
     Empty,
-    /// The name is longer than 32 characters. Carries its length in bytes.
+    /// The name is longer than 32 bytes, which is 32 characters for a name that is valid. Carries
+    /// its length in bytes.
     TooLong(usize),
     /// The name does not start with a lowercase letter.
     BadStart,
@@ -332,7 +348,7 @@ impl Change {
     }
 
     /// Every commit that the change names, old and new: the roots that the garbage collection
-    /// needs from this entry (ADR-007, ADR-011).
+    /// needs from this entry (ADR-007, ADR-011). A commit that is named twice is listed twice.
     pub fn commits(&self) -> Vec<CommitId> {
         let mut commits = Vec::new();
         if let Some(head) = &self.head {
@@ -361,12 +377,12 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Builds an entry.
+    /// Builds an entry. Only the log gives a number, so only this crate builds one.
     ///
     /// # Errors
     ///
     /// Returns [`EntryError::NumberOutOfRange`] if the number is 0 or larger than [`MAX_NUMBER`].
-    pub fn new(number: u64, change: Change) -> Result<Self, EntryError> {
+    pub(crate) fn new(number: u64, change: Change) -> Result<Self, EntryError> {
         if !(1..=MAX_NUMBER).contains(&number) {
             return Err(EntryError::NumberOutOfRange(number));
         }
@@ -651,6 +667,8 @@ pub enum EntryMalformed {
     PointerOutOfOrder,
     /// A value of `head` is not `-`, `branch:<name>`, or `commit:<id>`.
     UnknownHeadValue,
+    /// The file is larger than an entry can be.
+    TooLong,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -669,6 +687,7 @@ impl fmt::Display for EntryMalformed {
                 "the pointers come in the order head, working-copy, branches, each once"
             }
             Self::UnknownHeadValue => "expected `-`, `branch:<name>`, or `commit:<id>`",
+            Self::TooLong => "the file is too large to be an entry",
         })
     }
 }
@@ -845,14 +864,31 @@ pub enum OpLogError {
         /// The number.
         number: u64,
     },
-    /// The log is full: the next number is larger than [`MAX_NUMBER`], or every number that the
-    /// writer tried was taken.
-    Exhausted,
-    /// The entry was written, but its directory could not be flushed to disk, so it may not
-    /// survive a crash. A caller that orders "entry, then move" must not move: the entry is not
-    /// known to be safe.
+    /// The log is full: the next number is larger than [`MAX_NUMBER`].
+    Full,
+    /// Every number that the writer tried was taken, so many times that it gave up. Another writer
+    /// made progress each time, so trying again is reasonable.
+    Contended {
+        /// How many numbers were tried.
+        attempts: usize,
+    },
+    /// The entry was written and is in the log, but its directory could not be flushed to disk, so
+    /// it may not survive a crash. A caller that orders "entry, then move" must not move: the
+    /// entry is not known to be safe. The entry stays; a second attempt writes another one.
     NotFlushed {
+        /// The number of the entry that is in the log.
+        number: u64,
         /// The directory that could not be flushed.
+        path: PathBuf,
+        /// The error of the file system.
+        source: io::Error,
+    },
+    /// The entry is in the log, whole and flushed, but its temporary name in `tmp/` could not be
+    /// removed. Nothing is lost; the name can be removed by hand.
+    Leftover {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// The temporary name that stays.
         path: PathBuf,
         /// The error of the file system.
         source: io::Error,
@@ -895,7 +931,9 @@ impl OpLogError {
     /// [`Error::source`] does not lead to it (see the crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Io { source, .. } | Self::NotFlushed { source, .. } => Some(source),
+            Self::Io { source, .. }
+            | Self::NotFlushed { source, .. }
+            | Self::Leftover { source, .. } => Some(source),
             Self::Store(error) => error.io_error(),
             _ => None,
         }
@@ -934,13 +972,30 @@ impl fmt::Display for OpLogError {
                 path.display()
             ),
             Self::Missing { number } => write!(f, "the operation log has no entry {number}"),
-            Self::Exhausted => {
-                f.write_str("the operation log is full, or every number that was tried is taken")
-            }
-            Self::NotFlushed { path, source } => write!(
+            Self::Full => write!(f, "the operation log is full: it holds {MAX_NUMBER} entries"),
+            Self::Contended { attempts } => write!(
                 f,
-                "the entry was written, but flushing `{}` failed: {source}; it may not survive a \
-                 crash",
+                "the operation log is busy: every one of {attempts} numbers that were tried was \
+                 taken by another writer"
+            ),
+            Self::NotFlushed {
+                number,
+                path,
+                source,
+            } => write!(
+                f,
+                "entry {number} was written, but flushing `{}` failed: {source}; it may not \
+                 survive a crash",
+                path.display()
+            ),
+            Self::Leftover {
+                entry,
+                path,
+                source,
+            } => write!(
+                f,
+                "entry {} is in the log, but its temporary name `{}` could not be removed: {source}",
+                entry.number,
                 path.display()
             ),
             Self::Store(error) => error.fmt(f),
@@ -953,7 +1008,9 @@ impl Error for OpLogError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             // The message includes that of the I/O error, so the source is its own cause.
-            Self::Io { source, .. } | Self::NotFlushed { source, .. } => source.source(),
+            Self::Io { source, .. }
+            | Self::NotFlushed { source, .. }
+            | Self::Leftover { source, .. } => source.source(),
             Self::Corrupt { source, .. } => source.source(),
             Self::Store(error) => error.source(),
             Self::Entry(error) => error.source(),
@@ -983,8 +1040,41 @@ impl FsOpLog {
         self.dir().join(format!("{number:0NUMBER_WIDTH$}"))
     }
 
+    /// Lists the names of the directory as numbers, in no order. A name that starts with a dot is
+    /// skipped; any other name that is not an entry number is reported.
+    fn scan(&self) -> Result<Vec<u64>, OpLogError> {
+        let dir = self.dir();
+        let mut numbers = Vec::new();
+        for item in fs::read_dir(&dir).map_err(OpLogError::io("read the directory", &dir))? {
+            let item = item.map_err(OpLogError::io("read the directory", &dir))?;
+            let name = item.file_name();
+            if name.to_str().is_some_and(|name| name.starts_with('.')) {
+                continue;
+            }
+            let number = name
+                .to_str()
+                .and_then(parse_file_name)
+                .ok_or_else(|| OpLogError::UnexpectedFile { path: item.path() })?;
+            numbers.push(number);
+        }
+        Ok(numbers)
+    }
+
+    /// Returns the first number that is missing from 1, 2, 3, … in the sorted numbers, if any.
+    fn first_gap(sorted: &[u64]) -> Option<u64> {
+        sorted
+            .iter()
+            .enumerate()
+            .find(|(index, number)| **number != *index as u64 + 1)
+            .map(|(index, _)| index as u64 + 1)
+    }
+
     /// Lists the numbers of the entries in ascending order. They have to be 1, 2, 3, … without a
-    /// gap, and the directory holds nothing else.
+    /// gap. A name that starts with a dot is skipped, and any other name that is not an entry
+    /// number is reported.
+    ///
+    /// A listing is not a snapshot while a writer adds files, so a gap is reported only if a second
+    /// listing shows it too.
     ///
     /// # Errors
     ///
@@ -992,26 +1082,22 @@ impl FsOpLog {
     /// [`OpLogError::Gap`] if a number is missing, and [`OpLogError::Io`] if the directory cannot
     /// be read.
     pub fn numbers(&self) -> Result<Vec<u64>, OpLogError> {
-        let dir = self.dir();
-        let mut numbers = Vec::new();
-        for item in fs::read_dir(&dir).map_err(OpLogError::io("read the directory", &dir))? {
-            let item = item.map_err(OpLogError::io("read the directory", &dir))?;
-            let path = item.path();
-            let number = item
-                .file_name()
-                .to_str()
-                .and_then(parse_file_name)
-                .ok_or_else(|| OpLogError::UnexpectedFile { path: path.clone() })?;
-            numbers.push(number);
-        }
+        let mut numbers = self.scan()?;
         numbers.sort_unstable();
-        for (index, number) in numbers.iter().enumerate() {
-            let expected = index as u64 + 1;
-            if *number != expected {
-                return Err(OpLogError::Gap { missing: expected });
+        if Self::first_gap(&numbers).is_some() {
+            numbers = self.scan()?;
+            numbers.sort_unstable();
+            if let Some(missing) = Self::first_gap(&numbers) {
+                return Err(OpLogError::Gap { missing });
             }
         }
         Ok(numbers)
+    }
+
+    /// The number after the largest one in the directory, or 1. It checks nothing else, so a gap
+    /// does not stop a writer: the reader reports it.
+    fn next_number(&self) -> Result<u64, OpLogError> {
+        Ok(self.scan()?.into_iter().max().map_or(1, |last| last + 1))
     }
 
     /// Reads the entry with the number.
@@ -1019,17 +1105,31 @@ impl FsOpLog {
     /// # Errors
     ///
     /// Returns [`OpLogError::Missing`] if there is none, [`OpLogError::Corrupt`] if it is not in
-    /// canonical form, [`OpLogError::WrongNumber`] if the number inside is not the one of the
-    /// name, and [`OpLogError::Io`] if the storage fails.
+    /// canonical form or larger than an entry can be, [`OpLogError::WrongNumber`] if the number
+    /// inside is not the one of the name, and [`OpLogError::Io`] if the storage fails.
     pub fn read(&self, number: u64) -> Result<Entry, OpLogError> {
         let path = self.path_of(number);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(OpLogError::Missing { number });
             }
-            Err(error) => return Err(OpLogError::io("read the entry", &path)(error)),
+            Err(error) => return Err(OpLogError::io("open the entry", &path)(error)),
         };
+        // An entry is small. A file that is much larger is not one, and is not read in full.
+        let mut bytes = Vec::new();
+        file.take(MAX_ENTRY_LEN + 1)
+            .read_to_end(&mut bytes)
+            .map_err(OpLogError::io("read the entry", &path))?;
+        if bytes.len() as u64 > MAX_ENTRY_LEN {
+            return Err(OpLogError::Corrupt {
+                path,
+                source: EntryParseError::Malformed {
+                    line: 1,
+                    reason: EntryMalformed::TooLong,
+                },
+            });
+        }
         let entry = Entry::parse(&bytes).map_err(|source| OpLogError::Corrupt {
             path: path.clone(),
             source,
@@ -1059,61 +1159,106 @@ impl FsOpLog {
     /// Writes a new entry for the change under the next free number, flushes it, and returns it.
     /// The entry is whole when it can first be seen: it is written to a temporary file, flushed,
     /// and published with a hard link, which fails if the number is taken. If it is taken, another
-    /// writer was faster, and the next number is tried.
+    /// writer was faster, and the end of the log is looked up again.
     ///
-    /// A caller that moves a pointer calls this first and moves only if it succeeds (ADR-011).
+    /// Only [`Repository`](crate::repository::Repository) calls this, in the order of ADR-011: the
+    /// entry first, then the move of the pointer, under the lock of the references.
     ///
     /// # Errors
     ///
-    /// Returns [`OpLogError::Exhausted`] if the log is full, [`OpLogError::NotFlushed`] if the
-    /// entry is in place but not known to be flushed, and [`OpLogError::Io`] if the storage fails,
-    /// among others if the file system does not support hard links, or if the directory of the log
-    /// does not exist. The reading rules of [`numbers`](Self::numbers) apply to the numbers that
-    /// are found.
-    pub fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
+    /// Returns [`OpLogError::Full`] if the log is full, [`OpLogError::Contended`] if every number
+    /// that was tried was taken, [`OpLogError::NotFlushed`] if the entry is in place but not known
+    /// to be flushed, [`OpLogError::Leftover`] if the entry is in place and flushed but its
+    /// temporary name could not be removed, and [`OpLogError::Io`] if the storage fails, among
+    /// others if the file system has no hard links, or if the directory of the log does not exist.
+    pub(crate) fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
+        let start = self.next_number()?;
+        self.publish(
+            change,
+            start,
+            &mut |_| {},
+            &|from, to| fs::hard_link(from, to),
+            &sync_directory,
+        )
+    }
+
+    /// The loop of [`append`](Self::append), with the steps that a test has to be able to change:
+    /// `before_link` is called with the number that is about to be tried, after the temporary file
+    /// is ready and before it is linked; `link` publishes the temporary file under the name of the
+    /// entry and has to fail with [`io::ErrorKind::AlreadyExists`] if the name is taken; `sync`
+    /// flushes a directory.
+    fn publish(
+        &self,
+        change: &Change,
+        start: u64,
+        before_link: &mut dyn FnMut(u64),
+        link: &dyn Fn(&Path, &Path) -> io::Result<()>,
+        sync: &dyn Fn(&Path) -> Result<(), StoreError>,
+    ) -> Result<Entry, OpLogError> {
         let dir = self.dir();
         let temp_dir = self.root.join("tmp");
-        let mut number = self.numbers()?.last().map_or(1, |last| last + 1);
+        let mut number = start;
         for _ in 0..ATTEMPTS {
-            let entry = Entry::new(number, change.clone()).map_err(|error| match error {
-                EntryError::NumberOutOfRange(_) => OpLogError::Exhausted,
-                other => OpLogError::Entry(other),
-            })?;
-            let (mut file, temp) =
+            // The change was valid when it was built; only the number can be out of range.
+            let entry = Entry::new(number, change.clone()).map_err(|_| OpLogError::Full)?;
+            let (mut file, mut temp) =
                 create_temp(&temp_dir, &mut unique_temp_name).map_err(OpLogError::from_store)?;
             file.write_all(&entry.encode())
                 .map_err(OpLogError::io("write the temporary file", &temp.path))?;
             file.sync_all()
                 .map_err(OpLogError::io("flush the temporary file", &temp.path))?;
             drop(file);
+            before_link(number);
             let path = self.path_of(number);
-            match fs::hard_link(&temp.path, &path) {
+            match link(&temp.path, &path) {
                 Ok(()) => {
-                    // `temp` removes the other name of the file when it is dropped.
-                    drop(temp);
-                    return sync_directory(&dir)
-                        .map(|()| entry)
-                        .map_err(|error| match error {
-                            StoreError::Io { source, .. } => OpLogError::NotFlushed {
-                                path: dir.clone(),
-                                source,
-                            },
-                            other => OpLogError::Store(Box::new(other)),
+                    // The entry is in place under its own name. The temporary name is removed on
+                    // purpose, and a failure is reported: the entry is complete, but a name stays
+                    // in `tmp/`.
+                    temp.disarm();
+                    let removed = fs::remove_file(&temp.path);
+                    if let Err(error) = sync(&dir) {
+                        return Err(OpLogError::NotFlushed {
+                            number,
+                            path: dir,
+                            source: store_io(error),
                         });
+                    }
+                    return match removed {
+                        Ok(()) => Ok(entry),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(entry),
+                        Err(source) => Err(OpLogError::Leftover {
+                            entry: Box::new(entry),
+                            path: temp.path.clone(),
+                            source,
+                        }),
+                    };
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                     // Another writer was faster. Look again for the end of the log, which can be
                     // several entries further on, instead of stepping by one.
-                    number = self
-                        .numbers()?
-                        .last()
-                        .map_or(1, |last| last + 1)
-                        .max(number + 1);
+                    drop(temp);
+                    number = self.next_number()?.max(number + 1);
                 }
-                Err(error) => return Err(OpLogError::io("publish the entry", &path)(error)),
+                Err(source) => {
+                    return Err(OpLogError::Io {
+                        operation: "publish the entry with a hard link",
+                        path,
+                        source,
+                    });
+                }
             }
         }
-        Err(OpLogError::Exhausted)
+        Err(OpLogError::Contended { attempts: ATTEMPTS })
+    }
+}
+
+/// The error of the file system inside a [`StoreError::Io`], or an error of its own for another
+/// kind of store error, which a flush cannot give.
+fn store_io(error: StoreError) -> io::Error {
+    match error {
+        StoreError::Io { source, .. } => source,
+        other => io::Error::other(other.to_string()),
     }
 }
 
@@ -1244,6 +1389,19 @@ mod tests {
                 None,
                 vec![
                     (branch("b"), moved(None, Some(A))),
+                    (branch("b"), moved(None, Some(B)))
+                ]
+            ),
+            Err(EntryError::DuplicateBranch(branch("b")))
+        );
+        // Duplicates are found whatever the order of the input, not only next to each other.
+        assert_eq!(
+            build(
+                None,
+                None,
+                vec![
+                    (branch("b"), moved(None, Some(A))),
+                    (branch("a"), moved(None, Some(A))),
                     (branch("b"), moved(None, Some(B)))
                 ]
             ),
@@ -1642,41 +1800,83 @@ mod tests {
                 "{body:?}"
             );
         }
-        // A branch name.
-        for name in ["", "a b", "/a", "a/", ".a", "A\u{e9}"] {
-            let body = format!("branch {name} - {A}\n");
-            assert!(
-                matches!(
-                    at(body.clone()),
-                    EntryParseError::InvalidBranchName { line: 6, .. }
-                        | EntryParseError::Malformed { line: 6, .. }
-                ),
-                "{body:?}"
+        // A branch name: the error is exactly the one of `BranchName`, or the shape is wrong
+        // because the name has a space. The line is the one of the pointer.
+        for name in ["", "/a", "a/", ".a", "A\u{e9}", "a//b"] {
+            assert_eq!(
+                at(format!("branch {name} - {A}\n")),
+                EntryParseError::InvalidBranchName {
+                    line: 6,
+                    source: BranchName::new(name).unwrap_err()
+                },
+                "{name:?}"
             );
         }
-        // A value of HEAD.
-        for value in [
-            "main",
-            "branch:",
-            "branch:a b",
-            "commit:b3:00",
-            "Branch:main",
-            "tag:x",
-            ":",
-            "branch",
-            "commit",
-        ] {
-            let body = format!("head {value} -\n");
-            assert!(
-                matches!(
-                    at(body.clone()),
-                    EntryParseError::InvalidBranchName { line: 6, .. }
-                        | EntryParseError::InvalidObjectId { line: 6, .. }
-                        | EntryParseError::Malformed { line: 6, .. }
-                ),
-                "{body:?}"
-            );
+        assert_eq!(
+            at(format!("branch a b - {A}\n")),
+            malformed(6, EntryMalformed::WrongValueCount)
+        );
+        // A value of HEAD, in the old and in the new column.
+        let branch_error = |name: &str| BranchName::new(name).unwrap_err();
+        let id_error = ObjectId::from_str("b3:00").unwrap_err();
+        let head_cases: [(&str, EntryParseError); 9] = [
+            ("main", malformed(6, EntryMalformed::UnknownHeadValue)),
+            ("branch", malformed(6, EntryMalformed::UnknownHeadValue)),
+            ("commit", malformed(6, EntryMalformed::UnknownHeadValue)),
+            (
+                "Branch:main",
+                malformed(6, EntryMalformed::UnknownHeadValue),
+            ),
+            ("tag:x", malformed(6, EntryMalformed::UnknownHeadValue)),
+            (":", malformed(6, EntryMalformed::UnknownHeadValue)),
+            (
+                "branch:",
+                EntryParseError::InvalidBranchName {
+                    line: 6,
+                    source: branch_error(""),
+                },
+            ),
+            (
+                "commit:b3:00",
+                EntryParseError::InvalidObjectId {
+                    line: 6,
+                    source: id_error,
+                },
+            ),
+            ("branch:a b", malformed(6, EntryMalformed::WrongValueCount)),
+        ];
+        for (value, expected) in head_cases {
+            assert_eq!(at(format!("head {value} -\n")), expected, "old: {value}");
+            assert_eq!(at(format!("head - {value}\n")), expected, "new: {value}");
         }
+        // The line is the line of the pointer, also on the second and the third pointer line.
+        let h = "head - branch:main\n";
+        let w = format!("working-copy {A} {B}\n");
+        assert_eq!(
+            at(format!("{h}working-copy b3:00 -\n")),
+            EntryParseError::InvalidObjectId {
+                line: 7,
+                source: ObjectId::from_str("b3:00").unwrap_err()
+            }
+        );
+        assert_eq!(
+            at(format!("{h}{w}branch a - b3:zz\n")),
+            EntryParseError::InvalidObjectId {
+                line: 8,
+                source: ObjectId::from_str("b3:zz").unwrap_err()
+            }
+        );
+        assert_eq!(
+            at(format!("{h}{w}branch a {A} {A}\n")),
+            EntryParseError::Unchanged { line: 8 }
+        );
+        assert_eq!(
+            at(format!("{h}{w}branch /a - {A}\n")),
+            EntryParseError::InvalidBranchName {
+                line: 8,
+                source: BranchName::new("/a").unwrap_err()
+            }
+        );
         // Old and new are equal.
         for body in [
             format!("working-copy {A} {A}\n"),
@@ -1728,9 +1928,11 @@ mod tests {
         assert!(Error::source(&parse_error(with(&text, "time 1700000000", "time 01"))).is_none());
         let message = parse_error(with(&text, "number 42", "number 0")).to_string();
         assert!(message.starts_with("line 2: the number"), "{message}");
-        let message =
-            parse_error(format!("{}branch a {A} {B}\n", &text[..text.len() - 1])).to_string();
-        assert!(message.starts_with("line "), "{message}");
+        let message = parse_error(format!("{text}branch zz {A}\n")).to_string();
+        assert_eq!(
+            message,
+            "line 10: expected the old and the new value of the pointer"
+        );
         assert_eq!(
             EntryError::Unchanged(Pointer::Branch(branch("main"))).to_string(),
             "the branch `main` has the same old and new value"
@@ -1816,11 +2018,10 @@ mod tests {
         fs::remove_file(dir.path().join("oplog").join("000000000002")).unwrap();
         assert!(matches!(log.numbers(), Err(OpLogError::Gap { missing: 2 })));
         assert!(matches!(log.entries(), Err(OpLogError::Gap { missing: 2 })));
-        // An append does not hide the gap either.
-        assert!(matches!(
-            log.append(&change("main", None, A)),
-            Err(OpLogError::Gap { missing: 2 })
-        ));
+        // A writer needs only the end of the log: it takes the number after the largest, and the
+        // reader still reports the gap.
+        assert_eq!(log.append(&change("main", None, A)).unwrap().number(), 4);
+        assert!(matches!(log.numbers(), Err(OpLogError::Gap { missing: 2 })));
         let message = log.numbers().unwrap_err().to_string();
         assert!(
             message.contains("entry 2") && message.contains("lost"),
@@ -1829,28 +2030,78 @@ mod tests {
     }
 
     #[test]
-    fn the_log_holds_nothing_but_entries() {
+    fn the_log_holds_nothing_but_entries_and_skips_names_with_a_dot() {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("main", None, A)).unwrap();
+        let oplog = dir.path().join("oplog");
+        // File managers and editors leave names with a dot, as for the references.
+        for name in [".DS_Store", ".hidden", "._000000000001"] {
+            fs::write(oplog.join(name), b"x").unwrap();
+        }
+        assert_eq!(log.numbers().unwrap(), [1]);
+        assert_eq!(log.append(&change("main", Some(A), B)).unwrap().number(), 2);
+        // Any other name is reported with its path, also on the way to a write.
         for name in [
-            "000000000002.tmp",
+            "000000000003.tmp",
             "1",
             "00000000000a",
             "0000000000000",
             "000000000000",
-            ".hidden",
+            "entry",
         ] {
-            let path = dir.path().join("oplog").join(name);
+            let path = oplog.join(name);
             fs::write(&path, b"x").unwrap();
-            assert!(
-                matches!(log.numbers(), Err(OpLogError::UnexpectedFile { .. })),
-                "{name}"
-            );
+            for error in [
+                log.numbers().unwrap_err(),
+                log.append(&change("main", None, A)).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, OpLogError::UnexpectedFile { path: found } if found == &path),
+                    "{name}: {error}"
+                );
+            }
             fs::remove_file(path).unwrap();
         }
-        fs::create_dir(dir.path().join("oplog").join("000000000002")).unwrap();
-        assert!(log.read(2).is_err());
+        assert_eq!(log.numbers().unwrap(), [1, 2]);
+    }
+
+    #[test]
+    fn a_directory_in_the_place_of_an_entry_cannot_be_read_as_one() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        fs::create_dir(dir.path().join("oplog").join("000000000001")).unwrap();
+        // The name is that of an entry, so the listing accepts it; reading it fails.
+        assert_eq!(log.numbers().unwrap(), [1]);
+        let error = log.read(1).unwrap_err();
+        assert!(matches!(error, OpLogError::Io { .. }), "{error}");
+        assert!(error.io_error().is_some());
+    }
+
+    #[test]
+    fn a_file_that_is_larger_than_an_entry_is_not_read_in_full() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        fs::write(
+            dir.path().join("oplog").join("000000000001"),
+            vec![b'x'; 70_000],
+        )
+        .unwrap();
+        let error = log.read(1).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                OpLogError::Corrupt {
+                    source: EntryParseError::Malformed {
+                        reason: EntryMalformed::TooLong,
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("too large"), "{error}");
     }
 
     #[test]
@@ -1960,21 +2211,216 @@ mod tests {
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
     }
 
+    fn link(from: &Path, to: &Path) -> io::Result<()> {
+        fs::hard_link(from, to)
+    }
+
+    fn sync(dir: &Path) -> Result<(), StoreError> {
+        sync_directory(dir)
+    }
+
     #[test]
-    fn the_last_number_is_the_largest_and_the_log_is_then_full() {
+    fn a_writer_that_loses_a_number_looks_for_the_end_again_and_cleans_up() {
         let dir = TempDir::new();
         let log = log_in(&dir);
-        // A log that holds only the last number is not gap free, so it is reported as such; the
-        // limit is checked on the number that an append would take.
+        log.append(&change("main", None, A)).unwrap();
+        // The writer has chosen 2. Before it links, other writers take 2 and 3 and 4.
+        let mut taken = Vec::new();
+        let mut before_link = |number: u64| {
+            taken.push(number);
+            if number == 2 {
+                for n in 0..3 {
+                    log.append(&change(&format!("w{n}"), None, B)).unwrap();
+                }
+            }
+        };
+        let entry = log
+            .publish(&change("late", None, C), 2, &mut before_link, &link, &sync)
+            .unwrap();
+        // The second try is not 3: the writer looked at the end of the log, which was 4, and took 5.
+        assert_eq!(taken, [2, 5]);
+        assert_eq!(entry.number(), 5);
+        assert_eq!(log.numbers().unwrap(), [1, 2, 3, 4, 5]);
         assert_eq!(
-            Entry::new(MAX_NUMBER + 1, change("a", None, A)).unwrap_err(),
-            EntryError::NumberOutOfRange(MAX_NUMBER + 1)
+            log.read(5).unwrap().change().branches()[0].0,
+            branch("late")
         );
-        assert_eq!(parse_file_name("999999999999"), Some(MAX_NUMBER));
-        assert_eq!(parse_file_name("000000000001"), Some(1));
-        assert_eq!(parse_file_name("000000000000"), None);
-        assert_eq!(parse_file_name("1000000000000"), None);
-        let _ = log;
+        // The three entries of the others are whole, and nothing is left in `tmp/`.
+        for n in 2..=4 {
+            assert_eq!(log.read(n).unwrap().change().operation().as_str(), "commit");
+        }
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_writer_that_is_overtaken_every_time_gives_up_as_contended_and_leaves_nothing() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let always_taken = |_: &Path, _: &Path| Err(io::ErrorKind::AlreadyExists.into());
+        let error = log
+            .publish(
+                &change("main", None, A),
+                1,
+                &mut |_| {},
+                &always_taken,
+                &sync,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, OpLogError::Contended { attempts } if attempts == ATTEMPTS),
+            "{error}"
+        );
+        assert!(error.to_string().contains("busy"), "{error}");
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+        assert_eq!(log.numbers().unwrap(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn the_largest_number_is_written_and_the_next_one_is_a_full_log() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let entry = log
+            .publish(&change("a", None, A), MAX_NUMBER, &mut |_| {}, &link, &sync)
+            .unwrap();
+        assert_eq!(entry.number(), MAX_NUMBER);
+        assert_eq!(files(&dir.path().join("oplog")), ["999999999999"]);
+        // The file is there, and a reader reports the gap before it, as for any other loss.
+        assert!(matches!(log.numbers(), Err(OpLogError::Gap { missing: 1 })));
+        assert_eq!(log.read(MAX_NUMBER).unwrap(), entry);
+        // A writer that is at the end finds that there is no number after it.
+        let error = log
+            .append(&change("b", None, B))
+            .expect_err("the next number is out of range");
+        assert!(matches!(error, OpLogError::Full), "{error}");
+        assert!(error.to_string().contains("999999999999"), "{error}");
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+        let error = log
+            .publish(
+                &change("c", None, C),
+                MAX_NUMBER + 1,
+                &mut |_| {},
+                &link,
+                &sync,
+            )
+            .unwrap_err();
+        assert!(matches!(error, OpLogError::Full), "{error}");
+    }
+
+    #[test]
+    fn a_failing_flush_leaves_the_entry_and_says_which_one_it_is() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        log.append(&change("main", None, A)).unwrap();
+        let failing = |_: &Path| {
+            Err(StoreError::Io {
+                operation: "flush the directory",
+                path: PathBuf::from("oplog"),
+                source: io::Error::other("disk"),
+            })
+        };
+        let error = log
+            .publish(&change("main", Some(A), B), 2, &mut |_| {}, &link, &failing)
+            .unwrap_err();
+        assert!(
+            matches!(&error, OpLogError::NotFlushed { number: 2, .. }),
+            "{error}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.starts_with("entry 2 was written") && message.contains("disk"),
+            "{message}"
+        );
+        assert!(error.io_error().is_some());
+        // The entry is in the log, whole, and the temporary name is gone.
+        assert_eq!(log.numbers().unwrap(), [1, 2]);
+        assert!(log.read(2).is_ok());
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_failing_link_is_an_error_that_names_the_entry_and_leaves_nothing() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let refused = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let error = log
+            .publish(&change("main", None, A), 1, &mut |_| {}, &refused, &sync)
+            .unwrap_err();
+        assert!(
+            matches!(&error, OpLogError::Io { operation, path, .. }
+                if operation.contains("hard link") && path.ends_with("000000000001")),
+            "{error}"
+        );
+        assert!(error.io_error().is_some());
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+        assert_eq!(files(&dir.path().join("oplog")), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_oplog_directory_that_cannot_be_written_fails_at_the_link_and_leaves_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let oplog = dir.path().join("oplog");
+        fs::set_permissions(&oplog, fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = fs::File::create(oplog.join("probe")).is_ok();
+        let error = log.append(&change("main", None, A));
+        fs::set_permissions(&oplog, fs::Permissions::from_mode(0o755)).unwrap();
+        if writable {
+            return;
+        }
+        let error = error.unwrap_err();
+        assert!(
+            matches!(&error, OpLogError::Io { operation, .. } if operation.contains("hard link")),
+            "{error}"
+        );
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+        assert_eq!(files(&oplog), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_name_that_cannot_be_removed_is_reported_and_the_entry_is_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let tmp = dir.path().join("tmp");
+        let mut make_tmp_read_only = |_: u64| {
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
+        };
+        let probe_writable = {
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
+            let writable = fs::File::create(tmp.join("probe")).is_ok();
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = fs::remove_file(tmp.join("probe"));
+            writable
+        };
+        let result = log.publish(
+            &change("main", None, A),
+            1,
+            &mut make_tmp_read_only,
+            &link,
+            &sync,
+        );
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        if probe_writable {
+            return;
+        }
+        let error = result.unwrap_err();
+        match &error {
+            OpLogError::Leftover { entry, path, .. } => {
+                assert_eq!(entry.number(), 1);
+                assert!(path.starts_with(&tmp));
+            }
+            other => panic!("not a leftover: {other}"),
+        }
+        assert!(
+            error.to_string().contains("entry 1 is in the log"),
+            "{error}"
+        );
+        assert!(error.io_error().is_some());
+        assert_eq!(log.numbers().unwrap(), [1]);
+        assert!(log.read(1).is_ok());
     }
 
     #[test]
@@ -2012,19 +2458,22 @@ mod tests {
         assert_eq!(io_error.source().unwrap().to_string(), "deepest");
         assert_eq!(io_error.io_error().unwrap().to_string(), "outer");
         let not_flushed = OpLogError::NotFlushed {
+            number: 7,
             path: PathBuf::from("/x/oplog"),
             source: io::Error::other(Outer),
         };
         let message = not_flushed.to_string();
         assert!(
-            message.contains("flushing `/x/oplog` failed: outer"),
+            message.contains("entry 7 was written")
+                && message.contains("flushing `/x/oplog` failed: outer"),
             "{message}"
         );
         assert!(message.contains("may not survive"), "{message}");
         assert!(not_flushed.io_error().is_some());
         for (error, text) in [
             (OpLogError::Missing { number: 3 }, "no entry 3"),
-            (OpLogError::Exhausted, "full"),
+            (OpLogError::Full, "full"),
+            (OpLogError::Contended { attempts: 64 }, "64 numbers"),
             (OpLogError::Gap { missing: 2 }, "lost"),
             (
                 OpLogError::UnexpectedFile { path: path.clone() },

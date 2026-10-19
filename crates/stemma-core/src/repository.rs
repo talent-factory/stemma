@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::object::{CommitId, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName};
-use crate::refs::{BranchName, FsRefStore, Head, RefError, RefStore};
+use crate::refs::{BranchName, FsRefStore, Head, Logged, RefError, RefStore};
 use crate::store::{unique_temp_name, FsObjectStore};
 use crate::{Actor, Authorizer, Decision};
 
@@ -229,15 +229,19 @@ impl Repository {
         &self.objects
     }
 
-    /// The references of this repository, for reading. A pointer is changed only by
+    /// The references of this repository, for reading. A pointer is changed through
     /// [`update_branch`](Self::update_branch) and [`set_head`](Self::set_head), which write the
-    /// entry of the log first (ADR-011), so no caller can move a pointer past the log, or pair
-    /// the references of this repository with the objects of another.
+    /// entry of the log first (ADR-011) and use the object store of this repository. Through
+    /// `Repository` no caller can therefore move a pointer past the log, or pair the references of
+    /// this repository with the objects of another. This is a convention of the API, not a
+    /// boundary: the files are plain files, and code that builds its own store on the same
+    /// directory is not stopped.
     pub fn refs(&self) -> RefsView<'_> {
         RefsView { refs: &self.refs }
     }
 
-    /// The operation log of this repository.
+    /// The operation log of this repository. It can be read; entries are added only by
+    /// [`update_branch`](Self::update_branch) and [`set_head`](Self::set_head), and by `init`.
     pub fn oplog(&self) -> &FsOpLog {
         &self.oplog
     }
@@ -245,21 +249,25 @@ impl Repository {
     /// Moves a branch to `new`, or creates it, if it is still at `expected` (`None` for a branch
     /// that does not exist), and records the move in the log.
     ///
-    /// The order is the rule of ADR-011: the authorizer is asked, the checks that need no log run
-    /// (the branch is where the caller saw it, and the commit is in the object store of this
-    /// repository), the entry is written and flushed, and only then does the branch move. A
-    /// refusal or a stale branch therefore writes no entry. If the move itself fails after the
-    /// entry was written, because another writer was faster, the entry stays: it names a move
-    /// that did not happen, and the old value in it was the value of the branch at some moment.
+    /// The order is the rule of ADR-011, and everything after the authorizer happens under the lock
+    /// of the references: the branch is checked (a name that is in the way, a branch that is not at
+    /// `expected`, a commit that is not in the object store of this repository), the entry is
+    /// written and flushed, and only then does the branch move. No other change can come between
+    /// the checks and the move, so a refusal, a conflict, a stale branch, or a missing commit write
+    /// no entry, and an entry always describes a move that was going to be made. The one case in
+    /// which an entry names a move that did not happen is a failure of the file system between
+    /// the entry and the move; [`UpdateError::MoveFailed`] says so and carries the entry.
     ///
-    /// Returns the entry, or `None` if the branch is at `new` already: only a change writes an
-    /// entry.
+    /// Returns the entry, or `None` if `expected` is `Some(new)`, so that the branch is at `new`
+    /// already: only a change writes an entry.
     ///
     /// # Errors
     ///
-    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] if the
-    /// branch is not at `expected`, the commit is not in the store, or the references fail, and
-    /// [`UpdateError::Log`] if the entry could not be written; the branch has not moved then.
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, and [`UpdateError::Refs`] for what
+    /// the checks find or for a failure of the references before an entry was written, among them
+    /// [`RefError::Locked`] (another change is in progress: try again). If the entry could not be
+    /// written the error is [`UpdateError::Log`], and the branch has not moved. An entry that was
+    /// written belongs to [`UpdateError::MoveFailed`] and [`UpdateError::NotDurable`].
     pub fn update_branch(
         &self,
         operation: &OperationName,
@@ -270,44 +278,37 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
         self.authorize(actor, authorizer, operation, name.as_str())?;
-        let found = self.refs.branch(name)?;
-        if found != expected {
-            return Err(UpdateError::Refs(RefError::Stale {
-                name: name.clone(),
-                expected,
-                found,
-            }));
-        }
-        FsRefStore::require_commit(&new, &self.objects)?;
-        if expected == Some(new) {
-            return Ok(None);
-        }
-        let change = Change::new(
-            now(),
-            actor.clone(),
-            operation.clone(),
-            None,
-            None,
-            vec![(name.clone(), Moved::from_to(expected, Some(new)))],
-        )
-        .map_err(|error| UpdateError::Log(OpLogError::Entry(error)))?;
-        let entry = self.oplog.append(&change)?;
-        self.refs
-            .update_branch(name, expected, new, &self.objects)?;
-        Ok(Some(entry))
+        let outcome = self
+            .refs
+            .update_branch_after(name, expected, new, &self.objects, || {
+                let change = Change::new(
+                    now(),
+                    actor.clone(),
+                    operation.clone(),
+                    None,
+                    None,
+                    vec![(name.clone(), Moved::from_to(expected, Some(new)))],
+                )
+                .map_err(OpLogError::Entry)?;
+                self.oplog.append(&change)
+            })?;
+        outcome.into_result()
     }
 
     /// Points HEAD to a branch, which need not exist yet, or to a commit, and records the change
-    /// in the log, in the order of [`update_branch`](Self::update_branch). The change replaces
-    /// HEAD whatever it was (ADR-008): the old value in the entry is the one that was read just
-    /// before.
+    /// in the log, in the order of [`update_branch`](Self::update_branch) and under the same lock.
+    /// The old value in the entry is the one that the change replaces: it is read under the lock.
+    ///
+    /// Unlike the store of the references, which replaces HEAD whatever it was, this reads HEAD
+    /// first, so a HEAD that is missing or damaged is an error and is not replaced.
     ///
     /// Returns the entry, or `None` if HEAD has the value already.
     ///
     /// # Errors
     ///
-    /// Returns [`UpdateError::Denied`], [`UpdateError::Refs`] (a commit that is not in the
-    /// store), and [`UpdateError::Log`], as for [`update_branch`](Self::update_branch).
+    /// Returns [`UpdateError::Denied`], [`UpdateError::Refs`] (a commit that is not in the store, an
+    /// unreadable HEAD, [`RefError::Locked`]), [`UpdateError::Log`], [`UpdateError::MoveFailed`],
+    /// and [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch).
     pub fn set_head(
         &self,
         operation: &OperationName,
@@ -316,25 +317,19 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
         self.authorize(actor, authorizer, operation, "HEAD")?;
-        let old = self.refs.head()?;
-        if let Head::Detached(commit) = head {
-            FsRefStore::require_commit(commit, &self.objects)?;
-        }
-        if &old == head {
-            return Ok(None);
-        }
-        let change = Change::new(
-            now(),
-            actor.clone(),
-            operation.clone(),
-            Some(Moved::from_to(Some(old), Some(head.clone()))),
-            None,
-            vec![],
-        )
-        .map_err(|error| UpdateError::Log(OpLogError::Entry(error)))?;
-        let entry = self.oplog.append(&change)?;
-        self.refs.set_head(head, &self.objects)?;
-        Ok(Some(entry))
+        let outcome = self.refs.set_head_after(head, &self.objects, |old| {
+            let change = Change::new(
+                now(),
+                actor.clone(),
+                operation.clone(),
+                Some(Moved::from_to(Some(old.clone()), Some(head.clone()))),
+                None,
+                vec![],
+            )
+            .map_err(OpLogError::Entry)?;
+            self.oplog.append(&change)
+        })?;
+        outcome.into_result()
     }
 
     fn authorize(
@@ -399,7 +394,8 @@ impl RefsView<'_> {
 }
 
 /// The time now, in seconds since the Unix epoch (UTC), as an entry of the log claims it. A clock
-/// before 1970 gives a negative value.
+/// before 1970 gives a negative value. A value that does not fit `i64` is clamped to its limit; the
+/// time is a claim and proves nothing, and the order of the entries is the order of their numbers.
 fn now() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(after) => i64::try_from(after.as_secs()).unwrap_or(i64::MAX),
@@ -407,22 +403,44 @@ fn now() -> i64 {
     }
 }
 
-/// Reasons why [`Repository::update_branch`] and [`Repository::set_head`] fail.
+/// Reasons why [`Repository::update_branch`] and [`Repository::set_head`] fail. Whether an entry
+/// of the log was written tells the variant: only [`MoveFailed`](Self::MoveFailed),
+/// [`NotDurable`](Self::NotDurable), and a [`Log`](Self::Log) error with
+/// [`OpLogError::NotFlushed`] or [`OpLogError::Leftover`] leave one.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum UpdateError {
-    /// The authorizer refused the operation.
+    /// The authorizer refused the operation. No entry was written.
     Denied {
         /// The name of the operation.
         operation: String,
         /// The branch, or `HEAD`.
         target: String,
     },
-    /// The references refused or failed, or the commit is not in the object store. No entry was
-    /// written, unless the move itself failed after it: see [`Repository::update_branch`].
+    /// The checks refused, or the references failed before an entry was written: a name that is in
+    /// the way, a branch that is not where the caller saw it, a commit that is not in the store,
+    /// an unreadable HEAD, a lock that is held. No entry was written and nothing moved.
     Refs(RefError),
-    /// The entry could not be written. The pointer has not moved.
+    /// The entry could not be written, and the pointer has not moved. If the error is
+    /// [`OpLogError::NotFlushed`] or [`OpLogError::Leftover`], the entry is in the log anyway;
+    /// it names a move that did not happen, and a second attempt writes another entry.
     Log(OpLogError),
+    /// The entry was written, but the move failed. The file system failed after the checks, so the
+    /// entry names a move that did not happen; the old value in it was true when it was written.
+    MoveFailed {
+        /// The entry that is in the log.
+        entry: Box<Entry>,
+        /// Why the pointer did not move.
+        source: RefError,
+    },
+    /// The entry was written and the pointer moved, but a directory could not be flushed to disk, so
+    /// the change may not survive a crash. Do not repeat the change: read the pointer.
+    NotDurable {
+        /// The entry that is in the log.
+        entry: Box<Entry>,
+        /// The error of the flush.
+        source: RefError,
+    },
 }
 
 impl UpdateError {
@@ -430,22 +448,53 @@ impl UpdateError {
     /// [`Error::source`] does not lead to it (see the crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Refs(error) => error.io_error(),
+            Self::Refs(error)
+            | Self::MoveFailed { source: error, .. }
+            | Self::NotDurable { source: error, .. } => error.io_error(),
             Self::Log(error) => error.io_error(),
             Self::Denied { .. } => None,
         }
     }
+
+    /// The entry that was written, if the error leaves one in the log.
+    pub fn entry(&self) -> Option<&Entry> {
+        match self {
+            Self::MoveFailed { entry, .. } | Self::NotDurable { entry, .. } => Some(entry),
+            Self::Log(OpLogError::Leftover { entry, .. }) => Some(entry),
+            _ => None,
+        }
+    }
 }
 
-impl From<RefError> for UpdateError {
-    fn from(error: RefError) -> Self {
-        Self::Refs(error)
+impl<E: Into<UpdateError>> Logged<Entry, E> {
+    /// The result of an update: the entry if the pointer moved, `None` if it had the value, and an
+    /// error that says whether an entry exists otherwise.
+    fn into_result(self) -> Result<Option<Entry>, UpdateError> {
+        match self {
+            Self::Unchanged => Ok(None),
+            Self::Moved(entry) => Ok(Some(entry)),
+            Self::StepFailed(error) => Err(error.into()),
+            Self::MoveFailed(entry, source) => Err(UpdateError::MoveFailed {
+                entry: Box::new(entry),
+                source,
+            }),
+            Self::NotFlushed(entry, source) => Err(UpdateError::NotDurable {
+                entry: Box::new(entry),
+                source,
+            }),
+        }
     }
 }
 
 impl From<OpLogError> for UpdateError {
     fn from(error: OpLogError) -> Self {
         Self::Log(error)
+    }
+}
+
+impl From<RefError> for UpdateError {
+    fn from(error: RefError) -> Self {
+        Self::Refs(error)
     }
 }
 
@@ -457,6 +506,18 @@ impl fmt::Display for UpdateError {
             }
             Self::Refs(error) => error.fmt(f),
             Self::Log(error) => error.fmt(f),
+            Self::MoveFailed { entry, source } => write!(
+                f,
+                "entry {} of the operation log was written, but the move failed: {source}; the \
+                 entry names a move that did not happen",
+                entry.number()
+            ),
+            Self::NotDurable { entry, source } => write!(
+                f,
+                "the change was made and written as entry {} of the operation log, but flushing \
+                 failed: {source}; it may not survive a crash, and it must not be repeated",
+                entry.number()
+            ),
         }
     }
 }
@@ -464,7 +525,9 @@ impl fmt::Display for UpdateError {
 impl Error for UpdateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Refs(error) => error.source(),
+            Self::Refs(error)
+            | Self::MoveFailed { source: error, .. }
+            | Self::NotDurable { source: error, .. } => error.source(),
             Self::Log(error) => error.source(),
             Self::Denied { .. } => None,
         }
@@ -1584,6 +1647,7 @@ mod tests {
     use crate::change::sample_change;
     use crate::object::{Commit, Tree};
     use crate::oplog::EntryError;
+    use crate::refs::Logged;
 
     fn op(name: &str) -> OperationName {
         OperationName::new(name).unwrap()
@@ -1790,9 +1854,9 @@ mod tests {
     }
 
     #[test]
-    fn the_entry_is_written_before_the_pointer_moves() {
-        // A lock file makes the move fail after the entry was written: the entry is there, and the
-        // branch has not moved. That is the order of ADR-011, seen from the outside.
+    fn a_lock_that_is_held_writes_no_entry_and_moves_nothing() {
+        // The lock is taken before the entry is written, so a change that meets a lock leaves no
+        // entry that names a move that was never going to be made.
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
@@ -1801,19 +1865,249 @@ mod tests {
             b"another writer",
         )
         .unwrap();
+        let before = numbers(&repository);
         let error = update(&repository, "main", None, a).unwrap_err();
         assert!(
             matches!(error, UpdateError::Refs(RefError::Locked { .. })),
             "{error}"
         );
+        assert!(error.entry().is_none());
+        let error = repository
+            .set_head(
+                &op("checkout"),
+                &Head::Branch(branch("x")),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, UpdateError::Refs(RefError::Locked { .. })),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("main"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_move_that_fails_after_the_entry_leaves_the_entry_and_says_so() {
+        // The entry comes first: with the directory of the branches read-only, the entry is
+        // written and the move fails. If the order were the other one, nothing would be written.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let heads = dir.path().join(".stemma").join("refs").join("heads");
+        fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = fs::File::create(heads.join("probe")).is_ok();
+        let result = update(&repository, "main", None, a);
+        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_file(heads.join("probe"));
+        if writable {
+            return;
+        }
+        let error = result.unwrap_err();
+        let UpdateError::MoveFailed { entry, source } = &error else {
+            panic!("not a failed move: {error}");
+        };
+        assert_eq!(entry.number(), 2);
+        assert!(source.io_error().is_some());
+        assert_eq!(error.entry().map(Entry::number), Some(2));
+        let message = error.to_string();
+        assert!(
+            message.contains("entry 2") && message.contains("names a move that did not happen"),
+            "{message}"
+        );
+        assert!(error.io_error().is_some());
+        // The entry is in the log and names the move; the branch did not move.
         assert_eq!(numbers(&repository), [1, 2]);
-        let entry = repository.oplog().read(2).unwrap();
-        let [(name, pair)] = entry.change().branches() else {
+        let read = repository.oplog().read(2).unwrap();
+        let [(name, pair)] = read.change().branches() else {
             panic!("one branch")
         };
         assert_eq!(name, &branch("main"));
         assert_eq!((pair.before(), pair.after()), (None, Some(&a)));
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+    }
+
+    #[test]
+    fn the_outcomes_of_a_step_that_ran_become_errors_that_carry_the_entry() {
+        let entry = || {
+            Entry::new(
+                9,
+                Change::new(
+                    1,
+                    actor(),
+                    op("commit"),
+                    None,
+                    None,
+                    vec![(
+                        branch("main"),
+                        Moved::from_to(None, Some(CommitId::new("b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9".parse().unwrap()))),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let disk = || io::Error::other("disk");
+        let not_flushed = || RefError::NotFlushed {
+            path: PathBuf::from("/x/refs"),
+            source: disk(),
+        };
+        let io_failure = || RefError::Io {
+            operation: "write the reference",
+            path: PathBuf::from("/x/refs/heads/main"),
+            source: disk(),
+        };
+        type Outcome = Logged<Entry, OpLogError>;
+        assert!(matches!(Outcome::Unchanged.into_result(), Ok(None)));
+        let moved = Outcome::Moved(entry()).into_result().unwrap().unwrap();
+        assert_eq!(moved.number(), 9);
+        let failed = Outcome::StepFailed(OpLogError::Full)
+            .into_result()
+            .unwrap_err();
+        assert!(
+            matches!(&failed, UpdateError::Log(OpLogError::Full)),
+            "{failed}"
+        );
+        assert!(failed.entry().is_none());
+        let move_failed = Outcome::MoveFailed(entry(), io_failure())
+            .into_result()
+            .unwrap_err();
+        assert!(matches!(&move_failed, UpdateError::MoveFailed { .. }));
+        assert_eq!(move_failed.entry().map(Entry::number), Some(9));
+        assert!(
+            move_failed.to_string().contains("did not happen"),
+            "{move_failed}"
+        );
+        let durable = Outcome::NotFlushed(entry(), not_flushed())
+            .into_result()
+            .unwrap_err();
+        assert!(matches!(&durable, UpdateError::NotDurable { .. }));
+        assert_eq!(durable.entry().map(Entry::number), Some(9));
+        let message = durable.to_string();
+        assert!(
+            message.contains("was made") && message.contains("must not be repeated"),
+            "{message}"
+        );
+        assert!(durable.io_error().is_some());
+        // An entry that stays because a temporary name could not be removed is an entry too.
+        let leftover = UpdateError::Log(OpLogError::Leftover {
+            entry: Box::new(entry()),
+            path: PathBuf::from("/x/tmp/t"),
+            source: disk(),
+        });
+        assert_eq!(leftover.entry().map(Entry::number), Some(9));
+        assert!(UpdateError::Denied {
+            operation: "x".into(),
+            target: "y".into()
+        }
+        .entry()
+        .is_none());
+    }
+
+    #[test]
+    fn a_name_that_is_in_the_way_is_a_conflict_before_any_entry_is_written() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let (a, b) = (
+            store_commit(&repository, "a"),
+            store_commit(&repository, "b"),
+        );
+        update(&repository, "main", None, a).unwrap();
+        update(&repository, "x/y", None, a).unwrap();
+        let before = numbers(&repository);
+        // `main` is a branch, so `main/z` cannot be one; `x/y` is a branch, so `x` cannot be.
+        for name in ["main/z", "x"] {
+            let error = update(&repository, name, None, b).unwrap_err();
+            assert!(
+                matches!(&error, UpdateError::Refs(RefError::Conflict { .. })),
+                "{name}: {error}"
+            );
+            assert!(error.entry().is_none(), "{name}");
+        }
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+        assert_eq!(repository.refs().branches().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn head_changes_are_chained_the_old_value_is_the_previous_new_value() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let names: Vec<BranchName> = (0..6).map(|n| branch(&format!("b{n}"))).collect();
+        let barrier = std::sync::Barrier::new(names.len());
+        let entries: Vec<Entry> = std::thread::scope(|scope| {
+            let handles: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    let (repository, barrier) = (&repository, &barrier);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        loop {
+                            match repository.set_head(
+                                &op("checkout"),
+                                &Head::Branch(name.clone()),
+                                &actor(),
+                                &AllowAll,
+                            ) {
+                                Ok(entry) => break entry.expect("every value is new"),
+                                // Another writer holds the lock: try again.
+                                Err(UpdateError::Refs(RefError::Locked { .. })) => {
+                                    std::thread::yield_now();
+                                }
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        // Entry 1 is `init`; the others came in the order of their numbers, and each one names as its
+        // old value what the one before it set. The log does not lie about its own history.
+        let mut entries = entries;
+        entries.sort_by_key(Entry::number);
+        assert_eq!(
+            entries.iter().map(Entry::number).collect::<Vec<_>>(),
+            (2..=7).collect::<Vec<_>>()
+        );
+        let mut previous = Head::Branch(branch("main"));
+        for entry in &entries {
+            let head = entry.change().head().unwrap();
+            assert_eq!(head.before(), Some(&previous), "entry {}", entry.number());
+            previous = head.after().unwrap().clone();
+        }
+        assert_eq!(repository.refs().head().unwrap(), previous);
+        assert_eq!(numbers(&repository), (1..=7).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_damaged_head_is_an_error_and_is_not_replaced() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let head = dir.path().join(".stemma").join("HEAD");
+        fs::write(&head, b"not a head\n").unwrap();
+        let before = numbers(&repository);
+        let error = repository
+            .set_head(
+                &op("checkout"),
+                &Head::Branch(branch("x")),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::Corrupt { .. })),
+            "{error}"
+        );
+        assert_eq!(fs::read(&head).unwrap(), b"not a head\n");
+        assert_eq!(numbers(&repository), before);
     }
 
     #[test]
@@ -1924,7 +2218,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_updates_of_one_branch_leave_one_winner_and_an_entry_for_each_try() {
+    fn concurrent_updates_of_one_branch_leave_one_winner_and_one_entry() {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let commits: Vec<CommitId> = (0..6)
@@ -1944,8 +2238,11 @@ mod tests {
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
-        let winners = results.iter().filter(|r| matches!(r, Ok(Some(_)))).count();
-        assert_eq!(winners, 1, "{results:?}");
+        let winners: Vec<&Entry> = results
+            .iter()
+            .filter_map(|r| r.as_ref().ok().and_then(Option::as_ref))
+            .collect();
+        assert_eq!(winners.len(), 1, "{results:?}");
         for error in results.iter().filter_map(|r| r.as_ref().err()) {
             assert!(
                 matches!(
@@ -1954,12 +2251,15 @@ mod tests {
                 ),
                 "{error}"
             );
+            // A loser leaves no entry: the lock is held from the check to the move.
+            assert!(error.entry().is_none(), "{error}");
         }
-        // The numbers have no gap, and every entry that the log holds reads back.
-        let numbers = numbers(&repository);
-        assert_eq!(numbers, (1..=numbers.len() as u64).collect::<Vec<_>>());
-        assert!(numbers.len() >= 2);
+        // The log holds `init` and the one move, no entry for a try that lost.
+        assert_eq!(numbers(&repository), [1, 2]);
         let moved = repository.refs().branch(&branch("main")).unwrap().unwrap();
+        let entry = repository.oplog().read(2).unwrap();
+        assert_eq!(&entry, winners[0]);
+        assert_eq!(entry.change().branches()[0].1.after(), Some(&moved));
         assert!(commits.contains(&moved));
     }
 

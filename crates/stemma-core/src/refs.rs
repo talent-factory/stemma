@@ -978,6 +978,128 @@ fn join_name(prefix: &str, component: &str) -> String {
 
 impl crate::store::sealed::Sealed for FsRefStore {}
 
+/// The outcome of a change of a pointer that a step precedes, such as the entry of the operation
+/// log (ADR-011). `T` is what the step returned, `E` is how it can fail.
+pub(crate) enum Logged<T, E> {
+    /// The pointer has the value already. The step did not run and nothing changed.
+    Unchanged,
+    /// The step ran and the pointer moved.
+    Moved(T),
+    /// The step failed. The pointer has not moved.
+    StepFailed(E),
+    /// The step ran, but the pointer did not move: the file system failed. The step stays done.
+    MoveFailed(T, RefError),
+    /// The step ran and the pointer moved, but the directory could not be flushed to disk
+    /// ([`RefError::NotFlushed`]).
+    NotFlushed(T, RefError),
+}
+
+impl FsRefStore {
+    /// Moves a branch to `new`, or creates it, if it is still at `expected`, and runs `step` after
+    /// the checks and before the move, all under the lock of the references.
+    ///
+    /// The checks are the ones of [`RefStore::update_branch`]: a name that is in the way is a
+    /// [`RefError::Conflict`], a branch that is not at `expected` is [`RefError::Stale`], and the
+    /// commit has to be in `objects`. They run under the lock, so no other change can come between
+    /// them and the move, and `step` runs only for a move that is going to be made. If the branch
+    /// is at `new` already, `step` does not run.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of the checks. Once `step` has run, nothing is an error of this call:
+    /// the outcome says what happened, so the caller can tell a step that ran from one that did not.
+    pub(crate) fn update_branch_after<T, E>(
+        &self,
+        name: &BranchName,
+        expected: Option<CommitId>,
+        new: CommitId,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        Self::require_commit(&new, objects)?;
+        let _lock = self.lock()?;
+        let current = self.current(name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                name: name.clone(),
+                with,
+                kind,
+            });
+        }
+        if current.commit != expected {
+            return Err(RefError::Stale {
+                name: name.clone(),
+                expected,
+                found: current.commit,
+            });
+        }
+        if expected == Some(new) {
+            return Ok(Logged::Unchanged);
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let moved = (|| {
+            if let Some(empty) = &current.empty_directory {
+                // Nothing is below it, and the lock is held, so no branch is lost.
+                fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+            }
+            self.write_replacing(
+                &self.branch_path(name),
+                &encode_branch(&new),
+                &self.heads_dir(),
+            )
+        })();
+        Ok(Self::after_move(done, moved))
+    }
+
+    /// Points HEAD to `head`, and runs `step` with the value that HEAD had, after the checks and
+    /// before the move, under the lock of the references. The old value is read under the lock, so
+    /// it is the one that the move replaces. If HEAD has the value already, `step` does not run.
+    ///
+    /// Unlike [`RefStore::set_head`], which replaces HEAD whatever it was, this reads HEAD first,
+    /// so a HEAD that is missing or damaged is an error and is not replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
+    /// does not have, the errors of [`RefStore::head`] for an unreadable HEAD, and
+    /// [`RefError::Locked`]. Once `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn set_head_after<T, E>(
+        &self,
+        head: &Head,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce(&Head) -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        if let Head::Detached(commit) = head {
+            Self::require_commit(commit, objects)?;
+        }
+        let _lock = self.lock()?;
+        let old = self.head()?;
+        if &old == head {
+            return Ok(Logged::Unchanged);
+        }
+        let done = match step(&old) {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let moved = self.write_replacing(&self.head_path(), &head.encode(), &self.root);
+        Ok(Self::after_move(done, moved))
+    }
+
+    fn after_move<T, E>(done: T, moved: Result<(), RefError>) -> Logged<T, E> {
+        match moved {
+            Ok(()) => Logged::Moved(done),
+            Err(error @ RefError::NotFlushed { .. }) => Logged::NotFlushed(done, error),
+            Err(error) => Logged::MoveFailed(done, error),
+        }
+    }
+}
+
 impl RefStore for FsRefStore {
     fn head(&self) -> Result<Head, RefError> {
         self.require_root()?;

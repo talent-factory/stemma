@@ -985,6 +985,7 @@ fn the_entry_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
     let (seed, mut rng) = (seed(), Rng::new(seed(), 21));
     let valid: Vec<Vec<u8>> = (0..64).map(|_| random_entry(&mut rng).encode()).collect();
     let mut tally = Tally::default();
+    let mut variants = std::collections::HashSet::new();
     for case in 0..cases() * 5 {
         let context = format!("seed {seed}, case {case}");
         let input = arbitrary_input(&mut rng, &valid);
@@ -1000,6 +1001,7 @@ fn the_entry_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
             }
             Err(error) => {
                 tally.rejected += 1;
+                variants.insert(std::mem::discriminant(&error));
                 check_rejection(
                     &error,
                     entry_line(&error),
@@ -1011,6 +1013,13 @@ fn the_entry_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
         }
     }
     assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+    // A run that reaches few kinds of rejection would not notice a reader that reports the wrong
+    // one, so it has to reach most of them (there are ten, and one cannot occur).
+    assert!(
+        variants.len() >= 6,
+        "the run reached only {} kinds of rejection",
+        variants.len()
+    );
 }
 
 #[test]

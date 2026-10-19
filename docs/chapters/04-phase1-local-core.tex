@@ -17,7 +17,7 @@ Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden 
 
 \section{Aufbau eines Repositories}
 
-Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher und Referenzen, damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
+Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher, Referenzen und Log, damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
 
 \starttyping
 .stemma/
@@ -48,11 +48,13 @@ operation init
 head - branch:main
 \stoptyping
 
-Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger, bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log. Deshalb ist ein Eintrag eine Absicht: Verliert ein Schreiber das Rennen um einen Zeiger, bleibt sein Eintrag stehen, und der Zeiger bewegt sich nicht. Ob ein Zug stattgefunden hat, lässt sich an der Kette der Einträge eines Zeigers ablesen. Nach dem Zug wird nichts mehr geschrieben, damit nichts halb geschrieben bleiben kann.
+Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger, bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log. Das \type{Repository} hält dafür die Sperre der Referenzen vom Prüfen bis zum Zug: Es liest den Zeiger, prüft die Änderung (ein Name, der nicht im Weg steht, ein Branch, der dort steht, wo der Aufrufer ihn sah, ein Commit, der im Objektspeicher liegt), schreibt den Eintrag und bewegt dann den Zeiger. Weil nichts zwischen Prüfung und Zug dazwischenkommt, beschreibt ein Eintrag einen Zug, der gemacht werden sollte, und bei \type{set_head} steht der Wert im Eintrag, den HEAD wirklich hatte. Der Preis ist, dass das Schreiben der kleinen Datei zum geschützten Abschnitt gehört.
 
-Gleichzeitige Schreiber ordnen sich über die Nummer. Jeder schreibt den Eintrag in eine temporäre Datei und setzt dann einen harten Verweis auf die nächste freie Nummer. Der Verweis scheitert, wenn die Nummer vergeben ist, dann sucht der Schreiber das Ende des Logs neu. So braucht das Log keine Sperre, und ein Eintrag ist vom ersten Moment an vollständig. Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag.
+Ein Eintrag bleibt trotzdem eine Absicht, denn das Dateisystem kann zwischen Eintrag und Zug ausfallen. Der Fehler sagt es dann ausdrücklich und trägt den Eintrag mit, sodass ein Aufrufer ein Scheitern ohne Eintrag von einem mit Eintrag unterscheiden kann. Ob ein Zug stattgefunden hat, lässt sich an der Kette der Einträge eines Zeigers ablesen. Nach dem Zug wird nichts mehr geschrieben, damit nichts halb geschrieben bleiben kann.
 
-Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen zum Lesen heraus, und \type{update_branch} und \type{set_head} schreiben den Eintrag zuerst. Eine Verweigerung, ein Branch, der nicht dort steht, wo der Aufrufer ihn sah, und ein Commit, der nicht im Objektspeicher liegt, schreiben keinen Eintrag. \type{init} schreibt den ersten Eintrag. Der Befehl \type{stemma op log}, der die Einträge anzeigt, folgt als eigene Scheibe.
+Jeder Eintrag entsteht in einer temporären Datei und wird dann mit einem harten Verweis unter der nächsten freien Nummer veröffentlicht. Der Verweis scheitert, wenn die Nummer vergeben ist, und ein Eintrag ist vom ersten Moment an vollständig. Die Schreiber des \type{Repository} treffen sich hier nicht, weil sie die Sperre halten; die Wiederholung gilt für jeden anderen Schreiber. Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag, nachdem er das Verzeichnis ein zweites Mal gelesen hat, denn ein Verzeichnis ist während eines Schreibens kein Schnappschuss. Namen mit einem Punkt am Anfang überspringt er, jeden anderen fremden Namen meldet er.
+
+Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen und das Log zum Lesen heraus; der Schreiber des Logs und der Konstruktor eines Eintrags sind nur im Crate sichtbar. Das ist eine Vereinbarung der Schnittstelle und keine Grenze, denn die Dateien sind gewöhnliche Dateien. \type{init} schreibt den ersten Eintrag. Der Befehl \type{stemma op log}, der die Einträge anzeigt, folgt als eigene Scheibe.
 
 \section{Offene Fragen}
 

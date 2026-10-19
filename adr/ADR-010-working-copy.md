@@ -88,8 +88,8 @@ are prior art, not a template.
 
 - [ ] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
       which tier of ADR-004 it belongs to.
-- [ ] The operation log: the format, what an entry holds, and how long it keeps replaced
-      commits. A first design is STEMMA-5.
+- [ ] How long the operation log keeps the replaced commits of many snapshots (retention). The
+      format and what an entry holds are decided in ADR-011.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the log and
       lets garbage collection delete what only the log held.
 - [ ] Who the actor of a snapshot is when two actors use one directory, and how the lease of
