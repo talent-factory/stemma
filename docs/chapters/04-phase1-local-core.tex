@@ -12,6 +12,7 @@ Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden 
 \item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
 \item Befehle \type{init}, \type{add}, \type{commit} und \type{status}.
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
+\item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines Zeigers geschrieben werden (ADR-011).
 \stopitemize
 
 \section{Aufbau eines Repositories}
@@ -39,5 +40,6 @@ Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umge
 \item Format des Index: eigenes Binärformat oder lesbares Textformat für Debugging?
 \item Ausführbare Dateien und Dateirechte: Welche Metadaten werden gespeichert?
 \item Symbolische Links: Speichern oder ablehnen?
+\item Wie ein Leser erfährt, dass ein Eintrag im Operation Log nicht zu einer Änderung geführt hat, und wie lange Snapshot-Einträge aufbewahrt werden (ADR-011).
 \item Syntax der Ausschlussdatei und das Entfernen von Geheimnissen aus Verlauf und Log (ADR-010).
 \stopitemize
