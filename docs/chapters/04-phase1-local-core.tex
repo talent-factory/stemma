@@ -9,7 +9,7 @@ Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden 
 \startitemize
 \item Objektspeicher mit Blobs, Trees und Commits, adressiert über BLAKE3 mit Präfix nach ADR-001.
 \item Referenzen für den Branch \type{main} und HEAD.
-\item Index als Staging-Bereich.
+\item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
 \item Befehle \type{init}, \type{add}, \type{commit} und \type{status}.
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
 \stopitemize
@@ -39,5 +39,5 @@ Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umge
 \item Format des Index: eigenes Binärformat oder lesbares Textformat für Debugging?
 \item Ausführbare Dateien und Dateirechte: Welche Metadaten werden gespeichert?
 \item Symbolische Links: Speichern oder ablehnen?
-\item Arbeitskopie als Commit, wie bei Jujutsu, oder klassischer Index?
+\item Format der Change-ID, Syntax der Ausschlussdatei und das Entfernen von Geheimnissen aus Verlauf und Log (ADR-010).
 \stopitemize
