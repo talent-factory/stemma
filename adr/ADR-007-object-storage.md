@@ -97,8 +97,8 @@ server will later keep objects elsewhere (API-first). The implementation is
 - [ ] Garbage collection of unreachable objects, and removal of stale files in `tmp/`.
 - [ ] Streaming for large blobs, so that neither writing nor reading needs the whole body in
       memory.
-- [ ] A repository format file (`.stemma/format`, planned for `stemma init`) should be checked
-      before a store opens a repository; the store does not check it yet.
+- [x] A repository format file (`.stemma/format`) is checked before a repository opens
+      (`Repository::open`, ADR-009); the store itself does not check it.
 - [ ] Windows and other platforms: the code builds and its tests pass on Windows (a CI run,
       ADR-006),
       but five tests run on Unix only, and the behavior there is not known: a rename over an

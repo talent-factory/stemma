@@ -1,5 +1,5 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
-//! index, object storage, and references (branches and HEAD, ADR-008).
+//! index, object storage, references (branches and HEAD, ADR-008), and the repository (ADR-009).
 //!
 //! # Errors
 //!
@@ -29,6 +29,7 @@ pub mod object;
 #[cfg(test)]
 mod properties;
 pub mod refs;
+pub mod repository;
 pub mod store;
 #[cfg(test)]
 mod testutil;

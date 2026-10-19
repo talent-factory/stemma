@@ -10,3 +10,4 @@
 | [ADR-006](ADR-006-trunk-based-development.md) | Trunk-based development | Proposal, open for confirmation |
 | [ADR-007](ADR-007-object-storage.md) | Object storage | Proposal, partially confirmed |
 | [ADR-008](ADR-008-references.md) | References: branches and HEAD | Proposal, partially confirmed |
+| [ADR-009](ADR-009-repository-layout.md) | Repository layout and `init` | Proposal, partially confirmed |
