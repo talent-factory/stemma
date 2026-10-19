@@ -232,3 +232,18 @@ them.
       `ActorError`. `Actor::view` gives an `ActorRef` to match on. `Commit::new` no longer
       checks the author, and `CommitError::InvalidActorField` is gone. No encoding and no ID
       changes.
+- [ ] Readers for trees and commits, with the strict reading rule above (an unknown, repeated, or
+      misplaced header, a non-canonical number, or any other second spelling is rejected). A test
+      per rejected form, and a round trip in both directions: what a reader accepts encodes to the
+      same bytes. The IDs a reader finds are untyped until the code knows their kind; follow them
+      with `resolve_blob`, `resolve_tree`, or `resolve_commit`.
+- [ ] A commit reader needs to rebuild an `Actor` from the author header. Do it in `actor.rs` with a
+      strict `FromStr` that uses `Actor::human` and `Actor::agent`, so that every byte read is
+      validated again: split at single spaces, exact token counts (2 for a human, 5 for an agent),
+      the keys `model=`, `session=`, and `sponsor=` in this order, each split at its first `=`.
+      Report a grammar error (`Malformed`) apart from a rejected field (`ActorError`). Then, if
+      wanted, fold the three field lists (`Repr`, `ActorRef`, `repr_fields`) into one that the
+      check, the encoding, and the view share, name the field in the error with a type instead of a
+      string, and add `Hash` and `Display` for the actor line.
+- [ ] A tree builder from the index (`write-tree`) should verify inside: `Index::write_tree(&store)`
+      calls `Index::verify` itself and returns a `TreeId`, so that no caller can forget the check.
