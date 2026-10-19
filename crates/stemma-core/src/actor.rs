@@ -6,7 +6,7 @@
 //! are recorded in ADR-005.
 
 use std::error::Error;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::str::FromStr;
 
 /// Actor of an operation. Agents carry model version, session, and sponsor.
@@ -17,10 +17,10 @@ use std::str::FromStr;
 /// would let identities be spoofed. Look-alikes within ASCII, such as `l` and `I`, remain possible.
 /// All non-ASCII text is rejected, including harmless letters such as `ä`; an identifier derived
 /// from a person's name has to be transliterated (ADR-005).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Actor(Repr);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Repr {
     Human {
         id: String,
@@ -57,14 +57,46 @@ pub enum ActorRef<'a> {
     },
 }
 
+/// A field of an [`Actor`], in the order of the actor line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ActorField {
+    /// The identifier of a human or an agent.
+    Id,
+    /// The model version of an agent.
+    Model,
+    /// The session of an agent.
+    Session,
+    /// The sponsor of an agent.
+    Sponsor,
+}
+
+impl ActorField {
+    /// The name of the field, as it is used in an actor line and in messages.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::Model => "model",
+            Self::Session => "session",
+            Self::Sponsor => "sponsor",
+        }
+    }
+}
+
+impl fmt::Display for ActorField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// Why an actor is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ActorError {
     /// A field is empty or contains a character outside visible ASCII (U+0021 to U+007E, no
-    /// space). Carries the name of the field: `id`, `model`, `session`, or `sponsor`. With several
-    /// invalid fields, the first in this order is reported.
-    InvalidField(&'static str),
+    /// space). Carries the field. With several invalid fields, the first in the order of
+    /// [`ActorField`] is reported.
+    InvalidField(ActorField),
 }
 
 impl fmt::Display for ActorError {
@@ -158,6 +190,27 @@ impl FromStr for Actor {
     }
 }
 
+/// Writes the actor line of a commit: `human <id>` or
+/// `agent <id> model=<model> session=<session> sponsor=<sponsor>`. This is the form that
+/// [`Actor::from_str`] reads back.
+///
+/// The fields are not escaped. An [`Actor`] guarantees that no field is empty or contains a space,
+/// so the line splits unambiguously at spaces. A value may still contain `=`; the reader splits
+/// each `key=value` token at its first `=`.
+impl fmt::Display for Actor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (label, fields) = self.0.fields();
+        let mut line = String::from(label);
+        for (field, value) in fields {
+            match field {
+                ActorField::Id => write!(line, " {value}")?,
+                _ => write!(line, " {field}={value}")?,
+            }
+        }
+        f.write_str(&line)
+    }
+}
+
 impl Actor {
     /// Creates a human.
     ///
@@ -190,10 +243,10 @@ impl Actor {
     }
 
     fn checked(repr: Repr) -> Result<Self, ActorError> {
-        if let Some(field) = invalid_field(&repr) {
-            return Err(ActorError::InvalidField(field));
+        match repr.invalid_field() {
+            Some(field) => Err(ActorError::InvalidField(field)),
+            None => Ok(Self(repr)),
         }
-        Ok(Self(repr))
     }
 
     /// Returns the fields, for matching on the kind of actor.
@@ -213,13 +266,6 @@ impl Actor {
             },
         }
     }
-
-    /// Returns the label and the fields of the actor, the identifier first. This is the single
-    /// list from which both the check of the fields and the commit encoding work, so a new field
-    /// is always checked and always encoded.
-    pub(crate) fn fields(&self) -> (&'static str, Vec<(&'static str, &str)>) {
-        repr_fields(&self.0)
-    }
 }
 
 /// Returns the part of the token after `key`, or [`ActorParseError::Malformed`] with the reason if
@@ -235,33 +281,38 @@ fn token_value<'a>(
         .ok_or(ActorParseError::Malformed(reason))
 }
 
-fn repr_fields(repr: &Repr) -> (&'static str, Vec<(&'static str, &str)>) {
-    match repr {
-        Repr::Human { id } => ("human", vec![("id", id)]),
-        Repr::Agent {
-            id,
-            model,
-            session,
-            sponsor,
-        } => (
-            "agent",
-            vec![
-                ("id", id),
-                ("model", model),
-                ("session", session),
-                ("sponsor", sponsor),
-            ],
-        ),
+impl Repr {
+    /// Returns the label and the fields, the identifier first. This is the single list from which
+    /// both the check of the fields and the actor line work, so a new field is always checked and
+    /// always written.
+    fn fields(&self) -> (&'static str, Vec<(ActorField, &str)>) {
+        match self {
+            Self::Human { id } => ("human", vec![(ActorField::Id, id)]),
+            Self::Agent {
+                id,
+                model,
+                session,
+                sponsor,
+            } => (
+                "agent",
+                vec![
+                    (ActorField::Id, id),
+                    (ActorField::Model, model),
+                    (ActorField::Session, session),
+                    (ActorField::Sponsor, sponsor),
+                ],
+            ),
+        }
     }
-}
 
-/// Returns the name of the first field that is empty or not visible ASCII (U+0021 to U+007E).
-fn invalid_field(repr: &Repr) -> Option<&'static str> {
-    repr_fields(repr)
-        .1
-        .into_iter()
-        .find(|(_, value)| value.is_empty() || !value.chars().all(|c| c.is_ascii_graphic()))
-        .map(|(field, _)| field)
+    /// Returns the first field that is empty or not visible ASCII (U+0021 to U+007E).
+    fn invalid_field(&self) -> Option<ActorField> {
+        self.fields()
+            .1
+            .into_iter()
+            .find(|(_, value)| value.is_empty() || !value.chars().all(|c| c.is_ascii_graphic()))
+            .map(|(field, _)| field)
+    }
 }
 
 #[cfg(test)]
@@ -270,7 +321,7 @@ mod tests {
 
     fn rejected_field(actor: Result<Actor, ActorError>) -> Option<&'static str> {
         match actor {
-            Err(ActorError::InvalidField(field)) => Some(field),
+            Err(ActorError::InvalidField(field)) => Some(field.name()),
             Ok(_) => None,
         }
     }
@@ -309,6 +360,55 @@ mod tests {
                 sponsor: "daniel",
             }
         );
+    }
+
+    #[test]
+    fn the_field_names_are_those_of_the_actor_line() {
+        let names: Vec<_> = [
+            ActorField::Id,
+            ActorField::Model,
+            ActorField::Session,
+            ActorField::Sponsor,
+        ]
+        .into_iter()
+        .map(|field| (field.name(), field.to_string()))
+        .collect();
+        assert_eq!(
+            names,
+            [
+                ("id", "id".to_owned()),
+                ("model", "model".to_owned()),
+                ("session", "session".to_owned()),
+                ("sponsor", "sponsor".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_display_form_is_the_actor_line_and_reads_back() {
+        let human = Actor::human("daniel").unwrap();
+        assert_eq!(human.to_string(), "human daniel");
+        let agent = Actor::agent("agent-1", "claude-haiku-5-5", "s=1", "daniel").unwrap();
+        assert_eq!(
+            agent.to_string(),
+            "agent agent-1 model=claude-haiku-5-5 session=s=1 sponsor=daniel"
+        );
+        for actor in [human, agent] {
+            assert_eq!(actor.to_string().parse::<Actor>().as_ref(), Ok(&actor));
+        }
+    }
+
+    #[test]
+    fn equal_actors_hash_alike_and_different_ones_are_kept_apart() {
+        use std::collections::HashSet;
+        let set: HashSet<Actor> = [
+            Actor::human("x").unwrap(),
+            Actor::human("x").unwrap(),
+            Actor::agent("x", "m", "s", "p").unwrap(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(set.len(), 2);
     }
 
     #[test]
@@ -370,7 +470,7 @@ mod tests {
     #[test]
     fn the_error_names_the_field_and_the_rule() {
         let error = Actor::human("").unwrap_err();
-        assert_eq!(error, ActorError::InvalidField("id"));
+        assert_eq!(error, ActorError::InvalidField(ActorField::Id));
         assert_eq!(
             error.to_string(),
             "actor field `id` must be non-empty visible ASCII (U+0021 to U+007E)"
@@ -429,13 +529,16 @@ mod tests {
     #[test]
     fn an_actor_line_with_a_rejected_field_names_the_field() {
         for (line, field) in [
-            ("human \u{e4}", "id"),
-            ("human x\n", "id"),
-            ("agent a model= session=s sponsor=p", "model"),
-            ("agent a model=m session= sponsor=p", "session"),
-            ("agent a model=m session=s sponsor=", "sponsor"),
-            ("agent a model=m session=s sponsor=p\r", "sponsor"),
-            ("agent a model=m session=s\u{a0} sponsor=p", "session"),
+            ("human \u{e4}", ActorField::Id),
+            ("human x\n", ActorField::Id),
+            ("agent a model= session=s sponsor=p", ActorField::Model),
+            ("agent a model=m session= sponsor=p", ActorField::Session),
+            ("agent a model=m session=s sponsor=", ActorField::Sponsor),
+            ("agent a model=m session=s sponsor=p\r", ActorField::Sponsor),
+            (
+                "agent a model=m session=s\u{a0} sponsor=p",
+                ActorField::Session,
+            ),
         ] {
             assert_eq!(
                 line.parse::<Actor>(),
@@ -523,7 +626,9 @@ mod tests {
         // With the right form the field is rejected, also the identifier of an agent.
         assert_eq!(
             "agent \u{e4} model=m session=s sponsor=p".parse::<Actor>(),
-            Err(ActorParseError::Invalid(ActorError::InvalidField("id")))
+            Err(ActorParseError::Invalid(ActorError::InvalidField(
+                ActorField::Id
+            )))
         );
     }
 }

@@ -253,8 +253,11 @@ them.
       each `key=value` token at its first `=`, and checks the fields again with `Actor::human` and
       `Actor::agent`. A malformed line (`ActorParseError::Malformed`) is reported apart from a
       rejected field (`ActorParseError::Invalid`).
-- [ ] Clean up the actor type if it is wanted: fold the three field lists (`Repr`, `ActorRef`,
-      `repr_fields`) into one that the check, the encoding, and the view share, name the field in
-      `ActorError` with a type instead of a string, and add `Hash` and `Display` for the actor line.
+- [x] Clean up the actor type. Done: the check and the actor line work from one list
+      (`Repr::fields`), `ActorError::InvalidField` carries an `ActorField` instead of a string, and
+      `Actor` has `Hash` and `Display`; the commit encoding uses the `Display` form, which
+      `FromStr` reads back. `ActorRef` stays as the public type to match on, because a borrowed
+      view with public fields cannot come from the same list without indexing. No encoding and no
+      ID changes.
 - [ ] A tree builder from the index (`write-tree`) should verify inside: `Index::write_tree(&store)`
       calls `Index::verify` itself and returns a `TreeId`, so that no caller can forget the check.
