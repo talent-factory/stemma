@@ -9,7 +9,7 @@ The object store (ADR-007) and the references (ADR-008) each take a root directo
 check it. Nothing ties the two to one repository: `update_branch` accepts the object store of any
 repository, and nothing says which directory is a repository at all. `stemma init` needs a place
 where the layout, the format version, and the creation of a repository are defined once.
-Implementation: `crates/stemma-core/src/repository.rs`.
+Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `crates/stemma-cli/src/cli.rs`.
 
 ## Decision
 
@@ -75,7 +75,6 @@ Implementation: `crates/stemma-core/src/repository.rs`.
 - [ ] Finding the repository from a subdirectory (searching upwards for `.stemma`), which `add`,
       `commit`, and `status` need.
 - [ ] Removing a stale `.stemma-init-*` directory, by `init` or by a repair command.
-- [ ] A configuration file as a third place for the actor of the command line (ADR-002).
 - [ ] A configuration file, and the user-level default branch it would allow.
 - [ ] On Unix, an empty `.stemma` that another process creates between the check in `init` and
       the rename is replaced, because `rename` replaces an empty directory. Closing it needs

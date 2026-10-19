@@ -1,0 +1,67 @@
+\startappendices
+
+\chapter{Befehlsreferenz}
+
+Dieser Anhang beschreibt die Kommandozeile \type{stemma}, so wie sie heute vorliegt. Er wächst mit jedem Befehl: Wer einen Befehl hinzufügt oder ändert, ergänzt hier den Abschnitt im selben Pull Request. Die Ausgabe von \type{stemma --help} und \type{stemma <Befehl> --help} ist die maschinelle Quelle, dieser Anhang erklärt Zweck, Verhalten und Fehlerfälle. Wo beide abweichen, gilt das Programm.
+
+\section{Aufruf und gemeinsame Regeln}
+
+\starttyping
+stemma <Befehl> [Argumente] [Schalter]
+stemma --version
+stemma --help
+\stoptyping
+
+{\bf Akteur.} Jeder Befehl, der ein Repository ändert, braucht einen Akteur (ADR-002). Er kommt aus dem Schalter \type{--actor} oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}. Der Schalter geht der Variablen vor. Der Text hat die Form der Akteur-Zeile eines Commits:
+
+\starttyping
+human daniel
+agent claude model=opus-5-5 session=s1 sponsor=daniel
+\stoptyping
+
+Ein leerer Wert ist ein Fehler und fällt nicht auf die andere Quelle zurück. Ohne Akteur bricht der Befehl ab, bevor er etwas ändert. Einen Standardwert aus dem Benutzernamen gibt es nicht. Die Angabe belegt nicht, wer den Befehl wirklich ausführt, sie nennt nur, in wessen Namen er läuft.
+
+{\bf Exit-Codes.} Ein Skript kann sich auf diese Werte verlassen.
+
+\startitemize
+\item {\bf 0:} Der Befehl ist gelungen.
+\item {\bf 1:} Der Befehl ist gescheitert und hat nichts geändert. Die Meldung auf der Fehlerausgabe hat das Präfix \type{stemma:}.
+\item {\bf 2:} Die Argumente sind falsch, zum Beispiel ein unbekannter Schalter oder ein ungültiger Branch-Name. Das Programm gibt die Meldung selbst aus.
+\item {\bf 3:} Der Befehl hat sein Ergebnis angelegt, konnte aber nicht abschliessen: Das Verzeichnis ist nicht gesichert, oder die Ausgabe liess sich nicht schreiben. Ein Skript darf das Ergebnis weder löschen noch den Befehl wiederholen.
+\stopitemize
+
+Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit \type{stemma: <Meldung>} aus und läuft keine Kette von Ursachen ab.
+
+{\bf Pfade.} Die Ausgabe nennt Pfade absolut, damit ein Skript sie nach einem Verzeichniswechsel weiter verwenden kann.
+
+\section{init}
+
+Legt ein leeres Repository an.
+
+\starttyping
+stemma init [PFAD] [--initial-branch NAME] [--actor AKTEUR]
+\stoptyping
+
+\startitemize
+\item {\bf PFAD:} Das Verzeichnis des Repositories, standardmässig das aktuelle. Fehlt es, wird es samt Eltern angelegt.
+\item {\bf \type{--initial-branch} NAME:} Der Branch, auf den HEAD zeigt. Standard ist \type{main}. Der Branch selbst entsteht erst mit dem ersten Commit. Ein ungültiger Name ist ein Aufruffehler (Exit-Code 2) und legt nichts an.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\stopitemize
+
+{\bf Verhalten.} \type{init} legt den Ordner \type{.stemma} an (Aufbau im Abschnitt «Aufbau eines Repositories» von Kapitel 4) und gibt eine Zeile aus:
+
+\starttyping
+Initialized empty Stemma repository in /pfad/zum/projekt/.stemma
+\stoptyping
+
+Der Ordner entsteht atomar. Existiert \type{.stemma} schon, auch leer oder als Verweis, bricht \type{init} ab und ändert nichts (Exit-Code 1). Dateien im Verzeichnis bleiben unberührt, ein Projekt lässt sich also nachträglich unter Versionskontrolle stellen.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma init --actor "human daniel"
+stemma init projekt --initial-branch trunk --actor "human daniel"
+STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" stemma init
+\stoptyping
+
+\stopappendices
