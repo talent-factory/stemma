@@ -250,7 +250,7 @@ fn confirm_id(requested: ObjectId, parsed: ObjectId) -> Result<(), ReadError> {
 }
 
 /// Returns a function that wraps an I/O error with the operation and the path.
-pub(crate) fn io_error<'a>(
+fn io_error<'a>(
     operation: &'static str,
     path: &'a Path,
 ) -> impl FnOnce(io::Error) -> StoreError + 'a {
@@ -287,7 +287,8 @@ impl RawObject {
 }
 
 pub(crate) mod sealed {
-    /// Keeps [`ObjectStore`](super::ObjectStore) from being implemented outside this crate.
+    /// Keeps [`ObjectStore`](super::ObjectStore) and [`RefStore`](crate::refs::RefStore) from
+    /// being implemented outside this crate.
     pub trait Sealed {}
 }
 
@@ -564,7 +565,7 @@ impl FsObjectStore {
         drop(file);
 
         match fs::rename(&temp.path, path) {
-            Ok(()) => temp.armed = false,
+            Ok(()) => temp.disarm(),
             Err(error) => {
                 // Another writer may have stored the object in the meantime. Only an object that
                 // reads back correctly counts; the temporary file is removed on drop.
@@ -667,7 +668,14 @@ impl ObjectStore for FsObjectStore {
 /// for a file that this call created, so it can never remove the file of another writer.
 pub(crate) struct TempFile {
     pub(crate) path: PathBuf,
-    pub(crate) armed: bool,
+    armed: bool,
+}
+
+impl TempFile {
+    /// Keeps the file: it has been moved, or is meant to stay.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
 }
 
 impl Drop for TempFile {

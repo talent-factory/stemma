@@ -27,13 +27,15 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use crate::object::{CommitId, ObjectId, ObjectIdParseError};
+use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
 use crate::store::{
     create_dirs_synced, create_temp, sync_directory, unique_temp_name, ObjectStore, StoreError,
 };
 
-/// The longest branch name in bytes. A file name is limited by the file system, and a path by the
-/// platform; this stays well below both.
+/// The longest branch name in bytes. A file name is limited by the file system, which is 255 bytes
+/// for the usual ones, and this stays below that. The path of a branch has the directory of the
+/// repository in front of it, so a long name in a deep directory can still be too long on a
+/// platform with a short limit; such a path is an error of the file system when it is used.
 pub const MAX_BRANCH_NAME_LEN: usize = 200;
 
 /// The rule that a rejected branch name violates.
@@ -147,6 +149,10 @@ fn branch_name_problem(name: &str) -> Option<BranchNameProblem> {
 /// starts with `.` or `-` or ends with `.`, none is the name of a device on Windows, and the whole
 /// name has at most [`MAX_BRANCH_NAME_LEN`] bytes. The rule is that of a name that is a file path
 /// on every platform; loosening it changes no ID (ADR-008).
+///
+/// The order is that of the bytes of the name, so `Z` comes before `a`, and `a-b` and `a.b` come
+/// before `a/b`. `Eq` is exact too: the store, not this type, treats names that differ only in
+/// case as one name (see [`RefError::Conflict`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BranchName(String);
 
@@ -222,7 +228,8 @@ pub enum RefParseError {
     Malformed(RefMalformed),
     /// The object ID is not in canonical form.
     InvalidObjectId(ObjectIdParseError),
-    /// The name of the branch in HEAD is rejected.
+    /// The name of a branch is rejected: the one in HEAD, or the name of a file in the directory
+    /// of the branches.
     InvalidBranchName(BranchNameError),
 }
 
@@ -343,24 +350,44 @@ pub enum RefError {
     Stale {
         /// The branch.
         name: BranchName,
-        /// The commit the caller expected, or `None` for a branch that does not exist.
+        /// The commit the caller expected. `None` means that the branch has to be new.
         expected: Option<CommitId>,
         /// The commit the branch has, or `None` if it does not exist.
         found: Option<CommitId>,
     },
-    /// The name cannot be created because of another branch: a branch is a file, so a name cannot
+    /// The name cannot be created because of another entry: a branch is a file, so a name cannot
     /// be a branch and the start of other names, and on a file system that ignores case two names
     /// that differ only in case are one file.
     Conflict {
         /// The name that was to be created.
         name: BranchName,
-        /// The existing branch, or directory of branches, that is in the way.
+        /// The entry that is in the way, as a name below the branches. It is not always a branch;
+        /// `kind` says what it is.
         with: String,
+        /// What `with` is.
+        kind: ConflictKind,
     },
     /// The object store has no commit with this ID.
     MissingCommit(CommitId),
-    /// The object store failed, or the object is not a commit.
+    /// The object with this ID is not a commit.
+    NotACommit {
+        /// The ID that was given.
+        id: ObjectId,
+        /// The kind the object has.
+        found: Kind,
+    },
+    /// The object store failed in a way that is not a failure of the file system, for example a
+    /// damaged object.
     Store(Box<StoreError>),
+    /// The change was made, but the directory could not be flushed to disk afterwards, so it may
+    /// not survive a crash. The caller must not repeat the change with the old state, which is
+    /// gone: read the reference again.
+    NotFlushed {
+        /// The directory that could not be flushed.
+        path: PathBuf,
+        /// The error of the file system. Its message ends the message of this error.
+        source: io::Error,
+    },
     /// A lock file exists: another process changes references, or a process that did ended
     /// without removing it.
     Locked {
@@ -374,10 +401,26 @@ pub enum RefError {
     },
 }
 
-fn describe(commit: &Option<CommitId>) -> String {
-    commit
-        .as_ref()
-        .map_or_else(|| "does not exist".to_owned(), |id| format!("is at {id}"))
+/// What stands in the way of a new branch name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConflictKind {
+    /// A branch with a name that is the start of the new one: `a` is a branch, so `a/b` cannot be.
+    Branch,
+    /// A directory of other branches has the name: `x/y` is a branch, so `x` cannot be.
+    Directory,
+    /// A name that differs only in case, which is one file on a file system that ignores case.
+    CaseVariant,
+}
+
+impl fmt::Display for ConflictKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Branch => "is a branch",
+            Self::Directory => "is a directory of branches",
+            Self::CaseVariant => "differs only in case",
+        })
+    }
 }
 
 impl fmt::Display for RefError {
@@ -397,18 +440,30 @@ impl fmt::Display for RefError {
                 found,
             } => write!(
                 f,
-                "branch `{name}` has moved: it was expected to exist at {}, but it {}",
-                expected
-                    .as_ref()
-                    .map_or_else(|| "nothing (a new branch)".to_owned(), ToString::to_string),
-                describe(found)
+                "branch `{name}` has moved: {}, but {}",
+                expected.as_ref().map_or_else(
+                    || "it was expected to be new".to_owned(),
+                    |id| format!("it was expected to be at {id}")
+                ),
+                found.as_ref().map_or_else(
+                    || "it does not exist".to_owned(),
+                    |id| format!("it is at {id}")
+                )
             ),
-            Self::Conflict { name, with } => write!(
+            Self::Conflict { name, with, kind } => write!(
                 f,
-                "branch `{name}` conflicts with `{}`",
+                "branch `{name}` conflicts with `{}`, which {kind}",
                 with.escape_debug()
             ),
             Self::MissingCommit(id) => write!(f, "the store has no commit {id}"),
+            Self::NotACommit { id, found } => {
+                write!(f, "object {id} is a {}, not a commit", found.name())
+            }
+            Self::NotFlushed { path, source } => write!(
+                f,
+                "the change was made, but the directory `{}` could not be flushed to disk: {source}",
+                path.display()
+            ),
             Self::Store(source) => write!(f, "{source}"),
             Self::Locked { path } => write!(
                 f,
@@ -426,7 +481,7 @@ impl RefError {
     /// [`Error::source`] does not lead to it (see the crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Io { source, .. } => Some(source),
+            Self::Io { source, .. } | Self::NotFlushed { source, .. } => Some(source),
             Self::Store(source) => source.io_error(),
             _ => None,
         }
@@ -445,12 +500,13 @@ impl Error for RefError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             // The message has the message of the cause, so the source is the cause of the cause.
-            Self::Io { source, .. } => source.source(),
+            Self::Io { source, .. } | Self::NotFlushed { source, .. } => source.source(),
             Self::Corrupt { source, .. } => source.source(),
             Self::Store(source) => source.source(),
             Self::Stale { .. }
             | Self::Conflict { .. }
             | Self::MissingCommit(_)
+            | Self::NotACommit { .. }
             | Self::Locked { .. }
             | Self::NoHead { .. } => None,
         }
@@ -497,16 +553,21 @@ pub trait RefStore: crate::store::sealed::Sealed {
     fn head(&self) -> Result<Head, RefError>;
 
     /// Points HEAD to a branch, which need not exist yet, or to a commit. A commit has to be in
-    /// `objects`.
+    /// `objects`; for a branch, `objects` is not used. The change replaces HEAD whatever it was:
+    /// of two changes that race, the later one wins, and there is no `expected` as for a branch.
     ///
     /// # Errors
     ///
-    /// Returns [`RefError::MissingCommit`] if the commit is not in the store, [`RefError::Store`]
-    /// if the store fails or the object is not a commit, [`RefError::Locked`] if another change is
-    /// in progress, and [`RefError::Io`] if the storage fails.
+    /// Returns [`RefError::MissingCommit`] if the commit is not in the store,
+    /// [`RefError::NotACommit`] if the object is not a commit, [`RefError::Store`] and
+    /// [`RefError::Io`] if the store or the storage fails, [`RefError::Locked`] if another change
+    /// is in progress, and [`RefError::NotFlushed`] if the change was made but could not be
+    /// flushed to disk. Nothing is changed in any other case.
     fn set_head(&self, head: &Head, objects: &dyn ObjectStore) -> Result<(), RefError>;
 
-    /// Returns the commit of a branch, or `None` if the branch does not exist.
+    /// Returns the commit of a branch, or `None` if there is no branch with exactly this name.
+    /// That includes a name that is held by another entry, such as `Main` for `main`; creating
+    /// the branch fails with [`RefError::Conflict`].
     ///
     /// # Errors
     ///
@@ -514,7 +575,9 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// the storage fails.
     fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError>;
 
-    /// Returns all branches with their commits, sorted by name.
+    /// Returns all branches with their commits, sorted by name (by the bytes of the name, see
+    /// [`BranchName`]). Entries whose name starts with `.` are skipped: no branch name can, and
+    /// file managers and editors leave such files, for example `.DS_Store`.
     ///
     /// # Errors
     ///
@@ -527,11 +590,14 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`RefError::MissingCommit`] if `new` is not in the store, [`RefError::Store`] if
-    /// the store fails or `new` is not a commit, [`RefError::Locked`] if another change is in
-    /// progress, [`RefError::Stale`] if the branch is not at `expected`, [`RefError::Conflict`] if
-    /// a new name is in the way of another, and [`RefError::Corrupt`] and [`RefError::Io`] as for
-    /// [`branch`](Self::branch). Nothing is changed in any of these cases.
+    /// Returns [`RefError::MissingCommit`] if `new` is not in the store,
+    /// [`RefError::NotACommit`] if it is another object, [`RefError::Store`] and
+    /// [`RefError::Io`] if the store or the storage fails, [`RefError::Locked`] if another change
+    /// is in progress, [`RefError::Conflict`] if the name is held by another entry (checked before
+    /// `expected`, because such a name has no branch to be at any commit), [`RefError::Stale`] if
+    /// the branch is not at `expected`, and [`RefError::Corrupt`] as for
+    /// [`branch`](Self::branch). Nothing is changed in any of these cases, except for
+    /// [`RefError::NotFlushed`]: the change was made, and the directory could not be flushed.
     fn update_branch(
         &self,
         name: &BranchName,
@@ -541,7 +607,9 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ) -> Result<(), RefError>;
 
     /// Returns the commit that HEAD leads to: the commit of its branch, `None` if that branch does
-    /// not exist yet, or the commit that it names.
+    /// not exist yet, or the commit that it names. This is two reads without a lock, so HEAD can
+    /// change between them; a caller that changes a branch uses [`head`](Self::head) and
+    /// [`branch`](Self::branch) and passes what it saw as `expected`.
     ///
     /// # Errors
     ///
@@ -560,15 +628,20 @@ pub struct FsRefStore {
     root: PathBuf,
 }
 
-/// The lock file while it exists. It is removed when the value is dropped.
+/// The lock file while it exists. The file holds a token that only this lock knows, and the file
+/// is removed when the value is dropped, but only if it still holds the token: a person may have
+/// removed a lock that looked stale, and another process may hold a new one by now.
 struct Lock {
     path: PathBuf,
+    token: String,
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
         // Best effort: a lock that stays behind is reported by the next change.
-        let _ = fs::remove_file(&self.path);
+        if fs::read(&self.path).is_ok_and(|content| content == self.token.as_bytes()) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -587,7 +660,7 @@ impl FsRefStore {
         self.root.join("refs").join("heads")
     }
 
-    pub(crate) fn branch_path(&self, name: &BranchName) -> PathBuf {
+    fn branch_path(&self, name: &BranchName) -> PathBuf {
         name.as_str()
             .split('/')
             .fold(self.heads_dir(), |path, component| path.join(component))
@@ -612,46 +685,56 @@ impl FsRefStore {
         }
     }
 
-    /// Reads a file that is a regular file, or returns `None` if there is none. A directory is no
-    /// reference either; so is a link, which is not followed.
+    /// Reads a file that is a regular file, or returns `None` if there is none. Anything else at
+    /// the path is an error: a directory, a link (which is not followed), or a path that goes
+    /// through a file.
     fn read_reference(&self, path: &Path) -> Result<Option<Vec<u8>>, RefError> {
         match fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_file() => fs::read(path)
                 .map(Some)
                 .map_err(io_error("read the reference", path)),
-            Ok(metadata) if metadata.is_dir() => Ok(None),
             Ok(_) => Err(RefError::Io {
                 operation: "read the reference",
                 path: path.to_path_buf(),
                 source: io::Error::new(io::ErrorKind::InvalidInput, "not a regular file"),
             }),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                ) =>
-            {
-                Ok(None)
-            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(io_error("inspect the reference", path)(error)),
         }
     }
 
     fn lock(&self) -> Result<Lock, RefError> {
         let path = self.lock_path();
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(_) => Ok(Lock { path }),
+        let token = unique_temp_name();
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                Err(RefError::Locked { path })
+                return Err(RefError::Locked { path })
             }
-            Err(error) => Err(io_error("create the lock file", &path)(error)),
-        }
+            Err(error) => return Err(io_error("create the lock file", &path)(error)),
+        };
+        // The lock exists now. If the token cannot be written, the lock is removed again, and the
+        // error is reported.
+        let lock = Lock {
+            path: path.clone(),
+            token,
+        };
+        file.write_all(lock.token.as_bytes()).map_err(|error| {
+            let _ = fs::remove_file(&path);
+            io_error("write the lock file", &path)(error)
+        })?;
+        Ok(lock)
     }
 
     /// Replaces the file with the content, atomically: the content goes to a temporary file, is
     /// flushed, and is renamed over the file. The file is not made read-only, because Windows
     /// refuses to replace one.
-    fn write_replacing(&self, path: &Path, content: &[u8]) -> Result<(), RefError> {
+    ///
+    /// The temporary file is made first, and the directories of the file after it, so that a
+    /// failure of the first leaves no directory behind. If a later step fails, the directories
+    /// that are empty again are removed up to `top`, which stays. Once the file is in place the
+    /// change has happened: a failure to flush the directory is [`RefError::NotFlushed`].
+    fn write_replacing(&self, path: &Path, content: &[u8], top: &Path) -> Result<(), RefError> {
         let temp_dir = self.root.join("tmp");
         let parent = path.parent().ok_or_else(|| RefError::Io {
             operation: "find the directory of",
@@ -659,7 +742,6 @@ impl FsRefStore {
             source: io::Error::new(io::ErrorKind::InvalidInput, "the path has no parent"),
         })?;
         create_dirs_synced(&self.root, &temp_dir).map_err(from_store)?;
-        create_dirs_synced(&self.root, parent).map_err(from_store)?;
         let (mut file, mut temp) =
             create_temp(&temp_dir, &mut unique_temp_name).map_err(from_store)?;
         file.write_all(content)
@@ -667,9 +749,39 @@ impl FsRefStore {
         file.sync_all()
             .map_err(io_error("flush the temporary file", &temp.path))?;
         drop(file);
-        fs::rename(&temp.path, path).map_err(io_error("move the reference into place at", path))?;
-        temp.armed = false;
-        sync_directory(parent).map_err(from_store)
+        self.place(&temp.path, path, parent, top, |from, to| {
+            fs::rename(from, to)
+        })?;
+        temp.disarm();
+        sync_directory(parent).map_err(|error| match error {
+            StoreError::Io { source, .. } => RefError::NotFlushed {
+                path: parent.to_path_buf(),
+                source,
+            },
+            other => RefError::Store(Box::new(other)),
+        })
+    }
+
+    /// Makes the directories of `to` and moves `from` to it with `rename`. If a step fails, the
+    /// directories that are empty again are removed up to `top`, which stays. The move is a
+    /// parameter so that a test can make it fail.
+    fn place(
+        &self,
+        from: &Path,
+        to: &Path,
+        parent: &Path,
+        top: &Path,
+        rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    ) -> Result<(), RefError> {
+        let placed = create_dirs_synced(&self.root, parent)
+            .map_err(from_store)
+            .and_then(|()| {
+                rename(from, to).map_err(io_error("move the reference into place at", to))
+            });
+        if placed.is_err() {
+            remove_empty_directories(parent, top);
+        }
+        placed
     }
 
     /// Finds out what the name is in the file system, comparing every component **exactly**. On a
@@ -681,16 +793,11 @@ impl FsRefStore {
         let mut dir = self.heads_dir();
         let mut relative = String::new();
         for (index, component) in components.iter().enumerate() {
+            // Every directory but the first was seen to be a directory, and the first has to be
+            // one if it exists: `refs` or `heads` as a file is damage and not "no branches".
             let entries = match fs::read_dir(&dir) {
                 Ok(entries) => entries,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    return Ok(Lookup::Absent)
-                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
                 Err(error) => return Err(io_error("list the branches in", &dir)(error)),
             };
             let (mut exact, mut variant) = (false, None);
@@ -704,7 +811,9 @@ impl FsRefStore {
                 }
             }
             if !exact {
-                return Ok(variant.map_or(Lookup::Absent, Lookup::Conflict));
+                return Ok(variant.map_or(Lookup::Absent, |with| {
+                    Lookup::Conflict(with, ConflictKind::CaseVariant)
+                }));
             }
             let here = dir.join(component);
             let current = join_name(&relative, component);
@@ -712,13 +821,18 @@ impl FsRefStore {
             match fs::symlink_metadata(&here) {
                 Ok(metadata) if metadata.is_dir() => {
                     if last {
-                        // A directory of branches holds the name.
-                        return Ok(Lookup::Conflict(current));
+                        // A directory holds the name, unless no branch is below it: that is what
+                        // a change leaves behind that stopped, and it is cleared by the next one.
+                        return if has_files_below(&here)? {
+                            Ok(Lookup::Conflict(current, ConflictKind::Directory))
+                        } else {
+                            Ok(Lookup::EmptyDirectory(here))
+                        };
                     }
                 }
                 Ok(_) if last => return Ok(Lookup::Branch(here)),
                 // A file holds the place of a directory in the name.
-                Ok(_) => return Ok(Lookup::Conflict(current)),
+                Ok(_) => return Ok(Lookup::Conflict(current, ConflictKind::Branch)),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
                 Err(error) => return Err(io_error("inspect the branch", &here)(error)),
             }
@@ -729,10 +843,17 @@ impl FsRefStore {
     }
 
     /// The commit of the branch, and what stands in the way of creating it if there is none.
-    fn current(&self, name: &BranchName) -> Result<(Option<CommitId>, Option<String>), RefError> {
+    fn current(&self, name: &BranchName) -> Result<Current, RefError> {
         match self.lookup(name)? {
-            Lookup::Absent => Ok((None, None)),
-            Lookup::Conflict(with) => Ok((None, Some(with))),
+            Lookup::Absent => Ok(Current::default()),
+            Lookup::EmptyDirectory(path) => Ok(Current {
+                empty_directory: Some(path),
+                ..Current::default()
+            }),
+            Lookup::Conflict(with, kind) => Ok(Current {
+                in_the_way: Some((with, kind)),
+                ..Current::default()
+            }),
             Lookup::Branch(path) => {
                 let bytes = self.read_reference(&path)?.ok_or_else(|| RefError::Io {
                     operation: "read the reference",
@@ -740,7 +861,10 @@ impl FsRefStore {
                     source: io::Error::new(io::ErrorKind::NotFound, "it is gone"),
                 })?;
                 parse_branch(&bytes)
-                    .map(|commit| (Some(commit), None))
+                    .map(|commit| Current {
+                        commit: Some(commit),
+                        ..Current::default()
+                    })
                     .map_err(|source| RefError::Corrupt { path, source })
             }
         }
@@ -751,7 +875,10 @@ impl FsRefStore {
         match objects.resolve_commit(&commit.object_id()) {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(RefError::MissingCommit(*commit)),
-            Err(error) => Err(RefError::Store(Box::new(error))),
+            Err(StoreError::KindMismatch { id, found, .. }) => {
+                Err(RefError::NotACommit { id, found })
+            }
+            Err(error) => Err(from_store(error)),
         }
     }
 }
@@ -762,9 +889,55 @@ enum Lookup {
     Absent,
     /// The file of the branch.
     Branch(PathBuf),
+    /// A directory without any file below it holds the name. It is no branch and in nobody's way:
+    /// it is what a change leaves behind that stopped. A change removes it.
+    EmptyDirectory(PathBuf),
     /// The name cannot be a branch: another branch, or a directory of branches, is in the way, or
-    /// a name that differs only in case. Carries that name.
-    Conflict(String),
+    /// a name that differs only in case. Carries that name and what it is.
+    Conflict(String, ConflictKind),
+}
+
+/// What is known about a name: its commit, what is in the way of creating it, and an empty
+/// directory to clear before it is created.
+#[derive(Default)]
+struct Current {
+    commit: Option<CommitId>,
+    in_the_way: Option<(String, ConflictKind)>,
+    empty_directory: Option<PathBuf>,
+}
+
+/// Whether a file, or anything but a directory, is below the directory at any depth.
+fn has_files_below(dir: &Path) -> Result<bool, RefError> {
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).map_err(io_error("list the branches in", &dir))? {
+            let entry = entry.map_err(io_error("list the branches in", &dir))?;
+            let kind = entry
+                .file_type()
+                .map_err(io_error("inspect the branch", &entry.path()))?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Removes `dir` and its parents while they are empty, up to but not including `top`. It stops
+/// at the first directory that is not empty or cannot be removed.
+fn remove_empty_directories(dir: &Path, top: &Path) {
+    let mut dir = dir;
+    while dir != top && dir.starts_with(top) {
+        if fs::remove_dir(dir).is_err() {
+            return;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return,
+        }
+    }
 }
 
 fn join_name(prefix: &str, component: &str) -> String {
@@ -793,12 +966,12 @@ impl RefStore for FsRefStore {
             Self::require_commit(commit, objects)?;
         }
         let _lock = self.lock()?;
-        self.write_replacing(&self.head_path(), &head.encode())
+        self.write_replacing(&self.head_path(), &head.encode(), &self.root)
     }
 
     fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
         self.require_root()?;
-        Ok(self.current(name)?.0)
+        Ok(self.current(name)?.commit)
     }
 
     fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
@@ -817,7 +990,13 @@ impl RefStore for FsRefStore {
             for entry in entries {
                 let entry = entry.map_err(io_error("list the branches in", &dir))?;
                 let path = entry.path();
-                let name = join_name(&prefix, &entry.file_name().to_string_lossy());
+                let file_name = entry.file_name().to_string_lossy().into_owned();
+                // No branch name starts with a dot, and file managers and editors leave files
+                // that do, such as `.DS_Store`.
+                if file_name.starts_with('.') {
+                    continue;
+                }
+                let name = join_name(&prefix, &file_name);
                 let kind = entry
                     .file_type()
                     .map_err(io_error("inspect the branch", &path))?;
@@ -853,21 +1032,30 @@ impl RefStore for FsRefStore {
         self.require_root()?;
         Self::require_commit(&new, objects)?;
         let _lock = self.lock()?;
-        let (found, in_the_way) = self.current(name)?;
-        if found != expected {
-            return Err(RefError::Stale {
-                name: name.clone(),
-                expected,
-                found,
-            });
-        }
-        if let Some(with) = in_the_way {
+        let current = self.current(name)?;
+        if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 name: name.clone(),
                 with,
+                kind,
             });
         }
-        self.write_replacing(&self.branch_path(name), &encode_branch(&new))
+        if current.commit != expected {
+            return Err(RefError::Stale {
+                name: name.clone(),
+                expected,
+                found: current.commit,
+            });
+        }
+        if let Some(empty) = current.empty_directory {
+            // Nothing is below it, and the lock is held, so no branch is lost.
+            fs::remove_dir_all(&empty).map_err(io_error("remove the empty directory", &empty))?;
+        }
+        self.write_replacing(
+            &self.branch_path(name),
+            &encode_branch(&new),
+            &self.heads_dir(),
+        )
     }
 }
 
@@ -1255,9 +1443,20 @@ mod tests {
             .update_branch(&main, None, blob_as_commit, &objects)
             .unwrap_err();
         assert!(
-            matches!(error.store_error(), Some(StoreError::KindMismatch { .. })),
+            matches!(
+                &error,
+                RefError::NotACommit {
+                    found: Kind::Blob,
+                    ..
+                }
+            ),
             "{error}"
         );
+        assert_eq!(
+            error.to_string(),
+            format!("object {blob_as_commit} is a blob, not a commit")
+        );
+        assert!(error.store_error().is_none());
         assert_eq!(refs.branch(&main).unwrap(), None);
         assert!(!dir.path().join("refs/heads").exists());
         assert!(!dir.path().join("refs.lock").exists());
@@ -1296,21 +1495,24 @@ mod tests {
             matches!(&error, RefError::Conflict { with, .. } if with == "a"),
             "{error}"
         );
-        assert_eq!(error.to_string(), "branch `a/b` conflicts with `a`");
+        assert_eq!(
+            error.to_string(),
+            "branch `a/b` conflicts with `a`, which is a branch"
+        );
         refs.update_branch(&name("x/y"), None, id, &objects)
             .unwrap();
         let error = refs
             .update_branch(&name("x"), None, id, &objects)
             .unwrap_err();
         assert!(
-            matches!(&error, RefError::Conflict { with, .. } if with == "x"),
+            matches!(&error, RefError::Conflict { with, kind: ConflictKind::Directory, .. } if with == "x"),
             "{error}"
         );
         let error = refs
             .update_branch(&name("x/y/z"), None, id, &objects)
             .unwrap_err();
         assert!(
-            matches!(&error, RefError::Conflict { with, .. } if with == "x/y"),
+            matches!(&error, RefError::Conflict { with, kind: ConflictKind::Branch, .. } if with == "x/y"),
             "{error}"
         );
         // Nothing was written for the refused names, and the lock is gone.
@@ -1576,14 +1778,16 @@ mod tests {
         let error = refs
             .update_branch(&name("main"), None, id, &faulty)
             .unwrap_err();
-        assert!(matches!(error, RefError::Store(_)), "{error}");
+        // A failure of the file system is an `Io`, whether it comes from the object store or from
+        // the reference files.
+        assert!(matches!(error, RefError::Io { .. }), "{error}");
         assert!(error.to_string().ends_with(DISK_MESSAGE), "{error}");
         assert_eq!(error.to_string().matches(DISK_MESSAGE).count(), 1);
         assert_eq!(
             error.source().map(ToString::to_string).as_deref(),
             Some("the deepest cause")
         );
-        assert!(error.store_error().is_some());
+        assert!(error.store_error().is_none());
         assert_eq!(
             error.io_error().map(io::Error::kind),
             Some(io::ErrorKind::Other)
@@ -1612,9 +1816,7 @@ mod tests {
         };
         assert_eq!(
             stale.to_string(),
-            format!(
-                "branch `main` has moved: it was expected to exist at {a}, but it does not exist"
-            )
+            format!("branch `main` has moved: it was expected to be at {a}, but it does not exist")
         );
         let created = RefError::Stale {
             name: name("main"),
@@ -1623,7 +1825,7 @@ mod tests {
         };
         assert_eq!(
             created.to_string(),
-            format!("branch `main` has moved: it was expected to exist at nothing (a new branch), but it is at {a}")
+            format!("branch `main` has moved: it was expected to be new, but it is at {a}")
         );
         assert_eq!(
             RefError::NoHead {
@@ -1633,5 +1835,344 @@ mod tests {
             "there is no HEAD at `x/HEAD`"
         );
         assert!(stale.source().is_none() && created.source().is_none());
+    }
+
+    // ---- review fixes
+
+    /// Whether permissions have an effect: a user that may write into a directory without the
+    /// write permission (root) cannot show a failure of the file system by a permission.
+    #[cfg(unix)]
+    fn permissions_hold(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = dir.join("probe");
+        fs::create_dir(&probe).unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
+        let held = fs::write(probe.join("file"), b"").is_err();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(&probe).unwrap();
+        held
+    }
+
+    #[test]
+    fn what_is_in_the_way_of_a_name_is_named_by_its_kind() {
+        let (_dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        for text in ["a", "x/y", "Main"] {
+            refs.update_branch(&name(text), None, id, &objects).unwrap();
+        }
+        for (new, with, kind) in [
+            ("a/b", "a", ConflictKind::Branch),
+            ("x", "x", ConflictKind::Directory),
+            ("x/y/z", "x/y", ConflictKind::Branch),
+            ("main", "Main", ConflictKind::CaseVariant),
+            ("X/y", "x", ConflictKind::CaseVariant),
+        ] {
+            match refs
+                .update_branch(&name(new), None, id, &objects)
+                .unwrap_err()
+            {
+                RefError::Conflict {
+                    with: found,
+                    kind: found_kind,
+                    ..
+                } => {
+                    assert_eq!((found.as_str(), found_kind), (with, kind), "{new}");
+                }
+                other => panic!("{new}: unexpected error: {other}"),
+            }
+        }
+        assert_eq!(
+            ConflictKind::Directory.to_string(),
+            "is a directory of branches"
+        );
+        assert_eq!(
+            ConflictKind::CaseVariant.to_string(),
+            "differs only in case"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_in_the_way_is_a_conflict_even_if_the_caller_expects_a_commit() {
+        let (_dir, objects, refs) = setup();
+        let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
+        refs.update_branch(&name("Main"), None, first, &objects)
+            .unwrap();
+        // Not `Stale { found: None }`: nothing has moved, the name is held by another entry.
+        for expected in [None, Some(first)] {
+            let error = refs
+                .update_branch(&name("main"), expected, second, &objects)
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    RefError::Conflict {
+                        kind: ConflictKind::CaseVariant,
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+        }
+        // The read path says that there is no branch of exactly this name.
+        assert_eq!(refs.branch(&name("main")).unwrap(), None);
+    }
+
+    #[test]
+    fn an_empty_directory_that_a_stopped_change_left_does_not_block_the_name() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let leftover = dir.path().join("refs/heads/feat/deeper");
+        fs::create_dir_all(&leftover).unwrap();
+        assert_eq!(refs.branch(&name("feat")).unwrap(), None);
+        assert!(refs.branches().unwrap().is_empty());
+        refs.update_branch(&name("feat"), None, id, &objects)
+            .unwrap();
+        assert_eq!(refs.branch(&name("feat")).unwrap(), Some(id));
+        assert!(dir.path().join("refs/heads/feat").is_file());
+        // A directory with a branch below it is still a directory of branches.
+        fs::create_dir_all(dir.path().join("refs/heads/other/deeper")).unwrap();
+        refs.update_branch(&name("other/deeper/x"), None, id, &objects)
+            .unwrap();
+        let error = refs
+            .update_branch(&name("other"), None, id, &objects)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Conflict {
+                    kind: ConflictKind::Directory,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn empty_directories_are_removed_up_to_the_top_and_not_beyond() {
+        let dir = TempDir::new();
+        let top = dir.path().join("heads");
+        fs::create_dir_all(top.join("a/b/c")).unwrap();
+        fs::create_dir_all(top.join("a/keep")).unwrap();
+        remove_empty_directories(&top.join("a/b/c"), &top);
+        assert!(!top.join("a/b").exists(), "a/b/c and a/b are empty and go");
+        assert!(
+            top.join("a/keep").exists(),
+            "a sibling stays, and so does a"
+        );
+        // A directory with a file stops the removal, and the top is never removed.
+        fs::create_dir_all(top.join("f/g")).unwrap();
+        fs::write(top.join("f/file"), b"x").unwrap();
+        remove_empty_directories(&top.join("f/g"), &top);
+        assert!(top.join("f/file").exists() && !top.join("f/g").exists());
+        remove_empty_directories(&top, &top);
+        assert!(top.exists());
+        // A directory outside the top is left alone.
+        let outside = dir.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        remove_empty_directories(&outside, &top);
+        assert!(outside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_that_cannot_make_its_temporary_file_leaves_no_directory_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, objects, refs) = setup();
+        if !permissions_hold(dir.path()) {
+            return;
+        }
+        let id = commit(&objects, "c");
+        let tmp = dir.path().join("tmp");
+        fs::create_dir_all(&tmp).unwrap();
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
+        let error = refs
+            .update_branch(&name("feat/x"), None, id, &objects)
+            .unwrap_err();
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(&error, RefError::Io { .. }), "{error}");
+        assert!(!dir.path().join("refs/heads/feat").exists());
+        assert!(!dir.path().join("refs.lock").exists());
+        // The name is free afterwards.
+        refs.update_branch(&name("feat"), None, id, &objects)
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_that_cannot_flush_its_directory_says_that_it_was_made() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, objects, refs) = setup();
+        if !permissions_hold(dir.path()) {
+            return;
+        }
+        let id = commit(&objects, "c");
+        refs.set_head(&Head::Branch(name("main")), &objects)
+            .unwrap();
+        // The directory may be written and entered, but not read: the rename works and the flush
+        // of the directory cannot open it.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = refs.set_head(&Head::Detached(id), &objects);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            matches!(&error, RefError::NotFlushed { path, .. } if path == dir.path()),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("the change was made, but the directory `"),
+            "{error}"
+        );
+        assert!(error.io_error().is_some());
+        // The change happened, and the lock is gone.
+        assert_eq!(refs.head().unwrap(), Head::Detached(id));
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn a_lock_is_removed_only_by_the_one_that_made_it() {
+        let dir = TempDir::new();
+        let path = dir.path().join("refs.lock");
+        // Taken over by another: the token in the file is not ours, and the file stays.
+        fs::write(&path, b"other").unwrap();
+        drop(Lock {
+            path: path.clone(),
+            token: "mine".to_owned(),
+        });
+        assert_eq!(fs::read(&path).unwrap(), b"other");
+        // Our own lock goes.
+        fs::write(&path, b"mine").unwrap();
+        drop(Lock {
+            path: path.clone(),
+            token: "mine".to_owned(),
+        });
+        assert!(!path.exists());
+        // A lock that is already gone is no error.
+        drop(Lock {
+            path: path.clone(),
+            token: "mine".to_owned(),
+        });
+        // A real lock holds a token of its own, which differs between locks.
+        let (_dir, _objects, refs) = setup();
+        let first = refs.lock().unwrap();
+        assert_eq!(fs::read(&first.path).unwrap(), first.token.as_bytes());
+        assert!(matches!(refs.lock(), Err(RefError::Locked { .. })));
+        let token = first.token.clone();
+        drop(first);
+        let second = refs.lock().unwrap();
+        assert_ne!(second.token, token);
+    }
+
+    #[test]
+    fn entries_with_a_leading_dot_are_not_branches() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        let heads = dir.path().join("refs/heads");
+        fs::write(heads.join(".DS_Store"), [0u8, 1, 2]).unwrap();
+        fs::write(heads.join("._main"), [0u8]).unwrap();
+        fs::create_dir(heads.join(".hidden")).unwrap();
+        fs::write(heads.join(".hidden/file"), b"x").unwrap();
+        assert_eq!(refs.branches().unwrap(), vec![(name("main"), id)]);
+        // Other names that are not branch names are still damage.
+        fs::write(heads.join("not~valid"), format!("{id}\n")).unwrap();
+        assert!(matches!(
+            refs.branches(),
+            Err(RefError::Corrupt {
+                source: RefParseError::InvalidBranchName(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_directory_or_a_file_in_the_wrong_place_is_an_error_and_not_an_absence() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        // HEAD is a directory: not "no HEAD".
+        fs::create_dir(dir.path().join("HEAD")).unwrap();
+        let error = refs.head().unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Io {
+                    operation: "read the reference",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().ends_with("not a regular file"), "{error}");
+        // `refs` is a file: reading and writing agree that it is damage.
+        fs::write(dir.path().join("refs"), b"x").unwrap();
+        for error in [
+            refs.branch(&name("main")).unwrap_err(),
+            refs.branches().unwrap_err(),
+            refs.update_branch(&name("main"), None, id, &objects)
+                .unwrap_err(),
+        ] {
+            assert!(matches!(&error, RefError::Io { .. }), "{error}");
+        }
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn a_failed_check_of_the_object_store_is_an_io_error_when_the_file_system_failed() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let faulty = FaultyStore::new(dir.store(), true, false);
+        let error = refs.set_head(&Head::Detached(id), &faulty).unwrap_err();
+        assert!(matches!(&error, RefError::Io { .. }), "{error}");
+        assert_eq!(
+            error.io_error().map(io::Error::kind),
+            Some(io::ErrorKind::Other)
+        );
+        // A damaged object is not a failure of the file system.
+        let damaged = commit(&objects, "damaged");
+        crate::testutil::overwrite(
+            &dir.store().object_path(&damaged.object_id()),
+            b"commit 1\0x",
+        );
+        let error = refs
+            .update_branch(&name("main"), None, damaged, &objects)
+            .unwrap_err();
+        assert!(
+            matches!(error.store_error(), Some(StoreError::Corrupt { .. })),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_move_that_fails_removes_the_directories_that_it_made() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("keep/this"), None, id, &objects)
+            .unwrap();
+        let heads = dir.path().join("refs/heads");
+        let target = heads.join("p/q/r");
+        let parent = target.parent().unwrap();
+        let from = dir.path().join("from");
+        fs::write(&from, b"x").unwrap();
+        let failing = |_: &Path, _: &Path| Err(io::Error::other("the move failed"));
+        let error = refs
+            .place(&from, &target, parent, &heads, failing)
+            .unwrap_err();
+        assert!(matches!(&error, RefError::Io { .. }), "{error}");
+        assert!(error.to_string().ends_with("the move failed"), "{error}");
+        assert!(
+            !heads.join("p").exists(),
+            "p, p/q, and p/q/r were made by this call"
+        );
+        assert!(heads.join("keep/this").is_file(), "other branches stay");
+        assert!(heads.is_dir(), "the top stays");
+        // A move that works leaves the directories.
+        refs.place(&from, &target, parent, &heads, |from, to| {
+            fs::rename(from, to)
+        })
+        .unwrap();
+        assert!(target.is_file());
     }
 }
