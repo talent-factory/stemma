@@ -253,8 +253,10 @@ impl fmt::Display for IndexParseError {
 impl Error for IndexParseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidObjectId { source, .. } => Some(source),
-            Self::Entry { source, .. } => Some(source),
+            // The message of the variant includes the message of the cause, so the source is the
+            // cause of the cause (see the crate documentation).
+            Self::InvalidObjectId { source, .. } => source.source(),
+            Self::Entry { source, .. } => source.source(),
             _ => None,
         }
     }
@@ -298,7 +300,8 @@ impl fmt::Display for IndexVerifyError {
 impl Error for IndexVerifyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Store { source, .. } => Some(source.as_ref()),
+            // The message includes that of the store error; see the crate documentation.
+            Self::Store { source, .. } => source.source(),
             Self::Missing { .. } => None,
         }
     }
@@ -332,9 +335,11 @@ impl fmt::Display for WriteTreeError {
 impl Error for WriteTreeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Verify(source) => Some(source),
-            Self::Store(source) => Some(source.as_ref()),
-            Self::Tree(source) => Some(source),
+            // The message of each variant includes the message of the cause, so the source is the
+            // cause of the cause (see the crate documentation).
+            Self::Verify(source) => source.source(),
+            Self::Store(source) => source.source(),
+            Self::Tree(source) => source.source(),
         }
     }
 }
@@ -1319,13 +1324,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_errors_carry_their_cause() {
+    fn parse_errors_print_their_cause_once_and_keep_it_in_the_variant() {
         let error = Index::parse(&input("100644 b3:abcd a\n")).unwrap_err();
-        let cause = error.source().expect("the ID error is the cause");
-        assert!(cause.to_string().contains("found 4"), "{cause}");
+        let IndexParseError::InvalidObjectId { source, .. } = &error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(source.to_string().contains("found 4"), "{source}");
         assert!(error.to_string().starts_with("line 2: "), "{error}");
+        assert!(error.to_string().ends_with(&source.to_string()), "{error}");
+        // The message has the cause, so the chain goes on with the cause of the cause.
+        assert!(error.source().is_none());
         let error = Index::parse(&input(&format!("100644 {HELLO_ID} /a\n"))).unwrap_err();
-        assert!(error.source().is_some());
+        assert!(matches!(error, IndexParseError::Entry { .. }));
+        assert!(error.source().is_none());
         assert!(Index::parse(b"x").unwrap_err().source().is_none());
     }
 
@@ -1401,7 +1412,7 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
-        assert!(error.source().is_some());
+        assert!(error.source().is_none());
         assert!(
             error.to_string().contains("is a tree, not a blob"),
             "{error}"
@@ -1730,8 +1741,24 @@ mod tests {
         let store = crate::store::FsObjectStore::new(dir.path().join("absent"));
         let error = Index::new().write_tree(&store).unwrap_err();
         assert!(matches!(error, WriteTreeError::Store(_)), "{error}");
-        assert!(error.to_string().starts_with("cannot write a tree: "));
-        assert!(error.source().is_some());
+        let WriteTreeError::Store(store_error) = &error else {
+            unreachable!("matched above");
+        };
+        // The message has the message of the store error, and that has the one of the I/O error.
+        assert!(
+            error
+                .to_string()
+                .starts_with("cannot write a tree: could not open the object store directory"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().ends_with(&match &**store_error {
+                StoreError::Io { source, .. } => source.to_string(),
+                other => panic!("unexpected store error: {other}"),
+            }),
+            "{error}"
+        );
+        assert!(error.source().is_none());
     }
 
     #[test]
@@ -1748,13 +1775,13 @@ mod tests {
                 .starts_with("the index does not verify: `q\\\"d`: the store has no object b3:"),
             "{error}"
         );
-        assert!(error.source().is_some());
+        assert!(error.source().is_none());
         let tree = WriteTreeError::Tree(TreeError::DuplicateName("x".to_owned()));
         assert_eq!(
             tree.to_string(),
             "cannot build a tree: duplicate tree entry name `x`"
         );
-        assert!(tree.source().is_some());
+        assert!(tree.source().is_none());
     }
 
     #[test]

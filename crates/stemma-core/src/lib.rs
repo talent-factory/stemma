@@ -1,5 +1,15 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
 //! index, and object storage.
+//!
+//! # Errors
+//!
+//! The message of an error is complete: it includes the message of its cause, so `to_string()` is
+//! all that a log, a command line, or an agent needs. [`Error::source`](std::error::Error::source)
+//! therefore returns the cause of the cause, the first link that the message does not print yet,
+//! and never the cause itself. A program that walks the chain and prints every link shows each
+//! message once. The cause itself stays available as a field of the variant, typed, for a caller
+//! that wants to match on it. An error that wraps another one without adding anything to its
+//! message, such as [`store::ReadError::Store`], is transparent in the same way.
 
 mod actor;
 pub mod index;

@@ -296,3 +296,13 @@ them.
       where a commit expects its empty line, and not the header or line that it should have been;
       the actor line has no lines. The enums are `#[non_exhaustive]`, so a new reason is not a
       breaking change.
+- [x] One convention for the chain of causes. Done: the message of an error is complete and has
+      the message of its cause, so `to_string()` is enough for a log, a command line, or an agent;
+      `Error::source` returns the cause of the cause and never the cause itself, so that a program
+      that walks the chain shows each message once. The cause stays available as a typed field of
+      the variant. `StoreError::Io` now has the message of the I/O error. The rule is in the crate
+      documentation, `properties.rs` checks every rejection of the readers and builds the wrapping
+      errors from a real I/O failure (store, index, tree, and commit verification, `write_tree`),
+      and the old behavior of any of them fails a test. What is still open: the three verification
+      errors (`IndexVerifyError`, `TreeVerifyError`, `CommitVerifyError`) have the same two cases,
+      missing and store error, and could share one type.

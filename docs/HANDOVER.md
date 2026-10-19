@@ -207,6 +207,7 @@ Die verbindlichen Regeln stehen in `CLAUDE.md` im Repository und gehen jeder Vor
 **Qualitätssicherung**
 
 - `just ci` (Format-Check, Clippy mit `-D warnings`, Tests) muss vor jedem Commit grün sein. `cargo fmt` vorher laufen lassen, sonst scheitert der Format-Check.
+- Fehlertypen: Die Meldung eines Fehlers ist vollständig und enthält die Meldung der Ursache. `Error::source` liefert deshalb die Ursache der Ursache und nie die Ursache selbst, damit eine Fehlerkette jede Meldung nur einmal zeigt. Die Ursache bleibt als Feld der Variante erreichbar. Die Regel steht in der Crate-Doku von `lib.rs`; `properties.rs` prüft sie an echten Fehlern.
 - `just book` muss ohne Fehler und Warnungen durchlaufen, wenn das Buch geändert wurde.
 - ConTeXt MkIV, nicht LaTeX: `{\bf …}` statt `\textbf`, `\startxtable` statt `\starttable`.
 - Die Regel gilt für jeden Commit. Wer bei einer reinen Dokumentationsänderung `just ci` auslässt, sagt das ausdrücklich im PR.

@@ -117,8 +117,10 @@ impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io {
-                operation, path, ..
-            } => write!(f, "could not {operation} `{}`", path.display()),
+                operation,
+                path,
+                source,
+            } => write!(f, "could not {operation} `{}`: {source}", path.display()),
             Self::Corrupt { id, path, reason } => {
                 write!(f, "object {id} is corrupt (`{}`): {reason}", path.display())
             }
@@ -139,7 +141,8 @@ impl fmt::Display for StoreError {
 impl Error for StoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
+            // The message includes that of the I/O error, so the source is its own cause.
+            Self::Io { source, .. } => source.source(),
             Self::Corrupt { .. } | Self::KindMismatch { .. } => None,
         }
     }
@@ -201,8 +204,10 @@ impl Error for ReadError {
         match self {
             // Transparent: the message is that of the store error, so its cause is the cause here.
             Self::Store(source) => source.source(),
-            Self::Tree { source, .. } => Some(source),
-            Self::Commit { source, .. } => Some(source),
+            // The message of each variant includes the message of the cause, so the source is the
+            // cause of the cause (see the crate documentation).
+            Self::Tree { source, .. } => source.source(),
+            Self::Commit { source, .. } => source.source(),
             Self::IdMismatch { .. } => None,
         }
     }
@@ -1371,7 +1376,8 @@ mod tests {
         let error = store.put_blob(&Blob::new("hello")).unwrap_err();
         assert!(matches!(error, StoreError::Io { .. }), "{error:?}");
         assert!(error.to_string().contains("objects"), "{error}");
-        assert!(error.source().is_some());
+        // The message has the message of the I/O error, which has no cause of its own here.
+        assert!(error.source().is_none());
         assert!(!store.object_path(&ObjectId::from(stored)).exists());
         assert_eq!(temp_entries(&dir), 0);
     }
@@ -1595,9 +1601,9 @@ mod tests {
             text.contains("read the object file") && text.contains("a/b"),
             "{text}"
         );
-        // The cause is the source and is not repeated in the message.
-        assert!(!text.contains("denied"), "{text}");
-        assert_eq!(io.source().unwrap().to_string(), "denied");
+        // The message has the message of the cause, and the source is the cause of the cause.
+        assert!(text.ends_with(": denied"), "{text}");
+        assert!(io.source().is_none());
     }
 
     #[test]
@@ -1761,7 +1767,7 @@ mod tests {
             text.starts_with(&format!("tree {tree} is not canonical: ")),
             "{text}"
         );
-        assert!(error.source().is_some());
+        assert!(error.source().is_none());
         let blob = store.put_blob(&Blob::new("hello")).unwrap();
         let error = store
             .get_tree(&TreeId::new(ObjectId::from(blob)))
@@ -1874,8 +1880,11 @@ mod tests {
             text.starts_with(&format!("commit {commit} is not canonical: ")),
             "{text}"
         );
-        let cause = error.source().expect("the reader error is the cause");
-        assert!(text.ends_with(&cause.to_string()), "{text}");
+        let ReadError::Commit { source, .. } = &error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(text.ends_with(&source.to_string()), "{text}");
+        assert!(error.source().is_none());
     }
 
     #[test]
@@ -1896,12 +1905,21 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+        let ReadError::Store(inner) = &error else {
+            unreachable!("matched above");
+        };
+        let StoreError::Io { source, .. } = &**inner else {
+            unreachable!("matched above");
+        };
+        // The message is that of the store error, including the one of the I/O error.
         assert_eq!(
             error.to_string(),
-            format!("could not inspect the object file `{}`", path.display())
+            format!(
+                "could not inspect the object file `{}`: {source}",
+                path.display()
+            )
         );
-        let cause = error.source().expect("the I/O error is the cause");
-        assert!(cause.downcast_ref::<io::Error>().is_some());
+        assert!(error.source().is_none());
     }
 
     #[test]
