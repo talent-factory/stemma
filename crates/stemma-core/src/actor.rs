@@ -6,7 +6,7 @@
 //! are recorded in ADR-005.
 
 use std::error::Error;
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::str::FromStr;
 
 /// Actor of an operation. Agents carry model version, session, and sponsor.
@@ -95,7 +95,7 @@ impl fmt::Display for ActorField {
 pub enum ActorError {
     /// A field is empty or contains a character outside visible ASCII (U+0021 to U+007E, no
     /// space). Carries the field. With several invalid fields, the first in the order of
-    /// [`ActorField`] is reported.
+    /// the actor line is reported.
     InvalidField(ActorField),
 }
 
@@ -117,7 +117,7 @@ impl Error for ActorError {}
 #[non_exhaustive]
 pub enum ActorParseError {
     /// The line does not have the form of an actor line. Carries what is wrong with it. The form is
-    /// checked before the fields are; see the implementation of [`FromStr`] for [`Actor`].
+    /// checked before the fields are; see the order below.
     Malformed(&'static str),
     /// The line has the right form, but a field is rejected.
     Invalid(ActorError),
@@ -200,14 +200,17 @@ impl FromStr for Actor {
 impl fmt::Display for Actor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (label, fields) = self.0.fields();
-        let mut line = String::from(label);
+        f.write_str(label)?;
         for (field, value) in fields {
             match field {
-                ActorField::Id => write!(line, " {value}")?,
-                _ => write!(line, " {field}={value}")?,
+                ActorField::Id => write!(f, " {value}")?,
+                // Listed in full, so that a new field has to be decided here and in the reader.
+                ActorField::Model | ActorField::Session | ActorField::Sponsor => {
+                    write!(f, " {field}={value}")?
+                }
             }
         }
-        f.write_str(&line)
+        Ok(())
     }
 }
 
@@ -283,8 +286,10 @@ fn token_value<'a>(
 
 impl Repr {
     /// Returns the label and the fields, the identifier first. This is the single list from which
-    /// both the check of the fields and the actor line work, so a new field is always checked and
-    /// always written.
+    /// both the check of the fields and the writing of the actor line work, so a new field is
+    /// always checked and always written. The reader ([`FromStr`]), [`Actor::agent`] and
+    /// [`Actor::view`] are separate lists; the round-trip test catches a field that is missing
+    /// there.
     fn fields(&self) -> (&'static str, Vec<(ActorField, &str)>) {
         match self {
             Self::Human { id } => ("human", vec![(ActorField::Id, id)]),
@@ -400,15 +405,34 @@ mod tests {
 
     #[test]
     fn equal_actors_hash_alike_and_different_ones_are_kept_apart() {
-        use std::collections::HashSet;
-        let set: HashSet<Actor> = [
-            Actor::human("x").unwrap(),
-            Actor::human("x").unwrap(),
-            Actor::agent("x", "m", "s", "p").unwrap(),
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(set.len(), 2);
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        fn hash(actor: &Actor) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            actor.hash(&mut hasher);
+            hasher.finish()
+        }
+        let agent = Actor::agent("x", "m", "s", "p").unwrap();
+        assert_eq!(hash(&agent), hash(&agent.clone()));
+        let other = Actor::agent("x", "m", "s", "q").unwrap();
+        assert_ne!(hash(&agent), hash(&other));
+    }
+
+    #[test]
+    fn every_field_of_an_agent_is_written_and_read_back() {
+        let agent = Actor::agent("i", "m", "s", "p").unwrap();
+        let (_, fields) = agent.0.fields();
+        let names: Vec<_> = fields.iter().map(|(field, _)| field.name()).collect();
+        assert_eq!(names, ["id", "model", "session", "sponsor"]);
+        let line = agent.to_string();
+        for (field, value) in fields {
+            let token = match field {
+                ActorField::Id => format!(" {value}"),
+                _ => format!(" {field}={value}"),
+            };
+            assert!(line.contains(&token), "{line:?} lacks {token:?}");
+        }
+        assert_eq!(line.parse::<Actor>().as_ref(), Ok(&agent));
     }
 
     #[test]

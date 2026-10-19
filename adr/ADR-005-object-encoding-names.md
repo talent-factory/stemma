@@ -253,8 +253,8 @@ them.
       each `key=value` token at its first `=`, and checks the fields again with `Actor::human` and
       `Actor::agent`. A malformed line (`ActorParseError::Malformed`) is reported apart from a
       rejected field (`ActorParseError::Invalid`).
-- [x] Clean up the actor type. Done: the check and the actor line work from one list
-      (`Repr::fields`), `ActorError::InvalidField` carries an `ActorField` instead of a string, and
+- [x] Clean up the actor type. Done: the check and the writing of the actor line work from one
+      list (`Repr::fields`; the reader, `Actor::agent`, and `ActorRef` remain separate lists), `ActorError::InvalidField` carries an `ActorField` instead of a string, and
       `Actor` has `Hash` and `Display`; the commit encoding uses the `Display` form, which
       `FromStr` reads back. `ActorRef` stays as the public type to match on, because a borrowed
       view with public fields cannot come from the same list without indexing. No encoding and no
