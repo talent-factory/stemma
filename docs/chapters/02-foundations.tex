@@ -10,7 +10,7 @@ Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden. Es gi
 \externalfigure[images/objects.pdf][width=\textwidth]
 \stopplacefigure
 
-Stemma übernimmt dieses Modell und ändert drei Dinge. Die ID eines Objekts trägt den Algorithmus als Präfix (\type{b3:} für BLAKE3), damit später ein anderer Hash möglich bleibt. Jeder Commit nennt einen Akteur, einen Menschen oder einen Agenten mit Modell, Session und Sponsor. Einen Committer gibt es nicht. Die Leser sind streng: Was die Kodierung nicht geschrieben hätte, wird abgelehnt, damit jedes Objekt genau eine Kodierung und eine ID hat.
+Stemma übernimmt dieses Modell und ändert vier Dinge. Die ID eines Objekts trägt den Algorithmus als Präfix (\type{b3:} für BLAKE3), damit später ein anderer Hash möglich bleibt. Jeder Commit trägt eine Change-ID (\type{ch:} und 32 Hexziffern), die bei jedem Umschreiben gleich bleibt, damit ein Review oder ein Rebase \quotation{dieselbe Änderung} wiederfindet. Sie ist zufällig und wird nicht aus dem Inhalt abgeleitet. Jeder Commit nennt einen Akteur, einen Menschen oder einen Agenten mit Modell, Session und Sponsor. Einen Committer gibt es nicht. Die Leser sind streng: Was die Kodierung nicht geschrieben hätte, wird abgelehnt, damit jedes Objekt genau eine Kodierung und eine ID hat.
 
 \section{Referenzen}
 

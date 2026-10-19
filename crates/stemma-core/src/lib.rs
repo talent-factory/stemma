@@ -24,6 +24,7 @@
 //! inside. A program that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
+pub mod change;
 pub mod index;
 pub mod object;
 #[cfg(test)]

@@ -1090,6 +1090,7 @@ impl RefStore for FsRefStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::change::sample_change;
     use crate::object::{Blob, Commit, Tree};
     use crate::store::FsObjectStore;
     use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
@@ -1104,7 +1105,14 @@ mod tests {
     /// A commit in the store; the message makes it different from the others.
     fn commit(objects: &FsObjectStore, message: &str) -> CommitId {
         let tree = objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
-        let commit = Commit::new(tree, vec![], Actor::human("daniel").unwrap(), 0, message);
+        let commit = Commit::new(
+            tree,
+            vec![],
+            sample_change(),
+            Actor::human("daniel").unwrap(),
+            0,
+            message,
+        );
         objects.put_commit(&commit.unwrap()).unwrap()
     }
 
@@ -1448,6 +1456,7 @@ mod tests {
         let absent = Commit::new(
             objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap(),
             vec![],
+            sample_change(),
             Actor::human("daniel").unwrap(),
             0,
             "never stored",

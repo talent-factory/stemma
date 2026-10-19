@@ -233,13 +233,22 @@ impl Commit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::change::sample_change;
     use crate::object::{Blob, BlobId, CommitId, FileMode, TreeEntry, TreeId};
     use crate::store::FsObjectStore;
     use crate::testutil::{overwrite, TempDir};
     use crate::Actor;
 
     fn commit(tree: TreeId, parents: Vec<CommitId>) -> Commit {
-        Commit::new(tree, parents, Actor::human("daniel").unwrap(), 0, "m").unwrap()
+        Commit::new(
+            tree,
+            parents,
+            sample_change(),
+            Actor::human("daniel").unwrap(),
+            0,
+            "m",
+        )
+        .unwrap()
     }
 
     fn empty_tree(store: &FsObjectStore) -> TreeId {

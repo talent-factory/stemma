@@ -1,8 +1,8 @@
 //! Content-addressed objects: blobs, trees, and commits.
 //!
-//! Object IDs use BLAKE3 with the `b3:` prefix (ADR-001). Commits record their author as an
-//! [`Actor`] (ADR-002). ADR-005 records the decisions behind the rules for names, actor fields,
-//! timestamps, and versioning.
+//! Object IDs use BLAKE3 with the `b3:` prefix (ADR-001). Commits record their change ID
+//! ([`ChangeId`], ADR-010) and their author as an [`Actor`] (ADR-002). ADR-005 records the
+//! decisions behind the rules for names, actor fields, timestamps, change IDs, and versioning.
 //!
 //! The canonical encodings are defined in this module and pinned by the golden-vector tests at
 //! the end of this file. They are persistent formats: any change to them changes the ID of
@@ -23,6 +23,7 @@ use std::str::FromStr;
 
 use unicode_general_category::{get_general_category, GeneralCategory};
 
+use crate::change::{ChangeId, ChangeIdParseError};
 use crate::{Actor, ActorParseError};
 
 /// Algorithm prefix of BLAKE3 object IDs (ADR-001).
@@ -876,7 +877,10 @@ impl fmt::Display for CommitError {
 
 impl Error for CommitError {}
 
-/// A snapshot of a tree with its parents, its author, and a message.
+/// A snapshot of a tree with its parents, its change ID, its author, and a message.
+///
+/// The change ID names the change that the commit is a state of (ADR-010). A rewrite of the
+/// commit is a new commit with a new ID and the same change ID.
 ///
 /// The timestamp is the time the author claims, in seconds since the Unix epoch (UTC). It is
 /// self-reported and proves nothing; only signatures make it trustworthy (ADR-003, ADR-004).
@@ -885,6 +889,7 @@ impl Error for CommitError {}
 pub struct Commit {
     tree: TreeId,
     parents: Vec<CommitId>,
+    change: ChangeId,
     author: Actor,
     timestamp: i64,
     message: String,
@@ -902,6 +907,7 @@ impl Commit {
     pub fn new(
         tree: TreeId,
         parents: Vec<CommitId>,
+        change: ChangeId,
         author: Actor,
         timestamp: i64,
         message: impl Into<String>,
@@ -915,6 +921,7 @@ impl Commit {
         Ok(Self {
             tree,
             parents,
+            change,
             author,
             timestamp,
             message: message.into(),
@@ -929,6 +936,11 @@ impl Commit {
     /// Returns the parents in the order given at creation.
     pub fn parents(&self) -> &[CommitId] {
         &self.parents
+    }
+
+    /// Returns the change ID, which a rewrite of the commit keeps.
+    pub fn change(&self) -> ChangeId {
+        self.change
     }
 
     /// Returns the author.
@@ -947,7 +959,8 @@ impl Commit {
     }
 
     /// Returns the canonical encoding: the headers `tree <id>`, zero or more `parent <id>`,
-    /// `author <actor line>`, and `time <seconds>`, in this order and each on its own line, then
+    /// `change <change ID>`, `author <actor line>`, and `time <seconds>`, in this order and each on
+    /// its own line, then
     /// a blank line, then the message verbatim, with nothing appended. IDs are in textual
     /// form, the seconds are a decimal integer without a plus sign or leading zeros, and the
     /// actor line is the [`Display`](std::fmt::Display) form of [`Actor`].
@@ -956,6 +969,7 @@ impl Commit {
         for parent in &self.parents {
             out.push_str(&format!("parent {parent}\n"));
         }
+        out.push_str(&format!("change {}\n", self.change));
         out.push_str(&format!("author {}\n", self.author));
         out.push_str(&format!("time {}\n", self.timestamp));
         out.push('\n');
@@ -986,6 +1000,13 @@ pub enum CommitParseError {
         line: usize,
         /// What is wrong with it.
         reason: CommitMalformed,
+    },
+    /// The change ID is not in canonical form.
+    InvalidChangeId {
+        /// Number of the line.
+        line: usize,
+        /// Why the change ID is invalid.
+        source: ChangeIdParseError,
     },
     /// An object ID is not in canonical form.
     InvalidObjectId {
@@ -1035,6 +1056,9 @@ impl fmt::Display for CommitParseError {
             Self::InvalidObjectId { line, source } => {
                 write!(f, "line {line}: invalid object ID: {source}")
             }
+            Self::InvalidChangeId { line, source } => {
+                write!(f, "line {line}: invalid change ID: {source}")
+            }
             Self::InvalidTime { line, reason } => write!(f, "line {line}: {reason}"),
             Self::InvalidAuthor { line, source } => write!(f, "line {line}: {source}"),
             Self::DuplicateParent { line, id } => {
@@ -1051,6 +1075,7 @@ impl Error for CommitParseError {
             // The message of each variant includes the message of the cause, so the source is the
             // cause of the cause (see the crate documentation).
             Self::InvalidObjectId { source, .. } => source.source(),
+            Self::InvalidChangeId { source, .. } => source.source(),
             Self::InvalidTime { reason, .. } => reason.source(),
             Self::InvalidAuthor { source, .. } => source.source(),
             Self::Commit(source) => source.source(),
@@ -1071,7 +1096,9 @@ pub enum CommitMalformed {
     CutOff,
     /// The first line is not the header `tree <id>`.
     ExpectedTree,
-    /// After the parents comes no header `author <actor>`.
+    /// After the parents comes no header `change <change ID>`.
+    ExpectedChange,
+    /// After the change ID comes no header `author <actor>`.
     ExpectedAuthor,
     /// After the author comes no header `time <seconds>`.
     ExpectedTime,
@@ -1084,6 +1111,7 @@ impl fmt::Display for CommitMalformed {
         f.write_str(match self {
             Self::CutOff => "the last line has no terminating newline",
             Self::ExpectedTree => "expected the header `tree <id>` first",
+            Self::ExpectedChange => "expected the header `change <change ID>`",
             Self::ExpectedAuthor => "expected the header `author <actor>`",
             Self::ExpectedTime => "expected the header `time <seconds>`",
             Self::ExpectedEmptyLine => "expected an empty line after the headers",
@@ -1164,7 +1192,7 @@ impl Commit {
     /// Reads the body of a commit, as [`encode`](Self::encode) writes it. The reader is strict, by
     /// the rule of ADR-005: it rejects everything that `encode` would not have written, so a commit
     /// has exactly one encoding and one ID, and `parse(bytes).encode() == bytes` for every
-    /// accepted input. The headers are `tree`, `parent` (zero or more), `author`, and `time`, in
+    /// accepted input. The headers are `tree`, `parent` (zero or more), `change`, `author`, and `time`, in
     /// this order and each once, then an empty line, then the message, which is kept verbatim.
     ///
     /// The kind of each ID is claimed by its header: a tree for `tree` and a commit for `parent`.
@@ -1176,7 +1204,7 @@ impl Commit {
     ///
     /// Returns an error for input that is not UTF-8, a header that is missing, repeated, unknown,
     /// or out of order, a last line without a newline, an object ID that is not in canonical form,
-    /// a parent that is listed twice, an author line that [`Actor::from_str`] rejects, a time that
+    /// a parent that is listed twice, a change ID that is not in canonical form, an author line that [`Actor::from_str`] rejects, a time that
     /// is not canonical or does not fit `i64`, and a missing empty line after the headers.
     ///
     /// The body is checked for UTF-8 as a whole first, so a byte that is not UTF-8 in the message
@@ -1198,9 +1226,9 @@ impl Commit {
 
         let mut parents = Vec::new();
         let mut seen = HashSet::new();
-        let author = loop {
+        let change = loop {
             line += 1;
-            let header = next_line(&mut rest, line, CommitMalformed::ExpectedAuthor)?;
+            let header = next_line(&mut rest, line, CommitMalformed::ExpectedChange)?;
             match header.strip_prefix("parent ") {
                 Some(id) => {
                     let id = CommitId::new(header_id(id, line)?);
@@ -1212,7 +1240,14 @@ impl Commit {
                 None => break header,
             }
         };
-        let author = author
+        let change = change
+            .strip_prefix("change ")
+            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedChange))?;
+        let change = ChangeId::from_str(change)
+            .map_err(|source| CommitParseError::InvalidChangeId { line, source })?;
+
+        line += 1;
+        let author = next_line(&mut rest, line, CommitMalformed::ExpectedAuthor)?
             .strip_prefix("author ")
             .ok_or_else(|| malformed(line, CommitMalformed::ExpectedAuthor))?;
         let author = Actor::from_str(author)
@@ -1233,31 +1268,35 @@ impl Commit {
             None if !rest.is_empty() => return Err(malformed(line, CommitMalformed::CutOff)),
             _ => return Err(malformed(line, CommitMalformed::ExpectedEmptyLine)),
         }
-        Commit::new(tree, parents, author, timestamp, rest).map_err(CommitParseError::Commit)
+        Commit::new(tree, parents, change, author, timestamp, rest)
+            .map_err(CommitParseError::Commit)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::change::sample_change;
 
     // Golden vectors. The body of each was assembled by hand as `<kind> <length>\0<body>` and
-    // hashed with `blake3::hash` in a throwaway program, not through this module. To check one,
+    // hashed with `blake3::hash` in a throwaway program, not through this module. The three commit
+    // vectors were computed again for the header `change` (ADR-010); the throwaway program first
+    // reproduced the old IDs from the old bodies. To check one,
     // rebuild the body from the expected encoding asserted in the tests below.
     const TIME: i64 = 1_700_000_000;
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
     const EMPTY_ID: &str = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65";
     const TREE_ID: &str = "b3:0eec8324e510a63821fcbfda90ce4ed54b01a4db9efd829f7440967808796eb6";
     const HUMAN_COMMIT_ID: &str =
-        "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
+        "b3:d221f31574b523400685c00329614d9423e230bb7385ecda8d75c77b44e357cc";
     const AGENT_COMMIT_ID: &str =
-        "b3:4feb2d73a2c706e33c2a71f6f03cbfb48f0a20b48567936fca293159e7e3b32c";
+        "b3:d3721150f29b3a10e7df78ea7cc5bb16e54d74f892aa39de8a0a90ee1affdb41";
     const EMPTY_TREE_ID: &str =
         "b3:06b8469ad46d7051ad63f82809ef66c6d738d08cc3f1a5c842f3d66c05f64cf7";
     const ALL_MODES_TREE_ID: &str =
         "b3:7550c6d417278c76a35d3399bd4d18fab9fac01132b48cc1825b52c287450d3a";
     const MERGE_COMMIT_ID: &str =
-        "b3:8cb48a697fe25a78eeb950e011e7dc9897e8216d13e21f3210db70ce2d9db3e8";
+        "b3:b5f2dfbf38c0dab83fb91b0fd94ea3e9e54fdbb1489a1d3fea2c3748f903e662";
 
     fn human() -> Actor {
         Actor::human("daniel").expect("valid actor")
@@ -1304,7 +1343,15 @@ mod tests {
     }
 
     fn commit(parents: Vec<CommitId>, author: Actor, message: &str) -> Commit {
-        Commit::new(empty_tree_id(), parents, author, TIME, message).expect("valid commit")
+        Commit::new(
+            empty_tree_id(),
+            parents,
+            sample_change(),
+            author,
+            TIME,
+            message,
+        )
+        .expect("valid commit")
     }
 
     // Object IDs
@@ -1774,13 +1821,14 @@ mod tests {
         let commit = Commit::new(
             tree_id_of(TREE_ID),
             vec![commit_id(EMPTY_ID)],
+            sample_change(),
             human(),
             TIME,
             "first change",
         )
         .expect("valid commit");
         let expected = format!(
-            "tree {TREE_ID}\nparent {EMPTY_ID}\nauthor human daniel\ntime 1700000000\n\nfirst change"
+            "tree {TREE_ID}\nparent {EMPTY_ID}\nchange {CHANGE}\nauthor human daniel\ntime 1700000000\n\nfirst change"
         );
         assert_eq!(commit.encode(), expected.as_bytes());
         assert_eq!(commit.id().to_string(), HUMAN_COMMIT_ID);
@@ -1788,10 +1836,17 @@ mod tests {
 
     #[test]
     fn agent_commit_encoding_and_id_match_golden_vectors() {
-        let commit =
-            Commit::new(tree_id_of(TREE_ID), vec![], agent(), TIME, "work").expect("valid commit");
+        let commit = Commit::new(
+            tree_id_of(TREE_ID),
+            vec![],
+            sample_change(),
+            agent(),
+            TIME,
+            "work",
+        )
+        .expect("valid commit");
         let expected = format!(
-            "tree {TREE_ID}\nauthor agent agent-1 model=claude-haiku-5-5 session=s1 sponsor=daniel\ntime 1700000000\n\nwork"
+            "tree {TREE_ID}\nchange {CHANGE}\nauthor agent agent-1 model=claude-haiku-5-5 session=s1 sponsor=daniel\ntime 1700000000\n\nwork"
         );
         assert_eq!(commit.encode(), expected.as_bytes());
         assert_eq!(commit.id().to_string(), AGENT_COMMIT_ID);
@@ -1802,13 +1857,14 @@ mod tests {
         let commit = Commit::new(
             tree_id_of(TREE_ID),
             vec![commit_id(HELLO_ID), commit_id(EMPTY_ID)],
+            sample_change(),
             human(),
             TIME,
             "merge",
         )
         .expect("valid commit");
         let expected = format!(
-            "tree {TREE_ID}\nparent {HELLO_ID}\nparent {EMPTY_ID}\nauthor human daniel\ntime 1700000000\n\nmerge"
+            "tree {TREE_ID}\nparent {HELLO_ID}\nparent {EMPTY_ID}\nchange {CHANGE}\nauthor human daniel\ntime 1700000000\n\nmerge"
         );
         assert_eq!(commit.encode(), expected.as_bytes());
         assert_eq!(commit.id().to_string(), MERGE_COMMIT_ID);
@@ -1817,7 +1873,8 @@ mod tests {
     #[test]
     fn timestamp_is_part_of_the_id_and_written_as_a_plain_decimal() {
         let at = |time: i64| {
-            Commit::new(empty_tree_id(), vec![], human(), time, "m").expect("valid commit")
+            Commit::new(empty_tree_id(), vec![], sample_change(), human(), time, "m")
+                .expect("valid commit")
         };
         assert_ne!(at(1).id(), at(2).id());
         for (time, text) in [
@@ -1835,7 +1892,45 @@ mod tests {
     }
 
     #[test]
-    fn headers_come_in_the_fixed_order_tree_parent_author_time() {
+    fn the_change_id_is_part_of_the_commit_and_of_its_id() {
+        let other = ChangeId::from_bytes([7; 16]);
+        let make = |change: ChangeId| {
+            Commit::new(empty_tree_id(), vec![], change, human(), TIME, "m").expect("valid commit")
+        };
+        let (first, second) = (make(sample_change()), make(other));
+        assert_eq!(first.change(), sample_change());
+        assert_eq!(second.change(), other);
+        // The change ID is not derived from the content: the same change ID in two commits that
+        // differ in the tree is one change, and two change IDs for the same content are two.
+        assert_ne!(first.id(), second.id());
+        assert_eq!(first.id(), make(sample_change()).id());
+        let rewritten = Commit::new(
+            tree_id_of(TREE_ID),
+            vec![first.id()],
+            first.change(),
+            human(),
+            TIME + 1,
+            "m",
+        )
+        .expect("valid commit");
+        assert_ne!(rewritten.id(), first.id());
+        assert_eq!(rewritten.change(), first.change());
+    }
+
+    #[test]
+    fn a_change_id_is_read_back_whatever_its_value() {
+        for bytes in [[0u8; 16], [0xff; 16], [0x5a; 16]] {
+            let change = ChangeId::from_bytes(bytes);
+            let commit =
+                Commit::new(empty_tree_id(), vec![], change, human(), TIME, "m").expect("valid");
+            let read = Commit::parse(&commit.encode()).expect("canonical");
+            assert_eq!(read.change(), change);
+            assert_eq!(read, commit);
+        }
+    }
+
+    #[test]
+    fn headers_come_in_the_fixed_order_tree_parent_change_author_time() {
         let c = commit(vec![commit_id(HELLO_ID)], human(), "m");
         let text = String::from_utf8(c.encode()).expect("encoding is UTF-8");
         let order: Vec<&str> = text
@@ -1845,7 +1940,7 @@ mod tests {
             .lines()
             .map(|line| line.split(' ').next().expect("every line has a key"))
             .collect();
-        assert_eq!(order, ["tree", "parent", "author", "time"]);
+        assert_eq!(order, ["tree", "parent", "change", "author", "time"]);
     }
 
     #[test]
@@ -1907,6 +2002,7 @@ mod tests {
         let result = Commit::new(
             empty_tree_id(),
             vec![p, commit_id(EMPTY_ID), p],
+            sample_change(),
             human(),
             TIME,
             "m",
@@ -1921,8 +2017,15 @@ mod tests {
     #[test]
     fn commit_exposes_its_fields() {
         let tree = empty_tree_id();
-        let c = Commit::new(tree, vec![commit_id(HELLO_ID)], agent(), TIME, "msg")
-            .expect("valid commit");
+        let c = Commit::new(
+            tree,
+            vec![commit_id(HELLO_ID)],
+            sample_change(),
+            agent(),
+            TIME,
+            "msg",
+        )
+        .expect("valid commit");
         assert_eq!(c.tree(), tree);
         assert_eq!(c.parents(), [commit_id(HELLO_ID)]);
         assert_eq!(c.author(), &agent());
@@ -2342,12 +2445,28 @@ mod tests {
         assert!(accepted.contains(&with_replaced(&golden, "b3:9db8", "b3:9db0")));
         assert!(accepted.contains(&with_replaced(&golden, "a.txt\n", "a.txt\u{e9}\n")));
     }
+    /// The change ID that the helpers and the golden vectors use.
+    const CHANGE: &str = "ch:00112233445566778899aabbccddeeff";
+
     fn commit_bytes(tree: &str, parents: &[&str], author: &str, time: &str, rest: &str) -> Vec<u8> {
+        commit_bytes_with_change(tree, parents, CHANGE, author, time, rest)
+    }
+
+    fn commit_bytes_with_change(
+        tree: &str,
+        parents: &[&str],
+        change: &str,
+        author: &str,
+        time: &str,
+        rest: &str,
+    ) -> Vec<u8> {
         let mut text = format!("tree {tree}\n");
         for parent in parents {
             text.push_str(&format!("parent {parent}\n"));
         }
-        text.push_str(&format!("author {author}\ntime {time}\n{rest}"));
+        text.push_str(&format!(
+            "change {change}\nauthor {author}\ntime {time}\n{rest}"
+        ));
         text.into_bytes()
     }
 
@@ -2357,7 +2476,15 @@ mod tests {
 
     fn all_commits() -> Vec<Commit> {
         let message = |text: &str, parents: Vec<CommitId>, author: Actor, time: i64| {
-            Commit::new(tree_id_of(TREE_ID), parents, author, time, text).expect("valid commit")
+            Commit::new(
+                tree_id_of(TREE_ID),
+                parents,
+                sample_change(),
+                author,
+                time,
+                text,
+            )
+            .expect("valid commit")
         };
         vec![
             message("", vec![], human(), 0),
@@ -2423,31 +2550,32 @@ mod tests {
         malformed_at(format!("tree {tree}\ntime 1\n\n").into_bytes(), 2);
         malformed_at(format!("tree {tree}\ncommitter {human}\n").into_bytes(), 2);
         malformed_at(
-            format!("tree {tree}\nauthor {human}\nparent {parent}\n").into_bytes(),
-            3,
+            format!("tree {tree}\nchange {CHANGE}\nauthor {human}\nparent {parent}\n").into_bytes(),
+            4,
         );
         malformed_at(
-            format!("tree {tree}\nauthor {human}\nauthor {human}\n").into_bytes(),
-            3,
+            format!("tree {tree}\nchange {CHANGE}\nauthor {human}\nauthor {human}\n").into_bytes(),
+            4,
         );
         // A second space after the header name is part of the ID, which is then not canonical.
-        let spaced = format!("tree  {tree}\nauthor {human}\ntime 1\n\n").into_bytes();
+        let spaced =
+            format!("tree  {tree}\nchange {CHANGE}\nauthor {human}\ntime 1\n\n").into_bytes();
         assert!(matches!(
             error(spaced),
             CommitParseError::InvalidObjectId { line: 1, .. }
         ));
         malformed_at(
-            format!("tree {tree}\nauthor {human}\ntime 1").into_bytes(),
-            3,
+            format!("tree {tree}\nchange {CHANGE}\nauthor {human}\ntime 1").into_bytes(),
+            4,
         );
         // The empty line after the headers.
         malformed_at(
-            format!("tree {tree}\nauthor {human}\ntime 1\n").into_bytes(),
-            4,
+            format!("tree {tree}\nchange {CHANGE}\nauthor {human}\ntime 1\n").into_bytes(),
+            5,
         );
         malformed_at(
-            format!("tree {tree}\nauthor {human}\ntime 1\nmessage").into_bytes(),
-            4,
+            format!("tree {tree}\nchange {CHANGE}\nauthor {human}\ntime 1\nmessage").into_bytes(),
+            5,
         );
         // Time: only the canonical decimal form that fits i64.
         for time in [
@@ -2469,8 +2597,8 @@ mod tests {
             "99999999999999999999",
         ] {
             match error(commit_bytes(tree, &[], human, time, "\n")) {
-                CommitParseError::InvalidTime { line: 3, .. } => {}
-                other => panic!("time {time:?} is not an invalid time at line 3: {other}"),
+                CommitParseError::InvalidTime { line: 4, .. } => {}
+                other => panic!("time {time:?} is not an invalid time at line 4: {other}"),
             }
         }
         for time in ["0", "-1", "9223372036854775807", "-9223372036854775808"] {
@@ -2492,6 +2620,47 @@ mod tests {
             error(carriage),
             CommitParseError::InvalidObjectId { line: 1, .. }
         ));
+        // The change ID, with the line of the header: a missing header, and every bad form.
+        malformed_at(
+            format!("tree {tree}\nauthor {human}\ntime 1\n\n").into_bytes(),
+            2,
+        );
+        malformed_at(
+            format!("tree {tree}\nchange {CHANGE}\nchange {CHANGE}\n").into_bytes(),
+            3,
+        );
+        malformed_at(
+            format!("tree {tree}\nchange {CHANGE}\nparent {parent}\nauthor {human}\n").into_bytes(),
+            3,
+        );
+        for change in [
+            "",
+            "ch:",
+            "CH:00112233445566778899aabbccddeeff",
+            "00112233445566778899aabbccddeeff",
+            "ch:00112233445566778899AABBCCDDEEFF",
+            "ch:00112233445566778899aabbccddee",
+            "ch:00112233445566778899aabbccddeeff00",
+            "ch: 0112233445566778899aabbccddeeff",
+            "ch:00112233445566778899aabbccddeeff ",
+            "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad",
+        ] {
+            let bytes = commit_bytes_with_change(tree, &[], change, human, "1", "\n");
+            assert!(
+                matches!(
+                    error(bytes),
+                    CommitParseError::InvalidChangeId { line: 2, .. }
+                ),
+                "change {change:?}"
+            );
+        }
+        // A second space after the header name is part of the change ID, which is then not
+        // canonical.
+        let spaced = format!("tree {tree}\nchange  {CHANGE}\nauthor {human}\ntime 1\n\n");
+        assert!(matches!(
+            error(spaced.into_bytes()),
+            CommitParseError::InvalidChangeId { line: 2, .. }
+        ));
         // The author line: the form and the fields.
         for author in [
             "",
@@ -2505,7 +2674,7 @@ mod tests {
             assert!(
                 matches!(
                     error(bytes),
-                    CommitParseError::InvalidAuthor { line: 2, .. }
+                    CommitParseError::InvalidAuthor { line: 3, .. }
                 ),
                 "author {author:?}"
             );
@@ -2526,14 +2695,29 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .starts_with("line 2: malformed actor line"),
+                .starts_with("line 3: malformed actor line"),
             "{error}"
         );
         assert!(error.source().is_none());
         let error = Commit::parse(&commit_bytes(TREE_ID, &[], "human d", "01", "\n")).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "line 3: the time is not a canonical decimal integer of seconds"
+            "line 4: the time is not a canonical decimal integer of seconds"
+        );
+        assert!(error.source().is_none());
+        let error = Commit::parse(&commit_bytes_with_change(
+            TREE_ID,
+            &[],
+            "ch:xyz",
+            "human d",
+            "1",
+            "\n",
+        ))
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "line 2: invalid change ID: a change ID has 32 hexadecimal digits after the prefix, \
+             not 3"
         );
         assert!(error.source().is_none());
     }
@@ -2628,18 +2812,23 @@ mod tests {
     fn every_commit_error_has_a_stable_message_and_no_repeated_source() {
         let t = TREE_ID;
         let id_error = "b3:00".parse::<ObjectId>().unwrap_err();
-        let cases: [(Vec<u8>, String); 6] = [
+        let change_error = "ch:00".parse::<ChangeId>().unwrap_err();
+        let cases: [(Vec<u8>, String); 7] = [
             (
                 b"tree x\n\xff".to_vec(),
                 "the commit is not valid UTF-8 (valid up to byte 7)".to_owned(),
             ),
             (
                 commit_bytes(t, &[], "human d", "+1", "\n"),
-                format!("line 3: {}", TimeError::NotCanonical),
+                format!("line 4: {}", TimeError::NotCanonical),
             ),
             (
                 commit_bytes(t, &[], "human d", "9223372036854775808", "\n"),
-                format!("line 3: {}", TimeError::OutOfRange),
+                format!("line 4: {}", TimeError::OutOfRange),
+            ),
+            (
+                commit_bytes_with_change(t, &[], "ch:00", "human d", "1", "\n"),
+                format!("line 2: invalid change ID: {change_error}"),
             ),
             (
                 commit_bytes("b3:00", &[], "human d", "1", "\n"),
@@ -2647,7 +2836,7 @@ mod tests {
             ),
             (
                 commit_bytes(t, &[], "robot x", "1", "\n"),
-                "line 2: malformed actor line: an actor line starts with `human` or `agent`"
+                "line 3: malformed actor line: an actor line starts with `human` or `agent`"
                     .to_owned(),
             ),
             (
@@ -2817,6 +3006,7 @@ mod tests {
         let at = |bytes: Vec<u8>| match Commit::parse(&bytes).unwrap_err() {
             CommitParseError::Malformed { line, reason } => ("malformed", line, Some(reason)),
             CommitParseError::InvalidObjectId { line, .. } => ("id", line, None),
+            CommitParseError::InvalidChangeId { line, .. } => ("change", line, None),
             CommitParseError::InvalidTime { line, .. } => ("time", line, None),
             CommitParseError::InvalidAuthor { line, .. } => ("author", line, None),
             CommitParseError::DuplicateParent { line, .. } => ("duplicate", line, None),
@@ -2828,24 +3018,36 @@ mod tests {
             at(commit_bytes(t, &[p, q, p], "robot x", "+1", "x")),
             ("duplicate", 4, None)
         );
-        // With two parents the author is on line 4, the time on line 5, the empty line on line 6.
+        // With two parents the change is on line 4, the author on line 5, the time on line 6, and
+        // the empty line on line 7.
+        assert_eq!(
+            at(commit_bytes_with_change(
+                t,
+                &[p, q],
+                "ch:x",
+                "robot x",
+                "+1",
+                "\n"
+            )),
+            ("change", 4, None)
+        );
         assert_eq!(
             at(commit_bytes(t, &[p, q], "robot x", "1", "\n")),
-            ("author", 4, None)
+            ("author", 5, None)
         );
         assert_eq!(
             at(commit_bytes(t, &[p, q], human, "+1", "\n")),
-            ("time", 5, None)
+            ("time", 6, None)
         );
         // Where the empty line is expected, a last line without a newline is cut off, as in a
         // header, and a complete line that is not empty is the wrong line.
         assert_eq!(
             at(commit_bytes(t, &[p, q], human, "1", "x")),
-            ("malformed", 6, Some(CommitMalformed::CutOff))
+            ("malformed", 7, Some(CommitMalformed::CutOff))
         );
         assert_eq!(
-            at(format!("tree {t}\nauthor {human}\ntime 1\nx\n").into_bytes()),
-            ("malformed", 4, Some(CommitMalformed::ExpectedEmptyLine))
+            at(format!("tree {t}\nchange {CHANGE}\nauthor {human}\ntime 1\nx\n").into_bytes()),
+            ("malformed", 5, Some(CommitMalformed::ExpectedEmptyLine))
         );
         // Headers that are missing, repeated, or out of order.
         assert_eq!(
@@ -2858,29 +3060,44 @@ mod tests {
         );
         assert_eq!(
             at(format!("tree {t}\ntime 1\nauthor {human}\n").into_bytes()),
-            ("malformed", 2, Some(CommitMalformed::ExpectedAuthor))
+            ("malformed", 2, Some(CommitMalformed::ExpectedChange))
         );
         assert_eq!(
-            at(format!("tree {t}\nauthor {human}\ntime 1\ntime 1\n\n").into_bytes()),
-            ("malformed", 4, Some(CommitMalformed::ExpectedEmptyLine))
+            at(format!("tree {t}\nauthor {human}\ntime 1\n\n").into_bytes()),
+            ("malformed", 2, Some(CommitMalformed::ExpectedChange))
         );
-        // A third line that is not the time header, as against a time header that is missing.
         assert_eq!(
-            at(format!("tree {t}\nauthor {human}\nfoo 1\n\n").into_bytes()),
-            ("malformed", 3, Some(CommitMalformed::ExpectedTime))
+            at(format!("tree {t}\nchange {CHANGE}\ntime 1\nauthor {human}\n").into_bytes()),
+            ("malformed", 3, Some(CommitMalformed::ExpectedAuthor))
+        );
+        assert_eq!(
+            at(
+                format!("tree {t}\nchange {CHANGE}\nauthor {human}\ntime 1\ntime 1\n\n")
+                    .into_bytes()
+            ),
+            ("malformed", 5, Some(CommitMalformed::ExpectedEmptyLine))
+        );
+        // A line that is not the time header, as against a time header that is missing.
+        assert_eq!(
+            at(format!("tree {t}\nchange {CHANGE}\nauthor {human}\nfoo 1\n\n").into_bytes()),
+            ("malformed", 4, Some(CommitMalformed::ExpectedTime))
         );
         // A header that is missing at the end of the input, line by line.
         assert_eq!(
             at(format!("tree {t}\n").into_bytes()),
-            ("malformed", 2, Some(CommitMalformed::ExpectedAuthor))
+            ("malformed", 2, Some(CommitMalformed::ExpectedChange))
         );
         assert_eq!(
-            at(format!("tree {t}\nauthor {human}\n").into_bytes()),
-            ("malformed", 3, Some(CommitMalformed::ExpectedTime))
+            at(format!("tree {t}\nchange {CHANGE}\n").into_bytes()),
+            ("malformed", 3, Some(CommitMalformed::ExpectedAuthor))
         );
         assert_eq!(
-            at(format!("tree {t}\nauthor {human}\ntime 1\n").into_bytes()),
-            ("malformed", 4, Some(CommitMalformed::ExpectedEmptyLine))
+            at(format!("tree {t}\nchange {CHANGE}\nauthor {human}\n").into_bytes()),
+            ("malformed", 4, Some(CommitMalformed::ExpectedTime))
+        );
+        assert_eq!(
+            at(format!("tree {t}\nchange {CHANGE}\nauthor {human}\ntime 1\n").into_bytes()),
+            ("malformed", 5, Some(CommitMalformed::ExpectedEmptyLine))
         );
         // UTF-8 is checked for the whole body first.
         assert_eq!(at(b"robot\n\xff".to_vec()), ("utf8", 0, None));
@@ -2904,8 +3121,16 @@ mod tests {
         cut_off_at(format!("tree {t}"), 1);
         cut_off_at(format!("tree {t}\nparent {p}"), 2);
         cut_off_at(format!("tree {t}\nauthor {human}"), 2);
-        cut_off_at(format!("tree {t}\nauthor {human}\ntime 5"), 3);
-        cut_off_at(format!("tree {t}\nparent {p}\nauthor {human}\ntime 5"), 4);
+        cut_off_at(format!("tree {t}\nchange {CHANGE}"), 2);
+        cut_off_at(format!("tree {t}\nchange {CHANGE}\nauthor {human}"), 3);
+        cut_off_at(
+            format!("tree {t}\nchange {CHANGE}\nauthor {human}\ntime 5"),
+            4,
+        );
+        cut_off_at(
+            format!("tree {t}\nparent {p}\nchange {CHANGE}\nauthor {human}\ntime 5"),
+            5,
+        );
     }
 
     #[test]
@@ -2919,7 +3144,7 @@ mod tests {
         ))
         .unwrap_err()
         {
-            CommitParseError::InvalidTime { line: 3, reason } => reason,
+            CommitParseError::InvalidTime { line: 4, reason } => reason,
             other => panic!("unexpected error for {time:?}: {other}"),
         };
         for time in [

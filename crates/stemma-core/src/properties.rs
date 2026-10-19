@@ -20,6 +20,7 @@
 use std::error::Error;
 use std::io;
 
+use crate::change::{sample_change, ChangeId};
 use crate::index::{FileMode, Index, IndexParseError};
 use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
@@ -301,13 +302,28 @@ fn random_actor(rng: &mut Rng) -> Actor {
     }
 }
 
+fn random_change(rng: &mut Rng) -> ChangeId {
+    let mut bytes = [0u8; 16];
+    for chunk in bytes.chunks_mut(8) {
+        chunk.copy_from_slice(&rng.next().to_le_bytes()[..chunk.len()]);
+    }
+    ChangeId::from_bytes(bytes)
+}
+
 fn random_commit(rng: &mut Rng) -> Commit {
     let tree: TreeId = random_tree(rng).id();
     let mut parents: Vec<CommitId> = Vec::new();
     for n in 0..rng.below(4) {
-        let parent = Commit::new(tree, vec![], random_actor(rng), n as i64, format!("p{n}"))
-            .expect("no parents")
-            .id();
+        let parent = Commit::new(
+            tree,
+            vec![],
+            sample_change(),
+            random_actor(rng),
+            n as i64,
+            format!("p{n}"),
+        )
+        .expect("no parents")
+        .id();
         if !parents.contains(&parent) {
             parents.push(parent);
         }
@@ -321,7 +337,15 @@ fn random_commit(rng: &mut Rng) -> Commit {
         }
         message
     };
-    Commit::new(tree, parents, random_actor(rng), time, message).expect("distinct parents")
+    Commit::new(
+        tree,
+        parents,
+        random_change(rng),
+        random_actor(rng),
+        time,
+        message,
+    )
+    .expect("distinct parents")
 }
 
 /// A branch name made of a few parts, some of them invalid; the names that the rule rejects are
@@ -631,6 +655,7 @@ fn commit_line(error: &CommitParseError) -> Option<usize> {
         CommitParseError::NotUtf8 { .. } | CommitParseError::Commit(_) => None,
         CommitParseError::Malformed { line, .. }
         | CommitParseError::InvalidObjectId { line, .. }
+        | CommitParseError::InvalidChangeId { line, .. }
         | CommitParseError::InvalidTime { line, .. }
         | CommitParseError::InvalidAuthor { line, .. }
         | CommitParseError::DuplicateParent { line, .. } => Some(*line),
@@ -961,7 +986,15 @@ fn every_error_that_wraps_another_prints_the_cause_once_and_goes_on_below_it() {
     let mut index = Index::new();
     index.insert("a", FileMode::File, blob).unwrap();
     let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
-    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
+    let commit = Commit::new(
+        empty,
+        vec![],
+        sample_change(),
+        Actor::human("daniel").unwrap(),
+        0,
+        "m",
+    )
+    .unwrap();
 
     let reading = FaultyStore::new(dir.store(), true, false);
     let writing = FaultyStore::new(dir.store(), false, true);
@@ -1015,7 +1048,15 @@ fn the_error_of_the_file_system_is_reached_through_every_wrapper() {
     let mut index = Index::new();
     index.insert("a", FileMode::File, blob).unwrap();
     let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
-    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
+    let commit = Commit::new(
+        empty,
+        vec![],
+        sample_change(),
+        Actor::human("daniel").unwrap(),
+        0,
+        "m",
+    )
+    .unwrap();
     let reading = FaultyStore::new(dir.store(), true, false);
     let writing = FaultyStore::new(dir.store(), false, true);
 

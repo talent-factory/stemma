@@ -106,6 +106,17 @@ them.
   own date. A rewrite, such as a rebase, a cherry-pick, or an amend, creates a new commit that
   keeps the author and the time of the original change. Who rewrote it, and when, is recorded in
   the local operation log and, for other readers, in the record of ref updates of a hub (ADR-003).
+- **Change ID** *(confirmed)*. A commit carries one change ID as the header `change <id>`, between
+  the parents and the author. It names the change that the commit is a state of and stays the same
+  through every rewrite (ADR-010), so a review or a rebase can follow it. It is random, not derived
+  from the content, so `Commit::new` takes it as an input and "the same inputs give the same ID"
+  still holds. The form is `ch:` and 32 lowercase hexadecimal digits (128 bits); the prefix keeps it
+  apart from an object ID (`b3:`). The rules of the strict reader apply: uppercase digits, another
+  length, and a missing prefix are rejected. **This changes the format of `commit` in place**, which
+  the rule below ("Format version") would answer with `commit2`. It is allowed once, because no
+  repository holds a commit: `commit` is not yet written by any command, and the version of the
+  code is 0.0.1. The golden vectors of the three commits were computed again for the new header.
+  From the first commit that a command writes, the rule applies again without an exception.
 - **Operation log** *(confirmed)*. The operation log is local. It is not an object of the repository
   and is not exchanged with the history. Three reasons: it keeps every earlier state reachable, so a
   secret that was committed by mistake could not be removed by rewriting; it holds local paths and
@@ -122,7 +133,7 @@ them.
 - **Strict reading.** A reader rejects what it does not recognize: an unknown or repeated header, a
   header out of order, a number with a plus sign, `-0`, or leading zeros, or any other non-canonical
   form. Otherwise one logical object could have several encodings and several IDs. The commit
-  headers are, in this order, `tree`, `parent` (zero or more), `author`, `time`. The index reader
+  headers are, in this order, `tree`, `parent` (zero or more), `change`, `author`, `time`. The index reader
   (see below), `Tree::parse`, and `Commit::parse` apply the rule, and the actor line of a commit is
   read by `Actor::from_str`. A test feeds changed copies of a canonical encoding to each of these
   three readers (every byte deleted, replaced, or inserted from a set of troublesome bytes, and

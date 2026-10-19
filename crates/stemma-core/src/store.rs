@@ -787,6 +787,7 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use crate::change::sample_change;
     use crate::object::{FileMode, TreeEntry};
     use crate::testutil::{overwrite, TempDir};
     use crate::Actor;
@@ -876,6 +877,7 @@ mod tests {
         let commit = Commit::new(
             TreeId::new(id(EMPTY_TREE_ID)),
             vec![],
+            sample_change(),
             author,
             1_700_000_000,
             "m",
@@ -957,7 +959,9 @@ mod tests {
         let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
         let author = Actor::human("daniel").unwrap();
         let commit = store
-            .put_commit(&Commit::new(tree, vec![], author, 1_700_000_000, "m").unwrap())
+            .put_commit(
+                &Commit::new(tree, vec![], sample_change(), author, 1_700_000_000, "m").unwrap(),
+            )
             .unwrap();
         let (blob_raw, tree_raw, commit_raw) = (
             ObjectId::from(blob),
@@ -1078,13 +1082,16 @@ mod tests {
         let commit = Commit::new(
             TreeId::new(id(EMPTY_TREE_ID)),
             vec![],
+            sample_change(),
             author,
             1_700_000_000,
             "m",
         )
         .unwrap();
         let stored = store.put_commit(&commit).unwrap();
-        let body = format!("tree {EMPTY_TREE_ID}\nauthor human daniel\ntime 1700000000\n\nm");
+        let body = format!(
+            "tree {EMPTY_TREE_ID}\nchange ch:00112233445566778899aabbccddeeff\nauthor human daniel\ntime 1700000000\n\nm"
+        );
         let content = format!("commit {}\0{body}", body.len());
         // The ID is the hash of the file content, computed here without the code under test.
         assert_eq!(stored, CommitId::new(id_of(content.as_bytes())));
@@ -1686,12 +1693,20 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
-        let parent = Commit::new(tree, vec![], author(), 1, "first").unwrap();
+        let parent = Commit::new(tree, vec![], sample_change(), author(), 1, "first").unwrap();
         let parent_id = store.put_commit(&parent).unwrap();
-        let commit = Commit::new(tree, vec![parent_id], author(), 2, "second\n\nbody").unwrap();
+        let commit = Commit::new(
+            tree,
+            vec![parent_id],
+            sample_change(),
+            author(),
+            2,
+            "second\n\nbody",
+        )
+        .unwrap();
         let stored = store.put_commit(&commit).unwrap();
         assert_eq!(store.get_commit(&stored).unwrap(), Some(commit.clone()));
-        let absent = Commit::new(tree, vec![stored], author(), 3, "x")
+        let absent = Commit::new(tree, vec![stored], sample_change(), author(), 3, "x")
             .unwrap()
             .id();
         assert_eq!(store.get_commit(&absent).unwrap(), None);
@@ -1741,7 +1756,7 @@ mod tests {
         let store = dir.store();
         let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
         let commit = store
-            .put_commit(&Commit::new(tree, vec![], author(), 1, "m").unwrap())
+            .put_commit(&Commit::new(tree, vec![], sample_change(), author(), 1, "m").unwrap())
             .unwrap();
         overwrite(&store.object_path(&ObjectId::from(tree)), b"tree 1\0x");
         overwrite(&store.object_path(&ObjectId::from(commit)), b"commit 1\0x");
@@ -1833,10 +1848,18 @@ mod tests {
         assert_eq!(store.get_tree(&tree_id).unwrap(), Some(tree));
         let mut parents = Vec::new();
         for n in 0..5 {
-            let parent = Commit::new(empty_id, vec![], author(), n, format!("p{n}")).unwrap();
+            let parent = Commit::new(
+                empty_id,
+                vec![],
+                sample_change(),
+                author(),
+                n,
+                format!("p{n}"),
+            )
+            .unwrap();
             parents.push(store.put_commit(&parent).unwrap());
         }
-        let commit = Commit::new(tree_id, parents, author(), 9, "merge").unwrap();
+        let commit = Commit::new(tree_id, parents, sample_change(), author(), 9, "merge").unwrap();
         let commit_id = store.put_commit(&commit).unwrap();
         assert_eq!(store.get_commit(&commit_id).unwrap(), Some(commit));
     }
