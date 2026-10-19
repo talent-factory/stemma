@@ -23,6 +23,15 @@ All routine tasks run through `just` (see `justfile`, list with `just`):
 - Create commits with the `git-workflow:professional-commit-workflow` skill (`/git-workflow:professional-commit-workflow`).
 - Never add `Claude-Session:` lines (or any other link to a session transcript) to commit messages or PR descriptions. The link points to a full conversation transcript and does not belong in a permanent, potentially public history. Remove such lines if a tool adds them.
 
+## Book alongside the code
+
+The book (`docs/`) is developed in step with the implementation, not after it.
+
+- A slice that changes behaviour, a format, or a decision described in a chapter updates that chapter in the same PR. If the update is larger than the slice, the PR links a Plane issue with the `docs` label instead.
+- A new or changed ADR is reflected in the chapter that covers its topic.
+- Figures are kept as SVG sources and converted for the book; see the figure issue in Plane.
+- Run `just book` whenever a chapter changes. Tick the book item in the PR template, or state why it does not apply.
+
 ## ConTeXt
 
 The book uses ConTeXt MkIV, not LaTeX. Use `{\bf ...}` instead of `\textbf`, and `\startxtable` instead of `\starttable`.
