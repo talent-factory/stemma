@@ -10,8 +10,8 @@
 //!
 //! The encodings described here are version 1. An incompatible change must not reuse an object
 //! kind name: it introduces a new one (for example `commit2`) together with an ADR, so that
-//! old and new objects can exist side by side. A future reader has to reject what it does not
-//! recognize (ADR-005); this module only writes encodings and has no reader yet.
+//! old and new objects can exist side by side. The readers [`Tree::parse`] and [`Commit::parse`]
+//! reject what they do not recognize (ADR-005), so that an object has one encoding and one ID.
 
 use std::error::Error;
 use std::fmt;
@@ -19,7 +19,7 @@ use std::str::FromStr;
 
 use unicode_general_category::{get_general_category, GeneralCategory};
 
-use crate::Actor;
+use crate::{Actor, ActorParseError};
 
 /// Algorithm prefix of BLAKE3 object IDs (ADR-001).
 const PREFIX: &str = "b3:";
@@ -647,6 +647,166 @@ impl Tree {
     }
 }
 
+/// Why the body of a tree is rejected by [`Tree::parse`]. Line numbers count from 1; an entry takes
+/// two lines, the mode and name first and the ID second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TreeParseError {
+    /// The body is not valid UTF-8. Names are UTF-8 and the rest is ASCII.
+    NotUtf8 {
+        /// Length of the longest valid prefix, in bytes.
+        valid_up_to: usize,
+    },
+    /// A line does not have the form of the encoding, or the body does not end with a newline.
+    Malformed {
+        /// Number of the line.
+        line: usize,
+        /// What is wrong with it.
+        reason: &'static str,
+    },
+    /// The mode is not one of the four canonical codes.
+    UnknownMode {
+        /// Number of the line.
+        line: usize,
+        /// The mode as written.
+        code: String,
+    },
+    /// The object ID is not in canonical form.
+    InvalidObjectId {
+        /// Number of the line with the ID.
+        line: usize,
+        /// Why the ID is invalid.
+        source: ObjectIdParseError,
+    },
+    /// The name is rejected by the naming rules.
+    Entry {
+        /// Number of the line with the mode and the name.
+        line: usize,
+        /// Why the entry was rejected.
+        source: TreeError,
+    },
+    /// The name is not greater than the name before it. A duplicate is also reported this way.
+    OutOfOrder {
+        /// Number of the line with the mode and the name.
+        line: usize,
+        /// The name of the entry before.
+        previous: String,
+        /// The name of this entry.
+        name: String,
+    },
+}
+
+impl fmt::Display for TreeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotUtf8 { valid_up_to } => {
+                write!(
+                    f,
+                    "the tree is not valid UTF-8 (valid up to byte {valid_up_to})"
+                )
+            }
+            Self::Malformed { line, reason } => write!(f, "line {line}: {reason}"),
+            Self::UnknownMode { line, code } => {
+                write!(f, "line {line}: unknown mode `{}`", code.escape_debug())
+            }
+            Self::InvalidObjectId { line, source } => {
+                write!(f, "line {line}: invalid object ID: {source}")
+            }
+            Self::Entry { line, source } => write!(f, "line {line}: {source}"),
+            Self::OutOfOrder {
+                line,
+                previous,
+                name,
+            } => write!(
+                f,
+                "line {line}: `{}` does not sort after `{}`; names must be strictly ascending",
+                name.escape_debug(),
+                previous.escape_debug()
+            ),
+        }
+    }
+}
+
+impl Error for TreeParseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidObjectId { source, .. } => Some(source),
+            Self::Entry { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl Tree {
+    /// Reads the body of a tree, as [`encode`](Self::encode) writes it. The reader is strict, by
+    /// the rule of ADR-005: it rejects everything that `encode` would not have written, so a tree
+    /// has exactly one encoding and one ID, and `parse(bytes).encode() == bytes` for every
+    /// accepted input.
+    ///
+    /// The kind of each ID is claimed by the mode: a blob for a file or a symbolic link and a tree
+    /// for a directory. Nothing has asked a store; follow an ID with
+    /// [`ObjectStore::resolve_blob`](crate::store::ObjectStore::resolve_blob) or
+    /// [`resolve_tree`](crate::store::ObjectStore::resolve_tree) before relying on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for input that is not UTF-8, a body that does not end with a newline, a
+    /// line without the shape `<mode> <name>` or an entry without its ID line, an unknown mode, an
+    /// object ID that is not in canonical form, a name that the naming rules reject, and names that
+    /// are not in strictly ascending order (which also rules out duplicates). A line with several
+    /// problems reports the first in this order: shape, mode, ID, name rules, then the order.
+    pub fn parse(bytes: &[u8]) -> Result<Self, TreeParseError> {
+        let text = std::str::from_utf8(bytes).map_err(|error| TreeParseError::NotUtf8 {
+            valid_up_to: error.valid_up_to(),
+        })?;
+        if !text.is_empty() && !text.ends_with('\n') {
+            return Err(TreeParseError::Malformed {
+                line: text.split('\n').count(),
+                reason: "the last line has no terminating newline",
+            });
+        }
+
+        let mut entries: Vec<TreeEntry> = Vec::new();
+        let mut lines = text.split_terminator('\n').enumerate();
+        while let Some((index, head)) = lines.next() {
+            let line = index + 1;
+            let malformed = |reason| TreeParseError::Malformed { line, reason };
+            let (code, name) = head
+                .split_once(' ')
+                .ok_or_else(|| malformed("expected `<mode> <name>`"))?;
+            let mode = EntryMode::from_code(code).ok_or_else(|| TreeParseError::UnknownMode {
+                line,
+                code: code.to_owned(),
+            })?;
+            let (_, id_text) = lines
+                .next()
+                .ok_or_else(|| malformed("the entry has no line with its ID"))?;
+            let id =
+                ObjectId::from_str(id_text).map_err(|source| TreeParseError::InvalidObjectId {
+                    line: line + 1,
+                    source,
+                })?;
+            let entry = match FileMode::from_entry_mode(mode) {
+                Some(file_mode) => TreeEntry::file(name, file_mode, BlobId::new(id)),
+                None => TreeEntry::directory(name, TreeId::new(id)),
+            }
+            .map_err(|source| TreeParseError::Entry { line, source })?;
+            if let Some(previous) = entries
+                .last()
+                .filter(|previous| previous.name >= entry.name)
+            {
+                return Err(TreeParseError::OutOfOrder {
+                    line,
+                    previous: previous.name.clone(),
+                    name: entry.name,
+                });
+            }
+            entries.push(entry);
+        }
+        Ok(Self { entries })
+    }
+}
+
 /// Reasons why a commit is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -754,6 +914,165 @@ impl Commit {
     /// Returns the object ID of this commit.
     pub fn id(&self) -> CommitId {
         CommitId(hash_encoding(Kind::Commit, &self.encode()))
+    }
+}
+
+/// Why the body of a commit is rejected by [`Commit::parse`]. Line numbers count from 1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CommitParseError {
+    /// The body is not valid UTF-8. The message is a string, so the whole body has to be.
+    NotUtf8 {
+        /// Length of the longest valid prefix, in bytes.
+        valid_up_to: usize,
+    },
+    /// A header is missing, repeated, unknown, or out of order, the time is not a canonical
+    /// decimal integer, or the empty line after the headers is missing.
+    Malformed {
+        /// Number of the line.
+        line: usize,
+        /// What is wrong with it.
+        reason: &'static str,
+    },
+    /// An object ID is not in canonical form.
+    InvalidObjectId {
+        /// Number of the line.
+        line: usize,
+        /// Why the ID is invalid.
+        source: ObjectIdParseError,
+    },
+    /// The author line is rejected.
+    InvalidAuthor {
+        /// Number of the line.
+        line: usize,
+        /// Why the author is invalid.
+        source: ActorParseError,
+    },
+    /// The headers are well formed, but the commit is rejected.
+    Commit(CommitError),
+}
+
+impl fmt::Display for CommitParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotUtf8 { valid_up_to } => {
+                write!(
+                    f,
+                    "the commit is not valid UTF-8 (valid up to byte {valid_up_to})"
+                )
+            }
+            Self::Malformed { line, reason } => write!(f, "line {line}: {reason}"),
+            Self::InvalidObjectId { line, source } => {
+                write!(f, "line {line}: invalid object ID: {source}")
+            }
+            Self::InvalidAuthor { line, source } => write!(f, "line {line}: {source}"),
+            Self::Commit(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl Error for CommitParseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidObjectId { source, .. } => Some(source),
+            Self::InvalidAuthor { source, .. } => Some(source),
+            Self::Commit(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// Removes the first line, without its newline, from the front of the text and returns it, or
+/// returns `None` if the text has no newline.
+fn take_line<'a>(rest: &mut &'a str) -> Option<&'a str> {
+    let (line, tail) = rest.split_once('\n')?;
+    *rest = tail;
+    Some(line)
+}
+
+fn header_id(text: &str, line: usize) -> Result<ObjectId, CommitParseError> {
+    ObjectId::from_str(text).map_err(|source| CommitParseError::InvalidObjectId { line, source })
+}
+
+/// Reads the seconds of the `time` header. Only the canonical form is accepted: a decimal integer
+/// that fits `i64`, with a minus sign only for a negative value, no plus sign, no leading zeros,
+/// and no `-0`.
+fn parse_seconds(text: &str) -> Option<i64> {
+    let negative = text.starts_with('-');
+    let digits = if negative { &text[1..] } else { text };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if digits.starts_with('0') && (digits.len() > 1 || negative) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+impl Commit {
+    /// Reads the body of a commit, as [`encode`](Self::encode) writes it. The reader is strict, by
+    /// the rule of ADR-005: it rejects everything that `encode` would not have written, so a commit
+    /// has exactly one encoding and one ID, and `parse(bytes).encode() == bytes` for every
+    /// accepted input. The headers are `tree`, `parent` (zero or more), `author`, and `time`, in
+    /// this order and each once, then an empty line, then the message, which is kept verbatim.
+    ///
+    /// The kind of each ID is claimed by its header: a tree for `tree` and a commit for `parent`.
+    /// Nothing has asked a store; follow an ID with
+    /// [`ObjectStore::resolve_tree`](crate::store::ObjectStore::resolve_tree) or
+    /// [`resolve_commit`](crate::store::ObjectStore::resolve_commit) before relying on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for input that is not UTF-8, a header that is missing, repeated, unknown,
+    /// or out of order, an object ID that is not in canonical form, an author line that
+    /// [`Actor::from_str`] rejects, a time that is not canonical or does not fit `i64`, a missing
+    /// empty line after the headers, and a parent that is listed twice. The first problem in the
+    /// order of the lines is reported.
+    pub fn parse(bytes: &[u8]) -> Result<Self, CommitParseError> {
+        let text = std::str::from_utf8(bytes).map_err(|error| CommitParseError::NotUtf8 {
+            valid_up_to: error.valid_up_to(),
+        })?;
+        let mut rest = text;
+        let mut line = 1;
+        let malformed = |line, reason| CommitParseError::Malformed { line, reason };
+
+        let tree = take_line(&mut rest)
+            .and_then(|header| header.strip_prefix("tree "))
+            .ok_or_else(|| malformed(line, "expected the header `tree <id>` first"))?;
+        let tree = TreeId::new(header_id(tree, line)?);
+
+        let mut parents = Vec::new();
+        let author = loop {
+            line += 1;
+            let header = take_line(&mut rest)
+                .ok_or_else(|| malformed(line, "the headers end before `author <actor>`"))?;
+            match header.strip_prefix("parent ") {
+                Some(id) => parents.push(CommitId::new(header_id(id, line)?)),
+                None => break header,
+            }
+        };
+        let author = author
+            .strip_prefix("author ")
+            .ok_or_else(|| malformed(line, "expected the header `author <actor>`"))?;
+        let author = Actor::from_str(author)
+            .map_err(|source| CommitParseError::InvalidAuthor { line, source })?;
+
+        line += 1;
+        let seconds = take_line(&mut rest)
+            .and_then(|header| header.strip_prefix("time "))
+            .ok_or_else(|| malformed(line, "expected the header `time <seconds>`"))?;
+        let timestamp = parse_seconds(seconds).ok_or_else(|| {
+            malformed(
+                line,
+                "the time is not a canonical decimal integer of seconds",
+            )
+        })?;
+
+        line += 1;
+        if take_line(&mut rest) != Some("") {
+            return Err(malformed(line, "expected an empty line after the headers"));
+        }
+        Commit::new(tree, parents, author, timestamp, rest).map_err(CommitParseError::Commit)
     }
 }
 
@@ -1609,5 +1928,492 @@ mod tests {
             "9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad"
         );
         assert_eq!(stored.to_string(), format!("b3:{}", stored.hex()));
+    }
+
+    // Readers
+
+    /// Feeds every single-byte change of a canonical encoding (a byte replaced, inserted, or
+    /// deleted) to a reader. `reencode` returns the encoding of what the reader accepted, or `None`
+    /// if it rejected the input. Whatever is accepted has to encode back to exactly the bytes it
+    /// was given: a reader that accepts a second spelling of an object would give one object two
+    /// IDs. Returns how many changed inputs were accepted, so that a test can see it was not
+    /// vacuous.
+    fn accepted_changes_encode_back(
+        golden: &[u8],
+        reencode: impl Fn(&[u8]) -> Option<Vec<u8>>,
+    ) -> usize {
+        assert_eq!(
+            reencode(golden).as_deref(),
+            Some(golden),
+            "the canonical encoding itself must be accepted unchanged"
+        );
+        const BYTES: &[u8] = b" \n\r\t\0+-=09a:\xff";
+        let mut accepted = 0;
+        let mut check = |changed: Vec<u8>| {
+            if let Some(again) = reencode(&changed) {
+                assert_eq!(
+                    again,
+                    changed,
+                    "accepted a second spelling: {:?}",
+                    String::from_utf8_lossy(&changed)
+                );
+                accepted += 1;
+            }
+        };
+        for position in 0..golden.len() {
+            let mut deleted = golden.to_vec();
+            deleted.remove(position);
+            check(deleted);
+            for &byte in BYTES {
+                let mut replaced = golden.to_vec();
+                replaced[position] = byte;
+                check(replaced);
+                let mut inserted = golden.to_vec();
+                inserted.insert(position, byte);
+                check(inserted);
+            }
+        }
+        accepted
+    }
+
+    fn all_modes_tree() -> Tree {
+        Tree::new(vec![
+            entry("a-dir", EntryMode::Directory, id(TREE_ID)),
+            entry("b file", EntryMode::File, id(HELLO_ID)),
+            entry("c-link", EntryMode::Symlink, id(HELLO_ID)),
+            entry("d-run.sh", EntryMode::Executable, id(EMPTY_ID)),
+            entry("\u{e9}t\u{e9}", EntryMode::File, id(HELLO_ID)),
+        ])
+        .expect("valid tree")
+    }
+
+    fn tree_text(entries: &str) -> Vec<u8> {
+        entries.as_bytes().to_vec()
+    }
+
+    #[test]
+    fn a_tree_is_read_back_from_its_encoding() {
+        for tree in [Tree::new(vec![]).unwrap(), sample_tree(), all_modes_tree()] {
+            assert_eq!(Tree::parse(&tree.encode()), Ok(tree));
+        }
+    }
+
+    #[test]
+    fn a_tree_reader_claims_the_kind_of_an_id_by_the_mode() {
+        let tree = Tree::parse(&all_modes_tree().encode()).unwrap();
+        let by_name = |name: &str| {
+            tree.entries()
+                .iter()
+                .find(|entry| entry.name() == name)
+                .map(|entry| (entry.mode(), entry.id()))
+                .unwrap()
+        };
+        assert_eq!(by_name("a-dir"), (EntryMode::Directory, id(TREE_ID)));
+        assert_eq!(by_name("b file"), (EntryMode::File, id(HELLO_ID)));
+        assert_eq!(by_name("c-link"), (EntryMode::Symlink, id(HELLO_ID)));
+        assert_eq!(by_name("d-run.sh"), (EntryMode::Executable, id(EMPTY_ID)));
+    }
+
+    #[test]
+    fn a_tree_reader_rejects_every_non_canonical_form() {
+        let ok = format!("100644 a\n{HELLO_ID}\n");
+        assert!(Tree::parse(ok.as_bytes()).is_ok());
+        let line_of = |bytes: Vec<u8>| match Tree::parse(&bytes).unwrap_err() {
+            TreeParseError::Malformed { line, .. }
+            | TreeParseError::UnknownMode { line, .. }
+            | TreeParseError::InvalidObjectId { line, .. }
+            | TreeParseError::Entry { line, .. }
+            | TreeParseError::OutOfOrder { line, .. } => line,
+            other => panic!("unexpected error: {other}"),
+        };
+
+        // Not UTF-8: the longest valid prefix is `100644 a`.
+        assert_eq!(
+            Tree::parse(b"100644 a\xff\n"),
+            Err(TreeParseError::NotUtf8 { valid_up_to: 8 })
+        );
+        // No terminating newline, a missing space, a missing ID line, a blank line.
+        assert_eq!(line_of(tree_text(&format!("100644 a\n{HELLO_ID}"))), 2);
+        assert_eq!(line_of(tree_text(&format!("100644a\n{HELLO_ID}\n"))), 1);
+        assert_eq!(line_of(tree_text("100644 a\n")), 1);
+        assert_eq!(line_of(tree_text(&format!("\n{HELLO_ID}\n"))), 1);
+        assert_eq!(line_of(tree_text(&format!("100644 a\n{HELLO_ID}\n\n"))), 3);
+        // Modes: only the four canonical codes.
+        for code in ["100664", "40000", "0100644", "", "120001"] {
+            let error = Tree::parse(format!("{code} a\n{HELLO_ID}\n").as_bytes()).unwrap_err();
+            assert!(
+                matches!(error, TreeParseError::UnknownMode { line: 1, .. }),
+                "mode {code:?}: {error}"
+            );
+        }
+        // A name may start with a space, so a second space after the mode is part of the name.
+        let spaced = format!("100644  a\n{HELLO_ID}\n");
+        assert_eq!(
+            Tree::parse(spaced.as_bytes()).unwrap().entries()[0].name(),
+            " a"
+        );
+        // IDs: uppercase, wrong length, no prefix, a carriage return, trailing space.
+        let upper = HELLO_ID.to_uppercase();
+        for bad in [
+            upper.as_str(),
+            "b3:abcd",
+            &HELLO_ID[3..],
+            &format!("{HELLO_ID}\r"),
+            &format!("{HELLO_ID} "),
+        ] {
+            let error = Tree::parse(format!("100644 a\n{bad}\n").as_bytes()).unwrap_err();
+            assert!(
+                matches!(error, TreeParseError::InvalidObjectId { line: 2, .. }),
+                "id {bad:?}: {error}"
+            );
+        }
+        // Names: the naming rules apply, and the form is checked before them.
+        for name in ["", ".", "..", "a/b", "a\rb", ".stemma", "a\u{200b}b"] {
+            let error = Tree::parse(format!("100644 {name}\n{HELLO_ID}\n").as_bytes()).unwrap_err();
+            assert!(
+                matches!(error, TreeParseError::Entry { line: 1, .. }),
+                "name {name:?}: {error}"
+            );
+        }
+        // Order: descending and duplicate names; byte order, not case-folded.
+        for names in [["b", "a"], ["a", "a"]] {
+            let text = format!(
+                "100644 {}\n{HELLO_ID}\n100644 {}\n{HELLO_ID}\n",
+                names[0], names[1]
+            );
+            let error = Tree::parse(text.as_bytes()).unwrap_err();
+            assert!(
+                matches!(error, TreeParseError::OutOfOrder { line: 3, .. }),
+                "{names:?}: {error}"
+            );
+        }
+        let upper_first = format!("100644 B\n{HELLO_ID}\n100644 a\n{HELLO_ID}\n");
+        assert!(Tree::parse(upper_first.as_bytes()).is_ok());
+        // A directory has no special place in the order (ADR-005).
+        let dir_text = format!("040000 a\n{TREE_ID}\n100644 a-b\n{HELLO_ID}\n");
+        assert!(Tree::parse(dir_text.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn a_tree_error_names_the_line_and_the_cause() {
+        let error = Tree::parse(format!("100644 a/b\n{HELLO_ID}\n").as_bytes()).unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("line 1: invalid tree entry name `a/b`"));
+        assert!(error.source().is_some());
+        let error = Tree::parse(format!("100644 b\n{HELLO_ID}\n100644 a\n{HELLO_ID}\n").as_bytes())
+            .unwrap_err();
+        assert!(error.to_string().contains("strictly ascending"), "{error}");
+        assert!(error.source().is_none());
+    }
+
+    #[test]
+    fn a_tree_reader_accepts_no_second_spelling() {
+        for tree in [sample_tree(), all_modes_tree()] {
+            let accepted = accepted_changes_encode_back(&tree.encode(), |bytes| {
+                Tree::parse(bytes).ok().map(|tree| tree.encode())
+            });
+            assert!(
+                accepted > 0,
+                "the check accepted nothing and proves nothing"
+            );
+        }
+    }
+
+    fn commit_bytes(tree: &str, parents: &[&str], author: &str, time: &str, rest: &str) -> Vec<u8> {
+        let mut text = format!("tree {tree}\n");
+        for parent in parents {
+            text.push_str(&format!("parent {parent}\n"));
+        }
+        text.push_str(&format!("author {author}\ntime {time}\n{rest}"));
+        text.into_bytes()
+    }
+
+    fn all_commits() -> Vec<Commit> {
+        let message = |text: &str, parents: Vec<CommitId>, author: Actor, time: i64| {
+            Commit::new(tree_id_of(TREE_ID), parents, author, time, text).expect("valid commit")
+        };
+        vec![
+            message("", vec![], human(), 0),
+            message("first change", vec![commit_id(EMPTY_ID)], human(), TIME),
+            message("work", vec![], agent(), TIME),
+            message(
+                "merge",
+                vec![commit_id(HELLO_ID), commit_id(EMPTY_ID)],
+                human(),
+                -1,
+            ),
+            message("line\n\nbody\n", vec![], human(), i64::MAX),
+            message("\nstarts with a newline", vec![], human(), i64::MIN),
+            message("trailing blank\n\n", vec![], agent(), 7),
+            message("tree x\nparent y\n\nauthor z", vec![], human(), TIME),
+        ]
+    }
+
+    #[test]
+    fn a_commit_is_read_back_from_its_encoding() {
+        for commit in all_commits() {
+            assert_eq!(Commit::parse(&commit.encode()), Ok(commit));
+        }
+    }
+
+    #[test]
+    fn a_commit_reader_keeps_the_message_verbatim_after_the_first_empty_line() {
+        let text = commit_bytes(TREE_ID, &[], "human daniel", "1", "\nfirst\n\nsecond");
+        assert_eq!(Commit::parse(&text).unwrap().message(), "first\n\nsecond");
+        let text = commit_bytes(TREE_ID, &[], "human daniel", "1", "\n");
+        assert_eq!(Commit::parse(&text).unwrap().message(), "");
+    }
+
+    #[test]
+    fn a_commit_reader_rejects_every_non_canonical_form() {
+        let tree = TREE_ID;
+        let parent = HELLO_ID;
+        let human = "human daniel";
+        let error = |bytes: Vec<u8>| Commit::parse(&bytes).unwrap_err();
+        let malformed_at = |bytes: Vec<u8>, expected: usize| match error(bytes) {
+            CommitParseError::Malformed { line, .. } => assert_eq!(line, expected),
+            other => panic!("expected a malformed header at line {expected}: {other}"),
+        };
+
+        assert!(Commit::parse(&commit_bytes(tree, &[], human, "1", "\nm")).is_ok());
+        // Not UTF-8, also in the message.
+        assert!(matches!(
+            Commit::parse(b"tree x\n\xff"),
+            Err(CommitParseError::NotUtf8 { valid_up_to: 7 })
+        ));
+        let mut invalid_message = commit_bytes(tree, &[], human, "1", "\n");
+        invalid_message.push(0xff);
+        assert!(matches!(
+            Commit::parse(&invalid_message),
+            Err(CommitParseError::NotUtf8 { .. })
+        ));
+        // Headers: missing, repeated, out of order, unknown, with another spacing.
+        malformed_at(b"".to_vec(), 1);
+        malformed_at(format!("parent {parent}\ntree {tree}\n").into_bytes(), 1);
+        malformed_at(format!("tree {tree}\ntree {tree}\n").into_bytes(), 2);
+        malformed_at(format!("tree {tree}\ntime 1\n\n").into_bytes(), 2);
+        malformed_at(format!("tree {tree}\ncommitter {human}\n").into_bytes(), 2);
+        malformed_at(
+            format!("tree {tree}\nauthor {human}\nparent {parent}\n").into_bytes(),
+            3,
+        );
+        malformed_at(
+            format!("tree {tree}\nauthor {human}\nauthor {human}\n").into_bytes(),
+            3,
+        );
+        // A second space after the header name is part of the ID, which is then not canonical.
+        let spaced = format!("tree  {tree}\nauthor {human}\ntime 1\n\n").into_bytes();
+        assert!(matches!(
+            error(spaced),
+            CommitParseError::InvalidObjectId { line: 1, .. }
+        ));
+        malformed_at(
+            format!("tree {tree}\nauthor {human}\ntime 1").into_bytes(),
+            3,
+        );
+        // The empty line after the headers.
+        malformed_at(
+            format!("tree {tree}\nauthor {human}\ntime 1\n").into_bytes(),
+            4,
+        );
+        malformed_at(
+            format!("tree {tree}\nauthor {human}\ntime 1\nmessage").into_bytes(),
+            4,
+        );
+        // Time: only the canonical decimal form that fits i64.
+        for time in [
+            "",
+            "+1",
+            "-0",
+            "01",
+            "00",
+            "1.5",
+            "0x1",
+            " 1",
+            "1 ",
+            "1e3",
+            "-",
+            "--1",
+            "\u{661}",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "99999999999999999999",
+        ] {
+            malformed_at(commit_bytes(tree, &[], human, time, "\n"), 3);
+        }
+        for time in ["0", "-1", "9223372036854775807", "-9223372036854775808"] {
+            assert!(Commit::parse(&commit_bytes(tree, &[], human, time, "\n")).is_ok());
+        }
+        // IDs, with the line of the header.
+        let bad_tree = commit_bytes("b3:xyz", &[], human, "1", "\n");
+        assert!(matches!(
+            error(bad_tree),
+            CommitParseError::InvalidObjectId { line: 1, .. }
+        ));
+        let bad_parent = commit_bytes(tree, &[parent, "b3:00"], human, "1", "\n");
+        assert!(matches!(
+            error(bad_parent),
+            CommitParseError::InvalidObjectId { line: 3, .. }
+        ));
+        let carriage = commit_bytes(&format!("{tree}\r"), &[], human, "1", "\n");
+        assert!(matches!(
+            error(carriage),
+            CommitParseError::InvalidObjectId { line: 1, .. }
+        ));
+        // The author line: the form and the fields.
+        for author in [
+            "",
+            "human",
+            "human ",
+            "robot x",
+            "human  x",
+            "agent a model=m",
+        ] {
+            let bytes = commit_bytes(tree, &[], author, "1", "\n");
+            assert!(
+                matches!(
+                    error(bytes),
+                    CommitParseError::InvalidAuthor { line: 2, .. }
+                ),
+                "author {author:?}"
+            );
+        }
+        // A duplicate parent.
+        assert_eq!(
+            error(commit_bytes(tree, &[parent, parent], human, "1", "\n")),
+            CommitParseError::Commit(CommitError::DuplicateParent(commit_id(HELLO_ID)))
+        );
+    }
+
+    #[test]
+    fn a_commit_error_names_the_line_and_the_cause() {
+        let error = Commit::parse(&commit_bytes(TREE_ID, &[], "human a b", "1", "\n")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("line 2: malformed actor line"),
+            "{error}"
+        );
+        assert!(error.source().is_some());
+        let error = Commit::parse(&commit_bytes(TREE_ID, &[], "human d", "01", "\n")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "line 3: the time is not a canonical decimal integer of seconds"
+        );
+        assert!(error.source().is_none());
+    }
+
+    #[test]
+    fn a_commit_reader_accepts_no_second_spelling() {
+        for commit in all_commits().into_iter().filter(|c| c.message().len() < 12) {
+            let accepted = accepted_changes_encode_back(&commit.encode(), |bytes| {
+                Commit::parse(bytes).ok().map(|commit| commit.encode())
+            });
+            assert!(
+                accepted > 0,
+                "the check accepted nothing and proves nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn an_actor_line_is_read_back_and_accepts_no_second_spelling() {
+        let with_equals = Actor::agent("a=b", "m=1", "s=", "p==").unwrap();
+        for actor in [human(), agent(), with_equals] {
+            let line = actor_line(&actor);
+            assert_eq!(line.parse::<Actor>(), Ok(actor));
+            let accepted = accepted_changes_encode_back(line.as_bytes(), |bytes| {
+                let text = std::str::from_utf8(bytes).ok()?;
+                text.parse::<Actor>()
+                    .ok()
+                    .map(|actor| actor_line(&actor).into_bytes())
+            });
+            assert!(
+                accepted > 0,
+                "the check accepted nothing and proves nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn every_tree_error_has_a_stable_message_and_the_right_source() {
+        let bad_id = "100644 a\nb3:00\n";
+        let cases: [(Vec<u8>, &str, bool); 6] = [
+            (
+                b"100644 a\xff\n".to_vec(),
+                "the tree is not valid UTF-8 (valid up to byte 8)",
+                false,
+            ),
+            (
+                b"100644a\nx\n".to_vec(),
+                "line 1: expected `<mode> <name>`",
+                false,
+            ),
+            (
+                format!("100664 a\n{HELLO_ID}\n").into_bytes(),
+                "line 1: unknown mode `100664`",
+                false,
+            ),
+            (
+                bad_id.as_bytes().to_vec(),
+                "line 2: invalid object ID: object ID digest must be 64 bytes long, found 2",
+                true,
+            ),
+            (
+                format!("100644 a/b\n{HELLO_ID}\n").into_bytes(),
+                "line 1: invalid tree entry name `a/b`: the name contains `/`",
+                true,
+            ),
+            (
+                format!("100644 b\n{HELLO_ID}\n100644 a\n{HELLO_ID}\n").into_bytes(),
+                "line 3: `a` does not sort after `b`; names must be strictly ascending",
+                false,
+            ),
+        ];
+        for (bytes, message, has_source) in cases {
+            let error = Tree::parse(&bytes).unwrap_err();
+            assert_eq!(error.to_string(), message);
+            assert_eq!(error.source().is_some(), has_source, "{message}");
+        }
+    }
+
+    #[test]
+    fn every_commit_error_has_a_stable_message_and_the_right_source() {
+        let t = TREE_ID;
+        let cases: [(Vec<u8>, String, bool); 5] = [
+            (
+                b"tree x\n\xff".to_vec(),
+                "the commit is not valid UTF-8 (valid up to byte 7)".to_owned(),
+                false,
+            ),
+            (
+                commit_bytes(t, &[], "human d", "+1", "\n"),
+                "line 3: the time is not a canonical decimal integer of seconds".to_owned(),
+                false,
+            ),
+            (
+                commit_bytes("b3:00", &[], "human d", "1", "\n"),
+                "line 1: invalid object ID: object ID digest must be 64 bytes long, found 2"
+                    .to_owned(),
+                true,
+            ),
+            (
+                commit_bytes(t, &[], "robot x", "1", "\n"),
+                "line 2: malformed actor line: an actor line starts with `human` or `agent`"
+                    .to_owned(),
+                true,
+            ),
+            (
+                commit_bytes(t, &[HELLO_ID, HELLO_ID], "human d", "1", "\n"),
+                format!("duplicate parent {HELLO_ID}"),
+                true,
+            ),
+        ];
+        for (bytes, message, has_source) in cases {
+            let error = Commit::parse(&bytes).unwrap_err();
+            assert_eq!(error.to_string(), message);
+            assert_eq!(error.source().is_some(), has_source, "{message}");
+        }
     }
 }
