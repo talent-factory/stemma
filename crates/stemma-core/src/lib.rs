@@ -18,9 +18,9 @@
 //! `downcast_ref::<std::io::Error>()` on a source finds nothing, and neither does the idiom
 //! `root_cause()` of an error library. A program that wants the error of the file system, for
 //! example to map [`std::io::ErrorKind`] to an exit code, asks the error:
-//! [`store::StoreError::io_error`] for the store, and `store_error()` on
-//! [`store::ReadError`], [`index::IndexVerifyError`], [`index::WriteTreeError`],
-//! [`verify::TreeVerifyError`], and [`verify::CommitVerifyError`] for the error of the store
+//! [`store::StoreError::io_error`] for the store, and `store_error()` on [`store::ReadError`],
+//! [`index::WriteTreeError`], and [`verify::VerifyError`] (the error of a check of an index, a
+//! tree, or a commit) for the error of the store
 //! inside. A program that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;

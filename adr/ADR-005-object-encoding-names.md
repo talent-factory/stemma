@@ -311,6 +311,18 @@ them.
       readers, and builds the wrapping errors from a failure that has a cause of its own, the same
       on every system (`FaultyStore`; the same failure of a real file system has another error
       kind on Windows than on Unix): the message ends in the message of the I/O error once, and
-      the chain goes on with the link below it. What is still open: the three verification
-      errors (`IndexVerifyError`, `TreeVerifyError`, `CommitVerifyError`) have the same two cases,
-      missing and store error, and could share one type.
+      the chain goes on with the link below it.
+- [x] One type for the error of a check against a store. Done: `IndexVerifyError`,
+      `TreeVerifyError`, and `CommitVerifyError` had the same two cases, the store has no such
+      object and the store reports an error. They are now one generic `VerifyError<L>` (module
+      `verify`) with `Missing { at, id }` and `Store { at, source }`, and the three names are
+      aliases for the place: `EntryPath` for the path of an index entry, `EntryName` for the name
+      of a tree entry, and `CommitReference` for the tree or a parent of a commit. The place has
+      its own type each, so the path of an index entry and the name of a tree entry cannot be
+      mixed up, and `WriteTreeError::Verify` holds only the error of an index. `L` only has to
+      be `Debug + Display`: the `Display` form of the place starts the message (a path and a name
+      in escaped backticks), so the messages are what they were. `VerifyError::check` turns the
+      answer of a store into the result, once for all three checks, and makes the place only when
+      a claim fails; `store_error()` and `at()` are defined once. `IndexVerifyError::Missing`
+      names the ID as an `ObjectId` like the others, and the field is `at` instead of `path`,
+      `name`, and `reference`.
