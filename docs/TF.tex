@@ -1,0 +1,397 @@
+% TF.tex - Talent Factory page layout, fonts and colors for documentation
+% ConTeXt MkIV / LuaMetaTeX
+
+% =============================================================================
+% LANGUAGE (German)
+% =============================================================================
+
+\mainlanguage[de]
+\setuplabeltext[de][content=Inhaltsverzeichnis]
+\setuplabeltext[de][figure=Abbildung~]
+\setuplabeltext[de][table=Tabelle~]
+\setuplabeltext[de][chapter=Kapitel~]  % ~ = non-breaking space after 'Kapitel'
+
+% =============================================================================
+% PAGE LAYOUT
+% =============================================================================
+
+\setuppapersize[A4]
+
+\setuplayout[
+    width=middle,
+    height=middle,
+    topspace=2.5cm,
+    backspace=2.5cm,
+    header=1cm,
+    footer=1cm,
+    headerdistance=0.5cm,
+    footerdistance=0.5cm,
+]
+
+% =============================================================================
+% FONTS
+% =============================================================================
+
+% Sans-serif for headings, serif for body text, mono for code
+\definefontfamily[mainface][sans][TeX Gyre Heros]
+\definefontfamily[mainface][serif][TeX Gyre Pagella]
+\definefontfamily[mainface][mono][TeX Gyre Cursor][scale=0.85]
+
+\setupbodyfont[mainface, 11pt]
+
+% =============================================================================
+% COLORS
+% =============================================================================
+
+% Talent Factory Corporate Identity (source: website/tailwind.config.js)
+\definecolor[tfdark][h=0D0D1A]            % tf-dark
+\definecolor[tfaccent][h=7C3AED]          % tf-accent (violet)
+\definecolor[tfglow][h=A855F7]            % tf-accent-glow
+\definecolor[tfparticles][h=818CF8]       % tf-particles
+\definecolor[tftext][h=0F172A]            % tf-text
+\definecolor[tfmuted][h=64748B]           % tf-muted
+\definecolor[tfborder][h=E2E8F0]          % tf-border
+\definecolor[tfsurface][h=F8FAFC]         % tf-surface
+\definecolor[tfsurfacealt][h=EEF2FF]      % tf-surface-alt
+
+% Semantic roles (documents may override them)
+\definecolor[primarycolor][tfaccent]
+\definecolor[secondarycolor][h=059669]    % green (tip)
+\definecolor[accentcolor][h=D97706]       % orange (accent)
+\definecolor[warningcolor][h=DC2626]      % red (warning)
+\definecolor[mutedcolor][tfmuted]
+\definecolor[codebackground][tfsurface]
+\definecolor[codeborder][tfborder]
+\definecolor[infobackground][tfsurfacealt]
+
+% =============================================================================
+% HEADINGS
+% =============================================================================
+
+% Chapter opening: large number in muted color, title below, rule in the primary color
+\define[2]\TFchaptercommand{%
+    \vbox{%
+        \hsize\textwidth
+        {\tfd\bf\color[tfmuted]{#1}}\par
+        \blank[small]
+        {\bfd\bf\color[primarycolor]{#2}}\par
+        \blank[small]
+        \blackrule[width=\textwidth,height=1.5pt,color=primarycolor]%
+    }%
+}
+
+\setuphead[chapter][
+    style=\bfd\bf,
+    color=primarycolor,
+    command=\TFchaptercommand,
+    before={\blank[2*big]},
+    after={\blank[2*big]},
+]
+
+\setuphead[section][
+    style=\bfb\bf,
+    color=primarycolor,
+    before={\blank[2*big]},
+    after={\blank[big]},
+]
+
+\setuphead[subsection][
+    style=\bfa\bf,
+    color=primarycolor,
+    before={\blank[big]},
+    after={\blank[medium]},
+]
+
+\setuphead[subsubsection][
+    style=\bf,
+    before={\blank[medium]},
+    after={\blank[small]},
+]
+
+% =============================================================================
+% GIT INFORMATION
+% =============================================================================
+
+% Determine git branch and commit id at build time
+\startluacode
+    local function get_git_info()
+        local branch = "unknown"
+        local commit = "000000"
+
+        -- Branch
+        local handle = io.popen("git rev-parse --abbrev-ref HEAD 2>/dev/null")
+        if handle then
+            branch = handle:read("*a"):gsub("%s+", "")
+            handle:close()
+        end
+
+        -- Short commit id
+        handle = io.popen("git rev-parse --short HEAD 2>/dev/null")
+        if handle then
+            commit = handle:read("*a"):gsub("%s+", "")
+            handle:close()
+        end
+
+        return branch, commit
+    end
+
+    local branch, commit = get_git_info()
+    document.gitbranch = branch
+    document.gitcommit = commit
+    document.gitinfo = "[git] • Branch: " .. branch .. "@" .. commit
+\stopluacode
+
+% Make the git information available as TeX macros
+\def\gitinfo{\ctxlua{context(document.gitinfo)}}
+\def\gitbranch{\ctxlua{context(document.gitbranch)}}
+\def\gitcommit{\ctxlua{context(document.gitcommit)}}
+
+% =============================================================================
+% HEADERS AND FOOTERS
+% =============================================================================
+
+% Enable markings for chapter and section
+\setuphead[chapter][marking=chapter]
+\setuphead[section][marking=section]
+
+% Page number only in the footer, not in the header
+\setuppagenumbering[location=]
+
+% Header: left = short title (variable document:shorttitle, set by the document),
+% right = chapter (uppercase)
+\setvariables[document][shorttitle={}]
+% The rule below the header is part of the header content
+\setupheadertexts
+    [\vbox{\hbox to \hsize{\getvariable{document}{shorttitle}\hfil\WORD{\getmarking[chapter]}}%
+        \kern 0.4em
+        \blackrule[width=\hsize,height=0.6pt,color=tfmuted]}]
+
+% Footer: git information centered, page number right
+\setupfootertexts
+    [][\hbox to \hsize{\hfil\gitinfo\hfil\llap{\pagenumber}}]
+
+\setupheader[style=\small, color=black]
+\setupfooter[style=\small, color=black]
+
+% =============================================================================
+% PARAGRAPHS AND SPACING
+% =============================================================================
+
+\setupwhitespace[medium]
+\setupindenting[no]
+
+% =============================================================================
+% LISTS
+% =============================================================================
+
+% Unicode bullets do not work here: keep the default ConTeXt symbols
+
+\setupitemize[1][
+    margin=1em,
+    distance=0.5em,
+    before={\blank[small]},
+    after={\blank[small]},
+    inbetween={\blank[none]},
+]
+
+\setupitemize[2][
+    margin=1.5em,
+    distance=0.5em,
+    inbetween={\blank[none]},
+]
+
+\setupitemize[3][
+    margin=2em,
+    distance=0.5em,
+    inbetween={\blank[none]},
+]
+
+% =============================================================================
+% LINKS
+% =============================================================================
+
+\setupinteraction[
+    state=start,
+    color=primarycolor,
+    contrastcolor=primarycolor,
+    style=normal,
+]
+
+% =============================================================================
+% TABLE OF CONTENTS
+% =============================================================================
+
+\setupcombinedlist[content][
+    list={chapter,section},
+    alternative=c,
+]
+
+% Second level starts flush with the title of the chapter line
+\setuplist[chapter][
+    style=\bf,
+    width=2em,
+    before={\blank[medium]},
+]
+
+\setuplist[section][
+    margin=2em,
+    width=2.5em,
+]
+
+% Tighter line spacing: use \placecompactcontent instead of \placecontent
+\define\placecompactcontent{%
+    \begingroup
+    \setupwhitespace[none]
+    \setupinterlinespace[line=1.5em]
+    \placecontent
+    \endgroup
+}
+
+% =============================================================================
+% TABLES AND CAPTIONS
+% =============================================================================
+
+% Caption above the table: "Tabelle 1: Title"
+\setupcaption[table][
+    location=top,
+    way=bytext,
+    prefix=no,
+    headstyle=\bf,
+    style=\bf,
+    headseparator={:},
+    distance=0.5em,
+]
+
+% One extra line of space before and after every table
+\setupfloat[table][
+    spacebefore={medium,line},
+    spaceafter={medium,line},
+]
+
+% =============================================================================
+% CODE BLOCKS WITH SYNTAX HIGHLIGHTING (via vim)
+% =============================================================================
+
+% Load the vim module for syntax highlighting
+\usemodule[vim]
+
+% Python code
+\definevimtyping[pythoncode][
+    syntax=python,
+    before={\blank[small]\startframedtext[
+        frame=on,
+        framecolor=codeborder,
+        background=color,
+        backgroundcolor=codebackground,
+        width=broad,
+        offset=0.5em,
+    ]},
+    after={\stopframedtext\blank[small]},
+    style=\tt\small,
+    numbering=no,
+]
+
+% Bash/shell code
+\definevimtyping[bashcode][
+    syntax=sh,
+    before={\blank[small]\startframedtext[
+        frame=on,
+        framecolor=codeborder,
+        background=color,
+        backgroundcolor=codebackground,
+        width=broad,
+        offset=0.5em,
+    ]},
+    after={\stopframedtext\blank[small]},
+    style=\tt\small,
+    numbering=no,
+]
+
+% JSON code
+\definevimtyping[jsoncode][
+    syntax=json,
+    before={\blank[small]\startframedtext[
+        frame=on,
+        framecolor=codeborder,
+        background=color,
+        backgroundcolor=codebackground,
+        width=broad,
+        offset=0.5em,
+    ]},
+    after={\stopframedtext\blank[small]},
+    style=\tt\small,
+    numbering=no,
+]
+
+% YAML code
+\definevimtyping[yamlcode][
+    syntax=yaml,
+    before={\blank[small]\startframedtext[
+        frame=on,
+        framecolor=codeborder,
+        background=color,
+        backgroundcolor=codebackground,
+        width=broad,
+        offset=0.5em,
+    ]},
+    after={\stopframedtext\blank[small]},
+    style=\tt\small,
+    numbering=no,
+]
+
+% Plain text code (no highlighting)
+\definetyping[textcode][
+    before={\blank[small]\startframedtext[
+        frame=on,
+        framecolor=codeborder,
+        background=color,
+        backgroundcolor=codebackground,
+        width=broad,
+        offset=0.5em,
+    ]},
+    after={\stopframedtext\blank[small]},
+    style=\tt\small,
+]
+
+% Inline-Code
+\definetype[code][style=\tt\small]
+
+% =============================================================================
+% NOTICE BOXES
+% =============================================================================
+
+% Info box
+\defineframedtext[infobox][
+    frame=on,
+    framecolor=primarycolor,
+    background=color,
+    backgroundcolor=infobackground,
+    width=broad,
+    offset=1em,
+    before={\blank[medium]},
+    after={\blank[medium]},
+]
+
+% Tip box (green)
+\defineframedtext[tippbox][
+    frame=on,
+    framecolor=secondarycolor,
+    background=color,
+    backgroundcolor=secondarycolor:1,
+    width=broad,
+    offset=1em,
+    before={\blank[medium]},
+    after={\blank[medium]},
+]
+
+% Warning box (red)
+\defineframedtext[warnbox][
+    frame=on,
+    framecolor=warningcolor,
+    background=color,
+    backgroundcolor=warningcolor:1,
+    width=broad,
+    offset=1em,
+    before={\blank[medium]},
+    after={\blank[medium]},
+]
