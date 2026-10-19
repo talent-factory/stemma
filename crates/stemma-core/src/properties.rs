@@ -26,6 +26,7 @@ use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
     TreeParseError,
 };
+use crate::oplog::{Change, Entry, EntryParseError, Moved, OperationName, MAX_NUMBER};
 use crate::refs::{BranchName, Head, RefParseError};
 use crate::store::{ObjectStore, StoreError};
 use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
@@ -148,6 +149,14 @@ const PIECES: &[&str] = &[
     "parent ",
     "author ",
     "change ",
+    "stemma-oplog 1\n",
+    "number ",
+    "operation ",
+    "working-copy ",
+    "head ",
+    "branch:",
+    "commit:",
+    "-",
     "ch:",
     "ch:00112233445566778899AABBCCDDEEFF",
     "time ",
@@ -313,6 +322,87 @@ fn random_actor(rng: &mut Rng) -> Actor {
         )
         .expect("visible ASCII")
     }
+}
+
+const BRANCH_NAMES: &[&str] = &[
+    "main",
+    "dev",
+    "a",
+    "b",
+    "feat/x",
+    "release/1.0",
+    "x-y_z",
+    "Z",
+    "a.b",
+    "m/n/o",
+];
+
+const OPERATION_NAMES: &[&str] = &["init", "snapshot", "commit", "op-9", "a", "checkout"];
+
+fn random_branch(rng: &mut Rng) -> BranchName {
+    BranchName::new(*rng.pick(BRANCH_NAMES)).expect("valid branch name")
+}
+
+fn random_commit_value(rng: &mut Rng) -> Option<CommitId> {
+    if rng.one_in(4) {
+        None
+    } else {
+        Some(CommitId::new(ObjectId::from(random_blob(rng))))
+    }
+}
+
+fn random_head_value(rng: &mut Rng) -> Option<Head> {
+    match rng.below(3) {
+        0 => None,
+        1 => Some(Head::Branch(random_branch(rng))),
+        _ => Some(Head::Detached(CommitId::new(ObjectId::from(random_blob(
+            rng,
+        ))))),
+    }
+}
+
+/// Two values that differ, as an entry holds for a pointer that changed.
+fn random_moved<T: PartialEq>(
+    rng: &mut Rng,
+    mut value: impl FnMut(&mut Rng) -> Option<T>,
+) -> Moved<T> {
+    loop {
+        let (old, new) = (value(rng), value(rng));
+        if old != new {
+            return Moved::from_to(old, new);
+        }
+    }
+}
+
+fn random_entry(rng: &mut Rng) -> Entry {
+    let number = *rng.pick(&[1, 2, 41, 999, MAX_NUMBER - 1, MAX_NUMBER]);
+    let random_time = rng.next() as i64;
+    let time = *rng.pick(&[0, 1, -1, 1_700_000_000, i64::MAX, i64::MIN, random_time]);
+    let head = rng.one_in(2).then(|| random_moved(rng, random_head_value));
+    let working_copy = rng
+        .one_in(2)
+        .then(|| random_moved(rng, random_commit_value));
+    let mut branches: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
+    for _ in 0..rng.below(4) {
+        let name = random_branch(rng);
+        if !branches.iter().any(|(existing, _)| *existing == name) {
+            branches.push((name, random_moved(rng, random_commit_value)));
+        }
+    }
+    if head.is_none() && working_copy.is_none() && branches.is_empty() {
+        branches.push((random_branch(rng), random_moved(rng, random_commit_value)));
+    }
+    let operation = OperationName::new(*rng.pick(OPERATION_NAMES)).expect("valid operation");
+    let change = Change::new(
+        time,
+        random_actor(rng),
+        operation,
+        head,
+        working_copy,
+        branches,
+    )
+    .expect("a random change is valid");
+    Entry::new(number, change).expect("a random number is valid")
 }
 
 fn random_change(rng: &mut Rng) -> ChangeId {
@@ -699,6 +789,23 @@ fn tree_line(error: &TreeParseError) -> Option<usize> {
     }
 }
 
+fn entry_line(error: &EntryParseError) -> Option<usize> {
+    match error {
+        EntryParseError::NotUtf8 { .. }
+        | EntryParseError::UnsupportedVersion(_)
+        | EntryParseError::Entry(_) => None,
+        EntryParseError::Malformed { line, .. }
+        | EntryParseError::InvalidNumber { line, .. }
+        | EntryParseError::InvalidTime { line, .. }
+        | EntryParseError::InvalidActor { line, .. }
+        | EntryParseError::InvalidOperation { line, .. }
+        | EntryParseError::InvalidObjectId { line, .. }
+        | EntryParseError::InvalidBranchName { line, .. }
+        | EntryParseError::Unchanged { line }
+        | EntryParseError::OutOfOrder { line, .. } => Some(*line),
+    }
+}
+
 fn commit_line(error: &CommitParseError) -> Option<usize> {
     match error {
         CommitParseError::NotUtf8 { .. } | CommitParseError::Commit(_) => None,
@@ -858,6 +965,64 @@ fn the_commit_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
         }
     }
     assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+}
+
+#[test]
+fn every_entry_the_code_can_build_is_read_back() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 20));
+    for case in 0..cases() {
+        let context = format!("seed {seed}, case {case}");
+        let entry = random_entry(&mut rng);
+        let bytes = entry.encode();
+        let again = Entry::parse(&bytes).unwrap_or_else(|e| panic!("{context}: {e} for {entry:?}"));
+        assert_eq!(again, entry, "{context}");
+        assert_eq!(again.encode(), bytes, "{context}");
+    }
+}
+
+#[test]
+fn the_entry_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 21));
+    let valid: Vec<Vec<u8>> = (0..64).map(|_| random_entry(&mut rng).encode()).collect();
+    let mut tally = Tally::default();
+    let mut variants = std::collections::HashSet::new();
+    for case in 0..cases() * 5 {
+        let context = format!("seed {seed}, case {case}");
+        let input = arbitrary_input(&mut rng, &valid);
+        match Entry::parse(&input) {
+            Ok(entry) => {
+                tally.accepted += 1;
+                assert_eq!(
+                    entry.encode(),
+                    input,
+                    "{context}: a second spelling was accepted: {:?}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+            Err(error) => {
+                tally.rejected += 1;
+                variants.insert(std::mem::discriminant(&error));
+                check_rejection(
+                    &error,
+                    entry_line(&error),
+                    line_count(&input) + 1,
+                    &input,
+                    &context,
+                );
+            }
+        }
+    }
+    assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+    // A run that reaches few kinds of rejection would not notice a reader that reports the wrong
+    // one, so it has to reach most of them (there are twelve, and one cannot occur).
+    // The default run reaches ten or eleven; a short run, such as the one of a fast check, only
+    // a few, so the threshold depends on how many cases there were.
+    let needed = if cases() >= 2_000 { 9 } else { 3 };
+    assert!(
+        variants.len() >= needed,
+        "the run reached only {} kinds of rejection, and {needed} were needed",
+        variants.len()
+    );
 }
 
 #[test]

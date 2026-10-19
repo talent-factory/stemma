@@ -124,8 +124,7 @@ them.
   choice can be reversed in one direction only: an exchange can be added later as a new object kind
   without invalidating stored objects, but a log that was once exchanged cannot be withdrawn. For
   readers who do not have the local log, the answer to who rewrote a branch is the record of ref
-  updates of a hub (ADR-003), not the commit. The format and the place of the log belong to a later
-  ADR.
+  updates of a hub (ADR-003), not the commit. The format and the place of the log are decided in ADR-011.
 - **Format version** *(confirmed)*. The encodings in this ADR are version 1. An incompatible
   change does not reuse an object kind name: it introduces a new one, for example `commit2`,
   together with an ADR, so that old and new objects can exist side by side. The header `change`

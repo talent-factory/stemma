@@ -1182,7 +1182,7 @@ fn header_id(text: &str, line: usize) -> Result<ObjectId, CommitParseError> {
 /// Reads the seconds of the `time` header. Only the canonical form is accepted: a decimal integer
 /// with a minus sign only for a negative value, no plus sign, no leading zeros, and no `-0`, that
 /// fits `i64`. The error is the reason: [`TimeError::NotCanonical`] or [`TimeError::OutOfRange`].
-fn parse_seconds(text: &str) -> Result<i64, TimeError> {
+pub(crate) fn parse_seconds(text: &str) -> Result<i64, TimeError> {
     let negative = text.starts_with('-');
     let digits = if negative { &text[1..] } else { text };
     if digits.is_empty()
