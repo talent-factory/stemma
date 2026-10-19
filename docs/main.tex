@@ -1,18 +1,29 @@
 % Stemma: Grundlagendokument (ConTeXt, MkIV)
 % Kompilieren: context main.tex
 
-\setupbodyfont[modern,11pt]
-\mainlanguage[de]
+% Globale Environment-Datei laden (aus ~/Library/texmf/tex/context/user/)
+\environment TF
+
+% Metadaten (Kopfzeile und Titelblatt)
+\setvariables[document][
+  title={Stemma},
+  shorttitle={Stemma: Grundlagendokument},
+  subtitle={Ein API-first Versionskontrollsystem für Menschen und Agenten},
+  kind={Grundlagendokument, Entwurf},
+  author={Daniel Senften},
+  institution={Talent Factory GmbH},
+  date={18. Oktober 2026},
+  version={0.2}
+]
+
 \setupalign[verytolerant,stretch]
-\setuppapersize[A4][A4]
-\setuplayout[
-  width=middle, height=middle,
-  header=1.2cm, footer=1.2cm,
-  topspace=2.2cm, bottomspace=2.2cm,
-  backspace=2.5cm, margin=2cm]
-\setupheadertexts[\getmarking[chapter]][\pagenumber]
-\setupfootertexts[][\pagenumber]
-\setuphead[chapter][before={\blank[2*big]}, after={\blank[big]}]
+
+% PDF-Metadaten
+\setupinteraction[
+  title={\getvariable{document}{title}},
+  subtitle={\getvariable{document}{subtitle}},
+  author={\getvariable{document}{author}}
+]
 
 % Literatur: BibTeX-Datei, numerische Zitate
 \usebtxdataset[references.bib]
@@ -24,26 +35,31 @@
 % ------------------------------------------------------------------
 % Titelblatt
 % ------------------------------------------------------------------
-\startalign[center]
-\blank[4*big]
-{\tfd Stemma}\par
-\blank[big]
-{\tfa Ein API-first Versionskontrollsystem für Menschen und Agenten}\par
+\startstandardmakeup
+\vfill
+\midaligned{\bfd\ss\color[primarycolor]{\getvariable{document}{title}}}
 \blank[2*big]
-Grundlagendokument, Entwurf\par
-\blank[4*big]
-Daniel Senften\par
-Talent Factory GmbH\par
-\blank[big]
-Version 0.2 · 18. Oktober 2026\par
-\stopalign
-\page
+\midaligned{\bfa\ss\color[mutedcolor]{\getvariable{document}{subtitle}}}
+\vfill
+\midaligned{\bf\ss \getvariable{document}{kind}}
+\vfill
+\midaligned{
+  \getvariable{document}{author} \\
+  \getvariable{document}{institution} \\
+  Version \getvariable{document}{version} · \getvariable{document}{date}
+}
+\vfill
+\stopstandardmakeup
 
 % ------------------------------------------------------------------
 % Inhaltsverzeichnis
 % ------------------------------------------------------------------
-\title{Inhaltsverzeichnis}
-\placecontent
+\blank[2*big]
+{\bfd\bf\color[primarycolor]{Inhaltsverzeichnis}}\par
+\blank[small]
+\blackrule[width=\textwidth,height=1.5pt,color=primarycolor]\par
+\blank[2*big]
+\placecompactcontent
 \page
 
 % ------------------------------------------------------------------
