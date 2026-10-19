@@ -285,3 +285,11 @@ them.
       A round trip cannot see a rule that the encoder and the reader share, such as a name rule,
       because both agree on it. A separate list of forbidden names and actor fields, written apart
       from the rules, has to be rejected by every entry point.
+- [x] Give the reasons of the parse errors a type. Done: `Malformed` in `TreeParseError`,
+      `CommitParseError`, `IndexParseError`, and `ActorParseError` carries an enum instead of a
+      `&'static str`: `TreeMalformed`, `CommitMalformed`, `IndexMalformed`, and `ActorMalformed`.
+      A caller can match on the reason; the `Display` form of each variant is the message that
+      the string had, and the tests pin it. The time of a commit has its own two reasons,
+      `TimeForm` and `TimeRange`. A cut-off last line is `CutOff` in all readers but the actor
+      line, which has no lines. The enums are `#[non_exhaustive]`, so a new reason is not a
+      breaking change.
