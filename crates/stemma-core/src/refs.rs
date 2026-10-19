@@ -784,11 +784,36 @@ impl FsRefStore {
         placed
     }
 
+    /// Whether the directory of the branches exists. `refs` and `refs/heads` are each checked for
+    /// what they are, because the error for a path that goes through a file is not the same on
+    /// every platform (Windows says "not found"), and a file in the place of a directory is
+    /// damage and not "no branches".
+    fn heads_exist(&self) -> Result<bool, RefError> {
+        for dir in [self.root.join("refs"), self.heads_dir()] {
+            match fs::symlink_metadata(&dir) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => {
+                    return Err(RefError::Io {
+                        operation: "list the branches in",
+                        path: dir,
+                        source: io::Error::new(io::ErrorKind::InvalidInput, "not a directory"),
+                    })
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(io_error("inspect the directory", &dir)(error)),
+            }
+        }
+        Ok(true)
+    }
+
     /// Finds out what the name is in the file system, comparing every component **exactly**. On a
     /// file system that ignores case, `main` would open the file of `Main`; the listing of each
     /// directory shows the case that is stored, so such a name is found to be in conflict and not
     /// to be the other branch.
     fn lookup(&self, name: &BranchName) -> Result<Lookup, RefError> {
+        if !self.heads_exist()? {
+            return Ok(Lookup::Absent);
+        }
         let components: Vec<&str> = name.as_str().split('/').collect();
         let mut dir = self.heads_dir();
         let mut relative = String::new();
@@ -976,6 +1001,9 @@ impl RefStore for FsRefStore {
 
     fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
         self.require_root()?;
+        if !self.heads_exist()? {
+            return Ok(Vec::new());
+        }
         let heads = self.heads_dir();
         let mut found = Vec::new();
         let mut pending = vec![(heads.clone(), String::new())];
