@@ -25,6 +25,7 @@ use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
     TreeParseError,
 };
+use crate::refs::{BranchName, Head, RefParseError};
 use crate::store::{ObjectStore, StoreError};
 use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
 use crate::{Actor, ActorParseError};
@@ -152,6 +153,9 @@ const PIECES: &[&str] = &[
     " session=",
     " sponsor=",
     "stemma-index 1\n",
+    "branch ",
+    "commit ",
+    "branch main\n",
     "stemma-index 2\n",
     ".stemma",
     "9223372036854775807",
@@ -318,6 +322,32 @@ fn random_commit(rng: &mut Rng) -> Commit {
         message
     };
     Commit::new(tree, parents, random_actor(rng), time, message).expect("distinct parents")
+}
+
+/// A branch name made of a few parts, some of them invalid; the names that the rule rejects are
+/// dropped.
+fn random_branch_name(rng: &mut Rng) -> BranchName {
+    const PARTS: &[&str] = &[
+        "main", "feat", "TF-792", "a.b", "x_y", "v1.2", "con", "-x", ".x", "a.", "\u{e9}", "A", "z",
+    ];
+    loop {
+        let depth = 1 + rng.below(3);
+        let name = (0..depth)
+            .map(|_| *rng.pick(PARTS))
+            .collect::<Vec<_>>()
+            .join("/");
+        if let Ok(name) = BranchName::new(name) {
+            return name;
+        }
+    }
+}
+
+fn random_head(rng: &mut Rng) -> Head {
+    if rng.one_in(2) {
+        Head::Branch(random_branch_name(rng))
+    } else {
+        Head::Detached(random_commit(rng).id())
+    }
 }
 
 fn random_index(rng: &mut Rng) -> Index {
@@ -605,6 +635,11 @@ fn commit_line(error: &CommitParseError) -> Option<usize> {
         | CommitParseError::InvalidAuthor { line, .. }
         | CommitParseError::DuplicateParent { line, .. } => Some(*line),
     }
+}
+
+/// The line of a rejected file of references: there is none, the files have one line.
+fn ref_line(_error: &RefParseError) -> Option<usize> {
+    None
 }
 
 fn index_line(error: &IndexParseError) -> Option<usize> {
@@ -1051,4 +1086,76 @@ fn a_chain_that_repeats_a_message_is_found() {
     }
     let caught = std::panic::catch_unwind(|| assert_no_message_twice(&Outer(Inner), "test"));
     assert!(caught.is_err());
+}
+
+#[test]
+fn every_head_and_branch_file_the_code_can_build_is_read_back() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 9));
+    for case in 0..cases() {
+        let context = format!("seed {seed}, case {case}");
+        let head = random_head(&mut rng);
+        let bytes = head.encode();
+        let again = Head::parse(&bytes).unwrap_or_else(|e| panic!("{context}: {e} for {head:?}"));
+        assert_eq!(again, head, "{context}");
+        assert_eq!(again.encode(), bytes, "{context}");
+        let commit = random_commit(&mut rng).id();
+        let bytes = crate::refs::encode_branch(&commit);
+        assert_eq!(crate::refs::parse_branch(&bytes), Ok(commit), "{context}");
+    }
+}
+
+#[test]
+fn the_head_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 10));
+    let valid: Vec<Vec<u8>> = (0..64).map(|_| random_head(&mut rng).encode()).collect();
+    let mut tally = Tally::default();
+    for case in 0..cases() * 5 {
+        let context = format!("seed {seed}, case {case}");
+        let input = arbitrary_input(&mut rng, &valid);
+        match Head::parse(&input) {
+            Ok(head) => {
+                tally.accepted += 1;
+                assert_eq!(
+                    head.encode(),
+                    input,
+                    "{context}: a second spelling was accepted: {:?}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+            Err(error) => {
+                tally.rejected += 1;
+                check_rejection(&error, ref_line(&error), 1, &input, &context);
+            }
+        }
+    }
+    assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+}
+
+#[test]
+fn the_branch_file_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 11));
+    let valid: Vec<Vec<u8>> = (0..64)
+        .map(|_| crate::refs::encode_branch(&random_commit(&mut rng).id()))
+        .collect();
+    let mut tally = Tally::default();
+    for case in 0..cases() * 5 {
+        let context = format!("seed {seed}, case {case}");
+        let input = arbitrary_input(&mut rng, &valid);
+        match crate::refs::parse_branch(&input) {
+            Ok(commit) => {
+                tally.accepted += 1;
+                assert_eq!(
+                    crate::refs::encode_branch(&commit),
+                    input,
+                    "{context}: a second spelling was accepted: {:?}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+            Err(error) => {
+                tally.rejected += 1;
+                check_rejection(&error, ref_line(&error), 1, &input, &context);
+            }
+        }
+    }
+    assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
 }

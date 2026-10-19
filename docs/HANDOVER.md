@@ -6,7 +6,7 @@ Dieses Dokument ist eine Momentaufnahme für den Wechsel zwischen Sessions. Der 
 
 ## Auf einen Blick
 
-Das Datenmodell des lokalen Kerns steht: Objekte, Index, Objektspeicher, strikte Leser, Schreiben und Lesen von Trees und Commits. Die CLI ist noch ein leeres Skelett. Als Nächstes folgen die Referenzen (`main`, HEAD) und die Repository-Schicht mit `stemma init`.
+Das Datenmodell des lokalen Kerns steht: Objekte, Index, Objektspeicher, strikte Leser, Schreiben und Lesen von Trees und Commits, Referenzen (Branches und HEAD). Die CLI ist noch ein leeres Skelett. Als Nächstes folgt die Repository-Schicht mit `stemma init`.
 
 - **Repository:** GitHub `talent-factory/stemma`, lokal `~/GitRepository/stemma` auf Daniels Mac.
 - **Phase:** 1 von 6. Das Buch gliedert die Phasen so: lokaler Kern, Diff, Branches und Merge, Zusammenarbeit, Netzwerk, Agenten-Schnittstellen.
@@ -91,6 +91,7 @@ Trunk-based Development: `main` ist geschützt und immer grün. Jede Arbeitssche
 | `object.rs` | Objekte und Regeln | `ObjectId`, `BlobId`, `TreeId`, `CommitId`, `Blob`, `Tree` mit `parse`, `TreeEntry::file` und `::directory`, `FileMode`, `EntryMode`, `Commit` mit `parse`, `TreeMalformed`, `CommitMalformed`, `TimeError`, Namensregeln, `METADATA_DIR` |
 | `index.rs` | Staging-Bereich | `Index` mit `insert`, `remove`, `get`, `encode`, `parse`, `verify(&store)`, `write_tree(&store)`, `IndexMalformed`; Pfade nach Komponenten sortiert, Datei und Verzeichnis können nicht kollidieren |
 | `store.rs` | Objektspeicher | `ObjectStore` (versiegelt), `FsObjectStore`, `RawObject`, `resolve_blob`, `resolve_tree`, `resolve_commit`, `get_tree`, `get_commit`, `ReadError`, `CorruptReason`, `StoreError` |
+| `refs.rs` | Branches und HEAD | `BranchName` (gültig nach Konstruktion), `Head`, `RefStore` (versiegelt), `FsRefStore` mit `branch`, `branches`, `update_branch` (Compare-and-Swap, prüft den Commit im Speicher, Sperrdatei), `head`, `set_head`, `resolve_head`, `RefError` |
 | `verify.rs` | Behauptungen prüfen | `VerifyError<L>` mit den Aliasen `IndexVerifyError` (`EntryPath`), `TreeVerifyError` (`EntryName`), `CommitVerifyError` (`CommitReference`); `Tree::verify`, `Commit::verify` prüfen die Arten, die Modus, Baum-Header und Eltern behaupten, einen Schritt tief gegen einen Speicher |
 | `lib.rs` | Einstieg | `Authorizer`, `AllowAll`, `Decision` |
 | `testutil.rs` | Testhilfen | nur für Tests |
@@ -153,7 +154,7 @@ Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell ist fertig, die Befehle f
 | 1 | Objekt aus dem Speicher lesen und decodieren, Arten prüfen | Erledigt | PR #26: `get_tree`, `get_commit`, `Tree::verify`, `Commit::verify` |
 | 1 | `Index::write_tree(&store)` | Erledigt | PR #25: ruft `verify` selbst auf |
 | 1 | Autorisierungs-Hook `authorize` | Teilweise | Trait und `AllowAll` vorhanden, aber noch keine Operation ruft ihn auf |
-| 1 | Referenzen für `main` und HEAD | Offen | nächster Schritt; noch kein Modul `refs` |
+| 1 | Referenzen für `main` und HEAD | Erledigt | `refs.rs`, ADR-008; Löschen von Branches, gepackte Refs und Tags offen |
 | 1 | Repository-Schicht und `stemma init` | Offen | Layout von `.stemma/` entworfen, Standard-Branch konfigurierbar, Namensregel unbeantwortet |
 | 1 | `stemma add` | Offen | Dateien lesen, Blobs schreiben, Index speichern |
 | 1 | `stemma commit` | Offen | Zeitstempel ist im Commit vorgesehen |
@@ -222,12 +223,12 @@ Die verbindlichen Regeln stehen in `CLAUDE.md` im Repository und gehen jeder Vor
 
 ## Nächste Schritte und offene Entscheidungen
 
-Der nächste Schritt sind die Referenzen für `main` und HEAD, danach die Repository-Schicht mit `stemma init`. Jeder Punkt ist eine eigene Scheibe mit eigenem Branch und PR.
+Der nächste Schritt ist die Repository-Schicht mit `stemma init`; die Referenzen für `main` und HEAD stehen (ADR-008). Jeder Punkt ist eine eigene Scheibe mit eigenem Branch und PR.
 
 **Reihenfolge**
 
 1. Stand prüfen: aktuellen `main` holen, `ls adr` und `git log --oneline -15` lesen, offene PRs auf dem Mac ansehen.
-2. Referenzen: Modul für `refs/heads/<name>` und HEAD (symbolischer Verweis), mit Regel für Branch-Namen.
+2. ~~Referenzen~~ erledigt (ADR-008): `refs/heads/<name>`, HEAD, Regel für Branch-Namen, Compare-and-Swap mit Sperrdatei.
 3. Repository-Schicht und `stemma init`: legt `.stemma/` an mit `format`, `objects/`, `tmp/`, `refs/heads/` und `HEAD`. Der Standard-Branch ist **konfigurierbar** (so hat Daniel entschieden), zum Beispiel über `--initial-branch`; ohne Angabe `main`. Ein zweites `init` im selben Ordner meldet einen Fehler und ändert nichts. Der Speicher soll die Formatdatei prüfen (ADR-007).
 4. `stemma add`, danach `commit`, `status`, `log` als weitere Scheiben. Jede Repository-Operation ruft den Autorisierungs-Hook auf.
 5. Status-Zeilen der ADRs nachziehen (siehe Abschnitt Entscheidungen) und ADR-Entwürfe für das, was dabei neu entschieden wird.
@@ -238,7 +239,6 @@ Der nächste Schritt sind die Referenzen für `main` und HEAD, danach die Reposi
 
 | Frage | Stand |
 | --- | --- |
-| Regel für Branch-Namen | Vorschlag: nur `A-Z a-z 0-9 . _ -` und `/` als Trenner, kein führender Punkt oder Bindestrich. Daniel hat noch nicht geantwortet. Lockern ändert keine ID. |
 | Verteilt oder zentral | Web3-Interesse, aber offen für zentrale Vorteile. ADR-003 enthält die Frage nach P2P-Sync. |
 | Agenten-Identität | eigene Rolle oder Rolle mit menschlichem Sponsor (ADR-002 und 004) |
 | Working Copy als Commit (wie jj), Konfliktmodell, Rebase | nicht behandelt |
@@ -301,5 +301,5 @@ Arbeitsweise:
 - Der Arbeitsordner ist Daniels Arbeitskopie. Sage an, bevor du den Branch wechselst.
 - Stelle Daniel Fragen, wenn eine Entscheidung teuer zu ändern ist. Hinterfrage Ideen kritisch.
 
-Nächste Aufgabe: die Referenzen für main und HEAD (Modul refs), danach die Repository-Schicht mit `stemma init` und konfigurierbarem Standard-Branch. Frage Daniel zuerst nach der Regel für Branch-Namen (siehe Abschnitt «Noch nicht entschieden» in docs/HANDOVER.md).
+Nächste Aufgabe: die Repository-Schicht mit `stemma init` und konfigurierbarem Standard-Branch (die Referenzen in `refs.rs` stehen, ADR-008). Besprich mit Daniel zuerst die offenen Fragen: Layout von `.stemma/` und die Formatdatei, wer HEAD und den Standard-Branch anlegt, und was ein zweites `init` tut.
 ```
