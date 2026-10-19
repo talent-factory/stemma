@@ -703,6 +703,18 @@ impl FsRefStore {
         }
     }
 
+    /// Whether a writer holds the lock of the references now, so it may be between its entry in the
+    /// log and the move of a pointer (ADR-011). A lock that a crashed writer left stays until
+    /// someone removes it, and counts as held.
+    pub(crate) fn is_locked(&self) -> Result<bool, RefError> {
+        let path = self.lock_path();
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_error("inspect the lock file", &path)(error)),
+        }
+    }
+
     fn lock(&self) -> Result<Lock, RefError> {
         let path = self.lock_path();
         let token = unique_temp_name();

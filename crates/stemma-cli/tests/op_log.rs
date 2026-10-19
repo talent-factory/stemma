@@ -60,6 +60,7 @@ fn run(dir: &Path, args: &[&str]) -> Run {
 }
 
 const A: &str = "b3:1111111111111111111111111111111111111111111111111111111111111111";
+const C: &str = "b3:3333333333333333333333333333333333333333333333333333333333333333";
 const B: &str = "b3:2222222222222222222222222222222222222222222222222222222222222222";
 
 /// A repository made by `init`, with the actor `human daniel`.
@@ -159,13 +160,14 @@ fn the_json_form_is_one_object_per_line() {
             "{{\"number\":2,\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"head\":null,\
              \"working_copy\":{{\"old\":null,\"new\":\"{A}\"}},\
-             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}]}}"
+             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
+             \"took_effect\":false}}"
         )
     );
     assert!(
         lines[1].starts_with("{\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
-            && lines[1].ends_with("\"branches\":[]}"),
+            && lines[1].ends_with("\"branches\":[],\"took_effect\":true}"),
         "{}",
         lines[1]
     );
@@ -308,4 +310,193 @@ fn without_a_limit_the_twenty_newest_entries_are_shown() {
     );
     let more = run(dir.path(), &["op", "log", "-n", "100"]);
     assert_eq!(numbers_of(&more.stdout).len(), 21);
+}
+
+/// An entry that moves only the branch `main`, so that its outcome can be decided.
+fn branch_move(dir: &Path, number: u64, old: &str, new: &str) {
+    write_entry(
+        dir,
+        number,
+        &format!(
+            "time 1700000000\nactor human daniel\noperation commit\nbranch main {old} {new}\n"
+        ),
+    );
+}
+
+fn set_branch(dir: &Path, commit: &str) {
+    fs::write(dir.join(".stemma/refs/heads/main"), format!("{commit}\n")).unwrap();
+}
+
+#[test]
+fn an_entry_whose_move_took_effect_has_no_marker() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    set_branch(dir.path(), A);
+    let text = run(dir.path(), &["op", "log"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert!(
+        !text.stdout.contains('!') && !text.stdout.contains('?'),
+        "{}",
+        text.stdout
+    );
+    let json = run(dir.path(), &["op", "log", "--json"]);
+    assert!(
+        json.stdout
+            .lines()
+            .all(|line| line.ends_with("\"took_effect\":true}")),
+        "{}",
+        json.stdout
+    );
+}
+
+#[test]
+fn an_entry_whose_move_never_happened_is_marked_in_both_forms() {
+    // The entry 2 was written, but the branch did not move: entry 3 starts from the old value.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, "-", B);
+    set_branch(dir.path(), B);
+    let text = run(dir.path(), &["op", "log"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    let marker = "    ! the move did not take effect\n";
+    let lines: Vec<_> = text.stdout.split_inclusive('\n').collect();
+    let position = lines.iter().position(|l| l.starts_with("2  ")).unwrap();
+    assert_eq!(lines[position + 2], marker, "{}", text.stdout);
+    assert_eq!(text.stdout.matches(marker).count(), 1, "{}", text.stdout);
+    let json = run(dir.path(), &["op", "log", "--json"]);
+    let flags: Vec<_> = json
+        .stdout
+        .lines()
+        .map(|line| line.rsplit(":").next().unwrap().trim_end_matches('}'))
+        .collect();
+    assert_eq!(flags, ["true", "false", "true"]);
+}
+
+#[test]
+fn an_outcome_that_is_not_known_is_null_and_marked_with_a_question_mark() {
+    // The branch has a value that is neither the old nor the new one of the last entry.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    set_branch(dir.path(), B);
+    let text = run(dir.path(), &["op", "log"]);
+    assert!(
+        text.stdout
+            .contains("    ? it is not known whether the move took effect\n"),
+        "{}",
+        text.stdout
+    );
+    let json = run(dir.path(), &["op", "log", "--json"]);
+    assert!(json
+        .stdout
+        .lines()
+        .next()
+        .unwrap()
+        .ends_with("\"took_effect\":null}"));
+}
+
+/// The value of `took_effect` of each line of the JSON listing, newest first.
+fn flags(dir: &Path, extra: &[&str]) -> Vec<String> {
+    let mut args = vec!["op", "log", "--json"];
+    args.extend_from_slice(extra);
+    let result = run(dir, &args);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    result
+        .stdout
+        .lines()
+        .map(|line| {
+            let (_, flag) = line.rsplit_once("\"took_effect\":").unwrap();
+            flag.trim_end_matches('}').to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn a_branch_that_was_deleted_took_effect_if_it_is_gone() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, "-");
+    // No `refs/heads/main`: the deletion happened.
+    assert_eq!(flags(dir.path(), &[]), ["true", "true", "true"]);
+    set_branch(dir.path(), A);
+    assert_eq!(flags(dir.path(), &[]), ["false", "true", "true"]);
+}
+
+#[test]
+fn a_move_that_started_from_a_third_value_is_not_called_a_failure() {
+    // Something outside the log changed `main` between the two entries.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, B, A);
+    set_branch(dir.path(), A);
+    assert_eq!(flags(dir.path(), &[]), ["true", "null", "true"]);
+}
+
+#[test]
+fn while_a_writer_holds_the_lock_an_old_value_is_not_called_a_failure() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    assert_eq!(flags(dir.path(), &[]), ["false", "true"]);
+    fs::write(dir.path().join(".stemma/refs.lock"), "writer").unwrap();
+    assert_eq!(flags(dir.path(), &[]), ["null", "true"]);
+}
+
+#[test]
+fn the_limit_does_not_change_the_outcome_of_a_shown_entry() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, B);
+    branch_move(dir.path(), 4, A, C);
+    set_branch(dir.path(), C);
+    assert_eq!(flags(dir.path(), &[]), ["true", "false", "true", "true"]);
+    assert_eq!(flags(dir.path(), &["-n", "2"]), ["true", "false"]);
+}
+
+#[test]
+fn references_that_cannot_be_read_give_a_warning_and_the_outcome_of_the_chain() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, B);
+    // A file of a branch that is not in canonical form.
+    fs::write(dir.path().join(".stemma/refs/heads/main"), "damaged").unwrap();
+    let result = run(dir.path(), &["op", "log", "--json"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result
+            .stderr
+            .starts_with("stemma: warning: could not read the references"),
+        "{}",
+        result.stderr
+    );
+    assert!(result.stderr.contains("main"), "{}", result.stderr);
+    let flags: Vec<_> = result
+        .stdout
+        .lines()
+        .map(|line| {
+            line.rsplit_once(':')
+                .unwrap()
+                .1
+                .trim_end_matches('}')
+                .to_owned()
+        })
+        .collect();
+    // Entry 2 is confirmed by entry 3; entry 3 and the entry of `init` need the references.
+    assert_eq!(flags, ["null", "true", "null"]);
+    // The text form has the question mark on the same entries.
+    let text = run(dir.path(), &["op", "log"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert_eq!(text.stdout.matches("    ? it is not known").count(), 2);
+}
+
+#[test]
+fn a_head_that_is_missing_is_a_warning_too() {
+    let dir = repository();
+    fs::remove_file(dir.path().join(".stemma/HEAD")).unwrap();
+    let result = run(dir.path(), &["op", "log"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stderr.starts_with("stemma: warning: "),
+        "{}",
+        result.stderr
+    );
+    assert!(result.stdout.starts_with("1  "), "{}", result.stdout);
 }
