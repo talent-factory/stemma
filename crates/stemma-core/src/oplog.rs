@@ -951,6 +951,8 @@ impl OpLogError {
     }
 }
 
+// A path comes from the file system, and a file name in `oplog/` can be any bytes, so a path is
+// written escaped like Rust debug output: an error must not write terminal escape sequences.
 impl fmt::Display for OpLogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

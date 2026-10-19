@@ -39,8 +39,7 @@ struct Run {
     stderr: String,
 }
 
-/// Runs `stemma` in `dir` without an actor in the environment, and `extra` can change that. A
-/// command that reads a configuration or the home directory has to point those at `dir` here.
+/// Runs `stemma` in `dir` without `STEMMA_ACTOR`; `extra` can adjust the command before it runs.
 fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
@@ -235,4 +234,78 @@ fn the_log_needs_no_actor() {
     let dir = repository();
     let result = run(dir.path(), &["op", "log"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
+}
+
+/// The numbers of the entries that a text listing shows, in order.
+fn numbers_of(stdout: &str) -> Vec<u64> {
+    stdout
+        .lines()
+        .filter(|line| !line.starts_with(' '))
+        .map(|line| line.split("  ").next().unwrap().parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn head_and_branch_moves_are_shown_in_both_directions() {
+    let dir = repository();
+    write_entry(
+        dir.path(),
+        2,
+        &format!(
+            "time 1700000000\nactor human daniel\noperation checkout\n\
+             head branch:main commit:{A}\nbranch main {A} {B}\n"
+        ),
+    );
+    write_entry(
+        dir.path(),
+        3,
+        &format!(
+            "time 1700000000\nactor human daniel\noperation delete\n\
+             head commit:{A} -\nbranch main {B} -\n"
+        ),
+    );
+    let text = run(dir.path(), &["op", "log"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    for line in [
+        format!("    head  branch:main -> commit:{A}\n"),
+        format!("    head  commit:{A} -> -\n"),
+        format!("    branch main  {A} -> {B}\n"),
+        format!("    branch main  {B} -> -\n"),
+    ] {
+        assert!(text.stdout.contains(&line), "{line}: {}", text.stdout);
+    }
+    let json = run(dir.path(), &["op", "log", "--json"]);
+    let lines: Vec<_> = json.stdout.lines().collect();
+    assert!(
+        lines[0].contains(&format!("\"head\":{{\"old\":\"commit:{A}\",\"new\":null}}"))
+            && lines[0].contains(&format!(
+                "\"branches\":[{{\"name\":\"main\",\"old\":\"{B}\",\"new\":null}}]"
+            )),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains(&format!(
+            "\"head\":{{\"old\":\"branch:main\",\"new\":\"commit:{A}\"}}"
+        )) && lines[1].contains(&format!("\"old\":\"{A}\",\"new\":\"{B}\"")),
+        "{}",
+        lines[1]
+    );
+}
+
+#[test]
+fn without_a_limit_the_twenty_newest_entries_are_shown() {
+    let dir = repository();
+    for number in 2..=21 {
+        let (old, new) = if number % 2 == 0 { (A, B) } else { (B, A) };
+        snapshot(dir.path(), number, if number == 2 { "-" } else { old }, new);
+    }
+    let shown = run(dir.path(), &["op", "log"]);
+    assert_eq!(shown.code, 0, "{}", shown.stderr);
+    assert_eq!(
+        numbers_of(&shown.stdout),
+        (2..=21).rev().collect::<Vec<_>>()
+    );
+    let more = run(dir.path(), &["op", "log", "-n", "100"]);
+    assert_eq!(numbers_of(&more.stdout).len(), 21);
 }

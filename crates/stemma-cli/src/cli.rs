@@ -3,7 +3,9 @@
 //! Exit codes: 0 for success, 1 for a command that fails and has changed nothing, 2 for arguments
 //! that are wrong (the code of the argument parser), and 3 for a command that has done its work
 //! but could not finish: the repository exists, but flushing it to disk or writing the result
-//! failed. A script must not remove or repeat what such a command made. A failing command prints
+//! failed. A script must not remove or repeat what such a command made. A command that only reads
+//! (`op log`) has made nothing, so a failed write of its output is code 1; some of the output may
+//! already be written, and a script discards it. A failing command prints
 //! `stemma: <message>`, a complete message (see the crate documentation of `stemma-core`). The
 //! argument parser prints its own errors.
 
@@ -168,8 +170,9 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
     }
 }
 
-/// Lists the newest entries. The names of all files are listed, which finds a gap; only the files
-/// of the entries that are shown are read. Everything is read before anything is
+/// Lists the newest entries. The names of all files are listed, which finds a gap or a foreign
+/// file; only the files of the entries that are shown are read, so damage in an older entry goes
+/// unnoticed. Everything is read before anything is
 /// written, so an entry that is damaged gives an error and no partial list.
 fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = Repository::open(&args.path).map_err(CliError::Open)?;
@@ -277,6 +280,19 @@ mod tests {
     /// An output that fails on every write, such as a closed pipe.
     struct Closed;
 
+    /// An output that fails on every write with another error than a closed pipe.
+    struct Full;
+
+    impl Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("disk full"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Write for Closed {
         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
             Err(io::ErrorKind::BrokenPipe.into())
@@ -351,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_pipe_ends_the_list_quietly() {
+    fn a_closed_pipe_ends_the_list_quietly_and_another_write_error_fails() {
         let dir = std::env::temp_dir().join(format!("stemma-cli-unit-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
@@ -360,9 +376,13 @@ mod tests {
             &mut Vec::new(),
         )
         .unwrap();
-        let listed = run(parse(&["op", "log", path]), &mut Closed);
+        let closed = run(parse(&["op", "log", path]), &mut Closed);
+        let full = run(parse(&["op", "log", path]), &mut Full);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(listed.is_ok(), "{listed:?}");
+        assert!(closed.is_ok(), "{closed:?}");
+        let error = full.unwrap_err();
+        assert!(matches!(error, CliError::Write(_)), "{error}");
+        assert!(error.to_string().contains("disk full"), "{error}");
     }
 
     #[test]
