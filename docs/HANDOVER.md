@@ -30,7 +30,7 @@ Stemma ist ein API-first Versionskontrollsystem in Rust. Es wird von Daniel Senf
 
 **Nicht Ziel:** Git-Format-Kompatibilität, GitHub als Remote, eine Web-Oberfläche für alle.
 
-**Ideenquellen:** jj (Change-IDs, Konflikte als Daten, Operation Log), Pijul, Sapling. Das interne Versionskontrollsystem von Anthropic ist nur aus Presseberichten bekannt, nicht öffentlich. Coglans *Building Git* dient ausschliesslich als Ideenquelle, Text und Code sind neu geschrieben.
+**Ideenquellen:** jj (Change-IDs, Konflikte als Daten, Operation Log), Pijul, Sapling. Scion, das interne Versionskontrollsystem von Anthropic, ist durch den Engineering-Blog-Beitrag «Redesigning source control at Anthropic» (13.10.2026, `anthropic2026redesigning` in `docs/references.bib`) beschrieben. Es ist nicht öffentlich und nicht als Vorlage zum Nachbau gedacht. Coglans *Building Git* dient ausschliesslich als Ideenquelle, Text und Code sind neu geschrieben.
 
 ## Entscheidungen (ADRs)
 
