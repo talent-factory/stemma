@@ -261,7 +261,8 @@ them.
       ID changes.
 - [x] A tree builder from the index (`write-tree`) should verify inside. Done:
       `Index::write_tree(&store)` calls `Index::verify` itself, writes the trees from the innermost
-      directory outwards, and returns the root `TreeId`. Nothing is written if the check fails.
+      directory outwards, and returns the root `TreeId`. No tree is written if the check fails.
       `WriteTreeError` separates a failed check, a store that cannot write, and a tree that cannot
-      be built (ruled out by the index rules). The loop keeps a stack of open directories, so the
-      depth of a path cannot exhaust the call stack. The store can still change after the check.
+      be built (ruled out by the index rules). The work is a loop over a stack of open directories
+      and not a recursion. The blobs are not read again after the check, so a change of the store
+      after it goes unnoticed.

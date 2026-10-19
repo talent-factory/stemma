@@ -29,8 +29,9 @@
 //! Reading and encoding use no store. The reader claims each ID as a blob, because every entry of
 //! the index is a file, but it cannot know; [`Index::insert`] trusts the [`BlobId`] it is given.
 //! [`Index::verify`] checks the claim against a store. [`Index::write_tree`], the builder of trees
-//! from the index, calls it itself, so that no caller can forget the check. A failure to read a
-//! blob after the check is still an error, because the store can change after it.
+//! from the index, calls it itself, so that no caller can forget the check. It does not read the
+//! blobs again: if the store changes after the check, the tree is still written, and refers to
+//! the blob that is no longer there.
 //!
 //! An incompatible change to the encoding raises the number in the header line. A reader reports
 //! a header with another number as [`IndexParseError::UnsupportedVersion`] instead of reading
@@ -292,8 +293,8 @@ impl Error for IndexVerifyError {
 pub enum WriteTreeError {
     /// The index failed [`Index::verify`]. No tree was written.
     Verify(IndexVerifyError),
-    /// The store could not write a tree. Trees of subdirectories that were written before are
-    /// kept; they are valid objects that nothing refers to yet.
+    /// The store could not write a tree. The function does not remove the trees of
+    /// subdirectories that it wrote before; they are valid objects that nothing refers to yet.
     Store(Box<StoreError>),
     /// A tree could not be built from the entries. The rules of the index are those of a tree, so
     /// this does not happen for an index that was built with [`Index::insert`] or
@@ -601,13 +602,14 @@ impl Index {
     /// index gives the empty tree.
     ///
     /// The index is verified first ([`Index::verify`]), so a tree never refers to a blob that is
-    /// missing, damaged, or of another kind at that time. Nothing is written if the check fails.
-    /// The check costs as much as reading every staged file; see there. The store can still change
-    /// after the check, as it can after any check.
+    /// missing, damaged, or of another kind at that time. No tree is written if the check fails.
+    /// The check costs as much as reading every staged file; see there. The blobs are not read
+    /// again, so a change of the store after the check goes unnoticed: the tree then refers to a
+    /// blob that is missing or damaged.
     ///
     /// The trees are written from the innermost directory outwards, and the order of the entries
     /// is that of the depth-first walk, so each directory is complete when it is written. The
-    /// work is a loop and not a recursion, so the depth of a path cannot exhaust the stack.
+    /// work is a loop and not a recursion.
     ///
     /// # Errors
     ///
@@ -616,9 +618,10 @@ impl Index {
     /// the rules of the index rule out.
     pub fn write_tree(&self, store: &dyn ObjectStore) -> Result<TreeId, WriteTreeError> {
         self.verify(store).map_err(WriteTreeError::Verify)?;
-        // The directories that are open, from the root to the current one, each with its name
-        // and the entries found so far. The root has the empty name and is never closed here.
-        let mut open: Vec<(&str, Vec<TreeEntry>)> = vec![("", Vec::new())];
+        // The root and the directories that are open below it, from the outermost to the current
+        // one. The root is kept apart, so that an open directory always has a parent.
+        let mut root: Vec<TreeEntry> = Vec::new();
+        let mut open: Vec<OpenDirectory> = Vec::new();
         for (path, entry) in self.iter() {
             let (directories, name) = path.rsplit_once('/').unwrap_or(("", path));
             let wanted: Vec<&str> = if directories.is_empty() {
@@ -626,54 +629,79 @@ impl Index {
             } else {
                 directories.split('/').collect()
             };
-            let shared = open[1..]
+            let shared = open
                 .iter()
                 .zip(&wanted)
-                .take_while(|((open_name, _), wanted_name)| open_name == *wanted_name)
+                .take_while(|(directory, wanted_name)| directory.name == **wanted_name)
                 .count();
-            while open.len() > shared + 1 {
-                close_directory(store, &mut open)?;
+            while let Some(directory) = pop_beyond(&mut open, shared) {
+                close_directory(store, directory, entries_of(&mut root, &mut open))?;
             }
             for directory in &wanted[shared..] {
-                open.push((directory, Vec::new()));
+                open.push(OpenDirectory {
+                    name: directory,
+                    entries: Vec::new(),
+                });
             }
             let file = TreeEntry::file(name, entry.mode, entry.id).map_err(WriteTreeError::Tree)?;
-            if let Some((_, entries)) = open.last_mut() {
-                entries.push(file);
-            }
+            entries_of(&mut root, &mut open).push(file);
         }
-        while open.len() > 1 {
-            close_directory(store, &mut open)?;
+        while let Some(directory) = pop_beyond(&mut open, 0) {
+            close_directory(store, directory, entries_of(&mut root, &mut open))?;
         }
-        let (_, entries) = open.pop().unwrap_or_default();
-        write_directory(store, entries)
+        write_directory(store, root)
     }
 }
 
-/// Writes the tree of the entries and returns its ID.
+/// A directory below the root whose entries are still being collected.
+struct OpenDirectory<'a> {
+    name: &'a str,
+    entries: Vec<TreeEntry>,
+}
+
+/// Removes and returns the innermost open directory while more than `keep` are open.
+fn pop_beyond<'a>(open: &mut Vec<OpenDirectory<'a>>, keep: usize) -> Option<OpenDirectory<'a>> {
+    if open.len() > keep {
+        open.pop()
+    } else {
+        None
+    }
+}
+
+/// Returns the entries of the innermost open directory, or those of the root if none is open.
+fn entries_of<'e>(
+    root: &'e mut Vec<TreeEntry>,
+    open: &'e mut [OpenDirectory<'_>],
+) -> &'e mut Vec<TreeEntry> {
+    match open.last_mut() {
+        Some(directory) => &mut directory.entries,
+        None => root,
+    }
+}
+
+/// Writes the tree of the entries and returns its ID. The ID is computed from the tree and not
+/// taken from the store, which has to return the same one.
 fn write_directory(
     store: &dyn ObjectStore,
     entries: Vec<TreeEntry>,
 ) -> Result<TreeId, WriteTreeError> {
     let tree = Tree::new(entries).map_err(WriteTreeError::Tree)?;
-    store
+    let id = tree.id();
+    let stored = store
         .put_tree(&tree)
-        .map_err(|source| WriteTreeError::Store(Box::new(source)))
+        .map_err(|source| WriteTreeError::Store(Box::new(source)))?;
+    debug_assert_eq!(stored, id, "the store returned another ID for the tree");
+    Ok(id)
 }
 
-/// Writes the innermost open directory and adds it as an entry to its parent.
+/// Writes a closed directory and adds it as an entry to its parent.
 fn close_directory(
     store: &dyn ObjectStore,
-    open: &mut Vec<(&str, Vec<TreeEntry>)>,
+    directory: OpenDirectory<'_>,
+    parent: &mut Vec<TreeEntry>,
 ) -> Result<(), WriteTreeError> {
-    let Some((name, entries)) = open.pop() else {
-        return Ok(());
-    };
-    let id = write_directory(store, entries)?;
-    let directory = TreeEntry::directory(name, id).map_err(WriteTreeError::Tree)?;
-    if let Some((_, parent)) = open.last_mut() {
-        parent.push(directory);
-    }
+    let id = write_directory(store, directory.entries)?;
+    parent.push(TreeEntry::directory(directory.name, id).map_err(WriteTreeError::Tree)?);
     Ok(())
 }
 
@@ -1511,13 +1539,13 @@ mod tests {
         let (a, a_id) = directory("a", vec![b, file("d")]);
         let (f, f_id) = directory("f", vec![file("g")]);
         let (e, e_id) = directory("e", vec![f, file("h")]);
-        let (w, w_id) = directory("x", vec![file("w")]);
-        let (y, y_id) = directory("y", vec![w]);
+        let (x, x_id) = directory("x", vec![file("w")]);
+        let (y, y_id) = directory("y", vec![x]);
         let (z, z_id) = directory("z", vec![y]);
         let root = Tree::new(vec![file("README"), file("a-b"), file("a.b"), a, e, z]).unwrap();
         let root_id = index.write_tree(&store).unwrap();
         assert_eq!(root_id, root.id());
-        for id in [b_id, a_id, f_id, e_id, w_id, y_id, z_id, root_id] {
+        for id in [b_id, a_id, f_id, e_id, x_id, y_id, z_id, root_id] {
             assert!(store.contains(&ObjectId::from(id)).unwrap(), "{id}");
         }
     }
@@ -1553,6 +1581,75 @@ mod tests {
     }
 
     #[test]
+    fn write_tree_of_a_single_file_at_the_root() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let index = staged(&store, &["a"]);
+        let expected = Tree::new(vec![file("a")]).unwrap().id();
+        assert_eq!(index.write_tree(&store).unwrap(), expected);
+    }
+
+    #[test]
+    fn write_tree_closes_several_levels_at_once_and_keeps_shared_prefixes() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        // Two levels shared (`a/b`), three levels closed at once (`a/b/c/x` to `f`), and the same
+        // names at other depths (`b` below `a`, `g`, and `x`; `x` below `a` and at the root).
+        let index = staged(
+            &store,
+            &[
+                "a/b/c/x", "a/b/d", "a/e", "a/x/b/d", "f", "g/b/h", "g/b/i/j", "x/b/d",
+            ],
+        );
+        let (c, _) = directory("c", vec![file("x")]);
+        let (b, _) = directory("b", vec![c, file("d")]);
+        let (ax_b, _) = directory("b", vec![file("d")]);
+        let (ax, _) = directory("x", vec![ax_b]);
+        let (a, _) = directory("a", vec![b, file("e"), ax]);
+        let (i, _) = directory("i", vec![file("j")]);
+        let (gb, _) = directory("b", vec![file("h"), i]);
+        let (g, _) = directory("g", vec![gb]);
+        let (xb, _) = directory("b", vec![file("d")]);
+        let (x, _) = directory("x", vec![xb]);
+        let expected = Tree::new(vec![a, file("f"), g, x]).unwrap().id();
+        assert_eq!(index.write_tree(&store).unwrap(), expected);
+    }
+
+    /// Makes the store unable to write the tree: the directory for its file is a file.
+    fn block(store: &crate::store::FsObjectStore, tree: TreeId) {
+        let path = store.object_path(&ObjectId::from(tree));
+        let fan_out = path.parent().expect("an object file has a directory");
+        std::fs::create_dir_all(fan_out.parent().expect("an algorithm directory")).unwrap();
+        std::fs::write(fan_out, b"in the way").unwrap();
+    }
+
+    #[test]
+    fn write_tree_reports_a_store_that_fails_for_the_root_and_keeps_the_inner_trees() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let index = staged(&store, &["a/b", "c"]);
+        let (a, a_id) = directory("a", vec![file("b")]);
+        let root = Tree::new(vec![a, file("c")]).unwrap().id();
+        block(&store, root);
+        let error = index.write_tree(&store).unwrap_err();
+        assert!(matches!(error, WriteTreeError::Store(_)), "{error}");
+        assert!(store.contains(&ObjectId::from(a_id)).unwrap());
+    }
+
+    #[test]
+    fn write_tree_reports_a_store_that_fails_for_an_inner_tree_and_writes_no_root() {
+        let dir = crate::testutil::TempDir::new();
+        let store = dir.store();
+        let index = staged(&store, &["a/b", "c"]);
+        let (a, a_id) = directory("a", vec![file("b")]);
+        let root = Tree::new(vec![a, file("c")]).unwrap().id();
+        block(&store, a_id);
+        let error = index.write_tree(&store).unwrap_err();
+        assert!(matches!(error, WriteTreeError::Store(_)), "{error}");
+        assert!(!store.contains(&ObjectId::from(root)).unwrap());
+    }
+
+    #[test]
     fn write_tree_twice_gives_the_same_tree() {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
@@ -1583,7 +1680,7 @@ mod tests {
     }
 
     #[test]
-    fn write_tree_does_not_write_a_tree_for_an_id_that_names_a_tree() {
+    fn write_tree_rejects_an_id_that_names_a_tree_and_writes_no_tree() {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
         let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
@@ -1599,6 +1696,11 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+        let claimed = BlobId::new(ObjectId::from(tree));
+        let would_be = Tree::new(vec![TreeEntry::file("a", FileMode::File, claimed).unwrap()]);
+        assert!(!store
+            .contains(&ObjectId::from(would_be.unwrap().id()))
+            .unwrap());
     }
 
     #[test]
@@ -1635,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn write_tree_handles_a_deeply_nested_path() {
+    fn write_tree_gives_the_right_tree_for_a_deeply_nested_path() {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
         let path = vec!["d"; 200].join("/");
