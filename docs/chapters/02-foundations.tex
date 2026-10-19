@@ -24,6 +24,8 @@ Git trennt drei Zustände: die Arbeitskopie, den Index als Staging-Bereich und d
 
 Git bricht einen Vorgang ab, wenn ein Konflikt entsteht. Jujutsu speichert Konflikte dagegen im Commit selbst. Ein Agent kann so weiterarbeiten und den Konflikt später lösen. Ein Operation Log protokolliert jeden Schritt und ermöglicht das Zurücksetzen beliebiger Operationen. Beide Ideen passen gut zu Agenten, die viele Schritte ausführen.
 
+In Stemma ist das Log lokal und gehört nicht zur Historie (ADR-005, ADR-011). Es hält fest, welche Zeiger eine Operation von welchem auf welchen Wert gesetzt hat, wer sie ausgeführt hat und wann. Damit bleibt jeder ersetzte Commit erreichbar, auch der Arbeitskopie-Commit, den ein Snapshot ablöst. Der Eintrag wird geschrieben, bevor der Zeiger sich bewegt: Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log. Jeder Eintrag ist eine eigene Datei mit fortlaufender Nummer, sodass mehrere Agenten gleichzeitig schreiben können, ohne sich zu sperren, und ein einzelner Eintrag sich ersetzen lässt, wenn ein Geheimnis entfernt werden muss.
+
 \section{Ideen aus anderen Systemen}
 
 \startitemize
