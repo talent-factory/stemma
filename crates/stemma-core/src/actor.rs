@@ -172,7 +172,8 @@ impl fmt::Display for ActorParseError {
 impl Error for ActorParseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Invalid(source) => Some(source),
+            // The message is that of the cause, so the source is the cause of the cause.
+            Self::Invalid(source) => source.source(),
             Self::Malformed(_) => None,
         }
     }
@@ -617,7 +618,8 @@ mod tests {
             error.to_string(),
             "actor field `id` must be non-empty visible ASCII (U+0021 to U+007E)"
         );
-        assert!(std::error::Error::source(&error).is_some());
+        // The message is that of the field error, which has no cause of its own.
+        assert!(std::error::Error::source(&error).is_none());
     }
 
     #[test]

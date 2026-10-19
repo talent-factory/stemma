@@ -18,11 +18,15 @@
 //! a failure prints both values.
 
 use std::error::Error;
+use std::io;
 
 use crate::index::{FileMode, Index, IndexParseError};
 use crate::object::{
-    Blob, BlobId, Commit, CommitId, CommitParseError, Tree, TreeEntry, TreeId, TreeParseError,
+    Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
+    TreeParseError,
 };
+use crate::store::{ObjectStore, StoreError};
+use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
 use crate::{Actor, ActorParseError};
 
 /// The seed when `STEMMA_PROPERTY_SEED` is not set.
@@ -539,6 +543,25 @@ fn line_count(bytes: &[u8]) -> usize {
     (newlines + usize::from(cut_off)).max(1)
 }
 
+/// Walks the chain of causes and checks that it ends, that no link is empty, and that no link
+/// repeats in its message the message of the next one: a message is complete and `source` goes on
+/// with the first cause that the message does not print (crate documentation).
+fn assert_no_message_twice(error: &dyn Error, context: &str) {
+    let mut depth = 0;
+    let mut link = error;
+    while let Some(next) = link.source() {
+        depth += 1;
+        assert!(depth < 8, "{context}: the cause chain does not end");
+        let (outer, inner) = (link.to_string(), next.to_string());
+        assert!(!inner.is_empty(), "{context}: empty cause");
+        assert!(
+            !outer.contains(&inner),
+            "{context}: {outer:?} has the message of its source {inner:?}"
+        );
+        link = next;
+    }
+}
+
 /// Checks the rules for every rejection: the message is not empty, the chain of causes ends, and
 /// the line, if there is one, is inside the input.
 fn check_rejection(
@@ -552,14 +575,7 @@ fn check_rejection(
         !error.to_string().is_empty(),
         "{context}: empty message for {input:?}"
     );
-    let mut depth = 0;
-    let mut cause = error.source();
-    while let Some(next) = cause {
-        depth += 1;
-        assert!(depth < 8, "{context}: the cause chain does not end");
-        assert!(!next.to_string().is_empty(), "{context}: empty cause");
-        cause = next.source();
-    }
+    assert_no_message_twice(error, context);
     if let Some(line) = line {
         assert!(
             (1..=last_line).contains(&line),
@@ -894,4 +910,145 @@ fn names_and_fields_that_the_rules_forbid_are_rejected_everywhere() {
             assert!(line.parse::<Actor>().is_err(), "{line:?} is accepted");
         }
     }
+}
+
+/// Every error that wraps another one, built from a failure of the file system that has a cause
+/// of its own (the same on every system, see `FaultyStore`). The message of each ends in the
+/// message of the I/O error, once, and the chain of causes goes on with the one link below that,
+/// which the message does not print, and nothing after it.
+#[test]
+fn every_error_that_wraps_another_prints_the_cause_once_and_goes_on_below_it() {
+    let dir = TempDir::new();
+    let working = dir.store();
+    let blob = working.put_blob(&Blob::new("hello")).unwrap();
+    let id = ObjectId::from(blob);
+    let empty = working.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+    let mut index = Index::new();
+    index.insert("a", FileMode::File, blob).unwrap();
+    let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
+    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
+
+    let reading = FaultyStore::new(dir.store(), true, false);
+    let writing = FaultyStore::new(dir.store(), false, true);
+    let errors: Vec<(&str, Box<dyn Error>)> = vec![
+        ("get", Box::new(reading.get(&id).unwrap_err())),
+        ("get_tree", Box::new(reading.get_tree(&empty).unwrap_err())),
+        (
+            "get_commit",
+            Box::new(reading.get_commit(&commit.id()).unwrap_err()),
+        ),
+        (
+            "index verify",
+            Box::new(index.verify(&reading).unwrap_err()),
+        ),
+        (
+            "write_tree, check",
+            Box::new(index.write_tree(&reading).unwrap_err()),
+        ),
+        (
+            "write_tree, write",
+            Box::new(index.write_tree(&writing).unwrap_err()),
+        ),
+        ("tree verify", Box::new(tree.verify(&reading).unwrap_err())),
+        (
+            "commit verify",
+            Box::new(commit.verify(&reading).unwrap_err()),
+        ),
+    ];
+    for (name, error) in &errors {
+        let text = error.to_string();
+        assert!(text.ends_with(DISK_MESSAGE), "{name}: {text}");
+        assert_eq!(text.matches(DISK_MESSAGE).count(), 1, "{name}: {text}");
+        assert!(!text.contains("deepest"), "{name}: {text}");
+        // One link: the cause below the I/O error, whose message the text does not print.
+        let first = error
+            .source()
+            .unwrap_or_else(|| panic!("{name}: no source"));
+        assert_eq!(first.to_string(), "the deepest cause", "{name}");
+        assert!(first.source().is_none(), "{name}");
+        assert_no_message_twice(error.as_ref(), name);
+    }
+}
+
+/// The typed error of the file system stays reachable through the wrappers, by the accessors.
+#[test]
+fn the_error_of_the_file_system_is_reached_through_every_wrapper() {
+    let dir = TempDir::new();
+    let working = dir.store();
+    let blob = working.put_blob(&Blob::new("hello")).unwrap();
+    let empty = working.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+    let mut index = Index::new();
+    index.insert("a", FileMode::File, blob).unwrap();
+    let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
+    let commit = Commit::new(empty, vec![], Actor::human("daniel").unwrap(), 0, "m").unwrap();
+    let reading = FaultyStore::new(dir.store(), true, false);
+    let writing = FaultyStore::new(dir.store(), false, true);
+
+    let kind = |store_error: Option<&StoreError>| {
+        store_error
+            .and_then(StoreError::io_error)
+            .map(io::Error::kind)
+    };
+    let kinds = [
+        reading
+            .get(&ObjectId::from(blob))
+            .unwrap_err()
+            .io_error()
+            .map(io::Error::kind),
+        kind(reading.get_tree(&empty).unwrap_err().store_error()),
+        kind(index.verify(&reading).unwrap_err().store_error()),
+        kind(index.write_tree(&reading).unwrap_err().store_error()),
+        kind(index.write_tree(&writing).unwrap_err().store_error()),
+        kind(tree.verify(&reading).unwrap_err().store_error()),
+        kind(commit.verify(&reading).unwrap_err().store_error()),
+    ];
+    assert!(
+        kinds.iter().all(|kind| *kind == Some(io::ErrorKind::Other)),
+        "{kinds:?}"
+    );
+
+    // A rejection that is not an error of the store has none.
+    let mut missing = Index::new();
+    missing
+        .insert("a", FileMode::File, Blob::new("absent").id())
+        .unwrap();
+    assert!(missing
+        .verify(&dir.store())
+        .unwrap_err()
+        .store_error()
+        .is_none());
+    let store = dir.store();
+    let body = store
+        .put_raw(crate::object::Kind::Tree, b"100644 a\nnot-an-id\n")
+        .unwrap();
+    let error = store.get_tree(&TreeId::new(body)).unwrap_err();
+    assert!(error.store_error().is_none(), "{error}");
+}
+
+/// A chain in which a wrapper returns its cause although the message has it is the defect that
+/// the rule excludes. The check has to see it.
+#[test]
+fn a_chain_that_repeats_a_message_is_found() {
+    #[derive(Debug)]
+    struct Inner;
+    impl std::fmt::Display for Inner {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("inner")
+        }
+    }
+    impl Error for Inner {}
+    #[derive(Debug)]
+    struct Outer(Inner);
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "outer: {}", self.0)
+        }
+    }
+    impl Error for Outer {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+    let caught = std::panic::catch_unwind(|| assert_no_message_twice(&Outer(Inner), "test"));
+    assert!(caught.is_err());
 }

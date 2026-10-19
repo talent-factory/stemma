@@ -1,5 +1,27 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
 //! index, and object storage.
+//!
+//! # Errors
+//!
+//! The message of an error is complete: it includes the message of its cause, so `to_string()` is
+//! all that a log, a command line, or an agent needs. [`Error::source`](std::error::Error::source)
+//! therefore returns the cause of the cause, the first link that the message does not print yet,
+//! and never the cause itself. A program that walks the chain and prints every link shows each
+//! message once. The cause itself stays available as a field of the variant, typed, for a caller
+//! that wants to match on it. An error that wraps another one without adding anything to its
+//! message, such as [`store::ReadError::Store`], is transparent in the same way.
+//!
+//! The usual split is another one: each error prints only its own text, and a program prints the
+//! chain of causes. It was not chosen, because a complete `to_string()` is what tests, logs, and
+//! agents read, and because no code has to know how to print a chain. The price is that a walk
+//! of [`Error::source`](std::error::Error::source) does not lead to the typed cause, so
+//! `downcast_ref::<std::io::Error>()` on a source finds nothing, and neither does the idiom
+//! `root_cause()` of an error library. A program that wants the error of the file system, for
+//! example to map [`std::io::ErrorKind`] to an exit code, asks the error:
+//! [`store::StoreError::io_error`] for the store, and `store_error()` on
+//! [`store::ReadError`], [`index::IndexVerifyError`], [`index::WriteTreeError`],
+//! [`verify::TreeVerifyError`], and [`verify::CommitVerifyError`] for the error of the store
+//! inside. A program that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
 pub mod index;

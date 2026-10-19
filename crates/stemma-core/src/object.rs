@@ -765,8 +765,10 @@ impl fmt::Display for TreeParseError {
 impl Error for TreeParseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidObjectId { source, .. } => Some(source),
-            Self::Entry { source, .. } => Some(source),
+            // The message of the variant includes the message of the cause, so the source is the
+            // cause of the cause (see the crate documentation).
+            Self::InvalidObjectId { source, .. } => source.source(),
+            Self::Entry { source, .. } => source.source(),
             _ => None,
         }
     }
@@ -1046,10 +1048,12 @@ impl fmt::Display for CommitParseError {
 impl Error for CommitParseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidObjectId { source, .. } => Some(source),
-            Self::InvalidTime { reason, .. } => Some(reason),
-            Self::InvalidAuthor { source, .. } => Some(source),
-            Self::Commit(source) => Some(source),
+            // The message of each variant includes the message of the cause, so the source is the
+            // cause of the cause (see the crate documentation).
+            Self::InvalidObjectId { source, .. } => source.source(),
+            Self::InvalidTime { reason, .. } => reason.source(),
+            Self::InvalidAuthor { source, .. } => source.source(),
+            Self::Commit(source) => source.source(),
             _ => None,
         }
     }
@@ -2310,7 +2314,7 @@ mod tests {
         assert!(error
             .to_string()
             .starts_with("line 1: invalid tree entry name `a/b`"));
-        assert!(error.source().is_some());
+        assert!(error.source().is_none());
         let error = Tree::parse(format!("100644 b\n{HELLO_ID}\n100644 a\n{HELLO_ID}\n").as_bytes())
             .unwrap_err();
         assert!(error.to_string().contains("strictly ascending"), "{error}");
@@ -2517,7 +2521,7 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_error_names_the_line_and_the_cause() {
+    fn a_commit_error_names_the_line_and_the_cause_once() {
         let error = Commit::parse(&commit_bytes(TREE_ID, &[], "human a b", "1", "\n")).unwrap_err();
         assert!(
             error
@@ -2525,16 +2529,13 @@ mod tests {
                 .starts_with("line 2: malformed actor line"),
             "{error}"
         );
-        assert!(error.source().is_some());
+        assert!(error.source().is_none());
         let error = Commit::parse(&commit_bytes(TREE_ID, &[], "human d", "01", "\n")).unwrap_err();
         assert_eq!(
             error.to_string(),
             "line 3: the time is not a canonical decimal integer of seconds"
         );
-        assert_eq!(
-            error.source().map(ToString::to_string).as_deref(),
-            Some("the time is not a canonical decimal integer of seconds")
-        );
+        assert!(error.source().is_none());
     }
 
     #[test]
@@ -2588,87 +2589,77 @@ mod tests {
         assert!(accepted.contains(&with_replaced(&golden, "sponsor=daniel", "sponsor=daniel9")));
     }
     #[test]
-    fn every_tree_error_has_a_stable_message_and_the_right_source() {
+    fn every_tree_error_has_a_stable_message_and_no_repeated_source() {
         let id_error = "b3:00".parse::<ObjectId>().unwrap_err();
-        let cases: [(Vec<u8>, String, bool); 6] = [
+        let cases: [(Vec<u8>, String); 6] = [
             (
                 b"100644 a\xff\n".to_vec(),
                 "the tree is not valid UTF-8 (valid up to byte 8)".to_owned(),
-                false,
             ),
             (
                 b"100644a\nx\n".to_vec(),
                 "line 1: expected `<mode> <name>`".to_owned(),
-                false,
             ),
             (
                 format!("100664 a\n{HELLO_ID}\n").into_bytes(),
                 "line 1: unknown mode `100664`".to_owned(),
-                false,
             ),
             (
                 b"100644 a\nb3:00\n".to_vec(),
                 format!("line 2: invalid object ID: {id_error}"),
-                true,
             ),
             (
                 format!("100644 a/b\n{HELLO_ID}\n").into_bytes(),
                 "line 1: invalid tree entry name `a/b`: the name contains `/`".to_owned(),
-                true,
             ),
             (
                 format!("100644 b\n{HELLO_ID}\n100644 a\n{HELLO_ID}\n").into_bytes(),
                 "line 3: `a` does not sort after `b`; names must be strictly ascending".to_owned(),
-                false,
             ),
         ];
-        for (bytes, message, has_source) in cases {
+        for (bytes, message) in cases {
             let error = Tree::parse(&bytes).unwrap_err();
             assert_eq!(error.to_string(), message);
-            assert_eq!(error.source().is_some(), has_source, "{message}");
+            // The message has the message of the cause, so the chain ends here.
+            assert!(error.source().is_none(), "{message}");
         }
     }
     #[test]
-    fn every_commit_error_has_a_stable_message_and_the_right_source() {
+    fn every_commit_error_has_a_stable_message_and_no_repeated_source() {
         let t = TREE_ID;
         let id_error = "b3:00".parse::<ObjectId>().unwrap_err();
-        let cases: [(Vec<u8>, String, bool); 6] = [
+        let cases: [(Vec<u8>, String); 6] = [
             (
                 b"tree x\n\xff".to_vec(),
                 "the commit is not valid UTF-8 (valid up to byte 7)".to_owned(),
-                false,
             ),
             (
                 commit_bytes(t, &[], "human d", "+1", "\n"),
                 format!("line 3: {}", TimeError::NotCanonical),
-                true,
             ),
             (
                 commit_bytes(t, &[], "human d", "9223372036854775808", "\n"),
                 format!("line 3: {}", TimeError::OutOfRange),
-                true,
             ),
             (
                 commit_bytes("b3:00", &[], "human d", "1", "\n"),
                 format!("line 1: invalid object ID: {id_error}"),
-                true,
             ),
             (
                 commit_bytes(t, &[], "robot x", "1", "\n"),
                 "line 2: malformed actor line: an actor line starts with `human` or `agent`"
                     .to_owned(),
-                true,
             ),
             (
                 commit_bytes(t, &[HELLO_ID, HELLO_ID], "human d", "1", "\n"),
                 format!("line 3: duplicate parent {HELLO_ID}"),
-                false,
             ),
         ];
-        for (bytes, message, has_source) in cases {
+        for (bytes, message) in cases {
             let error = Commit::parse(&bytes).unwrap_err();
             assert_eq!(error.to_string(), message);
-            assert_eq!(error.source().is_some(), has_source, "{message}");
+            // The message has the message of the cause, so the chain ends here.
+            assert!(error.source().is_none(), "{message}");
         }
     }
 
@@ -2814,8 +2805,8 @@ mod tests {
             assert_eq!(reason.to_string(), message);
             let error = CommitParseError::InvalidTime { line: 7, reason };
             assert_eq!(error.to_string(), format!("line 7: {message}"));
-            let cause = error.source().expect("the reason is the cause");
-            assert_eq!(cause.to_string(), message);
+            // The message has the reason, which has no cause of its own.
+            assert!(error.source().is_none());
         }
     }
 

@@ -50,10 +50,21 @@ impl fmt::Display for TreeVerifyError {
     }
 }
 
+impl TreeVerifyError {
+    /// Returns the error of the store, unless the store has no such object.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Store { source, .. } => Some(source),
+            Self::Missing { .. } => None,
+        }
+    }
+}
+
 impl Error for TreeVerifyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Store { source, .. } => Some(source.as_ref()),
+            // The message includes that of the store error; see the crate documentation.
+            Self::Store { source, .. } => source.source(),
             Self::Missing { .. } => None,
         }
     }
@@ -153,10 +164,21 @@ impl fmt::Display for CommitVerifyError {
     }
 }
 
+impl CommitVerifyError {
+    /// Returns the error of the store, unless the store has no such object.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Store { source, .. } => Some(source),
+            Self::Missing { .. } => None,
+        }
+    }
+}
+
 impl Error for CommitVerifyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Store { source, .. } => Some(source.as_ref()),
+            // The message includes that of the store error; see the crate documentation.
+            Self::Store { source, .. } => source.source(),
             Self::Missing { .. } => None,
         }
     }
@@ -377,11 +399,8 @@ mod tests {
             error.to_string(),
             format!("`say\\\"hi`: object {sub} is a tree, not a blob")
         );
-        let cause = error.source().expect("a store error has a cause");
-        assert_eq!(
-            cause.to_string(),
-            format!("object {sub} is a tree, not a blob")
-        );
+        // The message has the message of the store error, so the chain ends here.
+        assert!(error.source().is_none());
     }
 
     #[test]
@@ -507,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_store_error_names_the_reference_and_carries_the_store_error() {
+    fn a_commit_store_error_names_the_reference_and_prints_the_store_error_once() {
         let dir = TempDir::new();
         let store = dir.store();
         let tree = empty_tree(&store);
@@ -520,18 +539,15 @@ mod tests {
             error.to_string(),
             format!("parent 2: object {tree} is a tree, not a commit")
         );
-        let cause = error.source().expect("a store error has a cause");
-        assert_eq!(
-            cause.to_string(),
-            format!("object {tree} is a tree, not a commit")
-        );
+        // The message has the message of the store error, so the chain ends here.
+        assert!(error.source().is_none());
         let parent_as_tree = TreeId::new(ObjectId::from(parent));
         let error = commit(parent_as_tree, vec![]).verify(&store).unwrap_err();
         assert_eq!(
             error.to_string(),
             format!("the tree: object {parent} is a commit, not a tree")
         );
-        assert!(error.source().is_some());
+        assert!(error.source().is_none());
     }
 
     #[test]
