@@ -7,6 +7,7 @@ pub mod object;
 pub mod store;
 #[cfg(test)]
 mod testutil;
+pub mod verify;
 
 pub use actor::{Actor, ActorError, ActorField, ActorParseError, ActorRef};
 

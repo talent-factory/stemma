@@ -1,7 +1,8 @@
 //! Object storage: the [`ObjectStore`] trait and a file system implementation (ADR-007).
 //!
 //! A store keeps objects by ID. It does not interpret them: it stores the object kind and the
-//! encoded body, and gives both back. It does not decode trees or commits.
+//! encoded body, and gives both back. [`ObjectStore::get_tree`] and [`ObjectStore::get_commit`]
+//! add the strict readers of ADR-005 on top; the store itself does not interpret a body.
 //!
 //! [`FsObjectStore`] keeps one file per object ("loose objects") below the repository's
 //! metadata directory:
@@ -23,7 +24,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::object::{hash_encoding, Blob, BlobId, Commit, CommitId, Kind, ObjectId, Tree, TreeId};
+use crate::object::{
+    hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
+    TreeParseError,
+};
 
 /// Why a stored object is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +141,53 @@ impl Error for StoreError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Corrupt { .. } | Self::KindMismatch { .. } => None,
+        }
+    }
+}
+
+/// Why [`ObjectStore::get_tree`] or [`ObjectStore::get_commit`] fails.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ReadError {
+    /// The store could not return the object: the storage failed, the object is damaged, or it
+    /// has another kind. The message and the cause are those of the store error. Boxed because
+    /// the unboxed error is too large for clippy's `result_large_err` lint.
+    Store(Box<StoreError>),
+    /// The object is a tree and its content is intact, but its body is not in canonical form.
+    /// Nothing in this crate writes such a tree.
+    Tree {
+        /// The ID the tree was requested by.
+        id: TreeId,
+        /// What is wrong with the body.
+        source: Box<TreeParseError>,
+    },
+    /// The object is a commit and its content is intact, but its body is not in canonical form.
+    /// Nothing in this crate writes such a commit.
+    Commit {
+        /// The ID the commit was requested by.
+        id: CommitId,
+        /// What is wrong with the body.
+        source: Box<CommitParseError>,
+    },
+}
+
+impl fmt::Display for ReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Store(source) => write!(f, "{source}"),
+            Self::Tree { id, source } => write!(f, "tree {id} is not canonical: {source}"),
+            Self::Commit { id, source } => write!(f, "commit {id} is not canonical: {source}"),
+        }
+    }
+}
+
+impl Error for ReadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            // Transparent: the message is that of the store error, so its cause is the cause here.
+            Self::Store(source) => source.source(),
+            Self::Tree { source, .. } => Some(source.as_ref()),
+            Self::Commit { source, .. } => Some(source.as_ref()),
         }
     }
 }
@@ -289,6 +340,62 @@ pub trait ObjectStore: sealed::Sealed {
         Ok(self
             .get_expecting(id, Kind::Commit)?
             .map(|_| CommitId::new(*id)))
+    }
+
+    /// Returns the tree with the ID, or `None` if the store does not have it. The object is read
+    /// and checked as in [`get`](Self::get), its kind is confirmed, and its body is read by
+    /// [`Tree::parse`]. The entries of the result are claims about the objects they name; see
+    /// [`Tree::verify`] for the check against this store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError::Store`] with [`StoreError::KindMismatch`] if the object is not a
+    /// tree, and with the other errors of [`get`](Self::get). Returns [`ReadError::Tree`] if the
+    /// body is not canonical.
+    fn get_tree(&self, id: &TreeId) -> Result<Option<Tree>, ReadError> {
+        let Some(object) = self
+            .get_expecting(&id.object_id(), Kind::Tree)
+            .map_err(|source| ReadError::Store(Box::new(source)))?
+        else {
+            return Ok(None);
+        };
+        let tree = Tree::parse(object.body()).map_err(|source| ReadError::Tree {
+            id: *id,
+            source: Box::new(source),
+        })?;
+        debug_assert_eq!(
+            tree.id(),
+            *id,
+            "a canonical body hashes to the ID it is stored by"
+        );
+        Ok(Some(tree))
+    }
+
+    /// Like [`get_tree`](Self::get_tree), for a commit. The IDs of the tree and of the parents in
+    /// the result are claims; see [`Commit::verify`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError::Store`] with [`StoreError::KindMismatch`] if the object is not a
+    /// commit, and with the other errors of [`get`](Self::get). Returns [`ReadError::Commit`] if
+    /// the body is not canonical.
+    fn get_commit(&self, id: &CommitId) -> Result<Option<Commit>, ReadError> {
+        let Some(object) = self
+            .get_expecting(&id.object_id(), Kind::Commit)
+            .map_err(|source| ReadError::Store(Box::new(source)))?
+        else {
+            return Ok(None);
+        };
+        let commit = Commit::parse(object.body()).map_err(|source| ReadError::Commit {
+            id: *id,
+            source: Box::new(source),
+        })?;
+        debug_assert_eq!(
+            commit.id(),
+            *id,
+            "a canonical body hashes to the ID it is stored by"
+        );
+        Ok(Some(commit))
     }
 }
 
@@ -1494,5 +1601,156 @@ mod tests {
             let text = reason.to_string();
             assert!(text.contains(fragment), "{text}");
         }
+    }
+
+    // ---- get_tree and get_commit
+
+    fn author() -> crate::Actor {
+        crate::Actor::human("daniel").unwrap()
+    }
+
+    #[test]
+    fn get_tree_returns_the_stored_tree_and_none_for_an_absent_one() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = Tree::new(vec![
+            TreeEntry::file("a", FileMode::File, BlobId::new(id(HELLO_ID))).unwrap(),
+            TreeEntry::file("b", FileMode::Symlink, BlobId::new(id(HELLO_ID))).unwrap(),
+        ])
+        .unwrap();
+        let stored = store.put_tree(&tree).unwrap();
+        assert_eq!(store.get_tree(&stored).unwrap(), Some(tree));
+        let absent = Tree::new(vec![]).unwrap().id();
+        assert_eq!(store.get_tree(&absent).unwrap(), None);
+    }
+
+    #[test]
+    fn get_commit_returns_the_stored_commit_and_none_for_an_absent_one() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let parent = Commit::new(tree, vec![], author(), 1, "first").unwrap();
+        let parent_id = store.put_commit(&parent).unwrap();
+        let commit = Commit::new(tree, vec![parent_id], author(), 2, "second\n\nbody").unwrap();
+        let stored = store.put_commit(&commit).unwrap();
+        assert_eq!(store.get_commit(&stored).unwrap(), Some(commit.clone()));
+        let absent = Commit::new(tree, vec![stored], author(), 3, "x")
+            .unwrap()
+            .id();
+        assert_eq!(store.get_commit(&absent).unwrap(), None);
+    }
+
+    #[test]
+    fn get_tree_and_get_commit_report_an_object_of_another_kind() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = store.put_blob(&Blob::new("hello")).unwrap();
+        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let blob_as_tree = TreeId::new(ObjectId::from(blob));
+        let tree_as_commit = CommitId::new(ObjectId::from(tree));
+        match store.get_tree(&blob_as_tree).unwrap_err() {
+            ReadError::Store(source) => assert!(
+                matches!(
+                    *source,
+                    StoreError::KindMismatch {
+                        expected: Kind::Tree,
+                        found: Kind::Blob,
+                        ..
+                    }
+                ),
+                "{source}"
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
+        match store.get_commit(&tree_as_commit).unwrap_err() {
+            ReadError::Store(source) => assert!(
+                matches!(
+                    *source,
+                    StoreError::KindMismatch {
+                        expected: Kind::Commit,
+                        found: Kind::Tree,
+                        ..
+                    }
+                ),
+                "{source}"
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn get_tree_and_get_commit_report_a_damaged_object_as_a_store_error() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let commit = store
+            .put_commit(&Commit::new(tree, vec![], author(), 1, "m").unwrap())
+            .unwrap();
+        overwrite(&store.object_path(&ObjectId::from(tree)), b"tree 1\0x");
+        overwrite(&store.object_path(&ObjectId::from(commit)), b"commit 1\0x");
+        match store.get_tree(&tree).unwrap_err() {
+            ReadError::Store(source) => {
+                assert!(matches!(*source, StoreError::Corrupt { .. }), "{source}")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        match store.get_commit(&commit).unwrap_err() {
+            ReadError::Store(source) => {
+                assert!(matches!(*source, StoreError::Corrupt { .. }), "{source}")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn a_non_canonical_body_is_reported_with_the_id_and_the_reason() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        // The content hashes to its ID, so the store accepts it; only the body is not canonical.
+        let tree = TreeId::new(store.put_raw(Kind::Tree, b"100644 a\nnot-an-id\n").unwrap());
+        let commit = CommitId::new(store.put_raw(Kind::Commit, b"tree x\n").unwrap());
+        match store.get_tree(&tree).unwrap_err() {
+            ReadError::Tree { id, source } => {
+                assert_eq!(id, tree);
+                assert!(
+                    matches!(*source, TreeParseError::InvalidObjectId { .. }),
+                    "{source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        match store.get_commit(&commit).unwrap_err() {
+            ReadError::Commit { id, source } => {
+                assert_eq!(id, commit);
+                assert!(
+                    matches!(*source, CommitParseError::InvalidObjectId { .. }),
+                    "{source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn read_errors_say_what_failed_and_carry_their_cause() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = TreeId::new(store.put_raw(Kind::Tree, b"100644 a\nnot-an-id\n").unwrap());
+        let error = store.get_tree(&tree).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.starts_with(&format!("tree {tree} is not canonical: ")),
+            "{text}"
+        );
+        assert!(error.source().is_some());
+        let blob = store.put_blob(&Blob::new("hello")).unwrap();
+        let error = store
+            .get_tree(&TreeId::new(ObjectId::from(blob)))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("object {blob} is a blob, not a tree")
+        );
+        assert!(error.source().is_none());
     }
 }

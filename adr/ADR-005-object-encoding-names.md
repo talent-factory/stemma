@@ -245,9 +245,14 @@ them.
       ascending, a body that is not UTF-8, a missing final newline or empty line, and a parent that
       is listed twice. The body is checked as a whole (UTF-8, and for a tree the final newline)
       before the lines are read in order. They claim the kind of each ID from the mode or the
-      header, and their documentation says that `resolve_*` has to confirm it. What is not done: a
-      function that reads an object from a store and returns the decoded value, which has to combine
-      the errors of the store and of the reader.
+      header, and their documentation says that `resolve_*` has to confirm it.
+- [x] Read an object from a store and return the decoded value. Done: `ObjectStore::get_tree` and
+      `get_commit` take a typed ID, confirm the kind, and read the body with the strict reader.
+      `ReadError` combines the errors: `Store` (transparent, boxed), and `Tree` or `Commit` with the
+      ID and the reason from the reader. `Tree::verify` and `Commit::verify` (module `verify`)
+      check the claims of a decoded object against a store, one level deep: a directory entry and
+      the tree of a commit must be trees, the other entries blobs, and the parents commits. Every
+      referenced object is read and hashed, so the cost grows with its size.
 - [x] A commit reader needs to rebuild an `Actor` from the author header. Done: `Actor::from_str` in
       `actor.rs` splits at single spaces, requires exact token counts and the keys in order, splits
       each `key=value` token at its first `=`, and checks the fields again with `Actor::human` and
