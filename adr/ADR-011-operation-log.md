@@ -61,13 +61,17 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   There is no marker for the outcome, because a second write after the move could be half done or
   lost, and then a move that happened would look as if it had not. A reader reads the outcome
   from the chain of the entries of one pointer: a later entry whose old value is the new value of
-  this one confirms the move, and the current value of the pointer confirms the last one
-  *(implemented)*. A later entry whose old value is another one refutes it, and so does a current
-  value that equals the old value. What the chain cannot decide is a current value that is
-  neither (a change outside the log), and the working-copy commit; the outcome is then unknown. A
-  writer that works between the reading of the entries and of the references can make the newest
-  entry unknown. A marker can come with a later version of the entry encoding (`stemma-oplog 2`)
-  if a use appears.
+  this one confirms the move, and the current value of the pointer confirms the last one. The
+  reading is `oplog::outcomes` *(implemented)*. "The move did not take effect" is the strongest
+  statement of the log, so it is made only on clear evidence: a later entry whose old value is the
+  *old* value of this one, or a current value that equals the old value while no writer is at work
+  (the lock of the references is not held before and after the references are read, and the log
+  has not grown meanwhile). A writer between its entry and its move looks the same as a crash
+  there, so while one is at work the outcome is unknown. Any other value is a change outside the
+  log and leaves the outcome unknown, as does the working-copy commit and a pointer whose value
+  cannot be read. A lock that a crashed writer left makes the newest entries unknown until
+  someone removes it. A separate marker can come with a later version of the entry encoding
+  (`stemma-oplog 2`) if a use appears.
 - **Only a change writes an entry** *(implemented for pointers; the snapshot is not built)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
@@ -160,7 +164,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 
 - [x] A function that reads the outcome of an entry from the chain of its pointer
       (`oplog::outcomes`, STEMMA-34); `stemma op log` marks an entry that did not take effect
-      (`took_effect` in JSON, a `!` or `?` line in the text). The working-copy commit has no
+      (`!`, `took_effect: false`) or whose outcome is not known (`?`, `null`). The working-copy commit has no
       place in the references yet (ADR-010), so the last entry that moves it stays unknown until
       the snapshot exists.
 - [ ] Every `append` lists the directory to find the end of the log, which costs time in a long

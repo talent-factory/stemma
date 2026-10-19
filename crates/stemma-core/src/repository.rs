@@ -394,6 +394,16 @@ impl RefsView<'_> {
         self.refs.branches()
     }
 
+    /// Whether a writer holds the lock of the references, so that an operation may be between its
+    /// entry in the log and the move of a pointer. A lock that a crashed writer left counts as held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Io`] if the lock file cannot be inspected.
+    pub fn is_locked(&self) -> Result<bool, RefError> {
+        self.refs.is_locked()
+    }
+
     /// The commit that HEAD leads to. See [`RefStore::resolve_head`].
     ///
     /// # Errors

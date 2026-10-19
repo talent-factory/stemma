@@ -60,6 +60,7 @@ fn run(dir: &Path, args: &[&str]) -> Run {
 }
 
 const A: &str = "b3:1111111111111111111111111111111111111111111111111111111111111111";
+const C: &str = "b3:3333333333333333333333333333333333333333333333333333333333333333";
 const B: &str = "b3:2222222222222222222222222222222222222222222222222222222222222222";
 
 /// A repository made by `init`, with the actor `human daniel`.
@@ -391,4 +392,111 @@ fn an_outcome_that_is_not_known_is_null_and_marked_with_a_question_mark() {
         .next()
         .unwrap()
         .ends_with("\"took_effect\":null}"));
+}
+
+/// The value of `took_effect` of each line of the JSON listing, newest first.
+fn flags(dir: &Path, extra: &[&str]) -> Vec<String> {
+    let mut args = vec!["op", "log", "--json"];
+    args.extend_from_slice(extra);
+    let result = run(dir, &args);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    result
+        .stdout
+        .lines()
+        .map(|line| {
+            let (_, flag) = line.rsplit_once("\"took_effect\":").unwrap();
+            flag.trim_end_matches('}').to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn a_branch_that_was_deleted_took_effect_if_it_is_gone() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, "-");
+    // No `refs/heads/main`: the deletion happened.
+    assert_eq!(flags(dir.path(), &[]), ["true", "true", "true"]);
+    set_branch(dir.path(), A);
+    assert_eq!(flags(dir.path(), &[]), ["false", "true", "true"]);
+}
+
+#[test]
+fn a_move_that_started_from_a_third_value_is_not_called_a_failure() {
+    // Something outside the log changed `main` between the two entries.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, B, A);
+    set_branch(dir.path(), A);
+    assert_eq!(flags(dir.path(), &[]), ["true", "null", "true"]);
+}
+
+#[test]
+fn while_a_writer_holds_the_lock_an_old_value_is_not_called_a_failure() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    assert_eq!(flags(dir.path(), &[]), ["false", "true"]);
+    fs::write(dir.path().join(".stemma/refs.lock"), "writer").unwrap();
+    assert_eq!(flags(dir.path(), &[]), ["null", "true"]);
+}
+
+#[test]
+fn the_limit_does_not_change_the_outcome_of_a_shown_entry() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, B);
+    branch_move(dir.path(), 4, A, C);
+    set_branch(dir.path(), C);
+    assert_eq!(flags(dir.path(), &[]), ["true", "false", "true", "true"]);
+    assert_eq!(flags(dir.path(), &["-n", "2"]), ["true", "false"]);
+}
+
+#[test]
+fn references_that_cannot_be_read_give_a_warning_and_the_outcome_of_the_chain() {
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, B);
+    // A file of a branch that is not in canonical form.
+    fs::write(dir.path().join(".stemma/refs/heads/main"), "damaged").unwrap();
+    let result = run(dir.path(), &["op", "log", "--json"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result
+            .stderr
+            .starts_with("stemma: warning: could not read the references"),
+        "{}",
+        result.stderr
+    );
+    assert!(result.stderr.contains("main"), "{}", result.stderr);
+    let flags: Vec<_> = result
+        .stdout
+        .lines()
+        .map(|line| {
+            line.rsplit_once(':')
+                .unwrap()
+                .1
+                .trim_end_matches('}')
+                .to_owned()
+        })
+        .collect();
+    // Entry 2 is confirmed by entry 3; entry 3 and the entry of `init` need the references.
+    assert_eq!(flags, ["null", "true", "null"]);
+    // The text form has the question mark on the same entries.
+    let text = run(dir.path(), &["op", "log"]);
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert_eq!(text.stdout.matches("    ? it is not known").count(), 2);
+}
+
+#[test]
+fn a_head_that_is_missing_is_a_warning_too() {
+    let dir = repository();
+    fs::remove_file(dir.path().join(".stemma/HEAD")).unwrap();
+    let result = run(dir.path(), &["op", "log"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stderr.starts_with("stemma: warning: "),
+        "{}",
+        result.stderr
+    );
+    assert!(result.stdout.starts_with("1  "), "{}", result.stdout);
 }

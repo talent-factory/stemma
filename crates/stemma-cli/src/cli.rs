@@ -9,6 +9,7 @@
 //! `stemma: <message>`, a complete message (see the crate documentation of `stemma-core`). The
 //! argument parser prints its own errors.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Write};
@@ -104,8 +105,6 @@ enum CliError {
     Open(OpenError),
     /// The operation log cannot be read.
     OpLog(OpLogError),
-    /// The references cannot be read, so the outcome of the entries is not known.
-    Refs(RefError),
     /// The entries were read, but the output could not be written.
     Write(io::Error),
     /// The command has done its work, but the result could not be written to the output.
@@ -128,7 +127,6 @@ impl CliError {
             | Self::Init(_)
             | Self::Open(_)
             | Self::OpLog(_)
-            | Self::Refs(_)
             | Self::Write(_) => ExitCode::FAILURE,
         }
     }
@@ -151,7 +149,6 @@ impl fmt::Display for CliError {
             Self::Init(error) => error.fmt(f),
             Self::Open(error) => error.fmt(f),
             Self::OpLog(error) => error.fmt(f),
-            Self::Refs(error) => error.fmt(f),
             Self::Write(source) => write!(f, "could not write the result: {source}"),
             Self::Output { created, source } => write!(
                 f,
@@ -176,27 +173,60 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
 
 /// Lists the newest entries. The names of all files are listed, which finds a gap or a foreign
 /// file; only the files of the entries that are shown are read, so damage in an older entry goes
-/// unnoticed. Everything is read before anything is
-/// written, so an entry that is damaged gives an error and no partial list.
+/// unnoticed. Everything is read before anything is written, so an entry that is damaged gives an
+/// error and no partial list.
+///
+/// The values of HEAD and of the branches that the entries name are read after the entries. With
+/// the chain of the entries they decide whether each move took effect (see `oplog::outcomes`). If
+/// the references cannot be read, the command warns and shows what the chain decides. A writer
+/// may be between its entry and its move while the references are read: the lock is looked at
+/// before and after, and the log is listed again, and if anything shows a writer, a pointer that
+/// still has its old value is not called a failed move.
 fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = Repository::open(&args.path).map_err(CliError::Open)?;
     let log = repository.oplog();
     let numbers = log.numbers().map_err(CliError::OpLog)?;
     // The shown entries are the newest ones, so every later entry of a pointer is among them, and
-    // only the last entry of a pointer needs its value now. The references are read after the
-    // entries (see `oplog::outcomes`).
+    // only the last entry of a pointer needs its value now.
     let shown = &numbers[numbers.len().saturating_sub(args.limit.get())..];
     let entries = shown
         .iter()
         .map(|number| log.read(*number))
         .collect::<Result<Vec<_>, _>>()
         .map_err(CliError::OpLog)?;
-    let refs = repository.refs();
-    let current = oplog::Current::new(
-        refs.head().map_err(CliError::Refs)?,
-        refs.branches().map_err(CliError::Refs)?,
-    );
-    let outcomes = oplog::outcomes(&entries, &current);
+    let names: BTreeSet<&BranchName> = entries
+        .iter()
+        .flat_map(|entry| entry.change().branches().iter().map(|(name, _)| name))
+        .collect();
+    let read = || -> Result<_, RefError> {
+        let refs = repository.refs();
+        let locked_before = refs.is_locked()?;
+        let head = refs.head()?;
+        let mut branches = Vec::new();
+        for name in &names {
+            if let Some(commit) = refs.branch(name)? {
+                branches.push(((*name).clone(), commit));
+            }
+        }
+        let locked_after = refs.is_locked()?;
+        Ok((head, branches, locked_before || locked_after))
+    };
+    let current = match read() {
+        Ok((head, branches, locked)) => {
+            let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
+            Some(oplog::Current::new(head, branches, !locked && unchanged))
+        }
+        Err(error) => {
+            // A warning that cannot be written is dropped on purpose, as in `main`.
+            let _ = writeln!(
+                io::stderr(),
+                "stemma: warning: could not read the references, so the outcome of the newest \
+                 entries is not known: {error}"
+            );
+            None
+        }
+    };
+    let outcomes = oplog::outcomes(&entries, current.as_ref());
     for (entry, outcome) in entries.iter().zip(outcomes).rev() {
         let written = if args.json {
             writeln!(out, "{}", op_log::json(entry, outcome))
