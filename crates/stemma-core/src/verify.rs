@@ -62,7 +62,8 @@ impl Error for TreeVerifyError {
 impl Tree {
     /// Checks that every entry names an object that the store has, with the kind that its mode
     /// claims: a tree for a directory, a blob for every other mode. See the module documentation
-    /// for what the check covers.
+    /// for what the check covers. Every entry is read and hashed completely, so a tree of large
+    /// files costs as much as reading them.
     ///
     /// # Errors
     ///
@@ -99,18 +100,23 @@ impl Tree {
 
 /// What a commit refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommitReference {
     /// The tree of the commit.
     Tree,
-    /// A parent. Carries the position in the list of parents, counted from 0.
-    Parent(usize),
+    /// A parent.
+    Parent {
+        /// The position in the list of parents, counted from 0 as in
+        /// [`Commit::parents`]. The `Display` form counts from 1: index 0 is "parent 1".
+        index: usize,
+    },
 }
 
 impl fmt::Display for CommitReference {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tree => f.write_str("the tree"),
-            Self::Parent(index) => write!(f, "parent {}", index + 1),
+            Self::Parent { index } => write!(f, "parent {}", index + 1),
         }
     }
 }
@@ -170,15 +176,14 @@ impl Commit {
     pub fn verify(&self, store: &dyn ObjectStore) -> Result<(), CommitVerifyError> {
         let tree = ObjectId::from(self.tree());
         let references = std::iter::once((CommitReference::Tree, tree)).chain(
-            self.parents()
-                .iter()
-                .enumerate()
-                .map(|(index, parent)| (CommitReference::Parent(index), ObjectId::from(*parent))),
+            self.parents().iter().enumerate().map(|(index, parent)| {
+                (CommitReference::Parent { index }, ObjectId::from(*parent))
+            }),
         );
         for (reference, id) in references {
             let found = match reference {
                 CommitReference::Tree => store.resolve_tree(&id).map(|found| found.is_some()),
-                CommitReference::Parent(_) => {
+                CommitReference::Parent { .. } => {
                     store.resolve_commit(&id).map(|found| found.is_some())
                 }
             };
@@ -363,13 +368,56 @@ mod tests {
         assert!(error.source().is_none());
         let sub = empty_tree(&store);
         let wrong = BlobId::new(ObjectId::from(sub));
-        let tree = Tree::new(vec![TreeEntry::file("f", FileMode::File, wrong).unwrap()]).unwrap();
+        let tree = Tree::new(vec![
+            TreeEntry::file("say\"hi", FileMode::File, wrong).unwrap()
+        ])
+        .unwrap();
         let error = tree.verify(&store).unwrap_err();
         assert_eq!(
             error.to_string(),
-            format!("`f`: object {sub} is a tree, not a blob")
+            format!("`say\\\"hi`: object {sub} is a tree, not a blob")
         );
-        assert!(error.source().is_some());
+        let cause = error.source().expect("a store error has a cause");
+        assert_eq!(
+            cause.to_string(),
+            format!("object {sub} is a tree, not a blob")
+        );
+    }
+
+    #[test]
+    fn a_tree_checks_every_entry_and_not_only_the_first() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = store.put_blob(&Blob::new("hello")).unwrap();
+        let sub = empty_tree(&store);
+        let good = |name| TreeEntry::file(name, FileMode::File, blob).unwrap();
+        let verify = |last: TreeEntry| {
+            Tree::new(vec![
+                good("a"),
+                TreeEntry::directory("b", sub).unwrap(),
+                last,
+            ])
+            .unwrap()
+            .verify(&store)
+        };
+        let missing = TreeEntry::file("c", FileMode::File, absent_blob()).unwrap();
+        let wrong = TreeEntry::file("c", FileMode::File, BlobId::new(ObjectId::from(sub))).unwrap();
+        for (entry, is_missing) in [(missing, true), (wrong, false)] {
+            match (verify(entry).unwrap_err(), is_missing) {
+                (TreeVerifyError::Missing { name, .. }, true) => assert_eq!(name, "c"),
+                (TreeVerifyError::Store { name, .. }, false) => assert_eq!(name, "c"),
+                (other, _) => panic!("unexpected error: {other}"),
+            }
+        }
+        // A damaged blob after good entries is a store error as well.
+        let damaged = store.put_blob(&Blob::new("damaged")).unwrap();
+        overwrite(&store.object_path(&ObjectId::from(damaged)), b"blob 1\0x");
+        let entry = TreeEntry::file("c", FileMode::File, damaged).unwrap();
+        assert!(matches!(
+            verify(entry),
+            Err(TreeVerifyError::Store { ref name, .. }) if name == "c"
+        ));
+        assert!(verify(good("c")).is_ok());
     }
 
     // ---- Commit::verify
@@ -404,7 +452,7 @@ mod tests {
             .unwrap_err()
         {
             CommitVerifyError::Missing { reference, id } => {
-                assert_eq!(reference, CommitReference::Parent(1));
+                assert_eq!(reference, CommitReference::Parent { index: 1 });
                 assert_eq!(id, ObjectId::from(absent_parent));
             }
             other => panic!("unexpected error: {other}"),
@@ -423,7 +471,7 @@ mod tests {
             (commit(parent_as_tree, vec![]), CommitReference::Tree),
             (
                 commit(tree, vec![parent, tree_as_parent]),
-                CommitReference::Parent(1),
+                CommitReference::Parent { index: 1 },
             ),
         ] {
             match bad.verify(&store).unwrap_err() {
@@ -459,6 +507,34 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_store_error_names_the_reference_and_carries_the_store_error() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = empty_tree(&store);
+        let parent = store.put_commit(&commit(tree, vec![])).unwrap();
+        let tree_as_parent = CommitId::new(ObjectId::from(tree));
+        let error = commit(tree, vec![parent, tree_as_parent])
+            .verify(&store)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("parent 2: object {tree} is a tree, not a commit")
+        );
+        let cause = error.source().expect("a store error has a cause");
+        assert_eq!(
+            cause.to_string(),
+            format!("object {tree} is a tree, not a commit")
+        );
+        let parent_as_tree = TreeId::new(ObjectId::from(parent));
+        let error = commit(parent_as_tree, vec![]).verify(&store).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("the tree: object {parent} is a commit, not a tree")
+        );
+        assert!(error.source().is_some());
+    }
+
+    #[test]
     fn commit_verify_errors_name_the_reference_and_carry_their_cause() {
         let dir = TempDir::new();
         let store = dir.store();
@@ -475,7 +551,12 @@ mod tests {
         let error = commit(TreeId::new(ObjectId::from(absent_parent)), vec![])
             .verify(&store)
             .unwrap_err();
-        assert!(error.to_string().starts_with("the tree: "), "{error}");
-        assert_eq!(CommitReference::Parent(2).to_string(), "parent 3");
+        assert!(
+            error
+                .to_string()
+                .starts_with("the tree: the store has no object"),
+            "{error}"
+        );
+        assert_eq!(CommitReference::Parent { index: 2 }.to_string(), "parent 3");
     }
 }

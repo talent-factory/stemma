@@ -154,20 +154,30 @@ pub enum ReadError {
     /// the unboxed error is too large for clippy's `result_large_err` lint.
     Store(Box<StoreError>),
     /// The object is a tree and its content is intact, but its body is not in canonical form.
-    /// Nothing in this crate writes such a tree.
+    /// The writers of this crate always produce canonical bodies.
     Tree {
         /// The ID the tree was requested by.
         id: TreeId,
         /// What is wrong with the body.
-        source: Box<TreeParseError>,
+        source: TreeParseError,
     },
     /// The object is a commit and its content is intact, but its body is not in canonical form.
-    /// Nothing in this crate writes such a commit.
+    /// The writers of this crate always produce canonical bodies.
     Commit {
         /// The ID the commit was requested by.
         id: CommitId,
         /// What is wrong with the body.
-        source: Box<CommitParseError>,
+        source: CommitParseError,
+    },
+    /// The reader accepted the body, but the value it returned has another ID than the one the
+    /// object was requested by. This means that the reader accepted a body that it would not
+    /// have written. It is a defect of the reader and is reported instead of returning a value
+    /// that does not match its ID.
+    IdMismatch {
+        /// The ID the object was requested by.
+        requested: ObjectId,
+        /// The ID of the value that was read.
+        parsed: ObjectId,
     },
 }
 
@@ -177,6 +187,11 @@ impl fmt::Display for ReadError {
             Self::Store(source) => write!(f, "{source}"),
             Self::Tree { id, source } => write!(f, "tree {id} is not canonical: {source}"),
             Self::Commit { id, source } => write!(f, "commit {id} is not canonical: {source}"),
+            Self::IdMismatch { requested, parsed } => write!(
+                f,
+                "object {requested} was read as a value with the ID {parsed}: \
+                 the reader accepted a body that is not canonical"
+            ),
         }
     }
 }
@@ -186,9 +201,22 @@ impl Error for ReadError {
         match self {
             // Transparent: the message is that of the store error, so its cause is the cause here.
             Self::Store(source) => source.source(),
-            Self::Tree { source, .. } => Some(source.as_ref()),
-            Self::Commit { source, .. } => Some(source.as_ref()),
+            Self::Tree { source, .. } => Some(source),
+            Self::Commit { source, .. } => Some(source),
+            Self::IdMismatch { .. } => None,
         }
+    }
+}
+
+/// Fails unless the value that a reader returned has the ID the object was requested by. The
+/// store has checked that the body hashes to the requested ID, and a reader promises that the
+/// value encodes back to the body it accepted, so the IDs are equal. The check enforces the
+/// promise in every build and not only in debug builds.
+fn confirm_id(requested: ObjectId, parsed: ObjectId) -> Result<(), ReadError> {
+    if requested == parsed {
+        Ok(())
+    } else {
+        Err(ReadError::IdMismatch { requested, parsed })
     }
 }
 
@@ -351,7 +379,9 @@ pub trait ObjectStore: sealed::Sealed {
     ///
     /// Returns [`ReadError::Store`] with [`StoreError::KindMismatch`] if the object is not a
     /// tree, and with the other errors of [`get`](Self::get). Returns [`ReadError::Tree`] if the
-    /// body is not canonical.
+    /// body is not canonical, and [`ReadError::IdMismatch`] if the reader returned a tree with
+    /// another ID, which a correct reader never does. To get the [`StoreError`] out of
+    /// [`ReadError::Store`], match on the variant: [`Error::source`] gives its cause.
     fn get_tree(&self, id: &TreeId) -> Result<Option<Tree>, ReadError> {
         let Some(object) = self
             .get_expecting(&id.object_id(), Kind::Tree)
@@ -359,15 +389,9 @@ pub trait ObjectStore: sealed::Sealed {
         else {
             return Ok(None);
         };
-        let tree = Tree::parse(object.body()).map_err(|source| ReadError::Tree {
-            id: *id,
-            source: Box::new(source),
-        })?;
-        debug_assert_eq!(
-            tree.id(),
-            *id,
-            "a canonical body hashes to the ID it is stored by"
-        );
+        let tree =
+            Tree::parse(object.body()).map_err(|source| ReadError::Tree { id: *id, source })?;
+        confirm_id(id.object_id(), tree.id().object_id())?;
         Ok(Some(tree))
     }
 
@@ -378,7 +402,8 @@ pub trait ObjectStore: sealed::Sealed {
     ///
     /// Returns [`ReadError::Store`] with [`StoreError::KindMismatch`] if the object is not a
     /// commit, and with the other errors of [`get`](Self::get). Returns [`ReadError::Commit`] if
-    /// the body is not canonical.
+    /// the body is not canonical, and [`ReadError::IdMismatch`] as [`get_tree`](Self::get_tree)
+    /// does.
     fn get_commit(&self, id: &CommitId) -> Result<Option<Commit>, ReadError> {
         let Some(object) = self
             .get_expecting(&id.object_id(), Kind::Commit)
@@ -386,15 +411,9 @@ pub trait ObjectStore: sealed::Sealed {
         else {
             return Ok(None);
         };
-        let commit = Commit::parse(object.body()).map_err(|source| ReadError::Commit {
-            id: *id,
-            source: Box::new(source),
-        })?;
-        debug_assert_eq!(
-            commit.id(),
-            *id,
-            "a canonical body hashes to the ID it is stored by"
-        );
+        let commit =
+            Commit::parse(object.body()).map_err(|source| ReadError::Commit { id: *id, source })?;
+        confirm_id(id.object_id(), commit.id().object_id())?;
         Ok(Some(commit))
     }
 }
@@ -1713,7 +1732,7 @@ mod tests {
             ReadError::Tree { id, source } => {
                 assert_eq!(id, tree);
                 assert!(
-                    matches!(*source, TreeParseError::InvalidObjectId { .. }),
+                    matches!(source, TreeParseError::InvalidObjectId { .. }),
                     "{source}"
                 );
             }
@@ -1723,7 +1742,7 @@ mod tests {
             ReadError::Commit { id, source } => {
                 assert_eq!(id, commit);
                 assert!(
-                    matches!(*source, CommitParseError::InvalidObjectId { .. }),
+                    matches!(source, CommitParseError::InvalidObjectId { .. }),
                     "{source}"
                 );
             }
@@ -1750,6 +1769,156 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!("object {blob} is a blob, not a tree")
+        );
+        assert!(error.source().is_none());
+    }
+
+    fn hello_blob() -> BlobId {
+        BlobId::new(id(HELLO_ID))
+    }
+
+    #[test]
+    fn the_roundtrip_covers_every_mode_the_empty_tree_and_many_parents() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let empty = Tree::new(vec![]).unwrap();
+        let empty_id = store.put_tree(&empty).unwrap();
+        assert_eq!(store.get_tree(&empty_id).unwrap(), Some(empty));
+        let tree = Tree::new(vec![
+            TreeEntry::file("exec", FileMode::Executable, hello_blob()).unwrap(),
+            TreeEntry::file("file", FileMode::File, hello_blob()).unwrap(),
+            TreeEntry::file("link", FileMode::Symlink, hello_blob()).unwrap(),
+            TreeEntry::directory("sub", empty_id).unwrap(),
+        ])
+        .unwrap();
+        let tree_id = store.put_tree(&tree).unwrap();
+        assert_eq!(store.get_tree(&tree_id).unwrap(), Some(tree));
+        let mut parents = Vec::new();
+        for n in 0..5 {
+            let parent = Commit::new(empty_id, vec![], author(), n, format!("p{n}")).unwrap();
+            parents.push(store.put_commit(&parent).unwrap());
+        }
+        let commit = Commit::new(tree_id, parents, author(), 9, "merge").unwrap();
+        let commit_id = store.put_commit(&commit).unwrap();
+        assert_eq!(store.get_commit(&commit_id).unwrap(), Some(commit));
+    }
+
+    #[test]
+    fn each_kind_of_non_canonical_body_keeps_its_own_reason() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree_body = |entries: &[(&str, &str)]| {
+            entries
+                .iter()
+                .map(|(name, id)| format!("100644 {name}\n{id}\n"))
+                .collect::<String>()
+        };
+        let unsorted = tree_body(&[("b", HELLO_ID), ("a", HELLO_ID)]);
+        let duplicate = tree_body(&[("a", HELLO_ID), ("a", HELLO_ID)]);
+        let cut = tree_body(&[("a", HELLO_ID)]).trim_end().to_owned();
+        let tree_of = |body: &str| TreeId::new(store.put_raw(Kind::Tree, body.as_bytes()).unwrap());
+        assert!(matches!(
+            store.get_tree(&tree_of(&unsorted)),
+            Err(ReadError::Tree {
+                source: TreeParseError::OutOfOrder { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.get_tree(&tree_of(&duplicate)),
+            Err(ReadError::Tree {
+                source: TreeParseError::OutOfOrder { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.get_tree(&tree_of(&cut)),
+            Err(ReadError::Tree {
+                source: TreeParseError::Malformed { .. },
+                ..
+            })
+        ));
+        let commit_of =
+            |body: &str| CommitId::new(store.put_raw(Kind::Commit, body.as_bytes()).unwrap());
+        let tree = Tree::new(vec![]).unwrap().id();
+        let no_author = format!("tree {tree}\n");
+        let not_utf8 = commit_of_bytes(&store, b"tree \xff\n");
+        assert!(matches!(
+            store.get_commit(&commit_of(&no_author)),
+            Err(ReadError::Commit {
+                source: CommitParseError::Malformed { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.get_commit(&not_utf8),
+            Err(ReadError::Commit {
+                source: CommitParseError::NotUtf8 { .. },
+                ..
+            })
+        ));
+    }
+
+    fn commit_of_bytes(store: &FsObjectStore, body: &[u8]) -> CommitId {
+        CommitId::new(store.put_raw(Kind::Commit, body).unwrap())
+    }
+
+    #[test]
+    fn a_commit_that_is_not_canonical_has_a_message_and_a_cause() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let commit = commit_of_bytes(&store, b"tree x\n");
+        let error = store.get_commit(&commit).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.starts_with(&format!("commit {commit} is not canonical: ")),
+            "{text}"
+        );
+        let cause = error.source().expect("the reader error is the cause");
+        assert!(text.ends_with(&cause.to_string()), "{text}");
+    }
+
+    #[test]
+    fn a_storage_failure_shows_through_the_transparent_store_variant() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        // The directory that should hold the object is a file, so reading it fails in the
+        // file system and the object is neither found nor reported as damaged.
+        let path = store.object_path(&ObjectId::from(tree));
+        let fan_out = path.parent().expect("an object file has a directory");
+        fs::remove_dir_all(fan_out).unwrap();
+        fs::write(fan_out, b"in the way").unwrap();
+        let error = store.get_tree(&tree).unwrap_err();
+        match &error {
+            ReadError::Store(source) => {
+                assert!(matches!(**source, StoreError::Io { .. }), "{source}")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(
+            error.to_string(),
+            format!("could not inspect the object file `{}`", path.display())
+        );
+        let cause = error.source().expect("the I/O error is the cause");
+        assert!(cause.downcast_ref::<io::Error>().is_some());
+    }
+
+    #[test]
+    fn a_value_with_another_id_than_requested_is_reported_in_every_build() {
+        let a = id(HELLO_ID);
+        let b = Tree::new(vec![]).unwrap().id().object_id();
+        assert!(confirm_id(a, a).is_ok());
+        let error = confirm_id(a, b).unwrap_err();
+        assert!(
+            matches!(&error, ReadError::IdMismatch { requested, parsed } if *requested == a && *parsed == b)
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "object {a} was read as a value with the ID {b}: \
+                 the reader accepted a body that is not canonical"
+            )
         );
         assert!(error.source().is_none());
     }

@@ -76,7 +76,9 @@ impl fmt::Debug for ObjectId {
 /// is known. That is the case in three places: where the code computes the ID of an object it
 /// holds, where a store has confirmed the kind (`resolve_*`), and where a reader claims it from
 /// the context, by the mode of a tree entry or the name of a commit header (`Tree::parse`,
-/// `Commit::parse`, `Index::parse`). A claim of a reader is not confirmed by anyone.
+/// `Commit::parse`, `Index::parse`). A claim of a reader is confirmed only by a store: by
+/// `Tree::verify`, `Commit::verify`, or `Index::verify` for all IDs of one object, or by
+/// `resolve_*` for one ID.
 macro_rules! typed_id {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
@@ -753,9 +755,10 @@ impl Tree {
     /// accepted input.
     ///
     /// The kind of each ID is claimed by the mode: a blob for a regular file, an executable file, or
-    /// a symbolic link, and a tree for a directory. Nothing has asked a store; follow an ID with
+    /// a symbolic link, and a tree for a directory. Nothing has asked a store; check them all with
+    /// [`Tree::verify`], or follow one ID with
     /// [`ObjectStore::resolve_blob`](crate::store::ObjectStore::resolve_blob) or
-    /// [`resolve_tree`](crate::store::ObjectStore::resolve_tree) before relying on it.
+    /// [`resolve_tree`](crate::store::ObjectStore::resolve_tree), before relying on it.
     ///
     /// # Errors
     ///
@@ -1085,9 +1088,9 @@ impl Commit {
     /// this order and each once, then an empty line, then the message, which is kept verbatim.
     ///
     /// The kind of each ID is claimed by its header: a tree for `tree` and a commit for `parent`.
-    /// Nothing has asked a store; follow an ID with
+    /// Nothing has asked a store; check them all with [`Commit::verify`], or follow one ID with
     /// [`ObjectStore::resolve_tree`](crate::store::ObjectStore::resolve_tree) or
-    /// [`resolve_commit`](crate::store::ObjectStore::resolve_commit) before relying on it.
+    /// [`resolve_commit`](crate::store::ObjectStore::resolve_commit), before relying on it.
     ///
     /// # Errors
     ///

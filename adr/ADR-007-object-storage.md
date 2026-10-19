@@ -52,9 +52,8 @@ server will later keep objects elsewhere (API-first). The implementation is
 - **Interface.** `ObjectStore` is a sealed trait: only this crate implements it. It has `put_blob`,
   `put_tree`, and `put_commit`, each of which returns the same ID as the object's own `id()`; `get`,
   `get_expecting`, and `contains`; `resolve_blob`, `resolve_tree`, and `resolve_commit`; and
-  `get_tree` and `get_commit`. The
-  store computes the ID from the kind and the body, so a caller cannot store an object under another
-  ID. Writing a raw body of any kind is internal to the crate, because the body of a tree or a
+  `get_tree` and `get_commit`. The store computes the ID from the kind and the body, so a caller
+  cannot store an object under another ID. Writing a raw body of any kind is internal to the crate, because the body of a tree or a
   commit has to come from a value that was checked. `get` returns the kind and the encoded body of
   an object whose content hashes to the ID; `get_expecting` fails with a `KindMismatch` if the kind
   differs. The `resolve_*` methods return a typed ID for an object that exists and has the kind,

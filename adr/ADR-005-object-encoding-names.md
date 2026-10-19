@@ -248,8 +248,9 @@ them.
       header, and their documentation says that `resolve_*` has to confirm it.
 - [x] Read an object from a store and return the decoded value. Done: `ObjectStore::get_tree` and
       `get_commit` take a typed ID, confirm the kind, and read the body with the strict reader.
-      `ReadError` combines the errors: `Store` (transparent, boxed), and `Tree` or `Commit` with the
-      ID and the reason from the reader. `Tree::verify` and `Commit::verify` (module `verify`)
+      `ReadError` combines the errors: `Store` (transparent, boxed), `Tree` or `Commit` with the ID
+      and the reason from the reader, and `IdMismatch` if a reader returned a value with another ID
+      than the one requested (checked in every build). `Tree::verify` and `Commit::verify` (module `verify`)
       check the claims of a decoded object against a store, one level deep: a directory entry and
       the tree of a commit must be trees, the other entries blobs, and the parents commits. Every
       referenced object is read and hashed, so the cost grows with its size.
