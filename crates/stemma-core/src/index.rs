@@ -51,6 +51,8 @@ use crate::object::{
     TreeError, TreeId,
 };
 use crate::store::{ObjectStore, StoreError};
+pub use crate::verify::IndexVerifyError;
+use crate::verify::VerifyError;
 
 /// First line of the encoding. It carries the format version.
 const HEADER: &str = "stemma-index 1\n";
@@ -258,61 +260,6 @@ impl Error for IndexParseError {
             Self::InvalidObjectId { source, .. } => source.source(),
             Self::Entry { source, .. } => source.source(),
             _ => None,
-        }
-    }
-}
-
-/// Why an index fails [`Index::verify`]. Carries the path of the first failing entry in index
-/// order.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum IndexVerifyError {
-    /// The store has no object with the ID of the entry, for example because the blob was never
-    /// stored.
-    Missing {
-        /// The path of the entry.
-        path: String,
-        /// The ID the entry names.
-        id: BlobId,
-    },
-    /// The store could not resolve the ID as a blob: the object has another kind
-    /// ([`StoreError::KindMismatch`]), it is damaged, or the storage failed.
-    Store {
-        /// The path of the entry.
-        path: String,
-        /// What the store reported. Boxed because the unboxed error is too large for clippy's
-        /// `result_large_err` lint.
-        source: Box<StoreError>,
-    },
-}
-
-impl fmt::Display for IndexVerifyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing { path, id } => {
-                write!(f, "`{}`: the store has no object {id}", path.escape_debug())
-            }
-            Self::Store { path, source } => write!(f, "`{}`: {source}", path.escape_debug()),
-        }
-    }
-}
-
-impl IndexVerifyError {
-    /// Returns the error of the store, unless the store has no such object.
-    pub fn store_error(&self) -> Option<&StoreError> {
-        match self {
-            Self::Store { source, .. } => Some(source),
-            Self::Missing { .. } => None,
-        }
-    }
-}
-
-impl Error for IndexVerifyError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            // The message includes that of the store error; see the crate documentation.
-            Self::Store { source, .. } => source.source(),
-            Self::Missing { .. } => None,
         }
     }
 }
@@ -622,26 +569,14 @@ impl Index {
     ///
     /// # Errors
     ///
-    /// Returns the first problem in index order: [`IndexVerifyError::Missing`] if the store has no
-    /// such object, and [`IndexVerifyError::Store`] if the object is not a blob, is damaged, or the
+    /// Returns the first problem in index order: [`VerifyError::Missing`] if the store has no
+    /// such object, and [`VerifyError::Store`] if the object is not a blob, is damaged, or the
     /// storage fails.
     pub fn verify(&self, store: &dyn ObjectStore) -> Result<(), IndexVerifyError> {
         for (path, entry) in &self.entries {
-            match store.resolve_blob(&ObjectId::from(entry.id)) {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    return Err(IndexVerifyError::Missing {
-                        path: path.0.clone(),
-                        id: entry.id,
-                    })
-                }
-                Err(source) => {
-                    return Err(IndexVerifyError::Store {
-                        path: path.0.clone(),
-                        source: Box::new(source),
-                    })
-                }
-            }
+            let id = ObjectId::from(entry.id);
+            let found = store.resolve_blob(&id).map(|found| found.is_some());
+            VerifyError::check(path.0.clone(), id, found)?;
         }
         Ok(())
     }
@@ -1399,8 +1334,8 @@ mod tests {
         let mut index = Index::new();
         index.insert("docs/new.md", FileMode::File, blob).unwrap();
         match index.verify(&store).unwrap_err() {
-            IndexVerifyError::Missing { path, id } => {
-                assert_eq!((path.as_str(), id), ("docs/new.md", blob));
+            IndexVerifyError::Missing { at: path, id } => {
+                assert_eq!((path.as_str(), id), ("docs/new.md", ObjectId::from(blob)));
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -1418,7 +1353,7 @@ mod tests {
         let index = Index::parse(text.as_bytes()).expect("the reader accepts the claim");
         let error = index.verify(&store).unwrap_err();
         match &error {
-            IndexVerifyError::Store { path, source } => {
+            IndexVerifyError::Store { at: path, source } => {
                 assert_eq!(path, "a.txt");
                 assert!(
                     matches!(
@@ -1452,8 +1387,8 @@ mod tests {
         index.insert("b", FileMode::File, absent).unwrap();
         index.insert("a", FileMode::File, stored).unwrap();
         match index.verify(&store).unwrap_err() {
-            IndexVerifyError::Missing { path, id } => {
-                assert_eq!((path.as_str(), id), ("b", absent))
+            IndexVerifyError::Missing { at: path, id } => {
+                assert_eq!((path.as_str(), id), ("b", ObjectId::from(absent)))
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -1470,8 +1405,8 @@ mod tests {
         index.insert("a-b", FileMode::File, dashed).unwrap();
         index.insert("a/z", FileMode::File, in_dir).unwrap();
         match index.verify(&store).unwrap_err() {
-            IndexVerifyError::Missing { path, id } => {
-                assert_eq!((path.as_str(), id), ("a/z", in_dir));
+            IndexVerifyError::Missing { at: path, id } => {
+                assert_eq!((path.as_str(), id), ("a/z", ObjectId::from(in_dir)));
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -1487,7 +1422,7 @@ mod tests {
         let mut index = Index::new();
         index.insert("src/lib.rs", FileMode::File, blob).unwrap();
         match index.verify(&store).unwrap_err() {
-            IndexVerifyError::Store { path, source } => {
+            IndexVerifyError::Store { at: path, source } => {
                 assert_eq!(path, "src/lib.rs");
                 assert!(matches!(*source, StoreError::Corrupt { .. }), "{source}");
             }
@@ -1508,11 +1443,11 @@ mod tests {
             Index::parse(text.as_bytes()).expect("the reader accepts the claims")
         };
         match parse(&tree, &absent).verify(&store).unwrap_err() {
-            IndexVerifyError::Store { path, .. } => assert_eq!(path, "a"),
+            IndexVerifyError::Store { at: path, .. } => assert_eq!(path, "a"),
             other => panic!("unexpected error: {other}"),
         }
         match parse(&absent, &tree).verify(&store).unwrap_err() {
-            IndexVerifyError::Missing { path, .. } => assert_eq!(path, "a"),
+            IndexVerifyError::Missing { at: path, .. } => assert_eq!(path, "a"),
             other => panic!("unexpected error: {other}"),
         }
     }
@@ -1722,9 +1657,9 @@ mod tests {
         let absent = crate::object::Blob::new("absent").id();
         index.insert("c/d", FileMode::File, absent).unwrap();
         match index.write_tree(&store).unwrap_err() {
-            WriteTreeError::Verify(IndexVerifyError::Missing { path, id }) => {
+            WriteTreeError::Verify(IndexVerifyError::Missing { at: path, id }) => {
                 assert_eq!(path, "c/d");
-                assert_eq!(id, absent);
+                assert_eq!(id, ObjectId::from(absent));
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -1741,7 +1676,7 @@ mod tests {
         let text = format!("stemma-index 1\n100644 {tree} a\n");
         let index = Index::parse(text.as_bytes()).expect("the reader accepts the claim");
         match index.write_tree(&store).unwrap_err() {
-            WriteTreeError::Verify(IndexVerifyError::Store { path, source }) => {
+            WriteTreeError::Verify(IndexVerifyError::Store { at: path, source }) => {
                 assert_eq!(path, "a");
                 assert!(
                     matches!(*source, StoreError::KindMismatch { .. }),
