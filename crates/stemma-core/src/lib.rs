@@ -5,6 +5,8 @@ mod actor;
 pub mod index;
 pub mod object;
 pub mod store;
+#[cfg(test)]
+mod testutil;
 
 pub use actor::{Actor, ActorError, ActorRef};
 

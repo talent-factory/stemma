@@ -329,7 +329,7 @@ impl FsObjectStore {
     }
 
     /// Returns the path of the file for the object ID.
-    fn object_path(&self, id: &ObjectId) -> PathBuf {
+    pub(crate) fn object_path(&self, id: &ObjectId) -> PathBuf {
         let hex = id.hex();
         self.root
             .join("objects")
@@ -625,43 +625,12 @@ mod tests {
 
     use super::*;
     use crate::object::{FileMode, TreeEntry};
+    use crate::testutil::{overwrite, TempDir};
     use crate::Actor;
 
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
     const EMPTY_TREE_ID: &str =
         "b3:06b8469ad46d7051ad63f82809ef66c6d738d08cc3f1a5c842f3d66c05f64cf7";
-
-    /// A directory below the system temp directory that is removed on drop. A directory left by
-    /// an earlier run that crashed is cleared first.
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new() -> Self {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "stemma-store-test-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).expect("create temp dir");
-            Self(path)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-
-        fn store(&self) -> FsObjectStore {
-            FsObjectStore::new(self.path())
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// The ID of the exact bytes, computed with the hash function and not with the code under
     /// test.
@@ -673,12 +642,6 @@ mod tests {
 
     fn id(text: &str) -> ObjectId {
         text.parse().expect("valid ID")
-    }
-
-    /// Replaces a read-only object file with other content.
-    fn overwrite(path: &Path, bytes: &[u8]) {
-        fs::remove_file(path).expect("remove object");
-        fs::write(path, bytes).expect("write object");
     }
 
     /// The number of files in `tmp`; a missing directory holds none.

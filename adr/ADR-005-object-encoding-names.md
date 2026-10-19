@@ -137,7 +137,9 @@ them.
   have written, including a missing final newline, `\r\n`, any separator other than one space, and
   paths that are not strictly ascending in the sort order below. A path cannot be both a file and a
   directory, and the check is byte-exact like all name comparisons, so `Foo` and `foo/bar` do not
-  conflict. The encoding is defined by `crates/stemma-core/src/index.rs` and its golden-vector test.
+  conflict. Reading does not check that the IDs name stored blobs, because the reader uses no store;
+  `Index::verify` checks it against a store and reports the first failing path. The encoding is
+  defined by `crates/stemma-core/src/index.rs` and its golden-vector test.
 - **Index sort order** *(confirmed)*. Index entries are sorted component by component: the path is
   split at `/`, the components are compared in UTF-8 byte order, and a path that is a prefix of
   another comes first. `a/z`, `a-b`, and `a.b` appear in this order, because the component `a` sorts
@@ -213,14 +215,17 @@ them.
 - [x] Check the kind when a typed ID is resolved from a store, so that an ID read from text cannot
       be claimed as the wrong kind unnoticed. Available in ADR-007: `resolve_blob`, `resolve_tree`,
       and `resolve_commit` return a typed ID or a `KindMismatch`. The check is available, not
-      enforced: the claims of the next item are still unchecked.
-- [ ] The index reader claims every ID as a blob without asking a store, as a tree or commit
-      reader will claim the kinds named by headers and modes. Check the claims where a tree is
-      built from the index or an object is followed, once those operations exist. The
-      constructor that makes such a claim is `pub(crate)` and could be renamed, for example to
-      `claim`, so that each call site reads as an assertion. A lookup of the kind from the object
-      header alone, or a read that returns the body together with the typed ID, would avoid the
-      full read of `resolve_*`, at the price of a weaker check or a second API.
+      enforced: a caller has to use it where it relies on a kind, as the next item does for the
+      index.
+- [x] The index reader claims every ID as a blob without asking a store, as a tree or commit reader
+      will claim the kinds named by headers and modes. Done for the index: `Index::verify` takes an
+      object store and checks every entry with `resolve_blob`. It reports an ID that the store does
+      not have, an object of another kind, a damaged object, or a storage failure, with the path of
+      the first entry that fails. It covers a parsed index and an entry staged with the ID of a blob
+      that was never stored. A builder of trees from the index has to call it first. The check reads
+      every blob completely; a lookup of the kind from the object header alone, or a read that
+      returns the body together with the typed ID, would avoid that at the price of a weaker check
+      or a second API. The same kind of check is needed once a tree or commit reader exists.
 - [x] Validate `Actor` in its own type, so that other consumers, such as the authorization
       hook, never see an actor that a commit would reject. Done: `Actor` has private fields and
       is built by `Actor::human` and `Actor::agent`, which check every field and return an
