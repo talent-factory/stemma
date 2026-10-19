@@ -37,9 +37,11 @@ are prior art, not a template.
 - **The change ID is `ch:` and 32 lowercase hexadecimal digits** *(confirmed)*. It has 128 bits and
   comes from the random source of the operating system (the crate `getrandom`); the standard
   library has none meant for it. `ChangeId::generate` never falls back to a weaker source and
-  reports a failure instead, because two changes that share an ID would be joined. A rewrite
-  takes the ID of the commit it replaces, a new change gets a new one, and a merge commit starts a
-  new change. A short form for people can be derived from the long one later, for display only.
+  reports a failure instead, because two changes that share an ID would be joined, and it refuses
+  a source that returns only zeros. A rewrite takes the ID of the commit it replaces, a new change
+  gets a new one, and **a merge commit gets a new change ID** *(confirmed)*: it joins two changes
+  and continues neither. `Commit::new` takes the ID as an input and does not decide which case
+  applies. A short form for people can be derived from the long one later, for display only.
 - **Untracked files are not saved until they are confirmed** *(confirmed)*. A file that is not in
   the tree of the working-copy commit is *untracked*. A snapshot saves a tracked file that
   changed or was deleted. It does not save an untracked file; `stemma track <path>` confirms
@@ -77,6 +79,12 @@ are prior art, not a template.
   directory with others, the lease of ADR-004 has to cover the working-copy commit too.
 
 ## Open items
+
+- [ ] `Commit::rewrite`, which takes the change ID from the commit it replaces, and a struct of
+      named parts instead of six positional arguments of `Commit::new`. They belong with the first
+      command that creates commits (STEMMA-3), because that is the first real caller.
+- [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
+      does when the working-copy commit has one (phase 3).
 
 - [ ] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
       which tier of ADR-004 it belongs to.

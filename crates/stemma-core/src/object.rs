@@ -10,7 +10,8 @@
 //!
 //! The encodings described here are version 1. An incompatible change must not reuse an object
 //! kind name: it introduces a new one (for example `commit2`) together with an ADR, so that
-//! old and new objects can exist side by side.
+//! old and new objects can exist side by side. The one exception is the header `change` of a
+//! commit, added in place while no repository held a commit (ADR-005).
 //!
 //! The readers [`Tree::parse`] and [`Commit::parse`] read the body of an object from bytes and
 //! reject what they do not recognize (ADR-005). Whatever they accept encodes back to the same
@@ -880,7 +881,9 @@ impl Error for CommitError {}
 /// A snapshot of a tree with its parents, its change ID, its author, and a message.
 ///
 /// The change ID names the change that the commit is a state of (ADR-010). A rewrite of the
-/// commit is a new commit with a new ID and the same change ID.
+/// commit, which differs from it in content or in parents, is a new commit with a new ID and the
+/// same change ID. A merge commit joins two changes and continues neither: it gets a new change
+/// ID.
 ///
 /// The timestamp is the time the author claims, in seconds since the Unix epoch (UTC). It is
 /// self-reported and proves nothing; only signatures make it trustworthy (ADR-003, ADR-004).
@@ -896,7 +899,10 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// Creates a commit. Parents are kept in the given order, and the order is part of the ID.
+    /// Creates a commit. The caller supplies the change ID: [`ChangeId::generate`] for a new
+    /// change, `previous.change()` for a rewrite of one, and a new one for a merge. `new` neither
+    /// makes nor checks it, as it does not check the author. Parents are kept in the given order,
+    /// and the order is part of the ID.
     /// Any `i64` is accepted as the timestamp, including negative values (before 1970).
     ///
     /// # Errors
@@ -1279,9 +1285,7 @@ mod tests {
     use crate::change::sample_change;
 
     // Golden vectors. The body of each was assembled by hand as `<kind> <length>\0<body>` and
-    // hashed with `blake3::hash` in a throwaway program, not through this module. The three commit
-    // vectors were computed again for the header `change` (ADR-010); the throwaway program first
-    // reproduced the old IDs from the old bodies. To check one,
+    // hashed with `blake3::hash` in a throwaway program, not through this module. To check one,
     // rebuild the body from the expected encoding asserted in the tests below.
     const TIME: i64 = 1_700_000_000;
     const HELLO_ID: &str = "b3:9db8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad";
@@ -2717,7 +2721,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "line 2: invalid change ID: a change ID has 32 hexadecimal digits after the prefix, \
-             not 3"
+             not 3 bytes"
         );
         assert!(error.source().is_none());
     }

@@ -8,7 +8,7 @@ are proposals.
 Object IDs are hashes of canonical encodings (ADR-001). Any change to an encoding changes the ID of
 every affected object, so the rules for what may appear in an encoding have to be settled before the
 first object is stored. This ADR covers the rules for tree entry names, actor fields, commit
-timestamps, and format versions. The implementation is `crates/stemma-core/src/object.rs`; together
+timestamps, change IDs, and format versions. The implementation is `crates/stemma-core/src/object.rs`; together
 with its golden-vector tests it is the normative definition of the byte-level encodings. The check
 of the actor fields is in `crates/stemma-core/src/actor.rs`. This ADR records the decisions behind
 them.
@@ -128,7 +128,9 @@ them.
   ADR.
 - **Format version** *(confirmed)*. The encodings in this ADR are version 1. An incompatible
   change does not reuse an object kind name: it introduces a new one, for example `commit2`,
-  together with an ADR, so that old and new objects can exist side by side. The hash algorithm
+  together with an ADR, so that old and new objects can exist side by side. The header `change`
+  of a commit (see "Change ID") is the one exception, made while no repository held a commit; it
+  is part of version 1 and not a second version. The hash algorithm
   is versioned separately by the ID prefix (ADR-001).
 - **Strict reading.** A reader rejects what it does not recognize: an unknown or repeated header, a
   header out of order, a number with a plus sign, `-0`, or leading zeros, or any other non-canonical
@@ -169,8 +171,8 @@ them.
 
 ## Consequences
 
-- Two commits with the same tree, parents, author, message, and time have the same ID, and a
-  different time gives a different ID. A rebase changes the parents and so every ID; only
+- Two commits with the same tree, parents, change ID, author, message, and time have the same ID,
+  and a different time or a different change ID gives a different ID. A rebase changes the parents and so every ID; only
   re-creating a commit from identical inputs reproduces its ID.
 - A timestamp gives a reader a date for foreign history without the operation log, but it can be
   set to any value. Nothing in the core may depend on its accuracy or its order.
