@@ -4,7 +4,13 @@ Dieses Kapitel fasst die Konzepte zusammen, auf denen das System aufbaut. Es ist
 
 \section{Datenmodell}
 
-Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden. Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse und Commits für Snapshots mit Verweis auf Vorgänger. Die Historie bildet damit einen azyklischen Graphen aus unveränderlichen Knoten. Dieser Aufbau ist die Stärke des Modells, weil identische Inhalte nur einmal gespeichert werden und Änderungen nachträglich nicht unbemerkt verändert werden können.
+Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden. Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse und Commits für Snapshots mit Verweis auf Vorgänger. Die Historie bildet damit einen azyklischen Graphen aus unveränderlichen Knoten. Dieser Aufbau ist die Stärke des Modells, weil identische Inhalte nur einmal gespeichert werden und Änderungen nachträglich nicht unbemerkt verändert werden können (\in{Abbildung}[fig:objects]).
+
+\startplacefigure[title={Objektmodell: Commit, Tree und Blob},reference=fig:objects,location=here]
+\externalfigure[images/objects.pdf][width=\textwidth]
+\stopplacefigure
+
+Stemma übernimmt dieses Modell und ändert drei Dinge. Die ID eines Objekts trägt den Algorithmus als Präfix (\type{b3:} für BLAKE3), damit später ein anderer Hash möglich bleibt. Jeder Commit nennt einen Akteur, einen Menschen oder einen Agenten mit Modell, Session und Sponsor. Einen Committer gibt es nicht. Die Leser sind streng: Was die Kodierung nicht geschrieben hätte, wird abgelehnt, damit jedes Objekt genau eine Kodierung und eine ID hat.
 
 \section{Referenzen}
 
