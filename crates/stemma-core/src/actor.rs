@@ -7,6 +7,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::str::FromStr;
 
 /// Actor of an operation. Agents carry model version, session, and sponsor.
 ///
@@ -79,6 +80,84 @@ impl fmt::Display for ActorError {
 
 impl Error for ActorError {}
 
+/// Why the actor line of a commit is rejected by [`Actor::from_str`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ActorParseError {
+    /// The line does not have the form of an actor line. Carries what is wrong with it. The form is
+    /// checked before the fields are; see the implementation of [`FromStr`] for [`Actor`].
+    Malformed(&'static str),
+    /// The line has the right form, but a field is rejected.
+    Invalid(ActorError),
+}
+
+impl fmt::Display for ActorParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed(reason) => write!(f, "malformed actor line: {reason}"),
+            Self::Invalid(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl Error for ActorParseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Invalid(source) => Some(source),
+            Self::Malformed(_) => None,
+        }
+    }
+}
+
+/// Reads the actor line of a commit: `human <id>` or
+/// `agent <id> model=<model> session=<session> sponsor=<sponsor>`, with single spaces between the
+/// tokens and the keys in this order. A value may contain `=`; each `key=value` token is split at
+/// its first `=`. Every field is checked again by [`Actor::human`] or [`Actor::agent`], so a line
+/// read from storage is as strict as an actor that is built in code. The result encodes back to
+/// exactly the line it was read from.
+///
+/// The form is checked before the fields: the first token, the number of tokens, and the three
+/// keys, in this order. Only a line of the right form can fail with
+/// [`ActorParseError::Invalid`], for the first field, in the order of the line, that is rejected.
+impl FromStr for Actor {
+    type Err = ActorParseError;
+
+    fn from_str(line: &str) -> Result<Self, Self::Err> {
+        let tokens: Vec<&str> = line.split(' ').collect();
+        match tokens.as_slice() {
+            ["human", id] => Actor::human(*id).map_err(ActorParseError::Invalid),
+            ["agent", id, model, session, sponsor] => {
+                let model = token_value(
+                    model,
+                    "model=",
+                    "the third token of an agent line is `model=<model>`",
+                )?;
+                let session = token_value(
+                    session,
+                    "session=",
+                    "the fourth token of an agent line is `session=<session>`",
+                )?;
+                let sponsor = token_value(
+                    sponsor,
+                    "sponsor=",
+                    "the fifth token of an agent line is `sponsor=<sponsor>`",
+                )?;
+                Actor::agent(*id, model, session, sponsor).map_err(ActorParseError::Invalid)
+            }
+            ["human", ..] => Err(ActorParseError::Malformed(
+                "a human line is `human <id>` with one space",
+            )),
+            ["agent", ..] => Err(ActorParseError::Malformed(
+                "an agent line is `agent <id> model=<model> session=<session> sponsor=<sponsor>` \
+                 with single spaces",
+            )),
+            _ => Err(ActorParseError::Malformed(
+                "an actor line starts with `human` or `agent`",
+            )),
+        }
+    }
+}
+
 impl Actor {
     /// Creates a human.
     ///
@@ -141,6 +220,19 @@ impl Actor {
     pub(crate) fn fields(&self) -> (&'static str, Vec<(&'static str, &str)>) {
         repr_fields(&self.0)
     }
+}
+
+/// Returns the part of the token after `key`, or [`ActorParseError::Malformed`] with the reason if
+/// the token does not start with `key`. The keys contain no `=`, so a value may contain one: the
+/// token is split at its first `=`.
+fn token_value<'a>(
+    token: &'a str,
+    key: &str,
+    reason: &'static str,
+) -> Result<&'a str, ActorParseError> {
+    token
+        .strip_prefix(key)
+        .ok_or(ActorParseError::Malformed(reason))
 }
 
 fn repr_fields(repr: &Repr) -> (&'static str, Vec<(&'static str, &str)>) {
@@ -304,5 +396,134 @@ mod tests {
         ] {
             assert_ne!(base, other);
         }
+    }
+
+    #[test]
+    fn an_actor_line_with_the_wrong_form_is_malformed() {
+        for line in [
+            "",
+            " ",
+            "human",
+            "human  x",
+            "human a b",
+            "Human x",
+            "robot x",
+            "agent",
+            "agent a",
+            "agent a model=m session=s",
+            "agent a model=m session=s sponsor=p extra",
+            "agent a  model=m session=s sponsor=p",
+            "agent a session=s model=m sponsor=p",
+            "agent a model m session=s sponsor=p",
+            "agent a Model=m session=s sponsor=p",
+            " human x",
+            "human x ",
+        ] {
+            assert!(
+                matches!(line.parse::<Actor>(), Err(ActorParseError::Malformed(_))),
+                "line {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_actor_line_with_a_rejected_field_names_the_field() {
+        for (line, field) in [
+            ("human \u{e4}", "id"),
+            ("human x\n", "id"),
+            ("agent a model= session=s sponsor=p", "model"),
+            ("agent a model=m session= sponsor=p", "session"),
+            ("agent a model=m session=s sponsor=", "sponsor"),
+            ("agent a model=m session=s sponsor=p\r", "sponsor"),
+            ("agent a model=m session=s\u{a0} sponsor=p", "session"),
+        ] {
+            assert_eq!(
+                line.parse::<Actor>(),
+                Err(ActorParseError::Invalid(ActorError::InvalidField(field))),
+                "line {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_keeps_everything_after_the_first_equals_sign() {
+        let actor: Actor = "agent a=b model=m=1 session==s sponsor=p=".parse().unwrap();
+        assert_eq!(
+            actor.view(),
+            ActorRef::Agent {
+                id: "a=b",
+                model: "m=1",
+                session: "=s",
+                sponsor: "p=",
+            }
+        );
+    }
+
+    #[test]
+    fn an_actor_parse_error_names_the_form_or_the_field() {
+        let error = "human".parse::<Actor>().unwrap_err();
+        assert!(
+            error.to_string().starts_with("malformed actor line:"),
+            "{error}"
+        );
+        assert!(std::error::Error::source(&error).is_none());
+        let error = "human ".parse::<Actor>().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "actor field `id` must be non-empty visible ASCII (U+0021 to U+007E)"
+        );
+        assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
+    fn the_reasons_of_a_malformed_actor_line_are_stable() {
+        for (line, reason) in [
+            ("human a b", "a human line is `human <id>` with one space"),
+            (
+                "agent a model=m session=s",
+                "an agent line is `agent <id> model=<model> session=<session> sponsor=<sponsor>` \
+                 with single spaces",
+            ),
+            ("robot x", "an actor line starts with `human` or `agent`"),
+            (
+                "agent a session=s model=m sponsor=p",
+                "the third token of an agent line is `model=<model>`",
+            ),
+            (
+                "agent a model=m sessio=s sponsor=p",
+                "the fourth token of an agent line is `session=<session>`",
+            ),
+            (
+                "agent a model=m session=s sponsor",
+                "the fifth token of an agent line is `sponsor=<sponsor>`",
+            ),
+        ] {
+            assert_eq!(
+                line.parse::<Actor>().unwrap_err().to_string(),
+                format!("malformed actor line: {reason}"),
+                "line {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_form_of_an_actor_line_is_checked_before_its_fields() {
+        // Each line has a field that is rejected and a form that is wrong; the form wins.
+        for line in [
+            "human \u{e4} extra",
+            "agent \u{e4} session=s model=m sponsor=p",
+            "agent a model=\u{e4} sessio=s sponsor=p",
+            "agent \u{e4} model=m session=s",
+        ] {
+            assert!(
+                matches!(line.parse::<Actor>(), Err(ActorParseError::Malformed(_))),
+                "line {line:?}"
+            );
+        }
+        // With the right form the field is rejected, also the identifier of an agent.
+        assert_eq!(
+            "agent \u{e4} model=m session=s sponsor=p".parse::<Actor>(),
+            Err(ActorParseError::Invalid(ActorError::InvalidField("id")))
+        );
     }
 }

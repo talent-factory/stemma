@@ -70,9 +70,9 @@ server will later keep objects elsewhere (API-first). The implementation is
 - Reading an object costs one hash of its content. That is the price of detecting corruption
   on read. Storing an object that exists also reads and hashes it once, so that a damaged file
   is repaired and not mistaken for a stored object.
-- A valid ID does not mean a valid object. The store checks that the content hashes to the ID,
-  not that a tree or a commit is in canonical form. A reader for trees and commits has to apply
-  the strict reading of ADR-005.
+- A valid ID does not mean a valid object. The store checks that the content hashes to the ID, not
+  that a tree or a commit is in canonical form. The readers `Tree::parse` and `Commit::parse` apply
+  the strict reading of ADR-005; the store does not call them, and a caller has to.
 - Many small files are slow on some file systems and large repositories. Pack files are the
   planned answer.
 - Stale files can remain in `tmp/` after a crash. Their names are never reused, so they are

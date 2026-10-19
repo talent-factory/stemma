@@ -119,12 +119,17 @@ them.
   change does not reuse an object kind name: it introduces a new one, for example `commit2`,
   together with an ADR, so that old and new objects can exist side by side. The hash algorithm
   is versioned separately by the ID prefix (ADR-001).
-- **Strict reading.** A reader rejects what it does not recognize: an unknown or repeated
-  header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any other
-  non-canonical form. Otherwise one logical object could have several encodings and several
-  IDs. The commit headers are, in this order, `tree`, `parent` (zero or more), `author`, `time`.
-  The index reader (see below) applies the rule. The reader for objects does not exist yet;
-  `object.rs` only writes encodings.
+- **Strict reading.** A reader rejects what it does not recognize: an unknown or repeated header, a
+  header out of order, a number with a plus sign, `-0`, or leading zeros, or any other non-canonical
+  form. Otherwise one logical object could have several encodings and several IDs. The commit
+  headers are, in this order, `tree`, `parent` (zero or more), `author`, `time`. The index reader
+  (see below), `Tree::parse`, and `Commit::parse` apply the rule, and the actor line of a commit is
+  read by `Actor::from_str`. A test feeds changed copies of a canonical encoding to each of these
+  three readers (every byte deleted, replaced, or inserted from a set of troublesome bytes, and
+  every line deleted, repeated, or swapped) and checks that whatever a reader accepts encodes back
+  to exactly the bytes it was given, so that no object has a second spelling and a second ID. It
+  cannot find a second spelling that needs a change of several places at once; those are covered by
+  tests of the rejected forms.
 - **Index file** *(proposal)*, except the sort order. The index (staging area) is persisted as a
   text file and is a second format next to the objects. It is a file, not an object, so it is
   versioned by its first line, `stemma-index 1`, and not by an object kind name. An incompatible
@@ -217,33 +222,39 @@ them.
       and `resolve_commit` return a typed ID or a `KindMismatch`. The check is available, not
       enforced: a caller has to use it where it relies on a kind, as the next item does for the
       index.
-- [x] The index reader claims every ID as a blob without asking a store, as a tree or commit reader
-      will claim the kinds named by headers and modes. Done for the index: `Index::verify` takes an
-      object store and checks every entry with `resolve_blob`. It reports an ID that the store does
-      not have, an object of another kind, a damaged object, or a storage failure, with the path of
-      the first entry that fails. It covers a parsed index and an entry staged with the ID of a blob
-      that was never stored. A builder of trees from the index has to call it first. The check reads
-      every blob completely; a lookup of the kind from the object header alone, or a read that
-      returns the body together with the typed ID, would avoid that at the price of a weaker check
-      or a second API. The same kind of check is needed once a tree or commit reader exists.
+- [x] The index reader claims every ID as a blob without asking a store, as the readers of trees and
+      commits claim the kinds named by headers and modes. Done for the index: `Index::verify` takes
+      an object store and checks every entry with `resolve_blob`. It reports an ID that the store
+      does not have, an object of another kind, a damaged object, or a storage failure, with the
+      path of the first entry that fails. It covers a parsed index and an entry staged with the ID
+      of a blob that was never stored. A builder of trees from the index has to call it first. The
+      check reads every blob completely; a lookup of the kind from the object header alone, or a
+      read that returns the body together with the typed ID, would avoid that at the price of a
+      weaker check or a second API. The same kind of check is still needed for what `Tree::parse`
+      and `Commit::parse` return: nothing calls `resolve_*` on those IDs yet.
 - [x] Validate `Actor` in its own type, so that other consumers, such as the authorization
       hook, never see an actor that a commit would reject. Done: `Actor` has private fields and
       is built by `Actor::human` and `Actor::agent`, which check every field and return an
       `ActorError`. `Actor::view` gives an `ActorRef` to match on. `Commit::new` no longer
       checks the author, and `CommitError::InvalidActorField` is gone. No encoding and no ID
       changes.
-- [ ] Readers for trees and commits, with the strict reading rule above (an unknown, repeated, or
-      misplaced header, a non-canonical number, or any other second spelling is rejected). A test
-      per rejected form, and a round trip in both directions: what a reader accepts encodes to the
-      same bytes. The IDs a reader finds are untyped until the code knows their kind; follow them
-      with `resolve_blob`, `resolve_tree`, or `resolve_commit`.
-- [ ] A commit reader needs to rebuild an `Actor` from the author header. Do it in `actor.rs` with a
-      strict `FromStr` that uses `Actor::human` and `Actor::agent`, so that every byte read is
-      validated again: split at single spaces, exact token counts (2 for a human, 5 for an agent),
-      the keys `model=`, `session=`, and `sponsor=` in this order, each split at its first `=`.
-      Report a grammar error (`Malformed`) apart from a rejected field (`ActorError`). Then, if
-      wanted, fold the three field lists (`Repr`, `ActorRef`, `repr_fields`) into one that the
-      check, the encoding, and the view share, name the field in the error with a type instead of a
-      string, and add `Hash` and `Display` for the actor line.
+- [x] Readers for trees and commits, with the strict reading rule above. Done: `Tree::parse` and
+      `Commit::parse` read the body of an object from bytes and reject everything that is not
+      canonical, for example a header that is missing, repeated, unknown, or out of order, a number
+      with a plus sign, `-0`, a leading zero, or a value outside `i64`, names that are not strictly
+      ascending, a body that is not UTF-8, a missing final newline or empty line, and a parent that
+      is listed twice. The body is checked as a whole (UTF-8, and for a tree the final newline)
+      before the lines are read in order. They claim the kind of each ID from the mode or the
+      header, and their documentation says that `resolve_*` has to confirm it. What is not done: a
+      function that reads an object from a store and returns the decoded value, which has to combine
+      the errors of the store and of the reader.
+- [x] A commit reader needs to rebuild an `Actor` from the author header. Done: `Actor::from_str` in
+      `actor.rs` splits at single spaces, requires exact token counts and the keys in order, splits
+      each `key=value` token at its first `=`, and checks the fields again with `Actor::human` and
+      `Actor::agent`. A malformed line (`ActorParseError::Malformed`) is reported apart from a
+      rejected field (`ActorParseError::Invalid`).
+- [ ] Clean up the actor type if it is wanted: fold the three field lists (`Repr`, `ActorRef`,
+      `repr_fields`) into one that the check, the encoding, and the view share, name the field in
+      `ActorError` with a type instead of a string, and add `Hash` and `Display` for the actor line.
 - [ ] A tree builder from the index (`write-tree`) should verify inside: `Index::write_tree(&store)`
       calls `Index::verify` itself and returns a `TreeId`, so that no caller can forget the check.
