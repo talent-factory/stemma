@@ -2,6 +2,7 @@
 //! builds the actor, calls the core, and prints the result (ADR-002, ADR-009).
 
 mod cli;
+mod op_log;
 
 use std::process::ExitCode;
 

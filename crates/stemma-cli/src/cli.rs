@@ -3,20 +3,26 @@
 //! Exit codes: 0 for success, 1 for a command that fails and has changed nothing, 2 for arguments
 //! that are wrong (the code of the argument parser), and 3 for a command that has done its work
 //! but could not finish: the repository exists, but flushing it to disk or writing the result
-//! failed. A script must not remove or repeat what such a command made. A failing command prints
+//! failed. A script must not remove or repeat what such a command made. A command that only reads
+//! (`op log`) has made nothing, so a failed write of its output is code 1; some of the output may
+//! already be written, and a script discards it. A failing command prints
 //! `stemma: <message>`, a complete message (see the crate documentation of `stemma-core`). The
 //! argument parser prints its own errors.
 
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Write};
+use std::num::NonZeroUsize;
 use std::path::{self, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+
+use crate::op_log;
 use stemma_core::object::METADATA_DIR;
+use stemma_core::oplog::OpLogError;
 use stemma_core::refs::BranchName;
-use stemma_core::repository::{InitError, InitOptions, Repository};
+use stemma_core::repository::{InitError, InitOptions, OpenError, Repository};
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
 /// The name of the environment variable that holds the actor.
@@ -37,6 +43,32 @@ struct Cli {
 enum Command {
     /// Create an empty repository
     Init(InitArgs),
+    /// Show the operation log
+    Op {
+        #[command(subcommand)]
+        command: OpCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OpCommand {
+    /// List the entries of the operation log, newest first
+    Log(OpLogArgs),
+}
+
+#[derive(Debug, Args)]
+struct OpLogArgs {
+    /// The directory of the repository, the one that contains `.stemma`
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
+    /// The number of entries to show; only their files are read, but all file names are listed
+    #[arg(short = 'n', long, value_name = "N", default_value = "20")]
+    limit: NonZeroUsize,
+
+    /// Write one JSON object per line instead of text
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -68,6 +100,12 @@ enum CliError {
     /// The core refused or could not create the repository, or created it and could not make it
     /// durable ([`InitError::NotDurable`]).
     Init(InitError),
+    /// The repository cannot be opened.
+    Open(OpenError),
+    /// The operation log cannot be read.
+    OpLog(OpLogError),
+    /// The entries were read, but the output could not be written.
+    Write(io::Error),
     /// The command has done its work, but the result could not be written to the output.
     Output {
         /// What the command made.
@@ -82,9 +120,13 @@ impl CliError {
     fn exit_code(&self) -> ExitCode {
         match self {
             Self::Init(InitError::NotDurable { .. }) | Self::Output { .. } => ExitCode::from(3),
-            Self::MissingActor | Self::EmptyActor | Self::Actor(_) | Self::Init(_) => {
-                ExitCode::FAILURE
-            }
+            Self::MissingActor
+            | Self::EmptyActor
+            | Self::Actor(_)
+            | Self::Init(_)
+            | Self::Open(_)
+            | Self::OpLog(_)
+            | Self::Write(_) => ExitCode::FAILURE,
         }
     }
 }
@@ -104,6 +146,9 @@ impl fmt::Display for CliError {
             ),
             Self::Actor(error) => write!(f, "invalid actor: {error}"),
             Self::Init(error) => error.fmt(f),
+            Self::Open(error) => error.fmt(f),
+            Self::OpLog(error) => error.fmt(f),
+            Self::Write(source) => write!(f, "could not write the result: {source}"),
             Self::Output { created, source } => write!(
                 f,
                 "created `{}`, but could not write the result: {source}",
@@ -119,7 +164,41 @@ impl Error for CliError {}
 fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
     match cli.command {
         Command::Init(args) => init(args, out),
+        Command::Op {
+            command: OpCommand::Log(args),
+        } => show_op_log(args, out),
     }
+}
+
+/// Lists the newest entries. The names of all files are listed, which finds a gap or a foreign
+/// file; only the files of the entries that are shown are read, so damage in an older entry goes
+/// unnoticed. Everything is read before anything is
+/// written, so an entry that is damaged gives an error and no partial list.
+fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = Repository::open(&args.path).map_err(CliError::Open)?;
+    let log = repository.oplog();
+    let numbers = log.numbers().map_err(CliError::OpLog)?;
+    let entries = numbers
+        .iter()
+        .rev()
+        .take(args.limit.get())
+        .map(|number| log.read(*number))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CliError::OpLog)?;
+    for entry in &entries {
+        let written = if args.json {
+            writeln!(out, "{}", op_log::json(entry))
+        } else {
+            write!(out, "{}", op_log::text(entry))
+        };
+        match written {
+            // The reader of a pipe, such as `head`, has had enough: that is not a failure.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(error) => return Err(CliError::Write(error)),
+            Ok(()) => {}
+        }
+    }
+    Ok(())
 }
 
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
@@ -201,6 +280,19 @@ mod tests {
     /// An output that fails on every write, such as a closed pipe.
     struct Closed;
 
+    /// An output that fails on every write with another error than a closed pipe.
+    struct Full;
+
+    impl Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("disk full"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Write for Closed {
         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
             Err(io::ErrorKind::BrokenPipe.into())
@@ -242,6 +334,11 @@ mod tests {
             CliError::MissingActor,
             CliError::EmptyActor,
             CliError::Actor("human".parse::<Actor>().unwrap_err()),
+            CliError::Open(OpenError::NotARepository {
+                path: PathBuf::from("."),
+            }),
+            CliError::OpLog(OpLogError::Gap { missing: 2 }),
+            CliError::Write(io_error()),
             CliError::Init(InitError::AlreadyExists {
                 path: PathBuf::from(".stemma"),
             }),
@@ -267,6 +364,25 @@ mod tests {
         for error in made {
             assert_eq!(error.exit_code(), ExitCode::from(3), "{error}");
         }
+    }
+
+    #[test]
+    fn a_closed_pipe_ends_the_list_quietly_and_another_write_error_fails() {
+        let dir = std::env::temp_dir().join(format!("stemma-cli-unit-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.to_str().unwrap();
+        run(
+            parse(&["init", path, "--actor", "human daniel"]),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let closed = run(parse(&["op", "log", path]), &mut Closed);
+        let full = run(parse(&["op", "log", path]), &mut Full);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(closed.is_ok(), "{closed:?}");
+        let error = full.unwrap_err();
+        assert!(matches!(error, CliError::Write(_)), "{error}");
+        assert!(error.to_string().contains("disk full"), "{error}");
     }
 
     #[test]

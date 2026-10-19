@@ -155,7 +155,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 ## Open items
 
 - [ ] A function that reads the outcome of an entry from the chain of its pointer (see the
-      decisions); `stemma op log` needs it to mark an entry that did not take effect (STEMMA-27).
+      decisions); `stemma op log` needs it to mark an entry that did not take effect (STEMMA-34).
+      Until then `stemma op log` (STEMMA-27) shows an entry that was written but whose move
+      never happened exactly like one that took effect.
 - [ ] Every `append` lists the directory to find the end of the log, which costs time in a long
       log. Measure it, and keep the number of the last entry if it matters.
 - [ ] `Moved` can be built with an old and a new value that are equal, and `Change::new` rejects
@@ -181,7 +183,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       the entry that the restore writes (STEMMA-28).
 - [ ] Who may read the log (ADR-003): it holds IDs and the actor, no paths, but it makes
       commits reachable that a role may not be allowed to see.
-- [ ] A reading order that does not read every file: the newest first, and a limit.
+- [x] A reading order that does not read every file: the newest first, and a limit
+      (`stemma op log`, STEMMA-27). It lists all file names, which finds a gap, and reads only
+      the files of the entries that are shown.
 - [ ] The `session` of an agent is part of its actor; whether the log offers "what did this
       session do" as a view.
 - [ ] Windows: the flush of a directory is a no-op there, so the order "entry, then move" holds

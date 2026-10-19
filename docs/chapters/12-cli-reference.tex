@@ -64,4 +64,46 @@ stemma init projekt --initial-branch trunk --actor "human daniel"
 STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" stemma init
 \stoptyping
 
+\section{op log}
+
+Zeigt das Operation Log (ADR-011), die neuesten Einträge zuerst.
+
+\starttyping
+stemma op log [PFAD] [-n ANZAHL] [--json]
+\stoptyping
+
+\startitemize
+\item {\bf PFAD:} Das Verzeichnis des Repositories, also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{-n}, \type{--limit} ANZAHL:} Wie viele Einträge der Befehl zeigt. Standard ist 20. Null ist ein Aufruffehler (Exit-Code 2). Nur diese Einträge werden gelesen; von den übrigen liest der Befehl nur die Dateinamen.
+\item {\bf \type{--json}:} Schreibt je Eintrag ein JSON-Objekt pro Zeile statt Text.
+\stopitemize
+
+Der Befehl liest nur und braucht keinen Akteur.
+
+{\bf Textform.} Pro Eintrag steht eine Zeile mit Nummer, Zeit (UTC), Akteur und Operation, danach je Zeiger, der sich bewegt hat, eine eingerückte Zeile mit altem und neuem Wert. Ein \type{-} steht für einen Zeiger, den es vorher nicht gab oder der danach nicht mehr existiert.
+
+\starttyping
+2  2023-11-14T22:13:20Z  human daniel  snapshot
+    working-copy  b3:1111...1111 -> b3:2222...2222
+    branch main  b3:1111...1111 -> b3:2222...2222
+1  2023-11-14T22:10:00Z  human daniel  init
+    head  - -> branch:main
+\stoptyping
+
+(Im Beispiel sind die Commit-IDs gekürzt; der Befehl gibt sie vollständig aus.)
+
+{\bf JSON-Form.} Die Felder sind \type{number}, \type{time} (Sekunden seit dem 1.1.1970, wie im Eintrag), \type{actor}, \type{operation}, \type{head}, \type{working_copy} und \type{branches}. \type{head} und \type{working_copy} sind \type{null}, wenn die Operation den Zeiger nicht berührt hat, sonst ein Objekt mit \type{old} und \type{new}. \type{branches} ist eine Liste von Objekten mit \type{name}, \type{old} und \type{new}, leer wenn kein Branch sich bewegt hat. Ein Wert, den es nicht gibt, ist \type{null}. HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
+
+{\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt. Fehlt eine Nummer im Log, ist ein Eintrag nicht in kanonischer Form, passt die Nummer im Eintrag nicht zum Dateinamen oder steht in \type{oplog/} eine fremde Datei, bricht er ab, gibt nichts aus und endet mit Exit-Code 1. Dasselbe gilt für ein Verzeichnis, das kein Repository ist, und für eine Datei \type{format}, die fehlt, nicht kanonisch ist oder eine andere Version nennt. Das Exit-Code 1 gilt auch, wenn die Ausgabe nicht geschrieben werden kann, zum Beispiel weil der Datenträger voll ist; dann kann schon ein Teil der Zeilen ausgegeben sein, und ein Skript verwirft die Ausgabe. Ein Name mit Steuerzeichen, auch ein Branch-Name in der Textform, erscheint in Meldungen und in der Textform maskiert (wie bei \type{escape_debug} von Rust); die JSON-Form maskiert nach den Regeln von JSON.
+
+{\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge. Eine Lücke findet er auch dann, wenn der fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten älteren Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug. Ein Eintrag wird geschrieben, bevor sich der Zeiger bewegt (ADR-011). Brach der Vorgang dazwischen ab, steht der Eintrag im Log, obwohl der Zug nie stattfand, und der Befehl zeigt ihn wie jeden anderen. Eine Markierung dafür ist ein eigenes Ticket (STEMMA-34). Schliesst der Leser der Ausgabe die Pipe früh, zum Beispiel \type{head}, endet der Befehl ohne Meldung mit Exit-Code 0; der Exit-Code sagt dann nicht, dass die Liste vollständig ausgegeben wurde.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma op log
+stemma op log -n 5 projekt
+stemma op log --json | head -1
+\stoptyping
+
 \stopappendices

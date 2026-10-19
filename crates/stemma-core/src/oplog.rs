@@ -951,6 +951,8 @@ impl OpLogError {
     }
 }
 
+// A path comes from the file system, and a file name in `oplog/` can be any bytes, so a path is
+// written escaped like Rust debug output: an error must not write terminal escape sequences.
 impl fmt::Display for OpLogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -958,11 +960,15 @@ impl fmt::Display for OpLogError {
                 operation,
                 path,
                 source,
-            } => write!(f, "could not {operation} `{}`: {source}", path.display()),
+            } => write!(
+                f,
+                "could not {operation} `{}`: {source}",
+                path.display().to_string().escape_debug()
+            ),
             Self::Corrupt { path, source } => write!(
                 f,
                 "the entry `{}` is not in canonical form: {source}",
-                path.display()
+                path.display().to_string().escape_debug()
             ),
             Self::WrongNumber {
                 path,
@@ -971,7 +977,7 @@ impl fmt::Display for OpLogError {
             } => write!(
                 f,
                 "the entry `{}` has number {found} inside, but its name says {expected}",
-                path.display()
+                path.display().to_string().escape_debug()
             ),
             Self::Gap { missing } => write!(
                 f,
@@ -980,7 +986,7 @@ impl fmt::Display for OpLogError {
             Self::UnexpectedFile { path } => write!(
                 f,
                 "`{}` is in the operation log, but is not an entry",
-                path.display()
+                path.display().to_string().escape_debug()
             ),
             Self::Missing { number } => write!(f, "the operation log has no entry {number}"),
             Self::Full => write!(
@@ -1001,7 +1007,7 @@ impl fmt::Display for OpLogError {
                 "entry {} was written, but flushing `{}` failed: {source}; it may not survive a \
                  crash",
                 entry.number,
-                path.display()
+                path.display().to_string().escape_debug()
             ),
             Self::EntryTooLarge { size } => write!(
                 f,
@@ -1278,6 +1284,21 @@ fn parse_file_name(name: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_path_with_control_characters_is_escaped_in_the_message() {
+        let error = OpLogError::UnexpectedFile {
+            path: PathBuf::from("oplog/a\x1b[2Jb\n"),
+        };
+        let message = error.to_string();
+        assert!(
+            !message.contains('\x1b') && !message.contains('\n'),
+            "{message:?}"
+        );
+        assert!(message.contains("a\\u{1b}[2Jb\\n"), "{message}");
+    }
+
     use std::sync::Barrier;
     use std::thread;
 
