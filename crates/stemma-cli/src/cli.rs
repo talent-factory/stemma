@@ -10,13 +10,17 @@
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Write};
+use std::num::NonZeroUsize;
 use std::path::{self, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+
+use crate::op_log;
 use stemma_core::object::METADATA_DIR;
+use stemma_core::oplog::OpLogError;
 use stemma_core::refs::BranchName;
-use stemma_core::repository::{InitError, InitOptions, Repository};
+use stemma_core::repository::{InitError, InitOptions, OpenError, Repository};
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
 /// The name of the environment variable that holds the actor.
@@ -37,6 +41,32 @@ struct Cli {
 enum Command {
     /// Create an empty repository
     Init(InitArgs),
+    /// Show and use the operation log
+    Op {
+        #[command(subcommand)]
+        command: OpCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OpCommand {
+    /// List the entries of the operation log, newest first
+    Log(OpLogArgs),
+}
+
+#[derive(Debug, Args)]
+struct OpLogArgs {
+    /// The directory of the repository, the one that contains `.stemma`
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
+    /// The number of entries to show; only these are read from disk
+    #[arg(short = 'n', long, value_name = "N", default_value = "20")]
+    limit: NonZeroUsize,
+
+    /// Write one JSON object per line instead of text
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -68,6 +98,12 @@ enum CliError {
     /// The core refused or could not create the repository, or created it and could not make it
     /// durable ([`InitError::NotDurable`]).
     Init(InitError),
+    /// The repository cannot be opened.
+    Open(OpenError),
+    /// The operation log cannot be read.
+    OpLog(OpLogError),
+    /// The entries were read, but the output could not be written.
+    Write(io::Error),
     /// The command has done its work, but the result could not be written to the output.
     Output {
         /// What the command made.
@@ -82,9 +118,13 @@ impl CliError {
     fn exit_code(&self) -> ExitCode {
         match self {
             Self::Init(InitError::NotDurable { .. }) | Self::Output { .. } => ExitCode::from(3),
-            Self::MissingActor | Self::EmptyActor | Self::Actor(_) | Self::Init(_) => {
-                ExitCode::FAILURE
-            }
+            Self::MissingActor
+            | Self::EmptyActor
+            | Self::Actor(_)
+            | Self::Init(_)
+            | Self::Open(_)
+            | Self::OpLog(_)
+            | Self::Write(_) => ExitCode::FAILURE,
         }
     }
 }
@@ -104,6 +144,9 @@ impl fmt::Display for CliError {
             ),
             Self::Actor(error) => write!(f, "invalid actor: {error}"),
             Self::Init(error) => error.fmt(f),
+            Self::Open(error) => error.fmt(f),
+            Self::OpLog(error) => error.fmt(f),
+            Self::Write(source) => write!(f, "could not write the result: {source}"),
             Self::Output { created, source } => write!(
                 f,
                 "created `{}`, but could not write the result: {source}",
@@ -119,7 +162,35 @@ impl Error for CliError {}
 fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
     match cli.command {
         Command::Init(args) => init(args, out),
+        Command::Op {
+            command: OpCommand::Log(args),
+        } => op_log(args, out),
     }
+}
+
+/// Lists the newest entries. Only the names of the files are read for all of them, which finds a
+/// gap; the files are read for the entries that are shown. Everything is read before anything is
+/// written, so an entry that is damaged gives an error and no partial list.
+fn op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = Repository::open(&args.path).map_err(CliError::Open)?;
+    let log = repository.oplog();
+    let numbers = log.numbers().map_err(CliError::OpLog)?;
+    let entries = numbers
+        .iter()
+        .rev()
+        .take(args.limit.get())
+        .map(|number| log.read(*number))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CliError::OpLog)?;
+    for entry in &entries {
+        if args.json {
+            writeln!(out, "{}", op_log::json(entry))
+        } else {
+            write!(out, "{}", op_log::text(entry))
+        }
+        .map_err(CliError::Write)?;
+    }
+    Ok(())
 }
 
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
