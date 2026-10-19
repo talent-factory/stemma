@@ -370,6 +370,23 @@ mod tests {
         }
     }
 
+    /// An output that takes the first write and fails on the second one.
+    struct FullAfterOne(bool);
+
+    impl Write for FullAfterOne {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if std::mem::replace(&mut self.0, true) {
+                Err(io::Error::other("disk full"))
+            } else {
+                Ok(buf.len())
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(std::iter::once("stemma").chain(args.iter().copied())).unwrap()
     }
@@ -456,6 +473,44 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "could not write entry 1 to standard output: disk full"
+        );
+    }
+
+    #[test]
+    fn a_write_error_names_the_entry_in_flight_and_not_the_first_or_the_oldest() {
+        let dir = std::env::temp_dir().join(format!("stemma-cli-unit-num-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.to_str().unwrap();
+        run(
+            parse(&["init", path, "--actor", "human daniel"]),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        for number in 2..=3 {
+            std::fs::write(
+                dir.join(".stemma/oplog").join(format!("{number:012}")),
+                format!(
+                    "stemma-oplog 1\nnumber {number}\ntime 1700000000\nactor human daniel\n\
+                     operation snapshot\nworking-copy - b3:{}\n",
+                    "1".repeat(64)
+                ),
+            )
+            .unwrap();
+        }
+        // The newest entry is written first, so a failing first write names entry 3, with or
+        // without a limit; a failure of the second write names the entry that follows it.
+        let first = run(parse(&["op", "log", path]), &mut Full).unwrap_err();
+        let limited = run(parse(&["op", "log", "-n", "2", path]), &mut Full).unwrap_err();
+        let second = run(parse(&["op", "log", path]), &mut FullAfterOne(false)).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(first, CliError::Write { entry: 3, .. }), "{first}");
+        assert!(
+            matches!(limited, CliError::Write { entry: 3, .. }),
+            "{limited}"
+        );
+        assert!(
+            matches!(second, CliError::Write { entry: 2, .. }),
+            "{second}"
         );
     }
 
