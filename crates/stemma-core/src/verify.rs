@@ -1,4 +1,4 @@
-//! Checking the claims of a tree or a commit against a store.
+//! Checking the claims of an index, a tree, or a commit against a store.
 //!
 //! The readers [`Tree::parse`] and [`Commit::parse`] claim the kind of each ID they find: the mode
 //! of an entry says whether it names a tree or a blob, and the headers of a commit name a tree and
@@ -21,24 +21,48 @@ use std::fmt;
 use crate::object::{Commit, EntryMode, ObjectId, Tree};
 use crate::store::{ObjectStore, StoreError};
 
-/// Where a check found its problem: the place that the message of a [`VerifyError`] starts with.
-/// It is the path of an entry of an index, the name of an entry of a tree (both a `String`, which
-/// is printed in backticks and escaped, because a name may contain anything but `/` and control
-/// characters), or what a commit refers to ([`CommitReference`]).
-pub trait VerifyLocation: fmt::Debug {
-    /// Writes the place as the start of a message.
-    fn write_location(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+/// The path of an entry of an index. It is a different thing from the name of an entry of a tree
+/// ([`EntryName`]): a path has `/`, a name has none. Its `Display` form is the path in backticks
+/// and escaped, because a path may contain anything but control characters, and so that it cannot
+/// pass for a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPath(pub String);
+
+impl EntryPath {
+    /// Returns the path.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-impl VerifyLocation for String {
-    fn write_location(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "`{}`", self.escape_debug())
+impl fmt::Display for EntryPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}`", self.0.escape_debug())
+    }
+}
+
+/// The name of an entry of a tree. It is a different thing from the path of an entry of an index
+/// ([`EntryPath`]). Its `Display` form is the name in backticks and escaped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryName(pub String);
+
+impl EntryName {
+    /// Returns the name.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for EntryName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}`", self.0.escape_debug())
     }
 }
 
 /// Why a check of the claims of an object against a store fails. Carries the place of the first
-/// failing claim, in the order of the object: [`IndexVerifyError`] for an index,
-/// [`TreeVerifyError`] for a tree, and [`CommitVerifyError`] for a commit are this type for
+/// failing claim, in the order of the object. The `Display` form of the place starts the message:
+/// [`IndexVerifyError`] for an index ([`EntryPath`]), [`TreeVerifyError`] for a tree
+/// ([`EntryName`]), and [`CommitVerifyError`] for a commit ([`CommitReference`]) are this type for
 /// their place.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -63,26 +87,39 @@ pub enum VerifyError<L> {
 
 /// Why an index fails [`Index::verify`](crate::index::Index::verify). The place is the path of
 /// the first failing entry, in index order.
-pub type IndexVerifyError = VerifyError<String>;
+pub type IndexVerifyError = VerifyError<EntryPath>;
 
 /// Why a tree fails [`Tree::verify`]. The place is the name of the first failing entry, in name
 /// order.
-pub type TreeVerifyError = VerifyError<String>;
+pub type TreeVerifyError = VerifyError<EntryName>;
 
 /// Why a commit fails [`Commit::verify`]. The place is the tree or the parent.
 pub type CommitVerifyError = VerifyError<CommitReference>;
 
-impl<L: VerifyLocation> VerifyError<L> {
+impl<L: fmt::Debug + fmt::Display> VerifyError<L> {
     /// Turns the answer of a store to "is there an object of the claimed kind" into the result of
     /// a check: found is `Ok`, not found is `Missing`, and an error of the store is `Store`.
-    pub(crate) fn check(at: L, id: ObjectId, found: Result<bool, StoreError>) -> Result<(), Self> {
+    ///
+    /// The place is made by a function, so that it costs nothing when the claim holds.
+    pub(crate) fn check(
+        at: impl FnOnce() -> L,
+        id: ObjectId,
+        found: Result<bool, StoreError>,
+    ) -> Result<(), Self> {
         match found {
             Ok(true) => Ok(()),
-            Ok(false) => Err(Self::Missing { at, id }),
+            Ok(false) => Err(Self::Missing { at: at(), id }),
             Err(source) => Err(Self::Store {
-                at,
+                at: at(),
                 source: Box::new(source),
             }),
+        }
+    }
+
+    /// Returns the place of the claim that failed.
+    pub fn at(&self) -> &L {
+        match self {
+            Self::Missing { at, .. } | Self::Store { at, .. } => at,
         }
     }
 
@@ -95,22 +132,16 @@ impl<L: VerifyLocation> VerifyError<L> {
     }
 }
 
-impl<L: VerifyLocation> fmt::Display for VerifyError<L> {
+impl<L: fmt::Debug + fmt::Display> fmt::Display for VerifyError<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Missing { at, id } => {
-                at.write_location(f)?;
-                write!(f, ": the store has no object {id}")
-            }
-            Self::Store { at, source } => {
-                at.write_location(f)?;
-                write!(f, ": {source}")
-            }
+            Self::Missing { at, id } => write!(f, "{at}: the store has no object {id}"),
+            Self::Store { at, source } => write!(f, "{at}: {source}"),
         }
     }
 }
 
-impl<L: VerifyLocation> Error for VerifyError<L> {
+impl<L: fmt::Debug + fmt::Display> Error for VerifyError<L> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             // The message includes that of the store error; see the crate documentation.
@@ -139,7 +170,7 @@ impl Tree {
             } else {
                 store.resolve_blob(&id).map(|found| found.is_some())
             };
-            VerifyError::check(entry.name().to_owned(), id, found)?;
+            VerifyError::check(|| EntryName(entry.name().to_owned()), id, found)?;
         }
         Ok(())
     }
@@ -168,12 +199,6 @@ impl fmt::Display for CommitReference {
     }
 }
 
-impl VerifyLocation for CommitReference {
-    fn write_location(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self}")
-    }
-}
-
 impl Commit {
     /// Checks that the tree is a tree and every parent is a commit that the store has. See the
     /// module documentation for what the check covers. A store that holds only part of the
@@ -199,7 +224,7 @@ impl Commit {
                     store.resolve_commit(&id).map(|found| found.is_some())
                 }
             };
-            VerifyError::check(reference, id, found)?;
+            VerifyError::check(|| reference, id, found)?;
         }
         Ok(())
     }
@@ -236,19 +261,25 @@ mod tests {
     // ---- VerifyError
 
     #[test]
-    fn the_errors_of_an_index_a_tree_and_a_commit_are_one_type_for_their_place() {
+    fn the_errors_of_an_index_a_tree_and_a_commit_are_one_generic_type_with_three_places() {
         use std::any::TypeId;
         assert_eq!(
             TypeId::of::<IndexVerifyError>(),
-            TypeId::of::<TreeVerifyError>()
+            TypeId::of::<VerifyError<EntryPath>>()
         );
         assert_eq!(
-            TypeId::of::<IndexVerifyError>(),
-            TypeId::of::<VerifyError<String>>()
+            TypeId::of::<TreeVerifyError>(),
+            TypeId::of::<VerifyError<EntryName>>()
         );
         assert_eq!(
             TypeId::of::<CommitVerifyError>(),
             TypeId::of::<VerifyError<CommitReference>>()
+        );
+        // The path of an index entry and the name of a tree entry are not mixed up: a function
+        // for the error of an index does not take the error of a tree.
+        assert_ne!(
+            TypeId::of::<IndexVerifyError>(),
+            TypeId::of::<TreeVerifyError>()
         );
         assert_ne!(
             TypeId::of::<TreeVerifyError>(),
@@ -259,8 +290,8 @@ mod tests {
     #[test]
     fn a_check_turns_the_answer_of_a_store_into_a_result() {
         let id = ObjectId::from(absent_blob());
-        assert!(VerifyError::check("a".to_owned(), id, Ok(true)).is_ok());
-        match VerifyError::check("a".to_owned(), id, Ok(false)).unwrap_err() {
+        assert!(VerifyError::check(|| EntryName("a".to_owned()), id, Ok(true)).is_ok());
+        match VerifyError::check(|| EntryName("a".to_owned()), id, Ok(false)).unwrap_err() {
             VerifyError::Missing { at, id: found } => assert_eq!((at.as_str(), found), ("a", id)),
             other => panic!("unexpected error: {other}"),
         }
@@ -269,7 +300,7 @@ mod tests {
             expected: crate::object::Kind::Blob,
             found: crate::object::Kind::Tree,
         };
-        let error = VerifyError::check(CommitReference::Tree, id, Err(failure)).unwrap_err();
+        let error = VerifyError::check(|| CommitReference::Tree, id, Err(failure)).unwrap_err();
         assert!(matches!(error, VerifyError::Store { .. }), "{error}");
         assert!(matches!(
             error.store_error(),
@@ -284,17 +315,18 @@ mod tests {
     #[test]
     fn a_place_is_written_as_the_start_of_the_message() {
         let id = ObjectId::from(absent_blob());
-        let missing = |at: &str| {
-            format!(
-                "{}",
-                VerifyError::<String>::Missing {
-                    at: at.to_owned(),
-                    id
-                }
-            )
-        };
+        let missing = |at: EntryPath| VerifyError::Missing { at, id }.to_string();
         // A path or a name is in backticks and escaped, so that it cannot pass for a message.
-        assert!(missing("a\"b\n").starts_with("`a\\\"b\\n`: the store has no object "));
+        assert!(missing(EntryPath("a\"b\n".to_owned()))
+            .starts_with("`a\\\"b\\n`: the store has no object "));
+        let by_name = VerifyError::Missing {
+            at: EntryName("a\"b\n".to_owned()),
+            id,
+        };
+        assert!(by_name
+            .to_string()
+            .starts_with("`a\\\"b\\n`: the store has no object "));
+        assert_eq!(by_name.at().as_str(), "a\"b\n");
         let parent = VerifyError::Missing {
             at: CommitReference::Parent { index: 0 },
             id,
@@ -302,6 +334,21 @@ mod tests {
         assert!(parent
             .to_string()
             .starts_with("parent 1: the store has no object "));
+        assert_eq!(*parent.at(), CommitReference::Parent { index: 0 });
+    }
+
+    #[test]
+    fn the_place_is_made_only_when_a_claim_fails() {
+        let id = ObjectId::from(absent_blob());
+        let place = |made: &std::cell::Cell<usize>| {
+            made.set(made.get() + 1);
+            EntryName("a".to_owned())
+        };
+        let made = std::cell::Cell::new(0);
+        assert!(VerifyError::check(|| place(&made), id, Ok(true)).is_ok());
+        assert_eq!(made.get(), 0, "a claim that holds makes no place");
+        assert!(VerifyError::check(|| place(&made), id, Ok(false)).is_err());
+        assert_eq!(made.get(), 1);
     }
 
     // ---- Tree::verify
@@ -333,7 +380,7 @@ mod tests {
         .unwrap();
         match file.verify(&store).unwrap_err() {
             TreeVerifyError::Missing { at: name, id } => {
-                assert_eq!(name, "f");
+                assert_eq!(name.as_str(), "f");
                 assert_eq!(id, ObjectId::from(absent_blob()));
             }
             other => panic!("unexpected error: {other}"),
@@ -341,7 +388,7 @@ mod tests {
         let directory = Tree::new(vec![TreeEntry::directory("d", absent_tree()).unwrap()]).unwrap();
         match directory.verify(&store).unwrap_err() {
             TreeVerifyError::Missing { at: name, id } => {
-                assert_eq!(name, "d");
+                assert_eq!(name.as_str(), "d");
                 assert_eq!(id, ObjectId::from(absent_tree()));
             }
             other => panic!("unexpected error: {other}"),
@@ -370,7 +417,7 @@ mod tests {
         ] {
             match Tree::new(vec![entry]).unwrap().verify(&store).unwrap_err() {
                 TreeVerifyError::Store { at: found, source } => {
-                    assert_eq!(found, name);
+                    assert_eq!(found.as_str(), name);
                     assert!(
                         matches!(*source, StoreError::KindMismatch { .. }),
                         "{source}"
@@ -472,8 +519,8 @@ mod tests {
         let wrong = TreeEntry::file("c", FileMode::File, BlobId::new(ObjectId::from(sub))).unwrap();
         for (entry, is_missing) in [(missing, true), (wrong, false)] {
             match (verify(entry).unwrap_err(), is_missing) {
-                (TreeVerifyError::Missing { at: name, .. }, true) => assert_eq!(name, "c"),
-                (TreeVerifyError::Store { at: name, .. }, false) => assert_eq!(name, "c"),
+                (TreeVerifyError::Missing { at: name, .. }, true) => assert_eq!(name.as_str(), "c"),
+                (TreeVerifyError::Store { at: name, .. }, false) => assert_eq!(name.as_str(), "c"),
                 (other, _) => panic!("unexpected error: {other}"),
             }
         }
@@ -483,7 +530,7 @@ mod tests {
         let entry = TreeEntry::file("c", FileMode::File, damaged).unwrap();
         assert!(matches!(
             verify(entry),
-            Err(TreeVerifyError::Store { ref at, .. }) if at == "c"
+            Err(TreeVerifyError::Store { ref at, .. }) if at.as_str() == "c"
         ));
         assert!(verify(good("c")).is_ok());
     }

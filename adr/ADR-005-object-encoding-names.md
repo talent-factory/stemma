@@ -316,10 +316,13 @@ them.
       `TreeVerifyError`, and `CommitVerifyError` had the same two cases, the store has no such
       object and the store reports an error. They are now one generic `VerifyError<L>` (module
       `verify`) with `Missing { at, id }` and `Store { at, source }`, and the three names are
-      aliases for the place: a `String` for the path of an index entry and for the name of a tree
-      entry, and `CommitReference` for the tree or a parent of a commit. The trait
-      `VerifyLocation` writes the place as the start of the message, so the messages are what
-      they were. `VerifyError::check` turns the answer of a store into the result, once for all
-      three checks, and `store_error()` is defined once. `IndexVerifyError::Missing` names the ID
-      as an `ObjectId` like the others, and the field is `at` instead of `path`, `name`, and
-      `reference`.
+      aliases for the place: `EntryPath` for the path of an index entry, `EntryName` for the name
+      of a tree entry, and `CommitReference` for the tree or a parent of a commit. The place has
+      its own type each, so the path of an index entry and the name of a tree entry cannot be
+      mixed up, and `WriteTreeError::Verify` holds only the error of an index. `L` only has to
+      be `Debug + Display`: the `Display` form of the place starts the message (a path and a name
+      in escaped backticks), so the messages are what they were. `VerifyError::check` turns the
+      answer of a store into the result, once for all three checks, and makes the place only when
+      a claim fails; `store_error()` and `at()` are defined once. `IndexVerifyError::Missing`
+      names the ID as an `ObjectId` like the others, and the field is `at` instead of `path`,
+      `name`, and `reference`.

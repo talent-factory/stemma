@@ -52,7 +52,7 @@ use crate::object::{
 };
 use crate::store::{ObjectStore, StoreError};
 pub use crate::verify::IndexVerifyError;
-use crate::verify::VerifyError;
+use crate::verify::{EntryPath, VerifyError};
 
 /// First line of the encoding. It carries the format version.
 const HEADER: &str = "stemma-index 1\n";
@@ -576,7 +576,7 @@ impl Index {
         for (path, entry) in &self.entries {
             let id = ObjectId::from(entry.id);
             let found = store.resolve_blob(&id).map(|found| found.is_some());
-            VerifyError::check(path.0.clone(), id, found)?;
+            VerifyError::check(|| EntryPath(path.0.clone()), id, found)?;
         }
         Ok(())
     }
@@ -1354,7 +1354,7 @@ mod tests {
         let error = index.verify(&store).unwrap_err();
         match &error {
             IndexVerifyError::Store { at: path, source } => {
-                assert_eq!(path, "a.txt");
+                assert_eq!(path.as_str(), "a.txt");
                 assert!(
                     matches!(
                         source.as_ref(),
@@ -1423,7 +1423,7 @@ mod tests {
         index.insert("src/lib.rs", FileMode::File, blob).unwrap();
         match index.verify(&store).unwrap_err() {
             IndexVerifyError::Store { at: path, source } => {
-                assert_eq!(path, "src/lib.rs");
+                assert_eq!(path.as_str(), "src/lib.rs");
                 assert!(matches!(*source, StoreError::Corrupt { .. }), "{source}");
             }
             other => panic!("unexpected error: {other}"),
@@ -1443,11 +1443,11 @@ mod tests {
             Index::parse(text.as_bytes()).expect("the reader accepts the claims")
         };
         match parse(&tree, &absent).verify(&store).unwrap_err() {
-            IndexVerifyError::Store { at: path, .. } => assert_eq!(path, "a"),
+            IndexVerifyError::Store { at: path, .. } => assert_eq!(path.as_str(), "a"),
             other => panic!("unexpected error: {other}"),
         }
         match parse(&absent, &tree).verify(&store).unwrap_err() {
-            IndexVerifyError::Missing { at: path, .. } => assert_eq!(path, "a"),
+            IndexVerifyError::Missing { at: path, .. } => assert_eq!(path.as_str(), "a"),
             other => panic!("unexpected error: {other}"),
         }
     }
@@ -1658,7 +1658,7 @@ mod tests {
         index.insert("c/d", FileMode::File, absent).unwrap();
         match index.write_tree(&store).unwrap_err() {
             WriteTreeError::Verify(IndexVerifyError::Missing { at: path, id }) => {
-                assert_eq!(path, "c/d");
+                assert_eq!(path.as_str(), "c/d");
                 assert_eq!(id, ObjectId::from(absent));
             }
             other => panic!("unexpected error: {other}"),
@@ -1677,7 +1677,7 @@ mod tests {
         let index = Index::parse(text.as_bytes()).expect("the reader accepts the claim");
         match index.write_tree(&store).unwrap_err() {
             WriteTreeError::Verify(IndexVerifyError::Store { at: path, source }) => {
-                assert_eq!(path, "a");
+                assert_eq!(path.as_str(), "a");
                 assert!(
                     matches!(*source, StoreError::KindMismatch { .. }),
                     "{source}"
