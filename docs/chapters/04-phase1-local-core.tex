@@ -14,6 +14,23 @@ Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden 
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
 \stopitemize
 
+\section{Aufbau eines Repositories}
+
+Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher und Referenzen, damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
+
+\starttyping
+.stemma/
+    format        stemma-repository 1
+    HEAD          branch main
+    objects/      lose Objekte
+    refs/heads/   Branches
+    tmp/          temporäre Dateien des Objektspeichers und der Referenzen
+\stoptyping
+
+Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende, eine nicht kanonische und jede andere Version ab. Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
+
+Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben \type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht, nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben. Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen. Für den Befehl \type{stemma init} ist der Schalter \type{--initial-branch} geplant. HEAD zeigt auf den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Wie jede Operation ruft \type{init} zuerst \type{authorize} mit dem Akteur auf.
+
 \section{Offene Fragen}
 
 \startitemize
