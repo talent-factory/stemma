@@ -658,6 +658,30 @@ impl Tree {
     }
 }
 
+/// What is wrong with the lines of a tree body, as far as the shape goes. The `Display` form is
+/// the message; a caller that wants to act on the reason matches on the variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TreeMalformed {
+    /// The last line has no terminating newline: the body is cut off.
+    CutOff,
+    /// A line is not of the form `<mode> <name>`.
+    EntryShape,
+    /// An entry has no line with its ID after the line with its mode and name. The line number of
+    /// the error is that of the line with the mode and the name, not that of the missing line.
+    ExpectedIdLine,
+}
+
+impl fmt::Display for TreeMalformed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::CutOff => "the last line has no terminating newline",
+            Self::EntryShape => "expected `<mode> <name>`",
+            Self::ExpectedIdLine => "the entry has no line with its ID",
+        })
+    }
+}
+
 /// Why the body of a tree is rejected by [`Tree::parse`]. Line numbers count from 1; an entry takes
 /// two lines, the mode and name first and the ID second.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -673,7 +697,7 @@ pub enum TreeParseError {
         /// Number of the line.
         line: usize,
         /// What is wrong with it.
-        reason: &'static str,
+        reason: TreeMalformed,
     },
     /// The mode is not one of the four canonical codes.
     UnknownMode {
@@ -779,7 +803,7 @@ impl Tree {
         if !text.is_empty() && !text.ends_with('\n') {
             return Err(TreeParseError::Malformed {
                 line: text.split('\n').count(),
-                reason: "the last line has no terminating newline",
+                reason: TreeMalformed::CutOff,
             });
         }
 
@@ -792,14 +816,14 @@ impl Tree {
             let malformed = |reason| TreeParseError::Malformed { line, reason };
             let (code, name) = head
                 .split_once(' ')
-                .ok_or_else(|| malformed("expected `<mode> <name>`"))?;
+                .ok_or_else(|| malformed(TreeMalformed::EntryShape))?;
             let mode = EntryMode::from_code(code).ok_or_else(|| TreeParseError::UnknownMode {
                 line,
                 code: code.to_owned(),
             })?;
             let (_, id_text) = lines
                 .next()
-                .ok_or_else(|| malformed("the entry has no line with its ID"))?;
+                .ok_or_else(|| malformed(TreeMalformed::ExpectedIdLine))?;
             let id =
                 ObjectId::from_str(id_text).map_err(|source| TreeParseError::InvalidObjectId {
                     line: line + 1,
@@ -952,14 +976,14 @@ pub enum CommitParseError {
         /// Length of the longest valid prefix, in bytes.
         valid_up_to: usize,
     },
-    /// A header is missing, repeated, unknown, or out of order, the last line is cut off, the time
-    /// is not a canonical decimal integer of seconds or does not fit `i64`, or the empty line after
-    /// the headers is missing.
+    /// A header is missing, repeated, unknown, or out of order, the last line is cut off, or the
+    /// empty line after the headers is missing. The shape of the lines is wrong; a value that is
+    /// rejected has a variant of its own.
     Malformed {
         /// Number of the line.
         line: usize,
         /// What is wrong with it.
-        reason: &'static str,
+        reason: CommitMalformed,
     },
     /// An object ID is not in canonical form.
     InvalidObjectId {
@@ -967,6 +991,14 @@ pub enum CommitParseError {
         line: usize,
         /// Why the ID is invalid.
         source: ObjectIdParseError,
+    },
+    /// The value of the `time` header is not a canonical decimal integer of seconds, or does not
+    /// fit `i64`.
+    InvalidTime {
+        /// Number of the line.
+        line: usize,
+        /// Why the time is invalid.
+        reason: TimeError,
     },
     /// The author line is rejected.
     InvalidAuthor {
@@ -1001,6 +1033,7 @@ impl fmt::Display for CommitParseError {
             Self::InvalidObjectId { line, source } => {
                 write!(f, "line {line}: invalid object ID: {source}")
             }
+            Self::InvalidTime { line, reason } => write!(f, "line {line}: {reason}"),
             Self::InvalidAuthor { line, source } => write!(f, "line {line}: {source}"),
             Self::DuplicateParent { line, id } => {
                 write!(f, "line {line}: duplicate parent {id}")
@@ -1014,6 +1047,7 @@ impl Error for CommitParseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::InvalidObjectId { source, .. } => Some(source),
+            Self::InvalidTime { reason, .. } => Some(reason),
             Self::InvalidAuthor { source, .. } => Some(source),
             Self::Commit(source) => Some(source),
             _ => None,
@@ -1021,19 +1055,61 @@ impl Error for CommitParseError {
     }
 }
 
-/// The reason for a last line without a newline: the object is cut off, and the header on that
-/// line may well be right.
-const CUT_OFF: &str = "the last line has no terminating newline";
+/// What is wrong with the lines of a commit body, as far as the shape goes. The `Display` form is
+/// the message; a caller that wants to act on the reason matches on the variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CommitMalformed {
+    /// The last line has no terminating newline: the body is cut off. A cut-off line is reported
+    /// as this wherever it is, in a header or where the empty line is expected, and not as the
+    /// header or the empty line that it should have been, so that a truncated object is not taken
+    /// for one with a wrong header.
+    CutOff,
+    /// The first line is not the header `tree <id>`.
+    ExpectedTree,
+    /// After the parents comes no header `author <actor>`.
+    ExpectedAuthor,
+    /// After the author comes no header `time <seconds>`.
+    ExpectedTime,
+    /// After the headers comes a line that is not empty.
+    ExpectedEmptyLine,
+}
 
-/// Reasons for a header that is missing or wrong.
-const EXPECTED_TREE: &str = "expected the header `tree <id>` first";
-const EXPECTED_AUTHOR: &str = "expected the header `author <actor>`";
-const EXPECTED_TIME: &str = "expected the header `time <seconds>`";
-const EXPECTED_EMPTY_LINE: &str = "expected an empty line after the headers";
+impl fmt::Display for CommitMalformed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::CutOff => "the last line has no terminating newline",
+            Self::ExpectedTree => "expected the header `tree <id>` first",
+            Self::ExpectedAuthor => "expected the header `author <actor>`",
+            Self::ExpectedTime => "expected the header `time <seconds>`",
+            Self::ExpectedEmptyLine => "expected an empty line after the headers",
+        })
+    }
+}
 
-/// Reasons for a time that is rejected.
-const TIME_FORM: &str = "the time is not a canonical decimal integer of seconds";
-const TIME_RANGE: &str = "the time is outside the range of a 64-bit signed integer of seconds";
+/// Why the value of the `time` header is rejected. The `Display` form is the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TimeError {
+    /// The time is not a canonical decimal integer: it has a sign other than a minus, a leading
+    /// zero, is `-0`, is empty, or has a character that is not an ASCII digit.
+    NotCanonical,
+    /// The time is a canonical integer, but it does not fit `i64`.
+    OutOfRange,
+}
+
+impl fmt::Display for TimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NotCanonical => "the time is not a canonical decimal integer of seconds",
+            Self::OutOfRange => {
+                "the time is outside the range of a 64-bit signed integer of seconds"
+            }
+        })
+    }
+}
+
+impl Error for TimeError {}
 
 /// Removes the next line, without its newline, from the front of the text and returns it. The
 /// reason `missing` is reported if there is no more input. A last line without a newline is
@@ -1042,7 +1118,7 @@ const TIME_RANGE: &str = "the time is outside the range of a 64-bit signed integ
 fn next_line<'a>(
     rest: &mut &'a str,
     line: usize,
-    missing: &'static str,
+    missing: CommitMalformed,
 ) -> Result<&'a str, CommitParseError> {
     match rest.split_once('\n') {
         Some((head, tail)) => {
@@ -1055,7 +1131,7 @@ fn next_line<'a>(
         }),
         None => Err(CommitParseError::Malformed {
             line,
-            reason: CUT_OFF,
+            reason: CommitMalformed::CutOff,
         }),
     }
 }
@@ -1067,17 +1143,17 @@ fn header_id(text: &str, line: usize) -> Result<ObjectId, CommitParseError> {
 
 /// Reads the seconds of the `time` header. Only the canonical form is accepted: a decimal integer
 /// with a minus sign only for a negative value, no plus sign, no leading zeros, and no `-0`, that
-/// fits `i64`. The error is the reason: [`TIME_FORM`] or [`TIME_RANGE`].
-fn parse_seconds(text: &str) -> Result<i64, &'static str> {
+/// fits `i64`. The error is the reason: [`TimeError::NotCanonical`] or [`TimeError::OutOfRange`].
+fn parse_seconds(text: &str) -> Result<i64, TimeError> {
     let negative = text.starts_with('-');
     let digits = if negative { &text[1..] } else { text };
     if digits.is_empty()
         || !digits.bytes().all(|b| b.is_ascii_digit())
         || (digits.starts_with('0') && (digits.len() > 1 || negative))
     {
-        return Err(TIME_FORM);
+        return Err(TimeError::NotCanonical);
     }
-    text.parse().map_err(|_| TIME_RANGE)
+    text.parse().map_err(|_| TimeError::OutOfRange)
 }
 
 impl Commit {
@@ -1111,16 +1187,16 @@ impl Commit {
         let mut line = 1;
         let malformed = |line, reason| CommitParseError::Malformed { line, reason };
 
-        let tree = next_line(&mut rest, line, EXPECTED_TREE)?
+        let tree = next_line(&mut rest, line, CommitMalformed::ExpectedTree)?
             .strip_prefix("tree ")
-            .ok_or_else(|| malformed(line, EXPECTED_TREE))?;
+            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedTree))?;
         let tree = TreeId::new(header_id(tree, line)?);
 
         let mut parents = Vec::new();
         let mut seen = HashSet::new();
         let author = loop {
             line += 1;
-            let header = next_line(&mut rest, line, EXPECTED_AUTHOR)?;
+            let header = next_line(&mut rest, line, CommitMalformed::ExpectedAuthor)?;
             match header.strip_prefix("parent ") {
                 Some(id) => {
                     let id = CommitId::new(header_id(id, line)?);
@@ -1134,20 +1210,24 @@ impl Commit {
         };
         let author = author
             .strip_prefix("author ")
-            .ok_or_else(|| malformed(line, EXPECTED_AUTHOR))?;
+            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedAuthor))?;
         let author = Actor::from_str(author)
             .map_err(|source| CommitParseError::InvalidAuthor { line, source })?;
 
         line += 1;
-        let seconds = next_line(&mut rest, line, EXPECTED_TIME)?
+        let seconds = next_line(&mut rest, line, CommitMalformed::ExpectedTime)?
             .strip_prefix("time ")
-            .ok_or_else(|| malformed(line, EXPECTED_TIME))?;
-        let timestamp = parse_seconds(seconds).map_err(|reason| malformed(line, reason))?;
+            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedTime))?;
+        let timestamp = parse_seconds(seconds)
+            .map_err(|reason| CommitParseError::InvalidTime { line, reason })?;
 
         line += 1;
         match rest.split_once('\n') {
             Some(("", message)) => rest = message,
-            _ => return Err(malformed(line, EXPECTED_EMPTY_LINE)),
+            // A last line without a newline is cut off, as in a header, and is not a line that
+            // should have been empty.
+            None if !rest.is_empty() => return Err(malformed(line, CommitMalformed::CutOff)),
+            _ => return Err(malformed(line, CommitMalformed::ExpectedEmptyLine)),
         }
         Commit::new(tree, parents, author, timestamp, rest).map_err(CommitParseError::Commit)
     }
@@ -2384,7 +2464,10 @@ mod tests {
             "-9223372036854775809",
             "99999999999999999999",
         ] {
-            malformed_at(commit_bytes(tree, &[], human, time, "\n"), 3);
+            match error(commit_bytes(tree, &[], human, time, "\n")) {
+                CommitParseError::InvalidTime { line: 3, .. } => {}
+                other => panic!("time {time:?} is not an invalid time at line 3: {other}"),
+            }
         }
         for time in ["0", "-1", "9223372036854775807", "-9223372036854775808"] {
             assert!(Commit::parse(&commit_bytes(tree, &[], human, time, "\n")).is_ok());
@@ -2448,7 +2531,10 @@ mod tests {
             error.to_string(),
             "line 3: the time is not a canonical decimal integer of seconds"
         );
-        assert!(error.source().is_none());
+        assert_eq!(
+            error.source().map(ToString::to_string).as_deref(),
+            Some("the time is not a canonical decimal integer of seconds")
+        );
     }
 
     #[test]
@@ -2554,13 +2640,13 @@ mod tests {
             ),
             (
                 commit_bytes(t, &[], "human d", "+1", "\n"),
-                format!("line 3: {TIME_FORM}"),
-                false,
+                format!("line 3: {}", TimeError::NotCanonical),
+                true,
             ),
             (
                 commit_bytes(t, &[], "human d", "9223372036854775808", "\n"),
-                format!("line 3: {TIME_RANGE}"),
-                false,
+                format!("line 3: {}", TimeError::OutOfRange),
+                true,
             ),
             (
                 commit_bytes("b3:00", &[], "human d", "1", "\n"),
@@ -2649,64 +2735,164 @@ mod tests {
     }
 
     #[test]
+    fn every_shape_problem_of_a_tree_has_its_own_variant_and_message() {
+        let cases: [(String, usize, TreeMalformed, &str); 3] = [
+            (
+                format!("100644 a\n{TREE_ID}"),
+                2,
+                TreeMalformed::CutOff,
+                "the last line has no terminating newline",
+            ),
+            (
+                "nospace\n".to_owned(),
+                1,
+                TreeMalformed::EntryShape,
+                "expected `<mode> <name>`",
+            ),
+            (
+                "100644 a\n".to_owned(),
+                1,
+                TreeMalformed::ExpectedIdLine,
+                "the entry has no line with its ID",
+            ),
+        ];
+        for (text, line, reason, message) in cases {
+            let error = Tree::parse(text.as_bytes()).unwrap_err();
+            assert_eq!(
+                error,
+                TreeParseError::Malformed { line, reason },
+                "{text:?}"
+            );
+            assert_eq!(reason.to_string(), message);
+            assert_eq!(error.to_string(), format!("line {line}: {message}"));
+        }
+    }
+
+    #[test]
+    fn every_shape_problem_of_a_commit_has_a_message_that_is_pinned() {
+        for (reason, message) in [
+            (
+                CommitMalformed::CutOff,
+                "the last line has no terminating newline",
+            ),
+            (
+                CommitMalformed::ExpectedTree,
+                "expected the header `tree <id>` first",
+            ),
+            (
+                CommitMalformed::ExpectedAuthor,
+                "expected the header `author <actor>`",
+            ),
+            (
+                CommitMalformed::ExpectedTime,
+                "expected the header `time <seconds>`",
+            ),
+            (
+                CommitMalformed::ExpectedEmptyLine,
+                "expected an empty line after the headers",
+            ),
+        ] {
+            assert_eq!(reason.to_string(), message);
+            let error = CommitParseError::Malformed { line: 7, reason };
+            assert_eq!(error.to_string(), format!("line 7: {message}"));
+            assert!(error.source().is_none());
+        }
+    }
+
+    #[test]
+    fn a_bad_time_is_an_invalid_value_with_its_own_variant_message_and_cause() {
+        for (reason, message) in [
+            (
+                TimeError::NotCanonical,
+                "the time is not a canonical decimal integer of seconds",
+            ),
+            (
+                TimeError::OutOfRange,
+                "the time is outside the range of a 64-bit signed integer of seconds",
+            ),
+        ] {
+            assert_eq!(reason.to_string(), message);
+            let error = CommitParseError::InvalidTime { line: 7, reason };
+            assert_eq!(error.to_string(), format!("line 7: {message}"));
+            let cause = error.source().expect("the reason is the cause");
+            assert_eq!(cause.to_string(), message);
+        }
+    }
+
+    #[test]
     fn a_commit_reader_reports_problems_in_the_order_of_the_lines() {
         let (t, p, q) = (TREE_ID, HELLO_ID, EMPTY_ID);
         let human = "human daniel";
         let at = |bytes: Vec<u8>| match Commit::parse(&bytes).unwrap_err() {
-            CommitParseError::Malformed { line, reason } => ("malformed", line, reason),
-            CommitParseError::InvalidObjectId { line, .. } => ("id", line, ""),
-            CommitParseError::InvalidAuthor { line, .. } => ("author", line, ""),
-            CommitParseError::DuplicateParent { line, .. } => ("duplicate", line, ""),
-            CommitParseError::NotUtf8 { .. } => ("utf8", 0, ""),
+            CommitParseError::Malformed { line, reason } => ("malformed", line, Some(reason)),
+            CommitParseError::InvalidObjectId { line, .. } => ("id", line, None),
+            CommitParseError::InvalidTime { line, .. } => ("time", line, None),
+            CommitParseError::InvalidAuthor { line, .. } => ("author", line, None),
+            CommitParseError::DuplicateParent { line, .. } => ("duplicate", line, None),
+            CommitParseError::NotUtf8 { .. } => ("utf8", 0, None),
             other => panic!("unexpected error: {other}"),
         };
         // A repeated parent is reported where it is, before a later bad author or time.
         assert_eq!(
             at(commit_bytes(t, &[p, q, p], "robot x", "+1", "x")),
-            ("duplicate", 4, "")
+            ("duplicate", 4, None)
         );
         // With two parents the author is on line 4, the time on line 5, the empty line on line 6.
         assert_eq!(
             at(commit_bytes(t, &[p, q], "robot x", "1", "\n")),
-            ("author", 4, "")
+            ("author", 4, None)
         );
         assert_eq!(
             at(commit_bytes(t, &[p, q], human, "+1", "\n")),
-            ("malformed", 5, TIME_FORM)
+            ("time", 5, None)
         );
+        // Where the empty line is expected, a last line without a newline is cut off, as in a
+        // header, and a complete line that is not empty is the wrong line.
         assert_eq!(
             at(commit_bytes(t, &[p, q], human, "1", "x")),
-            ("malformed", 6, EXPECTED_EMPTY_LINE)
+            ("malformed", 6, Some(CommitMalformed::CutOff))
+        );
+        assert_eq!(
+            at(format!("tree {t}\nauthor {human}\ntime 1\nx\n").into_bytes()),
+            ("malformed", 4, Some(CommitMalformed::ExpectedEmptyLine))
         );
         // Headers that are missing, repeated, or out of order.
-        assert_eq!(at(b"".to_vec()), ("malformed", 1, EXPECTED_TREE));
+        assert_eq!(
+            at(b"".to_vec()),
+            ("malformed", 1, Some(CommitMalformed::ExpectedTree))
+        );
         assert_eq!(
             at(format!("author {human}\ntree {t}\n").into_bytes()),
-            ("malformed", 1, EXPECTED_TREE)
+            ("malformed", 1, Some(CommitMalformed::ExpectedTree))
         );
         assert_eq!(
             at(format!("tree {t}\ntime 1\nauthor {human}\n").into_bytes()),
-            ("malformed", 2, EXPECTED_AUTHOR)
+            ("malformed", 2, Some(CommitMalformed::ExpectedAuthor))
         );
         assert_eq!(
             at(format!("tree {t}\nauthor {human}\ntime 1\ntime 1\n\n").into_bytes()),
-            ("malformed", 4, EXPECTED_EMPTY_LINE)
+            ("malformed", 4, Some(CommitMalformed::ExpectedEmptyLine))
+        );
+        // A third line that is not the time header, as against a time header that is missing.
+        assert_eq!(
+            at(format!("tree {t}\nauthor {human}\nfoo 1\n\n").into_bytes()),
+            ("malformed", 3, Some(CommitMalformed::ExpectedTime))
         );
         // A header that is missing at the end of the input, line by line.
         assert_eq!(
             at(format!("tree {t}\n").into_bytes()),
-            ("malformed", 2, EXPECTED_AUTHOR)
+            ("malformed", 2, Some(CommitMalformed::ExpectedAuthor))
         );
         assert_eq!(
             at(format!("tree {t}\nauthor {human}\n").into_bytes()),
-            ("malformed", 3, EXPECTED_TIME)
+            ("malformed", 3, Some(CommitMalformed::ExpectedTime))
         );
         assert_eq!(
             at(format!("tree {t}\nauthor {human}\ntime 1\n").into_bytes()),
-            ("malformed", 4, EXPECTED_EMPTY_LINE)
+            ("malformed", 4, Some(CommitMalformed::ExpectedEmptyLine))
         );
         // UTF-8 is checked for the whole body first.
-        assert_eq!(at(b"robot\n\xff".to_vec()), ("utf8", 0, ""));
+        assert_eq!(at(b"robot\n\xff".to_vec()), ("utf8", 0, None));
     }
 
     #[test]
@@ -2716,7 +2902,11 @@ mod tests {
         let cut_off_at =
             |text: String, expected: usize| match Commit::parse(text.as_bytes()).unwrap_err() {
                 CommitParseError::Malformed { line, reason } => {
-                    assert_eq!((line, reason), (expected, CUT_OFF), "{text:?}");
+                    assert_eq!(
+                        (line, reason),
+                        (expected, CommitMalformed::CutOff),
+                        "{text:?}"
+                    );
                 }
                 other => panic!("unexpected error for {text:?}: {other}"),
             };
@@ -2738,20 +2928,20 @@ mod tests {
         ))
         .unwrap_err()
         {
-            CommitParseError::Malformed { line: 3, reason } => reason,
+            CommitParseError::InvalidTime { line: 3, reason } => reason,
             other => panic!("unexpected error for {time:?}: {other}"),
         };
         for time in [
             "", "+1", "-0", "01", "-01", "1.5", "-", "--1", " 1", "\u{661}",
         ] {
-            assert_eq!(reason_of(time), TIME_FORM, "time {time:?}");
+            assert_eq!(reason_of(time), TimeError::NotCanonical, "time {time:?}");
         }
         for time in [
             "9223372036854775808",
             "-9223372036854775809",
             "99999999999999999999",
         ] {
-            assert_eq!(reason_of(time), TIME_RANGE, "time {time:?}");
+            assert_eq!(reason_of(time), TimeError::OutOfRange, "time {time:?}");
         }
     }
 

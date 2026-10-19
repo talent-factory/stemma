@@ -58,8 +58,25 @@ const HEADER: &str = "stemma-index 1\n";
 /// Start of the first line of every version of the encoding.
 const HEADER_PREFIX: &str = "stemma-index ";
 
-/// Shape of an entry line, used in error messages.
-const ENTRY_SHAPE: &str = "expected `<mode> <id> <path>`";
+/// What is wrong with the lines of an index, as far as the shape goes. The `Display` form is the
+/// message; a caller that wants to act on the reason matches on the variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum IndexMalformed {
+    /// The last line has no terminating newline: the input is cut off.
+    CutOff,
+    /// An entry line is not of the form `<mode> <id> <path>`.
+    EntryShape,
+}
+
+impl fmt::Display for IndexMalformed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::CutOff => "the last line has no terminating newline",
+            Self::EntryShape => "expected `<mode> <id> <path>`",
+        })
+    }
+}
 
 /// The rule that a rejected index path violates.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +179,7 @@ pub enum IndexParseError {
         /// Line number of the entry.
         line: usize,
         /// What is wrong with it.
-        reason: &'static str,
+        reason: IndexMalformed,
     },
     /// The mode is not one of `100644`, `100755`, and `120000`. This includes the tree mode
     /// `040000`, because the index holds no directories.
@@ -517,7 +534,7 @@ impl Index {
             // The header is line 1, so the last line of the body is line `count + 1`.
             return Err(IndexParseError::Malformed {
                 line: body.lines().count() + 1,
-                reason: "the last line has no terminating newline",
+                reason: IndexMalformed::CutOff,
             });
         }
 
@@ -529,8 +546,12 @@ impl Index {
                 line: line_number,
                 reason,
             };
-            let (code, rest) = line.split_once(' ').ok_or_else(|| malformed(ENTRY_SHAPE))?;
-            let (id, path) = rest.split_once(' ').ok_or_else(|| malformed(ENTRY_SHAPE))?;
+            let (code, rest) = line
+                .split_once(' ')
+                .ok_or_else(|| malformed(IndexMalformed::EntryShape))?;
+            let (id, path) = rest
+                .split_once(' ')
+                .ok_or_else(|| malformed(IndexMalformed::EntryShape))?;
             let mode = EntryMode::from_code(code)
                 .and_then(FileMode::from_entry_mode)
                 .ok_or_else(|| IndexParseError::UnknownMode {
@@ -750,7 +771,7 @@ mod tests {
     fn shape(line: usize) -> IndexParseError {
         IndexParseError::Malformed {
             line,
-            reason: ENTRY_SHAPE,
+            reason: IndexMalformed::EntryShape,
         }
     }
 
@@ -1080,14 +1101,14 @@ mod tests {
                 input(&format!("100644 {HELLO_ID} a")),
                 IndexParseError::Malformed {
                     line: 2,
-                    reason: "the last line has no terminating newline",
+                    reason: IndexMalformed::CutOff,
                 },
             ),
             (
                 input(&format!("{good}100644 {HELLO_ID} b")),
                 IndexParseError::Malformed {
                     line: 3,
-                    reason: "the last line has no terminating newline",
+                    reason: IndexMalformed::CutOff,
                 },
             ),
             (input("100644\n"), shape(2)),
@@ -1749,5 +1770,27 @@ mod tests {
                 .id();
         }
         assert_eq!(index.write_tree(&store).unwrap(), expected);
+    }
+
+    #[test]
+    fn the_shape_problems_of_an_index_have_their_own_variants_and_messages() {
+        let cut = Index::parse(&input(&format!("100644 {HELLO_ID} a"))).unwrap_err();
+        let not_an_entry = Index::parse(&input("100644\n")).unwrap_err();
+        assert_eq!(
+            cut,
+            IndexParseError::Malformed {
+                line: 2,
+                reason: IndexMalformed::CutOff
+            }
+        );
+        assert_eq!(not_an_entry, shape(2));
+        assert_eq!(
+            cut.to_string(),
+            "line 2: the last line has no terminating newline"
+        );
+        assert_eq!(
+            not_an_entry.to_string(),
+            "line 2: expected `<mode> <id> <path>`"
+        );
     }
 }

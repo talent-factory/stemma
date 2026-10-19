@@ -112,13 +112,50 @@ impl fmt::Display for ActorError {
 
 impl Error for ActorError {}
 
+/// What is wrong with the form of an actor line. The `Display` form is the message; a caller that
+/// wants to act on the reason matches on the variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ActorMalformed {
+    /// The first token, up to the first space, is neither `human` nor `agent`. A line such as
+    /// `humanoid x` or `human<TAB>x` is this, and so is an empty line.
+    UnknownLabel,
+    /// The first token is `human`, but the line is not `human <id>` with one space.
+    HumanShape,
+    /// The first token is `agent`, but the line does not have five tokens: it is not
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>` with single spaces.
+    AgentShape,
+    /// In an agent line with five tokens, the third is not `model=<model>`.
+    ExpectedModel,
+    /// In an agent line with five tokens, the fourth is not `session=<session>`.
+    ExpectedSession,
+    /// In an agent line with five tokens, the fifth is not `sponsor=<sponsor>`.
+    ExpectedSponsor,
+}
+
+impl fmt::Display for ActorMalformed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::UnknownLabel => "an actor line starts with `human` or `agent`",
+            Self::HumanShape => "a human line is `human <id>` with one space",
+            Self::AgentShape => {
+                "an agent line is `agent <id> model=<model> session=<session> sponsor=<sponsor>` \
+                 with single spaces"
+            }
+            Self::ExpectedModel => "the third token of an agent line is `model=<model>`",
+            Self::ExpectedSession => "the fourth token of an agent line is `session=<session>`",
+            Self::ExpectedSponsor => "the fifth token of an agent line is `sponsor=<sponsor>`",
+        })
+    }
+}
+
 /// Why the actor line of a commit is rejected by [`Actor::from_str`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ActorParseError {
-    /// The line does not have the form of an actor line. Carries what is wrong with it. The form is
+    /// The line does not have the form of an actor line. Carries the reason. The form is
     /// checked before the fields are; see the order below.
-    Malformed(&'static str),
+    Malformed(ActorMalformed),
     /// The line has the right form, but a field is rejected.
     Invalid(ActorError),
 }
@@ -159,33 +196,14 @@ impl FromStr for Actor {
         match tokens.as_slice() {
             ["human", id] => Actor::human(*id).map_err(ActorParseError::Invalid),
             ["agent", id, model, session, sponsor] => {
-                let model = token_value(
-                    model,
-                    "model=",
-                    "the third token of an agent line is `model=<model>`",
-                )?;
-                let session = token_value(
-                    session,
-                    "session=",
-                    "the fourth token of an agent line is `session=<session>`",
-                )?;
-                let sponsor = token_value(
-                    sponsor,
-                    "sponsor=",
-                    "the fifth token of an agent line is `sponsor=<sponsor>`",
-                )?;
+                let model = token_value(model, "model=", ActorMalformed::ExpectedModel)?;
+                let session = token_value(session, "session=", ActorMalformed::ExpectedSession)?;
+                let sponsor = token_value(sponsor, "sponsor=", ActorMalformed::ExpectedSponsor)?;
                 Actor::agent(*id, model, session, sponsor).map_err(ActorParseError::Invalid)
             }
-            ["human", ..] => Err(ActorParseError::Malformed(
-                "a human line is `human <id>` with one space",
-            )),
-            ["agent", ..] => Err(ActorParseError::Malformed(
-                "an agent line is `agent <id> model=<model> session=<session> sponsor=<sponsor>` \
-                 with single spaces",
-            )),
-            _ => Err(ActorParseError::Malformed(
-                "an actor line starts with `human` or `agent`",
-            )),
+            ["human", ..] => Err(ActorParseError::Malformed(ActorMalformed::HumanShape)),
+            ["agent", ..] => Err(ActorParseError::Malformed(ActorMalformed::AgentShape)),
+            _ => Err(ActorParseError::Malformed(ActorMalformed::UnknownLabel)),
         }
     }
 }
@@ -277,7 +295,7 @@ impl Actor {
 fn token_value<'a>(
     token: &'a str,
     key: &str,
-    reason: &'static str,
+    reason: ActorMalformed,
 ) -> Result<&'a str, ActorParseError> {
     token
         .strip_prefix(key)
@@ -654,5 +672,81 @@ mod tests {
                 ActorField::Id
             )))
         );
+    }
+
+    #[test]
+    fn every_form_problem_of_an_actor_line_has_its_own_variant_and_message() {
+        for (line, reason, message) in [
+            (
+                "robot x",
+                ActorMalformed::UnknownLabel,
+                "an actor line starts with `human` or `agent`",
+            ),
+            (
+                "",
+                ActorMalformed::UnknownLabel,
+                "an actor line starts with `human` or `agent`",
+            ),
+            (
+                "humanoid x",
+                ActorMalformed::UnknownLabel,
+                "an actor line starts with `human` or `agent`",
+            ),
+            (
+                "human\tdaniel",
+                ActorMalformed::UnknownLabel,
+                "an actor line starts with `human` or `agent`",
+            ),
+            (
+                "agent a model=m",
+                ActorMalformed::AgentShape,
+                "an agent line is `agent <id> model=<model> session=<session> sponsor=<sponsor>` \
+                 with single spaces",
+            ),
+            (
+                "Human x",
+                ActorMalformed::UnknownLabel,
+                "an actor line starts with `human` or `agent`",
+            ),
+            (
+                "human",
+                ActorMalformed::HumanShape,
+                "a human line is `human <id>` with one space",
+            ),
+            (
+                "human a b",
+                ActorMalformed::HumanShape,
+                "a human line is `human <id>` with one space",
+            ),
+            (
+                "agent a model=m session=s",
+                ActorMalformed::AgentShape,
+                "an agent line is `agent <id> model=<model> session=<session> sponsor=<sponsor>` \
+                 with single spaces",
+            ),
+            (
+                "agent a mode=m session=s sponsor=p",
+                ActorMalformed::ExpectedModel,
+                "the third token of an agent line is `model=<model>`",
+            ),
+            (
+                "agent a model=m sessio=s sponsor=p",
+                ActorMalformed::ExpectedSession,
+                "the fourth token of an agent line is `session=<session>`",
+            ),
+            (
+                "agent a model=m session=s sponsor",
+                ActorMalformed::ExpectedSponsor,
+                "the fifth token of an agent line is `sponsor=<sponsor>`",
+            ),
+        ] {
+            let error = line.parse::<Actor>().unwrap_err();
+            assert_eq!(error, ActorParseError::Malformed(reason), "line {line:?}");
+            assert_eq!(reason.to_string(), message);
+            assert_eq!(
+                error.to_string(),
+                format!("malformed actor line: {message}")
+            );
+        }
     }
 }

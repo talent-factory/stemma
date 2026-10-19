@@ -11,7 +11,7 @@ pub mod store;
 mod testutil;
 pub mod verify;
 
-pub use actor::{Actor, ActorError, ActorField, ActorParseError, ActorRef};
+pub use actor::{Actor, ActorError, ActorField, ActorMalformed, ActorParseError, ActorRef};
 
 /// Result of an authorization check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

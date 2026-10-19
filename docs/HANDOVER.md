@@ -87,9 +87,9 @@ Trunk-based Development: `main` ist geschützt und immer grün. Jede Arbeitssche
 
 | Datei | Aufgabe | Wichtige Elemente |
 | --- | --- | --- |
-| `actor.rs` | Wer handelt | `Actor::human`, `Actor::agent`, `Actor::view`, `FromStr` und `Display` (die Zeile im Commit), `ActorError`, `ActorField` |
-| `object.rs` | Objekte und Regeln | `ObjectId`, `BlobId`, `TreeId`, `CommitId`, `Blob`, `Tree` mit `parse`, `TreeEntry::file` und `::directory`, `FileMode`, `EntryMode`, `Commit` mit `parse`, Namensregeln, `METADATA_DIR` |
-| `index.rs` | Staging-Bereich | `Index` mit `insert`, `remove`, `get`, `encode`, `parse`, `verify(&store)`, `write_tree(&store)`; Pfade nach Komponenten sortiert, Datei und Verzeichnis können nicht kollidieren |
+| `actor.rs` | Wer handelt | `Actor::human`, `Actor::agent`, `Actor::view`, `FromStr` und `Display` (die Zeile im Commit), `ActorError`, `ActorField`, `ActorMalformed` |
+| `object.rs` | Objekte und Regeln | `ObjectId`, `BlobId`, `TreeId`, `CommitId`, `Blob`, `Tree` mit `parse`, `TreeEntry::file` und `::directory`, `FileMode`, `EntryMode`, `Commit` mit `parse`, `TreeMalformed`, `CommitMalformed`, `TimeError`, Namensregeln, `METADATA_DIR` |
+| `index.rs` | Staging-Bereich | `Index` mit `insert`, `remove`, `get`, `encode`, `parse`, `verify(&store)`, `write_tree(&store)`, `IndexMalformed`; Pfade nach Komponenten sortiert, Datei und Verzeichnis können nicht kollidieren |
 | `store.rs` | Objektspeicher | `ObjectStore` (versiegelt), `FsObjectStore`, `RawObject`, `resolve_blob`, `resolve_tree`, `resolve_commit`, `get_tree`, `get_commit`, `ReadError`, `CorruptReason`, `StoreError` |
 | `verify.rs` | Behauptungen prüfen | `Tree::verify`, `Commit::verify` prüfen die Arten, die Modus, Baum-Header und Eltern behaupten, einen Schritt tief gegen einen Speicher |
 | `lib.rs` | Einstieg | `Authorizer`, `AllowAll`, `Decision` |
