@@ -44,12 +44,16 @@ decides them. Implementation will be `crates/stemma-core/src/oplog.rs`.
   compare-and-swap of ADR-008. If the process stops in between, the old commit is already in the
   log. If the order were the other one, a stop after the move would leave a commit that no
   reference and no entry names.
-- **An entry is an intent, not a proof** *(proposal)*. If the compare-and-swap fails after the
-  entry was written, because another writer moved the pointer first, the entry names a move that
-  did not happen. The log is not wrong for it: every old value in it was the value of a pointer at
-  some moment, and that is all the garbage collection needs. A reader that wants to know whether a
-  move happened compares the entry with the pointers or with the next entry of the same pointer
-  (see the open items).
+- **An entry is an intent, not a proof, and nothing is written after the move** *(confirmed)*. If
+  the compare-and-swap fails after the entry was written, because another writer moved the pointer
+  first, the entry names a move that did not happen. The log is not wrong for it: every old value
+  in it was the value of a pointer at some moment, and that is all the garbage collection needs.
+  There is no marker for the outcome, because a second write after the move could be half done
+  or lost, and then a move that happened would look as if it had not. A reader reads the outcome
+  from the chain of the entries of one pointer: a later entry whose old value is the new value of
+  this one confirms the move, and the current value of the pointer confirms the last one. The case
+  that this cannot decide is a pointer that returns to an earlier value; it is rare, and a marker
+  can come with version 2 of the encoding if a use appears.
 - **Only a change writes an entry** *(proposal)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
@@ -60,13 +64,25 @@ decides them. Implementation will be `crates/stemma-core/src/oplog.rs`.
   else, as in ADR-005, so one entry has exactly one encoding. The sketch below is the proposal.
   The time is the one the writer claims, in seconds since the Unix epoch, written as in a commit
   (ADR-005); it is not a proof, and the order is the number, not the time.
-- **The repository format version rises to 2 with the log** *(proposal)*. `oplog/` is part of the
-  layout (ADR-009), and `Repository::open` rejects version 1 with the existing
+- **The repository format version rises to 2 with the log** *(implemented)*. `oplog/` is part of
+  the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again.
 - **The first slice** *(confirmed)*. The core writes and strictly reads entries; `init` and every
-  operation that changes a pointer write one; `stemma op log` lists them. Restoring and undoing
-  come as commands of their own (STEMMA-28).
+  operation that changes a pointer write one; `stemma op log` lists them (STEMMA-27). Restoring
+  and undoing come as commands of their own (STEMMA-28).
+- **Only `Repository` moves a pointer** *(confirmed)*. `Repository::update_branch` and
+  `set_head` order "check, write the entry, flush, move", and `Repository::refs()` returns a view
+  for reading. The raw reference store is no longer reachable, so no caller can move a pointer
+  past the log, or pair the references of one repository with the objects of another. A refusal
+  by the authorizer, a branch that is not where the caller saw it, and a commit that is not in the
+  store write no entry. A move to the value that a pointer has writes none either.
+- **An entry is published with a hard link** *(implemented)*. The writer writes the entry to a
+  temporary file in `tmp/`, flushes it, and links it to the name of the next free number. The link
+  fails if the name exists, so the entry is whole from the first moment it can be seen, and the
+  writer that loses looks for the end of the log again and tries the next number. A file system
+  that has no hard links cannot hold a log; that is reported as an I/O error. The numbers are
+  twelve digits, so the log holds up to 999 999 999 999 entries and then reports that it is full.
 
 ### Sketch of an entry *(proposal)*
 
@@ -104,9 +120,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 
 ## Open items
 
-- [ ] How a reader learns that an intent did not happen: a later entry `abort <n>`, a comparison
-      with the pointers at read time, or a flag that is written after the move. Decide with the
-      first operation that moves a pointer.
+- [ ] A function that reads the outcome of an entry from the chain of its pointer (see the
+      decisions); `stemma op log` needs it to mark an entry that did not take effect (STEMMA-27).
+- [ ] Every `append` lists the directory to find the end of the log, which costs time in a long
+      log. Measure it, and keep the number of the last entry if it matters.
 - [ ] Retention: whether many snapshot entries of one working-copy change are merged after some
       time, and what a garbage collection may remove (nothing before ADR-007's collection
       exists). Decide with a measurement of a real session.

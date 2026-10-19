@@ -18,8 +18,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
   operations (`add`, `commit`) are methods of `Repository`, so they use the stores of one
   repository.
 - **Layout** *(confirmed)*. A repository is a directory that contains `.stemma/`. Inside:
-  `format`, `HEAD`, `objects/` (ADR-007), `refs/heads/` (ADR-008), and `tmp/` (the temporary files
-  of the object store and of the references).
+  `format`, `HEAD`, `objects/` (ADR-007), `oplog/` (ADR-011), `refs/heads/` (ADR-008), and `tmp/`
+  (the temporary files of the object store, the references, and the log).
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
@@ -62,16 +62,18 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
 - A process that is killed during `init` can leave a `.stemma-init-…` directory. A later `add`
   must not treat it as content of the working copy (ADR-005 reserves `.stemma` and its aliases;
   this name is not one of them).
-- `Repository` hands out both stores. A caller can still give the reference store the object
-  store of another repository, so the type does not yet close the gap that the context names.
+- `Repository` hands out the object store, but the references only as a view for reading
+  (`Repository::refs()`, ADR-011). A pointer moves through `Repository::update_branch` and
+  `set_head`, which use the object store of their own repository, so the gap that the context
+  names is closed for those two operations. The rest of this consequence is unchanged:
   The operations that need both (`commit`) will be methods of `Repository`, and the stores
   can become crate-private then; see the open items.
 
 ## Open items
 
-- [ ] Hide the two stores behind methods of `Repository`, so that no caller can pair the
-      references of one repository with the objects of another. Decide with the first operation
-      that needs both (`commit`, STEMMA-3).
+- [ ] Hide the object store too, if an operation needs to be sure that it is the one of this
+      repository; today `objects()` is safe, because anything stored through it belongs to this
+      repository, and `update_branch` and `set_head` use it themselves.
 - [ ] Finding the repository from a subdirectory (searching upwards for `.stemma`), which `add`,
       `commit`, and `status` need.
 - [ ] Removing a stale `.stemma-init-*` directory, by `init` or by a repair command.

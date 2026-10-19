@@ -5,11 +5,12 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 1" and a newline
+//! ├── format          "stemma-repository 2" and a newline
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
-//! └── tmp/            temporary files of the object store and of the references
+//! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
+//! └── tmp/            temporary files of the object store, the references, and the log
 //! ```
 
 use std::error::Error;
@@ -18,13 +19,16 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use crate::object::METADATA_DIR;
-use crate::refs::{BranchName, FsRefStore, Head};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::object::{CommitId, METADATA_DIR};
+use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName};
+use crate::refs::{BranchName, FsRefStore, Head, RefError, RefStore};
 use crate::store::{unique_temp_name, FsObjectStore};
 use crate::{Actor, Authorizer, Decision};
 
 /// The version of the repository format that this code writes and reads.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 /// The name that the file `format` starts with, followed by the version.
 const FORMAT_PREFIX: &str = "stemma-repository ";
@@ -90,6 +94,7 @@ pub struct Repository {
     path: PathBuf,
     objects: FsObjectStore,
     refs: FsRefStore,
+    oplog: FsOpLog,
 }
 
 impl Repository {
@@ -142,7 +147,7 @@ impl Repository {
         let staging = create_staging(path, &mut || {
             format!("{METADATA_DIR}-init-{}", unique_temp_name())
         })?;
-        install(&staging, &target, options)?;
+        install(&staging, &target, options, actor)?;
         sync_directory(path).map_err(|source| InitError::NotDurable {
             path: path.to_path_buf(),
             source,
@@ -202,7 +207,8 @@ impl Repository {
         Self {
             path: path.to_path_buf(),
             objects: FsObjectStore::new(&metadata_dir),
-            refs: FsRefStore::new(metadata_dir),
+            refs: FsRefStore::new(&metadata_dir),
+            oplog: FsOpLog::new(metadata_dir),
         }
     }
 
@@ -223,9 +229,245 @@ impl Repository {
         &self.objects
     }
 
-    /// The references of this repository.
-    pub fn refs(&self) -> &FsRefStore {
-        &self.refs
+    /// The references of this repository, for reading. A pointer is changed only by
+    /// [`update_branch`](Self::update_branch) and [`set_head`](Self::set_head), which write the
+    /// entry of the log first (ADR-011), so no caller can move a pointer past the log, or pair
+    /// the references of this repository with the objects of another.
+    pub fn refs(&self) -> RefsView<'_> {
+        RefsView { refs: &self.refs }
+    }
+
+    /// The operation log of this repository.
+    pub fn oplog(&self) -> &FsOpLog {
+        &self.oplog
+    }
+
+    /// Moves a branch to `new`, or creates it, if it is still at `expected` (`None` for a branch
+    /// that does not exist), and records the move in the log.
+    ///
+    /// The order is the rule of ADR-011: the authorizer is asked, the checks that need no log run
+    /// (the branch is where the caller saw it, and the commit is in the object store of this
+    /// repository), the entry is written and flushed, and only then does the branch move. A
+    /// refusal or a stale branch therefore writes no entry. If the move itself fails after the
+    /// entry was written, because another writer was faster, the entry stays: it names a move
+    /// that did not happen, and the old value in it was the value of the branch at some moment.
+    ///
+    /// Returns the entry, or `None` if the branch is at `new` already: only a change writes an
+    /// entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] if the
+    /// branch is not at `expected`, the commit is not in the store, or the references fail, and
+    /// [`UpdateError::Log`] if the entry could not be written; the branch has not moved then.
+    pub fn update_branch(
+        &self,
+        operation: &OperationName,
+        name: &BranchName,
+        expected: Option<CommitId>,
+        new: CommitId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Option<Entry>, UpdateError> {
+        self.authorize(actor, authorizer, operation, name.as_str())?;
+        let found = self.refs.branch(name)?;
+        if found != expected {
+            return Err(UpdateError::Refs(RefError::Stale {
+                name: name.clone(),
+                expected,
+                found,
+            }));
+        }
+        FsRefStore::require_commit(&new, &self.objects)?;
+        if expected == Some(new) {
+            return Ok(None);
+        }
+        let change = Change::new(
+            now(),
+            actor.clone(),
+            operation.clone(),
+            None,
+            None,
+            vec![(name.clone(), Moved::from_to(expected, Some(new)))],
+        )
+        .map_err(|error| UpdateError::Log(OpLogError::Entry(error)))?;
+        let entry = self.oplog.append(&change)?;
+        self.refs
+            .update_branch(name, expected, new, &self.objects)?;
+        Ok(Some(entry))
+    }
+
+    /// Points HEAD to a branch, which need not exist yet, or to a commit, and records the change
+    /// in the log, in the order of [`update_branch`](Self::update_branch). The change replaces
+    /// HEAD whatever it was (ADR-008): the old value in the entry is the one that was read just
+    /// before.
+    ///
+    /// Returns the entry, or `None` if HEAD has the value already.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`], [`UpdateError::Refs`] (a commit that is not in the
+    /// store), and [`UpdateError::Log`], as for [`update_branch`](Self::update_branch).
+    pub fn set_head(
+        &self,
+        operation: &OperationName,
+        head: &Head,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Option<Entry>, UpdateError> {
+        self.authorize(actor, authorizer, operation, "HEAD")?;
+        let old = self.refs.head()?;
+        if let Head::Detached(commit) = head {
+            FsRefStore::require_commit(commit, &self.objects)?;
+        }
+        if &old == head {
+            return Ok(None);
+        }
+        let change = Change::new(
+            now(),
+            actor.clone(),
+            operation.clone(),
+            Some(Moved::from_to(Some(old), Some(head.clone()))),
+            None,
+            vec![],
+        )
+        .map_err(|error| UpdateError::Log(OpLogError::Entry(error)))?;
+        let entry = self.oplog.append(&change)?;
+        self.refs.set_head(head, &self.objects)?;
+        Ok(Some(entry))
+    }
+
+    fn authorize(
+        &self,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+        operation: &OperationName,
+        target: &str,
+    ) -> Result<(), UpdateError> {
+        match authorizer.authorize(actor, operation.as_str(), target) {
+            Decision::Allow => Ok(()),
+            Decision::Deny => Err(UpdateError::Denied {
+                operation: operation.to_string(),
+                target: target.to_owned(),
+            }),
+        }
+    }
+}
+
+/// The references of a repository, for reading. See [`Repository::refs`].
+#[derive(Debug, Clone, Copy)]
+pub struct RefsView<'a> {
+    refs: &'a FsRefStore,
+}
+
+impl RefsView<'_> {
+    /// What HEAD points to. See [`RefStore::head`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::head`].
+    pub fn head(&self) -> Result<Head, RefError> {
+        self.refs.head()
+    }
+
+    /// The commit of a branch, or `None` if there is no such branch. See [`RefStore::branch`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::branch`].
+    pub fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
+        self.refs.branch(name)
+    }
+
+    /// All branches with their commits, sorted by name. See [`RefStore::branches`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::branches`].
+    pub fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        self.refs.branches()
+    }
+
+    /// The commit that HEAD leads to. See [`RefStore::resolve_head`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::resolve_head`].
+    pub fn resolve_head(&self) -> Result<Option<CommitId>, RefError> {
+        self.refs.resolve_head()
+    }
+}
+
+/// The time now, in seconds since the Unix epoch (UTC), as an entry of the log claims it. A clock
+/// before 1970 gives a negative value.
+fn now() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_secs()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_secs()).map_or(i64::MIN, |s| -s),
+    }
+}
+
+/// Reasons why [`Repository::update_branch`] and [`Repository::set_head`] fail.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum UpdateError {
+    /// The authorizer refused the operation.
+    Denied {
+        /// The name of the operation.
+        operation: String,
+        /// The branch, or `HEAD`.
+        target: String,
+    },
+    /// The references refused or failed, or the commit is not in the object store. No entry was
+    /// written, unless the move itself failed after it: see [`Repository::update_branch`].
+    Refs(RefError),
+    /// The entry could not be written. The pointer has not moved.
+    Log(OpLogError),
+}
+
+impl UpdateError {
+    /// Returns the error of the file system, if there is one inside. The chain of
+    /// [`Error::source`] does not lead to it (see the crate documentation).
+    pub fn io_error(&self) -> Option<&io::Error> {
+        match self {
+            Self::Refs(error) => error.io_error(),
+            Self::Log(error) => error.io_error(),
+            Self::Denied { .. } => None,
+        }
+    }
+}
+
+impl From<RefError> for UpdateError {
+    fn from(error: RefError) -> Self {
+        Self::Refs(error)
+    }
+}
+
+impl From<OpLogError> for UpdateError {
+    fn from(error: OpLogError) -> Self {
+        Self::Log(error)
+    }
+}
+
+impl fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Denied { operation, target } => {
+                write!(f, "not allowed to {operation} `{target}`")
+            }
+            Self::Refs(error) => error.fmt(f),
+            Self::Log(error) => error.fmt(f),
+        }
+    }
+}
+
+impl Error for UpdateError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Refs(error) => error.source(),
+            Self::Log(error) => error.source(),
+            Self::Denied { .. } => None,
+        }
     }
 }
 
@@ -315,8 +557,13 @@ fn create_staging(dir: &Path, next_name: &mut dyn FnMut() -> String) -> Result<P
 
 /// Fills `staging`, which this call created, and moves it to `target`. If either step fails, it
 /// removes `staging`, and it reports a removal that fails as well.
-fn install(staging: &Path, target: &Path, options: &InitOptions) -> Result<(), InitError> {
-    let result = fill(staging, options).and_then(|()| move_into_place(staging, target));
+fn install(
+    staging: &Path,
+    target: &Path,
+    options: &InitOptions,
+    actor: &Actor,
+) -> Result<(), InitError> {
+    let result = fill(staging, options, actor).and_then(|()| move_into_place(staging, target));
     match result {
         Ok(()) => Ok(()),
         Err(error) => match fs::remove_dir_all(staging) {
@@ -348,18 +595,32 @@ fn move_into_place(staging: &Path, target: &Path) -> Result<(), InitError> {
 }
 
 /// Builds the content of `.stemma/` in `dir`, which exists and is empty.
-fn fill(dir: &Path, options: &InitOptions) -> Result<(), InitError> {
+fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitError> {
     write_new(&dir.join("format"), format_content().as_bytes())?;
     let objects = dir.join("objects");
     let tmp = dir.join("tmp");
+    let oplog = dir.join("oplog");
     let refs = dir.join("refs");
     let heads = refs.join("heads");
-    for created in [&objects, &tmp, &refs, &heads] {
+    for created in [&objects, &tmp, &oplog, &refs, &heads] {
         fs::create_dir(created).map_err(InitError::io("create the directory", created))?;
     }
     let head = Head::Branch(options.initial_branch.clone());
+    // The first entry of the log: HEAD comes into being. It is written before HEAD, as for every
+    // pointer (ADR-011); the directory is renamed as a whole, so both appear together.
+    let init = OperationName::new("init").expect("`init` is a valid operation name");
+    let change = Change::new(
+        now(),
+        actor.clone(),
+        init,
+        Some(Moved::from_to(None, Some(head.clone()))),
+        None,
+        vec![],
+    )
+    .map_err(|error| InitError::Log(OpLogError::Entry(error)))?;
+    FsOpLog::new(dir).append(&change).map_err(InitError::Log)?;
     write_new(&dir.join("HEAD"), &head.encode())?;
-    for flushed in [&refs, &heads, dir] {
+    for flushed in [&refs, &heads, &oplog, dir] {
         sync_directory(flushed).map_err(InitError::io("flush the directory", flushed))?;
     }
     Ok(())
@@ -428,6 +689,8 @@ pub enum InitError {
         /// The error of the file system.
         source: io::Error,
     },
+    /// The first entry of the log could not be written.
+    Log(OpLogError),
     /// An operation failed, and the temporary directory could not be removed afterwards. It is
     /// named here and can be removed by hand.
     Leftover {
@@ -455,6 +718,7 @@ impl InitError {
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
             Self::Io { source, .. } | Self::NotDurable { source, .. } => Some(source),
+            Self::Log(error) => error.io_error(),
             Self::Leftover { error, .. } => error.io_error(),
             Self::Denied { .. } | Self::AlreadyExists { .. } => None,
         }
@@ -483,6 +747,10 @@ impl fmt::Display for InitError {
                 path,
                 source,
             } => write!(f, "could not {operation} `{}`: {source}", path.display()),
+            Self::Log(error) => write!(
+                f,
+                "could not write the first entry of the operation log: {error}"
+            ),
             Self::NotDurable { path, source } => write!(
                 f,
                 "the repository was created in `{}`, but flushing that directory failed: \
@@ -507,6 +775,7 @@ impl Error for InitError {
         match self {
             // The message includes that of the I/O error, so the source is its own cause.
             Self::Io { source, .. } | Self::NotDurable { source, .. } => source.source(),
+            Self::Log(error) => error.source(),
             // The message includes the message of both causes. The cause of the first one is the
             // first link that it does not print yet.
             Self::Leftover { error, .. } => error.source(),
@@ -642,7 +911,6 @@ mod tests {
 
     use super::*;
     use crate::object::{Blob, ObjectId};
-    use crate::refs::RefStore;
     use crate::store::ObjectStore;
     use crate::testutil::TempDir;
     use crate::AllowAll;
@@ -693,13 +961,16 @@ mod tests {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let meta = dir.path().join(".stemma");
-        assert_eq!(names(&meta), ["HEAD", "format", "objects", "refs", "tmp"]);
+        assert_eq!(
+            names(&meta),
+            ["HEAD", "format", "objects", "oplog", "refs", "tmp"]
+        );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 1\n"
+            b"stemma-repository 2\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
-        for directory in ["objects", "tmp", "refs", "refs/heads"] {
+        for directory in ["objects", "tmp", "oplog", "refs", "refs/heads"] {
             assert!(meta.join(directory).is_dir(), "{directory}");
         }
         assert_eq!(names(&meta.join("refs")), ["heads"]);
@@ -933,7 +1204,7 @@ mod tests {
         // `fill` writes a file that must not exist yet, so it fails at the first step.
         fs::write(staging.join("format"), b"x").unwrap();
         let target = dir.path().join(".stemma");
-        let error = install(&staging, &target, &InitOptions::default()).unwrap_err();
+        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
         assert!(
             matches!(error, InitError::Io { operation, .. } if operation == "write the file"),
             "{error}"
@@ -950,7 +1221,7 @@ mod tests {
         let target = dir.path().join(".stemma");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("marker"), b"keep").unwrap();
-        let error = install(&staging, &target, &InitOptions::default()).unwrap_err();
+        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
         assert!(matches!(error, InitError::AlreadyExists { .. }), "{error}");
         assert!(!staging.exists());
         assert_eq!(fs::read(target.join("marker")).unwrap(), b"keep");
@@ -963,7 +1234,7 @@ mod tests {
         fs::create_dir(&staging).unwrap();
         let target = dir.path().join(".stemma");
         fs::write(&target, b"keep").unwrap();
-        let error = install(&staging, &target, &InitOptions::default()).unwrap_err();
+        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
         assert!(matches!(error, InitError::AlreadyExists { .. }), "{error}");
         assert!(!staging.exists());
         assert_eq!(fs::read(&target).unwrap(), b"keep");
@@ -975,7 +1246,7 @@ mod tests {
         let staging = dir.path().join("staging");
         fs::create_dir(&staging).unwrap();
         let target = dir.path().join("missing").join(".stemma");
-        let error = install(&staging, &target, &InitOptions::default()).unwrap_err();
+        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
         assert!(
             matches!(error, InitError::Io { operation, .. } if operation.starts_with("move")),
             "{error}"
@@ -1001,6 +1272,7 @@ mod tests {
             &staging,
             &dir.path().join(".stemma"),
             &InitOptions::default(),
+            &actor(),
         )
         .unwrap_err();
         fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1102,7 +1374,8 @@ mod tests {
     fn open_rejects_another_version() {
         for version in [
             "0",
-            "2",
+            "1",
+            "3",
             "99",
             "4294967295",
             "4294967296",
@@ -1285,14 +1558,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 1",
+                "stemma-repository 2",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
                     found: "7".to_string(),
                 },
-                "version 7, but this code supports version 1",
+                "version 7, but this code supports version 2",
             ),
         ];
         for (error, text) in cases {
@@ -1304,5 +1577,430 @@ mod tests {
             assert!(error.source().is_none());
             assert!(error.io_error().is_none());
         }
+    }
+
+    // The operation log
+
+    use crate::change::sample_change;
+    use crate::object::{Commit, Tree};
+    use crate::oplog::EntryError;
+
+    fn op(name: &str) -> OperationName {
+        OperationName::new(name).unwrap()
+    }
+
+    fn branch(name: &str) -> BranchName {
+        BranchName::new(name).unwrap()
+    }
+
+    /// Stores a commit with no parents and returns its ID.
+    fn store_commit(repository: &Repository, message: &str) -> CommitId {
+        let tree = repository
+            .objects()
+            .put_tree(&Tree::new(vec![]).unwrap())
+            .unwrap();
+        let commit = Commit::new(tree, vec![], sample_change(), actor(), 1, message).unwrap();
+        repository.objects().put_commit(&commit).unwrap()
+    }
+
+    fn numbers(repository: &Repository) -> Vec<u64> {
+        repository.oplog().numbers().unwrap()
+    }
+
+    fn update(
+        repository: &Repository,
+        name: &str,
+        expected: Option<CommitId>,
+        new: CommitId,
+    ) -> Result<Option<Entry>, UpdateError> {
+        repository.update_branch(
+            &op("commit"),
+            &branch(name),
+            expected,
+            new,
+            &actor(),
+            &AllowAll,
+        )
+    }
+
+    #[test]
+    fn init_writes_the_first_entry_of_the_log() {
+        let before = now();
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let after = now();
+        assert_eq!(numbers(&repository), [1]);
+        let entry = repository.oplog().read(1).unwrap();
+        let change = entry.change();
+        assert_eq!(change.operation().as_str(), "init");
+        assert_eq!(change.actor(), &actor());
+        assert!(
+            (before..=after).contains(&change.time()),
+            "{}",
+            change.time()
+        );
+        let head = change.head().unwrap();
+        assert_eq!(head.before(), None);
+        assert_eq!(head.after(), Some(&Head::Branch(branch("main"))));
+        assert!(change.working_copy().is_none() && change.branches().is_empty());
+        // The entry is the one that a later open sees, and nothing else is in the directories.
+        assert_eq!(
+            Repository::open(dir.path())
+                .unwrap()
+                .oplog()
+                .entries()
+                .unwrap(),
+            [entry]
+        );
+        assert_eq!(
+            names(&dir.path().join(".stemma").join("tmp")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_first_entry_names_the_initial_branch_and_the_actor_of_an_agent() {
+        let dir = TempDir::new();
+        let agent = Actor::agent("a1", "opus-5-5", "s1", "daniel").unwrap();
+        let options = InitOptions::new(branch("trunk/main"));
+        let repository = Repository::init(dir.path(), &options, &agent, &AllowAll).unwrap();
+        let entry = repository.oplog().read(1).unwrap();
+        assert_eq!(entry.change().actor(), &agent);
+        assert_eq!(
+            entry.change().head().unwrap().after(),
+            Some(&Head::Branch(branch("trunk/main")))
+        );
+    }
+
+    #[test]
+    fn a_refused_init_writes_no_log() {
+        let dir = TempDir::new();
+        let path = dir.path().join("new");
+        let _ = Repository::init(&path, &InitOptions::default(), &actor(), &DenyAll).unwrap_err();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_branch_that_is_created_and_moved_is_recorded_with_old_and_new() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let (a, b) = (
+            store_commit(&repository, "a"),
+            store_commit(&repository, "b"),
+        );
+        let created = update(&repository, "main", None, a).unwrap().unwrap();
+        let moved = update(&repository, "main", Some(a), b).unwrap().unwrap();
+        assert_eq!((created.number(), moved.number()), (2, 3));
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(b));
+        for (entry, old, new) in [(&created, None, a), (&moved, Some(a), b)] {
+            let change = entry.change();
+            assert_eq!(change.operation().as_str(), "commit");
+            assert_eq!(change.actor(), &actor());
+            assert!(change.head().is_none() && change.working_copy().is_none());
+            let [(name, pair)] = change.branches() else {
+                panic!("one branch")
+            };
+            assert_eq!(name, &branch("main"));
+            assert_eq!(
+                (pair.before().copied(), pair.after().copied()),
+                (old, Some(new))
+            );
+        }
+        assert_eq!(repository.oplog().entries().unwrap()[1..], [created, moved]);
+    }
+
+    #[test]
+    fn a_branch_that_is_not_where_the_caller_saw_it_writes_no_entry_and_does_not_move() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let (a, b) = (
+            store_commit(&repository, "a"),
+            store_commit(&repository, "b"),
+        );
+        update(&repository, "main", None, a).unwrap();
+        let before = numbers(&repository);
+        for expected in [None, Some(b)] {
+            let error = update(&repository, "main", expected, b).unwrap_err();
+            assert!(
+                matches!(&error, UpdateError::Refs(RefError::Stale { found: Some(f), .. }) if *f == a),
+                "{error}"
+            );
+        }
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+    }
+
+    #[test]
+    fn a_commit_that_is_not_in_the_store_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let elsewhere = TempDir::new();
+        let other = init(elsewhere.path()).unwrap();
+        let foreign = store_commit(&other, "in another repository");
+        let before = numbers(&repository);
+        let error = update(&repository, "main", None, foreign).unwrap_err();
+        assert!(
+            matches!(error, UpdateError::Refs(RefError::MissingCommit(_))),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_move_to_the_value_that_a_branch_has_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        update(&repository, "main", None, a).unwrap();
+        let before = numbers(&repository);
+        assert_eq!(update(&repository, "main", Some(a), a).unwrap(), None);
+        assert_eq!(numbers(&repository), before);
+    }
+
+    #[test]
+    fn a_refused_operation_writes_no_entry_and_does_not_move() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let before = numbers(&repository);
+        let error = repository
+            .update_branch(&op("commit"), &branch("main"), None, a, &actor(), &DenyAll)
+            .unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Denied { operation, target } if operation == "commit" && target == "main"),
+            "{error}"
+        );
+        assert_eq!(error.to_string(), "not allowed to commit `main`");
+        let error = repository
+            .set_head(
+                &op("checkout"),
+                &Head::Branch(branch("x")),
+                &actor(),
+                &DenyAll,
+            )
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("main"))
+        );
+    }
+
+    #[test]
+    fn the_entry_is_written_before_the_pointer_moves() {
+        // A lock file makes the move fail after the entry was written: the entry is there, and the
+        // branch has not moved. That is the order of ADR-011, seen from the outside.
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        fs::write(
+            dir.path().join(".stemma").join("refs.lock"),
+            b"another writer",
+        )
+        .unwrap();
+        let error = update(&repository, "main", None, a).unwrap_err();
+        assert!(
+            matches!(error, UpdateError::Refs(RefError::Locked { .. })),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), [1, 2]);
+        let entry = repository.oplog().read(2).unwrap();
+        let [(name, pair)] = entry.change().branches() else {
+            panic!("one branch")
+        };
+        assert_eq!(name, &branch("main"));
+        assert_eq!((pair.before(), pair.after()), (None, Some(&a)));
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_pointer_does_not_move_if_the_entry_cannot_be_written() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let log = dir.path().join(".stemma").join("oplog");
+        fs::remove_dir_all(&log).unwrap();
+        fs::write(&log, b"not a directory").unwrap();
+        let error = update(&repository, "main", None, a).unwrap_err();
+        assert!(matches!(error, UpdateError::Log(_)), "{error}");
+        assert!(error.io_error().is_some());
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+        let error = repository
+            .set_head(
+                &op("checkout"),
+                &Head::Branch(branch("x")),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Log(_)), "{error}");
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("main"))
+        );
+    }
+
+    #[test]
+    fn head_is_recorded_with_the_value_it_had() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let to_branch = repository
+            .set_head(
+                &op("checkout"),
+                &Head::Branch(branch("dev")),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap()
+            .unwrap();
+        let detached = repository
+            .set_head(&op("checkout"), &Head::Detached(a), &actor(), &AllowAll)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repository.refs().head().unwrap(), Head::Detached(a));
+        let first = to_branch.change().head().unwrap();
+        assert_eq!(first.before(), Some(&Head::Branch(branch("main"))));
+        assert_eq!(first.after(), Some(&Head::Branch(branch("dev"))));
+        let second = detached.change().head().unwrap();
+        assert_eq!(second.before(), Some(&Head::Branch(branch("dev"))));
+        assert_eq!(second.after(), Some(&Head::Detached(a)));
+        // The commit that HEAD named is a root of the log.
+        assert!(detached.change().commits().contains(&a));
+    }
+
+    #[test]
+    fn a_head_that_is_unchanged_or_names_a_missing_commit_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let before = numbers(&repository);
+        let same = repository
+            .set_head(
+                &op("checkout"),
+                &Head::Branch(branch("main")),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(same, None);
+        let elsewhere = TempDir::new();
+        let foreign = store_commit(&init(elsewhere.path()).unwrap(), "x");
+        let error = repository
+            .set_head(
+                &op("checkout"),
+                &Head::Detached(foreign),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, UpdateError::Refs(RefError::MissingCommit(_))),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+    }
+
+    #[test]
+    fn the_references_can_be_read_through_the_view() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let (a, b) = (
+            store_commit(&repository, "a"),
+            store_commit(&repository, "b"),
+        );
+        update(&repository, "main", None, a).unwrap();
+        update(&repository, "dev", None, b).unwrap();
+        let view = repository.refs();
+        assert_eq!(view.head().unwrap(), Head::Branch(branch("main")));
+        assert_eq!(view.branch(&branch("dev")).unwrap(), Some(b));
+        assert_eq!(
+            view.branches().unwrap(),
+            [(branch("dev"), b), (branch("main"), a)]
+        );
+        assert_eq!(view.resolve_head().unwrap(), Some(a));
+    }
+
+    #[test]
+    fn concurrent_updates_of_one_branch_leave_one_winner_and_an_entry_for_each_try() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let commits: Vec<CommitId> = (0..6)
+            .map(|n| store_commit(&repository, &format!("c{n}")))
+            .collect();
+        let barrier = std::sync::Barrier::new(commits.len());
+        let results: Vec<Result<Option<Entry>, UpdateError>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = commits
+                .iter()
+                .map(|&commit| {
+                    let (repository, barrier) = (&repository, &barrier);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        update(repository, "main", None, commit)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let winners = results.iter().filter(|r| matches!(r, Ok(Some(_)))).count();
+        assert_eq!(winners, 1, "{results:?}");
+        for error in results.iter().filter_map(|r| r.as_ref().err()) {
+            assert!(
+                matches!(
+                    error,
+                    UpdateError::Refs(RefError::Stale { .. } | RefError::Locked { .. })
+                ),
+                "{error}"
+            );
+        }
+        // The numbers have no gap, and every entry that the log holds reads back.
+        let numbers = numbers(&repository);
+        assert_eq!(numbers, (1..=numbers.len() as u64).collect::<Vec<_>>());
+        assert!(numbers.len() >= 2);
+        let moved = repository.refs().branch(&branch("main")).unwrap().unwrap();
+        assert!(commits.contains(&moved));
+    }
+
+    #[test]
+    fn a_repository_of_the_format_before_the_log_is_refused() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        set_format(dir.path(), "stemma-repository 1\n");
+        let error = Repository::open(dir.path()).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::UnsupportedFormat { found, .. } if found == "1"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_error_of_the_log_during_init_is_reported_and_leaves_nothing() {
+        let dir = TempDir::new();
+        let staging = dir.path().join("staging");
+        fs::create_dir(&staging).unwrap();
+        // `oplog` is a file, so the directory cannot be made.
+        fs::write(staging.join("oplog"), b"x").unwrap();
+        let error = install(
+            &staging,
+            &dir.path().join(".stemma"),
+            &InitOptions::default(),
+            &actor(),
+        )
+        .unwrap_err();
+        assert!(!staging.exists());
+        assert!(!dir.path().join(".stemma").exists());
+        assert!(
+            error.to_string().contains("oplog") || error.io_error().is_some(),
+            "{error}"
+        );
+        // The message of a failed entry names the log.
+        let log = InitError::Log(OpLogError::Entry(EntryError::NoChange));
+        assert!(
+            log.to_string().contains("first entry of the operation log"),
+            "{log}"
+        );
+        assert!(log.io_error().is_none() && log.source().is_none());
     }
 }

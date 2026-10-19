@@ -1,5 +1,6 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
-//! index, object storage, references (branches and HEAD, ADR-008), and the repository (ADR-009).
+//! index, object storage, references (branches and HEAD, ADR-008), the repository (ADR-009), and
+//! the operation log (ADR-011).
 //!
 //! # Errors
 //!
@@ -22,13 +23,15 @@
 //! [`index::WriteTreeError`], [`refs::RefError`], and [`verify::VerifyError`] (the error of a
 //! check of an index, a tree, or a commit) for the error of the store
 //! inside. [`repository::InitError`], [`repository::OpenError`], and [`change::GenerateError`]
-//! have an `io_error()` for the error of the file system or of the operating system. A program
+//! have an `io_error()` for the error of the file system or of the operating system, and so do
+//! [`oplog::OpLogError`] and [`repository::UpdateError`]. A program
 //! that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
 pub mod change;
 pub mod index;
 pub mod object;
+pub mod oplog;
 #[cfg(test)]
 mod properties;
 pub mod refs;

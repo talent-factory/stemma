@@ -896,7 +896,10 @@ impl FsRefStore {
     }
 
     /// Fails unless the object store has the commit.
-    fn require_commit(commit: &CommitId, objects: &dyn ObjectStore) -> Result<(), RefError> {
+    pub(crate) fn require_commit(
+        commit: &CommitId,
+        objects: &dyn ObjectStore,
+    ) -> Result<(), RefError> {
         match objects.resolve_commit(&commit.object_id()) {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(RefError::MissingCommit(*commit)),

@@ -21,18 +21,38 @@ Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. Di
 
 \starttyping
 .stemma/
-    format        stemma-repository 1
+    format        stemma-repository 2
     HEAD          branch main
     objects/      lose Objekte
+    oplog/        Operation Log, eine nummerierte Datei je Eintrag
     refs/heads/   Branches
-    tmp/          temporäre Dateien des Objektspeichers und der Referenzen
+    tmp/          temporäre Dateien des Objektspeichers, der Referenzen und des Logs
 \stoptyping
 
-Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende, eine nicht kanonische und jede andere Version ab. Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
+Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende, eine nicht kanonische und jede andere Version ab, auch die Version 1 der Repositories ohne Log. Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
 
 Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben \type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht, nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben. Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen. Der Befehl \type{stemma init} bietet ihn als \type{--initial-branch} an. HEAD zeigt auf den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Wie jede Operation ruft \type{init} zuerst \type{authorize} mit dem Akteur auf.
 
 Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umgebungsvariablen \type{STEMMA_ACTOR}. Der Text hat die Form der Akteur-Zeile eines Commits, also \type{human daniel} oder \type{agent claude model=opus-5-5 session=s1 sponsor=daniel}. Der Schalter geht der Variablen vor. Ein leerer Wert gilt als Fehler und fällt nicht auf die Variable zurück. Ohne Akteur bricht der Befehl ab und legt nichts an. Einen Standardwert aus dem Benutzernamen gibt es bewusst nicht, damit ein Agent nie stillschweigend als Mensch auftritt.
+
+\section{Das Operation Log}
+
+Jede Operation, die einen Zeiger ändert, schreibt einen Eintrag in das Verzeichnis \type{.stemma/oplog/} (ADR-011). Ein Eintrag ist eine Textdatei mit fortlaufender Nummer. Er nennt den Akteur, die Zeit, den Namen der Operation und für jeden geänderten Zeiger (HEAD, Branches) den alten und den neuen Wert:
+
+\starttyping
+stemma-oplog 1
+number 1
+time 1792435308
+actor human daniel
+operation init
+head - branch:main
+\stoptyping
+
+Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger, bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log. Deshalb ist ein Eintrag eine Absicht: Verliert ein Schreiber das Rennen um einen Zeiger, bleibt sein Eintrag stehen, und der Zeiger bewegt sich nicht. Ob ein Zug stattgefunden hat, lässt sich an der Kette der Einträge eines Zeigers ablesen. Nach dem Zug wird nichts mehr geschrieben, damit nichts halb geschrieben bleiben kann.
+
+Gleichzeitige Schreiber ordnen sich über die Nummer. Jeder schreibt den Eintrag in eine temporäre Datei und setzt dann einen harten Verweis auf die nächste freie Nummer. Der Verweis scheitert, wenn die Nummer vergeben ist, dann sucht der Schreiber das Ende des Logs neu. So braucht das Log keine Sperre, und ein Eintrag ist vom ersten Moment an vollständig. Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag.
+
+Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen zum Lesen heraus, und \type{update_branch} und \type{set_head} schreiben den Eintrag zuerst. Eine Verweigerung, ein Branch, der nicht dort steht, wo der Aufrufer ihn sah, und ein Commit, der nicht im Objektspeicher liegt, schreiben keinen Eintrag. \type{init} schreibt den ersten Eintrag. Der Befehl \type{stemma op log}, der die Einträge anzeigt, folgt als eigene Scheibe.
 
 \section{Offene Fragen}
 
@@ -40,6 +60,6 @@ Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umge
 \item Format des Index: eigenes Binärformat oder lesbares Textformat für Debugging?
 \item Ausführbare Dateien und Dateirechte: Welche Metadaten werden gespeichert?
 \item Symbolische Links: Speichern oder ablehnen?
-\item Wie ein Leser erfährt, dass ein Eintrag im Operation Log nicht zu einer Änderung geführt hat, und wie lange Snapshot-Einträge aufbewahrt werden (ADR-011).
+\item Wie lange Snapshot-Einträge im Operation Log aufbewahrt werden und wie ein Geheimnis aus dem Log entfernt wird (ADR-011).
 \item Syntax der Ausschlussdatei und das Entfernen von Geheimnissen aus Verlauf und Log (ADR-010).
 \stopitemize
