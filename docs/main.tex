@@ -1,7 +1,7 @@
 % Stemma: Grundlagendokument (ConTeXt, MkIV)
 % Kompilieren: context main.tex
 
-% Globale Environment-Datei laden (aus ~/Library/texmf/tex/context/user/)
+% Shared layout (colors, fonts, headings, boxes), see TF.tex next to this file
 \environment TF
 
 % Metadaten (Kopfzeile und Titelblatt)
@@ -83,6 +83,10 @@
 \title{Abbildungsverzeichnis}
 Abbildungen werden ergänzt, sobald sie vorliegen.
 \placelistoffigures
+\page
+
+\title{Tabellenverzeichnis}
+\placelist[table][criterium=all]
 \page
 
 \title{Literatur}
