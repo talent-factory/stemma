@@ -67,20 +67,47 @@ Pfade; ein Verzeichnis steht für die Dateien darunter, ohne einen Ordner \type{
 Sie baut den neuen Baum aus den verfolgten Dateien und den Dateien an den Pfaden und
 ersetzt den Working-Copy-Commit wie ein Snapshot. Die verfolgten Dateien speichert sie mit,
 denn sonst ginge eine Änderung an ihnen verloren. Ein Pfad, der schon verfolgt wird, ist
-kein Fehler. Ein Pfad, den es nicht gibt oder der eine Pfadregel verletzt, wird abgelehnt,
+kein Fehler, solange kein Muster der Ausschlussdatei ihn ausschliesst.
+Ein Pfad, den es nicht gibt oder der eine Pfadregel verletzt, wird abgelehnt,
 bevor sich der Working-Copy-Commit bewegt. Jeder Name im Pfad muss so geschrieben sein,
 wie ihn das Verzeichnis hat, denn ein Dateisystem ohne Unterscheidung von Gross- und
 Kleinschreibung nähme \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal;
 der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die beim
 Speichern verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt
 \type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung; jeder andere Name,
-den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest der
-Kern noch nicht (STEMMA-24); Syntax und Regeln stehen in ADR-012 und sind bestätigt.
+den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest \type{track}
+(ADR-012); sie steht im nächsten Absatz.
 Das Verzeichnis \type{.} allein steht für das ganze Arbeitsverzeichnis.
 Die Funktion \type{normalize_path} macht aus dem, was eine Person tippt
 (\type{./a.txt}, \type{dir/}), diese Form, und ein leeres Argument lässt sie unverändert,
 damit der Kern es ablehnt.
 Der Befehl \type{stemma track} ruft beide auf; er steht in der Befehlsreferenz.
+
+Die Ausschlussdatei \type{.stemmaignore} (ADR-012, \type{ignore.rs}) liegt im Wurzelverzeichnis.
+Eine Zeile ist ein Kommentar mit \type{#} oder ein Muster aus Teilen, die ein \type{/} trennt.
+Ein Teil ist ein Name mit den Platzhaltern \type{*} (eine beliebige Folge von Zeichen
+innerhalb eines Namens) und \type{?} (ein Zeichen),
+oder ganz \type{**} (beliebig viele Verzeichnisse, auch keines).
+Ein führendes oder ein mittleres \type{/} verankert das Muster an der Wurzel;
+ohne eins trifft es einen Namen auf jeder Ebene.
+Ein \type{/} am Ende trifft nur Verzeichnisse,
+und ein getroffenes Verzeichnis schliesst alles darunter aus.
+Es gibt weder Negation noch Escape noch Zeichenklassen:
+\type{!} am Anfang, \type{\}, \type{[} und \type{]} lehnt der Leser ab,
+damit diese Formen später frei bleiben.
+Der Leser ist streng wie die anderen:
+UTF-8, nur \type{\n}, jede Zeile endet mit einem Zeilenende,
+keine Leerzeile, kein Leerzeichen am Rand, keine doppelte Zeile,
+höchstens 1024 Byte je Zeile und 64 KiB je Datei.
+Ein Fehler nennt die Zeile.
+Muster und Namen vergleicht der Leser Byte für Byte und mit Gross- und Kleinschreibung,
+auch auf einem Dateisystem, das beides gleichsetzt;
+ein solcher Name bliebe unbemerkt verfolgt (offener Punkt in ADR-012).
+Die Datei wird bei jedem Aufruf von \type{track} aus dem Verzeichnis gelesen, nicht aus dem Baum.
+Ist sie ungültig, ein Link oder keine gewöhnliche Datei, oder ändert sie sich beim Lesen,
+bricht der Aufruf ab, bevor etwas verfolgt wird.
+Ein Snapshot, \type{commit} und ein Aufruf ohne Pfade lesen sie nie.
+Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Muster aus.
 
 Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst,
 dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen,
@@ -183,5 +210,5 @@ Der Befehl \type{stemma op log}, der die Einträge anzeigt, folgt als eigene Sch
 \item Symbolische Links: Speichern oder ablehnen?
 \item Wie lange Snapshot-Einträge im Operation Log aufbewahrt werden und wie ein Geheimnis
 aus dem Log entfernt wird (ADR-011).
-\item Syntax der Ausschlussdatei und das Entfernen von Geheimnissen aus Verlauf und Log (ADR-010).
+\item Das Entfernen von Geheimnissen aus Verlauf und Log (ADR-010).
 \stopitemize

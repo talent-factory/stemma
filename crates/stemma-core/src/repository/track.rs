@@ -11,10 +11,12 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use super::snapshot::{lookup, Tracked};
 use super::{Repository, SnapshotError, Unsupported, UpdateError};
+use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::index::path_problem;
 use crate::object::{name_problem, FileMode, NameProblem};
 use crate::oplog::{Entry, OperationName};
@@ -44,24 +46,30 @@ impl Repository {
     /// A path is relative to the working directory of the repository, is written with `/`, and
     /// spells every name as it is on disk (a file system that ignores case would take another
     /// spelling for the same file, and the tree would hold it twice). A directory stands for the
-    /// files below it, without a name that resolves to `.stemma`; those are skipped, not
-    /// reported, while a path that names one is an error. The path `.` alone stands for the
+    /// files below it, without a name that resolves to `.stemma` and without what `.stemmaignore`
+    /// excludes (ADR-012); those are skipped, not reported, while a path that names one is an
+    /// error. The path `.` alone stands for the
     /// working directory itself; [`normalize_path`] turns what a person types into this form. A
     /// path is never followed through a link, and a link at the end of a path is
-    /// tracked as a link. A path that is tracked already is not an error and adds nothing to the
-    /// tree, but the tracked files are saved as in [`snapshot`](Self::snapshot), since the new
-    /// tree is built from the working directory. The authorizer is asked once, before anything is
-    /// read. With no paths, the call is a snapshot that the log names `track`.
+    /// tracked as a link. A path that is tracked already is not an error (unless a pattern
+    /// excludes it) and adds nothing to the tree, but the tracked files are saved as in
+    /// [`snapshot`](Self::snapshot), since the new tree is built from the working directory. The
+    /// authorizer is asked once, before anything is read, also before `.stemmaignore`. With no
+    /// paths, the call is a snapshot that the log names `track`, and it does not read
+    /// `.stemmaignore`.
     ///
     /// # Errors
     ///
     /// Returns [`TrackError::InvalidPath`] for a path that is empty, absolute, ends in `/`, or has
     /// a part that a tree refuses (`..`, `.stemma`, control characters, and `.` in a longer path)
-    /// or that the file system reads as more than one name; [`TrackError::InvalidName`] for such a name below a
-    /// directory; [`TrackError::NotFound`] for a path that does not exist, or is gone when it is
-    /// saved; [`TrackError::NotDurable`] if the files are tracked but a directory could not be
-    /// flushed (the list of files is in the error); and [`TrackError::Spelling`] for a path that
-    /// is not spelled as on disk. The
+    /// or that the file system reads as more than one name; [`TrackError::InvalidName`] for such a
+    /// name below a directory (unless a pattern excludes the file); [`TrackError::NotFound`] for a
+    /// path that does not exist, or is gone when it is saved; [`TrackError::Excluded`] for a named
+    /// path that a pattern of `.stemmaignore` excludes, with the line of the pattern;
+    /// [`TrackError::Ignore`] if `.stemmaignore` is not valid or cannot be read (nothing is
+    /// tracked, whatever the paths are); [`TrackError::NotDurable`] if the files are tracked but a
+    /// directory could not be flushed (the list of files is in the error); and
+    /// [`TrackError::Spelling`] for a path that is not spelled as on disk. The
     /// working-copy commit moves only after every file is saved, so none of these moves it. The
     /// paths are checked before any file is saved, except that a named file can be gone when its
     /// turn comes. [`TrackError::Snapshot`] carries every other failure, as
@@ -74,8 +82,17 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Tracking, TrackError> {
         let operation = OperationName::new(OPERATION).expect("`track` is a valid operation name");
-        let replaced =
-            self.replace_working_copy(&operation, actor, authorizer, |root| expand(root, paths))?;
+        let replaced = self.replace_working_copy(&operation, actor, authorizer, |root| {
+            // The authorizer agreed already. With no paths the call is a snapshot, which never
+            // reads the file (ADR-012). Otherwise a file that cannot be read is an error and not
+            // "no patterns": a rule that cannot be read must not become "exclude nothing".
+            let rules = if paths.is_empty() {
+                IgnoreRules::empty()
+            } else {
+                IgnoreRules::read(root).map_err(TrackError::Ignore)?
+            };
+            expand(root, paths, &rules)
+        })?;
         match replaced.late {
             Some(error) => Err(TrackError::NotDurable {
                 added: replaced.added,
@@ -113,8 +130,9 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 /// Lists the files that the paths stand for, in the order of their paths. A file at a path is
-/// named; a file below a directory is not.
-fn expand(root: &Path, paths: &[String]) -> Result<Vec<Tracked>, TrackError> {
+/// named; a file below a directory is not. A named path that `rules` exclude is an error, and a
+/// file below a directory that they exclude is left out.
+fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Tracked>, TrackError> {
     let mut named = BTreeSet::new();
     let mut below = BTreeSet::new();
     for path in paths {
@@ -129,7 +147,7 @@ fn expand(root: &Path, paths: &[String]) -> Result<Vec<Tracked>, TrackError> {
                 }
                 Err(source) => return Err(io_error("inspect", root, source)),
             }
-            walk(root.to_path_buf(), "", &mut below)?;
+            walk(root.to_path_buf(), "", rules, &mut below)?;
             continue;
         }
         if path_problem(path).is_some() || !is_plain(path) {
@@ -139,8 +157,15 @@ fn expand(root: &Path, paths: &[String]) -> Result<Vec<Tracked>, TrackError> {
             return Err(TrackError::NotFound { path: path.clone() });
         };
         check_spelling(root, path)?;
+        // The path is spelled as on disk now, and the patterns compare names byte by byte.
+        if let Some(line) = rules.matching(path, metadata.is_dir()) {
+            return Err(TrackError::Excluded {
+                path: path.clone(),
+                line,
+            });
+        }
         if metadata.is_dir() {
-            walk(full, path, &mut below)?;
+            walk(full, path, rules, &mut below)?;
         } else {
             named.insert(path.clone());
         }
@@ -227,9 +252,15 @@ fn check_spelling(root: &Path, path: &str) -> Result<(), TrackError> {
     Ok(())
 }
 
-/// Collects the paths of the files below a directory. A directory is listed with the names sorted,
-/// and an explicit stack replaces the recursion, so that a deep tree cannot exhaust the stack.
-fn walk(dir: PathBuf, prefix: &str, found: &mut BTreeSet<String>) -> Result<(), TrackError> {
+/// Collects the paths of the files below a directory that the rules do not exclude. A directory is
+/// listed with the names sorted, and an explicit stack replaces the recursion, so that a deep tree
+/// cannot exhaust the stack.
+fn walk(
+    dir: PathBuf,
+    prefix: &str,
+    rules: &IgnoreRules,
+    found: &mut BTreeSet<String>,
+) -> Result<(), TrackError> {
     let mut pending = vec![(dir, prefix.to_owned())];
     while let Some((dir, prefix)) = pending.pop() {
         let mut names = Vec::new();
@@ -247,12 +278,11 @@ fn walk(dir: PathBuf, prefix: &str, found: &mut BTreeSet<String>) -> Result<(), 
                 .into());
             };
             let path = join(&prefix, name);
-            match name_problem(name) {
-                None => {}
-                // A name that resolves to `.stemma` is not a file of this repository, and a
-                // tree cannot hold it. A repository inside the directory is skipped with it.
-                Some(NameProblem::ReservedName) => continue,
-                Some(_) => return Err(TrackError::InvalidName { path }),
+            let problem = name_problem(name);
+            // A name that resolves to `.stemma` is not a file of this repository, and a tree
+            // cannot hold it. A repository inside the directory is skipped with it.
+            if problem == Some(NameProblem::ReservedName) {
+                continue;
             }
             let full = dir.join(name);
             let metadata = match fs::symlink_metadata(&full) {
@@ -261,6 +291,14 @@ fn walk(dir: PathBuf, prefix: &str, found: &mut BTreeSet<String>) -> Result<(), 
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(source) => return Err(io_error("inspect", &full, source)),
             };
+            // An excluded directory is not entered, and an excluded file is not listed, also one
+            // whose name a tree refuses: a pattern is the way to leave such a file out.
+            if rules.is_ignored(&path, metadata.is_dir()) {
+                continue;
+            }
+            if problem.is_some() {
+                return Err(TrackError::InvalidName { path });
+            }
             if metadata.is_dir() {
                 pending.push((full, path));
             } else {
@@ -314,6 +352,19 @@ pub enum TrackError {
         /// The path as the directories spell it, if a name differs in case only.
         on_disk: Option<String>,
     },
+    /// The path is excluded by a pattern of `.stemmaignore` (ADR-012): not even a path that the
+    /// caller names is added, and this holds for a path that is tracked already (it stays
+    /// tracked). A file below a directory is skipped without a word instead.
+    Excluded {
+        /// The path as it was given.
+        path: String,
+        /// The line of the pattern in `.stemmaignore`.
+        line: NonZeroUsize,
+    },
+    /// `.stemmaignore` cannot be read, is not a regular file, changed while it was read, or is not
+    /// valid. Nothing is tracked, as a rule that cannot be read must not become "exclude
+    /// nothing".
+    Ignore(IgnoreError),
     /// The working-copy commit moved and the files are tracked, but a directory could not be
     /// flushed to disk, so the change may not survive a crash. Do not repeat the call: read the
     /// pointer.
@@ -343,8 +394,10 @@ impl TrackError {
         match self {
             Self::Snapshot(error) => error.io_error(),
             Self::NotDurable { error, .. } => error.io_error(),
+            Self::Ignore(error) => error.io_error(),
             Self::InvalidPath { .. }
             | Self::InvalidName { .. }
+            | Self::Excluded { .. }
             | Self::NotFound { .. }
             | Self::Spelling { .. } => None,
         }
@@ -388,6 +441,14 @@ impl fmt::Display for TrackError {
                 "`{}` is not spelled as on disk; list the directory and use its name",
                 path.escape_debug()
             ),
+            Self::Excluded { path, line } => write!(
+                f,
+                "`{}` is excluded by line {line} of {}, so `track` leaves it out; remove or change \
+                 that line to add it",
+                path.escape_debug(),
+                crate::ignore::FILE_NAME
+            ),
+            Self::Ignore(error) => write!(f, "{error}; nothing was tracked"),
             Self::NotDurable { error, .. } => error.fmt(f),
             Self::Snapshot(error) => error.fmt(f),
         }
@@ -982,5 +1043,335 @@ mod tests {
             what: Unsupported::SpecialFile,
         };
         assert!(special.to_string().contains("regular file"), "{special}");
+    }
+
+    // ---- the exclusion file (ADR-012)
+
+    fn ignore(dir: &TempDir, text: &str) {
+        write(dir, ".stemmaignore", text);
+    }
+
+    #[test]
+    fn a_file_below_a_directory_that_a_pattern_excludes_is_skipped_without_a_word() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.log\ntarget/\n");
+        write(&dir, "a.txt", "a");
+        write(&dir, "d/x.log", "log");
+        write(&dir, "d/y.txt", "y");
+        write(&dir, "target/debug/z", "z");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore", "a.txt", "d/y.txt"]);
+        assert_eq!(paths(&repository), [".stemmaignore", "a.txt", "d/y.txt"]);
+    }
+
+    #[test]
+    fn a_path_that_is_named_and_excluded_is_an_error_with_the_line() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "# build\n*.log\ntarget/\n");
+        write(&dir, "d/x.log", "log");
+        write(&dir, "target/z", "z");
+        let entries = repository.oplog().entries().unwrap().len();
+
+        for (path, line) in [("d/x.log", 2), ("target", 3), ("target/z", 3)] {
+            let error = track(&repository, &[path]).unwrap_err();
+            assert!(
+                matches!(&error, TrackError::Excluded { path: p, line: l }
+                    if p == path && l.get() == line),
+                "{path}: {error}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("line {line} of .stemmaignore")),
+                "{error}"
+            );
+        }
+        assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+        assert!(paths(&repository).is_empty());
+    }
+
+    #[test]
+    fn an_excluded_directory_is_not_entered() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "/vendor\n");
+        // A name that a tree refuses would stop the call, but it is below an excluded directory.
+        write(&dir, "vendor/a\u{200B}b", "x");
+        write(&dir, "src/a.rs", "a");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore", "src/a.rs"]);
+    }
+
+    #[test]
+    fn what_is_tracked_already_stays_tracked_and_is_saved_after_the_file_excludes_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "secret.env", "one");
+        track(&repository, &["secret.env"]).unwrap();
+        ignore(&dir, "*.env\n");
+        write(&dir, "secret.env", "two");
+
+        let tracking = track(&repository, &[".stemmaignore"]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore"]);
+        assert!(paths(&repository).contains(&"secret.env".to_owned()));
+        // The new content is in the new commit: the snapshot saves tracked files.
+        assert_eq!(content(&repository, "secret.env"), b"two");
+        let again = repository.snapshot(&actor(), &AllowAll).unwrap();
+        assert!(
+            again.is_none(),
+            "a second snapshot has nothing left to save"
+        );
+    }
+
+    #[test]
+    fn the_file_is_never_excluded_by_its_own_wildcard() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, ".stemma*\n");
+        write(&dir, "a.txt", "a");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert!(
+            tracking.added.contains(&".stemmaignore".to_owned()),
+            "{tracking:?}"
+        );
+    }
+
+    #[test]
+    fn an_invalid_file_stops_the_call_before_anything_is_tracked() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.log\n\n");
+        write(&dir, "a.txt", "a");
+        let entries = repository.oplog().entries().unwrap().len();
+
+        let error = track(&repository, &["a.txt"]).unwrap_err();
+
+        assert!(matches!(&error, TrackError::Ignore(_)), "{error}");
+        assert!(error.to_string().contains("line 2: empty line"), "{error}");
+        assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+        assert!(paths(&repository).is_empty());
+    }
+
+    #[test]
+    fn an_invalid_file_does_not_stop_a_snapshot() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "one");
+        track(&repository, &["a.txt"]).unwrap();
+        ignore(&dir, "!broken\n");
+        write(&dir, "a.txt", "two");
+
+        let entry = repository.snapshot(&actor(), &AllowAll).unwrap();
+
+        assert!(entry.is_some());
+        assert_eq!(content(&repository, "a.txt"), b"two");
+    }
+
+    #[test]
+    fn a_denied_call_does_not_read_the_file() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "!broken\n");
+
+        write(&dir, "a.txt", "a");
+
+        let error = repository
+            .track(&["a.txt".to_owned()], &actor(), &DenyAll)
+            .unwrap_err();
+
+        assert!(matches!(error, TrackError::Snapshot(_)), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_as_the_file_stops_the_call() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "rules", "*.log\n");
+        std::os::unix::fs::symlink("rules", dir.path().join(".stemmaignore")).unwrap();
+
+        let error = track(&repository, &["rules"]).unwrap_err();
+
+        assert!(matches!(&error, TrackError::Ignore(_)), "{error}");
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    /// The content of a tracked file at the top of the working-copy tree.
+    fn content(repository: &Repository, path: &str) -> Vec<u8> {
+        let tree = current(repository).tree();
+        let raw = repository
+            .objects()
+            .get_expecting(&tree.object_id(), crate::object::Kind::Tree)
+            .unwrap()
+            .unwrap();
+        let tree = crate::object::Tree::parse(raw.body()).unwrap();
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|entry| entry.name() == path)
+            .unwrap_or_else(|| panic!("`{path}` is not tracked"));
+        repository
+            .objects()
+            .get_expecting(&entry.id(), crate::object::Kind::Blob)
+            .unwrap()
+            .unwrap()
+            .body()
+            .to_vec()
+    }
+
+    #[test]
+    fn a_named_directory_leaves_out_the_excluded_files_below_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.log\n");
+        write(&dir, "d/x.log", "log");
+        write(&dir, "d/y.txt", "y");
+
+        let tracking = track(&repository, &["d"]).unwrap();
+
+        assert_eq!(tracking.added, ["d/y.txt"]);
+    }
+
+    #[test]
+    fn an_unanchored_pattern_reaches_a_nested_directory_and_a_rooted_one_does_not() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "target/\n/vendor\n");
+        write(&dir, "a/target/z", "z");
+        write(&dir, "vendor/v", "v");
+        write(&dir, "a/vendor/x", "x");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore", "a/vendor/x"]);
+    }
+
+    #[test]
+    fn one_excluded_path_among_several_stops_the_call_and_tracks_none() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.log\n");
+        write(&dir, "a.txt", "a");
+        write(&dir, "d/x.log", "log");
+        let entries = repository.oplog().entries().unwrap().len();
+
+        let error = track(&repository, &["a.txt", "d/x.log"]).unwrap_err();
+
+        assert!(matches!(error, TrackError::Excluded { .. }), "{error}");
+        assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+        assert!(paths(&repository).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_not_a_directory_for_a_pattern_with_a_trailing_slash() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "target/\n");
+        write(&dir, "real/x", "x");
+        std::os::unix::fs::symlink("real", dir.path().join("target")).unwrap();
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore", "real/x", "target"]);
+    }
+
+    #[test]
+    fn a_pattern_compares_bytes_so_another_case_is_another_name() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "Target/\n");
+        write(&dir, "target/z", "z");
+
+        // The pattern is the person's text, and a name is the name on disk (ADR-012).
+        let tracking = track(&repository, &["target"]).unwrap();
+
+        assert_eq!(tracking.added, ["target/z"]);
+    }
+
+    #[test]
+    fn a_file_whose_name_a_tree_refuses_is_left_out_when_a_pattern_excludes_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.log\n");
+        write(&dir, "d/a\u{200B}b.log", "x");
+        write(&dir, "d/ok.txt", "ok");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore", "d/ok.txt"]);
+    }
+
+    #[test]
+    fn a_file_whose_name_a_tree_refuses_still_stops_the_call_when_no_pattern_excludes_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.log\n");
+        write(&dir, "d/a\u{200B}b.txt", "x");
+
+        let error = track(&repository, &["."]).unwrap_err();
+
+        assert!(matches!(&error, TrackError::InvalidName { .. }), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_a_carriage_return_in_its_name_can_be_excluded_by_a_question_mark() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        // macOS writes `Icon\r` into a folder that has its own icon.
+        ignore(&dir, "Icon?\n");
+        write(&dir, "d/Icon\r", "icon");
+        write(&dir, "d/a.txt", "a");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore", "d/a.txt"]);
+    }
+
+    #[test]
+    fn a_call_without_paths_does_not_read_an_invalid_file() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "one");
+        track(&repository, &["a.txt"]).unwrap();
+        ignore(&dir, "!broken\n");
+        write(&dir, "a.txt", "two");
+
+        let tracking = track(&repository, &[]).unwrap();
+
+        assert!(tracking.entry.is_some() && tracking.added.is_empty());
+        assert_eq!(content(&repository, "a.txt"), b"two");
+    }
+
+    #[test]
+    fn the_errors_say_what_to_do_and_that_nothing_was_tracked() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.log\n");
+        write(&dir, "x.log", "log");
+        let excluded = track(&repository, &["x.log"]).unwrap_err();
+        assert!(
+            excluded
+                .to_string()
+                .contains("remove or change that line to add it"),
+            "{excluded}"
+        );
+        ignore(&dir, "*.log\n\n");
+        let invalid = track(&repository, &["x.log"]).unwrap_err();
+        assert!(
+            invalid.to_string().ends_with("; nothing was tracked"),
+            "{invalid}"
+        );
+        assert!(invalid.io_error().is_none());
     }
 }

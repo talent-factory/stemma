@@ -338,3 +338,122 @@ fn a_special_file_stops_the_command_and_nothing_is_tracked() {
     assert!(result.stderr.contains("d/sock"), "{}", result.stderr);
     assert_eq!(operations(dir.path()).len(), 1);
 }
+
+#[test]
+fn a_dot_leaves_out_what_the_exclusion_file_names_and_tracks_the_file_itself() {
+    let dir = repository();
+    write(dir.path(), ".stemmaignore", "*.log\ntarget/\n");
+    write(dir.path(), "a.txt", "a");
+    write(dir.path(), "d/x.log", "log");
+    write(dir.path(), "target/debug/z", "z");
+
+    let result = track(dir.path(), &["."]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked .stemmaignore\ntracked a.txt\n");
+}
+
+#[test]
+fn a_path_that_is_named_and_excluded_fails_with_the_line_and_changes_nothing() {
+    let dir = repository();
+    write(dir.path(), ".stemmaignore", "# logs\n*.log\n");
+    write(dir.path(), "d/x.log", "log");
+    let entries = operations(dir.path()).len();
+
+    let result = track(dir.path(), &["d/x.log"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.starts_with("stemma: ")
+            && result.stderr.contains(
+                "`d/x.log` is excluded by line 2 of .stemmaignore, so `track` leaves it out"
+            ),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn an_invalid_exclusion_file_stops_the_command_and_names_the_line() {
+    let dir = repository();
+    write(dir.path(), ".stemmaignore", "*.log\n!keep.log\n");
+    write(dir.path(), "a.txt", "a");
+    let entries = operations(dir.path()).len();
+
+    let result = track(dir.path(), &["a.txt"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result
+            .stderr
+            .contains(".stemmaignore: line 2: negation (`!`) is not supported"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn an_invalid_exclusion_file_does_not_stop_a_commit() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    assert_eq!(track(dir.path(), &["a.txt"]).code, 0);
+    write(dir.path(), ".stemmaignore", "!broken\n");
+    write(dir.path(), "a.txt", "two");
+
+    let result = run(
+        dir.path(),
+        &["commit", "-m", "Change a", "--actor", "human alice"],
+    );
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+}
+
+#[test]
+fn an_exclusion_file_from_another_system_stops_the_command_and_says_why() {
+    let cases: &[(&[u8], &str)] = &[
+        (b"*.log\r\n", "line 1: carriage return"),
+        (
+            b"\xEF\xBB\xBF*.log\n",
+            "the file starts with a byte order mark",
+        ),
+        (b"*.log\n\xFF\n", "the file is not UTF-8"),
+    ];
+    for (bytes, text) in cases {
+        let dir = repository();
+        fs::write(dir.path().join(".stemmaignore"), bytes).unwrap();
+        write(dir.path(), "a.txt", "a");
+        let entries = operations(dir.path()).len();
+
+        let result = track(dir.path(), &["a.txt"]);
+
+        assert_eq!(result.code, 1, "{bytes:?}: {}", result.stdout);
+        assert_eq!(result.stdout, "");
+        assert!(
+            result.stderr.starts_with("stemma: .stemmaignore: ")
+                && result.stderr.contains(text)
+                && result.stderr.contains("nothing was tracked"),
+            "{bytes:?}: {}",
+            result.stderr
+        );
+        assert_eq!(operations(dir.path()).len(), entries);
+    }
+}
+
+#[test]
+fn a_directory_as_the_exclusion_file_stops_the_command() {
+    let dir = repository();
+    fs::create_dir(dir.path().join(".stemmaignore")).unwrap();
+    write(dir.path(), "a.txt", "a");
+
+    let result = track(dir.path(), &["a.txt"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("is a directory, not a regular file"),
+        "{}",
+        result.stderr
+    );
+}
