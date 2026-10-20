@@ -255,7 +255,7 @@ fn check_spelling(root: &Path, path: &str) -> Result<(), TrackError> {
 /// Collects the paths of the files below a directory that the rules do not exclude. A directory is
 /// listed with the names sorted, and an explicit stack replaces the recursion, so that a deep tree
 /// cannot exhaust the stack.
-fn walk(
+pub(super) fn walk(
     dir: PathBuf,
     prefix: &str,
     rules: &IgnoreRules,

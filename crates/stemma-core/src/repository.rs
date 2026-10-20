@@ -24,10 +24,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod commit;
 mod snapshot;
+mod status;
 mod track;
 
 pub use commit::{CommitError, Committed};
 pub use snapshot::{SnapshotError, Unsupported};
+pub use status::{ChangeKind, FileChange, Status, StatusError};
 pub use track::{normalize_path, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};

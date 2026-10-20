@@ -109,6 +109,23 @@ bricht der Aufruf ab, bevor etwas verfolgt wird.
 Ein Snapshot, \type{commit} und ein Aufruf ohne Pfade lesen sie nie.
 Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Muster aus.
 
+Die Funktion \type{Repository::status} (ADR-010) macht zuerst den Snapshot der verfolgten Dateien,
+wie jeder Befehl, der nicht nur das Log liest; sie braucht deshalb einen Akteur,
+und ein Eintrag entsteht nur, wenn sich eine verfolgte Datei geändert hat.
+Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit,
+«geändert» kann also nicht «anders als der Working-Copy-Commit» heissen.
+Es heisst: was der Working-Copy-Commit gegenüber seinem Elternteil tut, wie bei Jujutsu.
+Das sind hinzugefügte (\type{A}), geänderte (\type{M}, auch bei anderem Modus
+oder einem Link anstelle einer Datei) und gelöschte (\type{D}) Dateien, nach Pfad sortiert.
+Die Dateien eines hinzugefügten oder gelöschten Verzeichnisses stehen einzeln da.
+Ohne Elternteil gilt der leere Baum, bei mehreren Eltern der erste.
+Ein Verzeichnis, das in beiden Bäumen dieselbe ID hat, liest der Vergleich nicht.
+Unverfolgt sind die Dateien im Verzeichnis, die in keinem Baum stehen
+und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln da.
+\type{status} bricht dort ab, wo \type{track} abbräche:
+bei einer ungültigen Ausschlussdatei und bei einem Namen, den ein Baum ablehnt
+und den kein Muster ausschliesst.
+
 Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst,
 dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen,
 einmal zum Speichern und einmal, wenn der Baum geschrieben wird; einen Cache gibt es noch nicht.

@@ -91,6 +91,21 @@ are prior art, not a template.
     commit), and when the branch is not at the parent of the working-copy commit: a commit on
     top of that parent would drop what the branch has. A rebase (phase 3) brings the two
     together.
+- **`status` takes the snapshot first and compares the commit with its parent** *(confirmed,
+  implemented in `Repository::status`)*. Like every command that does not only read the log,
+  `status` saves the tracked files before it looks (so it has an actor, and the entry appears
+  only if a tracked file changed). The snapshot makes every tracked file equal to the working-copy
+  commit, so "changed" cannot mean "differs from the working-copy commit": it means what the
+  working-copy commit does against its **parent**, as in Jujutsu. That is `A` (in the commit and
+  not in the parent), `M` (another content or mode, also a link in place of a file), and `D`
+  (in the parent and not in the commit), sorted by path, with the files of a directory that is
+  added or deleted listed one by one. A commit with no parent is compared with the empty tree,
+  and one with several parents with the first. The **untracked** files are the files below the
+  directory that are in no tree and that `.stemmaignore` does not exclude (ADR-012), listed one
+  by one. `status` stops where `track` would stop: at an invalid `.stemmaignore`, and at a name
+  that a tree refuses and no pattern excludes. `op log` still takes no snapshot, because the
+  snapshot would change the log it is about to show. A tracked file that a pattern excludes
+  stays in the changes; a report "tracked and excluded" is an open item of ADR-012.
 - **The tracked set is the tree of the working-copy commit** *(proposal)*. There is no index file
   as a staging area. `Index` stays in the code as the model that builds a tree from a set of
   paths and as the format of a cache, if one is needed for speed.
@@ -123,8 +138,8 @@ are prior art, not a template.
   a commit, so `commit` is changed in place and the golden vectors were computed again. The
   exception ends with the first commit that a command writes.
 - **`stemma add` (STEMMA-2) becomes `stemma track`.** `stemma commit` (STEMMA-3) names the
-  working-copy commit and starts a new one. `stemma status` (STEMMA-4) compares the working
-  directory with the working-copy commit and lists the untracked files.
+  working-copy commit and starts a new one. `stemma status` (STEMMA-4) saves the tracked files,
+  lists what the working-copy commit changes against its parent, and lists the untracked files.
 - **A secret that was tracked is in the history and in the log.** The exclusion file and the
   confirmation of new files make this rare, but not impossible: a tracked `config` can gain a
   key. Removing a secret from the log is an operation of its own (see the open items).
@@ -145,14 +160,14 @@ are prior art, not a template.
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
       does when the working-copy commit has one (phase 3).
 
-- [ ] Which commands take a snapshot. `track` does, because it saves the tracked files in the
-      same step. `op log` reads and takes no actor, so it takes none: a snapshot adds an entry
-      and would change the log it is about to show. Decide for `status` (STEMMA-4) and for the
-      other commands that read. The path `.` of `track` tracks every file of the repository
-      directory, secrets included, unless `.stemmaignore` excludes them (ADR-012).
+- [ ] Which commands take a snapshot. `track`, `commit`, and `status` do. `op log` reads and
+      takes no actor, so it takes none: a snapshot adds an entry and would change the log it is
+      about to show. Decide for the other commands that read. The path `.` of `track` tracks
+      every file of the repository directory, secrets included, unless `.stemmaignore` excludes
+      them (ADR-012).
 - [ ] The path form is a `String` that the core validates and `normalize_path` writes. A
       `RepoPath` type that cannot be built from an invalid path would make the rule one
-      definition; do it with the next command that takes paths (`status`, STEMMA-4).
+      definition; do it with the next command that takes paths (`status` takes none).
 - [ ] A command finds its repository in a parent directory when it runs below the root, as Git
       does. Today a command takes the directory (`-C`, or the argument of `op log`) and the paths
       of `track` are relative to it.
