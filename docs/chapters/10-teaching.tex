@@ -8,8 +8,7 @@ eingesetzt werden kann.
 \startitemize
 \item {\bf DUA, Datenstrukturen und Algorithmen:} Hashing, Merkle-Graphen,
 Myers-Diff und Graphsuche.
-Der Kurs arbeitet mit dem Buch von Sedgewick und Wayne \cite[sedgewick2011algorithms];
-\in{Tabelle}[tab:algorithms] ordnet die Algorithmen des Codes den Kapiteln des Buches zu.
+Welche Algorithmen des Codes im Kursbuch stehen, zeigt \in{Tabelle}[tab:algorithms].
 \item {\bf AISE, AI Assisted Software Engineering:} Agenten-Workflows,
 Branch-Regeln, Freigaben und Risikostufen.
 \stopitemize
@@ -24,7 +23,7 @@ Sie ist ein Wegweiser zum Nachlesen und zum Vergleichen mit der eigenen Lösung,
 keine Beschreibung des Buches.
 
 \startplacetable[title={Algorithmen im Code von Stemma},
-  reference=tab:algorithms,location={here,force}]
+  reference=tab:algorithms,location=split]
 \startxtable[frame=off,split=yes,option=stretch]
 \startxtablehead
 \startxrow[topframe=on,bottomframe=on]
@@ -53,13 +52,12 @@ keine Beschreibung des Buches.
 \startxrow
 \startxcell Geordnete Symboltabelle: Der Index hält die Pfade sortiert \stopxcell
 \startxcell \type{Index} mit \type{BTreeMap} (\type{index.rs}) \stopxcell
-\startxcell Abschnitt 3.1 bis 3.3, Symboltabellen und balancierte Suchbäume (ein B-Baum
-verallgemeinert den 2-3-Baum) \stopxcell
+\startxcell Abschnitt 3.1 bis 3.3, Symboltabellen, Suchbäume und 2-3-Bäume \stopxcell
 \stopxrow
 \startxrow
-\startxcell Hashtabelle, um doppelte Pfade und doppelte Eltern zu erkennen \stopxcell
-\startxcell \type{HashSet} in \type{replace_working_copy} (\type{snapshot.rs}) und
-\type{Commit::new} \stopxcell
+\startxcell Hashtabelle, um bereits bekannte Pfade und doppelte Eltern auszusondern \stopxcell
+\startxcell \type{HashSet} in \type{replace_working_copy} (\type{snapshot.rs}),
+\type{Commit::new} und \type{Commit::parse} (\type{object.rs}) \stopxcell
 \startxcell Abschnitt 3.4, Hashtabellen \stopxcell
 \stopxrow
 \startxrow
@@ -73,12 +71,15 @@ Kreis) \stopxcell
 \startxcell Rückwärtiges Durchlaufen der Einträge, um das jüngste Vorkommen je
 Zeiger zu finden \stopxcell
 \startxcell \type{outcomes} (\type{oplog.rs}) \stopxcell
-\startxcell Abschnitt 1.3 und 3.1, lineares Durchlaufen und Symboltabelle \stopxcell
+\startxcell Abschnitt 1.3, Durchlaufen einer Folge, und 3.4, Hashtabelle \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
-Drei Dinge aus den Kursthemen sind noch nicht im Code oder stehen nicht im Buch:
+Der \type{BTreeMap} von Rust ist ein B-Baum, eine Verallgemeinerung des 2-3-Baums
+aus dem Buch; die Tabelle nennt deshalb die Abschnitte über 2-3-Bäume.
+
+Drei Themen der Kurse stehen nicht im Buch:
 
 \startitemize
 \item {\bf Kryptografische Hashfunktion:} Die Objekt-IDs sind BLAKE3-Hashes des Inhalts
@@ -92,9 +93,10 @@ Die Struktur ist ein gerichteter Graph ohne Kreis (Abschnitt 4.2 des Buches);
 den Merkle-Baum als Begriff kennt das Buch nicht.
 Den Commit-Graphen durchläuft erst Phase 3, für die Suche nach dem gemeinsamen Vorfahren
 (Abschnitt 4.1 und 4.2, Breitensuche und Tiefensuche).
-\item {\bf Myers-Diff:} Er kommt in Phase 2 und steht nicht im Buch.
-Am nächsten liegt das Problem der längsten gemeinsamen Teilfolge,
-das sich mit dynamischer Programmierung lösen lässt;
+\item {\bf Myers-Diff:} Er ist noch nicht im Code, denn er kommt in Phase 2, und er steht
+nicht im Buch.
+Am nächsten liegt das Problem der längsten gemeinsamen Teilfolge, das sich mit dynamischer
+Programmierung lösen lässt; auch das ist nicht aus dem Buch.
 Myers löst es in einer Zeit, die von der Zahl der Unterschiede abhängt.
 \stopitemize
 
