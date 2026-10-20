@@ -1,0 +1,20 @@
+# Build output and tools
+target/
+.claude/
+.headroom/
+.serena/
+.vscode/
+.DS_Store
+# Rust
+*.rs.bk
+*.pdb
+# ConTeXt (intermediate files and output)
+*.log
+*.pdf
+*.tuc
+*.tua
+*.top
+*.tmp
+*.synctex.gz
+*.synctex
+texmf-cache/
