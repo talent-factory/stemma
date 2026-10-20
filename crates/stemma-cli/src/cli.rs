@@ -6,8 +6,10 @@
 //! the result failed. A script must not remove or repeat what such a command made. A command that
 //! only reads (`op log`) has made nothing, so a failed write of its output is code 1; some of the
 //! output may already be written, and a script discards it. Code 1 can leave one trace: a write
-//! that fails after its entry is in the operation log (`track`, `UpdateError::MoveFailed`) leaves
-//! an entry for a move that did not happen, which `op log` marks as such. A failing command prints
+//! that fails after its entry is in the operation log (`track`, `commit`,
+//! `UpdateError::MoveFailed`) leaves an entry for a move that did not happen, which `op log` marks
+//! as such. A `commit` that moved one of its two pointers (`UpdateError::PartlyMoved`) ends with
+//! code 3 as well. A failing command prints
 //! `stemma: <message>`, a complete message (see the crate documentation of `stemma-core`). The
 //! argument parser prints its own errors.
 
@@ -26,7 +28,8 @@ use stemma_core::object::METADATA_DIR;
 use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
-    normalize_path, InitError, InitOptions, OpenError, Repository, TrackError, Tracking,
+    normalize_path, CommitError, Committed, InitError, InitOptions, OpenError, Repository,
+    TrackError, Tracking,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -50,6 +53,8 @@ enum Command {
     Init(InitArgs),
     /// Track files: from now on a snapshot saves them
     Track(TrackArgs),
+    /// Name the working-copy commit and start a new one
+    Commit(CommitArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -102,6 +107,27 @@ struct TrackArgs {
 }
 
 #[derive(Debug, Args)]
+struct CommitArgs {
+    /// The message of the commit; it must have a character that is not white space
+    #[arg(short = 'm', long, value_name = "MESSAGE")]
+    message: String,
+
+    /// The directory of the repository, the one that contains `.stemma`
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<String>,
+}
+
+#[derive(Debug, Args)]
 struct InitArgs {
     /// The directory of the repository; it is created if it does not exist
     #[arg(default_value = ".")]
@@ -138,6 +164,13 @@ enum CliError {
     Track(TrackError),
     /// The files are tracked, but the result could not be written to the output.
     TrackOutput(io::Error),
+    /// The core refused the commit or could not make it. Nothing is committed, except for what
+    /// [`CommitError::pointer_moved`] says; the snapshot before it may have made an entry.
+    Commit(CommitError),
+    /// The commit is made, but a directory could not be flushed (`Committed::late`).
+    CommitNotDurable(RefError),
+    /// The commit is made, but the result could not be written to the output.
+    CommitOutput(io::Error),
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
@@ -166,13 +199,17 @@ impl CliError {
             Self::Init(InitError::NotDurable { .. })
             | Self::Track(TrackError::NotDurable { .. })
             | Self::Output { .. }
-            | Self::TrackOutput(_) => ExitCode::from(3),
+            | Self::TrackOutput(_)
+            | Self::CommitNotDurable(_)
+            | Self::CommitOutput(_) => ExitCode::from(3),
+            Self::Commit(error) if error.pointer_moved() => ExitCode::from(3),
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
             | Self::Init(_)
             | Self::Open(_)
             | Self::Track(_)
+            | Self::Commit(_)
             | Self::OpLog(_)
             | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
@@ -206,6 +243,15 @@ impl fmt::Display for CliError {
                 f,
                 "tracked the files, but could not write the result: {source}"
             ),
+            Self::Commit(error) => error.fmt(f),
+            Self::CommitNotDurable(error) => write!(
+                f,
+                "committed, but flushing failed: {error}; the commit may not survive a crash, and \
+                 it must not be repeated"
+            ),
+            Self::CommitOutput(source) => {
+                write!(f, "committed, but could not write the result: {source}")
+            }
             Self::OpLog(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
@@ -232,6 +278,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
     match cli.command {
         Command::Init(args) => init(args, out),
         Command::Track(args) => track(args, out),
+        Command::Commit(args) => commit(args, out),
         Command::Op {
             command: OpCommand::Log(args),
         } => show_op_log(args, out),
@@ -384,6 +431,44 @@ fn track_text(added: &[String]) -> String {
         .collect()
 }
 
+/// Names the working-copy commit and starts a new one. The core saves the tracked files first, so
+/// a change since the last command is part of the commit.
+fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let result = repository
+        .commit(&args.message, &actor, &AllowAll)
+        .map_err(CliError::Commit)?;
+    finish_commit(result, out)
+}
+
+/// Writes what `commit` did. If a directory could not be flushed, the result is written first, so
+/// that a script finds what exists before it reads the error. A closed pipe ends the output
+/// quietly.
+fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError> {
+    let text = commit_text(&result);
+    let late = result.late.map(CliError::CommitNotDurable);
+    match out.write_all(text.as_bytes()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(source) => return Err(late.unwrap_or(CliError::CommitOutput(source))),
+    }
+    late.map_or(Ok(()), Err)
+}
+
+/// The line for the commit, and a second one if the call finished an earlier commit.
+fn commit_text(result: &Committed) -> String {
+    if result.resumed {
+        format!(
+            "Finished the commit {} on {} that had stopped; the message of this call was not \
+             used\n",
+            result.commit, result.branch
+        )
+    } else {
+        format!("Committed {} on {}\n", result.commit, result.branch)
+    }
+}
+
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let options = InitOptions::new(args.initial_branch);
@@ -452,6 +537,33 @@ mod tests {
         .unwrap();
         let entry = repository.oplog().read(1).unwrap();
         (dir, entry)
+    }
+
+    #[test]
+    fn a_commit_that_moved_a_pointer_ends_with_code_3_and_any_other_failure_with_code_1() {
+        let (dir, entry) = repository_with_entry("commit-codes");
+        let partly = CommitError::Update(UpdateError::PartlyMoved {
+            entry: Box::new(entry),
+            source: RefError::Locked { path: dir.clone() },
+        });
+        assert_eq!(
+            CliError::Commit(partly).exit_code(),
+            ExitCode::from(3),
+            "one pointer moved: the commit is not repeated"
+        );
+        assert_eq!(
+            CliError::Commit(CommitError::NothingToCommit).exit_code(),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            CliError::CommitNotDurable(RefError::Locked { path: dir.clone() }).exit_code(),
+            ExitCode::from(3)
+        );
+        assert_eq!(
+            CliError::CommitOutput(io::Error::other("x")).exit_code(),
+            ExitCode::from(3)
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

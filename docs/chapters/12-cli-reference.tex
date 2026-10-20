@@ -178,6 +178,69 @@ stemma track docs/ ./README.md
 stemma track -C projekt src
 \stoptyping
 
+\section{commit}
+
+Benennt den Working-Copy-Commit und beginnt einen neuen (ADR-010).
+
+\starttyping
+stemma commit -m NACHRICHT [-C VERZEICHNIS] [--actor AKTEUR]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-m}, \type{--message} NACHRICHT:} Die Nachricht des Commits. Sie braucht
+ein Zeichen, das kein Leerraum ist, sonst ist es ein Fehler (Exit-Code 1). Ohne \type{-m}
+ist es ein Aufruffehler (Exit-Code 2). Einen Editor gibt es in Phase 1 nicht.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
+also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\stopitemize
+
+{\bf Verhalten.} Zuerst speichert der Befehl die verfolgten Dateien wie ein Snapshot
+(Operation \type{snapshot}, eigener Eintrag), damit eine Änderung seit dem letzten Befehl
+im Commit landet. Dann bekommt der Working-Copy-Commit die Nachricht; Eltern und Change-ID
+bleiben, Akteur und Zeit sind die des Aufrufs. Der Branch, auf den HEAD zeigt, rückt auf
+diesen Commit und entsteht dabei, wenn es ihn noch nicht gab. Ein neuer Working-Copy-Commit
+tritt an die Stelle des alten: Kind des benannten Commits, mit demselben Baum, leerer
+Nachricht und eigener Change-ID. Beide Zeiger bewegen sich in einem Schritt und stehen
+in einem Eintrag (Operation \type{commit} im Operation Log).
+
+Der Befehl gibt eine Zeile mit der ID des Commits und dem Branch aus:
+
+\starttyping
+Committed b3:4a0b66... on main
+\stoptyping
+
+{\bf Fehler.} Mit Exit-Code 1 und ohne Änderung (ausser dem Snapshot) endet der Befehl bei
+einer leeren Nachricht, bei einem HEAD, der einen Commit und keinen Branch nennt, und wenn
+nichts zu committen ist, weil der Baum der des Elternteils ist (beim ersten Commit: leer).
+Steht der Branch nicht beim Elternteil des Working-Copy-Commits, weil ihn jemand bewegt hat,
+lehnt der Befehl ab, statt zu verwerfen, was der Branch hat; ein Rebase kommt in Phase 3.
+Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das, und der Aufruf
+lässt sich wiederholen. Liegt das Repository nicht im angegebenen Verzeichnis, sucht der Befehl
+nicht in den übergeordneten.
+
+Mit Exit-Code 3 endet der Befehl, wenn der Commit gemacht ist, aber die Ausgabe sich
+nicht schreiben liess oder ein Verzeichnis nicht gesichert ist; ein Skript wiederholt ihn dann
+nicht. Ist nur das Verzeichnis nicht gesichert, schreibt der Befehl die Zeile zuerst und
+meldet den Fehler danach. Dasselbe gilt, wenn nur einer der beiden Zeiger sich bewegt hat
+(\type{PartlyMoved}): Der Branch hat den Commit, der Working-Copy-Commit ist noch der alte,
+und \type{op log} markiert den Eintrag mit \type{!}. Der nächste \type{commit} beendet
+den ersten, ohne seine eigene Nachricht zu verwenden; er sagt es in seiner Ausgabe:
+
+\starttyping
+Finished the commit b3:4a0b66... on main that had stopped; the message of this call was not used
+\stoptyping
+
+Scheitert der Zug, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 1,
+hat nichts verschoben und hinterlässt einen Eintrag für einen Zug, der nicht stattfand.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma commit -m "Add the parser" --actor "human daniel"
+stemma commit -C projekt -m "Fix the build"
+\stoptyping
+
 \section{op log}
 
 Zeigt das Operation Log (ADR-011), die neuesten Einträge zuerst.
