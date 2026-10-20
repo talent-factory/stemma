@@ -26,7 +26,10 @@ agent claude model=opus-5-5 session=s1 sponsor=daniel
 \stoptyping
 
 Ein leerer Wert ist ein Fehler und fällt nicht auf die andere Quelle zurück.
-Ohne Akteur bricht der Befehl ab, bevor er etwas ändert. Einen Standardwert aus
+Ohne Akteur bricht der Befehl ab, bevor er etwas ändert (Exit-Code 1).
+Deshalb steht \type{--actor} in den Synopsen ohne eckige Klammern; ist \type{STEMMA_ACTOR}
+gesetzt, darf der Schalter in einem Aufruf fehlen. Die Beispiele ohne den Schalter
+setzen die Variable voraus. Einen Standardwert aus
 dem Benutzernamen gibt es nicht. Die Angabe belegt nicht, wer den Befehl wirklich ausführt,
 sie nennt nur, in wessen Namen er läuft.
 
@@ -62,18 +65,12 @@ Verzeichniswechsel weiter verwenden kann.
 Legt ein leeres Repository an.
 
 \starttyping
-stemma init [PFAD] [--initial-branch NAME] [--actor AKTEUR]
+stemma init [PFAD] [--initial-branch NAME] --actor AKTEUR
 \stoptyping
 
 \startitemize
-\item {\bf PFAD:} Eine Datei oder ein Verzeichnis, relativ zum Repository.
-Ein Verzeichnis steht für die Dateien darunter, \type{.} für das ganze Verzeichnis
-des Repositories. Mindestens ein Pfad ist nötig, sonst ist es ein Aufruffehler
-(Exit-Code 2). Das Programm schreibt die Eingabe in die Form des Kerns um:
-\type{./a.txt} wird \type{a.txt}, \type{dir/} wird \type{dir}, \type{a//b}
-und \type{a/./b} werden \type{a/b}. Ein leeres Argument (\type{""}, auch aus einer
-leeren Shell-Variable) und \type{//} bleiben stehen und sind ein Fehler;
-sie nehmen nie das ganze Verzeichnis auf.
+\item {\bf PFAD:} Das Verzeichnis des Repositories. Es wird angelegt, wenn es nicht existiert.
+Standard ist das aktuelle.
 \item {\bf \type{--initial-branch} NAME:} Der Branch, auf den HEAD zeigt.
 Standard ist \type{main}. Der Branch selbst entsteht erst mit dem ersten Commit.
 Ein ungültiger Name ist ein Aufruffehler (Exit-Code 2) und legt nichts an.
@@ -107,7 +104,7 @@ STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" stemma init
 Bestätigt Dateien: Von jetzt an speichert ein Snapshot sie (ADR-010).
 
 \starttyping
-stemma track [-C VERZEICHNIS] [--actor AKTEUR] PFAD...
+stemma track [-C VERZEICHNIS] --actor AKTEUR PFAD...
 \stoptyping
 
 \startitemize
@@ -227,7 +224,7 @@ stemma track -C projekt src
 Benennt den Working-Copy-Commit und beginnt einen neuen (ADR-010).
 
 \starttyping
-stemma commit -m NACHRICHT [-C VERZEICHNIS] [--actor AKTEUR]
+stemma commit -m NACHRICHT [-C VERZEICHNIS] --actor AKTEUR
 \stoptyping
 
 \startitemize
@@ -310,7 +307,7 @@ Zeigt, was der Working-Copy-Commit gegenüber seinem Elternteil ändert,
 und welche Dateien nicht verfolgt sind (ADR-010).
 
 \starttyping
-stemma status [-C VERZEICHNIS] [--actor AKTEUR]
+stemma status [-C VERZEICHNIS] --actor AKTEUR
 \stoptyping
 
 \startitemize
