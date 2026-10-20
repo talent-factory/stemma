@@ -13,4 +13,4 @@
 | [ADR-009](ADR-009-repository-layout.md) | Repository layout and `init` | Proposal, partially confirmed |
 | [ADR-010](ADR-010-working-copy.md) | The working copy is a commit | Proposal, partially confirmed |
 | [ADR-011](ADR-011-operation-log.md) | The operation log | Proposal, partially confirmed |
-| [ADR-012](ADR-012-exclusion-file.md) | The exclusion file `.stemmaignore` | Confirmed, implemented (reader and `track`) |
+| [ADR-012](ADR-012-exclusion-file.md) | The exclusion file `.stemmaignore` | Confirmed, implemented |

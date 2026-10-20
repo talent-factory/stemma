@@ -168,25 +168,43 @@ hinterlässt aber einen Eintrag für einen Zug, der nicht stattfand;
 \type{op log} markiert ihn mit \type{!}.
 
 {\bf Ausschlussdatei.} Die Datei \type{.stemmaignore} im Wurzelverzeichnis (ADR-012)
-nennt Pfade, die \type{track} nie aufnimmt. Eine ausgeschlossene Datei unter einem
-Verzeichnis überspringt der Befehl ohne Meldung. Ein Pfad, den die Person nennt und den
-ein Muster ausschliesst, ist ein Fehler mit Exit-Code 1; die Meldung nennt die Zeile:
+nennt Pfade, die \type{track} nie aufnimmt.
+Eine ausgeschlossene Datei unter einem Verzeichnis überspringt der Befehl ohne Meldung,
+auch eine, deren Name ein Baum sonst ablehnen würde.
+Ein Pfad, den die Person nennt und den ein Muster ausschliesst, ist ein Fehler mit Exit-Code 1;
+die Meldung nennt die Zeile und was zu tun ist:
 
 \starttyping
-stemma: `d/x.log` is excluded by line 2 of .stemmaignore, so it is not tracked
+stemma: `d/x.log` is excluded by line 2 of .stemmaignore, so `track` leaves it out;
+remove or change that line to add it
 \stoptyping
 
-Was schon verfolgt wird, bleibt verfolgt und wird weiter gespeichert, was die Datei auch sagt.
+Das gilt auch für einen Pfad, der schon verfolgt wird: Er bleibt verfolgt
+und wird weiter gespeichert, was die Datei auch sagt.
 Die Datei selbst nimmt \type{track} auf wie jede andere und schliesst sie nie aus.
-Eine Zeile ist ein Kommentar (\type{#}) oder ein Muster mit \type{*}, \type{?},
-\type{**} und einem \type{/} am Ende für Verzeichnisse; Negation, Escape und Zeichenklassen
-gibt es nicht. Ist die Datei ungültig, zum Beispiel mit einer Leerzeile oder einer Zeile
-mit \type{!}, oder ist sie ein Link oder ein Verzeichnis, endet der Befehl mit Exit-Code 1
-und verfolgt nichts; die Meldung nennt die Zeile. Ein Snapshot und \type{commit} lesen
-die Datei nie, eine ungültige Datei blockiert sie also nicht.
+
+Eine Zeile ist ein Kommentar (\type{#}) oder ein Muster.
+Ein Muster ohne \type{/} trifft einen Namen auf jeder Ebene.
+Ein führendes oder ein mittleres \type{/} verankert es an der Wurzel,
+und ein \type{/} am Ende lässt es nur Verzeichnisse treffen.
+\type{*} steht für eine beliebige Folge von Zeichen innerhalb eines Namens,
+\type{?} für ein Zeichen und \type{**} für beliebig viele Verzeichnisse, auch keines.
+Ein getroffenes Verzeichnis schliesst alles darunter aus.
+Negation, Escape und Zeichenklassen gibt es nicht; die Zeichen dafür lehnt der Leser ab.
+Namen und Muster werden Byte für Byte verglichen, mit Gross- und Kleinschreibung.
+
+Ist die Datei ungültig, zum Beispiel mit einer Leerzeile, einer Zeile mit \type{!}
+oder einem Windows-Zeilenende, oder ist sie ein Link oder ein Verzeichnis,
+endet der Befehl mit Exit-Code 1 und verfolgt nichts.
+Die Meldung nennt die Zeile und sagt, dass nichts verfolgt wurde.
+Dasselbe gilt, wenn die Datei sich während des Lesens ändert; dann hilft ein neuer Aufruf.
+Ein Snapshot und \type{commit} lesen die Datei nie, eine ungültige Datei blockiert sie also nicht.
 
 {\bf Grenzen.} Ohne \type{.stemmaignore} nimmt, wer \type{.} nennt, jede Datei
 des Verzeichnisses auf, auch eine mit Geheimnissen: Das Log und die History behalten sie.
+Ein Name, den das Dateisystem anders schreibt als das Muster
+(Gross- und Kleinschreibung, oder Unicode in anderer Normalform), wird nicht ausgeschlossen
+und bleibt ohne Meldung verfolgt (offener Punkt in ADR-012).
 Eine Datei, die sich während des Befehls ändert, wird so gespeichert,
 wie sie beim Lesen war; die Dateien zusammen sind kein einzelner Augenblick.
 

@@ -366,9 +366,9 @@ fn a_path_that_is_named_and_excluded_fails_with_the_line_and_changes_nothing() {
     assert_eq!(result.stdout, "");
     assert!(
         result.stderr.starts_with("stemma: ")
-            && result
-                .stderr
-                .contains("`d/x.log` is excluded by line 2 of .stemmaignore"),
+            && result.stderr.contains(
+                "`d/x.log` is excluded by line 2 of .stemmaignore, so `track` leaves it out"
+            ),
         "{}",
         result.stderr
     );
@@ -409,4 +409,51 @@ fn an_invalid_exclusion_file_does_not_stop_a_commit() {
     );
 
     assert_eq!(result.code, 0, "{}", result.stderr);
+}
+
+#[test]
+fn an_exclusion_file_from_another_system_stops_the_command_and_says_why() {
+    let cases: &[(&[u8], &str)] = &[
+        (b"*.log\r\n", "line 1: carriage return"),
+        (
+            b"\xEF\xBB\xBF*.log\n",
+            "the file starts with a byte order mark",
+        ),
+        (b"*.log\n\xFF\n", "the file is not UTF-8"),
+    ];
+    for (bytes, text) in cases {
+        let dir = repository();
+        fs::write(dir.path().join(".stemmaignore"), bytes).unwrap();
+        write(dir.path(), "a.txt", "a");
+        let entries = operations(dir.path()).len();
+
+        let result = track(dir.path(), &["a.txt"]);
+
+        assert_eq!(result.code, 1, "{bytes:?}: {}", result.stdout);
+        assert_eq!(result.stdout, "");
+        assert!(
+            result.stderr.starts_with("stemma: .stemmaignore: ")
+                && result.stderr.contains(text)
+                && result.stderr.contains("nothing was tracked"),
+            "{bytes:?}: {}",
+            result.stderr
+        );
+        assert_eq!(operations(dir.path()).len(), entries);
+    }
+}
+
+#[test]
+fn a_directory_as_the_exclusion_file_stops_the_command() {
+    let dir = repository();
+    fs::create_dir(dir.path().join(".stemmaignore")).unwrap();
+    write(dir.path(), "a.txt", "a");
+
+    let result = track(dir.path(), &["a.txt"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("is a directory, not a regular file"),
+        "{}",
+        result.stderr
+    );
 }
