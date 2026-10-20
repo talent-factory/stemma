@@ -296,6 +296,31 @@ fn no_path_is_a_usage_error() {
 }
 
 #[test]
+fn a_lost_last_entry_stops_track_and_changes_nothing() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    let first = track(dir.path(), &["a.txt"]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    fs::remove_file(dir.path().join(".stemma/oplog/000000000002")).unwrap();
+    write(dir.path(), "b.txt", "two");
+    let before = fs::read(dir.path().join(".stemma/working-copy")).unwrap();
+
+    let result = track(dir.path(), &["b.txt"]);
+
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("the tip file names entry 2"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(result.stdout, "");
+    assert_eq!(
+        fs::read(dir.path().join(".stemma/working-copy")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn the_actor_is_needed_and_comes_from_the_flag_or_the_variable() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");

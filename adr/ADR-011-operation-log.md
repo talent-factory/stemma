@@ -31,9 +31,10 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   written inside the entry, and a file whose inside and name disagree is corrupt. A gap in the
   numbers is reported, not skipped: it means that an entry is lost. A directory listing is not a
   snapshot while a writer adds files, so the reader lists the directory again before it reports a
-  gap, and a writer, which only needs the end of the log, looks at the largest number and checks
-  nothing else. Names that start with a dot are skipped, as for the references, because file
-  managers and editors leave such files; any other name that is not an entry is reported.
+  gap, and a writer, which only needs the end of the log, looks at the largest number and at the
+  tip file (below), and checks nothing else. Names that start with a dot are skipped, as for the
+  references, because file managers and editors leave such files; any other name that is not an
+  entry is reported.
 - **An entry records the changed references, old and new** *(confirmed)*. It holds the actor, the
   time, the name of the operation, and for each pointer that the operation changes its old and its
   new value: a branch, HEAD, or the working-copy commit. It is the reflog of ADR-008 for every
@@ -88,6 +89,31 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again.
+- **A tip file names the last entry** *(proposed, implemented in STEMMA-30)*. `.stemma/oplog-tip`
+  holds the number of the last entry in the strict form `stemma-oplog-tip 1\nnumber <n>\n`. The
+  writer replaces it after the entry is in place and before the pointer moves, with a temporary
+  file that is flushed and a rename. The flush of the directory is best effort: a tip that is not
+  on disk after a crash is one behind or missing, and both are accepted.
+  - The writer reads the tip before it takes a number. A tip *beyond* the largest number in the
+    directory means that the last entries are lost, and the writer refuses
+    (`OpLogError::TipAhead`) because it would give a number a second time to another move. The
+    reader reports the same. The message names the file and says what to do, because no command
+    repairs the log yet.
+  - A tip one behind, or a missing file (a log from before the tip file), is no fault: the next
+    entry writes the tip.
+  - Both the reader and the writer read the tip *before* they list the directory. A writer links
+    entry *n* before it writes tip *n*, so a tip that was read first is covered by the listing
+    that follows. In the other order, a reader that runs while a writer appends could see a tip
+    beyond its listing and report a loss that did not happen.
+  - The tip advances only for an entry that is flushed. After `NotFlushed` the entry may not
+    survive a crash, and a tip that did would then be beyond the log and refuse every later
+    writer for an entry whose move never happened. A failure to write the tip is no error of the
+    move: the entry is in place and the tip stays one behind.
+  - A gap in the middle does **not** stop the writer. A refusal would block the move that repairs
+    the log (`stemma op restore`, STEMMA-28). The reader reports the gap, as before.
+  - The tip guards against accidents and crashes, not against an attack: who removes the tip, or
+    the tip and the entry, stays unnoticed (a missing tip is accepted by design). A hash chain
+    with an anchor would be needed (STEMMA-41).
 - **The first slice** *(confirmed)*. The core writes and strictly reads entries, and `init` and every
   operation that changes a pointer write one. The commands that show and use the log are slices of
   their own: `stemma op log` (STEMMA-27), and restoring and undoing (STEMMA-28).
@@ -173,8 +199,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       (`!`, `took_effect: false`) or whose outcome is not known (`?`, `null`). The working-copy commit has its
       place in the references since STEMMA-22, and `oplog::Current::with_working_copy` hands its
       value to `outcomes`.
-- [ ] Every `append` lists the directory to find the end of the log, which costs time in a long
-      log. Measure it, and keep the number of the last entry if it matters.
+- [x] Every `append` lists the directory to find the end of the log. Measured in STEMMA-37: about
+      2 microseconds for each entry, 17 ms more at 10,000 entries than at 1,000, so it does not
+      matter. The tip file does not replace the listing; the writer still takes the largest number
+      from the directory.
 - [ ] `Moved` can be built with an old and a new value that are equal, and `Change::new` rejects
       that; a fallible `Moved::new` would keep the rule in one place. `Change::new` takes two
       adjacent optional pointers, which gets harder to read with every new kind of pointer; a
@@ -196,10 +224,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       exists). Decide with a measurement of a real session.
 - [ ] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
       audited without keeping the secret (STEMMA-26).
-- [ ] A recovery when the highest number is missing: the next writer takes the number after the
-      largest that is left, so a lost *last* entry is not noticed by a gap, and its number is
-      used again. A tip file that holds the number of the last entry would catch it. The writer
-      also does not refuse a log that has a gap; the reader does.
+- [x] A recovery when the highest number is missing: the tip file (STEMMA-30). What remains is
+      a command that repairs a log with a lost last entry (the tip has to be set back by hand
+      today), and the hash chain (STEMMA-41).
 - [ ] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of
       the references.
 - [ ] Restoring: what `stemma op restore` does when the working directory has changed since, and

@@ -458,10 +458,13 @@ den es nicht gibt, ist \type{null}. HEAD ist \type{branch:<name>} oder \type{com
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
 Fehlt eine Nummer im Log, ist ein Eintrag nicht in kanonischer Form, passt die Nummer
-im Eintrag nicht zum Dateinamen oder steht in \type{oplog/} eine fremde Datei oder
-ist das Log ganz leer, bricht er ab, gibt nichts aus und endet mit Exit-Code 1.
-Ein leeres Log deutet auf verlorene Einträge oder eine Veränderung von aussen,
-denn \type{init} schreibt immer den Eintrag 1. Mit Exit-Code 1 endet auch ein Verzeichnis,
+im Eintrag nicht zum Dateinamen, steht in \type{oplog/} eine fremde Datei,
+ist die Datei \type{oplog-tip} nicht kanonisch oder nennt sie einen Eintrag, den das
+Verzeichnis nicht hat, oder ist das Log ganz leer, bricht er ab, gibt nichts aus und
+endet mit Exit-Code 1. Ein leeres Log deutet auf verlorene Einträge oder eine Veränderung
+von aussen, denn \type{init} schreibt immer den Eintrag 1; diese Meldung kommt nur,
+wenn auch die Datei \type{oplog-tip} fehlt, sonst meldet der Befehl den Verlust mit
+der Nummer des fehlenden Eintrags. Mit Exit-Code 1 endet auch ein Verzeichnis,
 das kein Repository ist, und eine Datei \type{format}, die fehlt, nicht kanonisch ist
 oder eine andere Version nennt. Lassen sich HEAD oder die Branches der gezeigten
 Einträge nicht lesen, bricht der Befehl nicht ab: Er warnt auf der Fehlerausgabe
@@ -478,9 +481,9 @@ die JSON-Form maskiert nach den Regeln von JSON.
 {\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge. Eine Lücke findet er auch dann,
 wenn der fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten
 älteren Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug. Hat das Log nur
-seine neuesten Einträge verloren, bleibt es lückenlos und der Verlust unbemerkt;
-das erkennte erst eine Datei, die die Nummer des letzten Eintrags hält
-(offener Punkt in ADR-011). Ein Eintrag wird geschrieben, bevor sich der Zeiger
+seine neuesten Einträge verloren, bleibt es lückenlos; die Datei \type{oplog-tip}
+mit der Nummer des letzten Eintrags verrät den Verlust (ADR-011), und der Befehl
+bricht mit Exit-Code 1 ab. Ein Eintrag wird geschrieben, bevor sich der Zeiger
 bewegt (ADR-011). Brach der Vorgang dazwischen ab, steht der Eintrag im Log,
 obwohl der Zug nie stattfand. Der Befehl liest das Ergebnis aus der Kette der
 Einträge desselben Zeigers: Ein späterer Eintrag, dessen alter Wert der neue Wert

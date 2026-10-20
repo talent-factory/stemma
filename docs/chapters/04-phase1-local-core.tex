@@ -30,6 +30,7 @@ damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
     working-copy  ID des Working-Copy-Commits
     objects/      lose Objekte
     oplog/        Operation Log, eine nummerierte Datei je Eintrag
+    oplog-tip     Nummer des letzten Eintrags des Logs
     refs/heads/   Branches
     tmp/          temporäre Dateien des Objektspeichers, der Referenzen und des Logs
 \stoptyping
@@ -226,6 +227,24 @@ Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag, nachdem er d
 Verzeichnis ein zweites Mal gelesen hat, denn ein Verzeichnis ist während eines Schreibens
 kein Schnappschuss. Namen mit einem Punkt am Anfang überspringt er, jeden anderen
 fremden Namen meldet er.
+
+Die Datei \type{oplog-tip} hält die Nummer des letzten Eintrags. Der Schreiber führt sie
+nach dem Eintrag nach, noch bevor sich ein Zeiger bewegt; die Datei selbst wird gesichert,
+ihr Verzeichnis nur nach bestem Bemühen. Fehlt dem Verzeichnis der letzte Eintrag,
+nennt die Datei eine grössere Nummer, als es hat. Dann meldet der Leser den Verlust,
+und der Schreiber schreibt nichts, denn er vergäbe die Nummer sonst ein zweites Mal an einen
+anderen Zug. Beide lesen die Datei, bevor sie das Verzeichnis auflisten: Ein Schreiber legt
+den Eintrag an, bevor er die Datei nachführt, und in der anderen Reihenfolge meldete ein
+Leser, der gerade mit einem Schreiber zusammentrifft, einen Verlust, den es nicht gibt.
+Eine Datei, die um eins zurückliegt, ist kein Fehler: Der Vorgang brach zwischen
+dem Eintrag und der Datei ab, und der nächste Schreiber führt sie nach. Das gilt auch,
+wenn die Datei nicht geschrieben werden konnte. Nach einem Eintrag, dessen Verzeichnis sich
+nicht sichern liess, rückt die Datei nicht vor, sonst verweigerte sie nach einem Absturz
+jeden weiteren Schreiber. Fehlt die Datei (ein Repository vor ihrer Einführung), legt der
+nächste Eintrag sie an. Eine Lücke in der Mitte
+hält den Schreiber dagegen nicht auf, denn eine Weigerung verhinderte den Zug, der das Log
+reparieren soll. Die Datei schützt vor Unfällen, nicht vor einem Angriff: Wer sie löscht,
+oder sie und den Eintrag, bleibt unbemerkt (STEMMA-41).
 
 Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen und das Log zum
 Lesen heraus; der Schreiber des Logs und der Konstruktor eines Eintrags sind nur im

@@ -11,6 +11,7 @@
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
+//! ├── oplog-tip       the number of the last entry of the log (ADR-011)
 //! └── tmp/            temporary files of the object store, the references, and the log
 //! ```
 
@@ -1213,6 +1214,7 @@ mod tests {
                 "format",
                 "objects",
                 "oplog",
+                "oplog-tip",
                 "refs",
                 "tmp",
                 "working-copy"
@@ -1223,6 +1225,10 @@ mod tests {
             b"stemma-repository 2\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
+        assert_eq!(
+            fs::read(meta.join("oplog-tip")).unwrap(),
+            b"stemma-oplog-tip 1\nnumber 1\n"
+        );
         for directory in ["objects", "tmp", "oplog", "refs", "refs/heads"] {
             assert!(meta.join(directory).is_dir(), "{directory}");
         }
@@ -2204,6 +2210,46 @@ mod tests {
         assert_eq!(
             repository.refs().head().unwrap(),
             Head::Branch(branch("main"))
+        );
+    }
+
+    #[test]
+    fn a_lost_last_entry_stops_every_operation_before_a_pointer_moves() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let b = store_commit(&repository, "b");
+        assert!(update(&repository, "main", None, a).unwrap().is_some());
+        // The entry of the move to `a` is lost; the tip file still names it.
+        let lost = dir.path().join(".stemma/oplog/000000000002");
+        fs::remove_file(&lost).unwrap();
+        let head = repository.refs().head().unwrap();
+
+        let error = update(&repository, "main", Some(a), b).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Log(OpLogError::TipAhead { .. })),
+            "{error}"
+        );
+        assert!(error.entry().is_none());
+        let moved = repository.set_head(
+            &op("checkout"),
+            &Head::Branch(branch("x")),
+            &actor(),
+            &AllowAll,
+        );
+
+        assert!(matches!(
+            moved,
+            Err(UpdateError::Log(OpLogError::TipAhead { .. }))
+        ));
+        // The branch is where the lost entry put it, and no pointer moved on, no entry was added.
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+        assert_eq!(repository.refs().head().unwrap(), head);
+        assert_eq!(
+            fs::read_dir(dir.path().join(".stemma/oplog"))
+                .unwrap()
+                .count(),
+            1
         );
     }
 
