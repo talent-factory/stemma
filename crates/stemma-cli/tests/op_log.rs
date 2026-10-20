@@ -105,6 +105,11 @@ fn a_new_repository_shows_the_entry_of_init() {
         "{first}"
     );
     assert_eq!(lines.next(), Some("    head  - -> branch:main"));
+    let working_copy = lines.next().unwrap();
+    assert!(
+        working_copy.starts_with("    working-copy  - -> b3:"),
+        "{working_copy}"
+    );
     assert_eq!(lines.next(), None);
 }
 
@@ -149,7 +154,19 @@ fn the_limit_spares_an_entry_it_does_not_show() {
 #[test]
 fn the_json_form_is_one_object_per_line() {
     let dir = repository();
-    snapshot(dir.path(), 2, "-", A);
+    // The entry starts from the working-copy commit that `init` made.
+    let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    write_entry(
+        dir.path(),
+        2,
+        &format!(
+            "time 1700000000\nactor human daniel\noperation snapshot\n\
+             working-copy {first} {A}\nbranch main - {A}\n"
+        ),
+    );
     let result = run(dir.path(), &["op", "log", "--json"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     let lines: Vec<_> = result.stdout.lines().collect();
@@ -159,7 +176,7 @@ fn the_json_form_is_one_object_per_line() {
         format!(
             "{{\"number\":2,\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"head\":null,\
-             \"working_copy\":{{\"old\":null,\"new\":\"{A}\"}},\
+             \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
              \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
              \"took_effect\":false}}"
         )
@@ -517,4 +534,38 @@ fn a_head_that_is_missing_is_a_warning_too() {
         result.stderr
     );
     assert!(result.stdout.starts_with("1  "), "{}", result.stdout);
+}
+
+#[test]
+fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_leaves_it_unknown() {
+    let dir = repository();
+    let result = run(dir.path(), &["op", "log"]);
+    assert!(
+        !result.stdout.contains("! ") && !result.stdout.contains("? "),
+        "{}",
+        result.stdout
+    );
+    // The entry of `init` moved the working-copy commit. Without the file the log cannot say
+    // whether the move took effect, so the entry is unknown and a warning says why; it is not
+    // marked as a move that did not take effect.
+    fs::remove_file(dir.path().join(".stemma/working-copy")).unwrap();
+    let result = run(dir.path(), &["op", "log"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("no working-copy commit"),
+        "{}",
+        result.stderr
+    );
+    assert!(
+        !result.stdout.contains("! the move did not take effect"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result
+            .stdout
+            .contains("    ? it is not known whether the move took effect\n"),
+        "{}",
+        result.stdout
+    );
 }

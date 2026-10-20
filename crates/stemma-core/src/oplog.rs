@@ -1296,13 +1296,26 @@ pub enum Outcome {
     Unknown,
 }
 
-/// The values that the pointers have now, for [`outcomes`]. The working-copy commit has no place
-/// in the references yet (ADR-010), so it is not part of it.
+/// The values that the pointers have now, for [`outcomes`]. The working-copy commit is part of it
+/// only if [`Current::with_working_copy`] gave it; without it the outcome of its last move is
+/// unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Current {
     head: Head,
+    working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
     settled: bool,
+}
+
+/// What [`Current`] knows about the working-copy commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkingCopy {
+    /// [`Current::with_working_copy`] was not called.
+    Unknown,
+    /// The working-copy commit does not exist.
+    Absent,
+    /// The working-copy commit is at the commit.
+    At(CommitId),
 }
 
 impl Current {
@@ -1317,16 +1330,25 @@ impl Current {
     ) -> Self {
         Self {
             head,
+            working_copy: WorkingCopy::Unknown,
             branches: branches.into_iter().collect(),
             settled,
         }
+    }
+
+    /// Adds the value of the working-copy commit, `None` if it does not exist. Without it, the
+    /// last move of the working-copy commit in the log stays unknown.
+    #[must_use]
+    pub fn with_working_copy(mut self, working_copy: Option<CommitId>) -> Self {
+        self.working_copy = working_copy.map_or(WorkingCopy::Absent, WorkingCopy::At);
+        self
     }
 }
 
 /// What is known about a pointer now, for [`judge`].
 #[derive(Clone, Copy)]
 enum Now<'a, T> {
-    /// The value cannot be read, or the working-copy commit has no place in the references.
+    /// The value cannot be read, or `current` does not hold the working-copy commit.
     Unknown,
     /// The pointer does not exist.
     Absent,
@@ -1378,8 +1400,9 @@ fn judge<T: PartialEq>(
 /// is the old value of this one; any other old value is a change outside the log and leaves it
 /// unknown. The last entry of a pointer is compared with the value the pointer has now: equal to
 /// the new value confirms; equal to the old value refutes, but only if `current` is settled;
-/// anything else leaves it unknown, as does a working-copy commit, which `current` does not hold,
-/// and a `current` that is `None` because the references could not be read. An entry took effect
+/// anything else leaves it unknown, as does a working-copy commit that `current` does not hold
+/// ([`Current::with_working_copy`]), and a `current` that is `None` because the references could
+/// not be read. An entry took effect
 /// if all its pointers did, it did not if one did not, and otherwise it is unknown.
 ///
 /// `entries` must ascend and end with the newest entry of the log, because an entry that is the
@@ -1408,7 +1431,12 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
             judged.push(judge(moved, next_head, now, settled));
         }
         if let Some(moved) = change.working_copy() {
-            judged.push(judge(moved, next_working_copy, Now::Unknown, settled));
+            let now = match current.map(|current| &current.working_copy) {
+                Some(WorkingCopy::Absent) => Now::Absent,
+                Some(WorkingCopy::At(commit)) => Now::Is(commit),
+                Some(WorkingCopy::Unknown) | None => Now::Unknown,
+            };
+            judged.push(judge(moved, next_working_copy, now, settled));
         }
         for (name, moved) in change.branches() {
             let now = current.map_or(Now::Unknown, |current| {

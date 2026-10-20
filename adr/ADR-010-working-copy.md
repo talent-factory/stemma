@@ -57,9 +57,27 @@ are prior art, not a template.
 - **The tracked set is the tree of the working-copy commit** *(proposal)*. There is no index file
   as a staging area. `Index` stays in the code as the model that builds a tree from a set of
   paths and as the format of a cache, if one is needed for speed.
-- **Where the working-copy commit is recorded** *(proposal)*. A file `.stemma/working-copy`
+- **Where the working-copy commit is recorded** *(confirmed)*. A file `.stemma/working-copy`
   holds the ID of the working-copy commit, in the form of a branch file (ADR-008), replaced with
-  the same compare-and-swap. One working copy per repository directory in phase 1.
+  the same compare-and-swap under the lock of the references. One working copy per repository
+  directory in phase 1. A missing file is an error and not "no commit yet" (`RefError::NoWorkingCopy`).
+- **`init` makes the first working-copy commit** *(confirmed)*. It has the empty tree, no parents,
+  a change ID of its own, and the actor of `init` as its author. It goes into the first entry of
+  the log together with HEAD, so a snapshot always replaces a commit that exists, and the log
+  holds every working-copy commit from the start.
+- **What a snapshot does** *(confirmed)*. `Repository::snapshot` reads the tree of
+  the working-copy commit, reads each file in it from the working directory, and builds a new
+  tree. Only tracked files are looked at: a file that changed is saved, a file that is gone (or
+  that a directory has replaced) leaves the tree, and a file that is not in the tree is not
+  touched. The new commit keeps the parents, the change ID, and the message of the old one; its
+  author is the actor of the snapshot and its time is now. If the tree is the same, there is no
+  commit and no entry. A path is never followed through a link: a tracked file below a directory
+  that is now a link counts as gone. A tracked path that is a special file stops the snapshot
+  with an error instead of dropping it from the history. A link is saved as its target, and the
+  executable bit is a part of the file mode where the file system has one. A file is opened
+  and compared by device and inode with the one that was looked at, so a file or a directory
+  swapped for a link between the two is an error and not a read outside the working directory.
+  A file that vanishes between the two counts as gone.
 
 ## Consequences
 
@@ -95,10 +113,18 @@ are prior art, not a template.
 - [ ] Who the actor of a snapshot is when two actors use one directory, and how the lease of
       ADR-004 applies.
 - [ ] The cost of a snapshot for a large working directory: reading every file at every
-      command. A cache keyed by modification time and size is the usual answer and a risk for
+      command. It is twice the tracked files today, because `Index::write_tree` verifies the
+      blobs again (the code points here and does not repeat it). A cache keyed by modification time and size is the usual answer and a risk for
       correctness; decide with a measurement.
-- [ ] Files that change during a snapshot, and symbolic links and special files in the working
-      directory.
+- [ ] Files that change during a snapshot. Each file is read once and its blob is made from what
+      was read, so a file is consistent in itself, but the files together are not one instant.
+      Special files are refused; whether a link that is not UTF-8 may be saved is open.
+- [ ] A repository without the file `working-copy` (made before STEMMA-22, or the file removed). A
+      snapshot stops with `NoWorkingCopy`, and no command makes the file again. Raising the format
+      version would refuse such a repository at once; decide with the first command that needs it.
+- [ ] A tracked path that is now a special file blocks every snapshot until it is gone, and a
+      tracked directory that is now a link drops its files from the tree without a warning. Both
+      want a way to report or to untrack (`stemma track`, STEMMA-2).
 - [ ] A second working copy (a worktree) for a second agent in one repository (phase 3).
 - [ ] The name `track`, and whether `stemma commit` needs a flag that makes a snapshot and a
       commit in one step for a script.

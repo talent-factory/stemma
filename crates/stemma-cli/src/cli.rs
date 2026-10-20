@@ -222,6 +222,13 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let refs = repository.refs();
         let locked_before = refs.is_locked()?;
         let head = refs.head()?;
+        // A missing file is not a pointer that does not exist: `init` records one, so the log
+        // cannot say what the file held and the outcome of the working-copy entries stays unknown.
+        let working_copy = match refs.working_copy() {
+            Ok(commit) => Some(commit),
+            Err(RefError::NoWorkingCopy { .. }) => None,
+            Err(error) => return Err(error),
+        };
         let mut branches = Vec::new();
         for name in &names {
             if let Some(commit) = refs.branch(name)? {
@@ -229,12 +236,24 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
             }
         }
         let locked_after = refs.is_locked()?;
-        Ok((head, branches, locked_before || locked_after))
+        Ok((head, working_copy, branches, locked_before || locked_after))
     };
     let current = match read() {
-        Ok((head, branches, locked)) => {
+        Ok((head, working_copy, branches, locked)) => {
             let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
-            Some(oplog::Current::new(head, branches, !locked && unchanged))
+            let current = oplog::Current::new(head, branches, !locked && unchanged);
+            Some(match working_copy {
+                Some(commit) => current.with_working_copy(Some(commit)),
+                None => {
+                    // A warning that cannot be written is dropped on purpose, as in `main`.
+                    let _ = writeln!(
+                        io::stderr(),
+                        "stemma: warning: there is no working-copy commit, so the outcome of its \
+                         moves is not known"
+                    );
+                    current
+                }
+            })
         }
         Err(error) => {
             // A warning that cannot be written is dropped on purpose, as in `main`.

@@ -23,6 +23,7 @@ Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. Di
 .stemma/
     format        stemma-repository 2
     HEAD          branch main
+    working-copy  ID des Working-Copy-Commits
     objects/      lose Objekte
     oplog/        Operation Log, eine nummerierte Datei je Eintrag
     refs/heads/   Branches
@@ -31,13 +32,15 @@ Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. Di
 
 Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende, eine nicht kanonische und jede andere Version ab, auch die Version 1 der Repositories ohne Log. Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
 
-Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben \type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht, nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben. Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen. Der Befehl \type{stemma init} bietet ihn als \type{--initial-branch} an. HEAD zeigt auf den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Wie jede Operation ruft \type{init} zuerst \type{authorize} mit dem Akteur auf.
+Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben \type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht, nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben. Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen. Der Befehl \type{stemma init} bietet ihn als \type{--initial-branch} an. HEAD zeigt auf den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Die Arbeitskopie ist von Anfang an ein Commit (ADR-010): \type{init} legt einen ersten Working-Copy-Commit mit dem leeren Baum, ohne Eltern und mit einer eigenen Change-ID an und hält seine ID in der Datei \type{working-copy} fest. Wie jede Operation ruft \type{init} zuerst \type{authorize} mit dem Akteur auf.
+
+Ein Snapshot (\type{Repository::snapshot}, ADR-010) hält den Stand der Arbeitskopie fest. Er liest den Baum des Working-Copy-Commits und aus dem Arbeitsverzeichnis genau die Dateien, die in diesem Baum stehen; eine Datei, die nicht im Baum steht, ist nicht verfolgt und wird weder gespeichert noch gemeldet. Eine geänderte Datei wird gespeichert, eine gelöschte verlässt den Baum, ebenso eine, die ein Verzeichnis ersetzt hat oder die unter einem Verzeichnis liegt, das nun ein Link ist. Ein Pfad wird nie über einen Link verfolgt; ein verfolgter Pfad, der selbst ein Link ist, wird als sein Ziel gespeichert, und das Ausführbit gehört zum Dateimodus. Eine verfolgte Spezialdatei (Gerät, Socket, Pipe) bricht den Snapshot mit einem Fehler ab, statt still aus der History zu fallen. Der neue Commit behält Eltern, Change-ID und Nachricht des alten, sein Autor ist der Akteur des Snapshots. Ist der Baum unverändert, entstehen weder Commit noch Eintrag. Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst, dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen, einmal zum Speichern und einmal, wenn der Baum geschrieben wird; einen Cache gibt es noch nicht.
 
 Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umgebungsvariablen \type{STEMMA_ACTOR}. Der Text hat die Form der Akteur-Zeile eines Commits, also \type{human daniel} oder \type{agent claude model=opus-5-5 session=s1 sponsor=daniel}. Der Schalter geht der Variablen vor. Ein leerer Wert gilt als Fehler und fällt nicht auf die Variable zurück. Ohne Akteur bricht der Befehl ab und legt nichts an. Einen Standardwert aus dem Benutzernamen gibt es bewusst nicht, damit ein Agent nie stillschweigend als Mensch auftritt.
 
 \section{Das Operation Log}
 
-Jede Operation, die einen Zeiger ändert, schreibt einen Eintrag in das Verzeichnis \type{.stemma/oplog/} (ADR-011). Ein Eintrag ist eine Textdatei mit fortlaufender Nummer. Er nennt den Akteur, die Zeit, den Namen der Operation und für jeden geänderten Zeiger (HEAD, Branches) den alten und den neuen Wert:
+Jede Operation, die einen Zeiger ändert, schreibt einen Eintrag in das Verzeichnis \type{.stemma/oplog/} (ADR-011). Ein Eintrag ist eine Textdatei mit fortlaufender Nummer. Er nennt den Akteur, die Zeit, den Namen der Operation und für jeden geänderten Zeiger (HEAD, Working-Copy-Commit, Branches) den alten und den neuen Wert:
 
 \starttyping
 stemma-oplog 1
@@ -46,6 +49,7 @@ time 1792435308
 actor human daniel
 operation init
 head - branch:main
+working-copy - b3:4feb…b32c
 \stoptyping
 
 Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger, bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log. Das \type{Repository} hält dafür die Sperre der Referenzen vom Prüfen bis zum Zug: Es liest den Zeiger, prüft die Änderung (ein Name, der nicht im Weg steht, ein Branch, der dort steht, wo der Aufrufer ihn sah, ein Commit, der im Objektspeicher liegt), schreibt den Eintrag und bewegt dann den Zeiger. Weil nichts zwischen Prüfung und Zug dazwischenkommt, beschreibt ein Eintrag einen Zug, der gemacht werden sollte, und bei \type{set_head} steht der Wert im Eintrag, den HEAD wirklich hatte. Der Preis ist, dass das Schreiben der kleinen Datei zum geschützten Abschnitt gehört.

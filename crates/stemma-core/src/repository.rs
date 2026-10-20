@@ -7,6 +7,7 @@
 //! .stemma/
 //! ├── format          "stemma-repository 2" and a newline
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
+//! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
@@ -21,10 +22,15 @@ use std::path::{Path, PathBuf};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::object::{CommitId, METADATA_DIR};
+mod snapshot;
+
+pub use snapshot::{SnapshotError, Unsupported};
+
+use crate::change::{ChangeId, GenerateError};
+use crate::object::{Commit, CommitId, Tree, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName};
-use crate::refs::{BranchName, FsRefStore, Head, Logged, RefError, RefStore};
-use crate::store::{unique_temp_name, FsObjectStore};
+use crate::refs::{encode_branch, BranchName, FsRefStore, Head, Logged, RefError, RefStore};
+use crate::store::{unique_temp_name, FsObjectStore, ObjectStore, StoreError};
 use crate::{Actor, Authorizer, Decision};
 
 /// The version of the repository format that this code writes and reads.
@@ -343,6 +349,58 @@ impl Repository {
         outcome.into_result()
     }
 
+    /// Moves the working-copy commit from `expected` to `new` and records the move in the log, in
+    /// the order of [`update_branch`](Self::update_branch) and under the same lock: the commit has
+    /// to be in the object store, the working-copy commit has to be at `expected`, the entry is
+    /// written and flushed, and only then does the pointer move (ADR-010, ADR-011).
+    ///
+    /// Returns the entry, or `None` if `expected` is `new`: only a change writes an entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
+    /// the checks find ([`RefError::StaleWorkingCopy`], [`RefError::NoWorkingCopy`], a commit that
+    /// is not in the store, [`RefError::Locked`]), and [`UpdateError::Log`],
+    /// [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
+    /// [`update_branch`](Self::update_branch).
+    pub fn update_working_copy(
+        &self,
+        operation: &OperationName,
+        expected: CommitId,
+        new: CommitId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Option<Entry>, UpdateError> {
+        self.authorize(actor, authorizer, operation, "working-copy")?;
+        self.move_working_copy(operation, expected, new, actor)
+    }
+
+    /// The move of [`update_working_copy`](Self::update_working_copy) without the question to the
+    /// authorizer, for a caller that has asked already.
+    fn move_working_copy(
+        &self,
+        operation: &OperationName,
+        expected: CommitId,
+        new: CommitId,
+        actor: &Actor,
+    ) -> Result<Option<Entry>, UpdateError> {
+        let outcome = self
+            .refs
+            .update_working_copy_after(expected, new, &self.objects, || {
+                let change = Change::new(
+                    now(),
+                    actor.clone(),
+                    operation.clone(),
+                    None,
+                    Some(Moved::from_to(Some(expected), Some(new))),
+                    vec![],
+                )
+                .map_err(OpLogError::Entry)?;
+                self.oplog.append(&change)
+            })?;
+        outcome.into_result()
+    }
+
     fn authorize(
         &self,
         actor: &Actor,
@@ -402,6 +460,15 @@ impl RefsView<'_> {
     /// Returns [`RefError::Io`] if the lock file cannot be inspected.
     pub fn is_locked(&self) -> Result<bool, RefError> {
         self.refs.is_locked()
+    }
+
+    /// The working-copy commit (ADR-010). See [`FsRefStore::working_copy`].
+    ///
+    /// # Errors
+    ///
+    /// See [`FsRefStore::working_copy`].
+    pub fn working_copy(&self) -> Result<CommitId, RefError> {
+        self.refs.working_copy()
     }
 
     /// The commit that HEAD leads to. See [`RefStore::resolve_head`].
@@ -698,6 +765,21 @@ fn move_into_place(staging: &Path, target: &Path) -> Result<(), InitError> {
     }
 }
 
+/// Stores the first working-copy commit in the object store below `dir`: the empty tree, no
+/// parents, a new change ID, and the actor of `init` as the author.
+fn first_working_copy(dir: &Path, actor: &Actor) -> Result<CommitId, InitError> {
+    let store = FsObjectStore::new(dir);
+    let tree = store
+        .put_tree(&Tree::new(Vec::new()).expect("an empty tree is valid"))
+        .map_err(|error| InitError::Store(Box::new(error)))?;
+    let change = ChangeId::generate().map_err(InitError::ChangeId)?;
+    let commit = Commit::new(tree, Vec::new(), change, actor.clone(), now(), "")
+        .expect("a commit without parents has no duplicate parent");
+    store
+        .put_commit(&commit)
+        .map_err(|error| InitError::Store(Box::new(error)))
+}
+
 /// Builds the content of `.stemma/` in `dir`, which exists and is empty.
 fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitError> {
     write_new(&dir.join("format"), format_content().as_bytes())?;
@@ -710,15 +792,19 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
         fs::create_dir(created).map_err(InitError::io("create the directory", created))?;
     }
     let head = Head::Branch(options.initial_branch.clone());
-    // The first entry of the log: HEAD comes into being. It is written before HEAD, as for every
-    // pointer (ADR-011); the directory is renamed as a whole, so both appear together.
+    // The working copy starts as an empty commit with a change ID of its own (ADR-010): no file is
+    // tracked yet, and a snapshot always replaces a commit that exists.
+    let working_copy = first_working_copy(dir, actor)?;
+    // The first entry of the log: HEAD and the working-copy commit come into being. It is written
+    // before the pointers, as for every pointer (ADR-011); the directory is renamed as a whole, so
+    // all appear together.
     let init = OperationName::new("init").expect("`init` is a valid operation name");
     let change = Change::new(
         now(),
         actor.clone(),
         init,
         Some(Moved::from_to(None, Some(head.clone()))),
-        None,
+        Some(Moved::from_to(None, Some(working_copy))),
         vec![],
     )
     .map_err(|error| InitError::Log(OpLogError::Entry(error)))?;
@@ -729,6 +815,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
         Err(OpLogError::NotFlushed { .. }) => {}
         Err(error) => return Err(InitError::Log(error)),
     }
+    write_new(&dir.join("working-copy"), &encode_branch(&working_copy))?;
     write_new(&dir.join("HEAD"), &head.encode())?;
     for flushed in [&refs, &heads, &oplog, dir] {
         sync_directory(flushed).map_err(InitError::io("flush the directory", flushed))?;
@@ -801,6 +888,10 @@ pub enum InitError {
     },
     /// The first entry of the log could not be written.
     Log(OpLogError),
+    /// The first working-copy commit could not be stored.
+    Store(Box<StoreError>),
+    /// The change ID of the first working-copy commit could not be made.
+    ChangeId(GenerateError),
     /// An operation failed, and the temporary directory could not be removed afterwards. It is
     /// named here and can be removed by hand.
     Leftover {
@@ -829,6 +920,8 @@ impl InitError {
         match self {
             Self::Io { source, .. } | Self::NotDurable { source, .. } => Some(source),
             Self::Log(error) => error.io_error(),
+            Self::Store(error) => error.io_error(),
+            Self::ChangeId(error) => Some(error.io_error()),
             Self::Leftover { error, .. } => error.io_error(),
             Self::Denied { .. } | Self::AlreadyExists { .. } => None,
         }
@@ -861,6 +954,13 @@ impl fmt::Display for InitError {
                 f,
                 "could not write the first entry of the operation log: {error}"
             ),
+            Self::Store(error) => {
+                write!(f, "could not store the first working-copy commit: {error}")
+            }
+            Self::ChangeId(error) => write!(
+                f,
+                "could not make the change ID of the first working-copy commit: {error}"
+            ),
             Self::NotDurable { path, source } => write!(
                 f,
                 "the repository was created in `{}`, but flushing that directory failed: \
@@ -886,6 +986,8 @@ impl Error for InitError {
             // The message includes that of the I/O error, so the source is its own cause.
             Self::Io { source, .. } | Self::NotDurable { source, .. } => source.source(),
             Self::Log(error) => error.source(),
+            Self::Store(error) => error.source(),
+            Self::ChangeId(error) => error.source(),
             // The message includes the message of both causes. The cause of the first one is the
             // first link that it does not print yet.
             Self::Leftover { error, .. } => error.source(),
@@ -1020,6 +1122,7 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use crate::change::ChangeId;
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
     use crate::testutil::TempDir;
@@ -1073,7 +1176,15 @@ mod tests {
         let meta = dir.path().join(".stemma");
         assert_eq!(
             names(&meta),
-            ["HEAD", "format", "objects", "oplog", "refs", "tmp"]
+            [
+                "HEAD",
+                "format",
+                "objects",
+                "oplog",
+                "refs",
+                "tmp",
+                "working-copy"
+            ]
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
@@ -1086,6 +1197,162 @@ mod tests {
         assert_eq!(names(&meta.join("refs")), ["heads"]);
         assert_eq!(repository.path(), dir.path());
         assert_eq!(repository.metadata_dir(), meta);
+    }
+
+    #[test]
+    fn init_makes_an_empty_working_copy_commit_with_a_change_id_of_its_own() {
+        let first = TempDir::new();
+        let second = TempDir::new();
+        let a = init(first.path()).unwrap();
+        let b = init(second.path()).unwrap();
+        let id = a.refs().working_copy().unwrap();
+        assert_eq!(
+            fs::read(a.metadata_dir().join("working-copy")).unwrap(),
+            format!("{id}\n").into_bytes()
+        );
+        let raw = a
+            .objects()
+            .get_expecting(&id.object_id(), crate::object::Kind::Commit)
+            .unwrap()
+            .unwrap();
+        let commit = Commit::parse(raw.body()).unwrap();
+        assert_eq!(commit.tree(), Tree::new(Vec::new()).unwrap().id());
+        assert!(commit.parents().is_empty());
+        assert_eq!(commit.author(), &actor());
+        assert_eq!(commit.message(), "");
+        let other = b.refs().working_copy().unwrap();
+        let other = Commit::parse(
+            b.objects()
+                .get_expecting(&other.object_id(), crate::object::Kind::Commit)
+                .unwrap()
+                .unwrap()
+                .body(),
+        )
+        .unwrap();
+        assert_ne!(commit.change(), other.change());
+    }
+
+    #[test]
+    fn a_repository_without_the_working_copy_file_reports_it() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        fs::remove_file(repository.metadata_dir().join("working-copy")).unwrap();
+        let error = repository.refs().working_copy().unwrap_err();
+        assert!(matches!(error, RefError::NoWorkingCopy { .. }), "{error}");
+        assert!(error.to_string().contains("working-copy"), "{error}");
+    }
+
+    /// A commit on top of the working-copy commit with the empty tree, to move the pointer to.
+    fn next_commit(repository: &Repository, message: &str) -> CommitId {
+        let current = repository.refs().working_copy().unwrap();
+        let commit = Commit::new(
+            Tree::new(Vec::new()).unwrap().id(),
+            vec![current],
+            ChangeId::generate().unwrap(),
+            actor(),
+            1,
+            message,
+        )
+        .unwrap();
+        repository.objects().put_commit(&commit).unwrap()
+    }
+
+    fn operation(name: &str) -> OperationName {
+        OperationName::new(name).unwrap()
+    }
+
+    #[test]
+    fn the_working_copy_commit_moves_and_the_entry_names_both_values() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let old = repository.refs().working_copy().unwrap();
+        let new = next_commit(&repository, "x");
+        let entry = repository
+            .update_working_copy(&operation("snapshot"), old, new, &actor(), &AllowAll)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repository.refs().working_copy().unwrap(), new);
+        assert_eq!(entry.number(), 2);
+        let moved = entry.change().working_copy().unwrap();
+        assert_eq!((moved.before(), moved.after()), (Some(&old), Some(&new)));
+        assert!(entry.change().head().is_none() && entry.change().branches().is_empty());
+    }
+
+    #[test]
+    fn a_move_to_the_value_it_has_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let old = repository.refs().working_copy().unwrap();
+        let entry = repository
+            .update_working_copy(&operation("snapshot"), old, old, &actor(), &AllowAll)
+            .unwrap();
+        assert!(entry.is_none());
+        assert_eq!(repository.oplog().numbers().unwrap(), [1]);
+    }
+
+    #[test]
+    fn a_stale_working_copy_move_writes_no_entry_and_does_not_move() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let old = repository.refs().working_copy().unwrap();
+        let new = next_commit(&repository, "x");
+        let elsewhere = next_commit(&repository, "y");
+        let error = repository
+            .update_working_copy(&operation("snapshot"), elsewhere, new, &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                UpdateError::Refs(RefError::StaleWorkingCopy { expected, found })
+                    if expected == elsewhere && found == old
+            ),
+            "{error}"
+        );
+        assert_eq!(repository.refs().working_copy().unwrap(), old);
+        assert_eq!(repository.oplog().numbers().unwrap(), [1]);
+    }
+
+    #[test]
+    fn a_working_copy_move_to_a_commit_that_is_not_stored_is_refused() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let old = repository.refs().working_copy().unwrap();
+        let missing = CommitId::new(
+            "b3:1111111111111111111111111111111111111111111111111111111111111111"
+                .parse::<ObjectId>()
+                .unwrap(),
+        );
+        let error = repository
+            .update_working_copy(&operation("snapshot"), old, missing, &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, UpdateError::Refs(RefError::MissingCommit(id)) if id == missing),
+            "{error}"
+        );
+        assert_eq!(repository.oplog().numbers().unwrap(), [1]);
+    }
+
+    #[test]
+    fn a_denied_working_copy_move_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let old = repository.refs().working_copy().unwrap();
+        let new = next_commit(&repository, "x");
+        let error = repository
+            .update_working_copy(&operation("snapshot"), old, new, &actor(), &DenyAll)
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(repository.refs().working_copy().unwrap(), old);
+        assert_eq!(repository.oplog().numbers().unwrap(), [1]);
+    }
+
+    #[test]
+    fn init_can_be_denied_and_leaves_no_working_copy() {
+        let dir = TempDir::new();
+        let error =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &DenyAll).unwrap_err();
+        assert!(matches!(error, InitError::Denied { .. }), "{error}");
+        assert_eq!(names(dir.path()), Vec::<String>::new());
     }
 
     #[test]
@@ -1755,7 +2022,13 @@ mod tests {
         let head = change.head().unwrap();
         assert_eq!(head.before(), None);
         assert_eq!(head.after(), Some(&Head::Branch(branch("main"))));
-        assert!(change.working_copy().is_none() && change.branches().is_empty());
+        let working_copy = change.working_copy().unwrap();
+        assert_eq!(working_copy.before(), None);
+        assert_eq!(
+            working_copy.after(),
+            Some(&repository.refs().working_copy().unwrap())
+        );
+        assert!(change.branches().is_empty());
         // The entry is the one that a later open sees, and nothing else is in the directories.
         assert_eq!(
             Repository::open(dir.path())
@@ -2115,7 +2388,11 @@ mod tests {
                     let (repository, barrier) = (&repository, &barrier);
                     scope.spawn(move || {
                         barrier.wait();
-                        for _ in 0..100_000 {
+                        // A deadline and not a count of tries: how long a writer waits depends on
+                        // the load of the machine, since each holder of the lock flushes to disk.
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(60);
+                        while std::time::Instant::now() < deadline {
                             match repository.set_head(
                                 &op("checkout"),
                                 &Head::Branch(name.clone()),
