@@ -85,6 +85,28 @@ Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintr
 dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen,
 einmal zum Speichern und einmal, wenn der Baum geschrieben wird; einen Cache gibt es noch nicht.
 
+Die Funktion \type{Repository::commit} (ADR-010) benennt den Working-Copy-Commit und
+beginnt einen neuen.
+Zuerst speichert sie die verfolgten Dateien wie ein Snapshot,
+damit eine Änderung seit dem letzten Befehl im Commit landet;
+das ist eine eigene Operation mit eigenem Eintrag.
+Dann bekommt der Working-Copy-Commit die Nachricht,
+behält Eltern und Change-ID und erhält den Akteur und die Zeit des Aufrufs.
+Der Branch, auf den HEAD zeigt, rückt auf diesen Commit,
+und ein neuer Working-Copy-Commit tritt an die Stelle des alten:
+Kind des benannten Commits, mit demselben Baum, leerer Nachricht und eigener Change-ID.
+«Leer» heisst gleicher Baum, weil die verfolgten Dateien der Baum sind.
+Beide Zeiger bewegen sich in einem Schritt unter der Sperre der Referenzen
+und stehen in einem Eintrag des Operation Logs.
+Der Branch bewegt sich zuerst.
+Bricht der zweite Zug ab, meldet der Aufruf \type{PartlyMoved}
+und \type{op log} zeigt den Eintrag als nicht übernommen, obwohl der Branch sich bewegt hat;
+der nächste \type{commit} erkennt den Zustand und beendet den ersten, ohne seine eigene Nachricht
+zu verwenden.
+Der Aufruf lehnt eine leere Nachricht ab, ein HEAD ohne Branch, einen unveränderten Baum
+und einen Branch, der nicht beim Elternteil des Working-Copy-Commits steht;
+Letzteres wäre ein Fall für einen Rebase (Phase 3).
+
 Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umgebungsvariablen
 \type{STEMMA_ACTOR}. Der Text hat die Form der Akteur-Zeile eines Commits, also
 \type{human daniel} oder \type{agent claude model=opus-5-5 session=s1 sponsor=daniel}.

@@ -146,16 +146,7 @@ impl Repository {
                 late: None,
             });
         }
-        let replacement = Commit::new(
-            tree,
-            commit.parents().to_vec(),
-            commit.change(),
-            actor.clone(),
-            now(),
-            commit.message(),
-        )
-        // `Commit::parse` refuses a repeated parent, so the parents of a stored commit are distinct.
-        .expect("the parents of a commit are distinct");
+        let replacement = commit.rewrite(tree, actor.clone(), now(), commit.message());
         let new = self
             .objects()
             .put_commit(&replacement)
@@ -504,7 +495,7 @@ impl fmt::Display for SnapshotError {
                 write!(f, "the store has no {} {id}", kind.name())
             }
             Self::Commit { id, source } => {
-                write!(f, "the working-copy commit {id} is not valid: {source}")
+                write!(f, "the commit {id} is not valid: {source}")
             }
             Self::Tree { id, source } => write!(f, "the tree {id} is not valid: {source}"),
             Self::Unsupported { path, what } => write!(

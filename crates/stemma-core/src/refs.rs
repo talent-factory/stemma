@@ -1019,11 +1019,30 @@ fn join_name(prefix: &str, component: &str) -> String {
     }
 }
 
+/// The move of a branch in [`FsRefStore::update_branch_and_working_copy_after`].
+pub(crate) struct BranchMove<'a> {
+    /// The branch, which need not exist yet.
+    pub(crate) name: &'a BranchName,
+    /// The commit the branch has to be at, `None` for a branch that does not exist.
+    pub(crate) expected: Option<CommitId>,
+    /// The commit the branch takes. It differs from `expected`.
+    pub(crate) new: CommitId,
+}
+
+/// The move of the working-copy commit in [`FsRefStore::update_branch_and_working_copy_after`].
+pub(crate) struct WorkingCopyMove {
+    /// The commit the working copy has to be at.
+    pub(crate) expected: CommitId,
+    /// The commit the working copy takes. It differs from `expected`.
+    pub(crate) new: CommitId,
+}
+
 impl crate::store::sealed::Sealed for FsRefStore {}
 
 /// The outcome of a change of a pointer that a step precedes, such as the entry of the operation
 /// log (ADR-011). `T` is what the step returned, `E` is how it can fail. Every variant is the only
 /// record of what happened, so a caller must look at it.
+#[derive(Debug)]
 #[must_use]
 pub(crate) enum Logged<T, E> {
     /// The pointer has the value already. The step did not run and nothing changed.
@@ -1038,6 +1057,10 @@ pub(crate) enum Logged<T, E> {
     /// The step ran and the pointer moved, but the directory could not be flushed to disk
     /// ([`RefError::NotFlushed`]).
     NotFlushed(T, RefError),
+    /// The step ran and the first of two pointers moved, but the second did not: the file system
+    /// failed. The step stays done, and the entry names a move that was half made. Only
+    /// [`FsRefStore::update_branch_and_working_copy_after`] returns it.
+    PartlyMoved(T, RefError),
 }
 
 impl FsRefStore {
@@ -1194,6 +1217,107 @@ impl FsRefStore {
         let moved =
             self.write_replacing(&self.working_copy_path(), &encode_branch(&new), &self.root);
         Ok(Self::after_move(done, moved))
+    }
+
+    /// Moves a branch and the working-copy commit in one operation, and runs `step` after the
+    /// checks and before the first move, all under the lock of the references. This is what a
+    /// `commit` does (ADR-010): the branch takes the named commit and the working-copy commit takes
+    /// the new one, and the log has one entry for both (ADR-011).
+    ///
+    /// The checks are the ones of [`update_branch_after`](Self::update_branch_after) and
+    /// [`update_working_copy_after`](Self::update_working_copy_after), and both commits have to be
+    /// in `objects`. The branch moves first: if the process stops between the two moves, the
+    /// commit that was named is reachable from the branch and is not lost. Both pointers change, so
+    /// there is no unchanged case.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of the two calls named above. Once `step` has run, nothing is an error of
+    /// this call; see [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn update_branch_and_working_copy_after<T, E>(
+        &self,
+        branch: &BranchMove<'_>,
+        working_copy: &WorkingCopyMove,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        debug_assert!(
+            branch.expected != Some(branch.new) && working_copy.expected != working_copy.new,
+            "both pointers must change"
+        );
+        self.require_root()?;
+        let _lock = self.lock()?;
+        Self::require_commit(&branch.new, objects)?;
+        Self::require_commit(&working_copy.new, objects)?;
+        let current = self.current(branch.name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                name: branch.name.clone(),
+                with,
+                kind,
+            });
+        }
+        if current.commit != branch.expected {
+            return Err(RefError::Stale {
+                name: branch.name.clone(),
+                expected: branch.expected,
+                found: current.commit,
+            });
+        }
+        let found = self.working_copy()?;
+        if found != working_copy.expected {
+            return Err(RefError::StaleWorkingCopy {
+                expected: working_copy.expected,
+                found,
+            });
+        }
+        if let Some(empty) = &current.empty_directory {
+            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let first = self.write_replacing(
+            &self.branch_path(branch.name),
+            &encode_branch(&branch.new),
+            &self.heads_dir(),
+        );
+        Ok(Self::after_two_moves(done, first, || {
+            self.write_replacing(
+                &self.working_copy_path(),
+                &encode_branch(&working_copy.new),
+                &self.root,
+            )
+        }))
+    }
+
+    /// The outcome of two moves, the second of which runs only if the first moved its pointer
+    /// (`NotFlushed` counts as moved, see [`after_move`](Self::after_move)).
+    ///
+    /// If both moves are not flushed, the error of the first is kept: in both cases the caller
+    /// learns that the change may not survive a crash and must not repeat it. If the second move
+    /// fails after the first was not flushed, the result is
+    /// [`PartlyMoved`](Logged::PartlyMoved) and the flush error of the first is dropped, since a
+    /// caller that may not repeat the change reads the pointers either way.
+    fn after_two_moves<T, E>(
+        done: T,
+        first: Result<(), RefError>,
+        second: impl FnOnce() -> Result<(), RefError>,
+    ) -> Logged<T, E> {
+        let unflushed = match first {
+            Ok(()) => None,
+            Err(error @ RefError::NotFlushed { .. }) => Some(error),
+            Err(error) => return Logged::MoveFailed(done, error),
+        };
+        match (second(), unflushed) {
+            (Ok(()), None) => Logged::Moved(done),
+            (Ok(()) | Err(RefError::NotFlushed { .. }), Some(first)) => {
+                Logged::NotFlushed(done, first)
+            }
+            (Err(error @ RefError::NotFlushed { .. }), None) => Logged::NotFlushed(done, error),
+            (Err(error), _) => Logged::PartlyMoved(done, error),
+        }
     }
 
     fn after_move<T, E>(done: T, moved: Result<(), RefError>) -> Logged<T, E> {
@@ -2609,6 +2733,57 @@ mod tests {
         assert_eq!(fs::read(&head).unwrap(), b"damaged\n");
         assert_eq!(ran.get(), 0);
         assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn the_outcome_of_two_moves_says_which_pointer_moved() {
+        let disk = || io::Error::other("disk");
+        let unflushed = |path: &str| RefError::NotFlushed {
+            path: PathBuf::from(path),
+            source: disk(),
+        };
+        let hard = || RefError::Io {
+            operation: "write the reference",
+            path: PathBuf::from("/x/working-copy"),
+            source: disk(),
+        };
+        type Outcome = Logged<u8, ()>;
+        let two = |first: Result<(), RefError>, second: Result<(), RefError>| {
+            let ran = std::cell::Cell::new(false);
+            let outcome = FsRefStore::after_two_moves::<u8, ()>(5, first, || {
+                ran.set(true);
+                second
+            });
+            (outcome, ran.get())
+        };
+        assert!(matches!(two(Ok(()), Ok(())), (Outcome::Moved(5), true)));
+        // The first move failed hard: the second is not tried.
+        assert!(matches!(
+            two(Err(hard()), Ok(())),
+            (Outcome::MoveFailed(5, RefError::Io { .. }), false)
+        ));
+        // Not flushed counts as moved, so the second is tried, and the flush error is kept.
+        assert!(matches!(
+            two(Err(unflushed("/heads")), Ok(())),
+            (Outcome::NotFlushed(5, RefError::NotFlushed { path, .. }), true) if path == Path::new("/heads")
+        ));
+        assert!(matches!(
+            two(Ok(()), Err(unflushed("/root"))),
+            (Outcome::NotFlushed(5, RefError::NotFlushed { path, .. }), true) if path == Path::new("/root")
+        ));
+        assert!(matches!(
+            two(Err(unflushed("/heads")), Err(unflushed("/root"))),
+            (Outcome::NotFlushed(5, RefError::NotFlushed { path, .. }), true) if path == Path::new("/heads")
+        ));
+        // The second failed hard: one pointer moved.
+        assert!(matches!(
+            two(Ok(()), Err(hard())),
+            (Outcome::PartlyMoved(5, RefError::Io { .. }), true)
+        ));
+        assert!(matches!(
+            two(Err(unflushed("/heads")), Err(hard())),
+            (Outcome::PartlyMoved(5, RefError::Io { .. }), true)
+        ));
     }
 
     #[test]

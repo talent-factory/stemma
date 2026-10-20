@@ -22,9 +22,11 @@ use std::path::{Path, PathBuf};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod commit;
 mod snapshot;
 mod track;
 
+pub use commit::{CommitError, Committed};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use track::{normalize_path, TrackError, Tracking};
 
@@ -493,11 +495,13 @@ fn now() -> i64 {
     }
 }
 
-/// Reasons why [`Repository::update_branch`] and [`Repository::set_head`] fail. Two questions tell
-/// them apart: is there an entry in the log (`entry()`), and did the pointer move? An entry exists
-/// for [`MoveFailed`](Self::MoveFailed) (the pointer did not move), [`NotDurable`](Self::NotDurable)
-/// (it moved), and a [`Log`](Self::Log) error with [`OpLogError::NotFlushed`] (it did not move).
-/// [`pointer_moved`](Self::pointer_moved) answers the second question.
+/// Reasons why [`Repository::update_branch`], [`Repository::set_head`], and the operations that
+/// build on them (`snapshot`, `track`, `commit`) fail. Two questions tell them apart: is there an
+/// entry in the log (`entry()`), and did a pointer move? An entry exists for
+/// [`MoveFailed`](Self::MoveFailed) (no pointer moved), [`PartlyMoved`](Self::PartlyMoved) (one of
+/// two moved), [`NotDurable`](Self::NotDurable) (the pointers moved), and a [`Log`](Self::Log)
+/// error with [`OpLogError::NotFlushed`] (none moved). [`pointer_moved`](Self::pointer_moved)
+/// answers the second question.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum UpdateError {
@@ -525,6 +529,16 @@ pub enum UpdateError {
         /// Why the pointer did not move.
         source: RefError,
     },
+    /// The entry was written and the first of two pointers moved, but the second did not: the file
+    /// system failed between the moves. `op log` shows the entry as not taken (`!`), although the
+    /// first pointer did move. Do not repeat the change; read the pointers. After a `commit` that
+    /// stopped here, the next `commit` finishes it.
+    PartlyMoved {
+        /// The entry that is in the log.
+        entry: Box<Entry>,
+        /// Why the second pointer did not move.
+        source: RefError,
+    },
     /// The entry was written and the pointer moved, but a directory could not be flushed to disk, so
     /// the change may not survive a crash. Do not repeat the change: read the pointer.
     NotDurable {
@@ -542,23 +556,26 @@ impl UpdateError {
         match self {
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
+            | Self::PartlyMoved { source: error, .. }
             | Self::NotDurable { source: error, .. } => error.io_error(),
             Self::Log(error) => error.io_error(),
             Self::Denied { .. } => None,
         }
     }
 
-    /// Whether the pointer moved although the call failed. Only [`NotDurable`](Self::NotDurable)
-    /// moved it; in every other case the pointer is where it was, and the change can be repeated
-    /// (with a second entry if the first one stays).
+    /// Whether a pointer moved although the call failed. [`NotDurable`](Self::NotDurable) and
+    /// [`PartlyMoved`](Self::PartlyMoved) moved one; in every other case the pointers are where they
+    /// were, and the change can be repeated (with a second entry if the first one stays).
     pub fn pointer_moved(&self) -> bool {
-        matches!(self, Self::NotDurable { .. })
+        matches!(self, Self::NotDurable { .. } | Self::PartlyMoved { .. })
     }
 
     /// The entry that was written, if the error leaves one in the log.
     pub fn entry(&self) -> Option<&Entry> {
         match self {
-            Self::MoveFailed { entry, .. } | Self::NotDurable { entry, .. } => Some(entry),
+            Self::MoveFailed { entry, .. }
+            | Self::PartlyMoved { entry, .. }
+            | Self::NotDurable { entry, .. } => Some(entry),
             Self::Log(OpLogError::NotFlushed { entry, .. }) => Some(entry),
             _ => None,
         }
@@ -578,6 +595,10 @@ impl<E: Into<UpdateError>> Logged<Entry, E> {
                 source,
             }),
             Self::NotFlushed(entry, source) => Err(UpdateError::NotDurable {
+                entry: Box::new(entry),
+                source,
+            }),
+            Self::PartlyMoved(entry, source) => Err(UpdateError::PartlyMoved {
                 entry: Box::new(entry),
                 source,
             }),
@@ -622,6 +643,12 @@ impl fmt::Display for UpdateError {
                  entry names a move that did not happen",
                 entry.number()
             ),
+            Self::PartlyMoved { entry, source } => write!(
+                f,
+                "entry {} of the operation log was written and the first pointer moved, but the \
+                 second did not: {source}; do not repeat the change, read the pointers",
+                entry.number()
+            ),
             Self::NotDurable { entry, source } => write!(
                 f,
                 "the change was made and written as entry {} of the operation log, but flushing \
@@ -637,6 +664,7 @@ impl Error for UpdateError {
         match self {
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
+            | Self::PartlyMoved { source: error, .. }
             | Self::NotDurable { source: error, .. } => error.source(),
             Self::Log(error) => error.source(),
             Self::Denied { .. } => None,
