@@ -74,9 +74,50 @@ format-check:
 doc-check:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-# All CI checks: format, lint, documentation, tests.
+# Check that the lines of the documentation sources that differ from `main` hold at most 100
+# characters and end without a space. Verbatim blocks, code fences, and tables are exempt. The
+# lines of the existing chapters that no change touches are left alone.
 [group('Quality')]
-ci: format-check lint doc-check test
+doc-lines:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)
+    if [ -z "$base" ]; then
+        echo "doc-lines: no main branch to compare with, skipped"
+        exit 0
+    fi
+    status=0
+    while IFS= read -r file; do
+        [ -f "$file" ] || continue
+        # The added line ranges of the file as "start count" pairs; a count of 0 is a pure deletion.
+        ranges=$(git diff -U0 "$base" -- "$file" |
+            sed -nE 's/^@@ .* \+([0-9]+)(,([0-9]+))? @@.*/\1 \3/p')
+        RANGES="$ranges" awk -v file="$file" '
+            BEGIN {
+                n = split(ENVIRON["RANGES"], r, "\n")
+                for (i = 1; i <= n; i++) {
+                    split(r[i], p, " ")
+                    count = (p[2] == "") ? 1 : p[2]
+                    for (k = 0; k < count; k++) added[p[1] + k] = 1
+                }
+            }
+            /\\start(typing|xtable)/ || /^```/ { if (!skip) { skip = 1; next } }
+            skip { if (/\\stop(typing|xtable)/ || /^```/) skip = 0; next }
+            /^\|/ { next }
+            (FNR in added) && length($0) > 100 {
+                printf "%s:%d: %d characters, at most 100\n", file, FNR, length($0); bad = 1
+            }
+            (FNR in added) && /[ \t]$/ {
+                printf "%s:%d: trailing whitespace\n", file, FNR; bad = 1
+            }
+            END { exit bad }
+        ' "$file" || status=1
+    done < <(git diff --name-only --diff-filter=AM "$base" -- 'docs/*.tex' 'docs/*.md')
+    exit $status
+
+# All CI checks: format, lint, documentation, line length, tests.
+[group('Quality')]
+ci: format-check lint doc-check doc-lines test
 
 # Test coverage summary (needs `cargo install cargo-llvm-cov --locked`).
 [group('Quality')]

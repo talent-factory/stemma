@@ -26,7 +26,7 @@ mod snapshot;
 mod track;
 
 pub use snapshot::{SnapshotError, Unsupported};
-pub use track::{TrackError, Tracking};
+pub use track::{normalize_path, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};

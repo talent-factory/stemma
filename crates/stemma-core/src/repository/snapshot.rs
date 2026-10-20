@@ -14,7 +14,6 @@ use std::fs::{self, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::track::Tracking;
 use super::{now, Repository, UpdateError};
 use crate::index::{Index, IndexError, WriteTreeError};
 use crate::object::{
@@ -81,7 +80,10 @@ impl Repository {
         let replaced = self.replace_working_copy(&operation, actor, authorizer, |_| {
             Ok::<_, SnapshotError>(Vec::new())
         })?;
-        Ok(replaced.entry)
+        match replaced.late {
+            Some(error) => Err(SnapshotError::Update(error)),
+            None => Ok(replaced.entry),
+        }
     }
 
     /// Saves the tracked files, and the files that `additions` returns, as the new working-copy
@@ -90,9 +92,11 @@ impl Repository {
     /// tracked files are saved first. An added file that the tree holds already is left out, as is
     /// a repeated one.
     ///
-    /// The returned [`Tracking::added`] lists the added files that were saved. One that is gone
-    /// when it is saved is left out and is no error, unless the caller named it
-    /// ([`Tracked::named`]).
+    /// [`Replaced::added`] lists the added files that were saved. One that is gone when it is
+    /// saved is left out and is no error, unless the caller named it ([`Tracked::named`]). If the
+    /// move succeeded but the directory could not be flushed ([`UpdateError::NotDurable`]), the
+    /// call is not an error: the move happened, so the list is still true, and the error is in
+    /// [`Replaced::late`] for the caller to report after it has shown the list.
     ///
     /// # Errors
     ///
@@ -104,7 +108,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
         additions: impl FnOnce(&Path) -> Result<Vec<Tracked>, E>,
-    ) -> Result<Tracking, E> {
+    ) -> Result<Replaced, E> {
         self.authorize(actor, authorizer, operation, "working-copy")
             .map_err(SnapshotError::Update)?;
         let current = self.refs().working_copy().map_err(SnapshotError::Refs)?;
@@ -136,9 +140,10 @@ impl Repository {
             .write_tree(self.objects())
             .map_err(SnapshotError::WriteTree)?;
         if tree == commit.tree() {
-            return Ok(Tracking {
+            return Ok(Replaced {
                 entry: None,
                 added: saved,
+                late: None,
             });
         }
         let replacement = Commit::new(
@@ -155,14 +160,31 @@ impl Repository {
             .objects()
             .put_commit(&replacement)
             .map_err(|error| SnapshotError::Store(Box::new(error)))?;
-        let entry = self
-            .move_working_copy(operation, current, new, actor)
-            .map_err(SnapshotError::Update)?;
-        Ok(Tracking {
-            entry,
-            added: saved,
-        })
+        match self.move_working_copy(operation, current, new, actor) {
+            Ok(entry) => Ok(Replaced {
+                entry,
+                added: saved,
+                late: None,
+            }),
+            Err(error @ UpdateError::NotDurable { .. }) => Ok(Replaced {
+                entry: None,
+                added: saved,
+                late: Some(error),
+            }),
+            Err(error) => Err(SnapshotError::Update(error).into()),
+        }
     }
+}
+
+/// The result of [`Repository::replace_working_copy`].
+#[derive(Debug)]
+pub(super) struct Replaced {
+    /// The entry of the move, or `None` if the tree is the same (or the move is in `late`).
+    pub(super) entry: Option<Entry>,
+    /// The added files that were saved.
+    pub(super) added: Vec<String>,
+    /// The move happened, but a directory could not be flushed: [`UpdateError::NotDurable`].
+    pub(super) late: Option<UpdateError>,
 }
 
 /// Reads and parses the commit.

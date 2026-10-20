@@ -14,7 +14,7 @@ Version control system in Rust. See `README.md` for the project overview and `ad
 
 All routine tasks run through `just` (see `justfile`, list with `just`):
 
-- `just ci`: format check, clippy (`-D warnings`), the build of the documentation (`-D warnings`), tests. Must pass before every commit.
+- `just ci`: format check, clippy (`-D warnings`), the build of the documentation (`-D warnings`), the line length of the documentation sources (`just doc-lines`), tests. Must pass before every commit.
 - `just coverage`: test coverage summary (needs `cargo install cargo-llvm-cov --locked`). Informational, not part of `just ci`.
 - `just book`: build the ConTeXt book (`docs/main.tex`). Must compile without errors or warnings. It first runs `just figures`, which converts the SVG sources in `docs/images/src/` to PDF (needs `brew install librsvg`).
 
@@ -46,6 +46,7 @@ Source files under `docs/` (ConTeXt chapters, Markdown) are read by humans and c
 - Continuation lines of an `\item` are not indented; a list item still begins with `\item` at the start of the line.
 - No trailing whitespace.
 - Verbatim blocks (`\starttyping`) and tables keep their own layout and are exempt.
+- `just doc-lines` (part of `just ci`) checks the length and the trailing whitespace of the lines that differ from `main`.
 - Apply the rule to every line you write or change. When a passage is touched anyway, bring its paragraph into line; do not reformat whole files that a slice does not touch.
 
 ## Agent skills

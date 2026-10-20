@@ -2,7 +2,7 @@
 
 \section{Ziel}
 
-Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden gespeichert, 
+Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden gespeichert,
 Commits erzeugt und der Status angezeigt.
 
 \section{Umfang}
@@ -11,16 +11,16 @@ Commits erzeugt und der Status angezeigt.
 \item Objektspeicher mit Blobs, Trees und Commits, adressiert über BLAKE3 mit Präfix nach ADR-001.
 \item Referenzen für den Branch \type{main} und HEAD.
 \item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
-\item Befehle \type{init}, \type{add}, \type{commit} und \type{status}.
+\item Befehle \type{init}, \type{track} (statt \type{add}), \type{commit} und \type{status}.
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
-\item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines 
+\item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines
 Zeigers geschrieben werden (ADR-011).
 \stopitemize
 
 \section{Aufbau eines Repositories}
 
-Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält. 
-Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher, Referenzen und Log, 
+Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält.
+Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher, Referenzen und Log,
 damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
 
 \starttyping
@@ -34,66 +34,70 @@ damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
     tmp/          temporäre Dateien des Objektspeichers, der Referenzen und des Logs
 \stoptyping
 
-Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende, 
-eine nicht kanonische und jede andere Version ab, auch die Version 1 der Repositories ohne Log. 
+Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende,
+eine nicht kanonische und jede andere Version ab, auch die Version 1 der Repositories ohne Log.
 Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
 
-Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben 
-\type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner 
-wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht, 
-nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab 
-und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben. 
-Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen. 
-Der Befehl \type{stemma init} bietet ihn als \type{--initial-branch} an. HEAD zeigt auf 
-den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Die Arbeitskopie ist 
-von Anfang an ein Commit (ADR-010): \type{init} legt einen ersten Working-Copy-Commit 
-mit dem leeren Baum, ohne Eltern und mit einer eigenen Change-ID an und hält seine ID 
-in der Datei \type{working-copy} fest. Wie jede Operation ruft \type{init} zuerst 
+Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben
+\type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner
+wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht,
+nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab
+und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben.
+Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen.
+Der Befehl \type{stemma init} bietet ihn als \type{--initial-branch} an. HEAD zeigt auf
+den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Die Arbeitskopie ist
+von Anfang an ein Commit (ADR-010): \type{init} legt einen ersten Working-Copy-Commit
+mit dem leeren Baum, ohne Eltern und mit einer eigenen Change-ID an und hält seine ID
+in der Datei \type{working-copy} fest. Wie jede Operation ruft \type{init} zuerst
 \type{authorize} mit dem Akteur auf.
 
-Ein Snapshot (\type{Repository::snapshot}, ADR-010) hält den Stand der Arbeitskopie fest. 
-Er liest den Baum des Working-Copy-Commits und aus dem Arbeitsverzeichnis genau die Dateien, 
-die in diesem Baum stehen; eine Datei, die nicht im Baum steht, ist nicht verfolgt und wird 
-weder gespeichert noch gemeldet. Eine geänderte Datei wird gespeichert, eine gelöschte 
-verlässt den Baum, ebenso eine, die ein Verzeichnis ersetzt hat oder die unter einem 
-Verzeichnis liegt, das nun ein Link ist. Ein Pfad wird nie über einen Link verfolgt; 
-ein verfolgter Pfad, der selbst ein Link ist, wird als sein Ziel gespeichert, 
-und das Ausführbit gehört zum Dateimodus. Eine verfolgte Spezialdatei (Gerät, Socket, Pipe) 
-bricht den Snapshot mit einem Fehler ab, statt still aus der History zu fallen. 
-Der neue Commit behält Eltern, Change-ID und Nachricht des alten, sein Autor ist der 
-Akteur des Snapshots. Ist der Baum unverändert, entstehen weder Commit noch Eintrag. 
-Ein neuer Pfad kommt mit \type{Repository::track} in den Baum. Die Funktion nimmt relative 
-Pfade; ein Verzeichnis steht für die Dateien darunter, ohne einen Ordner \type{.stemma}. 
-Sie baut den neuen Baum aus den verfolgten Dateien und den Dateien an den Pfaden und 
-ersetzt den Working-Copy-Commit wie ein Snapshot. Die verfolgten Dateien speichert sie mit, 
-denn sonst ginge eine Änderung an ihnen verloren. Ein Pfad, der schon verfolgt wird, ist 
-kein Fehler. Ein Pfad, den es nicht gibt oder der eine Pfadregel verletzt, wird abgelehnt, 
-bevor sich der Working-Copy-Commit bewegt. Jeder Name im Pfad muss so geschrieben sein, 
-wie ihn das Verzeichnis hat, denn ein Dateisystem ohne Unterscheidung von Gross- und 
-Kleinschreibung nähme \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal; 
-der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die beim 
-Speichern verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt 
-\type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung; jeder andere Name, 
-den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest der 
-Kern noch nicht (STEMMA-24).
+Ein Snapshot (\type{Repository::snapshot}, ADR-010) hält den Stand der Arbeitskopie fest.
+Er liest den Baum des Working-Copy-Commits und aus dem Arbeitsverzeichnis genau die Dateien,
+die in diesem Baum stehen; eine Datei, die nicht im Baum steht, ist nicht verfolgt und wird
+weder gespeichert noch gemeldet. Eine geänderte Datei wird gespeichert, eine gelöschte
+verlässt den Baum, ebenso eine, die ein Verzeichnis ersetzt hat oder die unter einem
+Verzeichnis liegt, das nun ein Link ist. Ein Pfad wird nie über einen Link verfolgt;
+ein verfolgter Pfad, der selbst ein Link ist, wird als sein Ziel gespeichert,
+und das Ausführbit gehört zum Dateimodus. Eine verfolgte Spezialdatei (Gerät, Socket, Pipe)
+bricht den Snapshot mit einem Fehler ab, statt still aus der History zu fallen.
+Der neue Commit behält Eltern, Change-ID und Nachricht des alten, sein Autor ist der
+Akteur des Snapshots. Ist der Baum unverändert, entstehen weder Commit noch Eintrag.
+Ein neuer Pfad kommt mit \type{Repository::track} in den Baum. Die Funktion nimmt relative
+Pfade; ein Verzeichnis steht für die Dateien darunter, ohne einen Ordner \type{.stemma}.
+Sie baut den neuen Baum aus den verfolgten Dateien und den Dateien an den Pfaden und
+ersetzt den Working-Copy-Commit wie ein Snapshot. Die verfolgten Dateien speichert sie mit,
+denn sonst ginge eine Änderung an ihnen verloren. Ein Pfad, der schon verfolgt wird, ist
+kein Fehler. Ein Pfad, den es nicht gibt oder der eine Pfadregel verletzt, wird abgelehnt,
+bevor sich der Working-Copy-Commit bewegt. Jeder Name im Pfad muss so geschrieben sein,
+wie ihn das Verzeichnis hat, denn ein Dateisystem ohne Unterscheidung von Gross- und
+Kleinschreibung nähme \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal;
+der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die beim
+Speichern verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt
+\type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung; jeder andere Name,
+den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest der
+Kern noch nicht (STEMMA-24). Das Verzeichnis \type{.} allein steht für das ganze
+Arbeitsverzeichnis; die Funktion \type{normalize_path} macht aus dem, was eine Person
+tippt (\type{./a.txt}, \type{dir/}), diese Form, und ein leeres Argument lässt sie unverändert,
+damit der Kern es ablehnt. Der Befehl \type{stemma track} ruft beide auf; er steht in der
+Befehlsreferenz.
 
-Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst, 
-dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen, 
+Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst,
+dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen,
 einmal zum Speichern und einmal, wenn der Baum geschrieben wird; einen Cache gibt es noch nicht.
 
-Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umgebungsvariablen 
-\type{STEMMA_ACTOR}. Der Text hat die Form der Akteur-Zeile eines Commits, also 
-\type{human daniel} oder \type{agent claude model=opus-5-5 session=s1 sponsor=daniel}. 
-Der Schalter geht der Variablen vor. Ein leerer Wert gilt als Fehler und fällt nicht 
-auf die Variable zurück. Ohne Akteur bricht der Befehl ab und legt nichts an. 
-Einen Standardwert aus dem Benutzernamen gibt es bewusst nicht, damit ein Agent nie 
+Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umgebungsvariablen
+\type{STEMMA_ACTOR}. Der Text hat die Form der Akteur-Zeile eines Commits, also
+\type{human daniel} oder \type{agent claude model=opus-5-5 session=s1 sponsor=daniel}.
+Der Schalter geht der Variablen vor. Ein leerer Wert gilt als Fehler und fällt nicht
+auf die Variable zurück. Ohne Akteur bricht der Befehl ab und legt nichts an.
+Einen Standardwert aus dem Benutzernamen gibt es bewusst nicht, damit ein Agent nie
 stillschweigend als Mensch auftritt.
 
 \section{Das Operation Log}
 
-Jede Operation, die einen Zeiger ändert, schreibt einen Eintrag in das Verzeichnis 
-\type{.stemma/oplog/} (ADR-011). Ein Eintrag ist eine Textdatei mit fortlaufender Nummer. 
-Er nennt den Akteur, die Zeit, den Namen der Operation und für jeden geänderten Zeiger 
+Jede Operation, die einen Zeiger ändert, schreibt einen Eintrag in das Verzeichnis
+\type{.stemma/oplog/} (ADR-011). Ein Eintrag ist eine Textdatei mit fortlaufender Nummer.
+Er nennt den Akteur, die Zeit, den Namen der Operation und für jeden geänderten Zeiger
 (HEAD, Working-Copy-Commit, Branches) den alten und den neuen Wert:
 
 \starttyping
@@ -106,46 +110,46 @@ head - branch:main
 working-copy - b3:4feb…b32c
 \stoptyping
 
-Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger, 
-bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit 
-schon im Log. Das \type{Repository} hält dafür die Sperre der Referenzen vom Prüfen bis 
-zum Zug: Es liest den Zeiger, prüft die Änderung (ein Name, der nicht im Weg steht, 
-ein Branch, der dort steht, wo der Aufrufer ihn sah, ein Commit, der im Objektspeicher liegt), 
-schreibt den Eintrag und bewegt dann den Zeiger. Weil nichts zwischen Prüfung und Zug 
-dazwischenkommt, beschreibt ein Eintrag einen Zug, der gemacht werden sollte, und bei 
-\type{set_head} steht der Wert im Eintrag, den HEAD wirklich hatte. Der Preis ist, 
+Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger,
+bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit
+schon im Log. Das \type{Repository} hält dafür die Sperre der Referenzen vom Prüfen bis
+zum Zug: Es liest den Zeiger, prüft die Änderung (ein Name, der nicht im Weg steht,
+ein Branch, der dort steht, wo der Aufrufer ihn sah, ein Commit, der im Objektspeicher liegt),
+schreibt den Eintrag und bewegt dann den Zeiger. Weil nichts zwischen Prüfung und Zug
+dazwischenkommt, beschreibt ein Eintrag einen Zug, der gemacht werden sollte, und bei
+\type{set_head} steht der Wert im Eintrag, den HEAD wirklich hatte. Der Preis ist,
 dass das Schreiben der kleinen Datei zum geschützten Abschnitt gehört.
 
-Ein Eintrag bleibt trotzdem eine Absicht, denn das Dateisystem kann zwischen Eintrag 
-und Zug ausfallen, und ein Eintrag, der nicht als gesichert bekannt ist, verhindert den Zug. 
-Der Fehler sagt in beiden Fällen, dass ein Eintrag existiert und dass sich der Zeiger 
-nicht bewegt hat, und er trägt den Eintrag mit. Ein Aufrufer kann so ein Scheitern 
-ohne Eintrag von einem mit Eintrag unterscheiden und weiss, ob er die Änderung 
-wiederholen darf. Ob ein Zug stattgefunden hat, lässt sich an der Kette der Einträge 
-eines Zeigers ablesen. Nach dem Zug wird nichts mehr geschrieben, damit nichts halb 
+Ein Eintrag bleibt trotzdem eine Absicht, denn das Dateisystem kann zwischen Eintrag
+und Zug ausfallen, und ein Eintrag, der nicht als gesichert bekannt ist, verhindert den Zug.
+Der Fehler sagt in beiden Fällen, dass ein Eintrag existiert und dass sich der Zeiger
+nicht bewegt hat, und er trägt den Eintrag mit. Ein Aufrufer kann so ein Scheitern
+ohne Eintrag von einem mit Eintrag unterscheiden und weiss, ob er die Änderung
+wiederholen darf. Ob ein Zug stattgefunden hat, lässt sich an der Kette der Einträge
+eines Zeigers ablesen. Nach dem Zug wird nichts mehr geschrieben, damit nichts halb
 geschrieben bleiben kann.
 
-Ein Eintrag hat eine Obergrenze von 64 KiB, und der Schreiber hält sie ein: Er lehnt 
-einen grösseren Eintrag ab, bevor er etwas schreibt. Der Leser lehnt eine grössere 
-Datei ohnehin ab, und ohne die Grenze auf der Schreiberseite würde ein sehr langer 
+Ein Eintrag hat eine Obergrenze von 64 KiB, und der Schreiber hält sie ein: Er lehnt
+einen grösseren Eintrag ab, bevor er etwas schreibt. Der Leser lehnt eine grössere
+Datei ohnehin ab, und ohne die Grenze auf der Schreiberseite würde ein sehr langer
 Akteur ein Log erzeugen, das sich schon ab dem ersten Eintrag nicht mehr lesen lässt.
 
-Jeder Eintrag entsteht in einer temporären Datei und wird dann mit einem harten Verweis 
-unter der nächsten freien Nummer veröffentlicht. Der Verweis scheitert, wenn die Nummer 
-vergeben ist, und ein Eintrag ist vom ersten Moment an vollständig. Die Schreiber des 
-\type{Repository} treffen sich hier nicht, weil sie die Sperre halten; die Wiederholung 
-gilt für jeden anderen Schreiber. Die temporäre Datei wird danach auf Verdacht entfernt. 
-Gelingt das nicht, ist der Eintrag trotzdem vollständig, und der Zug geht weiter: 
-\type{tmp/} enthält Wegwerfdaten, und ein Aufräumen darf keinen Zug verhindern. 
-Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag, nachdem er das 
-Verzeichnis ein zweites Mal gelesen hat, denn ein Verzeichnis ist während eines Schreibens 
-kein Schnappschuss. Namen mit einem Punkt am Anfang überspringt er, jeden anderen 
+Jeder Eintrag entsteht in einer temporären Datei und wird dann mit einem harten Verweis
+unter der nächsten freien Nummer veröffentlicht. Der Verweis scheitert, wenn die Nummer
+vergeben ist, und ein Eintrag ist vom ersten Moment an vollständig. Die Schreiber des
+\type{Repository} treffen sich hier nicht, weil sie die Sperre halten; die Wiederholung
+gilt für jeden anderen Schreiber. Die temporäre Datei wird danach auf Verdacht entfernt.
+Gelingt das nicht, ist der Eintrag trotzdem vollständig, und der Zug geht weiter:
+\type{tmp/} enthält Wegwerfdaten, und ein Aufräumen darf keinen Zug verhindern.
+Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag, nachdem er das
+Verzeichnis ein zweites Mal gelesen hat, denn ein Verzeichnis ist während eines Schreibens
+kein Schnappschuss. Namen mit einem Punkt am Anfang überspringt er, jeden anderen
 fremden Namen meldet er.
 
-Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen und das Log zum 
-Lesen heraus; der Schreiber des Logs und der Konstruktor eines Eintrags sind nur im 
-Crate sichtbar. Das ist eine Vereinbarung der Schnittstelle und keine Grenze, denn 
-die Dateien sind gewöhnliche Dateien. \type{init} schreibt den ersten Eintrag. 
+Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen und das Log zum
+Lesen heraus; der Schreiber des Logs und der Konstruktor eines Eintrags sind nur im
+Crate sichtbar. Das ist eine Vereinbarung der Schnittstelle und keine Grenze, denn
+die Dateien sind gewöhnliche Dateien. \type{init} schreibt den ersten Eintrag.
 Der Befehl \type{stemma op log}, der die Einträge anzeigt, folgt als eigene Scheibe.
 
 \section{Offene Fragen}
@@ -154,7 +158,7 @@ Der Befehl \type{stemma op log}, der die Einträge anzeigt, folgt als eigene Sch
 \item Format des Index: eigenes Binärformat oder lesbares Textformat für Debugging?
 \item Ausführbare Dateien und Dateirechte: Welche Metadaten werden gespeichert?
 \item Symbolische Links: Speichern oder ablehnen?
-\item Wie lange Snapshot-Einträge im Operation Log aufbewahrt werden und wie ein Geheimnis 
+\item Wie lange Snapshot-Einträge im Operation Log aufbewahrt werden und wie ein Geheimnis
 aus dem Log entfernt wird (ADR-011).
 \item Syntax der Ausschlussdatei und das Entfernen von Geheimnissen aus Verlauf und Log (ADR-010).
 \stopitemize
