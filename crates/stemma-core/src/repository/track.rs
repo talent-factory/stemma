@@ -78,7 +78,7 @@ fn expand(
 ) -> Result<Vec<Tracked>, TrackError> {
     let mut found = BTreeSet::new();
     for path in paths {
-        if path_problem(path).is_some() {
+        if path_problem(path).is_some() || !is_plain(path) {
             return Err(TrackError::InvalidPath { path: path.clone() });
         }
         let Some((full, metadata)) = lookup(root, path)? else {
@@ -98,6 +98,16 @@ fn expand(
             mode: FileMode::File,
         })
         .collect())
+}
+
+/// Tells whether the file system reads every part of the path as one name below the directory it
+/// is joined to. Where `\` or `:` separates or starts a path (Windows), a part such as `a\..\b` or
+/// `C:x` is more than one name, or leaves the directory; the tree rules do not know that.
+fn is_plain(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+        && Path::new(path).components().count() == path.split('/').count()
 }
 
 /// Collects the paths of the files below a directory. A directory is listed with the names sorted,
@@ -359,6 +369,17 @@ mod tests {
                 "{path:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn a_path_is_plain_if_every_part_is_one_name() {
+        assert!(is_plain("a/b.txt") && is_plain("a"));
+        #[cfg(windows)]
+        for path in ["a\\..\\b", "C:x", "C:\\x", "\\\\server\\share"] {
+            assert!(!is_plain(path), "{path}");
+        }
+        #[cfg(unix)]
+        assert!(is_plain("a\\b"), "a backslash is a name character here");
     }
 
     #[cfg(unix)]
