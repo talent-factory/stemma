@@ -90,7 +90,10 @@ fn init_creates_a_repository_and_says_where_with_an_absolute_path() {
 #[test]
 fn init_takes_a_directory_and_creates_it() {
     let dir = Dir::new();
-    let result = run(dir.path(), &["init", "a/b", "--actor", "human daniel"]);
+    let result = run(
+        dir.path(),
+        &["init", "-C", "a/b", "--actor", "human daniel"],
+    );
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(head(&dir.path().join("a").join("b")), "branch main\n");
     assert!(!dir.path().join(".stemma").exists());
@@ -131,6 +134,7 @@ fn an_invalid_branch_is_a_usage_error_and_creates_nothing() {
             dir.path(),
             &[
                 "init",
+                "-C",
                 "target",
                 "--initial-branch",
                 bad,
@@ -152,7 +156,7 @@ fn an_invalid_branch_is_a_usage_error_and_creates_nothing() {
 #[test]
 fn without_an_actor_the_command_fails_and_creates_nothing() {
     let dir = Dir::new();
-    let result = run(dir.path(), &["init", "target"]);
+    let result = run(dir.path(), &["init", "-C", "target"]);
     assert_eq!(result.code, 1);
     assert!(
         result.stderr.starts_with("stemma: no actor"),
@@ -171,14 +175,18 @@ fn without_an_actor_the_command_fails_and_creates_nothing() {
 #[test]
 fn an_empty_actor_is_reported_as_empty_and_creates_nothing() {
     let dir = Dir::new();
-    let from_variable = stemma(dir.path(), &["init", "target"], |command| {
+    let from_variable = stemma(dir.path(), &["init", "-C", "target"], |command| {
         command.env("STEMMA_ACTOR", "");
     });
-    let from_flag = run(dir.path(), &["init", "target", "--actor", ""]);
+    let from_flag = run(dir.path(), &["init", "-C", "target", "--actor", ""]);
     // An empty flag does not fall back to a variable that is set.
-    let flag_over_variable = stemma(dir.path(), &["init", "target", "--actor", ""], |command| {
-        command.env("STEMMA_ACTOR", "human daniel");
-    });
+    let flag_over_variable = stemma(
+        dir.path(),
+        &["init", "-C", "target", "--actor", ""],
+        |command| {
+            command.env("STEMMA_ACTOR", "human daniel");
+        },
+    );
     for result in [from_variable, from_flag, flag_over_variable] {
         assert_eq!(result.code, 1);
         assert!(
@@ -227,7 +235,7 @@ fn an_invalid_actor_is_reported_with_the_reason() {
         "agent a",
         "  ",
     ] {
-        let result = run(dir.path(), &["init", "target", "--actor", bad]);
+        let result = run(dir.path(), &["init", "-C", "target", "--actor", bad]);
         assert_eq!(result.code, 1, "{bad:?}");
         assert!(
             result.stderr.starts_with("stemma: invalid actor: "),
@@ -261,7 +269,7 @@ fn a_path_that_is_a_file_fails_and_leaves_the_file() {
     fs::write(&file, b"keep").unwrap();
     let result = run(
         dir.path(),
-        &["init", "README.md", "--actor", "human daniel"],
+        &["init", "-C", "README.md", "--actor", "human daniel"],
     );
     assert_eq!(result.code, 1);
     assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);

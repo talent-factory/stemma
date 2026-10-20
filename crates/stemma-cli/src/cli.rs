@@ -87,8 +87,13 @@ enum OpCommand {
 #[derive(Debug, Args)]
 struct OpLogArgs {
     /// The directory of the repository, the one that contains `.stemma`
-    #[arg(default_value = ".")]
-    path: PathBuf,
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
 
     /// The number of entries to show; only their files are read, but all file names are listed
     #[arg(short = 'n', long, value_name = "N", default_value = "20")]
@@ -166,8 +171,13 @@ struct StatusArgs {
 #[derive(Debug, Args)]
 struct InitArgs {
     /// The directory of the repository; it is created if it does not exist
-    #[arg(default_value = ".")]
-    path: PathBuf,
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
 
     /// The branch that HEAD points to; the branch exists after the first commit
     #[arg(long, value_name = "NAME", default_value = "main")]
@@ -424,7 +434,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
 /// before and after, and the log is listed again, and if anything shows a writer, a pointer that
 /// still has its old value is not called a failed move.
 fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
-    let repository = Repository::open(&args.path).map_err(CliError::Open)?;
+    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
     let log = repository.oplog();
     let numbers = log.numbers().map_err(CliError::OpLog)?;
     if numbers.is_empty() {
@@ -723,10 +733,10 @@ fn commit_text(result: &Committed) -> String {
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let options = InitOptions::new(args.initial_branch);
-    let created = absolute(&args.path.join(METADATA_DIR));
+    let created = absolute(&args.repository.join(METADATA_DIR));
     // A repository that is complete but not durable is announced like a success, so that a
     // script can find it, and the command ends with the error afterwards.
-    let late = match Repository::init(&args.path, &options, &actor, &AllowAll) {
+    let late = match Repository::init(&args.repository, &options, &actor, &AllowAll) {
         Ok(_) => None,
         Err(error @ InitError::NotDurable { .. }) => Some(error),
         Err(error) => return Err(CliError::Init(error)),
@@ -1381,7 +1391,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
         run(
-            parse(&["init", path, "--actor", "human daniel"]),
+            parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Vec::new(),
         )
         .unwrap();
@@ -1492,7 +1502,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
         let error = run(
-            parse(&["init", path, "--actor", "human daniel"]),
+            parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Closed,
         )
         .unwrap_err();
@@ -1555,12 +1565,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
         run(
-            parse(&["init", path, "--actor", "human daniel"]),
+            parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Vec::new(),
         )
         .unwrap();
-        let closed = run(parse(&["op", "log", path]), &mut Closed);
-        let full = run(parse(&["op", "log", path]), &mut Full);
+        let closed = run(parse(&["op", "log", "-C", path]), &mut Closed);
+        let full = run(parse(&["op", "log", "-C", path]), &mut Full);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(closed.is_ok(), "{closed:?}");
         let error = full.unwrap_err();
@@ -1577,7 +1587,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
         run(
-            parse(&["init", path, "--actor", "human daniel"]),
+            parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Vec::new(),
         )
         .unwrap();
@@ -1594,9 +1604,9 @@ mod tests {
         }
         // The newest entry is written first, so a failing first write names entry 3, with or
         // without a limit; a failure of the second write names the entry that follows it.
-        let first = run(parse(&["op", "log", path]), &mut Full).unwrap_err();
-        let limited = run(parse(&["op", "log", "-n", "2", path]), &mut Full).unwrap_err();
-        let second = run(parse(&["op", "log", path]), &mut FullAfterOne(false)).unwrap_err();
+        let first = run(parse(&["op", "log", "-C", path]), &mut Full).unwrap_err();
+        let limited = run(parse(&["op", "log", "-n", "2", "-C", path]), &mut Full).unwrap_err();
+        let second = run(parse(&["op", "log", "-C", path]), &mut FullAfterOne(false)).unwrap_err();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(matches!(first, CliError::Write { entry: 3, .. }), "{first}");
         assert!(
