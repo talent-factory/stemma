@@ -155,7 +155,7 @@ are prior art, not a template.
       does. Today a command takes the directory (`-C`, or the argument of `op log`) and the paths
       of `track` are relative to it.
 - [ ] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
-      which tier of ADR-004 it belongs to.
+      which tier of ADR-004 it belongs to. Proposed in ADR-012; the reader is STEMMA-24.
 - [ ] How long the operation log keeps the replaced commits of many snapshots (retention). The
       format and what an entry holds are decided in ADR-011.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the log and
