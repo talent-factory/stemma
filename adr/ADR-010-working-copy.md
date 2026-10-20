@@ -64,7 +64,8 @@ are prior art, not a template.
   a directory that is gone is left out. Below a directory, a name that resolves to `.stemma` is
   skipped without a word, since a tree cannot hold it (this skips a repository inside the
   directory as well), and any other name that a tree refuses stops the call (`InvalidName`).
-  `.stemmaignore` (STEMMA-24) is not read yet, so nothing is excluded but those names.
+  `.stemmaignore` (ADR-012, STEMMA-24) is read by `track` now: an excluded file below a directory
+  is skipped like those names, and an excluded path that the caller names is an error.
 - **`commit` names the working-copy commit and starts a new one** *(proposal, implemented in
   `Repository::commit`)*. The current working-copy commit gets its message, and its change keeps
   its ID. A new, empty working-copy commit starts on top of it. HEAD keeps naming a branch
@@ -147,15 +148,15 @@ are prior art, not a template.
       same step. `op log` reads and takes no actor, so it takes none: a snapshot adds an entry
       and would change the log it is about to show. Decide for `status` (STEMMA-4) and for the
       other commands that read. The path `.` of `track` tracks every file of the repository
-      directory, secrets included, until `.stemmaignore` exists.
+      directory, secrets included, unless `.stemmaignore` excludes them (ADR-012).
 - [ ] The path form is a `String` that the core validates and `normalize_path` writes. A
       `RepoPath` type that cannot be built from an invalid path would make the rule one
       definition; do it with the next command that takes paths (`status`, STEMMA-4).
 - [ ] A command finds its repository in a parent directory when it runs below the root, as Git
       does. Today a command takes the directory (`-C`, or the argument of `op log`) and the paths
       of `track` are relative to it.
-- [ ] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
-      which tier of ADR-004 it belongs to. Proposed in ADR-012; the reader is STEMMA-24.
+- [x] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
+      which tier of ADR-004 it belongs to. Decided in ADR-012 and built in STEMMA-24.
 - [ ] How long the operation log keeps the replaced commits of many snapshots (retention). The
       format and what an entry holds are decided in ADR-011.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the log and

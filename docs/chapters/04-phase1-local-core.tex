@@ -74,13 +74,31 @@ Kleinschreibung nähme \type{a.txt} für \type{A.txt}, und der Baum hielte die D
 der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die beim
 Speichern verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt
 \type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung; jeder andere Name,
-den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest der
-Kern noch nicht (STEMMA-24); Syntax und Regeln stehen in ADR-012 und sind bestätigt.
+den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest \type{track}
+(ADR-012); sie steht im nächsten Absatz.
 Das Verzeichnis \type{.} allein steht für das ganze Arbeitsverzeichnis.
 Die Funktion \type{normalize_path} macht aus dem, was eine Person tippt
 (\type{./a.txt}, \type{dir/}), diese Form, und ein leeres Argument lässt sie unverändert,
 damit der Kern es ablehnt.
 Der Befehl \type{stemma track} ruft beide auf; er steht in der Befehlsreferenz.
+
+Die Ausschlussdatei \type{.stemmaignore} (ADR-012, \type{ignore.rs}) liegt im Wurzelverzeichnis.
+Eine Zeile ist ein Kommentar mit \type{#} oder ein Muster aus Teilen, die ein \type{/} trennt.
+Ein Teil ist ein Name mit den Platzhaltern \type{*} (eine beliebige Folge von Zeichen
+innerhalb eines Namens) und \type{?} (ein Zeichen), oder ganz \type{**} (beliebig viele
+Verzeichnisse, auch keines).
+Ein führendes oder ein mittleres \type{/} verankert das Muster an der Wurzel; ohne eins trifft
+es einen Namen auf jeder Ebene. Ein \type{/} am Ende trifft nur Verzeichnisse,
+und ein getroffenes Verzeichnis schliesst alles darunter aus.
+Es gibt weder Negation noch Escape noch Zeichenklassen: \type{!} am Anfang, \type{\},
+\type{[} und \type{]} lehnt der Leser ab, damit diese Formen später frei bleiben.
+Der Leser ist streng wie die anderen: UTF-8, nur \type{\n}, jede Zeile endet mit einem
+Zeilenende, keine Leerzeile, kein Leerzeichen am Rand, keine doppelte Zeile, höchstens
+1024 Byte je Zeile und 64 KiB je Datei. Ein Fehler nennt die Zeile.
+Die Datei wird bei jedem Aufruf von \type{track} aus dem Verzeichnis gelesen, nicht aus dem Baum;
+ist sie ungültig oder keine gewöhnliche Datei, bricht der Aufruf ab, bevor etwas verfolgt wird.
+Ein Snapshot und \type{commit} lesen sie nie. Was schon im Baum steht, bleibt verfolgt,
+und die Datei selbst schliesst kein Muster aus.
 
 Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst,
 dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen,

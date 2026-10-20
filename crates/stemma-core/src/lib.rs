@@ -1,6 +1,6 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
 //! index, object storage, references (branches and HEAD, ADR-008), the repository (ADR-009), and
-//! the operation log (ADR-011).
+//! the operation log (ADR-011), and the exclusion file `.stemmaignore` (ADR-012).
 //!
 //! # Errors
 //!
@@ -29,6 +29,7 @@
 
 mod actor;
 pub mod change;
+pub mod ignore;
 pub mod index;
 pub mod object;
 pub mod oplog;

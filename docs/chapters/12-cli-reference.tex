@@ -167,8 +167,25 @@ im Log steht, endet der Befehl mit Exit-Code 1 und hat nichts verfolgt,
 hinterlässt aber einen Eintrag für einen Zug, der nicht stattfand;
 \type{op log} markiert ihn mit \type{!}.
 
-{\bf Grenzen.} Die Datei \type{.stemmaignore} liest der Befehl noch nicht (STEMMA-24),
-ausgeschlossen ist nur \type{.stemma}. Wer \type{.} nennt, nimmt jede Datei
+{\bf Ausschlussdatei.} Die Datei \type{.stemmaignore} im Wurzelverzeichnis (ADR-012)
+nennt Pfade, die \type{track} nie aufnimmt. Eine ausgeschlossene Datei unter einem
+Verzeichnis überspringt der Befehl ohne Meldung. Ein Pfad, den die Person nennt und den
+ein Muster ausschliesst, ist ein Fehler mit Exit-Code 1; die Meldung nennt die Zeile:
+
+\starttyping
+stemma: `d/x.log` is excluded by line 2 of .stemmaignore, so it is not tracked
+\stoptyping
+
+Was schon verfolgt wird, bleibt verfolgt und wird weiter gespeichert, was die Datei auch sagt.
+Die Datei selbst nimmt \type{track} auf wie jede andere und schliesst sie nie aus.
+Eine Zeile ist ein Kommentar (\type{#}) oder ein Muster mit \type{*}, \type{?},
+\type{**} und einem \type{/} am Ende für Verzeichnisse; Negation, Escape und Zeichenklassen
+gibt es nicht. Ist die Datei ungültig, zum Beispiel mit einer Leerzeile oder einer Zeile
+mit \type{!}, oder ist sie ein Link oder ein Verzeichnis, endet der Befehl mit Exit-Code 1
+und verfolgt nichts; die Meldung nennt die Zeile. Ein Snapshot und \type{commit} lesen
+die Datei nie, eine ungültige Datei blockiert sie also nicht.
+
+{\bf Grenzen.} Ohne \type{.stemmaignore} nimmt, wer \type{.} nennt, jede Datei
 des Verzeichnisses auf, auch eine mit Geheimnissen: Das Log und die History behalten sie.
 Eine Datei, die sich während des Befehls ändert, wird so gespeichert,
 wie sie beim Lesen war; die Dateien zusammen sind kein einzelner Augenblick.

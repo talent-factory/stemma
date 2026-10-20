@@ -1,7 +1,8 @@
 # ADR-012: the exclusion file `.stemmaignore`
 
-**Status:** Confirmed by the author on 2026-10-20, not implemented yet. Decisions marked
-*(confirmed)* were agreed with the author; STEMMA-24 builds the reader.
+**Status:** Confirmed by the author on 2026-10-20 and implemented in STEMMA-24
+(`crates/stemma-core/src/ignore.rs`, used by `Repository::track`). `stemma status` (STEMMA-4)
+will use it for the untracked files.
 
 ## Context
 
