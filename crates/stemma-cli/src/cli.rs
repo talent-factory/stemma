@@ -3,15 +3,22 @@
 //! Exit codes: 0 for success, 1 for a command that fails and has changed nothing, 2 for arguments
 //! that are wrong (the code of the argument parser), and 3 for a command that has done its work
 //! but could not finish: the repository or the change exists, but flushing it to disk or writing
-//! the result failed. A script must not remove or repeat what such a command made. A command that
-//! only reads (`op log`) has made nothing, so a failed write of its output is code 1; some of the
-//! output may already be written, and a script discards it. Code 1 can leave one trace: a write
-//! that fails after its entry is in the operation log (`track`, `commit`,
-//! `UpdateError::MoveFailed`) leaves an entry for a move that did not happen, which `op log` marks
-//! as such. A `commit` that moved one of its two pointers (`UpdateError::PartlyMoved`) ends with
-//! code 3 as well. A failing command prints
-//! `stemma: <message>`, a complete message (see the crate documentation of `stemma-core`). The
-//! argument parser prints its own errors.
+//! the result failed, or a `commit` moved one of its two pointers and not the other. A script must
+//! not remove or repeat what such a command made; only the next `commit` after a half-made one
+//! finishes it, and the message of that call is not used. A command that only reads (`op log`)
+//! has made nothing, so a failed write of its output is code 1; some of the output may already
+//! be written, and a script discards it.
+//!
+//! Code 1 can leave two traces. A write that fails after its entry is in the operation log
+//! (`track`, `commit`, `UpdateError::MoveFailed`) leaves an entry for a move that did not happen,
+//! which `op log` marks as such. And `commit` saves the tracked files first, as an entry of its
+//! own (`snapshot`) that stays when the commit is then refused for nothing to commit or for a
+//! branch that moved; repeating the command is safe. A snapshot that moved the pointer and could
+//! not flush it is code 3, as for `track`; the commit was not made and the command can be
+//! repeated.
+//!
+//! A failing command prints `stemma: <message>`, a complete message (see the crate documentation
+//! of `stemma-core`). The argument parser prints its own errors.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -29,7 +36,7 @@ use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
     normalize_path, CommitError, Committed, InitError, InitOptions, OpenError, Repository,
-    TrackError, Tracking,
+    SnapshotError, TrackError, Tracking, UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -168,9 +175,21 @@ enum CliError {
     /// [`CommitError::pointer_moved`] says; the snapshot before it may have made an entry.
     Commit(CommitError),
     /// The commit is made, but a directory could not be flushed (`Committed::late`).
-    CommitNotDurable(RefError),
+    CommitNotDurable {
+        /// The commit and the branch, as the output would have named them.
+        committed: String,
+        /// The error of the flush.
+        source: Box<RefError>,
+        /// The error of the output, if the result could not be written either.
+        output: Option<io::Error>,
+    },
     /// The commit is made, but the result could not be written to the output.
-    CommitOutput(io::Error),
+    CommitOutput {
+        /// The commit and the branch, as the output would have named them.
+        committed: String,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
@@ -200,9 +219,9 @@ impl CliError {
             | Self::Track(TrackError::NotDurable { .. })
             | Self::Output { .. }
             | Self::TrackOutput(_)
-            | Self::CommitNotDurable(_)
-            | Self::CommitOutput(_) => ExitCode::from(3),
-            Self::Commit(error) if error.pointer_moved() => ExitCode::from(3),
+            | Self::CommitNotDurable { .. }
+            | Self::CommitOutput { .. } => ExitCode::from(3),
+            Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
@@ -235,7 +254,7 @@ impl fmt::Display for CliError {
             Self::Open(error @ OpenError::NotARepository { .. }) => write!(
                 f,
                 "{error}; stemma looks only in the directory it is given, not in its parents \
-                 (see `-C` of `track`, and the argument of `op log`)"
+                 (see `-C` of `track` and `commit`, and the argument of `op log`)"
             ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
@@ -243,15 +262,39 @@ impl fmt::Display for CliError {
                 f,
                 "tracked the files, but could not write the result: {source}"
             ),
-            Self::Commit(error) => error.fmt(f),
-            Self::CommitNotDurable(error) => write!(
+            Self::Commit(CommitError::Snapshot(SnapshotError::Update(
+                UpdateError::NotDurable { entry, source },
+            ))) => write!(
                 f,
-                "committed, but flushing failed: {error}; the commit may not survive a crash, and \
-                 it must not be repeated"
+                "saved the working copy as entry {} of the operation log, but flushing failed: \
+                 {source}; the commit was not made, and `stemma commit` can be run again",
+                entry.number()
             ),
-            Self::CommitOutput(source) => {
-                write!(f, "committed, but could not write the result: {source}")
+            Self::Commit(error @ CommitError::Update(UpdateError::PartlyMoved { .. })) => write!(
+                f,
+                "{error}; `stemma commit` run again finishes the commit, and the message of that \
+                 call is not used"
+            ),
+            Self::Commit(error) => error.fmt(f),
+            Self::CommitNotDurable {
+                committed,
+                source,
+                output,
+            } => {
+                write!(
+                    f,
+                    "committed {committed}, but flushing failed: {source}; the commit may not \
+                     survive a crash, and it must not be repeated"
+                )?;
+                match output {
+                    Some(error) => write!(f, "; the result could not be written either: {error}"),
+                    None => Ok(()),
+                }
             }
+            Self::CommitOutput { committed, source } => write!(
+                f,
+                "committed {committed}, but could not write the result: {source}"
+            ),
             Self::OpLog(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
@@ -431,6 +474,16 @@ fn track_text(added: &[String]) -> String {
         .collect()
 }
 
+/// Whether the failed `commit` moved a pointer: the error says so itself, or it is the snapshot
+/// before the commit that moved the working-copy commit and could not flush it.
+fn pointer_moved(error: &CommitError) -> bool {
+    error.pointer_moved()
+        || matches!(
+            error,
+            CommitError::Snapshot(SnapshotError::Update(update)) if update.pointer_moved()
+        )
+}
+
 /// Names the working-copy commit and starts a new one. The core saves the tracked files first, so
 /// a change since the last command is part of the commit.
 fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
@@ -439,24 +492,50 @@ fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let result = repository
         .commit(&args.message, &actor, &AllowAll)
         .map_err(CliError::Commit)?;
+    if result.resumed {
+        // A warning that cannot be written is dropped on purpose, as in `main`.
+        let _ = writeln!(
+            io::stderr(),
+            "stemma: warning: this call finished a commit that had stopped; its message was not \
+             used, and what changed since the stop is not in that commit"
+        );
+    }
     finish_commit(result, out)
 }
 
 /// Writes what `commit` did. If a directory could not be flushed, the result is written first, so
-/// that a script finds what exists before it reads the error. A closed pipe ends the output
-/// quietly.
+/// that a script can read the commit ID from the output before it sees the error. A closed pipe
+/// ends the output quietly.
 fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError> {
     let text = commit_text(&result);
-    let late = result.late.map(CliError::CommitNotDurable);
+    let committed = format!("{} on {}", result.commit, result.branch);
+    let late = result.late;
     match out.write_all(text.as_bytes()) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
-        Err(source) => return Err(late.unwrap_or(CliError::CommitOutput(source))),
+        Err(source) => {
+            return Err(match late {
+                Some(late) => CliError::CommitNotDurable {
+                    committed,
+                    source: Box::new(late),
+                    output: Some(source),
+                },
+                None => CliError::CommitOutput { committed, source },
+            });
+        }
     }
-    late.map_or(Ok(()), Err)
+    match late {
+        Some(source) => Err(CliError::CommitNotDurable {
+            committed,
+            source: Box::new(source),
+            output: None,
+        }),
+        None => Ok(()),
+    }
 }
 
-/// The line for the commit, and a second one if the call finished an earlier commit.
+/// The one line that reports the commit: `Committed` for a new commit, `Finished the commit` if
+/// the call finished an earlier commit that had stopped between its two moves.
 fn commit_text(result: &Committed) -> String {
     if result.resumed {
         format!(
@@ -556,12 +635,196 @@ mod tests {
             ExitCode::FAILURE
         );
         assert_eq!(
-            CliError::CommitNotDurable(RefError::Locked { path: dir.clone() }).exit_code(),
+            CliError::CommitNotDurable {
+                committed: "b3:x on main".to_owned(),
+                source: Box::new(RefError::Locked { path: dir.clone() }),
+                output: None,
+            }
+            .exit_code(),
             ExitCode::from(3)
         );
         assert_eq!(
-            CliError::CommitOutput(io::Error::other("x")).exit_code(),
+            CliError::CommitOutput {
+                committed: "b3:x on main".to_owned(),
+                source: io::Error::other("x"),
+            }
+            .exit_code(),
             ExitCode::from(3)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A writer that fails every write with an error of this kind.
+    struct Failing(io::ErrorKind);
+
+    impl Write for Failing {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(self.0))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A commit made in a new repository, and the repository's first entry.
+    fn committed(name: &str) -> (PathBuf, Committed, stemma_core::oplog::Entry) {
+        let (dir, entry) = repository_with_entry(name);
+        let repository = Repository::open(&dir).unwrap();
+        let actor: Actor = "human daniel".parse().unwrap();
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor, &AllowAll)
+            .unwrap();
+        let result = repository.commit("Add a", &actor, &AllowAll).unwrap();
+        (dir, result, entry)
+    }
+
+    fn not_durable() -> RefError {
+        RefError::NotFlushed {
+            path: PathBuf::from("/x"),
+            source: io::Error::other("disk"),
+        }
+    }
+
+    #[test]
+    fn a_commit_is_announced_with_the_commit_and_the_branch() {
+        let (dir, result, _) = committed("commit-text");
+        let id = result.commit;
+        let mut out = Vec::new();
+        finish_commit(result, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!("Committed {id} on main\n")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_resumed_commit_says_so_in_one_line() {
+        let (dir, mut result, _) = committed("commit-resumed");
+        result.resumed = true;
+        let id = result.commit;
+        let text = commit_text(&result);
+        assert_eq!(
+            text,
+            format!(
+                "Finished the commit {id} on main that had stopped; the message of this call was \
+                 not used\n"
+            )
+        );
+        assert_eq!(text.lines().count(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_commit_that_is_not_durable_writes_the_result_first_and_ends_with_code_3() {
+        let (dir, mut result, _) = committed("commit-late");
+        result.late = Some(not_durable());
+        let id = result.commit;
+        let mut out = Vec::new();
+        let error = finish_commit(result, &mut out).unwrap_err();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!("Committed {id} on main\n")
+        );
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let text = error.to_string();
+        assert!(
+            text.contains(&id.to_string()) && text.contains("must not be repeated"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_closed_pipe_ends_a_commit_quietly_but_keeps_the_late_error() {
+        let (dir, result, _) = committed("commit-pipe");
+        let mut closed = Failing(io::ErrorKind::BrokenPipe);
+        assert!(finish_commit(result, &mut closed).is_ok());
+        let (_, mut late, _) = committed("commit-pipe-late");
+        late.late = Some(not_durable());
+        let error = finish_commit(late, &mut closed).unwrap_err();
+        assert!(
+            matches!(&error, CliError::CommitNotDurable { output: None, .. }),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_result_that_cannot_be_written_names_the_commit_and_ends_with_code_3() {
+        let (dir, result, _) = committed("commit-output");
+        let id = result.commit;
+        let mut full = Failing(io::ErrorKind::StorageFull);
+        let error = finish_commit(result, &mut full).unwrap_err();
+        assert!(matches!(&error, CliError::CommitOutput { .. }), "{error}");
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        assert!(error.to_string().contains(&id.to_string()), "{error}");
+        let (_, mut late, _) = committed("commit-output-late");
+        late.late = Some(not_durable());
+        let both = finish_commit(late, &mut full).unwrap_err();
+        assert!(
+            matches!(
+                &both,
+                CliError::CommitNotDurable {
+                    output: Some(_),
+                    ..
+                }
+            ),
+            "{both}"
+        );
+        assert!(both.to_string().contains("either"), "{both}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_failures_of_a_commit_have_the_exit_code_that_says_what_was_done() {
+        let (dir, entry) = repository_with_entry("commit-table");
+        let snapshot_late = || {
+            CommitError::Snapshot(SnapshotError::Update(UpdateError::NotDurable {
+                entry: Box::new(entry.clone()),
+                source: not_durable(),
+            }))
+        };
+        // Nothing was made, or only a snapshot: code 1.
+        for error in [
+            CommitError::EmptyMessage,
+            CommitError::NothingToCommit,
+            CommitError::BranchMoved {
+                branch: BranchName::new("main").unwrap(),
+                parents: Vec::new(),
+                tip: None,
+            },
+            CommitError::Update(UpdateError::MoveFailed {
+                entry: Box::new(entry.clone()),
+                source: RefError::Locked { path: dir.clone() },
+            }),
+        ] {
+            assert_eq!(CliError::Commit(error).exit_code(), ExitCode::FAILURE);
+        }
+        // A pointer moved: code 3, and the text says what to do.
+        let partly = CliError::Commit(CommitError::Update(UpdateError::PartlyMoved {
+            entry: Box::new(entry.clone()),
+            source: RefError::Locked { path: dir.clone() },
+        }));
+        assert_eq!(partly.exit_code(), ExitCode::from(3));
+        assert!(
+            partly.to_string().contains("finishes the commit"),
+            "{partly}"
+        );
+        let durable = CliError::Commit(CommitError::Update(UpdateError::NotDurable {
+            entry: Box::new(entry.clone()),
+            source: not_durable(),
+        }));
+        assert_eq!(durable.exit_code(), ExitCode::from(3));
+        let snapshot = CliError::Commit(snapshot_late());
+        assert_eq!(snapshot.exit_code(), ExitCode::from(3));
+        let text = snapshot.to_string();
+        assert!(
+            text.contains("the commit was not made") && text.contains("can be run again"),
+            "{text}"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -3,7 +3,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
 use std::sync::atomic::{AtomicU64, Ordering};
+use stemma_core::object::{Commit, CommitId, Kind};
+use stemma_core::oplog::OperationName;
+use stemma_core::refs::BranchName;
+use stemma_core::repository::Repository;
+use stemma_core::store::ObjectStore;
+use stemma_core::{Actor, AllowAll};
 
 /// A directory below the system temp directory that is removed on drop.
 struct Dir(PathBuf);
@@ -89,8 +96,34 @@ fn operations(dir: &Path) -> Vec<String> {
     result.stdout.lines().map(str::to_owned).collect()
 }
 
+fn main_branch() -> BranchName {
+    BranchName::new("main").unwrap()
+}
+
+fn read(repository: &Repository, id: CommitId) -> Commit {
+    let raw = repository
+        .objects()
+        .get_expecting(&id.object_id(), Kind::Commit)
+        .unwrap()
+        .unwrap();
+    Commit::parse(raw.body()).unwrap()
+}
+
+/// The ID that a successful `commit` printed.
+fn printed_id(result: &Run) -> String {
+    let line = result.stdout.lines().next().unwrap();
+    line.split(' ').nth(1).unwrap().to_owned()
+}
+
+/// The refusals leave the commit unmade: no branch, and the log as it was.
+fn assert_nothing_committed(dir: &Path, entries: usize) {
+    let repository = Repository::open(dir).unwrap();
+    assert_eq!(repository.refs().branch(&main_branch()).unwrap(), None);
+    assert_eq!(operations(dir).len(), entries);
+}
+
 #[test]
-fn a_commit_names_the_working_copy_and_says_which_commit_and_branch() {
+fn a_commit_names_the_working_copy_and_starts_a_new_one() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track(dir.path(), "a.txt");
@@ -98,22 +131,45 @@ fn a_commit_names_the_working_copy_and_says_which_commit_and_branch() {
     let result = commit(dir.path(), "Add a");
 
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(
-        result.stdout.starts_with("Committed b3:") && result.stdout.ends_with(" on main\n"),
-        "{}",
-        result.stdout
-    );
+    let id = printed_id(&result);
+    assert_eq!(result.stdout, format!("Committed {id} on main\n"));
     assert_eq!(result.stderr, "");
+    let repository = Repository::open(dir.path()).unwrap();
+    let branch = repository.refs().branch(&main_branch()).unwrap().unwrap();
+    assert_eq!(branch.to_string(), id);
+    let named = read(&repository, branch);
+    assert_eq!(named.message(), "Add a");
+    assert_eq!(named.author().to_string(), "human alice");
+    let working = read(&repository, repository.refs().working_copy().unwrap());
+    assert_eq!(working.parents(), [branch]);
+    assert_eq!(working.tree(), named.tree());
+    assert_eq!(working.message(), "");
+    assert_ne!(working.change(), named.change());
     let log = operations(dir.path());
+    assert_eq!(log.len(), 3, "{log:?}");
     assert!(
         log[0].contains("\"actor\":\"human alice\"") && log[0].contains("\"operation\":\"commit\""),
         "{log:?}"
     );
-    assert!(!log[0].contains("\"took_effect\":false"), "{log:?}");
+    assert!(log[0].contains("\"took_effect\":true"), "{log:?}");
 }
 
 #[test]
-fn a_change_since_the_last_command_is_committed_and_two_commits_differ() {
+fn the_long_form_of_the_message_flag_works() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track(dir.path(), "a.txt");
+
+    let result = run(
+        dir.path(),
+        &["commit", "--message", "Add a", "--actor", "human alice"],
+    );
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+}
+
+#[test]
+fn a_change_since_the_last_command_is_committed_after_its_own_snapshot_entry() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track(dir.path(), "a.txt");
@@ -123,59 +179,203 @@ fn a_change_since_the_last_command_is_committed_and_two_commits_differ() {
     let second = commit(dir.path(), "two");
 
     assert_eq!((first.code, second.code), (0, 0), "{}", second.stderr);
-    assert_ne!(first.stdout, second.stdout);
+    let repository = Repository::open(dir.path()).unwrap();
+    let tip = repository.refs().branch(&main_branch()).unwrap().unwrap();
+    assert_eq!(tip.to_string(), printed_id(&second));
+    let parents = read(&repository, tip).parents().to_vec();
+    assert_eq!(parents.len(), 1);
+    assert_eq!(parents[0].to_string(), printed_id(&first));
     let log = operations(dir.path());
     // init, track, commit, then the snapshot and the commit.
     assert_eq!(log.len(), 5, "{log:?}");
+    assert!(log[0].contains("\"operation\":\"commit\""), "{log:?}");
     assert!(log[1].contains("\"operation\":\"snapshot\""), "{log:?}");
+    assert!(log[1].contains("\"actor\":\"human alice\""), "{log:?}");
 }
 
 #[test]
-fn an_empty_message_nothing_to_commit_and_no_message_fail_without_a_trace() {
+fn deleting_the_tracked_file_is_a_change_to_commit() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track(dir.path(), "a.txt");
+    assert_eq!(commit(dir.path(), "one").code, 0);
+    fs::remove_file(dir.path().join("a.txt")).unwrap();
+
+    let result = commit(dir.path(), "remove a");
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+}
+
+fn assert_refused_for_an_empty_message(message: &str) {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track(dir.path(), "a.txt");
+    let entries = operations(dir.path()).len();
+
+    let result = commit(dir.path(), message);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.starts_with("stemma: ") && result.stderr.contains("must not be empty"),
+        "{}",
+        result.stderr
+    );
+    assert_nothing_committed(dir.path(), entries);
+}
+
+#[test]
+fn an_empty_message_is_refused() {
+    assert_refused_for_an_empty_message("");
+}
+
+#[test]
+fn a_message_of_white_space_is_refused() {
+    assert_refused_for_an_empty_message("  \n\t");
+}
+
+#[test]
+fn nothing_to_commit_in_a_new_repository_is_refused() {
     let dir = repository();
     let entries = operations(dir.path()).len();
 
-    for message in ["", "   "] {
-        let result = commit(dir.path(), message);
-        assert_eq!(result.code, 1, "{}", result.stdout);
-        assert!(
-            result.stderr.contains("must not be empty"),
-            "{}",
-            result.stderr
-        );
-    }
-    let nothing = commit(dir.path(), "nothing");
-    assert_eq!(nothing.code, 1);
-    assert!(
-        nothing.stderr.contains("nothing to commit"),
-        "{}",
-        nothing.stderr
-    );
-    assert_eq!(nothing.stdout, "");
-    assert_eq!(operations(dir.path()).len(), entries);
+    let result = commit(dir.path(), "nothing");
 
-    let usage = run(dir.path(), &["commit", "--actor", "human alice"]);
-    assert_eq!(usage.code, 2, "{}", usage.stderr);
+    assert_eq!(result.code, 1);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.starts_with("stemma: ") && result.stderr.contains("nothing to commit"),
+        "{}",
+        result.stderr
+    );
+    assert_nothing_committed(dir.path(), entries);
 }
 
 #[test]
-fn without_an_actor_or_a_repository_the_command_fails_with_code_1() {
+fn nothing_to_commit_after_a_commit_is_refused_without_an_entry() {
     let dir = repository();
-    let result = run(dir.path(), &["commit", "-m", "x"]);
-    assert_eq!(result.code, 1);
-    assert!(result.stderr.contains("no actor"), "{}", result.stderr);
-    let elsewhere = Dir::new();
-    let result = commit(elsewhere.path(), "x");
+    write(dir.path(), "a.txt", "one");
+    track(dir.path(), "a.txt");
+    assert_eq!(commit(dir.path(), "one").code, 0);
+    let entries = operations(dir.path()).len();
+
+    let result = commit(dir.path(), "again");
+
     assert_eq!(result.code, 1);
     assert!(
-        result.stderr.contains("not in its parents"),
+        result.stderr.contains("nothing to commit"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn a_file_that_is_not_tracked_is_not_committed() {
+    let dir = repository();
+    write(dir.path(), "untracked.txt", "x");
+    let entries = operations(dir.path()).len();
+
+    let result = commit(dir.path(), "nothing tracked");
+
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("nothing to commit"),
+        "{}",
+        result.stderr
+    );
+    assert_nothing_committed(dir.path(), entries);
+}
+
+#[test]
+fn a_commit_that_is_refused_after_the_snapshot_leaves_the_snapshot_entry() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track(dir.path(), "a.txt");
+    assert_eq!(commit(dir.path(), "one").code, 0);
+    // Someone points main at the working-copy commit, past the parent that it is based on.
+    let metadata = dir.path().join(".stemma");
+    fs::copy(
+        metadata.join("working-copy"),
+        metadata.join("refs/heads/main"),
+    )
+    .unwrap();
+    let entries = operations(dir.path()).len();
+    write(dir.path(), "a.txt", "two");
+
+    let result = commit(dir.path(), "two");
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.starts_with("stemma: ") && result.stderr.contains("branch `main`"),
+        "{}",
+        result.stderr
+    );
+    let log = operations(dir.path());
+    assert_eq!(log.len(), entries + 1, "{log:?}");
+    assert!(log[0].contains("\"operation\":\"snapshot\""), "{log:?}");
+}
+
+#[test]
+fn a_head_that_names_a_commit_is_refused() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track(dir.path(), "a.txt");
+    let first = commit(dir.path(), "one");
+    let id = printed_id(&first);
+    fs::write(dir.path().join(".stemma/HEAD"), format!("commit {id}\n")).unwrap();
+    write(dir.path(), "a.txt", "two");
+    let entries = operations(dir.path()).len();
+
+    let result = commit(dir.path(), "two");
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(result.stderr.contains("not a branch"), "{}", result.stderr);
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn without_a_message_the_command_is_a_usage_error() {
+    let dir = repository();
+
+    let result = run(dir.path(), &["commit", "--actor", "human alice"]);
+
+    assert_eq!(result.code, 2, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+}
+
+#[test]
+fn without_an_actor_the_command_fails_and_commits_nothing() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track(dir.path(), "a.txt");
+    let entries = operations(dir.path()).len();
+
+    let result = run(dir.path(), &["commit", "-m", "x"]);
+
+    assert_eq!(result.code, 1);
+    assert!(result.stderr.contains("no actor"), "{}", result.stderr);
+    assert_nothing_committed(dir.path(), entries);
+}
+
+#[test]
+fn in_a_directory_without_a_repository_the_command_fails_and_names_the_flag() {
+    let elsewhere = Dir::new();
+
+    let result = commit(elsewhere.path(), "x");
+
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("not in its parents") && result.stderr.contains("`commit`"),
         "{}",
         result.stderr
     );
 }
 
 #[test]
-fn the_directory_and_the_actor_come_from_the_flag_and_the_environment() {
+fn the_directory_flag_and_the_environment_variable_are_used() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track(dir.path(), "a.txt");
@@ -194,20 +394,21 @@ fn the_directory_and_the_actor_come_from_the_flag_and_the_environment() {
 }
 
 #[test]
-fn a_branch_that_moved_is_refused_and_the_log_marks_nothing() {
+fn the_flag_goes_before_the_variable() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track(dir.path(), "a.txt");
-    assert_eq!(commit(dir.path(), "one").code, 0);
-    // Someone points main at the working-copy commit.
-    let heads = dir.path().join(".stemma/refs/heads/main");
-    fs::copy(dir.path().join(".stemma/working-copy"), &heads).unwrap();
-    write(dir.path(), "a.txt", "two");
 
-    let result = commit(dir.path(), "two");
+    let result = stemma(
+        dir.path(),
+        &["commit", "-m", "Add a", "--actor", "human alice"],
+        |command| {
+            command.env("STEMMA_ACTOR", "human bob");
+        },
+    );
 
-    assert_eq!(result.code, 1, "{}", result.stdout);
-    assert!(result.stderr.contains("branch `main`"), "{}", result.stderr);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(operations(dir.path())[0].contains("\"actor\":\"human alice\""));
 }
 
 #[test]
@@ -215,15 +416,25 @@ fn a_commit_that_stopped_between_its_moves_is_finished_by_the_next_one() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track(dir.path(), "a.txt");
-    assert_eq!(commit(dir.path(), "one").code, 0);
-    let metadata = dir.path().join(".stemma");
-    let before = fs::read(metadata.join("working-copy")).unwrap();
-    write(dir.path(), "a.txt", "two");
-    let second = commit(dir.path(), "two");
-    assert_eq!(second.code, 0, "{}", second.stderr);
-    // The state of a stop after the move of the branch: the working-copy pointer is the old one.
-    fs::write(metadata.join("working-copy"), before).unwrap();
-    let id = second.stdout.split(' ').nth(1).unwrap().to_owned();
+    // The state of a stop after the move of the branch: it has the named commit, and the
+    // working-copy commit is still the one the commit was made from.
+    let repository = Repository::open(dir.path()).unwrap();
+    let alice: Actor = "human alice".parse().unwrap();
+    let before = repository.refs().working_copy().unwrap();
+    let working = read(&repository, before);
+    let named = working.rewrite(working.tree(), alice.clone(), 1, "stopped");
+    let named_id = repository.objects().put_commit(&named).unwrap();
+    repository
+        .update_branch(
+            &OperationName::new("commit").unwrap(),
+            &main_branch(),
+            None,
+            named_id,
+            &alice,
+            &AllowAll,
+        )
+        .unwrap();
+    let entries = operations(dir.path()).len();
 
     let result = commit(dir.path(), "ignored");
 
@@ -231,10 +442,23 @@ fn a_commit_that_stopped_between_its_moves_is_finished_by_the_next_one() {
     assert_eq!(
         result.stdout,
         format!(
-            "Finished the commit {id} on main that had stopped; the message of this call was not \
-             used\n"
+            "Finished the commit {named_id} on main that had stopped; the message of this call \
+             was not used\n"
         )
     );
+    assert!(result.stderr.contains("warning"), "{}", result.stderr);
+    assert_eq!(
+        repository.refs().branch(&main_branch()).unwrap(),
+        Some(named_id)
+    );
+    assert_eq!(read(&repository, named_id).message(), "stopped");
+    let next = read(&repository, repository.refs().working_copy().unwrap());
+    assert_eq!(next.parents(), [named_id]);
+    assert_eq!(next.tree(), named.tree());
+    assert_eq!(next.message(), "");
+    assert_ne!(next.change(), named.change());
+    let log = operations(dir.path());
+    assert_eq!(log.len(), entries + 1, "{log:?}");
     // The repository works again.
     write(dir.path(), "a.txt", "three");
     assert_eq!(commit(dir.path(), "three").code, 0);
@@ -261,6 +485,12 @@ fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("committed, but"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("stemma: committed b3:") && stderr.contains("could not write"),
+        "{stderr}"
+    );
     assert!(operations(dir.path())[0].contains("\"operation\":\"commit\""));
+    let repository = Repository::open(dir.path()).unwrap();
+    assert!(repository.refs().branch(&main_branch()).unwrap().is_some());
 }
