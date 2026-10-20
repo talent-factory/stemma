@@ -23,8 +23,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod snapshot;
+mod track;
 
 pub use snapshot::{SnapshotError, Unsupported};
+pub use track::{TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};

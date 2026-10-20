@@ -363,7 +363,7 @@ pub struct Index {
 }
 
 /// Returns the first path rule the path violates, if any.
-fn path_problem(path: &str) -> Option<PathProblem> {
+pub(crate) fn path_problem(path: &str) -> Option<PathProblem> {
     for component in path.split('/') {
         if component.is_empty() {
             return Some(PathProblem::EmptyComponent);
