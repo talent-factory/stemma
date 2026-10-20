@@ -117,7 +117,8 @@ struct TrackArgs {
     repository: PathBuf,
 
     /// Who runs the command: `human <id>` or
-    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 }
@@ -138,7 +139,8 @@ struct CommitArgs {
     repository: PathBuf,
 
     /// Who runs the command: `human <id>` or
-    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 }
@@ -155,8 +157,8 @@ struct StatusArgs {
     repository: PathBuf,
 
     /// Who runs the command: `human <id>` or
-    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; the snapshot that the
-    /// command takes is made by this actor
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. The snapshot that the command takes is made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 }
@@ -172,7 +174,8 @@ struct InitArgs {
     initial_branch: BranchName,
 
     /// Who runs the command: `human <id>` or
-    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 }
