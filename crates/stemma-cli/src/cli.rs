@@ -2,10 +2,12 @@
 //!
 //! Exit codes: 0 for success, 1 for a command that fails and has changed nothing, 2 for arguments
 //! that are wrong (the code of the argument parser), and 3 for a command that has done its work
-//! but could not finish: the repository exists, but flushing it to disk or writing the result
-//! failed. A script must not remove or repeat what such a command made. A command that only reads
-//! (`op log`) has made nothing, so a failed write of its output is code 1; some of the output may
-//! already be written, and a script discards it. A failing command prints
+//! but could not finish: the repository or the change exists, but flushing it to disk or writing
+//! the result failed. A script must not remove or repeat what such a command made. A command that
+//! only reads (`op log`) has made nothing, so a failed write of its output is code 1; some of the
+//! output may already be written, and a script discards it. Code 1 can leave one trace: a write
+//! that fails after its entry is in the operation log (`track`, `UpdateError::MoveFailed`) leaves
+//! an entry for a move that did not happen, which `op log` marks as such. A failing command prints
 //! `stemma: <message>`, a complete message (see the crate documentation of `stemma-core`). The
 //! argument parser prints its own errors.
 
@@ -24,7 +26,7 @@ use stemma_core::object::METADATA_DIR;
 use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
-    InitError, InitOptions, OpenError, Repository, SnapshotError, TrackError, UpdateError,
+    normalize_path, InitError, InitOptions, OpenError, Repository, TrackError, Tracking,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -130,8 +132,9 @@ enum CliError {
     Init(InitError),
     /// The repository cannot be opened.
     Open(OpenError),
-    /// The core refused the paths or could not track them. Nothing is tracked, except for a
-    /// failure that says otherwise ([`UpdateError::NotDurable`] and [`UpdateError::MoveFailed`]).
+    /// The core refused the paths or could not track them. Nothing is tracked, except for
+    /// [`TrackError::NotDurable`]; a failed move leaves an entry in the log that names a move that
+    /// did not happen (`UpdateError::MoveFailed`).
     Track(TrackError),
     /// The files are tracked, but the result could not be written to the output.
     TrackOutput(io::Error),
@@ -161,9 +164,7 @@ impl CliError {
     fn exit_code(&self) -> ExitCode {
         match self {
             Self::Init(InitError::NotDurable { .. })
-            | Self::Track(TrackError::Snapshot(SnapshotError::Update(UpdateError::NotDurable {
-                ..
-            })))
+            | Self::Track(TrackError::NotDurable { .. })
             | Self::Output { .. }
             | Self::TrackOutput(_) => ExitCode::from(3),
             Self::MissingActor
@@ -194,6 +195,11 @@ impl fmt::Display for CliError {
             ),
             Self::Actor(error) => write!(f, "invalid actor: {error}"),
             Self::Init(error) => error.fmt(f),
+            Self::Open(error @ OpenError::NotARepository { .. }) => write!(
+                f,
+                "{error}; stemma looks only in the directory it is given, not in its parents \
+                 (see `-C` of `track`, and the argument of `op log`)"
+            ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
             Self::TrackOutput(source) => write!(
@@ -337,12 +343,33 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
 fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
-    let paths: Vec<String> = args.paths.iter().map(|path| normalize(path)).collect();
-    let tracking = repository
-        .track(&paths, &actor, &AllowAll)
-        .map_err(CliError::Track)?;
-    out.write_all(track_text(&tracking.added).as_bytes())
-        .map_err(CliError::TrackOutput)
+    let paths: Vec<String> = args.paths.iter().map(|path| normalize_path(path)).collect();
+    finish_track(repository.track(&paths, &actor, &AllowAll), out)
+}
+
+/// Writes what `track` did. If the files are tracked but a directory could not be flushed, the
+/// list is written first, like the announcement of `init`, so that a script finds what exists
+/// before it reads the error. A closed pipe ends the output quietly, as it does for `op log`.
+fn finish_track(result: Result<Tracking, TrackError>, out: &mut dyn Write) -> Result<(), CliError> {
+    let (added, late) = match result {
+        Ok(tracking) => (tracking.added, None),
+        Err(TrackError::NotDurable { added, error }) => (
+            added,
+            Some(CliError::Track(TrackError::NotDurable {
+                added: Vec::new(),
+                error,
+            })),
+        ),
+        Err(error) => return Err(CliError::Track(error)),
+    };
+    match out.write_all(track_text(&added).as_bytes()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(source) => {
+            return Err(late.unwrap_or(CliError::TrackOutput(source)));
+        }
+    }
+    late.map_or(Ok(()), Err)
 }
 
 /// One line for each file that is tracked now and was not before, or one line that says there is
@@ -355,24 +382,6 @@ fn track_text(added: &[String]) -> String {
         .iter()
         .map(|path| format!("tracked {}\n", path.escape_debug()))
         .collect()
-}
-
-/// Turns a path as a person types it into the form of the core: `./a.txt` and `dir/` are `a.txt`
-/// and `dir`, and `.` stays the directory of the repository. A path that starts with `/` is kept,
-/// so that the core refuses it: an absolute path is not relative to the repository.
-fn normalize(path: &str) -> String {
-    if path.starts_with('/') {
-        return path.to_owned();
-    }
-    let parts: Vec<&str> = path
-        .split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-        .collect();
-    if parts.is_empty() {
-        ".".to_owned()
-    } else {
-        parts.join("/")
-    }
 }
 
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
@@ -426,21 +435,23 @@ pub fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_path_is_written_in_the_form_of_the_core() {
-        for (given, normal) in [
-            ("a.txt", "a.txt"),
-            ("./a.txt", "a.txt"),
-            ("dir/", "dir"),
-            ("./dir//sub/./", "dir/sub"),
-            (".", "."),
-            ("./", "."),
-            ("", "."),
-            ("../a", "../a"),
-            ("/abs/a", "/abs/a"),
-        ] {
-            assert_eq!(normalize(given), normal, "{given:?}");
-        }
+    use super::*;
+    use stemma_core::repository::{SnapshotError, UpdateError};
+
+    /// A repository made by `init` below the temp directory, and its first entry.
+    fn repository_with_entry(name: &str) -> (PathBuf, stemma_core::oplog::Entry) {
+        let dir =
+            std::env::temp_dir().join(format!("stemma-cli-unit-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repository = Repository::init(
+            &dir,
+            &InitOptions::default(),
+            &"human daniel".parse().unwrap(),
+            &AllowAll,
+        )
+        .unwrap();
+        let entry = repository.oplog().read(1).unwrap();
+        (dir, entry)
     }
 
     #[test]
@@ -450,7 +461,91 @@ mod tests {
         assert_eq!(track_text(&two), "tracked a.txt\ntracked bad\\nname\n");
     }
 
-    use super::*;
+    #[test]
+    fn a_track_that_is_not_durable_lists_the_files_first_and_ends_with_code_3() {
+        let (dir, entry) = repository_with_entry("not-durable");
+        let late = TrackError::NotDurable {
+            added: vec!["a.txt".to_owned()],
+            error: Box::new(UpdateError::NotDurable {
+                entry: Box::new(entry),
+                source: RefError::Io {
+                    operation: "flush",
+                    path: PathBuf::from("x"),
+                    source: io::Error::other("x"),
+                },
+            }),
+        };
+        let mut out = Vec::new();
+        let error = finish_track(Err(late), &mut out).unwrap_err();
+        assert_eq!(String::from_utf8(out).unwrap(), "tracked a.txt\n");
+        assert_eq!(error.exit_code(), ExitCode::from(3), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_move_is_code_1_and_a_refused_path_is_code_1() {
+        let (dir, entry) = repository_with_entry("move-failed");
+        let failed = TrackError::Snapshot(SnapshotError::Update(UpdateError::MoveFailed {
+            entry: Box::new(entry),
+            source: RefError::Io {
+                operation: "write",
+                path: PathBuf::from("x"),
+                source: io::Error::other("x"),
+            },
+        }));
+        let mut out = Vec::new();
+        let error = finish_track(Err(failed), &mut out).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
+        assert!(out.is_empty());
+        let refused = TrackError::InvalidPath {
+            path: String::new(),
+        };
+        let error = finish_track(Err(refused), &mut out).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_track_whose_result_cannot_be_written_is_code_3_and_a_closed_pipe_is_quiet() {
+        let dir =
+            std::env::temp_dir().join(format!("stemma-cli-unit-track-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.to_str().unwrap();
+        run(
+            parse(&["init", path, "--actor", "human daniel"]),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join("b.txt"), "b").unwrap();
+        let track_args = |file: &'static str| {
+            let mut args = vec!["track", "-C", path, "--actor", "human daniel"];
+            args.push(file);
+            args
+        };
+        let full = run(parse(&track_args("a.txt")), &mut Full).unwrap_err();
+        assert!(matches!(full, CliError::TrackOutput(_)), "{full}");
+        assert_eq!(full.exit_code(), ExitCode::from(3));
+        // The file is tracked although the result was not written.
+        let mut out = Vec::new();
+        run(parse(&track_args("a.txt")), &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "No new files to track\n");
+        // A reader that has had enough is not a failure; the file is tracked.
+        run(parse(&track_args("b.txt")), &mut Closed).unwrap();
+        let mut out = Vec::new();
+        run(parse(&track_args("b.txt")), &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "No new files to track\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_repository_says_where_stemma_looks() {
+        let error = CliError::Open(OpenError::NotARepository {
+            path: PathBuf::from("sub"),
+        });
+        let message = error.to_string();
+        assert!(message.contains("not in its parents"), "{message}");
+    }
 
     #[test]
     fn the_arguments_are_consistent() {

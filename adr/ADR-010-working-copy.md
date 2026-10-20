@@ -45,7 +45,7 @@ are prior art, not a template.
 - **Untracked files are not saved until they are confirmed** *(confirmed)*. A file that is not in
   the tree of the working-copy commit is *untracked*. A snapshot saves a tracked file that
   changed or was deleted. It does not save an untracked file; `stemma track <path>` confirms
-  one. The name of the command is confirmed with the command (STEMMA-2). This replaces `stemma add` and keeps its purpose:
+  one. The name `track` is confirmed (STEMMA-2). This replaces `stemma add` and keeps its purpose:
   a new file never enters the history by accident.
 - **An exclusion file** *(confirmed)*. `.stemmaignore` lists paths that are never tracked, not
   even by `stemma track`, and are not reported as untracked. Its syntax is open, and it is
@@ -124,6 +124,9 @@ are prior art, not a template.
       and would change the log it is about to show. Decide for `status` (STEMMA-4) and for the
       other commands that read. The path `.` of `track` tracks every file of the repository
       directory, secrets included, until `.stemmaignore` exists.
+- [ ] The path form is a `String` that the core validates and `normalize_path` writes. A
+      `RepoPath` type that cannot be built from an invalid path would make the rule one
+      definition; do it with the next command that takes paths (`status`, STEMMA-4).
 - [ ] A command finds its repository in a parent directory when it runs below the root, as Git
       does. Today a command takes the directory (`-C`, or the argument of `op log`) and the paths
       of `track` are relative to it.
@@ -149,5 +152,5 @@ are prior art, not a template.
       tracked directory that is now a link drops its files from the tree without a warning. Both
       want a way to report or to untrack (`stemma track`, STEMMA-2).
 - [ ] A second working copy (a worktree) for a second agent in one repository (phase 3).
-- [ ] The name `track`, and whether `stemma commit` needs a flag that makes a snapshot and a
-      commit in one step for a script.
+- [ ] Whether `stemma commit` needs a flag that makes a snapshot and a commit in one step for a
+      script.

@@ -14,7 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::snapshot::{lookup, Tracked};
-use super::{Repository, SnapshotError, Unsupported};
+use super::{Repository, SnapshotError, Unsupported, UpdateError};
 use crate::index::path_problem;
 use crate::object::{name_problem, FileMode, NameProblem};
 use crate::oplog::{Entry, OperationName};
@@ -45,7 +45,9 @@ impl Repository {
     /// spells every name as it is on disk (a file system that ignores case would take another
     /// spelling for the same file, and the tree would hold it twice). A directory stands for the
     /// files below it, without a name that resolves to `.stemma`; those are skipped, not
-    /// reported. The path `.` stands for the working directory itself. A path is never followed through a link, and a link at the end of a path is
+    /// reported, while a path that names one is an error. The path `.` alone stands for the
+    /// working directory itself; [`normalize_path`] turns what a person types into this form. A
+    /// path is never followed through a link, and a link at the end of a path is
     /// tracked as a link. A path that is tracked already is not an error and adds nothing to the
     /// tree, but the tracked files are saved as in [`snapshot`](Self::snapshot), since the new
     /// tree is built from the working directory. The authorizer is asked once, before anything is
@@ -54,10 +56,12 @@ impl Repository {
     /// # Errors
     ///
     /// Returns [`TrackError::InvalidPath`] for a path that is empty, absolute, ends in `/`, or has
-    /// a part that a tree refuses (`.`, `..`, `.stemma`, control characters) or that the file
-    /// system reads as more than one name; [`TrackError::InvalidName`] for such a name below a
+    /// a part that a tree refuses (`..`, `.stemma`, control characters, and `.` in a longer path)
+    /// or that the file system reads as more than one name; [`TrackError::InvalidName`] for such a name below a
     /// directory; [`TrackError::NotFound`] for a path that does not exist, or is gone when it is
-    /// saved; and [`TrackError::Spelling`] for a path that is not spelled as on disk. The
+    /// saved; [`TrackError::NotDurable`] if the files are tracked but a directory could not be
+    /// flushed (the list of files is in the error); and [`TrackError::Spelling`] for a path that
+    /// is not spelled as on disk. The
     /// working-copy commit moves only after every file is saved, so none of these moves it. The
     /// paths are checked before any file is saved, except that a named file can be gone when its
     /// turn comes. [`TrackError::Snapshot`] carries every other failure, as
@@ -70,7 +74,41 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Tracking, TrackError> {
         let operation = OperationName::new(OPERATION).expect("`track` is a valid operation name");
-        self.replace_working_copy(&operation, actor, authorizer, |root| expand(root, paths))
+        let replaced =
+            self.replace_working_copy(&operation, actor, authorizer, |root| expand(root, paths))?;
+        match replaced.late {
+            Some(error) => Err(TrackError::NotDurable {
+                added: replaced.added,
+                error: Box::new(error),
+            }),
+            None => Ok(Tracking {
+                entry: replaced.entry,
+                added: replaced.added,
+            }),
+        }
+    }
+}
+
+/// Turns a path as a person types it into the form of [`Repository::track`]: `./a.txt` and `dir/`
+/// are `a.txt` and `dir`, an empty part (`a//b`) and a part `.` (`a/./b`) are dropped, and a
+/// path that is only dots and slashes with at least one `.` part (`.`, `./`) is `.`. Nothing
+/// else changes: `..` stays, so does an absolute path, and an empty argument or one of slashes
+/// only (`""`, `//`) stays as it is, so that the core refuses it. A script with an empty
+/// variable must not track the whole directory.
+pub fn normalize_path(path: &str) -> String {
+    if path.starts_with('/') {
+        return path.to_owned();
+    }
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    if !parts.is_empty() {
+        parts.join("/")
+    } else if path.split('/').any(|part| part == ".") {
+        ".".to_owned()
+    } else {
+        path.to_owned()
     }
 }
 
@@ -81,7 +119,16 @@ fn expand(root: &Path, paths: &[String]) -> Result<Vec<Tracked>, TrackError> {
     let mut below = BTreeSet::new();
     for path in paths {
         if path == "." {
-            // The working directory itself: every file below it.
+            // The working directory itself: every file below it. It may be a link to the
+            // directory, and it may be gone since the repository was opened.
+            match fs::metadata(root) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => return Err(TrackError::NotFound { path: path.clone() }),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Err(TrackError::NotFound { path: path.clone() });
+                }
+                Err(source) => return Err(io_error("inspect", root, source)),
+            }
             walk(root.to_path_buf(), "", &mut below)?;
             continue;
         }
@@ -267,6 +314,15 @@ pub enum TrackError {
         /// The path as the directories spell it, if a name differs in case only.
         on_disk: Option<String>,
     },
+    /// The working-copy commit moved and the files are tracked, but a directory could not be
+    /// flushed to disk, so the change may not survive a crash. Do not repeat the call: read the
+    /// pointer.
+    NotDurable {
+        /// The files that are tracked now and were not before, as in [`Tracking::added`].
+        added: Vec<String>,
+        /// The error of the move, an [`UpdateError::NotDurable`].
+        error: Box<UpdateError>,
+    },
     /// Anything else, as [`Repository::snapshot`] reports it.
     Snapshot(SnapshotError),
 }
@@ -286,6 +342,7 @@ impl TrackError {
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
             Self::Snapshot(error) => error.io_error(),
+            Self::NotDurable { error, .. } => error.io_error(),
             Self::InvalidPath { .. }
             | Self::InvalidName { .. }
             | Self::NotFound { .. }
@@ -331,6 +388,7 @@ impl fmt::Display for TrackError {
                 "`{}` is not spelled as on disk; list the directory and use its name",
                 path.escape_debug()
             ),
+            Self::NotDurable { error, .. } => error.fmt(f),
             Self::Snapshot(error) => error.fmt(f),
         }
     }
@@ -457,6 +515,63 @@ mod tests {
         let tracking = track(&repository, &["d"]).unwrap();
         assert_eq!(tracking.added, ["d/b.txt", "d/sub/c.txt"]);
         assert_eq!(paths(&repository), ["d/b.txt", "d/sub/c.txt"]);
+    }
+
+    #[test]
+    fn a_path_is_written_in_the_form_of_the_core() {
+        for (given, normal) in [
+            ("a.txt", "a.txt"),
+            ("./a.txt", "a.txt"),
+            ("dir/", "dir"),
+            ("./dir//sub/./", "dir/sub"),
+            (".", "."),
+            ("./", "."),
+            ("././", "."),
+            ("../a", "../a"),
+            ("a/../b", "a/../b"),
+            ("/abs/a", "/abs/a"),
+            ("", ""),
+            ("//", "//"),
+        ] {
+            assert_eq!(normalize_path(given), normal, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_path_is_refused_and_does_not_track_the_directory() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "a");
+        for given in ["", "//"] {
+            let error = track(&repository, &[&normalize_path(given)]).unwrap_err();
+            assert!(matches!(error, TrackError::InvalidPath { .. }), "{error}");
+        }
+        assert!(paths(&repository).is_empty());
+    }
+
+    #[test]
+    fn a_dot_with_other_paths_gives_the_same_list_in_any_order() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "a");
+        write(&dir, "d/b.txt", "b");
+        for order in [vec![".", "a.txt", "d"], vec!["d", "a.txt", "."]] {
+            let tracking = track(&repository, &order).unwrap();
+            if tracking.entry.is_some() {
+                assert_eq!(tracking.added, ["a.txt", "d/b.txt"]);
+            }
+        }
+        assert_eq!(paths(&repository), ["a.txt", "d/b.txt"]);
+    }
+
+    #[test]
+    fn a_dot_in_an_empty_directory_has_nothing_to_track() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let numbers = repository.oplog().numbers().unwrap();
+        let tracking = track(&repository, &["."]).unwrap();
+        assert!(tracking.entry.is_none() && tracking.added.is_empty());
+        assert_eq!(repository.oplog().numbers().unwrap(), numbers);
     }
 
     #[test]

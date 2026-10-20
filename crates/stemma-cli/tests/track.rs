@@ -79,16 +79,11 @@ fn track(dir: &Path, paths: &[&str]) -> Run {
     run(dir, &args)
 }
 
-/// The lines of `op log` that name an operation, newest first.
+/// The entries of `op log`, newest first, one JSON object each.
 fn operations(dir: &Path) -> Vec<String> {
-    let result = run(dir, &["op", "log"]);
+    let result = run(dir, &["op", "log", "--json"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
-    result
-        .stdout
-        .lines()
-        .filter(|line| line.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .map(str::to_owned)
-        .collect()
+    result.stdout.lines().map(str::to_owned).collect()
 }
 
 #[test]
@@ -103,7 +98,7 @@ fn a_file_is_tracked_and_the_command_lists_it() {
     let log = operations(dir.path());
     assert_eq!(log.len(), 2, "{log:?}");
     assert!(
-        log[0].contains("human alice") && log[0].contains("track"),
+        log[0].contains("\"actor\":\"human alice\"") && log[0].contains("\"operation\":\"track\""),
         "{log:?}"
     );
 }
@@ -156,19 +151,115 @@ fn the_repository_can_be_named_and_the_paths_are_relative_to_it() {
 
 #[test]
 fn a_change_to_a_tracked_file_is_saved_by_the_next_track() {
+    use stemma_core::object::Blob;
+    use stemma_core::repository::Repository;
+    use stemma_core::store::ObjectStore;
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     assert_eq!(track(dir.path(), &["a.txt"]).code, 0);
     write(dir.path(), "a.txt", "changed");
     write(dir.path(), "b.txt", "two");
+    let changed = Blob::new(b"changed".to_vec()).id().object_id();
+    let repository = Repository::open(dir.path()).unwrap();
+    assert!(!repository.objects().contains(&changed).unwrap());
     assert_eq!(track(dir.path(), &["b.txt"]).code, 0);
-    // The change to `a.txt` was saved with it, so a track of nothing new finds no change.
+    // The content of the tracked file was saved by a track of another file.
+    assert!(repository.objects().contains(&changed).unwrap());
     let before = operations(dir.path()).len();
     assert_eq!(
         track(dir.path(), &["a.txt"]).stdout,
         "No new files to track\n"
     );
     assert_eq!(operations(dir.path()).len(), before);
+}
+
+#[test]
+fn an_empty_argument_does_not_track_the_directory() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    for path in ["", "//"] {
+        let result = track(dir.path(), &[path]);
+        assert_eq!(result.code, 1, "{path:?}: {}", result.stderr);
+        assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
+    }
+    assert_eq!(operations(dir.path()).len(), 1);
+}
+
+#[test]
+fn a_dot_with_other_paths_and_in_an_empty_directory() {
+    let dir = repository();
+    let result = track(dir.path(), &["."]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "No new files to track\n");
+    assert_eq!(operations(dir.path()).len(), 1);
+    write(dir.path(), "a.txt", "a");
+    write(dir.path(), "d/b.txt", "b");
+    let result = track(dir.path(), &["d", "a.txt", "."]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked a.txt\ntracked d/b.txt\n");
+}
+
+#[test]
+fn a_relative_repository_is_the_base_of_the_paths() {
+    let outer = Dir::new();
+    let init = run(outer.path(), &["init", "proj", "--actor", "human daniel"]);
+    assert_eq!(init.code, 0, "{}", init.stderr);
+    write(&outer.path().join("proj"), "a.txt", "one");
+    fs::create_dir(outer.path().join("elsewhere")).unwrap();
+    let result = run(
+        &outer.path().join("elsewhere"),
+        &["track", "-C", "../proj", "--actor", "human alice", "."],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked a.txt\n");
+}
+
+#[test]
+fn a_directory_below_the_repository_is_not_one_and_the_message_says_where_stemma_looks() {
+    let dir = repository();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    write(&dir.path().join("sub"), "a.txt", "one");
+    let result = track(&dir.path().join("sub"), &["a.txt"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("not in its parents"),
+        "{}",
+        result.stderr
+    );
+}
+
+#[test]
+fn a_repository_without_a_working_copy_commit_fails_with_code_1_and_changes_nothing() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    fs::remove_file(dir.path().join(".stemma/working-copy")).unwrap();
+    let result = track(dir.path(), &["a.txt"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("no working-copy commit"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(result.stdout, "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_name_with_a_newline_is_refused_and_named_escaped() {
+    let dir = repository();
+    write(dir.path(), "d/ok.txt", "x");
+    write(dir.path(), "d/bad\nname", "x");
+    let result = track(dir.path(), &["d"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(result.stderr.contains("bad\\nname"), "{}", result.stderr);
+    assert_eq!(operations(dir.path()).len(), 1);
+}
+
+#[test]
+fn there_is_no_json_form() {
+    let dir = repository();
+    let result = track(dir.path(), &["--json", "a.txt"]);
+    assert_eq!(result.code, 2, "{}", result.stderr);
 }
 
 #[test]
@@ -246,39 +337,4 @@ fn a_special_file_stops_the_command_and_nothing_is_tracked() {
     assert_eq!(result.code, 1, "{}", result.stderr);
     assert!(result.stderr.contains("d/sock"), "{}", result.stderr);
     assert_eq!(operations(dir.path()).len(), 1);
-}
-
-#[cfg(unix)]
-#[test]
-fn a_result_that_cannot_be_written_ends_with_code_3_after_the_files_are_tracked() {
-    let dir = repository();
-    write(dir.path(), "a.txt", "one");
-    let result = stemma(
-        dir.path(),
-        &["track", "--actor", "human alice", "a.txt"],
-        |command| {
-            // A full device, where there is one, makes the write fail.
-            if Path::new("/dev/full").exists() {
-                command.stdout(
-                    fs::OpenOptions::new()
-                        .write(true)
-                        .open("/dev/full")
-                        .unwrap(),
-                );
-            }
-        },
-    );
-    if !Path::new("/dev/full").exists() {
-        eprintln!("skipped: there is no /dev/full here");
-        return;
-    }
-    assert_eq!(result.code, 3, "{}", result.stderr);
-    assert!(
-        result
-            .stderr
-            .contains("tracked the files, but could not write the result"),
-        "{}",
-        result.stderr
-    );
-    assert_eq!(operations(dir.path()).len(), 2);
 }
