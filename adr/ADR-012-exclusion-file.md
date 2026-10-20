@@ -1,7 +1,7 @@
 # ADR-012: the exclusion file `.stemmaignore`
 
-**Status:** Proposal, open confirmation. Nothing here is implemented; STEMMA-24 builds the reader
-once the author has confirmed the decisions.
+**Status:** Confirmed by the author on 2026-10-20, not implemented yet. Decisions marked
+*(confirmed)* were agreed with the author; STEMMA-24 builds the reader.
 
 ## Context
 
@@ -20,10 +20,10 @@ other).
 
 ## Decision
 
-- **One file at the root of the repository directory** *(proposal)*. The path is
+- **One file at the root of the repository directory** *(confirmed)*. The path is
   `.stemmaignore` next to `.stemma`. Nested files are not read; they can come later without
   changing the meaning of this one.
-- **A small pattern language** *(proposal)*. A line is a comment or a pattern.
+- **A small pattern language** *(confirmed)*. A line is a comment or a pattern.
   - A comment starts with `#`. A pattern cannot start with `#`; `/#name` writes such a name.
   - A pattern is a list of parts separated by `/`. A part is a name with the wildcards `*` (any
     run of characters, also none, inside one name) and `?` (one character, a Unicode scalar), or
@@ -41,7 +41,7 @@ other).
     (a wildcard pattern matches it, with the other names).
   - Because there is no negation, the order of the lines does not matter: a path is excluded if
     any pattern matches it or one of its parent directories.
-- **A strict reader** *(proposal)*. `IgnoreRules::parse` accepts only this form and says which
+- **A strict reader** *(confirmed)*. `IgnoreRules::parse` accepts only this form and says which
   line is wrong ("line *n*: …"), as the readers of the index, trees, and the log do:
   - UTF-8 without a byte order mark, no `\r`, no NUL, no other control character.
   - Every line ends with `\n`, also the last one. An empty file (no bytes) is valid.
@@ -56,18 +56,18 @@ other).
   - Matching is done part by part, from the left, and takes time linear in the length of the
     path and the pattern for each pair (no backtracking that grows with the number of `**` or
     `*`).
-- **The file is tracked** *(proposal)*. It is a file of the repository like any other, it reaches
+- **The file is tracked** *(confirmed)*. It is a file of the repository like any other, it reaches
   every clone with the repository, and so every clone excludes the same paths. It is never
   excluded by its own patterns (a wildcard that matches it has no effect on it), and `track`
   confirms it like any other file.
-- **Tier 2 of ADR-004** *(proposal)*. Removing or loosening a line can let a secret into the
+- **Tier 2 of ADR-004** *(confirmed)*. Removing or loosening a line can let a secret into the
   history, so a change needs two agents and a human maintainer. It is not tier 3: it is no
   permission, no key, and no signature. The list of paths per tier (ADR-004, open point) gets
   `.stemmaignore` at tier 2.
-- **`.stemma` stays excluded by name** *(proposal)*. A tree cannot hold a name that resolves to
+- **`.stemma` stays excluded by name** *(confirmed)*. A tree cannot hold a name that resolves to
   `.stemma` (ADR-005), and the file cannot lift that. The aliases of ADR-005 are the business of
   the name filter that exists, not of the patterns.
-- **Effect on commands** *(proposal)*.
+- **Effect on commands** *(confirmed)*.
   - `track` skips an excluded file below a directory without a word, as it skips `.stemma`. A
     path that the caller names and that is excluded is an error that names the line of the
     pattern.
@@ -77,7 +77,7 @@ other).
   - `status` does not list an excluded path as untracked.
   - A snapshot of tracked files does not read the file, so a damaged `.stemmaignore` never blocks
     a snapshot or a `commit`.
-- **Where it is read** *(proposal)*. From the working directory at every call that needs it, never
+- **Where it is read** *(confirmed)*. From the working directory at every call that needs it, never
   from the tree: an edit takes effect at once and not after the next snapshot. A missing file
   means no patterns. A file that is not a regular file (a link, a directory) or that the reader
   rejects is an error, and the command stops before it tracks or lists anything: a rule that
