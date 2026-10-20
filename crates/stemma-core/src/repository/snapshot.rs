@@ -3,8 +3,9 @@
 //! A snapshot builds the tree of the files that the working-copy commit tracks, as they are in the
 //! working directory now. If it differs from the tree of the working-copy commit, a new commit
 //! replaces the old one, with the same parents and the same change ID, and the move is recorded in
-//! the operation log. Only tracked files are looked at: a file that is not in the tree of the
-//! working-copy commit is untracked and is neither saved nor reported.
+//! the operation log. A snapshot looks only at tracked files: a file that is not in the tree of the
+//! working-copy commit is untracked and is neither saved nor reported. [`Repository::track`]
+//! shares the work (`replace_working_copy`) and adds the files that it names.
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -13,6 +14,7 @@ use std::fs::{self, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::track::Tracking;
 use super::{now, Repository, UpdateError};
 use crate::index::{Index, IndexError, WriteTreeError};
 use crate::object::{
@@ -27,10 +29,15 @@ use crate::{Actor, Authorizer};
 /// The operation that the log records for a snapshot.
 const OPERATION: &str = "snapshot";
 
-/// A file that the working-copy commit tracks.
+/// A file to save: a file of the tree of the working-copy commit, or one that a caller adds.
 pub(super) struct Tracked {
     pub(super) path: String,
+    /// The mode that the tree has. For a file that is added it is a placeholder, because the mode
+    /// comes from the file system (where it has an executable bit and links).
     pub(super) mode: FileMode,
+    /// A caller named this file. If it is gone when it is saved, that is an error and not a file
+    /// that leaves the tree.
+    pub(super) named: bool,
 }
 
 impl Repository {
@@ -40,9 +47,9 @@ impl Repository {
     /// Only the files in the tree of the working-copy commit are read: a changed file is saved, and
     /// a deleted one leaves the tree, and so does one that a directory has replaced or that lies
     /// below a directory that is now a link (a link is never followed). A tracked path that is a
-    /// link itself is saved as the link. A file that is not tracked is not saved. The new commit keeps the parents, the change
-    /// ID, and the message of the one it replaces; its author is `actor` and its time is now. The
-    /// move is recorded in the log in the order of
+    /// link itself is saved as the link. A file that is not tracked is not saved. The new commit
+    /// keeps the parents, the change ID, and the message of the one it replaces; its author is
+    /// `actor` and its time is now. The move is recorded in the log in the order of
     /// [`update_working_copy`](Self::update_working_copy), and the authorizer is asked once, before
     /// anything is read.
     ///
@@ -58,11 +65,12 @@ impl Repository {
     /// Returns [`SnapshotError::Update`] if the authorizer refuses or the move fails (among others
     /// [`RefError::StaleWorkingCopy`] when another process moved the working-copy commit first: the
     /// snapshot can be repeated), [`SnapshotError::Refs`] if the working-copy commit cannot be
-    /// read at the start, [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object store lacks an
-    /// object that the commit needs or fails, [`SnapshotError::Unsupported`] for a tracked path
-    /// that is a special file or a link that is not UTF-8, and [`SnapshotError::Io`] if a file
-    /// cannot be read or is replaced while it is read. Nothing but objects is written before the move, and an object that no commit
-    /// names is harmless.
+    /// read at the start, [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object
+    /// store lacks an object that the commit needs or fails, [`SnapshotError::Unsupported`] for a
+    /// tracked path that is a special file or a link that is not UTF-8, [`SnapshotError::Io`] if a
+    /// file cannot be read or is replaced while it is read, and [`SnapshotError::Index`] if the
+    /// working directory changes so that one path is a file and a directory. Nothing but objects
+    /// is written before the move, and an object that no commit names is harmless.
     pub fn snapshot(
         &self,
         actor: &Actor,
@@ -70,39 +78,49 @@ impl Repository {
     ) -> Result<Option<Entry>, SnapshotError> {
         let operation =
             OperationName::new(OPERATION).expect("`snapshot` is a valid operation name");
-        let replaced = self.replace_working_copy(&operation, actor, authorizer, |_, _| {
+        let replaced = self.replace_working_copy(&operation, actor, authorizer, |_| {
             Ok::<_, SnapshotError>(Vec::new())
         })?;
         Ok(replaced.entry)
     }
 
-    /// Saves the tracked files, and the files that `additions` names, as the new working-copy
-    /// commit, and moves the working-copy commit to it if the tree differs. `additions` is called
-    /// after the authorizer agreed, with the root of the working directory and the paths that the
-    /// working-copy commit tracks; it returns files that are not tracked yet.
+    /// Saves the tracked files, and the files that `additions` returns, as the new working-copy
+    /// commit, and moves the working-copy commit to it if the tree differs. The authorizer is asked
+    /// once, and `additions` is called after it agreed, with the root of the working directory. The
+    /// tracked files are saved first. An added file that the tree holds already is left out, as is
+    /// a repeated one.
+    ///
+    /// The returned [`Tracking::added`] lists the added files that were saved. One that is gone
+    /// when it is saved is left out and is no error, unless the caller named it
+    /// ([`Tracked::named`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`snapshot`](Self::snapshot) returns, [`SnapshotError::Gone`] for a named file
+    /// that is gone, and what `additions` returns.
     pub(super) fn replace_working_copy<E: From<SnapshotError>>(
         &self,
         operation: &OperationName,
         actor: &Actor,
         authorizer: &dyn Authorizer,
-        additions: impl FnOnce(&Path, &HashSet<String>) -> Result<Vec<Tracked>, E>,
-    ) -> Result<Replaced, E> {
+        additions: impl FnOnce(&Path) -> Result<Vec<Tracked>, E>,
+    ) -> Result<Tracking, E> {
         self.authorize(actor, authorizer, operation, "working-copy")
             .map_err(SnapshotError::Update)?;
         let current = self.refs().working_copy().map_err(SnapshotError::Refs)?;
         let commit = read_commit(self.objects(), current)?;
         let tracked = tracked_files(self.objects(), commit.tree())?;
-        let known: HashSet<String> = tracked.iter().map(|file| file.path.clone()).collect();
-        let added = additions(self.path(), &known)?;
+        let mut known: HashSet<String> = tracked.iter().map(|file| file.path.clone()).collect();
+        let added: Vec<Tracked> = additions(self.path())?
+            .into_iter()
+            .filter(|file| known.insert(file.path.clone()))
+            .collect();
+        let first_added = tracked.len();
         let mut index = Index::new();
         let mut saved = Vec::new();
-        for (file, is_new) in tracked
-            .into_iter()
-            .map(|file| (file, false))
-            .chain(added.into_iter().map(|file| (file, true)))
-        {
+        for (position, file) in tracked.into_iter().chain(added).enumerate() {
             if let Some((mode, id)) = save(self.path(), self.objects(), &file)? {
-                if is_new {
+                if position >= first_added {
                     saved.push(file.path.clone());
                 }
                 // A tree has no path that is a directory of another, but the working directory
@@ -110,13 +128,15 @@ impl Repository {
                 index
                     .insert(file.path, mode, id)
                     .map_err(SnapshotError::Index)?;
+            } else if file.named {
+                return Err(SnapshotError::Gone { path: file.path }.into());
             }
         }
         let tree = index
             .write_tree(self.objects())
             .map_err(SnapshotError::WriteTree)?;
         if tree == commit.tree() {
-            return Ok(Replaced {
+            return Ok(Tracking {
                 entry: None,
                 added: saved,
             });
@@ -138,19 +158,11 @@ impl Repository {
         let entry = self
             .move_working_copy(operation, current, new, actor)
             .map_err(SnapshotError::Update)?;
-        Ok(Replaced {
+        Ok(Tracking {
             entry,
             added: saved,
         })
     }
-}
-
-/// The result of [`Repository::replace_working_copy`].
-pub(super) struct Replaced {
-    /// The entry of the move, or `None` if the tree is the same.
-    pub(super) entry: Option<Entry>,
-    /// The files of `additions` that were saved.
-    pub(super) added: Vec<String>,
 }
 
 /// Reads and parses the commit.
@@ -194,7 +206,11 @@ pub(super) fn tracked_files(
                 format!("{prefix}/{}", entry.name())
             };
             match FileMode::from_entry_mode(entry.mode()) {
-                Some(mode) => files.push(Tracked { path, mode }),
+                Some(mode) => files.push(Tracked {
+                    path,
+                    mode,
+                    named: false,
+                }),
                 None => directories.push((path, TreeId::new(entry.id()))),
             }
         }
@@ -368,10 +384,16 @@ pub enum SnapshotError {
     /// A path is a special file (a device, a socket, a pipe), a link, or a name that cannot be
     /// saved. It is not skipped, because that would drop it from the history without a word.
     Unsupported {
-        /// The tracked path.
+        /// The path. For a name that is not UTF-8 it ends in the name in the form of `Debug`.
         path: String,
         /// What it is.
         what: Unsupported,
+    },
+    /// A file that a caller named is gone, or a directory or a link has taken its place, when it is
+    /// saved. A tracked file that is gone leaves the tree instead.
+    Gone {
+        /// The path.
+        path: String,
     },
     /// The paths found in the working directory do not make an index: a path is a file in one
     /// lookup and a directory in another, because the working directory changed meanwhile.
@@ -389,7 +411,7 @@ pub enum SnapshotError {
     WriteTree(WriteTreeError),
 }
 
-/// What a snapshot cannot save of a tracked path.
+/// What a snapshot cannot save of a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Unsupported {
@@ -399,6 +421,17 @@ pub enum Unsupported {
     NonUtf8Link,
     /// A file whose name is not UTF-8.
     NonUtf8Name,
+}
+
+impl Unsupported {
+    /// What the user can do about it.
+    fn remedy(self) -> &'static str {
+        match self {
+            Self::SpecialFile => "remove it or put a regular file in its place",
+            Self::NonUtf8Link => "point the link at a target with a UTF-8 name",
+            Self::NonUtf8Name => "rename it",
+        }
+    }
 }
 
 impl fmt::Display for Unsupported {
@@ -433,6 +466,7 @@ impl SnapshotError {
             | Self::Commit { .. }
             | Self::Tree { .. }
             | Self::Unsupported { .. }
+            | Self::Gone { .. }
             | Self::Index(_) => None,
         }
     }
@@ -453,8 +487,13 @@ impl fmt::Display for SnapshotError {
             Self::Tree { id, source } => write!(f, "the tree {id} is not valid: {source}"),
             Self::Unsupported { path, what } => write!(
                 f,
-                "`{}` is {what}, which a snapshot cannot save; remove it or put a regular file in \
-                 its place",
+                "`{}` is {what}, which cannot be saved; {}",
+                path.escape_debug(),
+                what.remedy()
+            ),
+            Self::Gone { path } => write!(
+                f,
+                "`{}` is gone, or something else has taken its place",
                 path.escape_debug()
             ),
             Self::Io {
@@ -464,8 +503,8 @@ impl fmt::Display for SnapshotError {
             } => write!(f, "could not {operation} `{}`: {source}", path.display()),
             Self::Index(error) => write!(
                 f,
-                "the working directory changed during the snapshot, so its paths do not fit: \
-                 {error}"
+                "the working directory changed while its files were read, so its paths do not \
+                 fit: {error}"
             ),
             Self::WriteTree(error) => {
                 write!(f, "could not write the tree of the snapshot: {error}")
