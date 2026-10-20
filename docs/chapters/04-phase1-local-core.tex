@@ -74,7 +74,8 @@ wie ihn das Verzeichnis hat, denn ein Dateisystem ohne Unterscheidung von Gross-
 Kleinschreibung nähme \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal;
 der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die beim
 Speichern verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt
-\type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung; jeder andere Name,
+\type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung, ebenso jede Datei und
+jedes Verzeichnis namens \type{.git} in jeder Tiefe (ADR-012); jeder andere Name,
 den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest \type{track}
 (ADR-012); sie steht im nächsten Absatz.
 Das Verzeichnis \type{.} allein steht für das ganze Arbeitsverzeichnis.
