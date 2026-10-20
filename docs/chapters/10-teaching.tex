@@ -1,17 +1,111 @@
 \chapter{Lehre}
 
-Das Projekt ist auch ein Lerngegenstand. Dieses Kapitel beschreibt, wie es in Kursen eingesetzt werden kann.
+Das Projekt ist auch ein Lerngegenstand. Dieses Kapitel beschreibt, wie es in Kursen
+eingesetzt werden kann.
 
 \section{Kurse}
 
 \startitemize
-\item {\bf DUA25, Datenstrukturen und Algorithmen:} Hashing, Merkle-Graphen, Myers-Diff und Graphsuche.
-\item {\bf AISE, AI Assisted Software Engineering:} Agenten-Workflows, Branch-Regeln, Freigaben und Risikostufen.
+\item {\bf DUA, Datenstrukturen und Algorithmen:} Hashing, Merkle-Graphen,
+Myers-Diff und Graphsuche.
+Welche Algorithmen des Codes im Kursbuch stehen, zeigt \in{Tabelle}[tab:algorithms].
+\item {\bf AISE, AI Assisted Software Engineering:} Agenten-Workflows,
+Branch-Regeln, Freigaben und Risikostufen.
+\stopitemize
+
+\section{Algorithmen im Code und im Buch}
+
+Der Kurs DUA arbeitet mit dem Buch {\em Algorithms} von Sedgewick und Wayne
+\cite[sedgewick2011algorithms].
+\in{Tabelle}[tab:algorithms] nennt, welche Algorithmen und Datenstrukturen der Code von Stemma
+heute einsetzt, wo man sie findet und in welchem Kapitel des Buches sie stehen.
+Sie ist ein Wegweiser zum Nachlesen und zum Vergleichen mit der eigenen Lösung,
+keine Beschreibung des Buches.
+
+\startplacetable[title={Algorithmen im Code von Stemma},
+  reference=tab:algorithms,location=split]
+\startxtable[frame=off,split=yes,option=stretch]
+\startxtablehead
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Algorithmus} \stopxcell
+\startxcell {\bf Stelle im Code} \stopxcell
+\startxcell {\bf Sedgewick und Wayne} \stopxcell
+\stopxrow
+\stopxtablehead
+\startxtablenext
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Algorithmus} \stopxcell
+\startxcell {\bf Stelle im Code} \stopxcell
+\startxcell {\bf Sedgewick und Wayne} \stopxcell
+\stopxrow
+\stopxtablenext
+\startxrow
+\startxcell Sortieren der Einträge eines Baums und der Branches eines Eintrags im Log \stopxcell
+\startxcell \type{Tree::new} (\type{object.rs}), \type{Change::new} (\type{oplog.rs}) \stopxcell
+\startxcell Kapitel 2, Sortieren \stopxcell
+\stopxrow
+\startxrow
+\startxcell Binäre Suche in einer sortierten Tabelle von Bereichen \stopxcell
+\startxcell \type{is_invisible_character} (\type{object.rs}) \stopxcell
+\startxcell Abschnitt 1.1 und 3.1, binäre Suche \stopxcell
+\stopxrow
+\startxrow
+\startxcell Geordnete Symboltabelle: Der Index hält die Pfade sortiert \stopxcell
+\startxcell \type{Index} mit \type{BTreeMap} (\type{index.rs}) \stopxcell
+\startxcell Abschnitt 3.1 bis 3.3, Symboltabellen, Suchbäume und 2-3-Bäume \stopxcell
+\stopxrow
+\startxrow
+\startxcell Hashtabelle, um bereits bekannte Pfade und doppelte Eltern auszusondern \stopxcell
+\startxcell \type{HashSet} in \type{replace_working_copy} (\type{snapshot.rs}),
+\type{Commit::new} und \type{Commit::parse} (\type{object.rs}) \stopxcell
+\startxcell Abschnitt 3.4, Hashtabellen \stopxcell
+\stopxrow
+\startxrow
+\startxcell Tiefensuche durch Verzeichnisbäume, mit einem Stapel statt Rekursion, damit ein tiefer
+Baum den Aufrufstapel nicht erschöpft \stopxcell
+\startxcell \type{tracked_files} (\type{snapshot.rs}), \type{walk} (\type{track.rs}) \stopxcell
+\startxcell Abschnitt 1.3, Stapel, und 4.1, Tiefensuche (ein Baum ist ein Graph ohne
+Kreis) \stopxcell
+\stopxrow
+\startxrow
+\startxcell Rückwärtiges Durchlaufen der Einträge, um das jüngste Vorkommen je
+Zeiger zu finden \stopxcell
+\startxcell \type{outcomes} (\type{oplog.rs}) \stopxcell
+\startxcell Abschnitt 1.3, Durchlaufen einer Folge, und 3.4, Hashtabelle \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Der \type{BTreeMap} von Rust ist ein B-Baum, eine Verallgemeinerung des 2-3-Baums
+aus dem Buch; die Tabelle nennt deshalb die Abschnitte über 2-3-Bäume.
+
+Drei Themen der Kurse stehen nicht im Buch:
+
+\startitemize
+\item {\bf Kryptografische Hashfunktion:} Die Objekt-IDs sind BLAKE3-Hashes des Inhalts
+(ADR-001).
+Das Buch behandelt Hashtabellen und ihre Hashfunktionen, nicht kryptografische Hashfunktionen.
+Für die IDs gilt eine andere Anforderung: Man darf zwei verschiedene Inhalte
+nicht mit gleichem Hash finden können.
+\item {\bf Merkle-Graph:} Bäume und Commits nennen ihre Teile über die ID des Inhalts
+(\type{object.rs}).
+Die Struktur ist ein gerichteter Graph ohne Kreis (Abschnitt 4.2 des Buches);
+den Merkle-Baum als Begriff kennt das Buch nicht.
+Den Commit-Graphen durchläuft erst Phase 3, für die Suche nach dem gemeinsamen Vorfahren
+(Abschnitt 4.1 und 4.2, Breitensuche und Tiefensuche).
+\item {\bf Myers-Diff:} Er ist noch nicht im Code, denn er kommt in Phase 2, und er steht
+nicht im Buch.
+Am nächsten liegt das Problem der längsten gemeinsamen Teilfolge, das sich mit dynamischer
+Programmierung lösen lässt; auch das ist nicht aus dem Buch.
+Myers löst es in einer Zeit, die von der Zahl der Unterschiede abhängt.
 \stopitemize
 
 \section{Übungen je Phase}
 
-Jede Phase lässt sich als Übung formulieren. Studierende implementieren einen Teil selbst und vergleichen ihn mit einer Referenzimplementierung. Die Phase 4 eignet sich besonders, weil Freigaben und Selbstfreigabeverbot eine Prüfung durch Agenten und Menschen verlangen.
+Jede Phase lässt sich als Übung formulieren. Studierende implementieren einen Teil
+selbst und vergleichen ihn mit einer Referenzimplementierung. Die Phase 4 eignet
+sich besonders, weil Freigaben und Selbstfreigabeverbot eine Prüfung durch Agenten
+und Menschen verlangen.
 
 \section{Offene Fragen}
 
