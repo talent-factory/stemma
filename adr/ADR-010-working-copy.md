@@ -65,10 +65,26 @@ are prior art, not a template.
   skipped without a word, since a tree cannot hold it (this skips a repository inside the
   directory as well), and any other name that a tree refuses stops the call (`InvalidName`).
   `.stemmaignore` (STEMMA-24) is not read yet, so nothing is excluded but those names.
-- **`commit` names the working-copy commit and starts a new one** *(proposal)*. The current
-  working-copy commit gets its message, and its change keeps its ID. A new, empty working-copy
-  commit starts on top of it. HEAD keeps naming a branch (ADR-008); the working-copy commit is a
-  child of the commit of that branch.
+- **`commit` names the working-copy commit and starts a new one** *(proposal, implemented in
+  `Repository::commit`)*. The current working-copy commit gets its message, and its change keeps
+  its ID. A new, empty working-copy commit starts on top of it. HEAD keeps naming a branch
+  (ADR-008); the working-copy commit is a child of the commit of that branch. Details:
+  - *Empty* means the same tree as the commit it follows. The tracked set is the tree, so a tree
+    without the files would leave every file untracked.
+  - `commit` takes a snapshot of the tracked files first, so that a change since the last command
+    is part of the commit. The snapshot is an operation of its own and has its own entry.
+  - The named commit `W'` is the working-copy commit `W` with the message, the actor, and the time
+    now: the parents and the change ID are kept. The new working-copy commit `N` has `W'` as its
+    only parent, the tree of `W'`, an empty message, and a new change ID.
+  - Two pointers move in **one** entry of the log: the branch from its tip (or from nothing) to
+    `W'`, and the working-copy commit from `W` to `N`. The branch moves first, so that a stop
+    between the moves keeps `W'` reachable. If the second move fails, the error says that one
+    pointer moved (`UpdateError::PartlyMoved`) and `op log` shows the entry as not taken.
+  - A commit is refused when the message is empty (there is no editor in phase 1), when HEAD
+    names a commit and not a branch, when the tree is that of the parent (or empty, for a first
+    commit), and when the branch is not at the parent of the working-copy commit: a commit on
+    top of that parent would drop what the branch has. A rebase (phase 3) brings the two
+    together.
 - **The tracked set is the tree of the working-copy commit** *(proposal)*. There is no index file
   as a staging area. `Index` stays in the code as the model that builds a tree from a set of
   paths and as the format of a cache, if one is needed for speed.
@@ -113,9 +129,11 @@ are prior art, not a template.
 
 ## Open items
 
-- [ ] `Commit::rewrite`, which takes the change ID from the commit it replaces, and a struct of
-      named parts instead of six positional arguments of `Commit::new`. They belong with the first
-      command that creates commits (STEMMA-3), because that is the first real caller.
+- [x] `Commit::rewrite`, which takes the parents and the change ID from the commit it replaces
+      (STEMMA-3). A struct of named parts instead of six positional arguments of `Commit::new` is
+      open.
+- [ ] A commit with an empty tree as an allowed empty commit, a commit while HEAD names a commit,
+      and a commit while the branch has moved (a rebase, phase 3) are refused today.
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
       does when the working-copy commit has one (phase 3).
 

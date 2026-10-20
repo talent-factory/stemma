@@ -146,16 +146,7 @@ impl Repository {
                 late: None,
             });
         }
-        let replacement = Commit::new(
-            tree,
-            commit.parents().to_vec(),
-            commit.change(),
-            actor.clone(),
-            now(),
-            commit.message(),
-        )
-        // `Commit::parse` refuses a repeated parent, so the parents of a stored commit are distinct.
-        .expect("the parents of a commit are distinct");
+        let replacement = commit.rewrite(tree, actor.clone(), now(), commit.message());
         let new = self
             .objects()
             .put_commit(&replacement)

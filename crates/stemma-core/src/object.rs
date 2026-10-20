@@ -934,6 +934,27 @@ impl Commit {
         })
     }
 
+    /// Creates the commit that replaces this one as the same change: the parents and the change ID
+    /// are kept, and the tree, the author, the time, and the message are the new ones. A snapshot
+    /// and a `commit` are rewrites in this sense (ADR-010). The parents of a commit are distinct
+    /// already, so the call cannot fail.
+    pub fn rewrite(
+        &self,
+        tree: TreeId,
+        author: Actor,
+        timestamp: i64,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            tree,
+            parents: self.parents.clone(),
+            change: self.change,
+            author,
+            timestamp,
+            message: message.into(),
+        }
+    }
+
     /// Returns the ID of the tree this commit snapshots.
     pub fn tree(&self) -> TreeId {
         self.tree
@@ -1359,6 +1380,35 @@ mod tests {
     }
 
     // Object IDs
+
+    #[test]
+    fn a_rewrite_keeps_the_parents_and_the_change_and_takes_the_rest() {
+        let parent =
+            commit_id("b3:3333333333333333333333333333333333333333333333333333333333333333");
+        let change = ChangeId::generate().unwrap();
+        let old = Commit::new(
+            tree_id_of("b3:1111111111111111111111111111111111111111111111111111111111111111"),
+            vec![parent],
+            change,
+            Actor::human("daniel").unwrap(),
+            10,
+            "old",
+        )
+        .unwrap();
+        let other = Actor::human("alice").unwrap();
+        let tree =
+            tree_id_of("b3:2222222222222222222222222222222222222222222222222222222222222222");
+
+        let new = old.rewrite(tree, other.clone(), 20, "new");
+
+        assert_eq!(new.parents(), [parent]);
+        assert_eq!(new.change(), change);
+        assert_eq!(new.tree(), tree);
+        assert_eq!(new.author(), &other);
+        assert_eq!(new.timestamp(), 20);
+        assert_eq!(new.message(), "new");
+        assert_ne!(new, old);
+    }
 
     #[test]
     fn blob_ids_match_golden_vectors() {

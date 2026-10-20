@@ -1019,6 +1019,20 @@ fn join_name(prefix: &str, component: &str) -> String {
     }
 }
 
+/// The move of a branch in [`FsRefStore::update_branch_and_working_copy_after`].
+pub(crate) struct BranchMove<'a> {
+    pub(crate) name: &'a BranchName,
+    /// The commit the branch has to be at, `None` for a branch that does not exist.
+    pub(crate) expected: Option<CommitId>,
+    pub(crate) new: CommitId,
+}
+
+/// The move of the working-copy commit in [`FsRefStore::update_branch_and_working_copy_after`].
+pub(crate) struct WorkingCopyMove {
+    pub(crate) expected: CommitId,
+    pub(crate) new: CommitId,
+}
+
 impl crate::store::sealed::Sealed for FsRefStore {}
 
 /// The outcome of a change of a pointer that a step precedes, such as the entry of the operation
@@ -1038,6 +1052,9 @@ pub(crate) enum Logged<T, E> {
     /// The step ran and the pointer moved, but the directory could not be flushed to disk
     /// ([`RefError::NotFlushed`]).
     NotFlushed(T, RefError),
+    /// The step ran and the first of two pointers moved, but the second did not: the file system
+    /// failed. The step stays done, and the entry names a move that was half made.
+    PartlyMoved(T, RefError),
 }
 
 impl FsRefStore {
@@ -1194,6 +1211,88 @@ impl FsRefStore {
         let moved =
             self.write_replacing(&self.working_copy_path(), &encode_branch(&new), &self.root);
         Ok(Self::after_move(done, moved))
+    }
+
+    /// Moves a branch and the working-copy commit in one operation, and runs `step` after the
+    /// checks and before the first move, all under the lock of the references. This is what a
+    /// `commit` does (ADR-010): the branch takes the named commit and the working-copy commit takes
+    /// the new one, and the log has one entry for both (ADR-011).
+    ///
+    /// The checks are the ones of [`update_branch_after`](Self::update_branch_after) and
+    /// [`update_working_copy_after`](Self::update_working_copy_after), and both commits have to be
+    /// in `objects`. The branch moves first: if the process stops between the two moves, the
+    /// commit that was named is reachable from the branch and is not lost. Both pointers change, so
+    /// there is no unchanged case.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of the two calls named above. Once `step` has run, nothing is an error of
+    /// this call; see [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn update_branch_and_working_copy_after<T, E>(
+        &self,
+        branch: &BranchMove<'_>,
+        working_copy: &WorkingCopyMove,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let _lock = self.lock()?;
+        Self::require_commit(&branch.new, objects)?;
+        Self::require_commit(&working_copy.new, objects)?;
+        let current = self.current(branch.name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                name: branch.name.clone(),
+                with,
+                kind,
+            });
+        }
+        if current.commit != branch.expected {
+            return Err(RefError::Stale {
+                name: branch.name.clone(),
+                expected: branch.expected,
+                found: current.commit,
+            });
+        }
+        let found = self.working_copy()?;
+        if found != working_copy.expected {
+            return Err(RefError::StaleWorkingCopy {
+                expected: working_copy.expected,
+                found,
+            });
+        }
+        if let Some(empty) = &current.empty_directory {
+            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let first = self.write_replacing(
+            &self.branch_path(branch.name),
+            &encode_branch(&branch.new),
+            &self.heads_dir(),
+        );
+        let mut unflushed = match first {
+            Ok(()) => None,
+            Err(error @ RefError::NotFlushed { .. }) => Some(error),
+            Err(error) => return Ok(Logged::MoveFailed(done, error)),
+        };
+        let second = self.write_replacing(
+            &self.working_copy_path(),
+            &encode_branch(&working_copy.new),
+            &self.root,
+        );
+        match second {
+            Ok(()) => Ok(match unflushed.take() {
+                Some(error) => Logged::NotFlushed(done, error),
+                None => Logged::Moved(done),
+            }),
+            Err(error @ RefError::NotFlushed { .. }) => {
+                Ok(Logged::NotFlushed(done, unflushed.unwrap_or(error)))
+            }
+            Err(error) => Ok(Logged::PartlyMoved(done, error)),
+        }
     }
 
     fn after_move<T, E>(done: T, moved: Result<(), RefError>) -> Logged<T, E> {

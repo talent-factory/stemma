@@ -152,8 +152,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 
 - Every operation that changes a pointer goes through a function of `Repository`
   (`update_branch`, `set_head`), which orders "check, write the entry, flush, move" under the lock.
-  The operations that move several pointers in one entry (`commit`, the snapshot) need a function
-  of their own (STEMMA-3, STEMMA-22). The stores alone must not move pointers in production code.
+  An operation that moves several pointers in one entry needs a function of its own: `commit`
+  moves a branch and the working-copy commit under one lock and writes one entry
+  (`Repository::commit`, STEMMA-3). The stores alone must not move pointers in production code.
 - The log grows with every change, and a snapshot at every command makes many entries. Nothing
   removes them in phase 1; the open items name the measure that decides about retention.
 - The log keeps commits that a rewrite or a purge would otherwise drop. A secret in a tracked file
@@ -174,9 +175,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - [ ] `Moved` can be built with an old and a new value that are equal, and `Change::new` rejects
       that; a fallible `Moved::new` would keep the rule in one place. `Change::new` takes two
       adjacent optional pointers, which gets harder to read with every new kind of pointer; a
-      struct of pointers, a context of operation, actor and authorizer, and an `apply` that moves
-      several pointers in one entry belong with `commit` and the snapshot (STEMMA-3, STEMMA-22),
-      which are the first operations that move more than one.
+      struct of pointers, a context of operation, actor and authorizer, and a general `apply` that
+      moves any set of pointers in one entry are open. `commit` has a function for its two
+      pointers (a branch and the working-copy commit); a third kind of operation, such as a
+      merge, decides the general form.
 - [ ] The type of the number of an entry (a newtype with its file name and its limit in one
       place) and a read-only trait for the references that `RefsView` and the store share.
 - [ ] Retention: whether many snapshot entries of one working-copy change are merged after some
