@@ -93,7 +93,7 @@ are prior art, not a template.
     top of that parent would drop what the branch has. A rebase (phase 3) brings the two
     together.
 - **`status` takes the snapshot and compares the commit with its parent** *(confirmed,
-  implemented in `Repository::status`)*. Like every command that does not only read the log,
+  implemented in `Repository::status` and `stemma status`)*. Like every command that does not only read the log,
   `status` saves the tracked files (so it has an actor, and the entry appears only if a tracked
   file changed). The snapshot makes every tracked file equal to the working-copy commit, so
   "changed" cannot mean "differs from the working-copy commit": it means what the working-copy
@@ -112,7 +112,9 @@ are prior art, not a template.
   - A failure after the snapshot (reading the references, the commits, or the trees) leaves the
     snapshot: the error says so and carries the entry (`StatusError::saved`). A snapshot that
     moved the pointer and could not flush it is a result with a flush error, as for `commit`,
-    and the command ends with code 3 after it has written the status (`stemma status`).
+    and the command ends with code 3 after it has written the status (`stemma status`). A
+    failure of reading after a snapshot, and an output that cannot be written, end with code 1
+    and name the entry of the snapshot; code 1 is the code of a command that only reads.
   - The references are read one after the other and not under a lock, so a process that moves a
     pointer in between can make HEAD and the working-copy commit come from two states.
   - `op log` still takes no snapshot, because the snapshot would change the log it is about to

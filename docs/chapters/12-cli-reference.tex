@@ -34,20 +34,21 @@ sie nennt nur, in wessen Namen er läuft.
 
 \startitemize
 \item {\bf 0:} Der Befehl ist gelungen.
-\item {\bf 1:} Der Befehl ist gescheitert und hat nichts geändert. Die Meldung auf der
-Fehlerausgabe hat das Präfix \type{stemma:}. Zwei Spuren kann Code 1 hinterlassen:
+\item {\bf 1:} Der Befehl ist gescheitert. Die Meldung auf der Fehlerausgabe hat das Präfix
+\type{stemma:}. Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
 einen Eintrag für einen Zug, der nicht stattfand (\type{op log} markiert ihn mit \type{!}),
 und bei den Befehlen \type{commit} und \type{status} den Eintrag des Snapshots,
-den sie vor der Ablehnung machten.
+den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein erneuter Aufruf ist unbedenklich.
 \item {\bf 2:} Die Argumente sind falsch, zum Beispiel ein unbekannter Schalter oder
 ein ungültiger Branch-Name. Das Programm gibt die Meldung selbst aus.
 \item {\bf 3:} Der Befehl hat sein Ergebnis angelegt, konnte aber nicht abschliessen:
-Das Verzeichnis ist nicht gesichert, die Ausgabe liess sich nicht schreiben,
-\type{commit} hat nur einen seiner beiden Zeiger bewegt,
-oder \type{status} konnte seinen Snapshot nicht sichern oder danach nicht lesen.
+Das Verzeichnis ist nicht gesichert, die Ausgabe liess sich nicht schreiben
+(nicht bei einem Befehl, der nur liest) oder \type{commit} hat nur einen seiner
+beiden Zeiger bewegt.
+Bei \type{status} heisst es: Der Snapshot hat den Zeiger bewegt, aber nicht gesichert.
 Ein Skript darf das Ergebnis weder löschen noch den Befehl wiederholen;
-nur ein weiterer \type{commit} beendet einen halben (siehe dort),
-und ein weiterer \type{status} ist unbedenklich.
+nur ein weiterer \type{commit} beendet einen halben (siehe dort).
+Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht.
 \stopitemize
 
 Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
@@ -144,7 +145,8 @@ No new files to track
 \stoptyping
 
 Die Pfade der Ausgabe sind relativ zum Repository (anders als bei \type{init}),
-und ein Name mit Steuerzeichen erscheint maskiert. Ein Pfad, der schon verfolgt wird,
+und ein Name erscheint maskiert, wie es bei \type{status} steht.
+Ein Pfad, der schon verfolgt wird,
 ist kein Fehler und ändert nichts; ändert sich weder der Baum noch eine verfolgte Datei,
 entsteht weder ein Commit noch ein Eintrag.
 
@@ -352,32 +354,48 @@ schreibt der Befehl eine Zeile:
 Working copy is clean
 \stoptyping
 
-Die Pfade sind relativ zum Repository, und ein Name mit einem Zeichen, das maskiert wird
-(zum Beispiel ein Hochkomma), erscheint maskiert, wie bei \type{track}.
+Die Pfade sind relativ zum Repository.
+Jeder Name wird Zeichen für Zeichen maskiert, damit zwei verschiedene Pfade nie gleich aussehen:
+Ein Hochkomma, ein Backslash, ein Steuerzeichen, ein kombinierendes Zeichen
+(das \type{e} mit Akzent als zwei Zeichen ist ein anderer Name als das \type{é} als eines)
+und ein Leerzeichen am Rand eines Namens erscheinen als Escape-Folge,
+Buchstaben anderer Schriften unverändert.
+Bei \type{track} gilt dieselbe Regel.
 Eine verfolgte Datei, die ein Muster der Ausschlussdatei ausschliesst, bleibt in den
 Änderungen; sie wird weiter gespeichert.
 
-{\bf Fehler.} Mit Exit-Code 1 und ohne Spur endet der Befehl, wenn kein Akteur da ist,
-wenn das Repository nicht im angegebenen Verzeichnis liegt (die Meldung nennt \type{-C}),
-bei einer ungültigen Ausschlussdatei und bei einem Namen im Verzeichnis,
-den ein Baum ablehnt und den kein Muster ausschliesst, oder der nicht UTF-8 ist.
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist
+und wenn das Repository nicht im angegebenen Verzeichnis liegt (die Meldung nennt \type{-C}).
+Ebenso endet er bei einem Fehler im Repository, zum Beispiel einer beschädigten Datei
+\type{working-copy}, und bei einer Datei, die der Snapshot nicht lesen kann:
+Der Snapshot bricht ab, bevor sich ein Zeiger bewegt.
+Mit Exit-Code 1 endet er auch bei einer ungültigen Ausschlussdatei,
+bei einem Namen im Verzeichnis, den ein Baum ablehnt und den kein Muster ausschliesst,
+bei einem Namen ohne UTF-8 und bei einem Fehler des Dateisystems beim Auflisten.
 Die Ausschlussdatei liest der Befehl und das Verzeichnis durchläuft er vor dem Snapshot;
-die Meldung sagt, dass nichts geschrieben wurde.
-Kann der Befehl die Ausgabe nicht schreiben, endet er mit Exit-Code 1,
-auch wenn der Snapshot schon einen Eintrag gemacht hat (siehe oben, zweite Spur).
-Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}), endet er mit
-Exit-Code 0.
+diese Meldungen sagen, dass nichts geschrieben wurde.
 
-Mit Exit-Code 3 endet der Befehl in zwei Fällen.
-Konnte der Snapshot den Zeiger bewegen und das Verzeichnis nicht sichern,
-schreibt der Befehl den Status zuerst und meldet den Fehler danach.
 Scheitert das Lesen der Referenzen, der Commits oder der Bäume erst nach dem Snapshot,
-bleibt der Snapshot, und die Meldung nennt seinen Eintrag.
-In beiden Fällen ist ein erneuter Aufruf unbedenklich: Er findet nichts mehr zu speichern.
+oder lässt sich die Ausgabe nicht schreiben, endet der Befehl ebenfalls mit Exit-Code 1.
+Hat der Snapshot einen Eintrag gemacht, bleibt dieser (zweite Spur oben),
+und die Meldung nennt ihn; ein erneuter Aufruf findet dann nichts mehr zu speichern.
+Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}),
+endet der Befehl mit Exit-Code 0, ausser sein Snapshot war nicht gesichert.
+
+Mit Exit-Code 3 endet der Befehl, wenn der Snapshot den Zeiger bewegt,
+aber das Verzeichnis nicht sichern konnte.
+Der Befehl schreibt den Status zuerst und meldet den Fehler danach.
+Lässt sich auch die Ausgabe nicht schreiben, nennt die Meldung beide Fehler.
+Scheitert das Lesen erst nach einem solchen Snapshot, endet der Befehl ebenfalls mit 3
+und nennt den Fehler des Sicherns.
+Ein erneuter Aufruf findet nichts mehr zu speichern; er endet mit Exit-Code 0,
+sichert den Eintrag aber nicht.
 
 {\bf Grenzen.} Eine verfolgte Datei, die die Ausschlussdatei ausschliesst,
 meldet der Befehl nicht als solche; ein Bericht «verfolgt und ausgeschlossen»
 ist ein offener Punkt in ADR-012.
+Eine Spezialdatei (Socket, Pipe, Gerät) im Verzeichnis listet der Befehl als unverfolgt auf;
+\type{track} verweigert sie.
 Einen Schalter \type{--json} gibt es nicht.
 Die Zeiger liest der Befehl nacheinander und nicht unter der Sperre,
 ein gleichzeitiger Prozess kann also HEAD und Commit aus zwei Zuständen liefern.
