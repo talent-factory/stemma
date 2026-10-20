@@ -2,7 +2,8 @@
 
 **Status:** Confirmed by the author on 2026-10-20 and implemented in STEMMA-24
 (`crates/stemma-core/src/ignore.rs`, used by `Repository::track`). `Repository::status`
-(STEMMA-4) uses it for the untracked files.
+(STEMMA-4) uses it for the untracked files. The rule that `.git` is always excluded was
+confirmed by the author on 2026-10-20 and implemented in the same way (PR #68).
 
 ## Context
 
@@ -84,7 +85,7 @@ other).
 - **`.stemma` stays excluded by name** *(confirmed)*. A tree cannot hold a name that resolves to
   `.stemma` (ADR-005), and the file cannot lift that. The aliases of ADR-005 are the business of
   the name filter that exists, not of the patterns.
-- **`.git` is always excluded by name** *(proposed)*. `track` and `status` leave a file or
+- **`.git` is always excluded by name** *(confirmed)*. `track` and `status` leave a file or
   directory named `.git` out at every depth, without a line in `.stemmaignore` and without a way
   to lift that. It is the metadata of Git (also the link file of a worktree or a submodule), not a
   file of the project, and it changes with every Git command. Unlike `.stemma` it is no threat to
