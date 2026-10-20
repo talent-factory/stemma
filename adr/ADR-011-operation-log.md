@@ -103,11 +103,14 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   store write no entry. A move to the value that a pointer has writes none either.
 - **The caller is told whether an entry exists, and whether the pointer moved** *(implemented)*. An
   error that leaves an entry carries it (`UpdateError::entry()`): `MoveFailed` (the move failed
-  after the entry; the pointer did not move), `NotDurable` (the move was made, a directory could
-  not be flushed; do not repeat it), and `Log` with `NotFlushed` (the entry is in the log but is
-  not known to be flushed, so the move is refused; the pointer did not move, and a second attempt
-  writes another entry). `UpdateError::pointer_moved()` answers the second question. Any other
-  error of the log means that no entry was written.
+  after the entry; the pointer did not move), `PartlyMoved` (an operation that moves two pointers
+  moved the first and failed on the second; do not repeat it, read the pointers), `NotDurable` (the
+  move was made, a directory could not be flushed; do not repeat it), and `Log` with `NotFlushed`
+  (the entry is in the log but is not known to be flushed, so the move is refused; the pointer did
+  not move, and a second attempt writes another entry). `UpdateError::pointer_moved()` answers the
+  second question: it is true for `NotDurable` and `PartlyMoved`. Any other error of the log means
+  that no entry was written. `op log` marks the entry of a `PartlyMoved` as not taken (`!`),
+  because not every pointer of it reached its new value, although one did.
 - **An entry has a size limit that the writer keeps** *(implemented)*. The reader refuses an entry
   above 64 KiB, so the writer refuses it before it writes anything (`EntryTooLarge`). The actor
   and the names in an entry have no limit of their own, so this is the only bound; without it, an
@@ -179,6 +182,13 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       moves any set of pointers in one entry are open. `commit` has a function for its two
       pointers (a branch and the working-copy commit); a third kind of operation, such as a
       merge, decides the general form.
+- [ ] `write_replacing` reports a failure to flush the directory as `NotFlushed` only if the
+      directory cannot be opened for the flush (`StoreError::Io`); any other error of the flush
+      after the rename becomes `RefError::Store`, so a move that was made is reported as one that
+      was not. It is older than `commit` and applies to every move.
+- [ ] If both moves of a `commit` are not flushed, the error names the first directory only, and
+      if the second move fails after the first was not flushed, `PartlyMoved` does not carry the
+      flush error of the first. The caller may not repeat the change in either case.
 - [ ] The type of the number of an entry (a newtype with its file name and its limit in one
       place) and a read-only trait for the references that `RefsView` and the store share.
 - [ ] Retention: whether many snapshot entries of one working-copy change are merged after some

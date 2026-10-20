@@ -79,7 +79,11 @@ are prior art, not a template.
   - Two pointers move in **one** entry of the log: the branch from its tip (or from nothing) to
     `W'`, and the working-copy commit from `W` to `N`. The branch moves first, so that a stop
     between the moves keeps `W'` reachable. If the second move fails, the error says that one
-    pointer moved (`UpdateError::PartlyMoved`) and `op log` shows the entry as not taken.
+    pointer moved (`UpdateError::PartlyMoved`) and `op log` shows the entry as not taken (`!`),
+    although the branch did move. The next `commit` finds the state (the tip of the branch has
+    the parents and the change ID of the working-copy commit, and a message) and finishes the
+    commit: it starts the new working-copy commit and moves that pointer alone, with an entry of
+    its own. The message of that call is not used (`Committed::resumed`).
   - A commit is refused when the message is empty (there is no editor in phase 1), when HEAD
     names a commit and not a branch, when the tree is that of the parent (or empty, for a first
     commit), and when the branch is not at the parent of the working-copy commit: a commit on
@@ -130,8 +134,10 @@ are prior art, not a template.
 ## Open items
 
 - [x] `Commit::rewrite`, which takes the parents and the change ID from the commit it replaces
-      (STEMMA-3). A struct of named parts instead of six positional arguments of `Commit::new` is
-      open.
+      (STEMMA-3).
+- [ ] A struct of named parts instead of six positional arguments of `Commit::new`.
+- [ ] A branch that someone moved to an older version of the working-copy commit that has a
+      message looks like a `commit` that stopped, and the next `commit` finishes it.
 - [ ] A commit with an empty tree as an allowed empty commit, a commit while HEAD names a commit,
       and a commit while the branch has moved (a rebase, phase 3) are refused today.
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge

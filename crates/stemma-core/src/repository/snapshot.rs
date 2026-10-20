@@ -495,7 +495,7 @@ impl fmt::Display for SnapshotError {
                 write!(f, "the store has no {} {id}", kind.name())
             }
             Self::Commit { id, source } => {
-                write!(f, "the working-copy commit {id} is not valid: {source}")
+                write!(f, "the commit {id} is not valid: {source}")
             }
             Self::Tree { id, source } => write!(f, "the tree {id} is not valid: {source}"),
             Self::Unsupported { path, what } => write!(

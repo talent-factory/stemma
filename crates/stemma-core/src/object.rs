@@ -900,7 +900,7 @@ pub struct Commit {
 
 impl Commit {
     /// Creates a commit. The caller supplies the change ID: [`ChangeId::generate`] for a new
-    /// change, `previous.change()` for a rewrite of one, and a new one for a merge. `new` neither
+    /// change, `previous.change()` for a rewrite of one (see [`rewrite`](Self::rewrite)), and a new one for a merge. `new` neither
     /// makes nor checks it, as it does not check the author. Parents are kept in the given order,
     /// and the order is part of the ID.
     /// Any `i64` is accepted as the timestamp, including negative values (before 1970).

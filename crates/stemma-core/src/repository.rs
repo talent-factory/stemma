@@ -495,11 +495,13 @@ fn now() -> i64 {
     }
 }
 
-/// Reasons why [`Repository::update_branch`] and [`Repository::set_head`] fail. Two questions tell
-/// them apart: is there an entry in the log (`entry()`), and did the pointer move? An entry exists
-/// for [`MoveFailed`](Self::MoveFailed) (the pointer did not move), [`NotDurable`](Self::NotDurable)
-/// (it moved), and a [`Log`](Self::Log) error with [`OpLogError::NotFlushed`] (it did not move).
-/// [`pointer_moved`](Self::pointer_moved) answers the second question.
+/// Reasons why [`Repository::update_branch`], [`Repository::set_head`], and the operations that
+/// build on them (`snapshot`, `track`, `commit`) fail. Two questions tell them apart: is there an
+/// entry in the log (`entry()`), and did a pointer move? An entry exists for
+/// [`MoveFailed`](Self::MoveFailed) (no pointer moved), [`PartlyMoved`](Self::PartlyMoved) (one of
+/// two moved), [`NotDurable`](Self::NotDurable) (the pointers moved), and a [`Log`](Self::Log)
+/// error with [`OpLogError::NotFlushed`] (none moved). [`pointer_moved`](Self::pointer_moved)
+/// answers the second question.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum UpdateError {
@@ -528,8 +530,9 @@ pub enum UpdateError {
         source: RefError,
     },
     /// The entry was written and the first of two pointers moved, but the second did not: the file
-    /// system failed between the moves. `op log` shows the entry as not taken in part. Do not repeat
-    /// the change; read the pointers.
+    /// system failed between the moves. `op log` shows the entry as not taken (`!`), although the
+    /// first pointer did move. Do not repeat the change; read the pointers. After a `commit` that
+    /// stopped here, the next `commit` finishes it.
     PartlyMoved {
         /// The entry that is in the log.
         entry: Box<Entry>,
