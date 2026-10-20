@@ -188,15 +188,15 @@ are prior art, not a template.
 - [x] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
       which level of ADR-004 it belongs to. Decided in ADR-012 and built (STEMMA-24).
 - [ ] How long the operation log keeps the replaced commits of many snapshots (retention). The
-      format and what an entry holds are decided in ADR-011.
+      format and what an entry holds are decided in ADR-011. Tracked in STEMMA-39.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the log and
-      lets garbage collection delete what only the log held.
+      lets garbage collection delete what only the log held. Tracked in STEMMA-26.
 - [ ] Who the actor of a snapshot is when two actors use one directory, and how the lease of
-      ADR-004 applies.
+      ADR-004 applies. Tracked in STEMMA-38.
 - [ ] The cost of a snapshot for a large working directory: reading every file at every
       command. It is twice the tracked files today, because `Index::write_tree` verifies the
       blobs again (the code points here and does not repeat it). A cache keyed by modification time and size is the usual answer and a risk for
-      correctness; decide with a measurement.
+      correctness; decide with a measurement. Tracked in STEMMA-37.
 - [ ] Files that change during a snapshot. Each file is read once and its blob is made from what
       was read, so a file is consistent in itself, but the files together are not one instant.
       Special files are refused; whether a link that is not UTF-8 may be saved is open.
