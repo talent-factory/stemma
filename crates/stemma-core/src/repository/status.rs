@@ -369,14 +369,29 @@ impl StatusError {
 
     /// Returns the error of the file system, if that is what failed. The chain of
     /// [`Error::source`] does not lead to it (see the crate documentation).
+    ///
+    /// If the failure is one of reading after a snapshot whose flush failed, the error of what
+    /// failed comes first and the flush error second: [`Saved::late`] has it.
     pub fn io_error(&self) -> Option<&io::Error> {
-        match self {
+        let own = match self {
             Self::Update(error) => error.io_error(),
             Self::Ignore(error) => error.io_error(),
             Self::Walk(error) => error.io_error(),
             Self::Snapshot(error) | Self::Read { source: error, .. } => error.io_error(),
             Self::Refs { source, .. } => source.io_error(),
-        }
+        };
+        own.or_else(|| {
+            self.saved()
+                .and_then(|saved| saved.late.as_ref())
+                .and_then(RefError::io_error)
+        })
+    }
+
+    /// Whether the snapshot that came before this failure moved the pointer and could not flush
+    /// it, so that the saved state may not survive a crash. The failure is one of reading, and
+    /// the entry is in the log ([`saved`](Self::saved)).
+    pub fn not_durable(&self) -> bool {
+        self.saved().is_some_and(|saved| saved.late.is_some())
     }
 }
 
@@ -401,9 +416,18 @@ impl fmt::Display for StatusError {
     }
 }
 
-/// The sentence that says the snapshot of the call stays.
+/// The sentence that says the snapshot of the call stays, and that its flush failed if it did.
 fn saved_note(saved: &Option<Box<Saved>>) -> String {
-    match saved {
+    match saved.as_deref() {
+        Some(Saved {
+            entry,
+            late: Some(late),
+            ..
+        }) => format!(
+            "; the tracked files were saved before as entry {} of the operation log, but \
+             flushing failed: {late}; the saved state may not survive a crash",
+            entry.number()
+        ),
         Some(saved) => format!(
             "; the tracked files were saved before as entry {} of the operation log",
             saved.entry.number()
@@ -1079,9 +1103,10 @@ mod tests {
         let probe = fs::read_dir(&metadata).is_err();
         let result = repository.status(&other(), &AllowAll);
         fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
-        if !probe {
-            return;
-        }
+        assert!(
+            probe,
+            "permissions do not bind this user; do not run the tests as root"
+        );
 
         let status = result.unwrap();
 
@@ -1131,6 +1156,39 @@ mod tests {
                 .contains("could not read the working-copy commit"),
             "{error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failure_of_reading_after_a_snapshot_that_was_not_flushed_keeps_the_flush_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "one");
+        track(&repository, "a.txt");
+        commit(&repository, "base");
+        write(&dir, "a.txt", "two");
+        let parent = repository.refs().resolve_head().unwrap().unwrap();
+        fs::remove_file(repository.objects().object_path(&parent.object_id())).unwrap();
+        let metadata = repository.metadata_dir();
+        fs::set_permissions(&metadata, fs::Permissions::from_mode(0o300)).unwrap();
+        let works = fs::read_dir(&metadata).is_ok();
+        let result = repository.status(&other(), &AllowAll);
+        fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            !works,
+            "permissions do not bind this user; do not run the tests as root"
+        );
+
+        let error = result.unwrap_err();
+
+        assert!(
+            matches!(&error, StatusError::Read { saved: Some(_), .. }),
+            "{error}"
+        );
+        assert!(error.not_durable() && error.pointer_moved());
+        assert!(error.to_string().contains("flushing failed"), "{error}");
+        assert!(error.io_error().is_some());
     }
 
     #[test]

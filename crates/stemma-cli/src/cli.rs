@@ -1,21 +1,28 @@
 //! Arguments, the actor, and the commands.
 //!
-//! Exit codes: 0 for success, 1 for a command that fails and has changed nothing, 2 for arguments
-//! that are wrong (the code of the argument parser), and 3 for a command that has done its work
-//! but could not finish: the repository or the change exists, but flushing it to disk or writing
-//! the result failed, or a `commit` moved one of its two pointers and not the other. A script must
-//! not remove or repeat what such a command made; only the next `commit` after a half-made one
-//! finishes it, and the message of that call is not used. A command that only reads (`op log`)
-//! has made nothing, so a failed write of its output is code 1; some of the output may already
-//! be written, and a script discards it.
+//! Exit codes: 0 for success, 1 for a command that fails, 2 for arguments that are wrong (the code
+//! of the argument parser), and 3 for a command that has done its work but could not finish: the
+//! repository or the change exists, but flushing it to disk failed, or (for `track` and `commit`)
+//! writing the result failed, or a `commit` moved one of its two pointers and not the other. A
+//! script must not remove or repeat what such a command made; only the next `commit` after a
+//! half-made one finishes it, and the message of that call is not used. Running `status` again is
+//! safe, but it finds nothing to save and so does not make an unflushed snapshot durable.
+//!
+//! A command that only reads (`op log`, `status`) has made nothing by its output, so a failed
+//! write of its output is code 1; some of the output may already be written, and a script discards
+//! it. A closed pipe is not a failure, and it does not hide an error of flushing that comes after
+//! the output.
 //!
 //! Code 1 can leave two traces. A write that fails after its entry is in the operation log
 //! (`track`, `commit`, `UpdateError::MoveFailed`) leaves an entry for a move that did not happen,
-//! which `op log` marks as such. And `commit` saves the tracked files first, as an entry of its
-//! own (`snapshot`) that stays when the commit is then refused for nothing to commit or for a
-//! branch that moved; repeating the command is safe. A snapshot that moved the pointer and could
-//! not flush it is code 3, as for `track`; the commit was not made and the command can be
-//! repeated.
+//! which `op log` marks as such. And a command that saves the tracked files first leaves that
+//! entry (`snapshot`) when it fails afterwards: `commit` when it is refused for nothing to commit
+//! or for a branch that moved, and `status` when it cannot read the repository or write its
+//! output. The message of such a failure names the entry, and repeating the command is safe.
+//!
+//! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
+//! status is written, for `commit` without a commit (it can be repeated), and for `track` as the
+//! other flush errors.
 //!
 //! A failing command prints `stemma: <message>`, a complete message (see the crate documentation
 //! of `stemma-core`). The argument parser prints its own errors.
@@ -36,7 +43,7 @@ use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
     normalize_path, CommitError, Committed, InitError, InitOptions, OpenError, Repository,
-    SnapshotError, TrackError, Tracking, UpdateError,
+    SnapshotError, Status, StatusError, TrackError, Tracking, UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -62,6 +69,8 @@ enum Command {
     Track(TrackArgs),
     /// Name the working-copy commit and start a new one
     Commit(CommitArgs),
+    /// Show what the working copy changes and which files are not tracked
+    Status(StatusArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -135,6 +144,24 @@ struct CommitArgs {
 }
 
 #[derive(Debug, Args)]
+struct StatusArgs {
+    /// The directory of the repository, the one that contains `.stemma`
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; the snapshot that the
+    /// command takes is made by this actor
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<String>,
+}
+
+#[derive(Debug, Args)]
 struct InitArgs {
     /// The directory of the repository; it is created if it does not exist
     #[arg(default_value = ".")]
@@ -190,6 +217,27 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The core could not report the status. If it saved the tracked files before it failed, the
+    /// message names the entry of that snapshot ([`StatusError::saved`]), and a failure of
+    /// flushing it is part of the message and of the exit code.
+    Status(StatusError),
+    /// The status was reported, but the snapshot that came first could not be flushed to disk.
+    StatusNotDurable {
+        /// The number of the entry of the snapshot.
+        entry: u64,
+        /// The error of the flush.
+        source: Box<RefError>,
+        /// The error of the output, if the status could not be written either. A closed pipe is
+        /// not recorded here.
+        output: Option<io::Error>,
+    },
+    /// The status could not be written to the output.
+    StatusOutput {
+        /// The error of the output.
+        source: io::Error,
+        /// The number of the entry of the snapshot that the call made, if one.
+        entry: Option<u64>,
+    },
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
@@ -220,8 +268,10 @@ impl CliError {
             | Self::Output { .. }
             | Self::TrackOutput(_)
             | Self::CommitNotDurable { .. }
-            | Self::CommitOutput { .. } => ExitCode::from(3),
+            | Self::CommitOutput { .. }
+            | Self::StatusNotDurable { .. } => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
+            Self::Status(error) if error.not_durable() => ExitCode::from(3),
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
@@ -229,6 +279,8 @@ impl CliError {
             | Self::Open(_)
             | Self::Track(_)
             | Self::Commit(_)
+            | Self::Status(_)
+            | Self::StatusOutput { .. }
             | Self::OpLog(_)
             | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
@@ -254,7 +306,7 @@ impl fmt::Display for CliError {
             Self::Open(error @ OpenError::NotARepository { .. }) => write!(
                 f,
                 "{error}; stemma looks only in the directory it is given, not in its parents \
-                 (see `-C` of `track` and `commit`, and the argument of `op log`)"
+                 (see `-C` of `track`, `commit`, and `status`, and the argument of `op log`)"
             ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
@@ -295,6 +347,34 @@ impl fmt::Display for CliError {
                 f,
                 "committed {committed}, but could not write the result: {source}"
             ),
+            Self::Status(error) => error.fmt(f),
+            Self::StatusNotDurable {
+                entry,
+                source,
+                output,
+            } => {
+                write!(
+                    f,
+                    "the tracked files were saved as entry {entry} of the operation log, but \
+                     flushing failed: {source}; the saved state may not survive a crash, and \
+                     running the command again does not make it durable"
+                )?;
+                match output {
+                    Some(error) => write!(f, "; the status could not be written either: {error}"),
+                    None => Ok(()),
+                }
+            }
+            Self::StatusOutput { source, entry } => {
+                write!(f, "could not write the status: {source}")?;
+                match entry {
+                    Some(entry) => write!(
+                        f,
+                        "; the tracked files were saved first as entry {entry} of the operation \
+                         log"
+                    ),
+                    None => Ok(()),
+                }
+            }
             Self::OpLog(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
@@ -322,6 +402,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
         Command::Init(args) => init(args, out),
         Command::Track(args) => track(args, out),
         Command::Commit(args) => commit(args, out),
+        Command::Status(args) => status(args, out),
         Command::Op {
             command: OpCommand::Log(args),
         } => show_op_log(args, out),
@@ -470,7 +551,7 @@ fn track_text(added: &[String]) -> String {
     }
     added
         .iter()
-        .map(|path| format!("tracked {}\n", path.escape_debug()))
+        .map(|path| format!("tracked {}\n", escape_path(path)))
         .collect()
 }
 
@@ -532,6 +613,94 @@ fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError>
         }),
         None => Ok(()),
     }
+}
+
+/// Reports what the working copy changes and which files are not tracked. The core saves the
+/// tracked files first, so the status is of the working copy as it is now.
+fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let result = repository
+        .status(&actor, &AllowAll)
+        .map_err(CliError::Status)?;
+    finish_status(result, out)
+}
+
+/// Writes the status. If the snapshot could not be flushed, the status is written first and the
+/// error comes after it. A closed pipe ends the output quietly, as for `op log`, and the error of
+/// flushing stays.
+fn finish_status(status: Status, out: &mut dyn Write) -> Result<(), CliError> {
+    let text = status_text(&status);
+    let entry = status.snapshot.as_ref().map(|saved| saved.entry.number());
+    let late = status.snapshot.and_then(|saved| saved.late);
+    match out.write_all(text.as_bytes()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(source) => {
+            return Err(match (late, entry) {
+                (Some(late), Some(entry)) => CliError::StatusNotDurable {
+                    entry,
+                    source: Box::new(late),
+                    output: Some(source),
+                },
+                _ => CliError::StatusOutput { source, entry },
+            });
+        }
+    }
+    match (late, entry) {
+        (Some(source), Some(entry)) => Err(CliError::StatusNotDurable {
+            entry,
+            source: Box::new(source),
+            output: None,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// The text of the status: the changes with their letters and the untracked files, each section
+/// only if it has files, or one line if there are none. A path is written with [`escape_path`].
+fn status_text(status: &Status) -> String {
+    if status.changes.is_empty() && status.untracked.is_empty() {
+        return "Working copy is clean\n".to_owned();
+    }
+    let mut text = String::new();
+    if !status.changes.is_empty() {
+        text.push_str("Working copy changes:\n");
+        for change in &status.changes {
+            text.push_str(&format!(
+                "{} {}\n",
+                change.kind.letter(),
+                escape_path(&change.path)
+            ));
+        }
+    }
+    if !status.untracked.is_empty() {
+        text.push_str("Untracked files:\n");
+        for path in &status.untracked {
+            text.push_str(&format!("? {}\n", escape_path(path)));
+        }
+    }
+    text
+}
+
+/// A path as it is written in the output, so that two different paths are never written alike:
+/// every character is escaped as `char::escape_debug` does it (a quote, a backslash, a control
+/// character, and a combining mark in every position, where `str::escape_debug` leaves one after
+/// the first character as it is), and a space at the start or the end of a name is `\u{20}`.
+fn escape_path(path: &str) -> String {
+    path.split('/')
+        .map(|name| {
+            let last = name.chars().count().saturating_sub(1);
+            name.chars()
+                .enumerate()
+                .map(|(index, c)| match c {
+                    ' ' if index == 0 || index == last => "\\u{20}".to_owned(),
+                    other => other.escape_debug().to_string(),
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// The one line that reports the commit: `Committed` for a new commit, `Finished the commit` if
@@ -777,6 +946,328 @@ mod tests {
         );
         assert!(both.to_string().contains("either"), "{both}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The status of a repository that has a tracked file that changed, a deleted one, and an
+    /// untracked one.
+    fn a_status(name: &str) -> (PathBuf, Status) {
+        let (dir, _) = repository_with_entry(name);
+        let repository = Repository::open(&dir).unwrap();
+        let actor: Actor = "human daniel".parse().unwrap();
+        std::fs::write(dir.join("keep.txt"), "one").unwrap();
+        std::fs::write(dir.join("gone.txt"), "gone").unwrap();
+        repository
+            .track(&[".".to_owned()], &actor, &AllowAll)
+            .unwrap();
+        let _ = repository.commit("base", &actor, &AllowAll).unwrap();
+        std::fs::write(dir.join("keep.txt"), "two").unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::write(dir.join("new.txt"), "new").unwrap();
+        repository
+            .track(&["new.txt".to_owned()], &actor, &AllowAll)
+            .unwrap();
+        std::fs::write(dir.join("it's.txt"), "x").unwrap();
+        let status = repository.status(&actor, &AllowAll).unwrap();
+        (dir, status)
+    }
+
+    #[test]
+    fn the_status_lists_the_changes_with_their_letters_and_the_untracked_files_escaped() {
+        let (dir, status) = a_status("status-text");
+        assert_eq!(
+            status_text(&status),
+            "Working copy changes:\nD gone.txt\nM keep.txt\nA new.txt\n\
+             Untracked files:\n? it\\'s.txt\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_section_without_files_is_left_out_and_no_files_at_all_is_one_line() {
+        let (dir, mut status) = a_status("status-sections");
+        status.untracked.clear();
+        assert_eq!(
+            status_text(&status),
+            "Working copy changes:\nD gone.txt\nM keep.txt\nA new.txt\n"
+        );
+        status.changes.clear();
+        assert_eq!(status_text(&status), "Working copy is clean\n");
+        status.untracked.push("only.txt".to_owned());
+        assert_eq!(status_text(&status), "Untracked files:\n? only.txt\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A status whose snapshot moved the pointer and could not be flushed: the metadata directory
+    /// may be written and entered, but not read. It fails where the permissions have no effect
+    /// (the tests must not run as root), and a test that skipped itself there would pass without
+    /// having tested anything.
+    #[cfg(unix)]
+    fn a_status_not_durable(name: &str) -> (PathBuf, Status) {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, _) = repository_with_entry(name);
+        let repository = Repository::open(&dir).unwrap();
+        let actor: Actor = "human daniel".parse().unwrap();
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor, &AllowAll)
+            .unwrap();
+        let _ = repository.commit("base", &actor, &AllowAll).unwrap();
+        std::fs::write(dir.join("a.txt"), "two").unwrap();
+        let metadata = dir.join(".stemma");
+        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o300)).unwrap();
+        let binds = std::fs::read_dir(&metadata).is_err();
+        let result = repository.status(&actor, &AllowAll);
+        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            binds,
+            "permissions do not bind this user; do not run the tests as root"
+        );
+        (dir, result.unwrap())
+    }
+
+    /// A status of a repository with a tracked file that changed after the last `track`, so that
+    /// the call saved it in a snapshot of its own.
+    fn a_status_with_a_snapshot(name: &str) -> (PathBuf, Status) {
+        let (dir, _) = repository_with_entry(name);
+        let repository = Repository::open(&dir).unwrap();
+        let actor: Actor = "human daniel".parse().unwrap();
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor, &AllowAll)
+            .unwrap();
+        std::fs::write(dir.join("a.txt"), "two").unwrap();
+        let status = repository.status(&actor, &AllowAll).unwrap();
+        assert!(status.snapshot.is_some());
+        (dir, status)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_status_is_written_and_a_snapshot_that_is_not_durable_follows_with_code_3() {
+        let (dir, status) = a_status_not_durable("status-late");
+        assert!(status.late().is_some());
+        let text = status_text(&status);
+        let mut out = Vec::new();
+
+        let error = finish_status(status, &mut out).unwrap_err();
+
+        assert_eq!(String::from_utf8(out).unwrap(), text);
+        assert!(text.contains("M a.txt"), "{text}");
+        assert!(
+            matches!(&error, CliError::StatusNotDurable { output: None, .. }),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let message = error.to_string();
+        assert!(
+            message.contains("saved as entry") && message.contains("flushing failed"),
+            "{message}"
+        );
+        assert!(
+            message.contains("does not make it durable"),
+            "running again is no remedy: {message}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_closed_pipe_ends_a_status_quietly() {
+        let (dir, status) = a_status("status-pipe");
+        let mut closed = Failing(io::ErrorKind::BrokenPipe);
+        assert!(finish_status(status, &mut closed).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_closed_pipe_keeps_the_late_error_and_a_full_output_names_both() {
+        let (dir, late) = a_status_not_durable("status-pipe-late");
+        let error = finish_status(late, &mut Failing(io::ErrorKind::BrokenPipe)).unwrap_err();
+        assert!(
+            matches!(&error, CliError::StatusNotDurable { output: None, .. }),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let _ = std::fs::remove_dir_all(dir);
+        let (dir, late) = a_status_not_durable("status-output-late");
+        let both = finish_status(late, &mut Failing(io::ErrorKind::StorageFull)).unwrap_err();
+        assert!(
+            matches!(
+                &both,
+                CliError::StatusNotDurable {
+                    output: Some(_),
+                    ..
+                }
+            ),
+            "{both}"
+        );
+        assert_eq!(both.exit_code(), ExitCode::from(3));
+        assert!(
+            both.to_string().contains("could not be written either"),
+            "{both}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_status_that_cannot_be_written_is_code_1_and_names_the_entry_of_its_snapshot() {
+        let (dir, status) = a_status("status-output");
+        assert!(status.snapshot.is_none());
+        let mut full = Failing(io::ErrorKind::StorageFull);
+        let error = finish_status(status, &mut full).unwrap_err();
+        assert!(
+            matches!(&error, CliError::StatusOutput { entry: None, .. }),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert_eq!(
+            error.to_string().split(':').next(),
+            Some("could not write the status")
+        );
+        assert!(!error.to_string().contains("saved first"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+
+        let (dir, saved) = a_status_with_a_snapshot("status-output-saved");
+        let number = saved.snapshot.as_ref().unwrap().entry.number();
+        let error = finish_status(saved, &mut full).unwrap_err();
+        assert!(
+            matches!(&error, CliError::StatusOutput { entry: Some(n), .. } if *n == number),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("saved first as entry {number}")),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failure_of_reading_after_a_snapshot_is_code_1_and_names_its_entry() {
+        let (dir, _) = repository_with_entry("status-read");
+        let repository = Repository::open(&dir).unwrap();
+        let actor: Actor = "human daniel".parse().unwrap();
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor, &AllowAll)
+            .unwrap();
+        let _ = repository.commit("base", &actor, &AllowAll).unwrap();
+        std::fs::write(dir.join("a.txt"), "two").unwrap();
+        // The parent of the working-copy commit is gone: the snapshot is made, and reading fails.
+        let parent = repository
+            .refs()
+            .resolve_head()
+            .unwrap()
+            .unwrap()
+            .to_string();
+        let hex = parent.strip_prefix("b3:").unwrap();
+        let file = dir
+            .join(".stemma/objects/b3")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        std::fs::remove_file(file).unwrap();
+
+        let error = CliError::Status(repository.status(&actor, &AllowAll).unwrap_err());
+
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert!(
+            error.to_string().contains("saved before as entry"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("flushing failed"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failure_of_reading_after_a_snapshot_that_was_not_flushed_is_code_3() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, _) = repository_with_entry("status-read-late");
+        let repository = Repository::open(&dir).unwrap();
+        let actor: Actor = "human daniel".parse().unwrap();
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor, &AllowAll)
+            .unwrap();
+        let _ = repository.commit("base", &actor, &AllowAll).unwrap();
+        std::fs::write(dir.join("a.txt"), "two").unwrap();
+        let parent = repository
+            .refs()
+            .resolve_head()
+            .unwrap()
+            .unwrap()
+            .to_string();
+        let hex = parent.strip_prefix("b3:").unwrap();
+        std::fs::remove_file(
+            dir.join(".stemma/objects/b3")
+                .join(&hex[..2])
+                .join(&hex[2..]),
+        )
+        .unwrap();
+        let metadata = dir.join(".stemma");
+        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o300)).unwrap();
+        let binds = std::fs::read_dir(&metadata).is_err();
+        let result = repository.status(&actor, &AllowAll);
+        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            binds,
+            "permissions do not bind this user; do not run the tests as root"
+        );
+
+        let error = CliError::Status(result.unwrap_err());
+
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        assert!(error.to_string().contains("flushing failed"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_other_failures_of_a_status_are_code_1() {
+        let (dir, _) = repository_with_entry("status-codes");
+        for error in [
+            StatusError::Update(UpdateError::Denied {
+                operation: "status".into(),
+                target: "working-copy".into(),
+            }),
+            StatusError::Ignore(stemma_core::ignore::IgnoreError::Changed { path: dir.clone() }),
+            StatusError::Walk(TrackError::InvalidName { path: "x".into() }),
+            StatusError::Refs {
+                source: RefError::Locked { path: dir.clone() },
+                saved: None,
+            },
+        ] {
+            let error = CliError::Status(error);
+            assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
+        }
+        let walk = CliError::Status(StatusError::Walk(TrackError::InvalidName {
+            path: "x".into(),
+        }));
+        assert!(
+            walk.to_string().ends_with("; nothing was written"),
+            "{walk}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_path_is_written_so_that_two_different_paths_never_look_alike() {
+        // NFC and NFD of the same letter are two names, and both are written differently.
+        assert_eq!(escape_path("\u{e9}.txt"), "é.txt");
+        assert_eq!(escape_path("e\u{301}.txt"), "e\\u{301}.txt");
+        assert_eq!(escape_path("dir/e\u{301}"), "dir/e\\u{301}");
+        // A space at the edge of a name is visible, a space inside is not changed.
+        assert_eq!(escape_path(" a"), "\\u{20}a");
+        assert_eq!(escape_path("a "), "a\\u{20}");
+        assert_eq!(escape_path("a b"), "a b");
+        assert_eq!(escape_path("d / e"), "d\\u{20}/\\u{20}e");
+        // A quote, a backslash, and a control character are escaped, and a letter is not.
+        assert_eq!(escape_path("it's"), "it\\'s");
+        assert_eq!(escape_path("a\\b"), "a\\\\b");
+        assert_eq!(escape_path("a\nb\t"), "a\\nb\\t");
+        assert_eq!(escape_path("日本 😀.txt"), "日本 😀.txt");
+        assert_eq!(escape_path("d/a.txt"), "d/a.txt");
     }
 
     #[test]

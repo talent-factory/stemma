@@ -6,7 +6,11 @@ Dieses Dokument ist eine Momentaufnahme für den Wechsel zwischen Sessions. Der 
 
 ## Auf einen Blick
 
-Das Datenmodell des lokalen Kerns steht: Objekte, Index, Objektspeicher, strikte Leser, Schreiben und Lesen von Trees und Commits, Referenzen (Branches und HEAD). Die CLI ist noch ein leeres Skelett. Als Nächstes folgt die Repository-Schicht mit `stemma init`.
+Das Datenmodell des lokalen Kerns steht:
+Objekte, Index, Objektspeicher, strikte Leser, Schreiben und Lesen von Trees und Commits,
+Referenzen (Branches und HEAD).
+Die CLI hat `stemma init`, `track`, `commit`, `status` und `op log`; als Nächstes folgen die
+Befehle für Branches und die Anzeige des Verlaufs.
 
 - **Repository:** GitHub `talent-factory/stemma`, lokal `~/GitRepository/stemma` auf Daniels Mac.
 - **Phase:** 1 von 6. Das Buch gliedert die Phasen so: lokaler Kern, Diff, Branches und Merge, Zusammenarbeit, Netzwerk, Agenten-Schnittstellen.
@@ -128,14 +132,18 @@ Trunk-based Development: `main` ist geschützt und immer grün. Jede Arbeitssche
 
 ## Phasen und Aufgaben
 
-Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell steht, `stemma init` und das Operation Log sind gebaut, die übrigen Befehle fehlen noch. Die Aufgaben stammen aus den Buchkapiteln 04 bis 09, Phase 1 ist feiner zerlegt. Der Status beruht auf dem Code, nicht auf Absichten.
+Von sechs Phasen hat Phase 1 begonnen:
+Ihr Datenmodell steht, `stemma init`, `track`, `commit`, `status` und das Operation Log sind
+gebaut, `log` und die Branch-Befehle fehlen noch.
+Die Aufgaben stammen aus den Buchkapiteln 04 bis 09, Phase 1 ist feiner zerlegt.
+Der Status beruht auf dem Code, nicht auf Absichten.
 
 **Überblick**
 
 | Phase | Ziel | Aufgaben | Erledigt | Status |
 | --- | --- | --- | --- | --- |
 | Fundament | Repository, Regeln, Werkzeuge, ADRs | 6 | 6 | Erledigt |
-| 1 Lokaler Kern | Ein lokales Repository mit einem Nutzer: anlegen, speichern, committen, Status | 15 | 9 (3 teilweise) | In Arbeit |
+| 1 Lokaler Kern | Ein lokales Repository mit einem Nutzer: anlegen, speichern, committen, Status | 15 | 12 (3 teilweise) | In Arbeit |
 | 2 Diff und Ausgabe | Änderungen zwischen Arbeitskopie, Index und Commits lesbar anzeigen | 4 | 0 | Nicht begonnen |
 | 3 Branches und Merge | Parallele Arbeit lokal: Branches, Wechsel, Drei-Wege-Merge | 4 | 0 | Nicht begonnen |
 | 4 Akteure und Zusammenarbeit | Schreibhoheit, PRs und Freigaben werden erzwungen | 7 | 0 | Nicht begonnen |
@@ -164,7 +172,7 @@ Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell steht, `stemma init` und 
 | 1 | Repository-Schicht und `stemma init` | Erledigt | PR #41, #42; ADR-009; `Repository::init` und `open`, Befehl `stemma init` mit `--initial-branch` und `--actor` |
 | 1 | `stemma track` (statt `add`) | Erledigt | STEMMA-2, PR #55, #56; ADR-010 |
 | 1 | `stemma commit` | Erledigt | STEMMA-3, PR #57, #58; ADR-010 |
-| 1 | `stemma status` | Teilweise | STEMMA-4: Kern `Repository::status` (PR #62); der Befehl folgt |
+| 1 | `stemma status` | Erledigt | STEMMA-4, PR #62 (Kern), #63 (Befehl); ADR-010 |
 | 1 | Operation Log | Teilweise | ADR-011, PR #47: Kern mit Schreiber und strengem Leser, `init` schreibt Eintrag 1 (ohne Sperre, niemand sieht das Verzeichnis), `update_branch` und `set_head` schreiben ihn vor dem Zug unter der Sperre; `stemma op log` (STEMMA-27) und `op restore` (STEMMA-28) offen |
 | 1 | Entscheidung Arbeitskopie als Commit (wie jj) oder klassischer Index | Teilweise | ADR-010: Arbeitskopie ist ein Commit, Snapshot bei jedem Befehl; Vorschläge noch zu bestätigen (STEMMA-25) |
 | 2 | Myers-Diff mit Tests gegen bekannte Fälle | Nicht begonnen | |
@@ -244,7 +252,7 @@ Der nächste Schritt ist die Repository-Schicht mit `stemma init`; die Referenze
    - *Formatdatei:* trägt eine Versionsnummer; `Repository::open` lehnt eine unbekannte Version ab.
    - *Standard-Branch:* `HEAD` zeigt auf den gewählten Branch (`branch <name>`), der Branch selbst existiert bis zum ersten Commit nicht (ungeborener Branch). Der Name läuft durch `BranchName`.
    - *Autorisierung:* offen, ob `init` schon einen Akteur braucht oder erst die Operationen auf einem bestehenden Repository.
-4. `stemma add`, danach `commit`, `status`, `log` als weitere Scheiben. Jede Repository-Operation ruft den Autorisierungs-Hook auf.
+4. `track`, `commit` und `status` sind gebaut; `log` bleibt als weitere Scheibe. Jede Repository-Operation ruft den Autorisierungs-Hook auf.
 5. Status-Zeilen der ADRs nachziehen (siehe Abschnitt Entscheidungen) und ADR-Entwürfe für das, was dabei neu entschieden wird.
 6. Buch nachführen: Kapitel 04 (Phase 1) zum aktuellen Stand, den Abschnitt «Der Name» in die Einleitung übernehmen (angeboten, noch nicht beantwortet), eine zitierfähige Quelle zur Stemmatologie ergänzen. Danach `just book`.
 7. CI: Entscheiden, wann der Workflow wieder für jeden PR und jeden Push auf `main` läuft (ADR-006).

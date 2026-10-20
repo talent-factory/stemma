@@ -34,17 +34,21 @@ sie nennt nur, in wessen Namen er läuft.
 
 \startitemize
 \item {\bf 0:} Der Befehl ist gelungen.
-\item {\bf 1:} Der Befehl ist gescheitert und hat nichts geändert. Die Meldung auf der
-Fehlerausgabe hat das Präfix \type{stemma:}. Zwei Spuren kann Code 1 hinterlassen:
+\item {\bf 1:} Der Befehl ist gescheitert. Die Meldung auf der Fehlerausgabe hat das Präfix
+\type{stemma:}. Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
 einen Eintrag für einen Zug, der nicht stattfand (\type{op log} markiert ihn mit \type{!}),
-und beim Befehl \type{commit} den Eintrag des Snapshots, den er vor der Ablehnung machte.
+und bei den Befehlen \type{commit} und \type{status} den Eintrag des Snapshots,
+den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein erneuter Aufruf ist unbedenklich.
 \item {\bf 2:} Die Argumente sind falsch, zum Beispiel ein unbekannter Schalter oder
 ein ungültiger Branch-Name. Das Programm gibt die Meldung selbst aus.
 \item {\bf 3:} Der Befehl hat sein Ergebnis angelegt, konnte aber nicht abschliessen:
-Das Verzeichnis ist nicht gesichert, die Ausgabe liess sich nicht schreiben,
-oder \type{commit} hat nur einen seiner beiden Zeiger bewegt.
+Das Verzeichnis ist nicht gesichert, die Ausgabe liess sich nicht schreiben
+(nicht bei einem Befehl, der nur liest) oder \type{commit} hat nur einen seiner
+beiden Zeiger bewegt.
+Bei \type{status} heisst es: Der Snapshot hat den Zeiger bewegt, aber nicht gesichert.
 Ein Skript darf das Ergebnis weder löschen noch den Befehl wiederholen;
 nur ein weiterer \type{commit} beendet einen halben (siehe dort).
+Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht.
 \stopitemize
 
 Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
@@ -141,7 +145,8 @@ No new files to track
 \stoptyping
 
 Die Pfade der Ausgabe sind relativ zum Repository (anders als bei \type{init}),
-und ein Name mit Steuerzeichen erscheint maskiert. Ein Pfad, der schon verfolgt wird,
+und ein Name erscheint maskiert, wie es bei \type{status} steht.
+Ein Pfad, der schon verfolgt wird,
 ist kein Fehler und ändert nichts; ändert sich weder der Baum noch eine verfolgte Datei,
 entsteht weder ein Commit noch ein Eintrag.
 
@@ -297,6 +302,109 @@ Finished the commit b3:4a0b66... on main that had stopped; the message of this c
 \starttyping
 stemma commit -m "Add the parser" --actor "human daniel"
 stemma commit -C projekt -m "Fix the build"
+\stoptyping
+
+\section{status}
+
+Zeigt, was der Working-Copy-Commit gegenüber seinem Elternteil ändert,
+und welche Dateien nicht verfolgt sind (ADR-010).
+
+\starttyping
+stemma status [-C VERZEICHNIS] [--actor AKTEUR]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
+also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben. Der Befehl macht einen Snapshot,
+und der Akteur ist der Akteur dieses Snapshots.
+\stopitemize
+
+Der Befehl nimmt keine Pfade und keine weiteren Argumente;
+ein weiteres Argument ist ein Aufruffehler (Exit-Code 2).
+
+{\bf Verhalten.} Zuerst speichert der Befehl die verfolgten Dateien wie ein Snapshot
+(Operation \type{snapshot}); ein Eintrag entsteht nur, wenn sich eine verfolgte Datei
+geändert hat.
+Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit.
+\type{status} zeigt deshalb nicht, was vom Working-Copy-Commit abweicht,
+sondern was dieser Commit gegenüber seinem Elternteil tut
+(beim ersten Commit gegenüber dem leeren Baum):
+
+\starttyping
+Working copy changes:
+D gone.txt
+M src/main.rs
+A docs/plan.md
+Untracked files:
+? notes.txt
+\stoptyping
+
+\type{A} ist eine Datei, die der Commit hinzufügt, \type{M} eine mit anderem Inhalt oder
+Modus (auch ein Link anstelle einer Datei) und \type{D} eine, die er löscht.
+Die Einträge stehen nach Pfad sortiert; die Dateien eines hinzugefügten oder gelöschten
+Verzeichnisses stehen einzeln da.
+Unverfolgt sind die Dateien im Verzeichnis, die nicht im Baum des Working-Copy-Commits stehen
+und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln und sortiert da,
+und das Verzeichnis \type{.stemma} kommt nie vor.
+Ein Abschnitt ohne Dateien fehlt. Gibt es weder Änderungen noch unverfolgte Dateien,
+schreibt der Befehl eine Zeile:
+
+\starttyping
+Working copy is clean
+\stoptyping
+
+Die Pfade sind relativ zum Repository.
+Jeder Name wird Zeichen für Zeichen maskiert, damit zwei verschiedene Pfade nie gleich aussehen:
+Ein Hochkomma, ein Backslash, ein Steuerzeichen, ein kombinierendes Zeichen
+(das \type{e} mit Akzent als zwei Zeichen ist ein anderer Name als das \type{é} als eines)
+und ein Leerzeichen am Rand eines Namens erscheinen als Escape-Folge,
+Buchstaben anderer Schriften unverändert.
+Bei \type{track} gilt dieselbe Regel.
+Eine verfolgte Datei, die ein Muster der Ausschlussdatei ausschliesst, bleibt in den
+Änderungen; sie wird weiter gespeichert.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist
+und wenn das Repository nicht im angegebenen Verzeichnis liegt (die Meldung nennt \type{-C}).
+Ebenso endet er bei einem Fehler im Repository, zum Beispiel einer beschädigten Datei
+\type{working-copy}, und bei einer Datei, die der Snapshot nicht lesen kann:
+Der Snapshot bricht ab, bevor sich ein Zeiger bewegt.
+Mit Exit-Code 1 endet er auch bei einer ungültigen Ausschlussdatei,
+bei einem Namen im Verzeichnis, den ein Baum ablehnt und den kein Muster ausschliesst,
+bei einem Namen ohne UTF-8 und bei einem Fehler des Dateisystems beim Auflisten.
+Die Ausschlussdatei liest der Befehl und das Verzeichnis durchläuft er vor dem Snapshot;
+diese Meldungen sagen, dass nichts geschrieben wurde.
+
+Scheitert das Lesen der Referenzen, der Commits oder der Bäume erst nach dem Snapshot,
+oder lässt sich die Ausgabe nicht schreiben, endet der Befehl ebenfalls mit Exit-Code 1.
+Hat der Snapshot einen Eintrag gemacht, bleibt dieser (zweite Spur oben),
+und die Meldung nennt ihn; ein erneuter Aufruf findet dann nichts mehr zu speichern.
+Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}),
+endet der Befehl mit Exit-Code 0, ausser sein Snapshot war nicht gesichert.
+
+Mit Exit-Code 3 endet der Befehl, wenn der Snapshot den Zeiger bewegt,
+aber das Verzeichnis nicht sichern konnte.
+Der Befehl schreibt den Status zuerst und meldet den Fehler danach.
+Lässt sich auch die Ausgabe nicht schreiben, nennt die Meldung beide Fehler.
+Scheitert das Lesen erst nach einem solchen Snapshot, endet der Befehl ebenfalls mit 3
+und nennt den Fehler des Sicherns.
+Ein erneuter Aufruf findet nichts mehr zu speichern; er endet mit Exit-Code 0,
+sichert den Eintrag aber nicht.
+
+{\bf Grenzen.} Eine verfolgte Datei, die die Ausschlussdatei ausschliesst,
+meldet der Befehl nicht als solche; ein Bericht «verfolgt und ausgeschlossen»
+ist ein offener Punkt in ADR-012.
+Eine Spezialdatei (Socket, Pipe, Gerät) im Verzeichnis listet der Befehl als unverfolgt auf;
+\type{track} verweigert sie.
+Einen Schalter \type{--json} gibt es nicht.
+Die Zeiger liest der Befehl nacheinander und nicht unter der Sperre,
+ein gleichzeitiger Prozess kann also HEAD und Commit aus zwei Zuständen liefern.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma status --actor "human daniel"
+stemma status -C projekt
 \stoptyping
 
 \section{op log}
