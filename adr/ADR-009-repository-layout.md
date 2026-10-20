@@ -18,7 +18,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
   operations (`add`, `commit`) are methods of `Repository`, so they use the stores of one
   repository.
 - **Layout** *(confirmed)*. A repository is a directory that contains `.stemma/`. Inside:
-  `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007), `oplog/` (ADR-011),
+  `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007), `oplog/` and `oplog-tip` (ADR-011),
   `refs/heads/` (ADR-008), and `tmp/` (the temporary files of the object store, the references,
   and the log).
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a

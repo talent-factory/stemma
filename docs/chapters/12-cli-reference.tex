@@ -458,10 +458,13 @@ den es nicht gibt, ist \type{null}. HEAD ist \type{branch:<name>} oder \type{com
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
 Fehlt eine Nummer im Log, ist ein Eintrag nicht in kanonischer Form, passt die Nummer
-im Eintrag nicht zum Dateinamen oder steht in \type{oplog/} eine fremde Datei oder
-ist das Log ganz leer, bricht er ab, gibt nichts aus und endet mit Exit-Code 1.
-Ein leeres Log deutet auf verlorene Einträge oder eine Veränderung von aussen,
-denn \type{init} schreibt immer den Eintrag 1. Mit Exit-Code 1 endet auch ein Verzeichnis,
+im Eintrag nicht zum Dateinamen, steht in \type{oplog/} eine fremde Datei,
+ist die Datei \type{oplog-tip} nicht kanonisch oder nennt sie einen Eintrag, den das
+Verzeichnis nicht hat, oder ist das Log ganz leer, bricht er ab, gibt nichts aus und
+endet mit Exit-Code 1. Ein leeres Log deutet auf verlorene Einträge oder eine Veränderung
+von aussen, denn \type{init} schreibt immer den Eintrag 1; diese Meldung kommt nur,
+wenn auch die Datei \type{oplog-tip} fehlt, sonst meldet der Befehl den Verlust mit
+der Nummer des fehlenden Eintrags. Mit Exit-Code 1 endet auch ein Verzeichnis,
 das kein Repository ist, und eine Datei \type{format}, die fehlt, nicht kanonisch ist
 oder eine andere Version nennt. Lassen sich HEAD oder die Branches der gezeigten
 Einträge nicht lesen, bricht der Befehl nicht ab: Er warnt auf der Fehlerausgabe
