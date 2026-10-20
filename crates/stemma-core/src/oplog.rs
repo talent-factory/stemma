@@ -869,6 +869,20 @@ pub enum OpLogError {
         /// The first number that is missing.
         missing: u64,
     },
+    /// The tip file names an entry that the directory does not hold: the last entries are lost.
+    /// The writer refuses to write, as the next number would be given a second time to another
+    /// move.
+    TipAhead {
+        /// The number of the last entry that the tip file names.
+        tip: u64,
+        /// The largest number in the directory, 0 if it holds no entry.
+        last: u64,
+    },
+    /// The tip file is not in canonical form.
+    BadTip {
+        /// The file.
+        path: PathBuf,
+    },
     /// The directory of the log holds something that is not an entry.
     UnexpectedFile {
         /// The file or directory.
@@ -984,6 +998,16 @@ impl fmt::Display for OpLogError {
                 f,
                 "the operation log has no entry {missing}, but later ones: an entry is lost"
             ),
+            Self::TipAhead { tip, last } => write!(
+                f,
+                "the operation log ends at entry {last}, but the tip file names entry {tip}: \
+                 the last entries are lost"
+            ),
+            Self::BadTip { path } => write!(
+                f,
+                "the tip file `{}` of the operation log is not in canonical form",
+                path.display().to_string().escape_debug()
+            ),
             Self::UnexpectedFile { path } => write!(
                 f,
                 "`{}` is in the operation log, but is not an entry",
@@ -1031,6 +1055,13 @@ impl Error for OpLogError {
         }
     }
 }
+
+/// The name of the tip file, next to `oplog/` in the metadata directory. It holds the number of the
+/// last entry, so that a lost last entry is noticed (ADR-011).
+const TIP_FILE: &str = "oplog-tip";
+
+/// The first line of the tip file.
+const TIP_HEADER: &str = "stemma-oplog-tip 1\n";
 
 /// The operation log of a repository, as files below its metadata directory.
 #[derive(Debug, Clone)]
@@ -1106,7 +1137,71 @@ impl FsOpLog {
                 return Err(OpLogError::Gap { missing });
             }
         }
+        self.check_tip(numbers.last().copied().unwrap_or(0))?;
         Ok(numbers)
+    }
+
+    fn tip_path(&self) -> PathBuf {
+        self.root.join(TIP_FILE)
+    }
+
+    /// Reads the number of the last entry from the tip file. A missing file is `None`: a log
+    /// without a tip yet (a repository made before the tip file, or a log that was never written).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpLogError::BadTip`] if the file is not in canonical form, and
+    /// [`OpLogError::Io`] if it cannot be read.
+    fn read_tip(&self) -> Result<Option<u64>, OpLogError> {
+        let path = self.tip_path();
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(OpLogError::io("read the tip file", &path)(error)),
+        };
+        let number = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.strip_prefix(TIP_HEADER))
+            .and_then(|rest| rest.strip_prefix("number "))
+            .and_then(|rest| rest.strip_suffix('\n'))
+            .filter(|digits| {
+                !digits.is_empty()
+                    && digits.bytes().all(|b| b.is_ascii_digit())
+                    && !(digits.len() > 1 && digits.starts_with('0'))
+            })
+            .and_then(|digits| digits.parse::<u64>().ok())
+            .filter(|number| *number <= MAX_NUMBER);
+        number.map(Some).ok_or(OpLogError::BadTip { path })
+    }
+
+    /// Replaces the tip file with the number, and flushes it and the directory.
+    fn write_tip(&self, number: u64) -> Result<(), OpLogError> {
+        let temp_dir = self.root.join("tmp");
+        let (mut file, temp) =
+            create_temp(&temp_dir, &mut unique_temp_name).map_err(OpLogError::from_store)?;
+        let content = format!("{TIP_HEADER}number {number}\n");
+        file.write_all(content.as_bytes())
+            .map_err(OpLogError::io("write the temporary file", &temp.path))?;
+        file.sync_all()
+            .map_err(OpLogError::io("flush the temporary file", &temp.path))?;
+        drop(file);
+        let path = self.tip_path();
+        fs::rename(&temp.path, &path).map_err(OpLogError::io("replace the tip file", &path))?;
+        // The name is gone after the rename, so the guard has nothing left to remove.
+        drop(temp);
+        // A tip that is not flushed is no fault: after a crash it is one behind or missing, which
+        // the writer accepts, and the move of a pointer flushes this directory again.
+        let _ = sync_directory(&self.root);
+        Ok(())
+    }
+
+    /// Fails with [`OpLogError::TipAhead`] if the tip file names an entry beyond the largest number
+    /// in the directory. A tip one behind is no fault: a stop between the entry and the tip.
+    fn check_tip(&self, last: u64) -> Result<(), OpLogError> {
+        match self.read_tip()? {
+            Some(tip) if tip > last => Err(OpLogError::TipAhead { tip, last }),
+            _ => Ok(()),
+        }
     }
 
     /// The number after the largest one in the directory, or 1. It checks nothing else, so a gap
@@ -1189,10 +1284,12 @@ impl FsOpLog {
     /// is not an entry, and [`OpLogError::Io`] if the storage fails, among others if the file
     /// system has no hard links, or if the directory of the log does not exist.
     pub(crate) fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
-        let start = self.next_number()?;
-        self.publish(
+        let last = self.scan()?.into_iter().max().unwrap_or(0);
+        // A lost last entry must not hand its number to another move.
+        self.check_tip(last)?;
+        let result = self.publish(
             change,
-            start,
+            last + 1,
             &mut |_| {},
             &|from, to| fs::hard_link(from, to),
             &|dir| match sync_directory(dir) {
@@ -1200,7 +1297,17 @@ impl FsOpLog {
                 Err(StoreError::Io { source, .. }) => Err(source),
                 Err(other) => Err(io::Error::other(other.to_string())),
             },
-        )
+        );
+        // The entry is in place in both of these results, so the tip names it. A failure to
+        // write the tip is reported and the entry stays; the tip is one behind then, which the
+        // next writer accepts.
+        let number = match &result {
+            Ok(entry) => entry.number,
+            Err(OpLogError::NotFlushed { entry, .. }) => entry.number,
+            Err(_) => return result,
+        };
+        self.write_tip(number)?;
+        result
     }
 
     /// The loop of [`append`](Self::append), with the steps that a test has to be able to change:
@@ -2409,6 +2516,133 @@ mod tests {
             fs::read(dir.path().join("oplog").join("000000000002")).unwrap(),
             log.read(2).unwrap().encode()
         );
+    }
+
+    fn four_entries(dir: &TempDir) -> FsOpLog {
+        let log = log_in(dir);
+        for (old, new) in [(None, A), (Some(A), B), (Some(B), A), (Some(A), B)] {
+            log.append(&change("main", old, new)).unwrap();
+        }
+        log
+    }
+
+    fn entry_file(dir: &TempDir, number: u64) -> PathBuf {
+        dir.path().join("oplog").join(format!("{number:012}"))
+    }
+
+    #[test]
+    fn the_tip_file_names_the_last_entry() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        assert!(!dir.path().join("oplog-tip").exists());
+
+        log.append(&change("main", None, A)).unwrap();
+        assert_eq!(
+            fs::read(dir.path().join("oplog-tip")).unwrap(),
+            b"stemma-oplog-tip 1\nnumber 1\n"
+        );
+        log.append(&change("main", Some(A), B)).unwrap();
+
+        assert_eq!(log.read_tip().unwrap(), Some(2));
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_lost_last_entry_is_noticed_and_the_writer_refuses_its_number() {
+        let dir = TempDir::new();
+        let log = four_entries(&dir);
+        fs::remove_file(entry_file(&dir, 4)).unwrap();
+
+        // Without the tip file the directory looks like a log of three entries.
+        assert!(matches!(
+            log.numbers(),
+            Err(OpLogError::TipAhead { tip: 4, last: 3 })
+        ));
+        let error = log.append(&change("main", Some(B), A)).unwrap_err();
+
+        assert!(matches!(error, OpLogError::TipAhead { tip: 4, last: 3 }));
+        assert_eq!(files(&dir.path().join("oplog")).len(), 3);
+        assert_eq!(log.read_tip().unwrap(), Some(4));
+    }
+
+    #[test]
+    fn all_entries_lost_are_noticed_too() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        log.append(&change("main", None, A)).unwrap();
+        fs::remove_file(entry_file(&dir, 1)).unwrap();
+
+        let error = log.append(&change("main", None, B)).unwrap_err();
+
+        assert!(matches!(error, OpLogError::TipAhead { tip: 1, last: 0 }));
+    }
+
+    #[test]
+    fn a_lost_first_entry_is_a_gap_and_a_lost_middle_one_too() {
+        for lost in [1, 2] {
+            let dir = TempDir::new();
+            let log = four_entries(&dir);
+            fs::remove_file(entry_file(&dir, lost)).unwrap();
+
+            assert!(
+                matches!(log.numbers(), Err(OpLogError::Gap { missing }) if missing == lost),
+                "{lost}"
+            );
+            // The writer does not refuse a gap: that would stop the move that repairs the log.
+            let appended = log.append(&change("main", Some(B), A)).unwrap();
+            assert_eq!(appended.number(), 5, "{lost}");
+            assert_eq!(log.read_tip().unwrap(), Some(5), "{lost}");
+        }
+    }
+
+    #[test]
+    fn a_tip_one_behind_is_a_stop_between_the_entry_and_the_tip_and_is_repaired() {
+        let dir = TempDir::new();
+        let log = four_entries(&dir);
+        // The stop: entry 4 is in place, the tip still names 3.
+        log.write_tip(3).unwrap();
+
+        assert_eq!(log.numbers().unwrap(), [1, 2, 3, 4]);
+        let appended = log.append(&change("main", Some(B), A)).unwrap();
+
+        assert_eq!(appended.number(), 5);
+        assert_eq!(log.read_tip().unwrap(), Some(5));
+    }
+
+    #[test]
+    fn a_log_without_a_tip_file_gets_one_with_the_next_entry() {
+        let dir = TempDir::new();
+        let log = four_entries(&dir);
+        fs::remove_file(dir.path().join("oplog-tip")).unwrap();
+
+        assert_eq!(log.numbers().unwrap(), [1, 2, 3, 4]);
+        log.append(&change("main", Some(B), A)).unwrap();
+
+        assert_eq!(log.read_tip().unwrap(), Some(5));
+    }
+
+    #[test]
+    fn a_tip_file_that_is_not_canonical_is_an_error_and_nothing_is_written() {
+        for content in [
+            &b""[..],
+            b"stemma-oplog-tip 1\n",
+            b"stemma-oplog-tip 1\nnumber 04\n",
+            b"stemma-oplog-tip 1\nnumber 4",
+            b"stemma-oplog-tip 1\nnumber -4\n",
+            b"stemma-oplog-tip 2\nnumber 4\n",
+            b"stemma-oplog-tip 1\nnumber 4\nmore\n",
+            b"stemma-oplog-tip 1\nnumber 99999999999999\n",
+        ] {
+            let dir = TempDir::new();
+            let log = four_entries(&dir);
+            fs::write(dir.path().join("oplog-tip"), content).unwrap();
+
+            let error = log.append(&change("main", Some(B), A)).unwrap_err();
+
+            assert!(matches!(error, OpLogError::BadTip { .. }), "{content:?}");
+            assert!(matches!(log.numbers(), Err(OpLogError::BadTip { .. })));
+            assert_eq!(files(&dir.path().join("oplog")).len(), 4, "{content:?}");
+        }
     }
 
     #[test]

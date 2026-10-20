@@ -478,9 +478,9 @@ die JSON-Form maskiert nach den Regeln von JSON.
 {\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge. Eine Lücke findet er auch dann,
 wenn der fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten
 älteren Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug. Hat das Log nur
-seine neuesten Einträge verloren, bleibt es lückenlos und der Verlust unbemerkt;
-das erkennte erst eine Datei, die die Nummer des letzten Eintrags hält
-(offener Punkt in ADR-011). Ein Eintrag wird geschrieben, bevor sich der Zeiger
+seine neuesten Einträge verloren, bleibt es lückenlos; die Datei \type{oplog-tip}
+mit der Nummer des letzten Eintrags verrät den Verlust (ADR-011), und der Befehl
+bricht mit Exit-Code 1 ab. Ein Eintrag wird geschrieben, bevor sich der Zeiger
 bewegt (ADR-011). Brach der Vorgang dazwischen ab, steht der Eintrag im Log,
 obwohl der Zug nie stattfand. Der Befehl liest das Ergebnis aus der Kette der
 Einträge desselben Zeigers: Ein späterer Eintrag, dessen alter Wert der neue Wert

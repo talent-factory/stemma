@@ -220,6 +220,8 @@ fn a_gap_is_reported_and_nothing_is_listed() {
 fn an_empty_log_is_reported_and_nothing_is_listed() {
     let dir = repository();
     fs::remove_file(dir.path().join(".stemma/oplog/000000000001")).unwrap();
+    // A log from before the tip file; with the tip the loss would be noticed (next test).
+    fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();
     for args in [&["op", "log"][..], &["op", "log", "--json"][..]] {
         let result = run(dir.path(), args);
         assert_eq!(result.code, 1);
@@ -227,6 +229,24 @@ fn an_empty_log_is_reported_and_nothing_is_listed() {
             result
                 .stderr
                 .starts_with("stemma: the operation log is empty"),
+            "{}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "");
+    }
+}
+
+#[test]
+fn a_lost_last_entry_is_reported_by_the_tip_file_and_nothing_is_listed() {
+    let dir = repository();
+    fs::remove_file(dir.path().join(".stemma/oplog/000000000001")).unwrap();
+    for args in [&["op", "log"][..], &["op", "log", "--json"][..]] {
+        let result = run(dir.path(), args);
+        assert_eq!(result.code, 1);
+        assert!(
+            result.stderr.starts_with(
+                "stemma: the operation log ends at entry 0, but the tip file names entry 1"
+            ),
             "{}",
             result.stderr
         );

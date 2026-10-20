@@ -1213,6 +1213,7 @@ mod tests {
                 "format",
                 "objects",
                 "oplog",
+                "oplog-tip",
                 "refs",
                 "tmp",
                 "working-copy"
