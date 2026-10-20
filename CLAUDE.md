@@ -37,6 +37,17 @@ The book (`docs/`) is developed in step with the implementation, not after it.
 
 The book uses ConTeXt MkIV, not LaTeX. Use `{\bf ...}` instead of `\textbf`, and `\startxtable` instead of `\starttable`.
 
+## Line length in documentation sources
+
+Source files under `docs/` (ConTeXt chapters, Markdown) are read by humans and compared in diffs, so they are wrapped by hand.
+
+- Lines hold at most 100 characters, ideally 80 to 100. Do not leave a long paragraph on one line.
+- Break at a natural boundary: after a sentence, or at a clause (comma, conjunction), so that a change to one sentence touches only its own lines. Do not break in the middle of a phrase, a `\type{...}` argument, or a command.
+- Continuation lines of an `\item` are not indented; a list item still begins with `\item` at the start of the line.
+- No trailing whitespace.
+- Verbatim blocks (`\starttyping`) and tables keep their own layout and are exempt.
+- Apply the rule to every line you write or change. When a passage is touched anyway, bring its paragraph into line; do not reformat whole files that a slice does not touch.
+
 ## Agent skills
 
 ### Issue tracker

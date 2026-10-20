@@ -50,6 +50,21 @@ are prior art, not a template.
 - **An exclusion file** *(confirmed)*. `.stemmaignore` lists paths that are never tracked, not
   even by `stemma track`, and are not reported as untracked. Its syntax is open, and it is
   strict like the other readers: what the writer would not have written is rejected.
+- **What `track` does** *(confirmed for the core; the command line is open)*.
+  `Repository::track` takes relative paths, builds the new tree from the tracked files and from
+  the files at the paths, and replaces the working-copy commit like a snapshot does. A directory
+  stands for the files below it, without a directory named `.stemma`. The tracked files are saved
+  as well, because the new tree is built from the working directory and a track that kept the old
+  blobs would drop a change. A path that is tracked already is not an error. A path that does not
+  exist or breaks a path rule is refused before anything is written; a special file or a name that
+  is not UTF-8 stops the call, as it stops a snapshot. A path spells every name as the directory
+  has it: a file system that ignores case would take `a.txt` for `A.txt`, and the tree would hold
+  the file twice, so the call refuses the other spelling and names the one on disk. A file that
+  the caller named and that is gone when it is saved is an error (`NotFound`); a file found below
+  a directory that is gone is left out. Below a directory, a name that resolves to `.stemma` is
+  skipped without a word, since a tree cannot hold it (this skips a repository inside the
+  directory as well), and any other name that a tree refuses stops the call (`InvalidName`).
+  `.stemmaignore` (STEMMA-24) is not read yet, so nothing is excluded but those names.
 - **`commit` names the working-copy commit and starts a new one** *(proposal)*. The current
   working-copy commit gets its message, and its change keeps its ID. A new, empty working-copy
   commit starts on top of it. HEAD keeps naming a branch (ADR-008); the working-copy commit is a
