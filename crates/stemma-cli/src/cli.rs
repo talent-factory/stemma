@@ -23,7 +23,9 @@ use crate::op_log;
 use stemma_core::object::METADATA_DIR;
 use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
-use stemma_core::repository::{InitError, InitOptions, OpenError, Repository};
+use stemma_core::repository::{
+    InitError, InitOptions, OpenError, Repository, SnapshotError, TrackError, UpdateError,
+};
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
 /// The name of the environment variable that holds the actor.
@@ -44,6 +46,8 @@ struct Cli {
 enum Command {
     /// Create an empty repository
     Init(InitArgs),
+    /// Track files: from now on a snapshot saves them
+    Track(TrackArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -70,6 +74,29 @@ struct OpLogArgs {
     /// Write one JSON object per line instead of text
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct TrackArgs {
+    /// The files and directories to track, relative to the repository; a directory stands for
+    /// the files below it, and `.` for the whole directory of the repository
+    #[arg(required = true, value_name = "PATH")]
+    paths: Vec<String>,
+
+    /// The directory of the repository, the one that contains `.stemma`; the paths are relative
+    /// to it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -103,6 +130,11 @@ enum CliError {
     Init(InitError),
     /// The repository cannot be opened.
     Open(OpenError),
+    /// The core refused the paths or could not track them. Nothing is tracked, except for a
+    /// failure that says otherwise ([`UpdateError::NotDurable`] and [`UpdateError::MoveFailed`]).
+    Track(TrackError),
+    /// The files are tracked, but the result could not be written to the output.
+    TrackOutput(io::Error),
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
@@ -128,12 +160,18 @@ impl CliError {
     /// The exit code of the error (see the module documentation).
     fn exit_code(&self) -> ExitCode {
         match self {
-            Self::Init(InitError::NotDurable { .. }) | Self::Output { .. } => ExitCode::from(3),
+            Self::Init(InitError::NotDurable { .. })
+            | Self::Track(TrackError::Snapshot(SnapshotError::Update(UpdateError::NotDurable {
+                ..
+            })))
+            | Self::Output { .. }
+            | Self::TrackOutput(_) => ExitCode::from(3),
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
             | Self::Init(_)
             | Self::Open(_)
+            | Self::Track(_)
             | Self::OpLog(_)
             | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
@@ -157,6 +195,11 @@ impl fmt::Display for CliError {
             Self::Actor(error) => write!(f, "invalid actor: {error}"),
             Self::Init(error) => error.fmt(f),
             Self::Open(error) => error.fmt(f),
+            Self::Track(error) => error.fmt(f),
+            Self::TrackOutput(source) => write!(
+                f,
+                "tracked the files, but could not write the result: {source}"
+            ),
             Self::OpLog(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
@@ -182,6 +225,7 @@ impl Error for CliError {}
 fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
     match cli.command {
         Command::Init(args) => init(args, out),
+        Command::Track(args) => track(args, out),
         Command::Op {
             command: OpCommand::Log(args),
         } => show_op_log(args, out),
@@ -287,6 +331,50 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Tracks the files and lists the ones that are new. `track` saves the tracked files as well, so
+/// it is the snapshot that ADR-010 asks for before a command that changes something; `op log`
+/// only reads and takes none.
+fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let paths: Vec<String> = args.paths.iter().map(|path| normalize(path)).collect();
+    let tracking = repository
+        .track(&paths, &actor, &AllowAll)
+        .map_err(CliError::Track)?;
+    out.write_all(track_text(&tracking.added).as_bytes())
+        .map_err(CliError::TrackOutput)
+}
+
+/// One line for each file that is tracked now and was not before, or one line that says there is
+/// none. A name with a control character is written escaped, as in the other output.
+fn track_text(added: &[String]) -> String {
+    if added.is_empty() {
+        return "No new files to track\n".to_owned();
+    }
+    added
+        .iter()
+        .map(|path| format!("tracked {}\n", path.escape_debug()))
+        .collect()
+}
+
+/// Turns a path as a person types it into the form of the core: `./a.txt` and `dir/` are `a.txt`
+/// and `dir`, and `.` stays the directory of the repository. A path that starts with `/` is kept,
+/// so that the core refuses it: an absolute path is not relative to the repository.
+fn normalize(path: &str) -> String {
+    if path.starts_with('/') {
+        return path.to_owned();
+    }
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    if parts.is_empty() {
+        ".".to_owned()
+    } else {
+        parts.join("/")
+    }
+}
+
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let options = InitOptions::new(args.initial_branch);
@@ -338,6 +426,30 @@ pub fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_path_is_written_in_the_form_of_the_core() {
+        for (given, normal) in [
+            ("a.txt", "a.txt"),
+            ("./a.txt", "a.txt"),
+            ("dir/", "dir"),
+            ("./dir//sub/./", "dir/sub"),
+            (".", "."),
+            ("./", "."),
+            ("", "."),
+            ("../a", "../a"),
+            ("/abs/a", "/abs/a"),
+        ] {
+            assert_eq!(normalize(given), normal, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn the_output_of_track_lists_new_files_or_says_there_are_none() {
+        assert_eq!(track_text(&[]), "No new files to track\n");
+        let two = ["a.txt".to_owned(), "bad\nname".to_owned()];
+        assert_eq!(track_text(&two), "tracked a.txt\ntracked bad\\nname\n");
+    }
+
     use super::*;
 
     #[test]

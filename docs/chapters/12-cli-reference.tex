@@ -64,6 +64,48 @@ stemma init projekt --initial-branch trunk --actor "human daniel"
 STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" stemma init
 \stoptyping
 
+\section{track}
+
+Bestätigt Dateien: Von jetzt an speichert ein Snapshot sie (ADR-010).
+
+\starttyping
+stemma track [-C VERZEICHNIS] [--actor AKTEUR] PFAD...
+\stoptyping
+
+\startitemize
+\item {\bf PFAD:} Eine Datei oder ein Verzeichnis, relativ zum Repository. Ein Verzeichnis steht für die Dateien darunter, \type{.} für das ganze Verzeichnis des Repositories. Mindestens ein Pfad ist nötig, sonst ist es ein Aufruffehler (Exit-Code 2). Ein Pfad darf mit \type{./} beginnen und mit \type{/} enden.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories, also das, welches \type{.stemma} enthält. Standard ist das aktuelle. Die Pfade sind relativ dazu. Ein Repository in einem übergeordneten Verzeichnis sucht der Befehl nicht (offener Punkt in ADR-010).
+\item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\stopitemize
+
+{\bf Verhalten.} Eine Datei, die nicht im Baum des Working-Copy-Commits steht, ist nicht verfolgt, und ein Snapshot speichert sie nicht. \type{track} nimmt die Dateien an den Pfaden in den Baum auf und ersetzt den Working-Copy-Commit durch einen neuen mit denselben Eltern, derselben Change-ID und derselben Nachricht (Operation \type{track} im Operation Log). Die schon verfolgten Dateien speichert er im selben Schritt mit, denn der neue Baum entsteht aus dem Arbeitsverzeichnis. \type{track} ist damit der Snapshot, den ADR-010 vor einem Befehl verlangt, der etwas ändert. \type{op log} liest nur und macht keinen.
+
+Der Befehl gibt je neu verfolgter Datei eine Zeile aus, nach Pfad sortiert, und sonst eine Zeile:
+
+\starttyping
+tracked docs/plan.md
+tracked src/main.rs
+\stoptyping
+
+\starttyping
+No new files to track
+\stoptyping
+
+Die Pfade der Ausgabe sind relativ zum Repository (anders als bei \type{init}), und ein Name mit Steuerzeichen erscheint maskiert. Ein Pfad, der schon verfolgt wird, ist kein Fehler und ändert nichts; ändert sich weder der Baum noch eine verfolgte Datei, entsteht weder ein Commit noch ein Eintrag.
+
+{\bf Fehler.} Ein Pfad, den es nicht gibt, ein Pfad, der absolut ist, \type{..} enthält oder auf \type{.stemma} zeigt, und ein Pfad, dessen Schreibweise nicht der auf dem Datenträger entspricht (ein Dateisystem ohne Unterscheidung von Gross- und Kleinschreibung nähme sonst \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal), beenden den Befehl mit Exit-Code 1, bevor sich etwas ändert. Dasselbe gilt für eine Spezialdatei (Gerät, Socket, Pipe) oder einen Namen ohne UTF-8 unter einem genannten Verzeichnis und für einen Namen, den ein Baum ablehnt: Der Befehl nennt den Pfad und ändert nichts. Namen, die auf \type{.stemma} hinauslaufen, überspringt er unter einem Verzeichnis ohne Meldung. Mit Exit-Code 3 endet der Befehl, wenn die Dateien verfolgt sind, aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht gesichert ist; ein Skript wiederholt ihn dann nicht.
+
+{\bf Grenzen.} Die Datei \type{.stemmaignore} liest der Befehl noch nicht (STEMMA-24), ausgeschlossen ist nur \type{.stemma}. Wer \type{.} nennt, nimmt jede Datei des Verzeichnisses auf, auch eine mit Geheimnissen: Das Log und die History behalten sie. Eine Datei, die sich während des Befehls ändert, wird so gespeichert, wie sie beim Lesen war; die Dateien zusammen sind kein einzelner Augenblick.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma track src/main.rs --actor "human daniel"
+stemma track . --actor "human daniel"
+stemma track docs/ ./README.md
+stemma track -C projekt src
+\stoptyping
+
 \section{op log}
 
 Zeigt das Operation Log (ADR-011), die neuesten Einträge zuerst.

@@ -45,7 +45,7 @@ impl Repository {
     /// spells every name as it is on disk (a file system that ignores case would take another
     /// spelling for the same file, and the tree would hold it twice). A directory stands for the
     /// files below it, without a name that resolves to `.stemma`; those are skipped, not
-    /// reported. A path is never followed through a link, and a link at the end of a path is
+    /// reported. The path `.` stands for the working directory itself. A path is never followed through a link, and a link at the end of a path is
     /// tracked as a link. A path that is tracked already is not an error and adds nothing to the
     /// tree, but the tracked files are saved as in [`snapshot`](Self::snapshot), since the new
     /// tree is built from the working directory. The authorizer is asked once, before anything is
@@ -80,6 +80,11 @@ fn expand(root: &Path, paths: &[String]) -> Result<Vec<Tracked>, TrackError> {
     let mut named = BTreeSet::new();
     let mut below = BTreeSet::new();
     for path in paths {
+        if path == "." {
+            // The working directory itself: every file below it.
+            walk(root.to_path_buf(), "", &mut below)?;
+            continue;
+        }
         if path_problem(path).is_some() || !is_plain(path) {
             return Err(TrackError::InvalidPath { path: path.clone() });
         }
@@ -189,12 +194,12 @@ fn walk(dir: PathBuf, prefix: &str, found: &mut BTreeSet<String>) -> Result<(), 
         for name in names {
             let Some(name) = name.to_str() else {
                 return Err(SnapshotError::Unsupported {
-                    path: format!("{prefix}/{name:?}"),
+                    path: join(&prefix, &format!("{name:?}")),
                     what: Unsupported::NonUtf8Name,
                 }
                 .into());
             };
-            let path = format!("{prefix}/{name}");
+            let path = join(&prefix, name);
             match name_problem(name) {
                 None => {}
                 // A name that resolves to `.stemma` is not a file of this repository, and a
@@ -217,6 +222,15 @@ fn walk(dir: PathBuf, prefix: &str, found: &mut BTreeSet<String>) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// The path of a name below a directory; the working directory itself has the empty path.
+fn join(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{prefix}/{name}")
+    }
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> TrackError {
@@ -443,6 +457,29 @@ mod tests {
         let tracking = track(&repository, &["d"]).unwrap();
         assert_eq!(tracking.added, ["d/b.txt", "d/sub/c.txt"]);
         assert_eq!(paths(&repository), ["d/b.txt", "d/sub/c.txt"]);
+    }
+
+    #[test]
+    fn a_dot_stands_for_the_whole_working_directory() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "a");
+        write(&dir, "d/b.txt", "b");
+        write(&dir, "d/sub/c.txt", "c");
+        let tracking = track(&repository, &["."]).unwrap();
+        assert_eq!(tracking.added, ["a.txt", "d/b.txt", "d/sub/c.txt"]);
+        // The metadata directory is no file of the repository.
+        assert_eq!(paths(&repository), ["a.txt", "d/b.txt", "d/sub/c.txt"]);
+        assert!(track(&repository, &["."]).unwrap().entry.is_none());
+    }
+
+    #[test]
+    fn a_dot_in_front_of_a_name_is_still_refused_in_the_core() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "a");
+        let error = track(&repository, &["./a.txt"]).unwrap_err();
+        assert!(matches!(error, TrackError::InvalidPath { .. }), "{error}");
     }
 
     #[test]

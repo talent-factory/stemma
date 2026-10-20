@@ -11,7 +11,7 @@ Commits erzeugt und der Status angezeigt.
 \item Objektspeicher mit Blobs, Trees und Commits, adressiert über BLAKE3 mit Präfix nach ADR-001.
 \item Referenzen für den Branch \type{main} und HEAD.
 \item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
-\item Befehle \type{init}, \type{add}, \type{commit} und \type{status}.
+\item Befehle \type{init}, \type{track} (statt \type{add}), \type{commit} und \type{status}.
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
 \item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines 
 Zeigers geschrieben werden (ADR-011).
@@ -75,7 +75,7 @@ der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die
 Speichern verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt 
 \type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung; jeder andere Name, 
 den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest der 
-Kern noch nicht (STEMMA-24).
+Kern noch nicht (STEMMA-24). Der Befehl \type{stemma track} ruft die Funktion auf. Er ist der Snapshot vor einem Befehl, der etwas ändert; \type{op log} macht keinen, weil es nur liest und keinen Akteur kennt. Das Verzeichnis \type{.} steht für das ganze Arbeitsverzeichnis.
 
 Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst, 
 dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen, 
