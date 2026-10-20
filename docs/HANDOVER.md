@@ -26,7 +26,10 @@ Stemma ist ein API-first Versionskontrollsystem in Rust. Es wird von Daniel Senf
 - **Verteilt, mit offenem Blick auf Zentrales:** Daniel interessiert sich für Web3, ist aber offen für die Vorteile einer zentralen Instanz. Das ist noch nicht entschieden.
 - **RBAC im Hinterkopf:** Rollen und Rechte sind geplant, noch nicht umgesetzt (ADR-003).
 
-**Nutzergruppen in Etappen:** 1. Daniel allein, 2. Mitarbeitende von Talent Factory, 3. Studierende (Unterricht an der FFHS, Fächer DUA25 und AISE), 4. andere Firmen. Primäre Oberfläche ist die CLI, später ein MCP-Server. Eine Web-Oberfläche höchstens für Administratoren.
+**Nutzergruppen in Etappen:** 1. Daniel allein, 2. Mitarbeitende von Talent Factory,
+3. Studierende (Unterricht an der FFHS, Fächer DUA und AISE), 4. andere Firmen.
+Primäre Oberfläche ist die CLI, später ein MCP-Server.
+Eine Web-Oberfläche höchstens für Administratoren.
 
 **Nicht Ziel:** Git-Format-Kompatibilität, GitHub als Remote, eine Web-Oberfläche für alle.
 
