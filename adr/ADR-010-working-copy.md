@@ -112,7 +112,7 @@ are prior art, not a template.
   - A failure after the snapshot (reading the references, the commits, or the trees) leaves the
     snapshot: the error says so and carries the entry (`StatusError::saved`). A snapshot that
     moved the pointer and could not flush it is a result with a flush error, as for `commit`,
-    and the command ends with code 3 (STEMMA-4, CLI).
+    and the command ends with code 3 after it has written the status (`stemma status`).
   - The references are read one after the other and not under a lock, so a process that moves a
     pointer in between can make HEAD and the working-copy commit come from two states.
   - `op log` still takes no snapshot, because the snapshot would change the log it is about to

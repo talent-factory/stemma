@@ -164,7 +164,7 @@ Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell steht, `stemma init` und 
 | 1 | Repository-Schicht und `stemma init` | Erledigt | PR #41, #42; ADR-009; `Repository::init` und `open`, Befehl `stemma init` mit `--initial-branch` und `--actor` |
 | 1 | `stemma track` (statt `add`) | Erledigt | STEMMA-2, PR #55, #56; ADR-010 |
 | 1 | `stemma commit` | Erledigt | STEMMA-3, PR #57, #58; ADR-010 |
-| 1 | `stemma status` | Teilweise | STEMMA-4: Kern `Repository::status` (PR #62); der Befehl folgt |
+| 1 | `stemma status` | Erledigt | STEMMA-4, PR #62 (Kern) und der Befehl; ADR-010 |
 | 1 | Operation Log | Teilweise | ADR-011, PR #47: Kern mit Schreiber und strengem Leser, `init` schreibt Eintrag 1 (ohne Sperre, niemand sieht das Verzeichnis), `update_branch` und `set_head` schreiben ihn vor dem Zug unter der Sperre; `stemma op log` (STEMMA-27) und `op restore` (STEMMA-28) offen |
 | 1 | Entscheidung Arbeitskopie als Commit (wie jj) oder klassischer Index | Teilweise | ADR-010: Arbeitskopie ist ein Commit, Snapshot bei jedem Befehl; Vorschläge noch zu bestätigen (STEMMA-25) |
 | 2 | Myers-Diff mit Tests gegen bekannte Fälle | Nicht begonnen | |
