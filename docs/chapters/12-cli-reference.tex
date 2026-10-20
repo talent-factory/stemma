@@ -160,7 +160,9 @@ eine Spezialdatei (Gerät, Socket, Pipe) oder einen Namen ohne UTF-8 unter einem
 genannten Verzeichnis und für einen Namen, den ein Baum ablehnt: Der Befehl nennt
 den Pfad und ändert nichts. Namen, die auf \type{.stemma} hinauslaufen,
 überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so
-einem Namen ist dagegen ein Fehler. Liegt das Repository nicht im angegebenen
+einem Namen ist dagegen ein Fehler. Dasselbe gilt für \type{.git}, die Metadaten von Git:
+Sie fehlen immer, auch ohne Muster, und ein genannter Pfad mit einem Teil \type{.git}
+ist ein Fehler. Liegt das Repository nicht im angegebenen
 Verzeichnis, sucht der Befehl nicht in den übergeordneten; die Meldung sagt
 das und nennt \type{-C}. Mit Exit-Code 3 endet der Befehl, wenn die Dateien verfolgt sind,
 aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht gesichert ist;

@@ -684,6 +684,19 @@ mod tests {
     }
 
     #[test]
+    fn the_metadata_of_git_is_never_untracked() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "a");
+        write(&dir, ".git/HEAD", "ref");
+        write(&dir, "sub/.git", "gitdir: ../.git");
+
+        let status = status(&repository);
+
+        assert_eq!(status.untracked, ["a.txt"]);
+    }
+
+    #[test]
     fn what_the_exclusion_file_excludes_is_not_untracked_but_the_file_itself_is() {
         let dir = TempDir::new();
         let repository = repository(&dir);

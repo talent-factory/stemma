@@ -84,6 +84,15 @@ other).
 - **`.stemma` stays excluded by name** *(confirmed)*. A tree cannot hold a name that resolves to
   `.stemma` (ADR-005), and the file cannot lift that. The aliases of ADR-005 are the business of
   the name filter that exists, not of the patterns.
+- **`.git` is always excluded by name** *(proposed)*. `track` and `status` leave a file or
+  directory named `.git` out at every depth, without a line in `.stemmaignore` and without a way
+  to lift that. It is the metadata of Git (also the link file of a worktree or a submodule), not a
+  file of the project, and it changes with every Git command. Unlike `.stemma` it is no threat to
+  the repository, so a tree may hold the name and ADR-005 stays as it is; the rule lives in the
+  walk and not in the name filter. The comparison ignores the case of ASCII letters, as the file
+  systems of macOS and Windows do. A path that the caller names and that has a part `.git` is an
+  error, not a silent skip; no line is involved. What is in the tree already stays tracked, as
+  for a pattern. The price is that a repository cannot version a `.git` on purpose.
 - **Effect on commands** *(confirmed)*.
   - `track` skips an excluded file below a directory without a word, as it skips `.stemma`. A
     path that the caller names and that is excluded is an error that names the line of the

@@ -36,6 +36,11 @@ const PREFIX: &str = "b3:";
 /// (ADR-005).
 pub const METADATA_DIR: &str = ".stemma";
 
+/// Name of the metadata of Git. It is not a file of the project, so `track` and `status` leave it
+/// out at every depth, whatever `.stemmaignore` says (ADR-012). A tree may hold such a name: it
+/// is no threat to the repository, as [`METADATA_DIR`] is, only noise.
+pub const GIT_DIR: &str = ".git";
+
 /// Number of hexadecimal characters in a BLAKE3 digest (32 bytes, two characters per byte).
 const HEX_LEN: usize = 64;
 

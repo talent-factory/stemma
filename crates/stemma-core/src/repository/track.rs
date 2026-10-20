@@ -18,7 +18,7 @@ use super::snapshot::{lookup, Tracked};
 use super::{Repository, SnapshotError, Unsupported, UpdateError};
 use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::index::path_problem;
-use crate::object::{name_problem, FileMode, NameProblem};
+use crate::object::{name_problem, FileMode, NameProblem, GIT_DIR};
 use crate::oplog::{Entry, OperationName};
 use crate::{Actor, Authorizer};
 
@@ -158,6 +158,9 @@ fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Trac
         };
         check_spelling(root, path)?;
         // The path is spelled as on disk now, and the patterns compare names byte by byte.
+        if path.split('/').any(is_git_dir) {
+            return Err(TrackError::GitDirectory { path: path.clone() });
+        }
         if let Some(line) = rules.matching(path, metadata.is_dir()) {
             return Err(TrackError::Excluded {
                 path: path.clone(),
@@ -278,6 +281,11 @@ pub(super) fn walk(
                 .into());
             };
             let path = join(&prefix, name);
+            // The metadata of Git is left out at every depth, as a link file of a worktree or a
+            // submodule is, and no pattern can lift that (ADR-012).
+            if is_git_dir(name) {
+                continue;
+            }
             let problem = name_problem(name);
             // A name that resolves to `.stemma` is not a file of this repository, and a tree
             // cannot hold it. A repository inside the directory is skipped with it.
@@ -307,6 +315,12 @@ pub(super) fn walk(
         }
     }
     Ok(())
+}
+
+/// Whether the name is the metadata of Git. The comparison ignores the case of ASCII letters, as
+/// the file systems of macOS and Windows do.
+fn is_git_dir(name: &str) -> bool {
+    name.eq_ignore_ascii_case(GIT_DIR)
 }
 
 /// The path of a name below a directory; the working directory itself has the empty path.
@@ -361,6 +375,12 @@ pub enum TrackError {
         /// The line of the pattern in `.stemmaignore`.
         line: NonZeroUsize,
     },
+    /// A part of the path is `.git`, the metadata of Git, which `track` always leaves out
+    /// (ADR-012). Unlike [`TrackError::Excluded`] no line of `.stemmaignore` is involved.
+    GitDirectory {
+        /// The path as it was given.
+        path: String,
+    },
     /// `.stemmaignore` cannot be read, is not a regular file, changed while it was read, or is not
     /// valid. Nothing is tracked, as a rule that cannot be read must not become "exclude
     /// nothing".
@@ -398,6 +418,7 @@ impl TrackError {
             Self::InvalidPath { .. }
             | Self::InvalidName { .. }
             | Self::Excluded { .. }
+            | Self::GitDirectory { .. }
             | Self::NotFound { .. }
             | Self::Spelling { .. } => None,
         }
@@ -447,6 +468,11 @@ impl fmt::Display for TrackError {
                  that line to add it",
                 path.escape_debug(),
                 crate::ignore::FILE_NAME
+            ),
+            Self::GitDirectory { path } => write!(
+                f,
+                "`{}` is part of the metadata of Git, which `track` always leaves out",
+                path.escape_debug()
             ),
             Self::Ignore(error) => write!(f, "{error}; nothing was tracked"),
             Self::NotDurable { error, .. } => error.fmt(f),
@@ -1253,6 +1279,52 @@ mod tests {
         let tracking = track(&repository, &["."]).unwrap();
 
         assert_eq!(tracking.added, [".stemmaignore", "a/vendor/x"]);
+    }
+
+    #[test]
+    fn the_metadata_of_git_is_left_out_at_every_depth_without_a_pattern() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "a");
+        write(&dir, ".git/HEAD", "ref");
+        write(&dir, "vendor/lib/.git", "gitdir: ../../.git/modules/lib");
+        write(&dir, "vendor/lib/x.txt", "x");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, ["a.txt", "vendor/lib/x.txt"]);
+    }
+
+    #[test]
+    fn a_pattern_cannot_bring_the_metadata_of_git_back() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        ignore(&dir, "*.txt\n");
+        write(&dir, ".git/config", "c");
+
+        let tracking = track(&repository, &["."]).unwrap();
+
+        assert_eq!(tracking.added, [".stemmaignore"]);
+    }
+
+    #[test]
+    fn a_named_path_in_the_metadata_of_git_is_an_error() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, ".git/HEAD", "ref");
+        write(&dir, "a.txt", "a");
+        let entries = repository.oplog().entries().unwrap().len();
+
+        for path in [".git", ".git/HEAD"] {
+            let error = track(&repository, &["a.txt", path]).unwrap_err();
+            assert!(
+                matches!(error, TrackError::GitDirectory { .. }),
+                "{path}: {error}"
+            );
+        }
+
+        assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+        assert!(paths(&repository).is_empty());
     }
 
     #[test]
