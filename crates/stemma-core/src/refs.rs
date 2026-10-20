@@ -400,7 +400,8 @@ pub enum RefError {
         path: PathBuf,
     },
     /// There is no working-copy commit. `init` records one, so the file was removed or the
-    /// repository is older than the working-copy commit (ADR-010).
+    /// repository was made before the working-copy commit existed (ADR-010). A snapshot cannot
+    /// start without it; there is no command yet that makes the file again.
     NoWorkingCopy {
         /// The file that does not exist.
         path: PathBuf,
@@ -487,7 +488,8 @@ impl fmt::Display for RefError {
             Self::NoHead { path } => write!(f, "there is no HEAD at `{}`", path.display()),
             Self::NoWorkingCopy { path } => write!(
                 f,
-                "there is no working-copy commit at `{}`; `init` records one",
+                "there is no working-copy commit at `{}`; `init` records one, so the file was removed \
+                 or the repository was made before the working-copy commit existed",
                 path.display()
             ),
             Self::StaleWorkingCopy { expected, found } => write!(
@@ -1165,7 +1167,8 @@ impl FsRefStore {
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
     /// does not have, [`RefError::NoWorkingCopy`] and [`RefError::Corrupt`] for a file that cannot
-    /// be read, [`RefError::StaleWorkingCopy`] if the working-copy commit is not `expected`, and [`RefError::Locked`]. Once `step` has run, nothing is an error of this call; see
+    /// be read, [`RefError::StaleWorkingCopy`] if the working-copy commit is not `expected`, and
+    /// [`RefError::Locked`]. Once `step` has run, nothing is an error of this call; see
     /// [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn update_working_copy_after<T, E>(
         &self,

@@ -222,7 +222,8 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let refs = repository.refs();
         let locked_before = refs.is_locked()?;
         let head = refs.head()?;
-        // A repository without the file is older than the working-copy commit: it has none.
+        // A missing file is not a pointer that does not exist: `init` records one, so the log
+        // cannot say what the file held and the outcome of the working-copy entries stays unknown.
         let working_copy = match refs.working_copy() {
             Ok(commit) => Some(commit),
             Err(RefError::NoWorkingCopy { .. }) => None,
@@ -240,10 +241,19 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let current = match read() {
         Ok((head, working_copy, branches, locked)) => {
             let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
-            Some(
-                oplog::Current::new(head, branches, !locked && unchanged)
-                    .with_working_copy(working_copy),
-            )
+            let current = oplog::Current::new(head, branches, !locked && unchanged);
+            Some(match working_copy {
+                Some(commit) => current.with_working_copy(Some(commit)),
+                None => {
+                    // A warning that cannot be written is dropped on purpose, as in `main`.
+                    let _ = writeln!(
+                        io::stderr(),
+                        "stemma: warning: there is no working-copy commit, so the outcome of its \
+                         moves is not known"
+                    );
+                    current
+                }
+            })
         }
         Err(error) => {
             // A warning that cannot be written is dropped on purpose, as in `main`.

@@ -537,7 +537,7 @@ fn a_head_that_is_missing_is_a_warning_too() {
 }
 
 #[test]
-fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_is_marked() {
+fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_leaves_it_unknown() {
     let dir = repository();
     let result = run(dir.path(), &["op", "log"]);
     assert!(
@@ -545,16 +545,26 @@ fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_is_marked() {
         "{}",
         result.stdout
     );
-    // The entry of `init` moved the working-copy commit; without the file the move did not
-    // happen, and that is not a failure to read the references.
+    // The entry of `init` moved the working-copy commit. Without the file the log cannot say
+    // whether the move took effect, so the entry is unknown and a warning says why; it is not
+    // marked as a move that did not take effect.
     fs::remove_file(dir.path().join(".stemma/working-copy")).unwrap();
     let result = run(dir.path(), &["op", "log"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert_eq!(result.stderr, "");
+    assert!(
+        result.stderr.contains("no working-copy commit"),
+        "{}",
+        result.stderr
+    );
+    assert!(
+        !result.stdout.contains("! the move did not take effect"),
+        "{}",
+        result.stdout
+    );
     assert!(
         result
             .stdout
-            .contains("    ! the move did not take effect\n"),
+            .contains("    ? it is not known whether the move took effect\n"),
         "{}",
         result.stdout
     );

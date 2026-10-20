@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod snapshot;
 
-pub use snapshot::SnapshotError;
+pub use snapshot::{SnapshotError, Unsupported};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};

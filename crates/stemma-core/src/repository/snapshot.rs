@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{now, Repository, UpdateError};
-use crate::index::{Index, IndexError, WriteTreeError};
+use crate::index::{Index, WriteTreeError};
 use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, FileMode, Kind, ObjectId, Tree, TreeId,
     TreeParseError,
@@ -37,15 +37,17 @@ impl Repository {
     /// differ from the tree of the current one (ADR-010).
     ///
     /// Only the files in the tree of the working-copy commit are read: a changed file is saved, and
-    /// a deleted one (or one that a directory or a link to a directory has replaced) leaves the
-    /// tree. A file that is not tracked is not saved. The new commit keeps the parents, the change
+    /// a deleted one leaves the tree, and so does one that a directory has replaced or that lies
+    /// below a directory that is now a link (a link is never followed). A tracked path that is a
+    /// link itself is saved as the link. A file that is not tracked is not saved. The new commit keeps the parents, the change
     /// ID, and the message of the one it replaces; its author is `actor` and its time is now. The
     /// move is recorded in the log in the order of
     /// [`update_working_copy`](Self::update_working_copy), and the authorizer is asked once, before
     /// anything is read.
     ///
     /// Every tracked file is read completely, and the blobs are read again when the tree is
-    /// written, so the cost is that of reading the tracked files twice. There is no cache.
+    /// written, so the cost is that of reading the tracked files twice. There is no cache (see
+    /// ADR-010).
     ///
     /// Returns the entry, or `None` if the tree is the same: nothing changed, so there is no commit
     /// and no entry.
@@ -55,10 +57,10 @@ impl Repository {
     /// Returns [`SnapshotError::Update`] if the authorizer refuses or the move fails (among others
     /// [`RefError::StaleWorkingCopy`] when another process moved the working-copy commit first: the
     /// snapshot can be repeated), [`SnapshotError::Refs`] if the working-copy commit cannot be
-    /// read, [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object store lacks an
+    /// read at the start, [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object store lacks an
     /// object that the commit needs or fails, [`SnapshotError::Unsupported`] for a tracked path
     /// that is a special file or a link that is not UTF-8, and [`SnapshotError::Io`] if a file
-    /// cannot be read. Nothing but objects is written before the move, and an object that no commit
+    /// cannot be read or is replaced while it is read. Nothing but objects is written before the move, and an object that no commit
     /// names is harmless.
     pub fn snapshot(
         &self,
@@ -74,9 +76,10 @@ impl Repository {
         let mut index = Index::new();
         for file in tracked_files(self.objects(), commit.tree())? {
             if let Some((mode, id)) = save(self.path(), self.objects(), &file)? {
+                // The paths come from a tree, so none is a directory of another.
                 index
                     .insert(file.path, mode, id)
-                    .map_err(SnapshotError::Index)?;
+                    .expect("the paths of a tree make an index");
             }
         }
         let tree = index
@@ -93,6 +96,7 @@ impl Repository {
             now(),
             commit.message(),
         )
+        // `Commit::parse` refuses a repeated parent, so the parents of a stored commit are distinct.
         .expect("the parents of a commit are distinct");
         let new = self
             .objects()
@@ -179,7 +183,7 @@ fn lookup(root: &Path, path: &str) -> Result<Option<(PathBuf, Metadata)>, Snapsh
 }
 
 /// The mode of a regular file. Where the file system has no executable bit, the mode that the tree
-/// has stays.
+/// has stays, except that a tracked link is a plain file there, because the file is not a link.
 fn file_mode(metadata: &Metadata, tracked: FileMode) -> FileMode {
     #[cfg(unix)]
     {
@@ -201,7 +205,41 @@ fn file_mode(metadata: &Metadata, tracked: FileMode) -> FileMode {
     }
 }
 
-/// Stores the content of a tracked file as a blob, or returns `None` if the file is gone.
+/// Reads the file that `lookup` saw, or returns `None` if it is gone. `fs::read` follows links, so
+/// a process that swaps the file or a directory above it for a link between the lookup and the read
+/// could lead it out of the working directory; the file that was opened must be the one that was
+/// looked at, which is checked by its device and inode where the file system has them.
+fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotError> {
+    use std::io::Read;
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(SnapshotError::io("read the file", path, source)),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let opened = file
+            .metadata()
+            .map_err(|source| SnapshotError::io("read the file", path, source))?;
+        if (opened.dev(), opened.ino()) != (seen.dev(), seen.ino()) {
+            return Err(SnapshotError::io(
+                "read the file",
+                path,
+                io::Error::other("the file was replaced while it was read"),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = seen;
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .map_err(|source| SnapshotError::io("read the file", path, source))?;
+    Ok(Some(content))
+}
+
+/// Stores the content of a tracked file as a blob, or returns `None` if the file is gone or a
+/// directory has taken its place.
 fn save(
     root: &Path,
     objects: &dyn ObjectStore,
@@ -216,12 +254,13 @@ fn save(
             .map_err(|source| SnapshotError::io("read the link", &full, source))?;
         let target = target.to_str().ok_or_else(|| SnapshotError::Unsupported {
             path: file.path.clone(),
-            what: "a link whose target is not UTF-8",
+            what: Unsupported::NonUtf8Link,
         })?;
         (FileMode::Symlink, target.as_bytes().to_vec())
     } else if kind.is_file() {
-        let content =
-            fs::read(&full).map_err(|source| SnapshotError::io("read the file", &full, source))?;
+        let Some(content) = read_file(&full, &metadata)? else {
+            return Ok(None);
+        };
         (file_mode(&metadata, file.mode), content)
     } else if kind.is_dir() {
         // A directory has taken the place of the file; what is below it is not tracked.
@@ -229,7 +268,7 @@ fn save(
     } else {
         return Err(SnapshotError::Unsupported {
             path: file.path.clone(),
-            what: "a special file",
+            what: Unsupported::SpecialFile,
         });
     };
     let id = objects
@@ -245,7 +284,8 @@ pub enum SnapshotError {
     /// The authorizer refused, or the move of the working-copy commit failed. See
     /// [`UpdateError`] for what is in the log and whether the pointer moved.
     Update(UpdateError),
-    /// The working-copy commit cannot be read.
+    /// The working-copy commit cannot be read when the snapshot starts. A [`RefError`] of the
+    /// move itself, among them [`RefError::StaleWorkingCopy`], is in [`Update`](Self::Update).
     Refs(RefError),
     /// The object store failed.
     Store(Box<StoreError>),
@@ -276,7 +316,7 @@ pub enum SnapshotError {
         /// The tracked path.
         path: String,
         /// What it is.
-        what: &'static str,
+        what: Unsupported,
     },
     /// A file of the working directory cannot be read.
     Io {
@@ -287,10 +327,27 @@ pub enum SnapshotError {
         /// The error of the file system.
         source: io::Error,
     },
-    /// The paths of the tree do not make an index, which the rules of the tree rule out.
-    Index(IndexError),
     /// The tree of the snapshot could not be written.
     WriteTree(WriteTreeError),
+}
+
+/// What a snapshot cannot save of a tracked path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Unsupported {
+    /// A device, a socket, or a pipe.
+    SpecialFile,
+    /// A link whose target is not UTF-8.
+    NonUtf8Link,
+}
+
+impl fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::SpecialFile => "a special file",
+            Self::NonUtf8Link => "a link whose target is not UTF-8",
+        })
+    }
 }
 
 impl SnapshotError {
@@ -314,8 +371,7 @@ impl SnapshotError {
             Self::Missing { .. }
             | Self::Commit { .. }
             | Self::Tree { .. }
-            | Self::Unsupported { .. }
-            | Self::Index(_) => None,
+            | Self::Unsupported { .. } => None,
         }
     }
 }
@@ -335,7 +391,8 @@ impl fmt::Display for SnapshotError {
             Self::Tree { id, source } => write!(f, "the tree {id} is not valid: {source}"),
             Self::Unsupported { path, what } => write!(
                 f,
-                "`{}` is tracked, but it is {what}, which a snapshot cannot save",
+                "`{}` is tracked, but it is {what}, which a snapshot cannot save; remove it or \
+                 put a regular file in its place",
                 path.escape_debug()
             ),
             Self::Io {
@@ -343,7 +400,6 @@ impl fmt::Display for SnapshotError {
                 path,
                 source,
             } => write!(f, "could not {operation} `{}`: {source}", path.display()),
-            Self::Index(error) => write!(f, "the tracked paths make no index: {error}"),
             Self::WriteTree(error) => {
                 write!(f, "could not write the tree of the snapshot: {error}")
             }
@@ -356,7 +412,6 @@ impl Error for SnapshotError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::change::ChangeId;
     use crate::repository::InitOptions;
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
@@ -392,8 +447,8 @@ mod tests {
         read_commit(repository.objects(), id).unwrap()
     }
 
-    /// Makes the files and a working-copy commit that tracks them, with the message "work", by
-    /// the move that a command will make; there is no command to track files yet.
+    /// Makes the files and a working-copy commit that tracks them, with the message "work", by a
+    /// move of the working-copy commit.
     fn track(repository: &Repository, dir: &TempDir, files: &[(&str, &str)]) {
         let mut index = Index::new();
         for (path, content) in files {
@@ -706,6 +761,253 @@ mod tests {
             snapshot(&repository).unwrap();
             assert_eq!(current(&repository).change(), change);
         }
-        assert_ne!(change, ChangeId::generate().unwrap());
+    }
+
+    #[test]
+    fn nested_paths_are_changed_deleted_and_left_alone_at_depth() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(
+            &repository,
+            &dir,
+            &[
+                ("a/b/c/deep.txt", "one"),
+                ("a/b/c/other.txt", "two"),
+                ("a/b/side.txt", "three"),
+                ("top.txt", "four"),
+            ],
+        );
+        write(&dir, "a/b/c/deep.txt", "changed");
+        write(&dir, "a/b/c/untracked.txt", "untracked");
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(
+            paths(&repository),
+            [
+                "a/b/c/deep.txt",
+                "a/b/c/other.txt",
+                "a/b/side.txt",
+                "top.txt"
+            ]
+        );
+        // A deletion that empties a directory takes the directory out of the tree.
+        fs::remove_file(dir.path().join("a/b/c/deep.txt")).unwrap();
+        fs::remove_file(dir.path().join("a/b/c/other.txt")).unwrap();
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(paths(&repository), ["a/b/side.txt", "top.txt"]);
+        let expected = {
+            let mut index = Index::new();
+            for (path, content) in [("a/b/side.txt", "three"), ("top.txt", "four")] {
+                let id = repository
+                    .objects()
+                    .put_blob(&Blob::new(content.as_bytes()))
+                    .unwrap();
+                index.insert(path, FileMode::File, id).unwrap();
+            }
+            index.write_tree(repository.objects()).unwrap()
+        };
+        assert_eq!(current(&repository).tree(), expected);
+    }
+
+    #[test]
+    fn an_empty_file_and_an_empty_untracked_directory() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("empty.txt", "full")]);
+        write(&dir, "empty.txt", "");
+        fs::create_dir(dir.path().join("hollow")).unwrap();
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(paths(&repository), ["empty.txt"]);
+        assert!(snapshot(&repository).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_content_change_keeps_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("run.sh", "echo")]);
+        fs::set_permissions(dir.path().join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        snapshot(&repository).unwrap();
+        write(&dir, "run.sh", "echo changed");
+        fs::set_permissions(dir.path().join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(
+            tracked(&repository),
+            [("run.sh".to_owned(), FileMode::Executable)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_changes_with_its_target_and_back_to_a_file() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("l", "content")]);
+        fs::remove_file(dir.path().join("l")).unwrap();
+        symlink("first", dir.path().join("l")).unwrap();
+        assert!(snapshot(&repository).is_some());
+        assert!(snapshot(&repository).is_none());
+        fs::remove_file(dir.path().join("l")).unwrap();
+        symlink("second", dir.path().join("l")).unwrap();
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(tracked(&repository), [("l".to_owned(), FileMode::Symlink)]);
+        fs::remove_file(dir.path().join("l")).unwrap();
+        write(&dir, "l", "content");
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(tracked(&repository), [("l".to_owned(), FileMode::File)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_whose_target_is_not_utf8_is_refused() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("l", "content")]);
+        let before = repository.refs().working_copy().unwrap();
+        fs::remove_file(dir.path().join("l")).unwrap();
+        symlink(OsStr::from_bytes(b"\xff\xfe"), dir.path().join("l")).unwrap();
+        let error = repository.snapshot(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                SnapshotError::Unsupported {
+                    what: Unsupported::NonUtf8Link,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(repository.refs().working_copy().unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_file_is_an_io_error_and_nothing_moves() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a.txt", "one"), ("secret", "two")]);
+        let before = repository.refs().working_copy().unwrap();
+        let numbers = repository.oplog().numbers().unwrap();
+        write(&dir, "a.txt", "changed");
+        let secret = dir.path().join("secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read(&secret).is_ok();
+        let result = repository.snapshot(&actor(), &AllowAll);
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        if readable {
+            eprintln!("skipped: the permission of a file is not enforced here (root?)");
+            return;
+        }
+        let error = result.unwrap_err();
+        assert!(matches!(error, SnapshotError::Io { .. }), "{error}");
+        assert!(error.io_error().is_some());
+        assert!(error.to_string().contains("secret"), "{error}");
+        assert_eq!(repository.refs().working_copy().unwrap(), before);
+        assert_eq!(repository.oplog().numbers().unwrap(), numbers);
+    }
+
+    #[test]
+    fn a_file_that_vanishes_before_the_read_is_gone() {
+        let dir = TempDir::new();
+        let seen = fs::metadata(dir.path()).unwrap();
+        assert!(read_file(&dir.path().join("missing"), &seen)
+            .unwrap()
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_is_not_the_one_that_was_looked_at_is_refused() {
+        let dir = TempDir::new();
+        write(&dir, "one", "1");
+        write(&dir, "two", "2");
+        let seen = fs::symlink_metadata(dir.path().join("one")).unwrap();
+        let error = read_file(&dir.path().join("two"), &seen).unwrap_err();
+        assert!(matches!(error, SnapshotError::Io { .. }), "{error}");
+        assert!(error.to_string().contains("replaced"), "{error}");
+        let own = fs::symlink_metadata(dir.path().join("one")).unwrap();
+        assert_eq!(
+            read_file(&dir.path().join("one"), &own).unwrap(),
+            Some(b"1".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_denied_move_names_the_working_copy_as_its_target() {
+        use std::sync::Mutex;
+        struct Record(Mutex<Vec<(String, String)>>);
+        impl Authorizer for Record {
+            fn authorize(&self, _actor: &Actor, operation: &str, target: &str) -> Decision {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((operation.to_owned(), target.to_owned()));
+                Decision::Deny
+            }
+        }
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let old = repository.refs().working_copy().unwrap();
+        let record = Record(Mutex::new(Vec::new()));
+        let error = repository
+            .update_working_copy(
+                &OperationName::new("track").unwrap(),
+                old,
+                old,
+                &actor(),
+                &record,
+            )
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(
+            *record.0.lock().unwrap(),
+            [("track".to_owned(), "working-copy".to_owned())]
+        );
+    }
+
+    #[test]
+    fn snapshots_at_the_same_time_make_one_move_and_one_entry() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a.txt", "one")]);
+        let before = repository.refs().working_copy().unwrap();
+        let numbers = repository.oplog().numbers().unwrap().len();
+        write(&dir, "a.txt", "changed");
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..6)
+                .map(|_| scope.spawn(|| repository.snapshot(&other_actor(), &AllowAll)))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let moved = results
+            .iter()
+            .filter(|result| matches!(result, Ok(Some(_))))
+            .count();
+        // The others find nothing left to save, lose the race, or find the lock held.
+        for result in &results {
+            match result {
+                Ok(_)
+                | Err(SnapshotError::Update(UpdateError::Refs(
+                    RefError::StaleWorkingCopy { .. } | RefError::Locked { .. },
+                ))) => {}
+                Err(error) => panic!("unexpected: {error}"),
+            }
+        }
+        assert_eq!(moved, 1);
+        let after = repository.refs().working_copy().unwrap();
+        assert_ne!(after, before);
+        assert_eq!(repository.oplog().numbers().unwrap().len(), numbers + 1);
+        let entries = repository.oplog().entries().unwrap();
+        let moves = entries.last().unwrap().change().working_copy().unwrap();
+        assert_eq!(
+            (moves.before(), moves.after()),
+            (Some(&before), Some(&after))
+        );
     }
 }
