@@ -193,10 +193,18 @@ are prior art, not a template.
       lets garbage collection delete what only the log held. Tracked in STEMMA-26.
 - [ ] Who the actor of a snapshot is when two actors use one directory, and how the lease of
       ADR-004 applies. Tracked in STEMMA-38.
-- [ ] The cost of a snapshot for a large working directory: reading every file at every
+- [x] The cost of a snapshot for a large working directory: reading every file at every
       command. It is twice the tracked files today, because `Index::write_tree` verifies the
-      blobs again (the code points here and does not repeat it). A cache keyed by modification time and size is the usual answer and a risk for
-      correctness; decide with a measurement. Tracked in STEMMA-37.
+      blobs again (the code points here and does not repeat it). Measured in STEMMA-37 (release
+      build, macOS with APFS on an SSD, one run each, files of 1 KiB): a snapshot of an unchanged
+      working directory costs about 70 microseconds per file (0.04 s for 100 files, 0.7 s for
+      10,000, 3.3 s for 50,000), and a changed file adds no measurable time. Ten files of 100 MiB
+      take 1.5 s. The first `track` is slower by two orders of magnitude, about 6.6 ms per file
+      (66 s for 10,000 files), because every object is flushed. **Decision:** no cache keyed by
+      modification time and size for now. A snapshot stays under one second up to about 10,000
+      files, and the cache is a risk for correctness. Look at it again when repositories with more
+      than 50,000 files are realistic, and measure on Linux and Windows first (STEMMA-33). The
+      flush of the first `track` is tracked in STEMMA-40.
 - [ ] Files that change during a snapshot. Each file is read once and its blob is made from what
       was read, so a file is consistent in itself, but the files together are not one instant.
       Special files are refused; whether a link that is not UTF-8 may be saved is open.
