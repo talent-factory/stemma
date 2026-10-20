@@ -202,7 +202,10 @@ fn a_dot_with_other_paths_and_in_an_empty_directory() {
 #[test]
 fn a_relative_repository_is_the_base_of_the_paths() {
     let outer = Dir::new();
-    let init = run(outer.path(), &["init", "proj", "--actor", "human daniel"]);
+    let init = run(
+        outer.path(),
+        &["init", "-C", "proj", "--actor", "human daniel"],
+    );
     assert_eq!(init.code, 0, "{}", init.stderr);
     write(&outer.path().join("proj"), "a.txt", "one");
     fs::create_dir(outer.path().join("elsewhere")).unwrap();

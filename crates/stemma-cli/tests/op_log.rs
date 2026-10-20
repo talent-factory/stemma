@@ -195,7 +195,7 @@ fn the_repository_can_be_named() {
     let dir = repository();
     let elsewhere = Dir::new();
     let path = dir.path().to_str().unwrap();
-    let result = run(elsewhere.path(), &["op", "log", path]);
+    let result = run(elsewhere.path(), &["op", "log", "-C", path]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(result.stdout.starts_with("1  "), "{}", result.stdout);
 }
