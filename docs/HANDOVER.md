@@ -159,12 +159,12 @@ Von sechs Phasen hat Phase 1 begonnen: Ihr Datenmodell steht, `stemma init` und 
 | 1 | Index als Datenmodell: Kodierung, Pfadregeln, `verify` | Erledigt | PR #3, #11, #20; Format `stemma-index 1` entschieden |
 | 1 | Objekt aus dem Speicher lesen und decodieren, Arten prüfen | Erledigt | PR #26: `get_tree`, `get_commit`, `Tree::verify`, `Commit::verify` |
 | 1 | `Index::write_tree(&store)` | Erledigt | PR #25: ruft `verify` selbst auf |
-| 1 | Autorisierungs-Hook `authorize` | Teilweise | `init`, `update_branch` und `set_head` rufen ihn auf, ebenso die Befehle; `add`, `commit` und der Snapshot fehlen noch |
+| 1 | Autorisierungs-Hook `authorize` | Teilweise | `init`, `update_branch`, `set_head`, der Snapshot, `track`, `commit` und `status` rufen ihn auf; neue Operationen müssen es ebenfalls tun |
 | 1 | Referenzen für `main` und HEAD | Erledigt | `refs.rs`, ADR-008; Löschen von Branches, gepackte Refs und Tags offen |
 | 1 | Repository-Schicht und `stemma init` | Erledigt | PR #41, #42; ADR-009; `Repository::init` und `open`, Befehl `stemma init` mit `--initial-branch` und `--actor` |
-| 1 | `stemma add` | Offen | Dateien lesen, Blobs schreiben, Index speichern |
-| 1 | `stemma commit` | Offen | Zeitstempel ist im Commit vorgesehen |
-| 1 | `stemma status` | Offen | braucht Arbeitskopie, Index und HEAD |
+| 1 | `stemma track` (statt `add`) | Erledigt | STEMMA-2, PR #55, #56; ADR-010 |
+| 1 | `stemma commit` | Erledigt | STEMMA-3, PR #57, #58; ADR-010 |
+| 1 | `stemma status` | Teilweise | STEMMA-4: Kern `Repository::status` (PR #62); der Befehl folgt |
 | 1 | Operation Log | Teilweise | ADR-011, PR #47: Kern mit Schreiber und strengem Leser, `init` schreibt Eintrag 1 (ohne Sperre, niemand sieht das Verzeichnis), `update_branch` und `set_head` schreiben ihn vor dem Zug unter der Sperre; `stemma op log` (STEMMA-27) und `op restore` (STEMMA-28) offen |
 | 1 | Entscheidung Arbeitskopie als Commit (wie jj) oder klassischer Index | Teilweise | ADR-010: Arbeitskopie ist ein Commit, Snapshot bei jedem Befehl; Vorschläge noch zu bestätigen (STEMMA-25) |
 | 2 | Myers-Diff mit Tests gegen bekannte Fälle | Nicht begonnen | |

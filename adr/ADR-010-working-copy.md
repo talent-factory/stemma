@@ -9,7 +9,8 @@ Git keeps three states: the working copy, the index as a staging area, and the l
 an agent has not staged and committed is not in the history, so a crash, a wrong `checkout`, or
 an overwritten file loses it without a trace. The goal of Stemma is that no state of an agent is
 lost *(confirmed)*. The index of `crates/stemma-core/src/index.rs` is built as a data model
-(`stemma-index 1`), but nothing depends on it yet: there is no `add`, `commit`, or `status`.
+(`stemma-index 1`), but nothing depended on it yet when this ADR was written: there was no `add`,
+`commit`, or `status`.
 
 Jujutsu treats the working copy as a commit that every command updates, and the Anthropic
 article on Scion (`anthropic2026redesigning`) works without a local staging area as well. Both
@@ -91,21 +92,32 @@ are prior art, not a template.
     commit), and when the branch is not at the parent of the working-copy commit: a commit on
     top of that parent would drop what the branch has. A rebase (phase 3) brings the two
     together.
-- **`status` takes the snapshot first and compares the commit with its parent** *(confirmed,
+- **`status` takes the snapshot and compares the commit with its parent** *(confirmed,
   implemented in `Repository::status`)*. Like every command that does not only read the log,
-  `status` saves the tracked files before it looks (so it has an actor, and the entry appears
-  only if a tracked file changed). The snapshot makes every tracked file equal to the working-copy
-  commit, so "changed" cannot mean "differs from the working-copy commit": it means what the
-  working-copy commit does against its **parent**, as in Jujutsu. That is `A` (in the commit and
-  not in the parent), `M` (another content or mode, also a link in place of a file), and `D`
-  (in the parent and not in the commit), sorted by path, with the files of a directory that is
-  added or deleted listed one by one. A commit with no parent is compared with the empty tree,
-  and one with several parents with the first. The **untracked** files are the files below the
-  directory that are in no tree and that `.stemmaignore` does not exclude (ADR-012), listed one
-  by one. `status` stops where `track` would stop: at an invalid `.stemmaignore`, and at a name
-  that a tree refuses and no pattern excludes. `op log` still takes no snapshot, because the
-  snapshot would change the log it is about to show. A tracked file that a pattern excludes
-  stays in the changes; a report "tracked and excluded" is an open item of ADR-012.
+  `status` saves the tracked files (so it has an actor, and the entry appears only if a tracked
+  file changed). The snapshot makes every tracked file equal to the working-copy commit, so
+  "changed" cannot mean "differs from the working-copy commit": it means what the working-copy
+  commit does against its **parent**, as in Jujutsu. That is `A` (in the commit and not in the
+  parent), `M` (another content or mode, also a link in place of a file), and `D` (in the parent
+  and not in the commit), sorted by path, with the files of a directory that is added or deleted
+  listed one by one, and a file that becomes a directory (or the reverse) as a `D` and the `A`
+  files below it. A commit with no parent is compared with the empty tree, and one with several
+  parents with the first. The **untracked** files are the files below the working directory that
+  are not in the tree of the working-copy commit and that `.stemmaignore` does not exclude
+  (ADR-012), listed one by one.
+  - `status` reads the exclusion file and walks the working directory **before** the snapshot.
+    It stops where `track` stops (an invalid or unreadable `.stemmaignore`, a name that a tree
+    refuses and no pattern excludes, a name that is not UTF-8, which a pattern cannot exclude),
+    and so it stops before it writes anything.
+  - A failure after the snapshot (reading the references, the commits, or the trees) leaves the
+    snapshot: the error says so and carries the entry (`StatusError::saved`). A snapshot that
+    moved the pointer and could not flush it is a result with a flush error, as for `commit`,
+    and the command ends with code 3 (STEMMA-4, CLI).
+  - The references are read one after the other and not under a lock, so a process that moves a
+    pointer in between can make HEAD and the working-copy commit come from two states.
+  - `op log` still takes no snapshot, because the snapshot would change the log it is about to
+    show. A tracked file that a pattern excludes stays in the changes; a report "tracked and
+    excluded" is an open item of ADR-012.
 - **The tracked set is the tree of the working-copy commit** *(proposal)*. There is no index file
   as a staging area. `Index` stays in the code as the model that builds a tree from a set of
   paths and as the format of a cache, if one is needed for speed.
@@ -138,7 +150,7 @@ are prior art, not a template.
   a commit, so `commit` is changed in place and the golden vectors were computed again. The
   exception ends with the first commit that a command writes.
 - **`stemma add` (STEMMA-2) becomes `stemma track`.** `stemma commit` (STEMMA-3) names the
-  working-copy commit and starts a new one. `stemma status` (STEMMA-4) saves the tracked files,
+  working-copy commit and starts a new one. `status` (STEMMA-4) saves the tracked files,
   lists what the working-copy commit changes against its parent, and lists the untracked files.
 - **A secret that was tracked is in the history and in the log.** The exclusion file and the
   confirmation of new files make this rare, but not impossible: a tracked `config` can gain a

@@ -109,23 +109,6 @@ bricht der Aufruf ab, bevor etwas verfolgt wird.
 Ein Snapshot, \type{commit} und ein Aufruf ohne Pfade lesen sie nie.
 Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Muster aus.
 
-Die Funktion \type{Repository::status} (ADR-010) macht zuerst den Snapshot der verfolgten Dateien,
-wie jeder Befehl, der nicht nur das Log liest; sie braucht deshalb einen Akteur,
-und ein Eintrag entsteht nur, wenn sich eine verfolgte Datei geändert hat.
-Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit,
-«geändert» kann also nicht «anders als der Working-Copy-Commit» heissen.
-Es heisst: was der Working-Copy-Commit gegenüber seinem Elternteil tut, wie bei Jujutsu.
-Das sind hinzugefügte (\type{A}), geänderte (\type{M}, auch bei anderem Modus
-oder einem Link anstelle einer Datei) und gelöschte (\type{D}) Dateien, nach Pfad sortiert.
-Die Dateien eines hinzugefügten oder gelöschten Verzeichnisses stehen einzeln da.
-Ohne Elternteil gilt der leere Baum, bei mehreren Eltern der erste.
-Ein Verzeichnis, das in beiden Bäumen dieselbe ID hat, liest der Vergleich nicht.
-Unverfolgt sind die Dateien im Verzeichnis, die in keinem Baum stehen
-und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln da.
-\type{status} bricht dort ab, wo \type{track} abbräche:
-bei einer ungültigen Ausschlussdatei und bei einem Namen, den ein Baum ablehnt
-und den kein Muster ausschliesst.
-
 Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst,
 dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen,
 einmal zum Speichern und einmal, wenn der Baum geschrieben wird; einen Cache gibt es noch nicht.
@@ -151,6 +134,36 @@ zu verwenden.
 Der Aufruf lehnt eine leere Nachricht ab, ein HEAD ohne Branch, einen unveränderten Baum
 und einen Branch, der nicht beim Elternteil des Working-Copy-Commits steht;
 Letzteres wäre ein Fall für einen Rebase (Phase 3).
+
+Die Funktion \type{Repository::status} (ADR-010) macht den Snapshot der verfolgten Dateien,
+wie jeder Befehl, der nicht nur das Log liest.
+Sie braucht deshalb einen Akteur,
+und ein Eintrag entsteht nur, wenn sich eine verfolgte Datei geändert hat.
+Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit,
+«geändert» kann also nicht «anders als der Working-Copy-Commit» heissen.
+Es heisst: was der Working-Copy-Commit gegenüber seinem Elternteil tut, wie bei Jujutsu.
+Das sind hinzugefügte (\type{A}), geänderte (\type{M}) und gelöschte (\type{D}) Dateien,
+nach Pfad sortiert.
+\type{M} gilt auch bei anderem Modus oder bei einem Link anstelle einer Datei.
+Die Dateien eines hinzugefügten oder gelöschten Verzeichnisses stehen einzeln da.
+Ein Wechsel von Datei zu Verzeichnis ist ein \type{D} und die \type{A} darunter.
+Ohne Elternteil gilt der leere Baum, bei mehreren Eltern der erste.
+Ein Verzeichnis, das in beiden Bäumen dieselbe ID hat, liest der Vergleich nicht.
+Unverfolgt sind die Dateien im Arbeitsverzeichnis,
+die nicht im Baum des Working-Copy-Commits stehen
+und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln da.
+
+Die Ausschlussdatei liest \type{status} und das Arbeitsverzeichnis durchläuft es vor dem Snapshot.
+Es bricht dort ab, wo \type{track} abbricht:
+bei einer ungültigen Ausschlussdatei, bei einem Namen, den ein Baum ablehnt
+und den kein Muster ausschliesst, und bei einem Namen ohne UTF-8.
+Dann hat es noch nichts geschrieben.
+Scheitert das Lesen der Commits oder Bäume erst nach dem Snapshot, bleibt der Snapshot,
+und der Fehler nennt seinen Eintrag.
+Konnte der Snapshot den Zeiger bewegen, aber nicht sichern, ist das ein Ergebnis mit einem Fehler
+und kein Abbruch, wie bei \type{commit}.
+Die Zeiger liest die Funktion nacheinander und nicht unter der Sperre;
+bewegt ein anderer Prozess einen dazwischen, können HEAD und Commit aus zwei Zuständen stammen.
 
 Den Akteur liest die Kommandozeile aus dem Schalter \type{--actor} oder der Umgebungsvariablen
 \type{STEMMA_ACTOR}. Der Text hat die Form der Akteur-Zeile eines Commits, also

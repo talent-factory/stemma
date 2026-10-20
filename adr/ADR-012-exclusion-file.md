@@ -1,8 +1,8 @@
 # ADR-012: the exclusion file `.stemmaignore`
 
 **Status:** Confirmed by the author on 2026-10-20 and implemented in STEMMA-24
-(`crates/stemma-core/src/ignore.rs`, used by `Repository::track`). `stemma status` (STEMMA-4)
-will use it for the untracked files.
+(`crates/stemma-core/src/ignore.rs`, used by `Repository::track`). `Repository::status`
+(STEMMA-4) uses it for the untracked files.
 
 ## Context
 
@@ -89,9 +89,9 @@ other).
     path that the caller names and that is excluded is an error that names the line of the
     pattern.
   - What is in the tree already stays tracked and is saved by every snapshot, whatever the file
-    says. Otherwise a snapshot would drop a file from the history without a word. `stemma status`
-    (STEMMA-4) can report such a file as tracked and excluded.
-  - `status` (STEMMA-4) will not list an excluded path as untracked.
+    says. Otherwise a snapshot would drop a file from the history without a word. `status`
+    (STEMMA-4) lists such a file with the changes; a report "tracked and excluded" is open.
+  - `status` (STEMMA-4) does not list an excluded path as untracked.
   - A snapshot of tracked files does not read the file, so a damaged `.stemmaignore` never blocks
     a snapshot or a `commit`.
 - **Where it is read** *(confirmed)*. From the working directory at every call that needs it, never
