@@ -188,7 +188,7 @@ pub(super) fn read_commit(
 }
 
 /// Reads an object of the kind, or fails if the store lacks it.
-fn read_object(
+pub(super) fn read_object(
     objects: &dyn ObjectStore,
     id: ObjectId,
     kind: Kind,
