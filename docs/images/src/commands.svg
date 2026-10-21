@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 326" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 370" font-family="Helvetica, Arial, sans-serif">
   <title>Welcher Befehl berührt welche Zone</title>
 
   <!-- Zone headers: one colour per zone, dark enough for print -->
@@ -22,6 +22,7 @@
     <line x1="20" y1="194" x2="730" y2="194"/>
     <line x1="20" y1="238" x2="730" y2="238"/>
     <line x1="20" y1="282" x2="730" y2="282"/>
+    <line x1="20" y1="326" x2="730" y2="326"/>
   </g>
 
   <!-- Commands -->
@@ -31,6 +32,7 @@
     <text x="20" y="169" font-family="Courier, monospace" font-size="15" font-weight="bold">commit</text>
     <text x="20" y="213" font-family="Courier, monospace" font-size="15" font-weight="bold">status</text>
     <text x="20" y="257" font-family="Courier, monospace" font-size="15" font-weight="bold">op log</text>
+    <text x="20" y="301" font-family="Courier, monospace" font-size="15" font-weight="bold">op restore</text>
   </g>
   <g fill="#4A4842" font-size="12">
     <text x="20" y="97">legt das Repository an</text>
@@ -38,6 +40,7 @@
     <text x="20" y="185">benennt den Commit und beginnt einen neuen</text>
     <text x="20" y="229">zeigt A, M, D und unverfolgte Dateien</text>
     <text x="20" y="273">zeigt die Einträge, neueste zuerst</text>
+    <text x="20" y="317">setzt die Werte vor einem Eintrag zurück</text>
   </g>
 
   <!-- init: changes working-copy commit, HEAD, log -->
@@ -72,16 +75,22 @@
   <circle cx="580" cy="260" r="8" fill="none" stroke="#2F7D32" stroke-width="2"/>
   <circle cx="680" cy="260" r="8" fill="none" stroke="#6B46C1" stroke-width="2"/>
 
+  <!-- op restore: saves and rewrites the directory, moves the pointers, writes an entry -->
+  <circle cx="380" cy="304" r="9" fill="#2B6CB0"/>
+  <circle cx="480" cy="304" r="9" fill="#B45309"/>
+  <circle cx="580" cy="304" r="9" fill="#2F7D32"/>
+  <circle cx="680" cy="304" r="9" fill="#6B46C1"/>
+
   <!-- Legend -->
   <g fill="#4A4842" font-size="12">
-    <circle cx="28" cy="305" r="8" fill="#4A4842"/>
-    <text x="44" y="309">ändert</text>
-    <circle cx="116" cy="305" r="7" fill="none" stroke="#4A4842" stroke-width="2"/>
-    <text x="132" y="309">liest nur</text>
-    <circle cx="220" cy="305" r="7" fill="none" stroke="#4A4842" stroke-width="2"/>
-    <path d="M220,298 A7,7 0 0 0 220,312 Z" fill="#4A4842"/>
-    <text x="236" y="309">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
-    <text x="568" y="309" font-size="14" fill="#6B6B6B">–</text>
-    <text x="584" y="309">unberührt</text>
+    <circle cx="28" cy="349" r="8" fill="#4A4842"/>
+    <text x="44" y="353">ändert</text>
+    <circle cx="116" cy="349" r="7" fill="none" stroke="#4A4842" stroke-width="2"/>
+    <text x="132" y="353">liest nur</text>
+    <circle cx="220" cy="349" r="7" fill="none" stroke="#4A4842" stroke-width="2"/>
+    <path d="M220,342 A7,7 0 0 0 220,356 Z" fill="#4A4842"/>
+    <text x="236" y="353">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
+    <text x="568" y="353" font-size="14" fill="#6B6B6B">–</text>
+    <text x="584" y="353">unberührt</text>
   </g>
 </svg>
