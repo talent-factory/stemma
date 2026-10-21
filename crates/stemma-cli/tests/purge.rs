@@ -115,7 +115,9 @@ fn the_plan_names_the_rewrites_the_moves_the_stubs_and_the_deletions_and_writes_
         format!("Would purge blob {}; nothing is written", secret())
     );
     let count = |prefix: &str| lines.iter().filter(|line| line.starts_with(prefix)).count();
-    // The snapshot that saved the secret, the commit that named it, and the working copy after it.
+    // The working copy that `track` saved with the secret, the commit that `commit` made of it,
+    // and the new working copy after it. The counts follow how many commits `track` and `commit`
+    // make; the deleted commits are the old sides of the rewrites.
     assert_eq!(count("    rewrite "), 3, "{}", result.stdout);
     assert_eq!(count("    working-copy  "), 1);
     assert_eq!(count("    branch main  "), 1);
@@ -153,7 +155,10 @@ fn an_unknown_blob_is_refused() {
     assert_eq!(result.code, 1);
     assert_eq!(
         result.stderr,
-        format!("stemma: the object store has no blob {unknown}\n")
+        format!(
+            "stemma: could not plan the purge, nothing was written: the object store has no \
+             blob {unknown}\n"
+        )
     );
 }
 

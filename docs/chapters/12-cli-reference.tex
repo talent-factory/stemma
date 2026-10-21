@@ -668,7 +668,8 @@ stemma op restore 13 -C projekt --actor "human daniel"
 
 Zeigt, was das Entfernen eines Geheimnisses aus dem Verlauf und dem Operation Log täte
 (ADR-014). Gebaut ist bisher nur der Plan: Der Befehl schreibt nichts, auch keinen Snapshot.
-Das Umschreiben, die Stubs im Log und das Löschen folgen mit \type{--apply}.
+Die Stubs im Log folgen mit STEMMA-47, das Umschreiben und das Löschen mit \type{--apply}
+in STEMMA-48.
 
 \starttyping
 stemma purge BLOB [-C VERZEICHNIS] --actor AKTEUR
@@ -684,7 +685,7 @@ also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
 \stopitemize
 
 {\bf Nur ein Mensch.} Ein Purge entfernt Verlauf, der sich nicht zurückholen lässt.
-Deshalb lehnt der Befehl einen Agenten ab, bevor er etwas liest, gleich was die Rollen
+Deshalb lehnt der Befehl einen Agenten ab, bevor er den Verlauf liest, gleich was die Rollen
 erlauben (ADR-014). Das ist eine Ausnahme von ADR-002 und nur ein Hinweis, solange sich
 Akteure nicht belegen lassen; ein Mensch kann den Purge für einen Agenten ausführen,
 zum Beispiel dessen Sponsor.
@@ -697,41 +698,58 @@ Der Plan nennt die Zeiger, die auf die neuen Commits gehen, die Einträge des Lo
 einen umgeschriebenen Commit nennen und deshalb zu Stubs werden, und die Objekte, die
 gelöscht werden: die alten Commits, die Bäume mit dem Blob und den Blob selbst.
 Was ein behaltener Zeiger oder ein behaltener Eintrag noch erreicht, wird nicht gelöscht.
-Zum Schluss durchsucht der Plan den ganzen Objektspeicher nach Bäumen und Commits, die den
-Blob enthalten und die nichts erreicht, etwa Reste eines Absturzes; auch sie werden gelöscht.
+Zum Schluss durchsucht der Plan den ganzen Objektspeicher nach Bäumen und Commits, die
+kein Zeiger und kein Eintrag erreicht, etwa Reste eines Absturzes. Enthält ein solcher Rest
+den Blob oder folgt er auf einen Commit, der ihn enthält, wird er gelöscht und nicht
+umgeschrieben, denn nichts nennt ihn. Von einem Blob liest der Plan dabei nur den Kopf.
+Am Ende prüft der Plan, dass nichts Behaltenes den Blob enthält oder etwas erreicht, das er
+löscht; schlägt das fehl, ist es ein Fehler von Stemma, und der Befehl bricht ab.
 
 {\bf Ausgabe.}
 
 \starttyping
 Would purge blob b3:f60c…; nothing is written
-    rewrite b3:9f7b… -> b3:391c…
-    working-copy  b3:3831… -> b3:89af…
-    branch main  b3:9f7b… -> b3:391c…
+    rewrite b3:0051… -> b3:c478…
+    rewrite b3:35ee… -> b3:546a…
+    rewrite b3:e6c1… -> b3:53c4…
+    working-copy  b3:35ee… -> b3:546a…
+    branch main  b3:0051… -> b3:c478…
     stub entries 4-5
-    delete commit b3:2705…
-    delete tree b3:51d0…
+    delete commit b3:0051…
+    delete commit b3:35ee…
+    delete commit b3:e6c1…
+    delete tree b3:63bc…
     delete blob b3:f60c…
 Only the plan is built so far; the purge itself is not
 \stoptyping
 
-Die IDs sind hier gekürzt; das Programm schreibt sie ganz.
+Die Ausgabe stammt aus einem Repository, in dem \type{a.txt} committet und danach
+die Datei \type{key} mit dem Geheimnis verfolgt und committet wurde. Die IDs sind hier gekürzt;
+das Programm schreibt sie ganz. Umgeschrieben werden der Commit von \type{commit}, die neue
+Arbeitskopie danach und die Fassung der Arbeitskopie, die \type{track} gespeichert hat;
+diese nennt nur noch das Log.
 Die Zeilen \type{rewrite} stehen in der Reihenfolge, in der die Commits entstehen würden,
 Eltern vor Kindern. Die Zeilen der Zeiger folgen der Form von \type{op restore --dry-run}.
 \type{stub entries} nennt die Nummern als Bereiche, zum Beispiel \type{3, 5-7}.
-Liegt der Blob in keinem Commit, fehlen die Zeilen \type{rewrite} und \type{stub entries},
-und nur der Blob wird gelöscht.
+Liegt der Blob in keinem Commit, fehlen die Zeilen \type{rewrite} und \type{stub entries};
+gelöscht werden der Blob und allenfalls Reste im Objektspeicher, die ihn enthalten.
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt oder ein Agent ist,
-wenn der Objektspeicher keinen Blob mit der ID hat (auch wenn die ID einen Commit oder einen
-Baum nennt), wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, ungültig oder ein
+Agent ist, wenn das Verzeichnis kein Repository ist, wenn der Objektspeicher keinen Blob mit
+der ID hat (auch wenn die ID einen Commit oder einen Baum nennt) oder die Datei des Blobs
+beschädigt ist, wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
 und wenn ein Objekt im Speicher beschädigt ist: Dann ist nicht bekannt, ob es den Blob nennt.
+Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.
+Jede Meldung nach der Prüfung des Akteurs beginnt mit
+\type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
 erst ein Merge (Phase 3).
 Ein Fehler beim Schreiben der Ausgabe ist Exit-Code 1, denn es wurde nichts gemacht;
 eine geschlossene Pipe ist kein Fehler.
 
-{\bf Grenzen.} Der Plan geht vom heutigen Stand aus. Ein echter Purge sichert das
-Arbeitsverzeichnis zuerst und plant unter der Sperre neu, sein Plan kann also abweichen.
+{\bf Grenzen.} Der Plan geht vom heutigen Stand aus. Der Purge mit \type{--apply}
+(STEMMA-48) wird das Arbeitsverzeichnis zuerst sichern und unter der Sperre neu planen,
+sein Plan kann also abweichen.
 Was ein Purge nicht garantiert (Kopien im Dateisystem, Dateien in \type{tmp/},
 Nachrichten und Pfadnamen), steht in ADR-014.
 

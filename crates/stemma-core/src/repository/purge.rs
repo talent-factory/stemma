@@ -5,8 +5,8 @@
 //! stays. The entries of the log that name a rewritten commit are replaced by stubs, and the
 //! objects that the rewrite replaced are deleted, unless something that is kept still names them.
 //!
-//! This module makes the plan and writes nothing. The steps that write (the new objects, the
-//! `purge` entry, the stubs, the deletion, the journal) come with the slices that follow.
+//! This module makes the plan and writes nothing (STEMMA-46). The stubs and the `purge` entry come
+//! with STEMMA-47, and the new objects, the deletion, and the journal with STEMMA-48.
 
 use std::collections::{hash_map, HashMap, HashSet};
 use std::error::Error;
@@ -28,8 +28,8 @@ const OPERATION: &str = "purge";
 /// What a purge would do: the commits it rewrites, the pointers it moves, the entries it replaces
 /// by stubs, and the objects it deletes.
 ///
-/// The plan is made from the pointers and the log as they are now. A real purge saves the
-/// directory in a snapshot first and plans again, so its plan can differ (ADR-014).
+/// The plan is made from the pointers and the log as they are now. The purge itself (STEMMA-48)
+/// will save the directory in a snapshot first and plan again, so its plan can differ (ADR-014).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PurgePlan {
     blob: BlobId,
@@ -75,13 +75,16 @@ impl PurgePlan {
         &self.entries
     }
 
-    /// The commits that are deleted: the old versions of the rewritten commits, and the commits
-    /// in the store that hold the blob and that nothing kept reaches. Sorted by ID.
+    /// The commits that are deleted, sorted by ID: the old versions of the rewritten commits, and
+    /// the commits in the store that no pointer and no entry reaches and that hold the blob or
+    /// come after a commit that does. Such a leftover is deleted and not rewritten, as nothing
+    /// names it.
     pub fn deleted_commits(&self) -> &[CommitId] {
         &self.commits
     }
 
-    /// The trees that are deleted: those that hold the blob, at any depth. Sorted by ID.
+    /// The trees that are deleted, sorted by ID: every tree that holds the blob, at any depth, in
+    /// a commit or left in the store. Nothing that is kept reaches them; the plan checks it.
     pub fn deleted_trees(&self) -> &[TreeId] {
         &self.trees
     }
@@ -96,17 +99,22 @@ impl Repository {
     /// pointers (HEAD, the working-copy commit, the branches) and from every commit that an entry
     /// of the log names, and follows the parents. A tree that becomes empty leaves its parent
     /// tree, as a snapshot never makes an empty directory; the tree of a commit can become empty.
-    /// Last, the store is scanned for trees and commits that hold the blob and that no pointer
-    /// and no entry reaches, such as those a crash left behind, and they join the delete set.
+    /// Last, the store is scanned for trees and commits that no pointer and no entry reaches,
+    /// such as those a crash left behind. One that holds the blob, or a commit that comes after
+    /// one, joins the delete set. The plan then checks that nothing that is kept holds the blob or
+    /// reaches what it deletes.
     ///
     /// # Errors
     ///
     /// [`PurgeError::Agent`] for an agent, [`PurgeError::Update`] for a refusal of the authorizer,
-    /// [`PurgeError::NoSuchBlob`] if the store has no blob with the ID, [`PurgeError::Refs`] and
+    /// [`PurgeError::NoSuchBlob`] if the store has no blob with the ID,
+    /// [`PurgeError::BlobUnreadable`] if its file is damaged, [`PurgeError::Refs`] and
     /// [`PurgeError::Log`] if the pointers or the log cannot be read, [`PurgeError::Read`] for a
     /// commit or a tree that is missing or cannot be read, [`PurgeError::Store`] if the store
-    /// cannot be listed or an object in it is damaged, and [`PurgeError::DuplicateParent`] if a
-    /// rewrite makes two parents of a commit the same.
+    /// cannot be listed or an object in it is damaged, [`PurgeError::DuplicateParent`] if a
+    /// rewrite makes two parents of a commit the same, [`PurgeError::Leftover`] for one of these
+    /// failures in an object that only the scan found, and [`PurgeError::Unsound`] if the check
+    /// fails.
     pub fn plan_purge(
         &self,
         blob: ObjectId,
@@ -133,7 +141,12 @@ impl Repository {
                     found: Some(found),
                 })
             }
-            Err(error) => return Err(PurgeError::Store(error)),
+            Err(source) => {
+                return Err(PurgeError::BlobUnreadable {
+                    id: blob,
+                    source: Box::new(source),
+                })
+            }
         };
 
         let refs = self.refs();
@@ -185,7 +198,7 @@ impl Repository {
         });
 
         // The roots that stay: the pointers after the purge, and the entries that are not
-        // replaced. What they reach is not deleted.
+        // replaced.
         let mut kept_roots = vec![new(working_copy)];
         kept_roots.extend(branches.iter().map(|(_, commit)| new(*commit)));
         if let Head::Detached(commit) = &head {
@@ -194,21 +207,26 @@ impl Repository {
         kept_roots.extend(kept.iter().flat_map(|entry| entry.change().commits()));
 
         planner.scan()?;
-        let reached = planner.reached(&kept_roots)?;
-        let mut commits: Vec<CommitId> = planner
-            .rewrites
-            .iter()
-            .map(|(old, _)| *old)
-            .filter(|old| !reached.contains(&old.object_id()))
-            .collect();
+        let mut commits: Vec<CommitId> = planner.rewrites.iter().map(|(old, _)| *old).collect();
         commits.sort();
         let mut trees: Vec<TreeId> = planner
             .trees
             .iter()
-            .filter(|(old, new)| new.is_some() && !reached.contains(&old.object_id()))
+            .filter(|(_, new)| new.is_some())
             .map(|(old, _)| *old)
             .collect();
         trees.sort();
+        // By construction nothing that is kept holds the blob or reaches what is deleted: every
+        // commit with the blob is rewritten, and so is every commit after it. The check makes a
+        // mistake in that reasoning an error instead of a secret that stays.
+        let reached = planner.reached(&kept_roots)?;
+        let deleted = commits
+            .iter()
+            .map(|commit| commit.object_id())
+            .chain(trees.iter().map(|tree| tree.object_id()));
+        if let Some(id) = deleted.into_iter().find(|id| reached.contains(id)) {
+            return Err(PurgeError::Unsound { id });
+        }
 
         Ok(PurgePlan {
             blob,
@@ -224,18 +242,23 @@ impl Repository {
 }
 
 /// Rewrites commits and trees in memory, with a memo, so that each object is read and rewritten
-/// once.
+/// once. It keeps the links of every commit and tree it has seen, old and new, so that the walk of
+/// what is kept does not read the history a second time.
 struct Planner<'a> {
     objects: &'a FsObjectStore,
     blob: BlobId,
-    /// Every tree that was looked at, with its new version if it holds the blob.
-    trees: HashMap<TreeId, Option<Tree>>,
-    /// The new trees, by their IDs, for the walk of what is kept.
+    /// Every tree that was looked at, with the ID of its new version if it holds the blob.
+    trees: HashMap<TreeId, Option<TreeId>>,
+    /// The subtrees of every tree, old and new, and whether it names the blob itself.
+    tree_links: HashMap<TreeId, (Vec<TreeId>, bool)>,
+    /// The new trees, by their IDs.
     new_trees: HashMap<TreeId, Tree>,
     /// Every commit that was looked at, with the ID of its new version (the same ID if it does
     /// not change).
     commits: HashMap<CommitId, CommitId>,
-    /// The new commits, by their IDs, for the walk of what is kept.
+    /// The tree and the parents of every commit, old and new.
+    commit_links: HashMap<CommitId, (TreeId, Vec<CommitId>)>,
+    /// The new commits, by their IDs.
     new_commits: HashMap<CommitId, Commit>,
     /// The commits that change, parents first.
     rewrites: Vec<(CommitId, CommitId)>,
@@ -247,8 +270,10 @@ impl<'a> Planner<'a> {
             objects,
             blob,
             trees: HashMap::new(),
+            tree_links: HashMap::new(),
             new_trees: HashMap::new(),
             commits: HashMap::new(),
+            commit_links: HashMap::new(),
             new_commits: HashMap::new(),
             rewrites: Vec::new(),
         }
@@ -282,6 +307,8 @@ impl<'a> Planner<'a> {
             }
             pending.pop();
             let commit = read.remove(&id).expect("the commit was read above");
+            self.commit_links
+                .insert(id, (commit.tree(), commit.parents().to_vec()));
             let parents: Vec<CommitId> = commit
                 .parents()
                 .iter()
@@ -301,6 +328,8 @@ impl<'a> Planner<'a> {
                 })?;
             let new = rewritten.id();
             self.commits.insert(id, new);
+            self.commit_links
+                .insert(new, (rewritten.tree(), rewritten.parents().to_vec()));
             self.new_commits.insert(new, rewritten);
             self.rewrites.push((id, new));
         }
@@ -311,25 +340,31 @@ impl<'a> Planner<'a> {
     /// tree is as deep as the directories, so the recursion is bounded by the paths.
     fn tree(&mut self, id: TreeId) -> Result<Option<TreeId>, PurgeError> {
         if let Some(known) = self.trees.get(&id) {
-            return Ok(known.as_ref().map(Tree::id));
+            return Ok(*known);
         }
-        let raw =
-            read_object(self.objects, id.object_id(), Kind::Tree).map_err(PurgeError::Read)?;
-        let tree = Tree::parse(raw.body())
-            .map_err(|source| PurgeError::Read(SnapshotError::Tree { id, source }))?;
+        let tree = read_tree(self.objects, id)?;
         let mut changed = false;
+        let mut holds_blob = false;
+        let mut old_subtrees = Vec::new();
+        let mut new_subtrees = Vec::new();
         let mut entries = Vec::with_capacity(tree.entries().len());
         for entry in tree.entries() {
             if FileMode::from_entry_mode(entry.mode()).is_some() {
                 if entry.id() == self.blob.object_id() {
                     changed = true;
+                    holds_blob = true;
                 } else {
                     entries.push(entry.clone());
                 }
                 continue;
             }
-            match self.tree(TreeId::new(entry.id()))? {
-                None => entries.push(entry.clone()),
+            let subtree = TreeId::new(entry.id());
+            old_subtrees.push(subtree);
+            match self.tree(subtree)? {
+                None => {
+                    entries.push(entry.clone());
+                    new_subtrees.push(subtree);
+                }
                 Some(new) => {
                     changed = true;
                     if !self.new_trees[&new].entries().is_empty() {
@@ -337,48 +372,62 @@ impl<'a> Planner<'a> {
                             TreeEntry::directory(entry.name(), new)
                                 .expect("the name is that of a valid entry"),
                         );
+                        new_subtrees.push(new);
                     }
                 }
             }
         }
-        let new = changed.then(|| Tree::new(entries).expect("the entries of a valid tree"));
-        let new_id = new.as_ref().map(Tree::id);
-        if let Some(tree) = &new {
-            self.new_trees.insert(tree.id(), tree.clone());
+        self.tree_links.insert(id, (old_subtrees, holds_blob));
+        if !changed {
+            self.trees.insert(id, None);
+            return Ok(None);
         }
-        self.trees.insert(id, new);
-        Ok(new_id)
+        let new = Tree::new(entries).expect("the entries of a valid tree");
+        let new_id = new.id();
+        self.tree_links.insert(new_id, (new_subtrees, false));
+        self.new_trees.insert(new_id, new);
+        self.trees.insert(id, Some(new_id));
+        Ok(Some(new_id))
     }
 
     /// Looks at every tree and commit in the store that the walk from the roots did not reach, so
-    /// that one that holds the blob is rewritten in memory too, and its old version joins the
-    /// delete set. A damaged object is an error: it may name the blob.
+    /// that one that holds the blob, or that comes after a commit that does, joins the delete set.
+    /// Only the header of an object is read to learn its kind, so a blob is not read. A damaged
+    /// tree or commit is an error, as it may name the blob.
     fn scan(&mut self) -> Result<(), PurgeError> {
-        for id in self.objects.ids().map_err(PurgeError::Store)? {
+        for id in self.objects.ids().map_err(store)? {
             let known = self.trees.contains_key(&TreeId::new(id))
                 || self.commits.contains_key(&CommitId::new(id))
                 || id == self.blob.object_id();
             if known {
                 continue;
             }
+            let leftover = |source| PurgeError::Leftover {
+                id,
+                source: Box::new(source),
+            };
             // An object that is gone since the listing names nothing any more.
-            let Some(raw) = self.objects.get(&id).map_err(PurgeError::Store)? else {
+            let Some(kind) = self.objects.kind_of(&id).map_err(store)? else {
                 continue;
             };
-            match raw.kind() {
+            match kind {
+                Kind::Blob => {}
                 Kind::Tree => {
-                    self.tree(TreeId::new(id))?;
+                    self.tree(TreeId::new(id)).map_err(leftover)?;
                 }
-                Kind::Commit => self.commit(CommitId::new(id))?,
-                _ => {}
+                Kind::Commit => self.commit(CommitId::new(id)).map_err(leftover)?,
             }
         }
         Ok(())
     }
 
     /// The commits and trees that the roots reach after the purge, through the parents and the
-    /// trees, with the new objects taken from memory.
-    fn reached(&self, roots: &[CommitId]) -> Result<HashSet<ObjectId>, PurgeError> {
+    /// trees, from the links in memory. A root that the plan did not walk is read from the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PurgeError::Unsound`] if a tree that is reached names the blob.
+    fn reached(&mut self, roots: &[CommitId]) -> Result<HashSet<ObjectId>, PurgeError> {
         let mut seen = HashSet::new();
         let mut commits: Vec<CommitId> = roots.to_vec();
         let mut trees = Vec::new();
@@ -386,34 +435,39 @@ impl<'a> Planner<'a> {
             if !seen.insert(id.object_id()) {
                 continue;
             }
-            let commit = match self.new_commits.get(&id) {
-                Some(commit) => commit.clone(),
-                None => read_commit(self.objects, id).map_err(PurgeError::Read)?,
-            };
-            trees.push(commit.tree());
-            commits.extend(commit.parents());
+            if !self.commit_links.contains_key(&id) {
+                self.commit(id)?;
+            }
+            let (tree, parents) = &self.commit_links[&id];
+            trees.push(*tree);
+            commits.extend(parents);
         }
         while let Some(id) = trees.pop() {
             if !seen.insert(id.object_id()) {
                 continue;
             }
-            let tree = match self.new_trees.get(&id) {
-                Some(tree) => tree.clone(),
-                None => {
-                    let raw = read_object(self.objects, id.object_id(), Kind::Tree)
-                        .map_err(PurgeError::Read)?;
-                    Tree::parse(raw.body())
-                        .map_err(|source| PurgeError::Read(SnapshotError::Tree { id, source }))?
-                }
-            };
-            for entry in tree.entries() {
-                if FileMode::from_entry_mode(entry.mode()).is_none() {
-                    trees.push(TreeId::new(entry.id()));
-                }
+            if !self.tree_links.contains_key(&id) {
+                self.tree(id)?;
             }
+            let (subtrees, holds_blob) = &self.tree_links[&id];
+            if *holds_blob {
+                return Err(PurgeError::Unsound { id: id.object_id() });
+            }
+            trees.extend(subtrees);
         }
         Ok(seen)
     }
+}
+
+/// Wraps an error of the store.
+fn store(error: StoreError) -> PurgeError {
+    PurgeError::Store(Box::new(error))
+}
+
+/// Reads and parses a tree, or fails if the store lacks it.
+fn read_tree(objects: &FsObjectStore, id: TreeId) -> Result<Tree, PurgeError> {
+    let raw = read_object(objects, id.object_id(), Kind::Tree).map_err(PurgeError::Read)?;
+    Tree::parse(raw.body()).map_err(|source| PurgeError::Read(SnapshotError::Tree { id, source }))
 }
 
 /// Why [`Repository::plan_purge`] fails. A plan writes nothing, so no failure leaves a trace.
@@ -431,6 +485,14 @@ pub enum PurgeError {
         /// The kind of the object, if the store has one with the ID.
         found: Option<Kind>,
     },
+    /// The store has a file for the blob, but it cannot be read or is damaged, so it is not known
+    /// that it is a blob.
+    BlobUnreadable {
+        /// The ID.
+        id: ObjectId,
+        /// Why.
+        source: Box<StoreError>,
+    },
     /// The pointers cannot be read.
     Refs(RefError),
     /// The operation log cannot be read.
@@ -439,7 +501,7 @@ pub enum PurgeError {
     Read(SnapshotError),
     /// The store cannot be listed, or an object in it is damaged, so it is not known whether it
     /// names the blob.
-    Store(StoreError),
+    Store(Box<StoreError>),
     /// Two parents of a commit become the same commit, because they differed only in the blob.
     /// A commit with two parents is a merge, which comes with phase 3.
     DuplicateParent {
@@ -448,17 +510,33 @@ pub enum PurgeError {
         /// The new parent that it would have twice.
         parent: CommitId,
     },
+    /// A tree or a commit that nothing reaches, left in the store, cannot be planned. The scan
+    /// does not skip it, as it may hold the blob.
+    Leftover {
+        /// The object that the scan found.
+        id: ObjectId,
+        /// Why it cannot be planned.
+        source: Box<PurgeError>,
+    },
+    /// The plan would keep an object reachable that holds the blob or that it deletes. This is a
+    /// mistake of the plan and not of the repository; it is an error so that the secret does not
+    /// stay without a word.
+    Unsound {
+        /// The object.
+        id: ObjectId,
+    },
 }
 
-impl fmt::Display for PurgeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl PurgeError {
+    /// The reason, without the words that say that nothing was planned.
+    fn reason(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Agent => write!(
                 f,
                 "an agent may not purge, as a purge removes history for good; a human has to run \
                  it, for example the sponsor of the agent"
             ),
-            Self::Update(error) => write!(f, "could not purge: {error}"),
+            Self::Update(error) => write!(f, "{error}"),
             Self::NoSuchBlob { id, found: None } => {
                 write!(f, "the object store has no blob {id}")
             }
@@ -466,19 +544,48 @@ impl fmt::Display for PurgeError {
                 id,
                 found: Some(kind),
             } => write!(f, "{id} is a {}, not a blob", kind.name()),
-            Self::Refs(error) => write!(f, "could not read the references: {error}"),
-            Self::Log(error) => write!(f, "could not read the operation log: {error}"),
-            Self::Read(error) => write!(f, "could not read the history: {error}"),
+            Self::BlobUnreadable { id, source } => write!(
+                f,
+                "the blob {id} cannot be read, so it is not known that it is one: {source}"
+            ),
+            Self::Refs(error) => write!(f, "the references cannot be read: {error}"),
+            Self::Log(error) => write!(f, "the operation log cannot be read: {error}"),
+            Self::Read(error) => write!(f, "the history cannot be read: {error}"),
             Self::Store(error) => write!(
                 f,
-                "could not look at every object, so it is not known whether one names the blob: \
-                 {error}"
+                "not every object can be looked at, so it is not known whether one names the \
+                 blob: {error}"
             ),
             Self::DuplicateParent { commit, parent } => write!(
                 f,
                 "commit {commit} would have the parent {parent} twice after the purge, which a \
                  commit cannot have"
             ),
+            Self::Leftover { id, source } => {
+                write!(
+                    f,
+                    "the object {id}, which nothing reaches and which was left in the store, \
+                     cannot be planned: "
+                )?;
+                source.reason(f)
+            }
+            Self::Unsound { id } => write!(
+                f,
+                "the plan would keep {id} reachable although it holds the blob or is deleted; \
+                 this is a mistake of stemma"
+            ),
+        }
+    }
+}
+
+impl fmt::Display for PurgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Agent => self.reason(f),
+            _ => {
+                write!(f, "could not plan the purge, nothing was written: ")?;
+                self.reason(f)
+            }
         }
     }
 }
@@ -492,8 +599,12 @@ impl Error for PurgeError {
             Self::Refs(error) => error.source(),
             Self::Log(error) => error.source(),
             Self::Read(error) => error.source(),
-            Self::Store(error) => error.source(),
-            Self::Agent | Self::NoSuchBlob { .. } | Self::DuplicateParent { .. } => None,
+            Self::Store(error) | Self::BlobUnreadable { source: error, .. } => error.source(),
+            Self::Leftover { source, .. } => source.source(),
+            Self::Agent
+            | Self::NoSuchBlob { .. }
+            | Self::DuplicateParent { .. }
+            | Self::Unsound { .. } => None,
         }
     }
 }
@@ -542,8 +653,55 @@ mod tests {
             .commit
     }
 
+    const SECRET: &str = "key=hunter2";
+
     fn secret() -> ObjectId {
-        Blob::new("key=hunter2").id().object_id()
+        Blob::new(SECRET).id().object_id()
+    }
+
+    fn numbers(repository: &Repository) -> Vec<u64> {
+        repository
+            .oplog()
+            .entries()
+            .unwrap()
+            .iter()
+            .map(Entry::number)
+            .collect()
+    }
+
+    /// The planner after it has walked the commit.
+    fn planned(repository: &Repository, commit: CommitId) -> Planner<'_> {
+        let mut planner = Planner::new(repository.objects(), BlobId::new(secret()));
+        planner.commit(commit).unwrap();
+        planner
+    }
+
+    /// The tree of the new version of a commit.
+    fn new_tree(planner: &Planner<'_>, old: CommitId) -> TreeId {
+        planner.new_commits[&planner.commits[&old]].tree()
+    }
+
+    /// The ID that a tree names under `name`.
+    fn subtree(repository: &Repository, planner: &Planner<'_>, tree: TreeId, name: &str) -> TreeId {
+        let tree = match planner.new_trees.get(&tree) {
+            Some(tree) => tree.clone(),
+            None => read_tree(repository.objects(), tree).unwrap(),
+        };
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|entry| entry.name() == name)
+            .unwrap();
+        TreeId::new(entry.id())
+    }
+
+    /// Writes a file at the path of an ID that the store does not have.
+    fn junk(repository: &Repository, content: &[u8]) -> ObjectId {
+        let id = Blob::new("never stored").id().object_id();
+        let path = repository.objects().object_path(&id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+        id
     }
 
     fn plan(repository: &Repository) -> PurgePlan {
@@ -581,7 +739,7 @@ mod tests {
         write(dir, "a.txt", "one");
         track(repository, &["a.txt"]);
         let first = commit(repository, "first");
-        write(dir, "config/key", "key=hunter2");
+        write(dir, "config/key", SECRET);
         track(repository, &["config/key"]);
         let second = commit(repository, "second");
         write(dir, "a.txt", "two");
@@ -717,23 +875,20 @@ mod tests {
     }
 
     #[test]
-    fn the_entries_that_name_a_rewritten_commit_are_replaced_and_no_other() {
+    fn the_entries_from_the_one_that_saved_the_secret_on_are_replaced() {
         let dir = TempDir::new();
         let repository = repository(&dir);
-        let [_, second, _] = history(&dir, &repository);
-        let plan = plan(&repository);
-        let rewritten: HashSet<CommitId> = plan.rewrites().iter().map(|(old, _)| *old).collect();
-        for entry in repository.oplog().entries().unwrap() {
-            let names = entry
-                .change()
-                .commits()
-                .iter()
-                .any(|commit| rewritten.contains(commit));
-            assert_eq!(plan.entries().contains(&entry.number()), names);
-        }
-        assert!(plan.entries().windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(rewritten.contains(&second));
-        assert!(!plan.entries().contains(&1), "the entry of init is kept");
+        write(&dir, "a.txt", "one");
+        track(&repository, &["a.txt"]);
+        commit(&repository, "first");
+        let before = numbers(&repository).len() as u64;
+        write(&dir, "config/key", SECRET);
+        track(&repository, &["config/key"]);
+        commit(&repository, "second");
+        let after = numbers(&repository).len() as u64;
+        // Every entry after the secret was saved moves the working copy, which descends from it.
+        let expected: Vec<u64> = (before + 1..=after).collect();
+        assert_eq!(plan(&repository).entries(), expected);
     }
 
     #[test]
@@ -812,5 +967,241 @@ mod tests {
         let before = counts(&repository);
         plan(&repository);
         assert_eq!(counts(&repository), before);
+    }
+
+    #[test]
+    fn a_directory_that_keeps_other_files_gets_a_new_tree_without_the_blob() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "one");
+        write(&dir, "config/key", SECRET);
+        write(&dir, "config/other", "other");
+        track(&repository, &["a.txt", "config"]);
+        let commit = commit(&repository, "first");
+        let planner = planned(&repository, commit);
+        let old_root = read_commit(repository.objects(), commit).unwrap().tree();
+        let old_config = subtree(&repository, &planner, old_root, "config");
+        let root = new_tree(&planner, commit);
+        assert_eq!(names(&repository, root, &planner), ["a.txt", "config"]);
+        let config = subtree(&repository, &planner, root, "config");
+        assert_ne!(config, old_config);
+        assert_eq!(names(&repository, config, &planner), ["other"]);
+        let plan = plan(&repository);
+        assert!(plan.deleted_trees().contains(&old_root));
+        assert!(plan.deleted_trees().contains(&old_config));
+    }
+
+    #[test]
+    fn a_secret_that_only_the_log_still_names_is_purged_from_the_log() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "one");
+        track(&repository, &["a.txt"]);
+        commit(&repository, "first");
+        write(&dir, "key", SECRET);
+        track(&repository, &["key"]);
+        let saved = *numbers(&repository).last().unwrap();
+        let held = repository.refs().working_copy().unwrap();
+        let restored = repository
+            .restore(saved, false, &actor(), &AllowAll)
+            .unwrap();
+        let restored = restored.entry().unwrap().number();
+
+        let plan = plan(&repository);
+        assert_eq!(plan.entries(), [saved, restored]);
+        assert!(plan.rewrites().iter().any(|(old, _)| *old == held));
+        assert!(plan.deleted_commits().contains(&held));
+        assert_eq!(
+            plan.working_copy(),
+            None,
+            "the working copy holds no secret now"
+        );
+        assert!(plan.branches().is_empty());
+    }
+
+    #[test]
+    fn nothing_that_is_kept_may_hold_the_blob() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        let mut planner = planned(&repository, second);
+        let error = planner.reached(&[second]).unwrap_err();
+        assert!(matches!(error, PurgeError::Unsound { .. }), "{error:?}");
+        assert!(error.to_string().ends_with("this is a mistake of stemma"));
+    }
+
+    #[test]
+    fn a_detached_head_on_a_rewritten_commit_moves_and_one_on_a_clean_commit_does_not() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let operation = OperationName::new("checkout").unwrap();
+        let detach = |commit| {
+            repository
+                .set_head(&operation, &Head::Detached(commit), &actor(), &AllowAll)
+                .unwrap();
+        };
+        detach(second);
+        let detached = plan(&repository);
+        let new = detached
+            .rewrites()
+            .iter()
+            .find(|(old, _)| *old == second)
+            .unwrap()
+            .1;
+        assert_eq!(
+            detached.head(),
+            Some(&Moved::from_to(
+                Some(Head::Detached(second)),
+                Some(Head::Detached(new))
+            ))
+        );
+        detach(first);
+        assert_eq!(plan(&repository).head(), None);
+    }
+
+    #[test]
+    fn a_damaged_object_in_the_store_stops_the_plan() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        junk(&repository, b"junk");
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(matches!(error, PurgeError::Store(_)), "{error:?}");
+        assert!(error
+            .to_string()
+            .starts_with("could not plan the purge, nothing was written: not every object"));
+    }
+
+    #[test]
+    fn a_damaged_secret_is_not_taken_for_a_missing_one() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let id = junk(&repository, b"junk");
+        let error = repository.plan_purge(id, &actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(error, PurgeError::BlobUnreadable { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_tree_of_a_commit_can_become_empty() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "key", SECRET);
+        track(&repository, &["key"]);
+        let commit = commit(&repository, "only");
+        let planner = planned(&repository, commit);
+        let tree = new_tree(&planner, commit);
+        assert!(planner.new_trees[&tree].entries().is_empty());
+        assert!(plan(&repository)
+            .rewrites()
+            .iter()
+            .any(|(old, _)| *old == commit));
+    }
+
+    #[test]
+    fn the_blob_is_removed_from_every_place_of_a_tree() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a/key", SECRET);
+        write(&dir, "b/key", SECRET);
+        write(&dir, "key.bak", SECRET);
+        write(&dir, "c.txt", "kept");
+        track(&repository, &["."]);
+        let commit = commit(&repository, "first");
+        let planner = planned(&repository, commit);
+        assert_eq!(
+            names(&repository, new_tree(&planner, commit), &planner),
+            ["c.txt"]
+        );
+        let plan = plan(&repository);
+        let old: HashSet<CommitId> = plan.rewrites().iter().map(|(old, _)| *old).collect();
+        assert_eq!(old.len(), plan.rewrites().len(), "each commit once");
+    }
+
+    #[test]
+    fn a_leftover_merge_whose_parents_become_one_is_an_error_that_names_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let store = repository.objects();
+        let file = |name: &str, content: &str| {
+            TreeEntry::file(name, FileMode::File, Blob::new(content).id()).unwrap()
+        };
+        let with = store
+            .put_tree(&Tree::new(vec![file("a.txt", "one"), file("key", SECRET)]).unwrap())
+            .unwrap();
+        let without = store
+            .put_tree(&Tree::new(vec![file("a.txt", "one")]).unwrap())
+            .unwrap();
+        let change = crate::change::ChangeId::generate().unwrap();
+        let parent = |tree| Commit::new(tree, vec![], change, actor(), 5, "p").unwrap();
+        let one = store.put_commit(&parent(with)).unwrap();
+        let two = store.put_commit(&parent(without)).unwrap();
+        let merge = Commit::new(
+            without,
+            vec![one, two],
+            crate::change::ChangeId::generate().unwrap(),
+            actor(),
+            6,
+            "merge",
+        )
+        .unwrap();
+        let merge = store.put_commit(&merge).unwrap();
+
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        match &error {
+            PurgeError::Leftover { id, source } => {
+                assert_eq!(*id, merge.object_id());
+                assert!(matches!(
+                    **source,
+                    PurgeError::DuplicateParent { commit, parent }
+                        if commit == merge && parent == two
+                ));
+            }
+            other => panic!("expected a leftover, got {other:?}"),
+        }
+        assert!(error.to_string().contains("which nothing reaches"));
+    }
+
+    #[test]
+    fn a_leftover_after_a_rewritten_commit_is_deleted_and_a_clean_one_is_not() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let store = repository.objects();
+        let clean_tree = read_commit(store, first).unwrap().tree();
+        let make = |parents, message: &str| {
+            let commit = Commit::new(
+                clean_tree,
+                parents,
+                crate::change::ChangeId::generate().unwrap(),
+                actor(),
+                7,
+                message,
+            )
+            .unwrap();
+            store.put_commit(&commit).unwrap()
+        };
+        let after = make(vec![second], "after the secret");
+        let clean = make(vec![first], "clean");
+        let plan = plan(&repository);
+        assert!(plan.deleted_commits().contains(&after));
+        assert!(!plan.deleted_commits().contains(&clean));
+        assert!(!plan.deleted_trees().contains(&clean_tree));
+    }
+
+    #[test]
+    fn the_same_repository_gives_the_same_plan() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        assert_eq!(plan(&repository), plan(&repository));
     }
 }

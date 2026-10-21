@@ -78,8 +78,11 @@ Facts that bound the design:
   only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
   does not make ADR-007's collection necessary. The plan also scans the store for trees that name
-  the blob and for the commits of such trees. One that no kept root reaches (the leftover of a
-  crash before its entry) is deleted with them, so that no tree is left that names a missing blob.
+  the blob, for the commits of such trees, and for the commits after them. One that no kept root
+  reaches (the leftover of a crash before its entry) is deleted with them and not rewritten, so
+  that no tree is left that names a missing blob and no commit that names a deleted parent. A
+  leftover that holds no secret and follows no such commit stays. The plan checks at the end
+  that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
   The scratch files of `tmp/` are not touched (see the limits).
 - **A synchronized repository stays open** *(confirmed)*. A secret that was pushed (phase 5) is
   also on the hub, and a purge here does not reach it. The rule for users is that a pushed secret
@@ -151,8 +154,10 @@ a person to repair.
   exists (STEMMA-31); the purge cannot tell a stale file from the live file of a writer that does
   not take the lock. Other objects that were unreachable before and name no blob stay. The commit
   messages and path names are kept as they are and can hold the secret too; the unit of the
-  purge is the blob. Nothing stops a later `track` from taking the secret in again unless
-  `.stemmaignore` names it.
+  purge is the blob. A file below `objects/` whose path is not that of an ID is not looked at, as
+  no read reaches it, and the scan reads only the header of a blob, so a tree whose header was
+  damaged into that of a blob is not found. Nothing stops a later `track` from taking the secret
+  in again unless `.stemmaignore` names it.
 - Commit IDs change for the rewritten commits and their descendants. Anything that holds an old ID
   outside the repository (a note, a message) points at nothing afterwards. Change IDs stay. Two
   commits that differed only in the blob can become one. The rewrite takes new parents with
@@ -195,6 +200,8 @@ a person to repair.
 - [ ] The reachability check of the last step has to know every kind of reference that holds
       objects, including those that come later (tags, remote references).
 - [ ] The removal on a hub and the rule for a repository that was synchronized (phase 5).
+- [ ] A secret blob whose file is damaged cannot be purged: the plan does not know that it is a
+      blob. Deleting it needs no knowledge of its content, so a later version may allow it.
 
 Slices: the plan (`Repository::plan_purge` and `stemma purge BLOB`, which writes nothing,
 STEMMA-46), the stubs and the `purge` entry in the log with its reader and `op restore` refusing

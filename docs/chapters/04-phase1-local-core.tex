@@ -302,10 +302,12 @@ umgeschriebenen Commit nennen, werden zu Stubs mit derselben Nummer, und gelösc
 was das Umschreiben ersetzt hat und nichts Behaltenes mehr erreicht.
 Nur ein Mensch darf purgen, denn der Purge lässt sich nicht zurücksetzen.
 
-Gebaut ist bisher der Plan: \type{stemma purge} nennt die Commits, die Zeiger, die Stubs und
-die Objekte und schreibt nichts. Ein Verzeichnis, das nur den Blob enthielt, fällt dabei aus
-dem Baum, so wie ein Snapshot nie ein leeres Verzeichnis anlegt. Das Umschreiben selbst, die
-Stubs mit dem Eintrag \type{purge} und das Löschen mit Journal folgen.
+Gebaut ist bisher der Plan (STEMMA-46): \type{stemma purge} nennt die Commits, die Zeiger,
+die Stubs und die Objekte und schreibt nichts. Ein Verzeichnis, das nur den Blob enthielt,
+fällt dabei aus dem Baum, so wie ein Snapshot nie ein leeres Verzeichnis anlegt. Der Plan
+durchsucht auch den Objektspeicher nach Resten, die nichts erreicht, und prüft zum Schluss,
+dass nichts Behaltenes den Blob noch enthält. Die Stubs mit dem Eintrag \type{purge} folgen
+mit STEMMA-47, das Umschreiben und das Löschen mit Journal mit STEMMA-48.
 
 \section{Offene Fragen}
 

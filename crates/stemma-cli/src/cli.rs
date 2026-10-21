@@ -10,10 +10,9 @@
 //! and the same `op restore` run again moves the rest. Running `status` again is safe, but it
 //! finds nothing to save and so does not make an unflushed snapshot durable.
 //!
-//! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge`, which
-//! plans and writes nothing so far) has made nothing by
-//! its output, so a failed write of its output is code 1; some of the output may already be
-//! written, and a script discards it. A closed pipe is not a failure, and it does not hide an
+//! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge`, which only
+//! plans until STEMMA-48) has made nothing by its output, so a failed write of its output is code
+//! 1; some of the output may already be written, and a script discards it. A closed pipe is not a failure, and it does not hide an
 //! error of flushing that comes after the output. The one exception is a closed pipe after an
 //! `op restore` that was made: the output is the only place that names its entry, so it is code 3.
 //! An `op restore` writes its result before an error that follows a restore that was made, as
@@ -411,7 +410,8 @@ impl fmt::Display for CliError {
             Self::Open(error @ OpenError::NotARepository { .. }) => write!(
                 f,
                 "{error}; stemma looks only in the directory it is given, not in its parents \
-                 (see `-C` of `track`, `commit`, and `status`, and the argument of `op log`)"
+                 (see `-C` of `track`, `commit`, `status`, `op restore`, and `purge`, and the \
+                 argument of `op log`)"
             ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
@@ -547,8 +547,8 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
 
 /// Shows what a purge of the blob would do (ADR-014): the commits it rewrites, the pointers it
 /// moves, the entries it replaces by stubs, and the objects it deletes. The core refuses an agent
-/// before anything else. Only the plan is built so far, so the command writes nothing, not even a
-/// snapshot; a closed pipe is not a failure.
+/// before it reads the history. Only the plan is built until STEMMA-48, so the command writes
+/// nothing, not even a snapshot; a closed pipe is not a failure.
 fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
