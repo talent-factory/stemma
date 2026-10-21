@@ -11,7 +11,8 @@ Commits erzeugt und der Status angezeigt.
 \item Objektspeicher mit Blobs, Trees und Commits, adressiert über BLAKE3 mit Präfix nach ADR-001.
 \item Referenzen für den Branch \type{main} und HEAD.
 \item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
-\item Befehle \type{init}, \type{track} (statt \type{add}), \type{commit} und \type{status}.
+\item Befehle \type{init}, \type{track} (statt \type{add}), \type{commit}, \type{status},
+\type{op log} und \type{op restore}.
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
 \item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines
 Zeigers geschrieben werden (ADR-011).
@@ -262,20 +263,25 @@ nächste Snapshot läse das unveränderte Verzeichnis und stellte den neuen Stan
 Das Restore schreibt deshalb die Dateien des alten Baums ins Verzeichnis. Das tut eine eigene
 Schicht, die auch der spätere Checkout von Branches braucht. Sie plant zuerst und schreibt
 danach, fasst nur Pfade an, die der alte oder der neue Baum nennt, und lässt nicht verfolgte
-Dateien, ausgeschlossene Pfade, \type{.stemma} und \type{.git} in Ruhe. Sie schreibt nie
+Dateien, \type{.stemma} und \type{.git} in Ruhe. Ein verfolgter Pfad wird auch dann
+zurückgesetzt, wenn die Ausschlussdatei ihn heute ausschliesst (ADR-012). Sie schreibt nie
 durch einen Link, lehnt Namen ab, die Windows nicht halten kann, und erkennt Namen, die auf
 einem Dateisystem ohne Unterscheidung der Gross- und Kleinschreibung zusammenfallen.
 Jede Datei geht über eine temporäre Datei und ein \type{rename}, damit ein Leser die alte
 oder die neue Fassung sieht.
 
-Der Ablauf folgt der Regel des Logs: Zuerst der Snapshot, damit keine ungesicherte Änderung
-verloren geht, dann der Eintrag, dann das Verzeichnis, dann die Zeiger. Ein Abbruch nach dem
-Eintrag lässt die alten Zeiger, und der Eintrag nennt ein Restore, das nicht stattfand,
-was das Log schon kennt. Ein Abbruch nach dem Verzeichnis lässt die neuen Zeiger über
-alten Dateien; derselbe Aufruf noch einmal beendet das Restore. Das Restore beurteilt jeden Zeiger
-für sich, denn ein Eintrag kann zur Hälfte stattgefunden haben. Es ist eine Operation mit
-eigenem Eintrag, und das Log wird nie umgeschrieben: Ein Restore lässt sich wieder
-zurücksetzen.
+Der Ablauf folgt der Regel des Logs: Zuerst wird geplant, damit ein fehlender Commit oder eine
+Datei im Weg gefunden wird, bevor etwas geschrieben ist. Dann kommt der Snapshot, damit keine
+ungesicherte Änderung verloren geht, dann der Eintrag, dann das Verzeichnis, dann die Zeiger.
+Ein Abbruch nach dem Eintrag lässt die Zeiger, wo sie waren, und der Eintrag nennt ein Restore,
+das nicht stattfand, was das Log schon kennt.
+Ein Abbruch nach dem Verzeichnis lässt die Dateien des Ziels unter den Zeigern, die sich noch
+nicht bewegt haben, und ein Abbruch zwischen zwei Zeigern lässt einige bewegt und andere nicht.
+In beiden Fällen beendet derselbe Aufruf noch einmal das Restore: Er lässt, was schon stimmt,
+wie es ist, und bewegt den Rest.
+Das Restore beurteilt jeden Zeiger für sich, denn ein Eintrag kann zur Hälfte stattgefunden haben.
+Es ist eine Operation mit eigenem Eintrag, und das Log wird nie umgeschrieben:
+Ein Restore lässt sich wieder zurücksetzen.
 
 \section{Offene Fragen}
 

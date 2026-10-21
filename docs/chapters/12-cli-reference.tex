@@ -11,6 +11,8 @@ Verhalten und Fehlerfälle. Wo beide abweichen, gilt das Programm.
 Die Übersicht (\in{Abbildung}[fig:commands]) zeigt auf einen Blick, welche Zone von Stemma
 ein Befehl berührt: das Arbeitsverzeichnis, den Working-Copy-Commit,
 die Zeiger (Branch und HEAD) oder das Operation Log.
+Bei \type{op restore} hängt es vom Eintrag ab, welche Zeiger und Dateien sich bewegen;
+die Zeile zeigt den Höchstfall.
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]
@@ -26,7 +28,8 @@ stemma --help
 
 {\bf Verzeichnis.} Jeder Befehl nimmt das Verzeichnis des Repositories mit
 \type{-C} (\type{--repository}) entgegen. Es gibt kein Positionsargument dafür,
-denn \type{track} braucht die Positionsargumente für die Pfade.
+denn \type{track} braucht die Positionsargumente für die Pfade und \type{op restore}
+für die Nummer.
 
 {\bf Akteur.} Jeder Befehl, der ein Repository ändert, braucht einen Akteur (ADR-002).
 Er kommt aus dem Schalter \type{--actor} oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}.
@@ -60,11 +63,13 @@ ein ungültiger Branch-Name. Das Programm gibt die Meldung selbst aus.
 \item {\bf 3:} Der Befehl hat sein Ergebnis angelegt, konnte aber nicht abschliessen:
 Das Verzeichnis ist nicht gesichert, die Ausgabe liess sich nicht schreiben
 (nicht bei einem Befehl, der nur liest), \type{commit} hat nur einen seiner
-beiden Zeiger bewegt oder \type{op restore} hat nur einen Teil seiner Zeiger bewegt.
+beiden Zeiger bewegt, \type{op restore} hat nur einen Teil seiner Zeiger bewegt
+oder ein gemachtes \type{op restore} liess sich nicht ausgeben.
 Bei \type{status} heisst es: Der Snapshot hat den Zeiger bewegt, aber nicht gesichert.
 Ein Skript darf das Ergebnis weder löschen noch den Befehl wiederholen;
 nur ein weiterer \type{commit} beendet einen halben (siehe dort), und ein halbes
 \type{op restore} beendet derselbe Aufruf, noch einmal ausgeführt (siehe dort).
+Ein \type{op restore}, das gemacht ist, nennt in der Ausgabe den Eintrag, der es zurücksetzt.
 Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht.
 \stopitemize
 
@@ -546,23 +551,30 @@ Eintrag des Restores tragen diesen Akteur.
 
 {\bf Was zurückkommt.} Das Restore setzt jeden Zeiger, den der Eintrag bewegt hat,
 auf den Wert vor dem Eintrag: HEAD, den Working-Copy-Commit und die Branches.
-Ein Branch, den der Eintrag angelegt hat, wird gelöscht. Zeiger, die der Eintrag nicht
-nennt, bleiben, und ein Zeiger, der den alten Wert schon hat, wird nicht angefasst.
-Das gilt Zeiger für Zeiger: Auch ein Eintrag, der nur zum Teil stattfand (ein
-\type{commit}, der den Branch bewegte und dann abbrach), lässt sich zurücksetzen,
-und ein Zeiger, den spätere Einträge weiterbewegt haben, geht trotzdem auf den alten Wert.
+Ein Branch, den der Eintrag angelegt hat, wird gelöscht.
+Zeiger, die der Eintrag nicht nennt, bleiben, und ein Zeiger, der den alten Wert schon hat,
+wird nicht angefasst.
+Das gilt Zeiger für Zeiger: Auch ein Eintrag, der nur zum Teil stattfand (ein \type{commit},
+der den Branch bewegte und dann abbrach), lässt sich zurücksetzen.
+Ein Zeiger, den spätere Einträge weiterbewegt haben, geht ohne Warnung auf den alten Wert.
 Bewegt sich der Working-Copy-Commit, schreibt das Restore die Dateien des alten Baums
-ins Arbeitsverzeichnis. Verfolgte Dateien, die der alte Baum nicht hat, werden gelöscht,
-und mit ihnen die Verzeichnisse, die dadurch leer werden. Nicht verfolgte Dateien,
-ausgeschlossene Pfade, \type{.stemma} und \type{.git} bleiben unberührt.
+ins Arbeitsverzeichnis.
+Verfolgte Dateien, die der alte Baum nicht hat, werden gelöscht,
+und mit ihnen die Verzeichnisse, die dadurch leer werden.
+Nicht verfolgte Dateien, \type{.stemma} und \type{.git} bleiben unberührt.
+Ein verfolgter Pfad wird auch dann zurückgesetzt, wenn die Ausschlussdatei ihn heute
+ausschliesst (ADR-012); ein Pfad, den der alte Baum neu anlegt und den die Ausschlussdatei
+ausschliesst, ist ein Fehler.
 
 {\bf Ablauf.} Das Restore ist selbst eine Operation und schreibt einen Eintrag
 \type{restore}. Es lässt sich also wieder zurücksetzen, und die Ausgabe nennt den Befehl dafür.
 Zuerst plant es: Es prüft, dass alle Commits im Objektspeicher liegen und jede Datei
-ihren Platz findet. Dann sichert es das Arbeitsverzeichnis in einem Snapshot, damit keine
-ungesicherte Änderung verloren geht. Unter der Sperre der Referenzen schreibt es dann
-den Eintrag, bringt die Dateien auf den alten Stand und bewegt zuletzt die Zeiger
-(Branches, Working-Copy-Commit, HEAD). Ein Abbruch vor dem Eintrag ändert nichts.
+ihren Platz findet.
+Dann sichert es das Arbeitsverzeichnis in einem Snapshot, damit keine ungesicherte Änderung
+an verfolgten Dateien verloren geht.
+Unter der Sperre der Referenzen schreibt es dann den Eintrag, bringt die Dateien
+auf den Stand des Ziels und bewegt zuletzt die Zeiger (Branches, Working-Copy-Commit, HEAD).
+Ein Abbruch vor dem Eintrag schreibt nichts vom Restore; ein Snapshot kann schon im Log stehen.
 
 {\bf Ausgabe.}
 
@@ -572,43 +584,68 @@ Restored the state before entry 9 as entry 13
 To undo it: stemma op restore 13
 \stoptyping
 
-Die erste Zeile steht nur, wenn das Arbeitsverzeichnis ungesicherte Änderungen hatte.
+Die erste Zeile steht nur, wenn das Arbeitsverzeichnis ungesicherte Änderungen
+an verfolgten Dateien hatte.
 Haben alle Zeiger die alten Werte schon, steht
 \type{Nothing to restore: every pointer of entry 9 has its old value already}
-(Exit-Code 0, kein Eintrag). Mit \type{--dry-run} beginnt die Ausgabe mit
-\type{Would restore the state before entry 9; nothing is written}. Darauf folgen je Zeiger
-eine eingerückte Zeile \type{head}, \type{working-copy} oder \type{branch NAME} mit altem und
-neuem Wert und je Datei eine Zeile \type{write PFAD} oder \type{remove PFAD}. Der Plan kennt
-ungesicherte Änderungen nicht: Ein echter Lauf sichert sie zuerst und ersetzt die Datei
-trotzdem.
+(Exit-Code 0, kein Eintrag des Restores).
+Mit \type{--dry-run} beginnt die Ausgabe mit
+\type{Would restore the state before entry 9; nothing is written}.
+Darauf folgen je Zeiger eine eingerückte Zeile \type{head}, \type{working-copy} oder
+\type{branch NAME} mit altem und neuem Wert (in dieser Reihenfolge; ein gelöschter Branch hat
+\type{-} als neuen Wert) und je Datei eine Zeile \type{write PFAD} oder \type{remove PFAD}.
+Die Zeile \type{A real run saves unsaved changes first} steht nur, wenn Dateien betroffen sind:
+Der Plan kennt ungesicherte Änderungen nicht, ein echter Lauf sichert sie zuerst
+und ersetzt die Datei trotzdem.
 
 {\bf Ausgang des Eintrags.} Zeigen das Log und die Referenzen nicht, ob der Eintrag
 stattfand (er ist in \type{op log} mit \type{?} markiert), bricht der Befehl ab, denn der
 Zustand davor muss dann nicht stimmen. \type{--force} setzt trotzdem zurück.
+Das gilt auch für \type{--dry-run}.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, der Eintrag
 nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
 HEAD oder den Working-Copy-Commit angelegt hat (das tut nur der erste Eintrag, und
-beide können nicht fehlen). Dazu kommen ein Commit, der im Objektspeicher fehlt,
-ein Branch-Name, der im Weg liegt, eine Sperre der Referenzen (ein anderer Vorgang
-schreibt: später noch einmal) und eine Datei oder ein Verzeichnis, das nicht verfolgt wird
-und dort liegt, wo der alte Baum eine Datei braucht. In diesen Fällen hat das Restore
-nichts geschrieben; hatte der Befehl vorher einen Snapshot gemacht, nennt die Meldung ihn.
+beide können nicht fehlen).
+Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt,
+eine Sperre der Referenzen (ein anderer Vorgang schreibt: später noch einmal) und eine Datei
+oder ein Verzeichnis, das nicht verfolgt wird und dort liegt, wo der Baum eine Datei braucht.
+In diesen Fällen hat das Restore nichts geschrieben; hatte der Befehl vorher einen Snapshot
+gemacht, nennt die Meldung ihn.
+
 Scheitert das Schreiben der Dateien, nachdem der Eintrag im Log steht, ist das ebenfalls
 Exit-Code 1: Der Eintrag nennt ein Restore, das nicht stattfand (\type{op log} markiert ihn
 mit \type{!}), kein Zeiger hat sich bewegt, und die schon geschriebenen Dateien bleiben;
-der nächste Snapshot sichert sie als Änderung des Akteurs. Dasselbe gilt, wenn nach den
-Dateien schon der erste Zeiger scheitert: Die Dateien sind alt, der Working-Copy-Commit
-ist neu, und das Restore noch einmal auszuführen holt das nach.
-Exit-Code 3 gilt, wenn ein Teil der Zeiger sich bewegt hat und ein späterer nicht, oder
-wenn ein Verzeichnis nicht gesichert werden konnte oder die Ausgabe nicht zu schreiben war.
-Nach einem halben Restore führt ein Skript denselben Aufruf noch einmal aus: Er bewegt nur
-die Zeiger, die noch nicht den alten Wert haben, und die schon vorhandenen Dateien bleiben.
+der nächste Snapshot sichert sie als Änderung des Akteurs.
+Dasselbe gilt, wenn nach den Dateien schon der erste Zeiger scheitert: Die Dateien haben
+den Stand des Ziels, der Working-Copy-Commit zeigt noch auf den bisherigen.
+In beiden Fällen holt derselbe Aufruf noch einmal das Restore nach.
+Er sichert die geschriebenen Dateien zuerst in einem Snapshot (die Ausgabe nennt ihn),
+lässt Dateien, die schon den Inhalt und den Modus des Ziels haben, wie sie sind
+und bewegt die Zeiger.
+
+Exit-Code 3 gilt in drei Fällen:
+Ein Teil der Zeiger hat sich bewegt und ein späterer nicht (die Ausgabe nennt
+\type{Half made} und den Aufruf, der es beendet), der Eintrag und die Zeiger sind geschrieben,
+aber ein Verzeichnis liess sich nicht auf den Datenträger sichern, oder das Restore ist gemacht
+und die Ausgabe liess sich nicht schreiben.
+Bei einem halben Restore führt ein Skript denselben Aufruf noch einmal aus: Er bewegt
+nur die Zeiger, die noch nicht den alten Wert haben.
+In den anderen Fällen darf es das Ergebnis weder löschen noch wiederholen; die Ausgabe
+oder die Meldung nennt den Eintrag, mit dem sich das Restore zurücksetzen lässt.
+Das Restore schreibt sein Ergebnis auf die Standardausgabe, bevor es einen solchen
+Fehler meldet; eine geschlossene Pipe nach einem gemachten Restore ist deshalb Exit-Code 3
+und nicht still ein Erfolg.
+Konnte ein Snapshot vor dem Restore nicht gesichert werden, endet der Befehl ebenfalls
+mit 3, nachdem das Restore gemacht ist; die Meldung nennt den Eintrag des Snapshots.
+Ein Fehler beim Schreiben der Ausgabe von \type{--dry-run} oder bei
+\type{Nothing to restore} ist Exit-Code 1, denn es wurde nichts gemacht.
 
 {\bf Grenzen.} Die Version nimmt eine Eintragsnummer und keinen Zeitpunkt; ein
-\type{undo} für den letzten Eintrag gibt es nicht. Namen, die sich nur in der
-Unicode-Normalisierung unterscheiden, erkennt das Schreiben der Dateien erst,
-wenn die zweite Datei an der Reihe ist; Windows ist nicht getestet (ADR-013).
+\type{undo} für den letzten Eintrag gibt es nicht.
+Namen, die sich nur in der Unicode-Normalisierung unterscheiden, erkennt das Schreiben
+der Dateien erst, wenn die zweite Datei an der Reihe ist, und nur, wenn sie neu ist;
+Windows ist nicht getestet (ADR-013).
 
 {\bf Beispiele.}
 

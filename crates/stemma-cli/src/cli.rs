@@ -3,29 +3,33 @@
 //! Exit codes: 0 for success, 1 for a command that fails, 2 for arguments that are wrong (the code
 //! of the argument parser), and 3 for a command that has done its work but could not finish: the
 //! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`, and
-//! `op restore`) writing the result failed, or a `commit` moved one of its two pointers and not
-//! the other. A script must not remove or repeat what such a command made; only the next `commit`
-//! after a half-made one finishes it, and the message of that call is not used. The same holds
-//! for an `op restore` that moved some pointers and not all: the same `op restore` run again
-//! moves the rest. An `op restore` that failed before a pointer moved is code 1; if its entry is
-//! in the log, the message names it (and the files that were written stay). Running `status` again is
-//! safe, but it finds nothing to save and so does not make an unflushed snapshot durable.
+//! `op restore`) writing the result failed after the work was made, or a `commit` moved one of
+//! its two pointers and not the other. A script must not remove or repeat what such a command
+//! made; only the next `commit` after a half-made one finishes it, and the message of that call is
+//! not used. The exception is an `op restore` that moved some pointers and not all: it is code 3,
+//! and the same `op restore` run again moves the rest. Running `status` again is safe, but it
+//! finds nothing to save and so does not make an unflushed snapshot durable.
 //!
-//! A command that only reads (`op log`, `status`) has made nothing by its output, so a failed
-//! write of its output is code 1; some of the output may already be written, and a script discards
-//! it. A closed pipe is not a failure, and it does not hide an error of flushing that comes after
-//! the output.
+//! A command that only reads (`op log`, `status`, and `op restore --dry-run`) has made nothing by
+//! its output, so a failed write of its output is code 1; some of the output may already be
+//! written, and a script discards it. A closed pipe is not a failure, and it does not hide an
+//! error of flushing that comes after the output. The one exception is a closed pipe after an
+//! `op restore` that was made: the output is the only place that names its entry, so it is code 3.
+//! An `op restore` writes its result before an error that follows a restore that was made, as
+//! `commit` does.
 //!
 //! Code 1 can leave two traces. A write that fails after its entry is in the operation log
-//! (`track`, `commit`, `UpdateError::MoveFailed`) leaves an entry for a move that did not happen,
-//! which `op log` marks as such. And a command that saves the tracked files first leaves that
-//! entry (`snapshot`) when it fails afterwards: `commit` when it is refused for nothing to commit
-//! or for a branch that moved, and `status` when it cannot read the repository or write its
-//! output. The message of such a failure names the entry, and repeating the command is safe.
+//! (`track`, `commit`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
+//! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
+//! and no pointer moved: the same call run again completes it. And a command that saves the
+//! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
+//! is refused for nothing to commit or for a branch that moved, `status` when it cannot read the
+//! repository or write its output, and `op restore` when a later step fails. The message of such
+//! a failure names the entry, and repeating the command is safe.
 //!
 //! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
-//! status is written, for `commit` without a commit (it can be repeated), and for `track` as the
-//! other flush errors.
+//! status is written, for `commit` without a commit (it can be repeated), for `op restore` after
+//! the restore is made, and for `track` as the other flush errors.
 //!
 //! A failing command prints `stemma: <message>`, a complete message (see the crate documentation
 //! of `stemma-core`). The argument parser prints its own errors.
@@ -46,7 +50,7 @@ use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
     normalize_path, CommitError, Committed, InitError, InitOptions, OpenError, Repository,
-    RestoreError, RestorePlan, Restored, SnapshotError, Status, StatusError, TrackError, Tracking,
+    RestoreError, RestorePlan, SnapshotError, Status, StatusError, TrackError, Tracking,
     UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
@@ -290,11 +294,12 @@ enum CliError {
     /// The restore was refused or stopped. [`RestoreError::pointer_moved`] says whether a pointer
     /// moved; the error says what is in the log and what state the files are in.
     Restore(RestoreError),
-    /// The restore was made (`restored` is the number of its entry) or planned, but the result
-    /// could not be written to the output.
+    /// The restore was made or planned, but the result could not be written to the output.
     RestoreOutput {
         /// The entry of the restore, if one was made.
         restored: Option<u64>,
+        /// The entry of the snapshot that came first, if one was made.
+        snapshot: Option<u64>,
         /// The error of the output.
         source: io::Error,
     },
@@ -332,8 +337,11 @@ impl CliError {
             | Self::StatusNotDurable { .. }
             | Self::RestoreOutput {
                 restored: Some(_), ..
+            }
+            | Self::RestoreOutput {
+                snapshot: Some(_), ..
             } => ExitCode::from(3),
-            Self::Restore(error) if restore_is_half_made(error) => ExitCode::from(3),
+            Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
             Self::MissingActor
@@ -443,17 +451,26 @@ impl fmt::Display for CliError {
             }
             Self::Restore(error) => error.fmt(f),
             Self::RestoreOutput {
-                restored: Some(entry),
+                restored,
+                snapshot,
                 source,
-            } => write!(
-                f,
-                "restored as entry {entry} of the operation log, but could not write the result: \
-                 {source}; do not repeat it"
-            ),
-            Self::RestoreOutput {
-                restored: None,
-                source,
-            } => write!(f, "could not write the result: {source}"),
+            } => {
+                match (restored, snapshot) {
+                    (Some(entry), _) => {
+                        write!(f, "restored as entry {entry} of the operation log")?
+                    }
+                    (None, Some(_)) => write!(f, "nothing was restored")?,
+                    (None, None) => write!(f, "nothing was restored or written")?,
+                }
+                if let Some(saved) = snapshot {
+                    write!(f, " (the working copy was saved first as entry {saved})")?;
+                }
+                write!(f, ", but the result could not be written: {source}")?;
+                match restored {
+                    Some(entry) => write!(f, "; to undo it run `stemma op restore {entry}`"),
+                    None => Ok(()),
+                }
+            }
             Self::OpLog(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
@@ -491,39 +508,64 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
     }
 }
 
-/// Whether a failed restore moved a pointer or made the restore without making it durable. The
-/// script does not undo such a restore; for a restore that stopped between two pointers, the
-/// same restore run again finishes it.
-fn restore_is_half_made(error: &RestoreError) -> bool {
-    error.pointer_moved()
-}
-
 /// Puts back the old values of an entry, or shows what that would do. The core plans first, so a
 /// missing commit or a file in the way is an error before anything is written, and it saves the
 /// working directory in a snapshot before it changes it.
+///
+/// The result is written before an error that follows a restore that was made (exit code 3), as
+/// `commit` does, so that a script finds the entry that undoes it. A closed pipe is no failure for
+/// a plan or for nothing to restore; after a restore it is, because the output is the only place
+/// that names the entry.
 fn restore(args: OpRestoreArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
-    let (text, restored) = if args.dry_run {
+    if args.dry_run {
         let plan = repository
             .plan_restore(args.number, args.force, &actor, &AllowAll)
             .map_err(CliError::Restore)?;
-        (plan_text(args.number, plan.as_ref()), None)
-    } else {
-        let result = repository
-            .restore(args.number, args.force, &actor, &AllowAll)
-            .map_err(CliError::Restore)?;
-        let restored = match &result {
-            Restored::Done { entry, .. } => Some(entry.number()),
-            _ => None,
-        };
-        (restored_text(args.number, &result), restored)
-    };
+        return write_restore(out, &plan_text(args.number, plan.as_ref()), None, None);
+    }
+    match repository.restore(args.number, args.force, &actor, &AllowAll) {
+        Ok(result) => write_restore(
+            out,
+            &restored_text(args.number, result.snapshot(), result.entry()),
+            result.entry().map(oplog::Entry::number),
+            result.snapshot().map(oplog::Entry::number),
+        ),
+        Err(error) => {
+            if error.pointer_moved() {
+                // The message of the error names the entries too, so a failure to write is not
+                // reported on top of it.
+                let _ = out.write_all(made_text(args.number, &error).as_bytes());
+            }
+            Err(CliError::Restore(error))
+        }
+    }
+}
+
+/// Writes the result of a restore or a plan. `restored` and `snapshot` are the entries that the
+/// call made.
+fn write_restore(
+    out: &mut dyn Write,
+    text: &str,
+    restored: Option<u64>,
+    snapshot: Option<u64>,
+) -> Result<(), CliError> {
     match out.write_all(text.as_bytes()) {
         Ok(()) => Ok(()),
-        // The reader of a pipe has had enough, and the work is done.
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(source) => Err(CliError::RestoreOutput { restored, source }),
+        // The reader of a pipe has had enough, and nothing was made that only this text names.
+        Err(error)
+            if error.kind() == io::ErrorKind::BrokenPipe
+                && restored.is_none()
+                && snapshot.is_none() =>
+        {
+            Ok(())
+        }
+        Err(source) => Err(CliError::RestoreOutput {
+            restored,
+            snapshot,
+            source,
+        }),
     }
 }
 
@@ -561,7 +603,7 @@ fn plan_text(number: u64, plan: Option<&RestorePlan>) -> String {
             value(moved.after())
         ));
     }
-    if let Some(checkout) = plan.checkout() {
+    if let Some(checkout) = plan.checkout().filter(|checkout| !checkout.is_empty()) {
         for write in checkout.writes() {
             text.push_str(&format!("    write {}\n", escape_path(write.path())));
         }
@@ -575,26 +617,41 @@ fn plan_text(number: u64, plan: Option<&RestorePlan>) -> String {
     text
 }
 
+/// The line that names the snapshot that came first.
+fn saved_text(snapshot: Option<&oplog::Entry>) -> String {
+    snapshot.map_or_else(String::new, |entry| {
+        format!("Saved the working copy first as entry {}\n", entry.number())
+    })
+}
+
 /// What a restore did: the snapshot, the entry of the restore, and how to undo it.
-fn restored_text(number: u64, result: &Restored) -> String {
-    let saved = |snapshot: &Option<Box<oplog::Entry>>| {
-        snapshot.as_ref().map_or_else(String::new, |entry| {
-            format!("Saved the working copy first as entry {}\n", entry.number())
-        })
-    };
-    match result {
-        Restored::NothingToRestore { snapshot } => {
-            format!("{}{}", saved(snapshot), nothing_to_restore(number))
-        }
-        Restored::Done { snapshot, entry } => format!(
-            "{}Restored the state before entry {number} as entry {}\nTo undo it: stemma op \
+fn restored_text(
+    number: u64,
+    snapshot: Option<&oplog::Entry>,
+    entry: Option<&oplog::Entry>,
+) -> String {
+    let saved = saved_text(snapshot);
+    match entry {
+        Some(entry) => format!(
+            "{saved}Restored the state before entry {number} as entry {}\nTo undo it: stemma op \
              restore {}\n",
-            saved(snapshot),
             entry.number(),
             entry.number()
         ),
-        // The enum is non-exhaustive; a new kind of result is reported as it is.
-        other => format!("{other:?}\n"),
+        None => format!("{saved}{}", nothing_to_restore(number)),
+    }
+}
+
+/// What a restore that was made or half made has done, for the output before its error.
+fn made_text(number: u64, error: &RestoreError) -> String {
+    match (error.half_made(), error.entry()) {
+        (true, Some(entry)) => format!(
+            "{}Half made: entry {} of the restore moved some of the pointers of entry {number}\n\
+             To finish it: stemma op restore {number}\n",
+            saved_text(error.snapshot()),
+            entry.number()
+        ),
+        _ => restored_text(number, error.snapshot(), error.entry()),
     }
 }
 
@@ -1054,20 +1111,165 @@ mod tests {
             assert_eq!(code(error), ExitCode::FAILURE);
         }
         assert_eq!(
-            CliError::RestoreOutput {
-                restored: Some(3),
-                source: io::Error::other("x")
-            }
-            .exit_code(),
+            code(RestoreError::SnapshotNotDurable {
+                snapshot: entry.clone(),
+                restored: None,
+                source: locked()
+            }),
             ExitCode::from(3)
         );
         assert_eq!(
+            code(RestoreError::AfterSnapshot {
+                snapshot: entry.clone(),
+                source: Box::new(RestoreError::CheckoutFailed {
+                    entry: entry.clone(),
+                    source: stemma_core::repository::CheckoutError::InTheWay {
+                        path: "a".to_owned()
+                    }
+                })
+            }),
+            ExitCode::FAILURE,
+            "the files are written and no pointer moved: run the same restore again"
+        );
+        let output = |restored, snapshot| {
             CliError::RestoreOutput {
-                restored: None,
-                source: io::Error::other("x")
+                restored,
+                snapshot,
+                source: io::Error::other("x"),
             }
-            .exit_code(),
-            ExitCode::FAILURE
+            .exit_code()
+        };
+        assert_eq!(output(Some(3), None), ExitCode::from(3));
+        assert_eq!(output(None, Some(2)), ExitCode::from(3));
+        assert_eq!(output(None, None), ExitCode::FAILURE);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A restore that is made, with the entry of the first commit as the one to restore.
+    fn restore_args(dir: &Path, dry_run: bool) -> (OpRestoreArgs, u64) {
+        let repository = Repository::open(dir).unwrap();
+        let commit = repository
+            .oplog()
+            .entries()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|entry| entry.change().operation().as_str() == "commit")
+            .unwrap()
+            .number();
+        let args = OpRestoreArgs {
+            number: commit,
+            repository: dir.to_path_buf(),
+            force: false,
+            dry_run,
+            actor: Some("human daniel".to_owned()),
+        };
+        (args, commit)
+    }
+
+    #[test]
+    fn a_failed_write_after_a_restore_is_code_3_and_names_the_entry_to_undo_it() {
+        let (dir, _, _) = committed("restore-write");
+        let (args, _) = restore_args(&dir, false);
+        let error = restore(args, &mut Failing(io::ErrorKind::Other)).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let text = error.to_string();
+        assert!(
+            text.starts_with("restored as entry ")
+                && text.contains("to undo it run `stemma op restore "),
+            "{text}"
+        );
+        let repository = Repository::open(&dir).unwrap();
+        let last = repository.oplog().entries().unwrap().pop().unwrap();
+        assert_eq!(last.change().operation().as_str(), "restore");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_closed_pipe_after_a_restore_is_code_3_but_after_a_plan_it_is_nothing() {
+        let (dir, _, _) = committed("restore-pipe");
+        let (plan, _) = restore_args(&dir, true);
+        assert!(restore(plan, &mut Failing(io::ErrorKind::BrokenPipe)).is_ok());
+        let (args, _) = restore_args(&dir, false);
+        let error = restore(args, &mut Failing(io::ErrorKind::BrokenPipe)).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_write_of_a_plan_is_code_1_and_says_nothing_was_restored() {
+        let (dir, _, _) = committed("restore-plan-write");
+        let (args, _) = restore_args(&dir, true);
+        let before = Repository::open(&dir)
+            .unwrap()
+            .oplog()
+            .entries()
+            .unwrap()
+            .len();
+        let error = restore(args, &mut Failing(io::ErrorKind::Other)).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert!(
+            error
+                .to_string()
+                .starts_with("nothing was restored or written"),
+            "{error}"
+        );
+        let after = Repository::open(&dir)
+            .unwrap()
+            .oplog()
+            .entries()
+            .unwrap()
+            .len();
+        assert_eq!(after, before, "a plan writes no entry");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_text_of_a_restore_names_the_snapshot_and_the_way_back() {
+        let (dir, _, entry) = committed("restore-text");
+        assert_eq!(
+            restored_text(7, None, None),
+            "Nothing to restore: every pointer of entry 7 has its old value already\n"
+        );
+        assert_eq!(
+            restored_text(7, Some(&entry), Some(&entry)),
+            "Saved the working copy first as entry 1\n\
+             Restored the state before entry 7 as entry 1\nTo undo it: stemma op restore 1\n"
+        );
+        assert_eq!(
+            restored_text(7, Some(&entry), None),
+            "Saved the working copy first as entry 1\n\
+             Nothing to restore: every pointer of entry 7 has its old value already\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_half_made_restore_writes_the_way_to_finish_it_before_its_error() {
+        let (dir, entry) = repository_with_entry("restore-half");
+        let entry = Box::new(entry);
+        let half = RestoreError::AfterSnapshot {
+            snapshot: entry.clone(),
+            source: Box::new(RestoreError::PartlyMoved {
+                entry: entry.clone(),
+                source: RefError::Locked { path: dir.clone() },
+            }),
+        };
+        assert!(half.half_made());
+        assert_eq!(
+            made_text(5, &half),
+            "Saved the working copy first as entry 1\n\
+             Half made: entry 1 of the restore moved some of the pointers of entry 5\n\
+             To finish it: stemma op restore 5\n"
+        );
+        let not_durable = RestoreError::NotDurable {
+            entry: entry.clone(),
+            source: RefError::Locked { path: dir.clone() },
+        };
+        assert!(!not_durable.half_made());
+        assert_eq!(
+            made_text(5, &not_durable),
+            "Restored the state before entry 5 as entry 1\nTo undo it: stemma op restore 1\n"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

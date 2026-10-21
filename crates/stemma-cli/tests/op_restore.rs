@@ -298,10 +298,9 @@ fn the_first_entry_cannot_be_restored() {
     let result = run(dir.path(), &["op", "restore", "1", "--actor", ACTOR]);
 
     assert_eq!(result.code, 1);
-    assert!(
-        result.stderr.contains("created HEAD") || result.stderr.contains("cannot be restored"),
-        "{}",
-        result.stderr
+    assert_eq!(
+        result.stderr,
+        "stemma: entry 1 created HEAD, which cannot be absent, so it cannot be restored\n"
     );
 }
 
@@ -334,4 +333,310 @@ fn a_file_in_the_way_stops_the_restore_before_anything_is_written() {
     );
     assert_eq!(numbers(dir.path()), entries);
     assert_eq!(read(dir.path(), "a.txt/mine"), "mine");
+}
+
+/// A line `    <name>  b3:<id> -> b3:<id>` or `... -> -`, checked without the IDs.
+fn assert_pointer_line(line: &str, name: &str, deleted: bool) {
+    let rest = line
+        .strip_prefix(&format!("    {name}  b3:"))
+        .unwrap_or_else(|| panic!("{line:?} is not a line of {name}"));
+    let (old, new) = rest.split_once(" -> ").unwrap();
+    assert_eq!(old.len(), 64, "{line:?}");
+    if deleted {
+        assert_eq!(new, "-", "{line:?}");
+    } else {
+        assert_eq!(new.strip_prefix("b3:").map(str::len), Some(64), "{line:?}");
+    }
+}
+
+#[test]
+fn a_dry_run_names_the_pointers_and_the_files_in_order() {
+    let (dir, snapshot) = two_commits();
+
+    let result = ok(
+        dir.path(),
+        &[
+            "op",
+            "restore",
+            &snapshot.to_string(),
+            "--dry-run",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        format!("Would restore the state before entry {snapshot}; nothing is written")
+    );
+    assert_pointer_line(lines[1], "working-copy", false);
+    assert_eq!(lines[2], "    write a.txt");
+    assert_eq!(
+        lines[3],
+        "A real run saves unsaved changes first; the files above are replaced all the same"
+    );
+    assert_eq!(lines.len(), 4, "{}", result.stdout);
+}
+
+#[test]
+fn a_dry_run_of_a_commit_shows_the_branch_and_no_file_note() {
+    let (dir, snapshot) = two_commits();
+    let commit = snapshot + 1;
+
+    let result = ok(
+        dir.path(),
+        &[
+            "op",
+            "restore",
+            &commit.to_string(),
+            "--dry-run",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    // A commit changes the pointers and not the tree, so there is nothing to write.
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert_pointer_line(lines[1], "working-copy", false);
+    assert_pointer_line(lines[2], "branch main", false);
+    assert_eq!(lines.len(), 3, "{}", result.stdout);
+}
+
+#[test]
+fn a_dry_run_shows_a_deleted_branch_and_a_removed_file_and_the_restore_does_both() {
+    let dir = Dir::new();
+    ok(dir.path(), &["init", "--actor", ACTOR]);
+    write(dir.path(), "a.txt", "one");
+    ok(dir.path(), &["track", "a.txt", "--actor", ACTOR]);
+    ok(dir.path(), &["commit", "-m", "first", "--actor", ACTOR]);
+    let all = numbers(dir.path());
+    let (track, commit) = (all[1].to_string(), all[2].to_string());
+
+    let branch = ok(
+        dir.path(),
+        &["op", "restore", &commit, "--dry-run", "--actor", ACTOR],
+    );
+    let files = ok(
+        dir.path(),
+        &["op", "restore", &track, "--dry-run", "--actor", ACTOR],
+    );
+
+    let lines: Vec<&str> = branch.stdout.lines().collect();
+    assert_pointer_line(lines[2], "branch main", true);
+    let lines: Vec<&str> = files.stdout.lines().collect();
+    assert_pointer_line(lines[1], "working-copy", false);
+    assert_eq!(lines[2], "    remove a.txt", "{}", files.stdout);
+    ok(dir.path(), &["op", "restore", &track, "--actor", ACTOR]);
+    assert!(
+        !dir.path().join("a.txt").exists(),
+        "the tracked file is removed"
+    );
+}
+
+/// Moves the working-copy commit to a commit that no entry names as one, so that the outcome of
+/// the newest entry of the working copy is not known.
+fn make_the_outcome_unknown(dir: &Path) {
+    let repository = Repository::open(dir).unwrap();
+    let tip = repository
+        .refs()
+        .branch(&"main".parse().unwrap())
+        .unwrap()
+        .unwrap();
+    let parent = {
+        let raw = stemma_core::store::ObjectStore::get(repository.objects(), &tip.object_id())
+            .unwrap()
+            .unwrap();
+        stemma_core::object::Commit::parse(raw.body())
+            .unwrap()
+            .parents()[0]
+    };
+    fs::write(
+        dir.join(".stemma").join("working-copy"),
+        format!("{parent}\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_unknown_outcome_is_refused_and_force_restores_anyway() {
+    let (dir, snapshot) = two_commits();
+    let commit = (snapshot + 1).to_string();
+    make_the_outcome_unknown(dir.path());
+    let before = numbers(dir.path());
+
+    let refused = run(dir.path(), &["op", "restore", &commit, "--actor", ACTOR]);
+    let planned = run(
+        dir.path(),
+        &["op", "restore", &commit, "--dry-run", "--actor", ACTOR],
+    );
+
+    for result in [&refused, &planned] {
+        assert_eq!(result.code, 1, "{}", result.stdout);
+        assert!(
+            result
+                .stderr
+                .contains(&format!("whether entry {commit} took effect"))
+                && result.stderr.contains("use --force to restore anyway"),
+            "{}",
+            result.stderr
+        );
+    }
+    assert_eq!(numbers(dir.path()), before);
+    let dry = ok(
+        dir.path(),
+        &[
+            "op",
+            "restore",
+            &commit,
+            "--dry-run",
+            "--force",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert!(dry.stdout.starts_with("Would restore"), "{}", dry.stdout);
+    assert_eq!(
+        numbers(dir.path()),
+        before,
+        "a dry run with --force writes nothing"
+    );
+    let forced = ok(
+        dir.path(),
+        &["op", "restore", &commit, "--force", "--actor", ACTOR],
+    );
+    assert!(
+        forced.stdout.contains("Restored the state before entry"),
+        "{}",
+        forced.stdout
+    );
+}
+
+#[test]
+fn the_actor_comes_from_the_environment_and_the_flag_wins() {
+    let (dir, snapshot) = two_commits();
+    let number = snapshot.to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
+        .current_dir(dir.path())
+        .env("STEMMA_ACTOR", "human erika")
+        .args(["op", "restore", &number])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let repository = Repository::open(dir.path()).unwrap();
+    let last = repository.oplog().entries().unwrap().pop().unwrap();
+    assert_eq!(last.change().actor().to_string(), "human erika");
+
+    let again = Command::new(env!("CARGO_BIN_EXE_stemma"))
+        .current_dir(dir.path())
+        .env("STEMMA_ACTOR", "human erika")
+        .args([
+            "op",
+            "restore",
+            &last.number().to_string(),
+            "--actor",
+            "human max",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    let last = Repository::open(dir.path())
+        .unwrap()
+        .oplog()
+        .entries()
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(last.change().actor().to_string(), "human max");
+}
+
+#[test]
+fn wrong_arguments_are_code_2_and_write_nothing() {
+    let (dir, snapshot) = two_commits();
+    let before = numbers(dir.path());
+    let number = snapshot.to_string();
+    let cases: [&[&str]; 6] = [
+        &["op", "restore"],
+        &["op", "restore", "-3"],
+        &["op", "restore", "99999999999999999999999"],
+        &["op", "restore", &number, "--unknown"],
+        &["op", "restore", &number, "extra"],
+        &["op", "restore", &number, "--force", "--force"],
+    ];
+    for args in cases {
+        let mut full = args.to_vec();
+        full.extend(["--actor", ACTOR]);
+        let result = run(dir.path(), &full);
+        assert_eq!(result.code, 2, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "");
+    }
+    assert_eq!(numbers(dir.path()), before);
+}
+
+#[test]
+fn a_directory_without_a_repository_is_an_error_that_names_the_flag() {
+    let (_dir, snapshot) = two_commits();
+    let elsewhere = Dir::new();
+
+    let result = run(
+        elsewhere.path(),
+        &["op", "restore", &snapshot.to_string(), "--actor", ACTOR],
+    );
+
+    assert_eq!(result.code, 1);
+    assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
+    assert!(result.stderr.contains("-C"), "{}", result.stderr);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_restore_whose_pointers_cannot_move_names_the_way_on_and_the_same_call_finishes_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, snapshot) = two_commits();
+    let commit = (snapshot + 1).to_string();
+    let branch = |dir: &Path| {
+        Repository::open(dir)
+            .unwrap()
+            .refs()
+            .branch(&"main".parse().unwrap())
+            .unwrap()
+    };
+    let tip = branch(dir.path());
+    // The branch is written through a temporary file that is renamed into `refs/heads`, which
+    // a directory that cannot be written stops. The entry comes before the move.
+    let heads = dir.path().join(".stemma").join("refs").join("heads");
+    fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
+    // A process that runs as root ignores the permission; the test needs a real failure.
+    if fs::File::create(heads.join("probe")).is_ok() {
+        let _ = fs::remove_file(heads.join("probe"));
+        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let result = run(dir.path(), &["op", "restore", &commit, "--actor", ACTOR]);
+
+    fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result
+            .stderr
+            .contains("the files are at the old state, but no pointer moved")
+            && result.stderr.contains("run the same restore again"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(branch(dir.path()), tip, "no pointer moved");
+
+    let finished = ok(dir.path(), &["op", "restore", &commit, "--actor", ACTOR]);
+
+    assert!(
+        finished.stdout.contains("Restored the state before entry"),
+        "{}",
+        finished.stdout
+    );
+    assert_ne!(
+        branch(dir.path()),
+        tip,
+        "the branch is back at its old commit"
+    );
 }

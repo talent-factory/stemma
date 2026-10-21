@@ -72,7 +72,7 @@ impl RestorePlan {
 pub enum Restored {
     /// The pointers have the old values of the entry already. Nothing was moved and no entry of
     /// the restore was written. A snapshot of unsaved changes was taken only if the pointers
-    /// changed between the check and the move, so `snapshot` is `None` in practice.
+    /// changed between the plan and the move, so `snapshot` is `None` in practice.
     NothingToRestore {
         /// The entry of the snapshot, if one was taken.
         snapshot: Option<Box<Entry>>,
@@ -84,6 +84,25 @@ pub enum Restored {
         /// The entry of the restore. Restoring it undoes the restore.
         entry: Box<Entry>,
     },
+}
+
+impl Restored {
+    /// The entry of the restore, or `None` if there was nothing to restore.
+    pub fn entry(&self) -> Option<&Entry> {
+        match self {
+            Self::Done { entry, .. } => Some(entry),
+            Self::NothingToRestore { .. } => None,
+        }
+    }
+
+    /// The entry of the snapshot that came first, if the directory had unsaved changes.
+    pub fn snapshot(&self) -> Option<&Entry> {
+        match self {
+            Self::Done { snapshot, .. } | Self::NothingToRestore { snapshot } => {
+                snapshot.as_deref()
+            }
+        }
+    }
 }
 
 /// What is read from the log before anything is done.
@@ -174,10 +193,13 @@ impl Repository {
         if prepared.plan.is_none() {
             return Ok(Restored::NothingToRestore { snapshot: None });
         }
-        let snapshot = match self.snapshot(actor, authorizer) {
-            Ok(entry) => entry,
-            // The snapshot was made and the pointer moved; only the flush is not known.
-            Err(SnapshotError::Update(UpdateError::NotDurable { entry, .. })) => Some(*entry),
+        let (snapshot, snapshot_late) = match self.snapshot(actor, authorizer) {
+            Ok(entry) => (entry, None),
+            // The snapshot was made and the pointer moved; only the flush is not known. The
+            // restore goes on, as the unsaved work is in the log, and reports the flush at the end.
+            Err(SnapshotError::Update(UpdateError::NotDurable { entry, source })) => {
+                (Some(*entry), Some(source))
+            }
             Err(error) => return Err(RestoreError::Snapshot(error)),
         };
         let snapshot = snapshot.map(Box::new);
@@ -220,11 +242,25 @@ impl Repository {
         };
         match logged {
             Err(error) => Err(wrap(RestoreError::Refs(error))),
-            Ok(Logged::Unchanged) => Ok(Restored::NothingToRestore { snapshot }),
-            Ok(Logged::Moved(entry)) => Ok(Restored::Done {
-                snapshot,
-                entry: Box::new(entry),
-            }),
+            Ok(Logged::Unchanged) => match (snapshot, snapshot_late) {
+                (Some(saved), Some(source)) => Err(RestoreError::SnapshotNotDurable {
+                    snapshot: saved,
+                    restored: None,
+                    source,
+                }),
+                (snapshot, _) => Ok(Restored::NothingToRestore { snapshot }),
+            },
+            Ok(Logged::Moved(entry)) => match (snapshot, snapshot_late) {
+                (Some(saved), Some(source)) => Err(RestoreError::SnapshotNotDurable {
+                    snapshot: saved,
+                    restored: Some(Box::new(entry)),
+                    source,
+                }),
+                (snapshot, _) => Ok(Restored::Done {
+                    snapshot,
+                    entry: Box::new(entry),
+                }),
+            },
             Ok(Logged::StepFailed(error)) => Err(wrap(error)),
             Ok(Logged::MoveFailed(entry, source)) => Err(wrap(RestoreError::MoveFailed {
                 entry: Box::new(entry),
@@ -428,6 +464,17 @@ pub enum RestoreError {
         /// The error of the flush.
         source: RefError,
     },
+    /// The restore was made (`restored` is its entry; `None` if there was nothing to restore), but
+    /// the snapshot that came first moved the working-copy commit and a directory could not be
+    /// flushed to disk, so the saved unsaved work may not survive a crash.
+    SnapshotNotDurable {
+        /// The entry of the snapshot.
+        snapshot: Box<Entry>,
+        /// The entry of the restore, if it was made.
+        restored: Option<Box<Entry>>,
+        /// The error of the flush.
+        source: RefError,
+    },
     /// The snapshot that comes first wrote an entry, and a later step failed with `source`.
     AfterSnapshot {
         /// The entry of the snapshot.
@@ -446,7 +493,8 @@ impl RestoreError {
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
             | Self::PartlyMoved { source: error, .. }
-            | Self::NotDurable { source: error, .. } => error.io_error(),
+            | Self::NotDurable { source: error, .. }
+            | Self::SnapshotNotDurable { source: error, .. } => error.io_error(),
             Self::Snapshot(error) => error.io_error(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
             Self::AfterSnapshot { source, .. } => source.io_error(),
@@ -464,24 +512,42 @@ impl RestoreError {
             | Self::MoveFailed { entry, .. }
             | Self::PartlyMoved { entry, .. }
             | Self::NotDurable { entry, .. } => Some(entry),
+            Self::SnapshotNotDurable { restored, .. } => restored.as_deref(),
             Self::AfterSnapshot { source, .. } => source.entry(),
             _ => None,
+        }
+    }
+
+    /// Whether the restore is half made: some pointers moved and a later one did not, so that the
+    /// same restore run again moves the rest.
+    pub fn half_made(&self) -> bool {
+        match self {
+            Self::PartlyMoved { .. } => true,
+            Self::AfterSnapshot { source, .. } => source.half_made(),
+            _ => false,
         }
     }
 
     /// The entry of the snapshot that came first, if it wrote one and a later step failed.
     pub fn snapshot(&self) -> Option<&Entry> {
         match self {
-            Self::AfterSnapshot { snapshot, .. } => Some(snapshot),
+            Self::AfterSnapshot { snapshot, .. } | Self::SnapshotNotDurable { snapshot, .. } => {
+                Some(snapshot)
+            }
             _ => None,
         }
     }
 
-    /// Whether a pointer of the restore moved although the call failed. The snapshot that comes
-    /// first is not counted; see [`snapshot`](Self::snapshot).
+    /// Whether a pointer moved although the call failed: some pointers of the restore moved, or
+    /// the restore was made and only a flush failed. A snapshot that came first and could not be
+    /// flushed counts too ([`SnapshotNotDurable`](Self::SnapshotNotDurable)); a snapshot that
+    /// came first and was followed by another failure does not (see
+    /// [`snapshot`](Self::snapshot)).
     pub fn pointer_moved(&self) -> bool {
         match self {
-            Self::PartlyMoved { .. } | Self::NotDurable { .. } => true,
+            Self::PartlyMoved { .. }
+            | Self::NotDurable { .. }
+            | Self::SnapshotNotDurable { .. } => true,
             Self::AfterSnapshot { source, .. } => source.pointer_moved(),
             _ => false,
         }
@@ -511,9 +577,10 @@ impl fmt::Display for RestoreError {
                 }
             ),
             Self::Refs(error) => write!(f, "could not restore, nothing of it was written: {error}"),
-            Self::Snapshot(error) => {
-                write!(f, "could not restore, nothing of it was written: {error}")
-            }
+            Self::Snapshot(error) => write!(
+                f,
+                "could not save the working directory first, so the restore wrote nothing: {error}"
+            ),
             Self::Checkout(error) => {
                 write!(f, "could not restore, nothing of it was written: {error}")
             }
@@ -543,6 +610,22 @@ impl fmt::Display for RestoreError {
                  may not survive a crash: {source}",
                 entry.number()
             ),
+            Self::SnapshotNotDurable {
+                snapshot,
+                restored,
+                source,
+            } => {
+                match restored {
+                    Some(entry) => write!(f, "the restore was made as entry {}", entry.number())?,
+                    None => write!(f, "there was nothing to restore")?,
+                }
+                write!(
+                    f,
+                    ", but the unsaved changes that were saved first as entry {} could not be \
+                     flushed to disk and may not survive a crash: {source}",
+                    snapshot.number()
+                )
+            }
             Self::AfterSnapshot { snapshot, source } => write!(
                 f,
                 "{source}; the unsaved changes were saved first as entry {}",
@@ -562,7 +645,8 @@ impl Error for RestoreError {
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
             | Self::PartlyMoved { source: error, .. }
-            | Self::NotDurable { source: error, .. } => error.source(),
+            | Self::NotDurable { source: error, .. }
+            | Self::SnapshotNotDurable { source: error, .. } => error.source(),
             Self::Snapshot(error) => error.source(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.source(),
             Self::AfterSnapshot { source, .. } => source.source(),

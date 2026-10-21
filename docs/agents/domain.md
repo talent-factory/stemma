@@ -6,7 +6,8 @@ How the engineering skills should consume this repo's domain documentation when 
 
 - **`GLOSSARY.md`** at the repo root.
 - **`adr/`**: read ADRs that touch the area you're about to work in. This repo keeps its ADRs in `adr/` at the repo root, not in `docs/adr/`, and names them `ADR-NNN-<slug>.md`. `adr/README.md` lists them.
-- **The book** under `docs/` carries the design background. Read it when the task touches the design, and treat the code and ADRs as authoritative where they differ.
+- **The book** under `docs/` carries the design background. Read it when the task touches the
+  design, and treat the code and ADRs as authoritative where they differ.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
