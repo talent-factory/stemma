@@ -291,6 +291,22 @@ Das Restore beurteilt jeden Zeiger für sich, denn ein Eintrag kann zur Hälfte 
 Es ist eine Operation mit eigenem Eintrag, und das Log wird nie umgeschrieben:
 Ein Restore lässt sich wieder zurücksetzen.
 
+\subsection{Ein Geheimnis aus Verlauf und Log entfernen}
+
+Gerät ein Schlüssel in eine verfolgte Datei, hält ihn der nächste Snapshot fest, und das Log
+behält jeden Commit, den eine Operation verlassen hat. Ein Purge entfernt ihn wieder
+(ADR-014). Er nimmt die ID des Blobs. Jeder Commit, dessen Baum den Blob enthält, bekommt
+einen Baum ohne ihn, und jeder Commit danach neue Eltern; die Change-ID bleibt, damit sich
+eine Änderung über den Purge hinweg verfolgen lässt. Die Einträge des Logs, die einen
+umgeschriebenen Commit nennen, werden zu Stubs mit derselben Nummer, und gelöscht wird nur,
+was das Umschreiben ersetzt hat und nichts Behaltenes mehr erreicht.
+Nur ein Mensch darf purgen, denn der Purge lässt sich nicht zurücksetzen.
+
+Gebaut ist bisher der Plan: \type{stemma purge} nennt die Commits, die Zeiger, die Stubs und
+die Objekte und schreibt nichts. Ein Verzeichnis, das nur den Blob enthielt, fällt dabei aus
+dem Baum, so wie ein Snapshot nie ein leeres Verzeichnis anlegt. Das Umschreiben selbst, die
+Stubs mit dem Eintrag \type{purge} und das Löschen mit Journal folgen.
+
 \section{Offene Fragen}
 
 \startitemize
@@ -298,6 +314,4 @@ Ein Restore lässt sich wieder zurücksetzen.
 \item Ausführbare Dateien und Dateirechte: Welche Metadaten werden gespeichert?
 \item Symbolische Links: Speichern oder ablehnen?
 \item Wie lange Snapshot-Einträge im Operation Log aufbewahrt werden (ADR-011).
-\item Das Entfernen von Geheimnissen aus Verlauf und Log
-ist in ADR-014 entschieden und wird in Phase 1 umgesetzt.
 \stopitemize

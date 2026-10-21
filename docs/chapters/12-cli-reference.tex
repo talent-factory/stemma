@@ -28,8 +28,8 @@ stemma --help
 
 {\bf Verzeichnis.} Jeder Befehl nimmt das Verzeichnis des Repositories mit
 \type{-C} (\type{--repository}) entgegen. Es gibt kein Positionsargument dafür,
-denn \type{track} braucht die Positionsargumente für die Pfade und \type{op restore}
-für die Nummer.
+denn \type{track} braucht die Positionsargumente für die Pfade, \type{op restore}
+für die Nummer und \type{purge} für die ID des Blobs.
 
 {\bf Akteur.} Jeder Befehl, der ein Repository ändert, braucht einen Akteur (ADR-002).
 Er kommt aus dem Schalter \type{--actor} oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}.
@@ -662,6 +662,86 @@ stemma op log -n 5
 stemma op restore 9 --actor "human daniel"
 stemma op restore 9 --dry-run --actor "human daniel"
 stemma op restore 13 -C projekt --actor "human daniel"
+\stoptyping
+
+\section{purge}
+
+Zeigt, was das Entfernen eines Geheimnisses aus dem Verlauf und dem Operation Log täte
+(ADR-014). Gebaut ist bisher nur der Plan: Der Befehl schreibt nichts, auch keinen Snapshot.
+Das Umschreiben, die Stubs im Log und das Löschen folgen mit \type{--apply}.
+
+\starttyping
+stemma purge BLOB [-C VERZEICHNIS] --actor AKTEUR
+\stoptyping
+
+\startitemize
+\item {\bf BLOB:} Die volle ID des Blobs, der das Geheimnis enthält: \type{b3:} und
+64 Hexadezimalziffern in Kleinbuchstaben. Eine andere Form ist ein Fehler der Argumente
+(Exit-Code 2). Pfade oder Muster nimmt der Befehl noch nicht.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
+also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Es muss ein Mensch sein.
+\stopitemize
+
+{\bf Nur ein Mensch.} Ein Purge entfernt Verlauf, der sich nicht zurückholen lässt.
+Deshalb lehnt der Befehl einen Agenten ab, bevor er etwas liest, gleich was die Rollen
+erlauben (ADR-014). Das ist eine Ausnahme von ADR-002 und nur ein Hinweis, solange sich
+Akteure nicht belegen lassen; ein Mensch kann den Purge für einen Agenten ausführen,
+zum Beispiel dessen Sponsor.
+
+{\bf Was der Plan enthält.} Jeder Commit, dessen Baum den Blob in irgendeiner Tiefe enthält,
+bekommt einen neuen Baum ohne ihn; jeder Commit danach bekommt neue Eltern. Die neuen
+Commits behalten Change-ID, Autor, Zeit und Nachricht. Ein Verzeichnis, das nur den Blob
+enthielt, fällt aus dem Baum, wie es auch ein Snapshot nie anlegen würde.
+Der Plan nennt die Zeiger, die auf die neuen Commits gehen, die Einträge des Logs, die
+einen umgeschriebenen Commit nennen und deshalb zu Stubs werden, und die Objekte, die
+gelöscht werden: die alten Commits, die Bäume mit dem Blob und den Blob selbst.
+Was ein behaltener Zeiger oder ein behaltener Eintrag noch erreicht, wird nicht gelöscht.
+Zum Schluss durchsucht der Plan den ganzen Objektspeicher nach Bäumen und Commits, die den
+Blob enthalten und die nichts erreicht, etwa Reste eines Absturzes; auch sie werden gelöscht.
+
+{\bf Ausgabe.}
+
+\starttyping
+Would purge blob b3:f60c…; nothing is written
+    rewrite b3:9f7b… -> b3:391c…
+    working-copy  b3:3831… -> b3:89af…
+    branch main  b3:9f7b… -> b3:391c…
+    stub entries 4-5
+    delete commit b3:2705…
+    delete tree b3:51d0…
+    delete blob b3:f60c…
+Only the plan is built so far; the purge itself is not
+\stoptyping
+
+Die IDs sind hier gekürzt; das Programm schreibt sie ganz.
+Die Zeilen \type{rewrite} stehen in der Reihenfolge, in der die Commits entstehen würden,
+Eltern vor Kindern. Die Zeilen der Zeiger folgen der Form von \type{op restore --dry-run}.
+\type{stub entries} nennt die Nummern als Bereiche, zum Beispiel \type{3, 5-7}.
+Liegt der Blob in keinem Commit, fehlen die Zeilen \type{rewrite} und \type{stub entries},
+und nur der Blob wird gelöscht.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt oder ein Agent ist,
+wenn der Objektspeicher keinen Blob mit der ID hat (auch wenn die ID einen Commit oder einen
+Baum nennt), wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
+und wenn ein Objekt im Speicher beschädigt ist: Dann ist nicht bekannt, ob es den Blob nennt.
+Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
+erst ein Merge (Phase 3).
+Ein Fehler beim Schreiben der Ausgabe ist Exit-Code 1, denn es wurde nichts gemacht;
+eine geschlossene Pipe ist kein Fehler.
+
+{\bf Grenzen.} Der Plan geht vom heutigen Stand aus. Ein echter Purge sichert das
+Arbeitsverzeichnis zuerst und plant unter der Sperre neu, sein Plan kann also abweichen.
+Was ein Purge nicht garantiert (Kopien im Dateisystem, Dateien in \type{tmp/},
+Nachrichten und Pfadnamen), steht in ADR-014.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55 \
+    --actor "human daniel"
+stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55 \
+    -C projekt --actor "human daniel"
 \stoptyping
 
 \stopappendices
