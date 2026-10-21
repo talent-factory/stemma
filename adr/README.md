@@ -14,3 +14,4 @@
 | [ADR-010](ADR-010-working-copy.md) | The working copy is a commit | Proposal, partially confirmed |
 | [ADR-011](ADR-011-operation-log.md) | The operation log | Proposal, partially confirmed |
 | [ADR-012](ADR-012-exclusion-file.md) | The exclusion file `.stemmaignore` | Confirmed, implemented |
+| [ADR-013](ADR-013-restore.md) | Restoring the state before an entry | Proposal, open for confirmation |
