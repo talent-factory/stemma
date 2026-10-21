@@ -791,8 +791,15 @@ fn install(
 }
 
 /// Renames `staging` to `target`. A rename that fails while `target` exists means that something
-/// was created there since the check: a directory is not moved onto a non-empty one.
+/// was created there since the check: a directory is not moved onto a non-empty one. Windows
+/// replaces a file by the directory instead of failing, so a target that is not a directory is
+/// refused up front.
 fn move_into_place(staging: &Path, target: &Path) -> Result<(), InitError> {
+    if fs::symlink_metadata(target).is_ok_and(|metadata| !metadata.is_dir()) {
+        return Err(InitError::AlreadyExists {
+            path: target.to_path_buf(),
+        });
+    }
     match fs::rename(staging, target) {
         Ok(()) => Ok(()),
         Err(error) => match exists(target) {

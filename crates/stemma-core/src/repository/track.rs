@@ -927,6 +927,8 @@ mod tests {
         assert!(matches!(error, TrackError::NotFound { .. }), "{error}");
     }
 
+    // Windows does not allow a line feed in a file name, so the file cannot be created there.
+    #[cfg(unix)]
     #[test]
     fn a_name_below_a_directory_that_a_tree_refuses_is_named_in_the_error() {
         let dir = TempDir::new();
