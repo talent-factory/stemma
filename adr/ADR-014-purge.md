@@ -55,8 +55,11 @@ Facts that bound the design:
   removes, and the new values of the pointers are in the references anyway. The reader accepts
   an entry of this operation without a pointer (the one exception to ADR-011's "at least one"),
   and `stemma op restore` refuses it. A purge cannot be restored, which is its purpose. A stub is
-  valid only if a `purge` entry lists its number, which also lets a hash chain tell a purge from
-  a forged replacement (see the consequences).
+  valid only if a `purge` entry lists its number. If the list does not fit into the limit of an
+  entry (64 KiB, ADR-011), the purge writes as many `purge` entries as it needs. The stub and the
+  pointer-less entry change the format, so they come with the entry encoding `stemma-oplog 2` and
+  the format version of the repository (ADR-009, ADR-011): an older reader refuses the log
+  instead of calling it corrupt.
 - **Only a human may purge, and the call is authorized** *(confirmed)*. A purge removes history,
   which is level 3 of ADR-004 (a human owner). The core calls
   `authorize(actor, "purge", target)` like every operation (ADR-002) and **in addition refuses an
@@ -72,8 +75,10 @@ Facts that bound the design:
   working-copy commit, and the entries that remain). Everything else stays, also an object that
   only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
-  does not make ADR-007's collection necessary. It also removes the scratch files of `tmp/` that
-  can hold the secret (a failed write, ADR-007, and a failed checkout, ADR-013).
+  does not make ADR-007's collection necessary. The plan also scans the store for trees that name
+  the blob and for the commits of such trees. One that no kept root reaches (the leftover of a
+  crash before its entry) is deleted with them, so that no tree is left that names a missing blob.
+  The scratch files of `tmp/` are not touched (see the limits).
 - **A synchronized repository stays open** *(confirmed)*. A secret that was pushed (phase 5) is
   also on the hub, and a purge here does not reach it. The rule for users is that a pushed secret
   counts as compromised and has to be replaced, whatever a purge does. The hub needs a removal of
@@ -81,33 +86,56 @@ Facts that bound the design:
 
 ### The steps
 
-A purge holds the repository lock from the plan to the end, so no other writer can store an
-object that the purge deletes or move a pointer that it moved. A crash leaves a journal, and the
-journal is what finishes the purge.
+A purge holds the repository lock from the plan to the end and keeps a journal. The lock is the
+file `refs.lock`, which is not re-entrant, so the purge needs an internal path that writes the
+`purge` entry and moves the pointers while it holds the lock (`Lock` is private to the references
+today). The lock does not cover the writes of objects, which a snapshot makes before it takes the
+lock, so the journal is what keeps other writers out.
 
-1. **Snapshot.** Like every command (ADR-010), the purge first takes a snapshot of the directory,
-   so that a change that holds the blob is in a commit and in the plan.
-2. **Plan.** Under the lock, compute the commits to rewrite, the entries to replace, and the
-   delete set. `stemma purge BLOB` prints the plan and changes nothing. `--apply` executes it. The
-   plan is the default, unlike `op restore` (ADR-013), because a purge cannot be taken back; the
-   flag is a different one from `--force` of the restore, which overrides a refusal.
-3. **Journal.** Write `.stemma/purge-pending` (a temporary file, a flush, and a rename). It holds
-   the blob ID, the old and the new ID of every rewritten commit, and the delete set. These are
-   IDs of removed objects, so the file exists only until step 7. While it exists, every other
-   command that writes (`track`, `commit`, `status`, `op restore`) refuses and says that
-   `stemma purge --resume` has to finish a purge first.
-4. Write the new trees and commits. They are new objects, so nothing is lost yet.
-5. Write the `purge` entry and move the pointers (compare-and-swap against the values of the
-   plan; if one differs, nothing moved yet, the journal is removed, and the call fails).
-6. Replace the entries that name a rewritten commit by stubs (a temporary file in `tmp/` and a
+1. **Refuse an agent** before anything is written. `stemma purge BLOB` without `--apply` prints
+   the plan and writes nothing, not even a snapshot, as `op restore --dry-run` does (ADR-013).
+2. **Snapshot** (with `--apply`). Like every command (ADR-010), the purge takes a snapshot of the
+   directory first, so that a change that holds the blob is in a commit and in the plan. The
+   plan that `--apply` executes is made again after the snapshot and can differ from the printed
+   one.
+3. **Plan** under the lock: the commits to rewrite, the entries to replace, the delete set. The
+   flag is `--apply` and not `--force`: the plan is the default, unlike `op restore`, because a
+   purge cannot be taken back, and `--force` of the restore overrides a refusal.
+4. **Journal.** Write `.stemma/purge-pending` (a temporary file, a flush, and a rename). It holds
+   the blob ID, the number of the last entry of the log at this moment, the old and the new ID of
+   every rewritten commit, and the delete set. These are IDs of removed objects, so the file
+   exists only until the last step. The blob ID is a hash of the whole file: for a short secret
+   it allows a guess offline, and the ID is also on the command line and in the history of the
+   shell.
+   - **Writers refuse.** Every command that writes (`track`, `commit`, `status`, `op restore`)
+     checks for the journal first, before it writes any object, and again under the lock, and
+     says that `stemma purge --resume` or `--abort` has to come first. The lock alone cannot do
+     this: it only answers "locked".
+5. Write the new trees and commits. They are new objects, so nothing is lost yet.
+6. Check all pointers against the values of the plan, then write the `purge` entry and move the
+   pointers. If a pointer differs before the first move, nothing has moved: the call fails and
+   `--abort` removes the journal. If a move fails after the first (`PartlyMoved`, ADR-011), every
+   pointer is at its old or at its new value, and `--resume` finishes it.
+7. Replace the entries that name a rewritten commit by stubs (a temporary file in `tmp/` and a
    rename, never a name inside `oplog/`).
-7. Delete the delete set and the scratch files, then remove the journal.
+8. Delete the delete set, then remove the journal.
 
-`stemma purge --resume` reads the journal and repeats the steps from the first one that is not
-done. Each step can be repeated: a new object that exists is a no-op (ADR-007), a pointer that
-already has the new value is skipped, a stub is replaced by itself, and a deleted object is gone.
-Because the journal holds the delete set, a crash after step 6 does not leave the blob behind as
-an object that "was already unreachable".
+**Resume.** `stemma purge --resume` reads the journal and repeats the steps from step 5. A crash
+leaves `refs.lock` behind (ADR-011), and the lock would stop the resume. While the journal exists,
+`--resume` and `--abort` treat the lock as the purge's own and remove it, and the message of
+`Locked` of any other command names the journal. Each step can be repeated: a new object that
+exists is a no-op (ADR-007), a pointer that already has its new value is skipped, a stub is
+replaced by itself, and a deleted object is gone. The `purge` entry is found, not written again:
+it is the entry with an operation `purge` and a number above the one that the journal recorded.
+A pointer that is at neither its old nor its new value (a foreign change after the lock was
+removed by hand) makes `--resume` refuse and name the pointer. Because the journal holds the delete
+set, a crash after step 7 does not leave the blob behind as an object that "was already
+unreachable".
+
+**Abort.** `stemma purge --abort` removes the journal and the objects that step 5 wrote, as long
+as the `purge` entry is not written. Once it is, the purge can only go forward: that is the point
+of no return, and a purge that cannot finish (a missing object, an unreadable log) is left for
+a person to repair.
 
 ## Consequences
 
@@ -116,22 +144,31 @@ an object that "was already unreachable".
   refuse `op restore`, that the numbering has no gap, that a crash after each step is finished by
   `--resume`, and that an unaffected commit is not deleted.
 - **What a purge does not guarantee.** The file system may keep the bytes of a deleted file (wear
-  levelling of an SSD, a snapshot of APFS, a backup). Objects that were already unreachable and
-  have no journal entry stay. The commit messages and path names are kept as they are and can
-  hold the secret too; the unit of the purge is the blob. Nothing stops a later `track` from
-  taking the secret in again unless `.stemmaignore` names it.
+  levelling of an SSD, a snapshot of APFS, a backup). The scratch files in `tmp/` can hold the
+  secret after a failed write (ADR-007) or a failed checkout (ADR-013) until a cleanup of `tmp/`
+  exists (STEMMA-31); the purge cannot tell a stale file from the live file of a writer that does
+  not take the lock. Other objects that were unreachable before and name no blob stay. The commit
+  messages and path names are kept as they are and can hold the secret too; the unit of the
+  purge is the blob. Nothing stops a later `track` from taking the secret in again unless
+  `.stemmaignore` names it.
 - Commit IDs change for the rewritten commits and their descendants. Anything that holds an old ID
   outside the repository (a note, a message) points at nothing afterwards. Change IDs stay. Two
   commits that differed only in the blob can become one, and the rewrite needs a constructor that
   takes new parents (`Commit::rewrite` keeps them).
-- The log needs a reader that tells a stub from an entry, and the reading of outcomes (ADR-011)
-  has to treat a stub as unknown. An entry before the purge whose later entry is a stub then
-  needs `--force` for a restore, which is acceptable.
+- The log needs a reader that tells a stub from an entry. `outcomes` (ADR-011) takes entries, so
+  it either takes the stubs as well or skips them. If it skips them, the entry before a stub
+  finds a later old value that is neither its old nor its new one and is unknown, and a restore of
+  it needs `--force`. That is acceptable. `op log` needs a line for a stub and for a `purge`
+  entry, which has no pointer.
 - The hash chain of the log (STEMMA-41) collides with a stub: replacing an entry changes the hash
-  that the next entry links to. A stub keeps the hash of the entry it replaced, and a verifier
-  accepts it only if a `purge` entry lists its number. The chain has to be decided before the
-  stub gets its final format; until then the stub holds no hash.
+  that the next entry links to. Once the chain exists, a stub keeps the hash of the entry it
+  replaced, and a verifier accepts it only if a `purge` entry lists its number. That detects a
+  replacement without a `purge` entry. It does not stop someone who can write the log from adding
+  both, because actors are not proved (ADR-002). The chain has to be decided before the stub gets
+  its final format; until then the stub holds no hash.
 - The tip file (ADR-011) is not affected: a stub keeps the number.
+- The layout (ADR-009) gets the file `.stemma/purge-pending`, and `Repository::open` has to
+  accept it and the writers have to check for it.
 - Retention of snapshot entries (STEMMA-39) is a separate question, but the two share the stub:
   an entry that retention drops could be replaced by the same stub.
 

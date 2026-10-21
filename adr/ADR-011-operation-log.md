@@ -79,7 +79,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **Only a change writes an entry** *(confirmed)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
-- **Nothing is deleted** *(confirmed)*. No operation removes an entry, and no garbage collection
+- **Nothing is deleted** *(confirmed)*. No operation removes an entry, except the purge that
+  replaces entries by stubs (ADR-014), and no garbage collection
   runs in phase 1 (ADR-007). Removing a secret replaces the entries that name it by a stub that
   keeps the number (ADR-014, STEMMA-26), so the numbering has no gap.
 - **The format is strict text** *(confirmed)*. A reader accepts what the writer writes and nothing
