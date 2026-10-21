@@ -1,8 +1,9 @@
 //! Restoring the state before an entry of the operation log (ADR-013).
 //!
 //! A restore puts back the old values of the pointers that one entry moved: HEAD, the
-//! working-copy commit, and the branches. It writes an entry of its own, so the log is never
-//! rewritten and a restore can itself be restored. Because the working copy is a commit that
+//! working-copy commit, and the branches. It writes an entry of its own, so a restore never
+//! rewrites the log (only a purge replaces entries by stubs, ADR-014) and a restore can itself be
+//! restored. Because the working copy is a commit that
 //! stands for the directory (ADR-010), a restore that moves it also brings the files of the
 //! directory to the old tree, through the checkout layer.
 
@@ -163,12 +164,15 @@ impl Repository {
     /// that stopped half way can be restored, and so can a restore that stopped half way. A branch
     /// that the entry created is deleted. If the log and the references do not decide whether the
     /// entry took effect, the call is refused with [`RestoreError::OutcomeUnknown`] unless
-    /// `force` is set.
+    /// `force` is set; this is so for every entry before the newest stub (ADR-014). A stub, the
+    /// entry of a purge, and an entry that an unfinished purge lists are refused even with `force`.
     ///
     /// # Errors
     ///
     /// Before the snapshot: [`RestoreError::Update`] for a refusal of the question `restore`,
     /// [`RestoreError::Log`] and [`RestoreError::NoSuchEntry`] for the entry,
+    /// [`RestoreError::Purged`] for a stub, [`RestoreError::IsPurge`] for the entry of a purge,
+    /// [`RestoreError::PurgePending`] for an entry that an unfinished purge lists,
     /// [`RestoreError::OutcomeUnknown`], [`RestoreError::NoOldValue`] for HEAD or the working-copy
     /// commit that the entry created (they cannot be absent), [`RestoreError::Refs`] for a commit
     /// the store lacks, a name in the way, or references that cannot be read,
@@ -1492,7 +1496,7 @@ mod tests {
         let (snapshot, commit) = two_commits(&dir, &repository);
         let log = repository.oplog();
         let purge = log
-            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[commit]))
+            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[commit]).unwrap())
             .unwrap()[0]
             .number();
         log.replace_with_stub(commit).unwrap();
@@ -1523,7 +1527,7 @@ mod tests {
         let (snapshot, _) = two_commits(&dir, &repository);
         repository
             .oplog()
-            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[snapshot]))
+            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[snapshot]).unwrap())
             .unwrap();
         let count = numbers(&repository).len();
         assert!(matches!(

@@ -637,6 +637,37 @@ fn a_stub_and_a_purge_are_shown_without_ids() {
 }
 
 #[test]
+fn a_purge_with_several_ranges_lists_each() {
+    let dir = repository();
+    let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    snapshot(dir.path(), 2, &first, A);
+    snapshot(dir.path(), 3, A, B);
+    snapshot(dir.path(), 4, B, A);
+    snapshot(dir.path(), 5, A, B);
+    for number in [2, 3, 5] {
+        write_entry_2(dir.path(), number, "stub\n");
+    }
+    write_entry_2(dir.path(), 6, "operation purge\ncommits 3\nstubs 2-3 5\n");
+
+    let result = run(dir.path(), &["op", "log", "-n", "1"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "6  2023-11-14T22:13:20Z  human daniel  purge\n    commits 3  stubs 2-3, 5\n"
+    );
+    let result = run(dir.path(), &["op", "log", "-n", "1", "--json"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "{\"number\":6,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
+         \"operation\":\"purge\",\"commits\":3,\"stubs\":[[2,3],[5,5]]}\n"
+    );
+}
+
+#[test]
 fn a_stub_that_no_purge_lists_is_reported() {
     let dir = repository();
     let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))

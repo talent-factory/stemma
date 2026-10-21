@@ -1321,12 +1321,15 @@ mod tests {
         let first = plan(&repository);
         let log = repository.oplog();
         let purge = log
-            .append_purge(crate::oplog::Purge::new(
-                1,
-                actor(),
-                first.rewrites().len() as u64,
-                first.entries(),
-            ))
+            .append_purge(
+                crate::oplog::Purge::new(
+                    1,
+                    actor(),
+                    first.rewrites().len() as u64,
+                    first.entries(),
+                )
+                .unwrap(),
+            )
             .unwrap()[0]
             .number();
         for number in first.entries() {

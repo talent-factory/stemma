@@ -76,9 +76,10 @@
 //! largest number and at the tip file (below). Names that start with a dot are skipped, as in the
 //! references, because file managers and editors leave such files; any other name is reported.
 //!
-//! Only the repository writes. `FsOpLog::append`, `append_purge`, `replace_with_stub`, and
-//! `Entry::new` and `Entry::of` are visible inside this crate only, so no caller can add an entry
-//! past the authorizer or invent one that was never in the log. `replace_with_stub` is the only
+//! Only the repository writes. `FsOpLog::append`, `append_purge`, `replace_with_stub`,
+//! `Entry::new`, `Entry::of`, `Entry::to_stub`, and `Purge::new` are visible inside this crate
+//! only, so no caller can add an entry past the authorizer or invent one, a stub, or a purge that
+//! was never in the log. `replace_with_stub` is the only
 //! writer that changes an entry that exists: a purge replaces it by a stub (ADR-014).
 //!
 //! A gap does not stop a writer: the reader reports it, and a refusal would block the move that
@@ -308,6 +309,8 @@ pub enum EntryError {
     },
     /// The count of commits of a purge is larger than [`MAX_NUMBER`].
     TooManyCommits(u64),
+    /// A purge lists a number that is 0 or larger than [`MAX_NUMBER`] as a stub.
+    StubOutOfRange(u64),
     /// The entry of a purge cannot become a stub. Carries its number.
     PurgeNotReplaceable(u64),
 }
@@ -333,6 +336,11 @@ impl fmt::Display for EntryError {
             Self::TooManyCommits(count) => write!(
                 f,
                 "a purge of {count} commits cannot be recorded; the count is at most {MAX_NUMBER}"
+            ),
+            Self::StubOutOfRange(number) => write!(
+                f,
+                "a purge cannot list entry {number} as a stub, as it is not between 1 and \
+                 {MAX_NUMBER}"
             ),
             Self::PurgeNotReplaceable(number) => {
                 write!(
@@ -494,14 +502,34 @@ pub struct Purge {
 impl Purge {
     /// Builds the record of a purge. `stubs` are the numbers of the entries that become stubs, in
     /// any order; they are kept as ranges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::StubOutOfRange`] for a stub that is 0 or larger than [`MAX_NUMBER`],
+    /// and [`EntryError::TooManyCommits`] for a count larger than [`MAX_NUMBER`], which the reader
+    /// would reject.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the purge of STEMMA-48 calls it")
     )]
-    pub(crate) fn new(time: i64, actor: Actor, commits: u64, stubs: &[u64]) -> Self {
+    pub(crate) fn new(
+        time: i64,
+        actor: Actor,
+        commits: u64,
+        stubs: &[u64],
+    ) -> Result<Self, EntryError> {
+        if commits > MAX_NUMBER {
+            return Err(EntryError::TooManyCommits(commits));
+        }
         let mut numbers = stubs.to_vec();
         numbers.sort_unstable();
         numbers.dedup();
+        if let Some(number) = numbers
+            .iter()
+            .find(|number| !(1..=MAX_NUMBER).contains(*number))
+        {
+            return Err(EntryError::StubOutOfRange(*number));
+        }
         let mut ranges: Vec<(u64, u64)> = Vec::new();
         for number in numbers {
             match ranges.last_mut() {
@@ -509,12 +537,12 @@ impl Purge {
                 _ => ranges.push((number, number)),
             }
         }
-        Self {
+        Ok(Self {
             time,
             actor,
             commits,
             stubs: ranges,
-        }
+        })
     }
 
     /// The time that the writer claims.
@@ -623,10 +651,10 @@ impl Entry {
     ///
     /// # Errors
     ///
-    /// Returns [`EntryError::NumberOutOfRange`] if the number, or a number that a purge lists, is
-    /// 0 or larger than [`MAX_NUMBER`], [`EntryError::StubNotBefore`] if a purge lists its own
-    /// number or a later one, and [`EntryError::TooManyCommits`] for a count that the reader would
-    /// reject. So every entry that is built here reads back equal.
+    /// Returns [`EntryError::NumberOutOfRange`] if the number is 0 or larger than [`MAX_NUMBER`],
+    /// and [`EntryError::StubNotBefore`] if a purge lists its own number or a later one. A
+    /// [`Purge`] checks its own bounds when it is built, so every entry that is built here reads
+    /// back equal.
     pub(crate) fn of(number: u64, record: Record) -> Result<Self, EntryError> {
         if !(1..=MAX_NUMBER).contains(&number) {
             return Err(EntryError::NumberOutOfRange(number));
@@ -637,12 +665,6 @@ impl Entry {
                     stub: purge.last_stub(),
                     purge: number,
                 });
-            }
-            if purge.stubs.first().is_some_and(|(start, _)| *start == 0) {
-                return Err(EntryError::NumberOutOfRange(0));
-            }
-            if purge.commits > MAX_NUMBER {
-                return Err(EntryError::TooManyCommits(purge.commits));
             }
         }
         Ok(Self { number, record })
@@ -1376,14 +1398,33 @@ pub enum OpLogError {
         /// The number of the entry.
         number: u64,
     },
-    /// The entries of a purge were written only in part, or one is not known to be flushed. The
-    /// written ones are in the log; the stubs that they list may be written, and the count of
-    /// commits must not be written again.
+    /// A purge was to list an entry that is not a change: a stub, or the entry of a purge, which
+    /// cannot become a stub. Nothing was written.
+    NotAChange {
+        /// The number of the entry.
+        number: u64,
+    },
+    /// The entries of a purge were written only in part. The written ones are in the log; the
+    /// stubs that they list may be written, and the count of commits must not be written again.
     PurgeIncomplete {
         /// The entries that are in the log.
         written: Vec<Entry>,
+        /// The numbers of the written entries that are not known to be flushed.
+        not_flushed: Vec<u64>,
         /// What failed.
         source: Box<OpLogError>,
+    },
+    /// Every entry of a purge is in the log, but some are not known to be flushed, so they may not
+    /// survive a crash. As after [`OpLogError::NotFlushed`], no stub must be written yet.
+    PurgeNotFlushed {
+        /// The entries that are in the log.
+        written: Vec<Entry>,
+        /// The numbers of the entries that are not known to be flushed.
+        not_flushed: Vec<u64>,
+        /// The directory that could not be flushed.
+        path: PathBuf,
+        /// The first error of the file system.
+        source: io::Error,
     },
 }
 
@@ -1425,11 +1466,22 @@ impl OpLogError {
     /// crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Io { source, .. } | Self::NotFlushed { source, .. } => Some(source),
+            Self::Io { source, .. }
+            | Self::NotFlushed { source, .. }
+            | Self::PurgeNotFlushed { source, .. } => Some(source),
             Self::PurgeIncomplete { source, .. } => source.io_error(),
             _ => None,
         }
     }
+}
+
+/// Numbers as a message lists them: `9, 10`.
+fn list(numbers: &[u64]) -> String {
+    numbers
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // A path comes from the file system, and a file name in `oplog/` can be any bytes, so a path is
@@ -1520,15 +1572,41 @@ impl fmt::Display for OpLogError {
                 "entry {number} cannot become a stub, as no purge entry lists it, and nothing was \
                  written"
             ),
-            Self::PurgeIncomplete { written, source } => {
-                let numbers: Vec<String> = written
-                    .iter()
-                    .map(|entry| entry.number.to_string())
-                    .collect();
+            Self::NotAChange { number } => write!(
+                f,
+                "a purge cannot list entry {number}, as it is not a change, and nothing was \
+                 written"
+            ),
+            Self::PurgeIncomplete {
+                written,
+                not_flushed,
+                source,
+            } => {
+                let numbers: Vec<u64> = written.iter().map(|entry| entry.number).collect();
                 write!(
                     f,
-                    "the purge wrote only part of its entries, {}: {source}",
-                    numbers.join(", ")
+                    "the purge wrote only part of its entries, {}",
+                    list(&numbers)
+                )?;
+                if !not_flushed.is_empty() {
+                    write!(f, " ({} not known to be flushed)", list(not_flushed))?;
+                }
+                write!(f, ": {source}")
+            }
+            Self::PurgeNotFlushed {
+                written,
+                not_flushed,
+                path,
+                source,
+            } => {
+                let numbers: Vec<u64> = written.iter().map(|entry| entry.number).collect();
+                write!(
+                    f,
+                    "the purge wrote all of its entries, {}, but flushing `{}` failed for {}: \
+                     {source}; they may not survive a crash",
+                    list(&numbers),
+                    path.display().to_string().escape_debug(),
+                    list(not_flushed)
                 )
             }
         }
@@ -1539,7 +1617,9 @@ impl Error for OpLogError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             // The message includes that of the I/O error, so the source is its own cause.
-            Self::Io { source, .. } | Self::NotFlushed { source, .. } => source.source(),
+            Self::Io { source, .. }
+            | Self::NotFlushed { source, .. }
+            | Self::PurgeNotFlushed { source, .. } => source.source(),
             Self::Corrupt { source, .. } => source.source(),
             Self::Entry(error) => error.source(),
             Self::PurgeIncomplete { source, .. } => source.source(),
@@ -1777,7 +1857,10 @@ impl FsOpLog {
     /// that listed the numbers before the purge entry and read an entry after it became a stub
     /// sees a stub that nothing lists. So a stub that nothing lists is looked at once more: the
     /// numbers are listed again and the entries read again, and only a second finding is an error,
-    /// as for a gap (see [`numbers`](Self::numbers)).
+    /// as for a gap (see [`numbers`](Self::numbers)). The second reading covers one purge: if
+    /// another purge writes its entry and a stub while it runs, it too can see a stub that nothing
+    /// lists, and then the error is reported falsely. Running the command again reads the log
+    /// whole.
     ///
     /// # Errors
     ///
@@ -1834,22 +1917,37 @@ impl FsOpLog {
 
     /// Writes the entries of a purge, as [`append`](Self::append) writes an entry, and returns
     /// them. A list of stubs that does not fit into one entry is split over several, and the first
-    /// has the count of commits (ADR-014). The entries go after the ones that they list. A part
-    /// that is in place but not known to be flushed does not stop the others: every part is
+    /// has the count of commits (ADR-014). The entries go after the ones that they list. Before
+    /// anything is written, every listed entry is read, and one that is not a change is refused:
+    /// a purge that listed it could never finish, as the entry of a purge cannot become a stub. A
+    /// part that is in place but not known to be flushed does not stop the others: every part is
     /// written, so that no stub misses its listing.
     ///
     /// # Errors
     ///
-    /// See [`append`](Self::append) for a failure of the first part, which leaves nothing. A later
-    /// failure, or a part that is not known to be flushed, is [`OpLogError::PurgeIncomplete`],
-    /// which carries the entries that are in the log; a retry must not write the count again.
+    /// Returns what [`read`](Self::read) returns for a listed entry and
+    /// [`OpLogError::NotAChange`] for one that is not a change; nothing is written. See
+    /// [`append`](Self::append) for a failure of the first part, which leaves nothing. A later
+    /// failure is [`OpLogError::PurgeIncomplete`], which carries the entries that are in the log;
+    /// a retry must not write the count again. If every part is in place but some are not known to
+    /// be flushed, the error is [`OpLogError::NotFlushed`] for a single part and
+    /// [`OpLogError::PurgeNotFlushed`] for several.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the purge of STEMMA-48 calls it")
     )]
     pub(crate) fn append_purge(&self, purge: Purge) -> Result<Vec<Entry>, OpLogError> {
+        for (start, end) in purge.stubs() {
+            for number in *start..=*end {
+                if self.read(number)?.change().is_none() {
+                    return Err(OpLogError::NotAChange { number });
+                }
+            }
+        }
         let mut written = Vec::new();
-        let mut not_flushed = None;
+        let mut not_flushed = Vec::new();
+        // The first failure to flush: the directory and the error of the file system.
+        let mut flush_error = None;
         for part in purge.split() {
             match self.append_record(&Record::Purge(part)) {
                 Ok(entry) => written.push(entry),
@@ -1858,27 +1956,32 @@ impl FsOpLog {
                     path,
                     source,
                 }) => {
-                    written.push((*entry).clone());
-                    not_flushed.get_or_insert(OpLogError::NotFlushed {
-                        entry,
-                        path,
-                        source,
-                    });
+                    not_flushed.push(entry.number);
+                    written.push(*entry);
+                    flush_error.get_or_insert((path, source));
                 }
                 Err(error) if written.is_empty() => return Err(error),
                 Err(error) => {
                     return Err(OpLogError::PurgeIncomplete {
                         written,
+                        not_flushed,
                         source: Box::new(error),
                     })
                 }
             }
         }
-        match not_flushed {
+        match flush_error {
             None => Ok(written),
-            Some(error) => Err(OpLogError::PurgeIncomplete {
+            Some((path, source)) if written.len() == 1 => Err(OpLogError::NotFlushed {
+                entry: Box::new(written.remove(0)),
+                path,
+                source,
+            }),
+            Some((path, source)) => Err(OpLogError::PurgeNotFlushed {
                 written,
-                source: Box::new(error),
+                not_flushed,
+                path,
+                source,
             }),
         }
     }
@@ -1891,10 +1994,11 @@ impl FsOpLog {
     ///
     /// # Errors
     ///
-    /// Returns what [`read`](Self::read) returns for an entry, [`OpLogError::NotListed`] if no
-    /// `purge` entry lists the number (nothing is written, as the stub would make the log
-    /// unreadable), [`OpLogError::Entry`] with [`EntryError::PurgeNotReplaceable`] for the entry of
-    /// a purge, [`OpLogError::Io`] if the storage fails before the stub is in place, and
+    /// Returns what [`numbers`](Self::numbers) returns and what [`read`](Self::read) returns for
+    /// the entry or a later one, [`OpLogError::NotListed`] if no `purge` entry lists the number
+    /// (nothing is written, as the stub would make the log unreadable), [`OpLogError::Entry`] with
+    /// [`EntryError::PurgeNotReplaceable`] for the entry of a purge, [`OpLogError::Io`] if the
+    /// storage fails before the stub is in place, and
     /// [`OpLogError::NotFlushed`] with the stub if it is in place but the directory could not be
     /// flushed; a repeated call is harmless.
     #[cfg_attr(
@@ -1903,17 +2007,16 @@ impl FsOpLog {
     )]
     pub(crate) fn replace_with_stub(&self, number: u64) -> Result<Entry, OpLogError> {
         let stub = self.read(number)?.to_stub().map_err(OpLogError::Entry)?;
-        let listed = self
-            .numbers()?
-            .into_iter()
-            .filter(|later| *later > number)
-            .map(|later| self.read(later))
-            .any(|entry| {
-                matches!(
-                    entry,
-                    Ok(Entry { record: Record::Purge(ref purge), .. }) if purge.lists(number)
-                )
-            });
+        // A later entry that cannot be read is an error of its own: it may be the purge entry.
+        let mut listed = false;
+        for later in self.numbers()?.into_iter().filter(|later| *later > number) {
+            if let Record::Purge(purge) = self.read(later)?.record() {
+                if purge.lists(number) {
+                    listed = true;
+                    break;
+                }
+            }
+        }
         if !listed {
             return Err(OpLogError::NotListed { number });
         }
@@ -4092,7 +4195,7 @@ mod tests {
         log.append(&change("b", None, B)).unwrap();
         log.append(&change("c", None, C)).unwrap();
         let written = log
-            .append_purge(Purge::new(TIME + 9, human(), 2, &[3, 2]))
+            .append_purge(Purge::new(TIME + 9, human(), 2, &[3, 2]).unwrap())
             .unwrap();
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].number(), 4);
@@ -4113,7 +4216,7 @@ mod tests {
 
         let purge = Entry::of(
             9,
-            Record::Purge(Purge::new(TIME, human(), 3, &[7, 4, 5, 1])),
+            Record::Purge(Purge::new(TIME, human(), 3, &[7, 4, 5, 1]).unwrap()),
         )
         .unwrap();
         let text = "stemma-oplog 2\nnumber 9\ntime 1700000000\nactor human daniel\n\
@@ -4121,7 +4224,7 @@ mod tests {
         assert_eq!(String::from_utf8(purge.encode()).unwrap(), text);
         assert_eq!(Entry::parse(text.as_bytes()).unwrap(), purge);
 
-        let none = Entry::of(2, Record::Purge(Purge::new(TIME, human(), 0, &[]))).unwrap();
+        let none = Entry::of(2, Record::Purge(Purge::new(TIME, human(), 0, &[]).unwrap())).unwrap();
         let text = "stemma-oplog 2\nnumber 2\ntime 1700000000\nactor human daniel\n\
                     operation purge\ncommits 0\nstubs -\n";
         assert_eq!(String::from_utf8(none.encode()).unwrap(), text);
@@ -4279,7 +4382,7 @@ mod tests {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 1, &[1]))
+        log.append_purge(Purge::new(TIME, human(), 1, &[1]).unwrap())
             .unwrap();
         assert_eq!(
             log.entries().unwrap().len(),
@@ -4290,7 +4393,7 @@ mod tests {
 
     #[test]
     fn a_purge_must_come_after_the_entries_it_lists() {
-        let purge = Record::Purge(Purge::new(TIME, human(), 1, &[2, 5]));
+        let purge = Record::Purge(Purge::new(TIME, human(), 1, &[2, 5]).unwrap());
         assert_eq!(
             Entry::of(5, purge.clone()),
             Err(EntryError::StubNotBefore { stub: 5, purge: 5 })
@@ -4302,7 +4405,7 @@ mod tests {
     fn a_long_list_of_stubs_is_split_over_entries_that_fit() {
         // Every second number, so that no two merge into a range.
         let numbers: Vec<u64> = (1..=20_000).map(|n| n * 2 + 100_000_000_000).collect();
-        let parts = Purge::new(TIME, human(), 7, &numbers).split();
+        let parts = Purge::new(TIME, human(), 7, &numbers).unwrap().split();
         assert!(parts.len() > 1, "{} parts", parts.len());
         assert_eq!(parts[0].commits(), 7);
         assert!(parts[1..].iter().all(|part| part.commits() == 0));
@@ -4324,7 +4427,11 @@ mod tests {
             number: 2,
             ..first.to_stub().unwrap()
         };
-        let purge = Entry::of(3, Record::Purge(Purge::new(TIME, human(), 1, &[2]))).unwrap();
+        let purge = Entry::of(
+            3,
+            Record::Purge(Purge::new(TIME, human(), 1, &[2]).unwrap()),
+        )
+        .unwrap();
         let after = entry(4, None, vec![moves("other", None, Some(B))]);
         let result = outcomes(
             &[first.clone(), stub, purge.clone(), after],
@@ -4341,7 +4448,8 @@ mod tests {
         );
         // Without the stub, the purge entry is no barrier.
         let purge = Entry { number: 2, ..purge };
-        let alone = Entry::of(2, Record::Purge(Purge::new(TIME, human(), 0, &[]))).unwrap();
+        let alone =
+            Entry::of(2, Record::Purge(Purge::new(TIME, human(), 0, &[]).unwrap())).unwrap();
         assert_eq!(purge.number(), alone.number());
         let result = outcomes(&[first, alone], now(&[("main", A)]).as_ref());
         assert_eq!(result, [Outcome::Took, Outcome::Unknown]);
@@ -4356,7 +4464,11 @@ mod tests {
         let third = entry(3, None, vec![moves("main", Some(C), Some(A))]);
         let fourth = entry(4, None, vec![moves("main", Some(A), Some(B))]);
         let stub = |entry: &Entry| entry.to_stub().unwrap();
-        let purge = Entry::of(5, Record::Purge(Purge::new(TIME, human(), 2, &[2, 3]))).unwrap();
+        let purge = Entry::of(
+            5,
+            Record::Purge(Purge::new(TIME, human(), 2, &[2, 3]).unwrap()),
+        )
+        .unwrap();
         let result = outcomes(
             &[first, stub(&second), stub(&third), fourth, purge],
             now(&[("main", B)]).as_ref(),
@@ -4376,40 +4488,55 @@ mod tests {
             (5, vec![MAX_NUMBER - 2, MAX_NUMBER - 1, 7]),
         ];
         for (commits, stubs) in cases {
-            let purge = Purge::new(TIME, human(), commits, &stubs);
+            let purge = Purge::new(TIME, human(), commits, &stubs).unwrap();
             let entry = Entry::of(MAX_NUMBER, Record::Purge(purge)).unwrap();
             assert_eq!(Entry::parse(&entry.encode()).unwrap(), entry, "{stubs:?}");
         }
         assert_eq!(
-            Entry::of(9, Record::Purge(Purge::new(TIME, human(), 1, &[0, 1]))),
-            Err(EntryError::NumberOutOfRange(0))
+            Purge::new(TIME, human(), 1, &[0, 1]),
+            Err(EntryError::StubOutOfRange(0))
         );
         assert_eq!(
-            Entry::of(
-                9,
-                Record::Purge(Purge::new(TIME, human(), MAX_NUMBER + 1, &[1]))
-            ),
+            Purge::new(TIME, human(), 1, &[1, MAX_NUMBER + 1]),
+            Err(EntryError::StubOutOfRange(MAX_NUMBER + 1))
+        );
+        assert_eq!(
+            Purge::new(TIME, human(), MAX_NUMBER + 1, &[1]),
             Err(EntryError::TooManyCommits(MAX_NUMBER + 1))
         );
+        assert!(EntryError::StubOutOfRange(0)
+            .to_string()
+            .contains("cannot list entry 0 as a stub"));
+    }
+
+    /// Writes a change under each number by hand, as `append` only writes at the end.
+    fn changes_at(dir: &TempDir, numbers: &[u64]) {
+        for number in numbers {
+            fs::write(
+                dir.path().join("oplog").join(format!("{number:012}")),
+                Entry::new(*number, change("a", None, A)).unwrap().encode(),
+            )
+            .unwrap();
+        }
+    }
+
+    /// Numbers wide enough and far enough apart that a purge of them does not fit one entry, and
+    /// below `below`.
+    fn wide_numbers(below: u64) -> Vec<u64> {
+        (1..=6_000).map(|n| below - 2 * n).collect()
     }
 
     #[test]
     fn a_purge_that_does_not_fit_is_written_in_parts_at_the_following_numbers() {
         let dir = TempDir::new();
         let log = log_in(&dir);
-        // A first entry at a high number, so that the stubs below it are numerous and wide.
-        fs::write(
-            dir.path()
-                .join("oplog")
-                .join(format!("{:012}", 100_000_100_000_u64)),
-            Entry::new(100_000_100_000, change("a", None, A))
-                .unwrap()
-                .encode(),
-        )
-        .unwrap();
-        let numbers: Vec<u64> = (1..=20_000).map(|n| n * 2 + 100_000_000_000).collect();
+        let mut numbers = wide_numbers(100_000_100_000);
+        numbers.sort_unstable();
+        changes_at(&dir, &numbers);
+        // The last entry before the purge, which comes after the stubs.
+        changes_at(&dir, &[100_000_100_000]);
         let written = log
-            .append_purge(Purge::new(TIME, human(), 7, &numbers))
+            .append_purge(Purge::new(TIME, human(), 7, &numbers).unwrap())
             .unwrap();
         assert!(written.len() > 1);
         for (index, entry) in written.iter().enumerate() {
@@ -4440,7 +4567,7 @@ mod tests {
     #[test]
     fn the_split_keeps_the_order_and_fills_each_part() {
         let numbers: Vec<u64> = (1..=20_000).map(|n| n * 2 + 100_000_000_000).collect();
-        let whole = Purge::new(TIME, human(), 7, &numbers);
+        let whole = Purge::new(TIME, human(), 7, &numbers).unwrap();
         let parts = whole.clone().split();
         let joined: Vec<(u64, u64)> = parts
             .iter()
@@ -4464,18 +4591,15 @@ mod tests {
     }
 
     #[test]
-    fn a_purge_that_lists_a_later_number_is_refused_and_writes_nothing() {
+    fn a_purge_that_lists_a_missing_entry_is_refused_and_writes_nothing() {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
         let error = log
-            .append_purge(Purge::new(TIME, human(), 1, &[1, 2]))
+            .append_purge(Purge::new(TIME, human(), 1, &[1, 2]).unwrap())
             .unwrap_err();
         assert!(
-            matches!(
-                error,
-                OpLogError::Entry(EntryError::StubNotBefore { stub: 2, purge: 2 })
-            ),
+            matches!(error, OpLogError::Missing { number: 2 }),
             "{error:?}"
         );
         assert_eq!(log.numbers().unwrap(), [1]);
@@ -4483,11 +4607,128 @@ mod tests {
     }
 
     #[test]
+    fn a_purge_that_lists_a_stub_or_a_purge_entry_is_refused_and_writes_nothing() {
+        let dir = TempDir::new();
+        let log = purged_log(&dir);
+        for listed in [2, 4] {
+            let error = log
+                .append_purge(Purge::new(TIME, human(), 1, &[1, listed]).unwrap())
+                .unwrap_err();
+            assert!(
+                matches!(error, OpLogError::NotAChange { number } if number == listed),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("not a change"), "{error}");
+        }
+        assert_eq!(log.numbers().unwrap(), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_purge_that_stops_after_a_part_reports_the_parts_in_the_log() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let mut numbers = wide_numbers(MAX_NUMBER - 1);
+        numbers.sort_unstable();
+        changes_at(&dir, &numbers);
+        changes_at(&dir, &[MAX_NUMBER - 1]);
+        let error = log
+            .append_purge(Purge::new(TIME, human(), 7, &numbers).unwrap())
+            .unwrap_err();
+        let OpLogError::PurgeIncomplete {
+            written,
+            not_flushed,
+            source,
+        } = &error
+        else {
+            panic!("{error:?}");
+        };
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].number(), MAX_NUMBER);
+        assert_eq!(log.read(MAX_NUMBER).unwrap(), written[0]);
+        assert!(matches!(written[0].record(), Record::Purge(p) if p.commits() == 7));
+        assert!(not_flushed.is_empty());
+        assert!(matches!(**source, OpLogError::Full));
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("only part of its entries, {MAX_NUMBER}: ")),
+            "{message}"
+        );
+        assert!(message.contains("is full"), "{message}");
+    }
+
+    #[test]
+    fn the_messages_of_a_purge_name_the_entries_not_known_to_be_flushed() {
+        let part = |number| {
+            Entry::of(
+                number,
+                Record::Purge(Purge::new(TIME, human(), 0, &[1]).unwrap()),
+            )
+            .unwrap()
+        };
+        let incomplete = OpLogError::PurgeIncomplete {
+            written: vec![part(9)],
+            not_flushed: vec![9],
+            source: Box::new(OpLogError::Full),
+        };
+        assert!(incomplete
+            .to_string()
+            .contains("only part of its entries, 9 (9 not known to be flushed): "));
+        let not_flushed = OpLogError::PurgeNotFlushed {
+            written: vec![part(9), part(10)],
+            not_flushed: vec![10],
+            path: PathBuf::from("oplog"),
+            source: io::Error::other("disk"),
+        };
+        let message = not_flushed.to_string();
+        assert!(
+            message.contains("wrote all of its entries, 9, 10, but flushing `oplog` failed for 10"),
+            "{message}"
+        );
+        assert_eq!(not_flushed.io_error().unwrap().to_string(), "disk");
+    }
+
+    #[test]
+    fn an_unreadable_later_entry_is_reported_instead_of_a_missing_listing() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        log.append(&change("a", None, A)).unwrap();
+        log.append_purge(Purge::new(TIME, human(), 1, &[1]).unwrap())
+            .unwrap();
+        fs::write(dir.path().join("oplog/000000000002"), "junk").unwrap();
+        assert!(matches!(
+            log.replace_with_stub(1),
+            Err(OpLogError::Corrupt { .. })
+        ));
+        assert!(log.read(1).unwrap().change().is_some(), "nothing written");
+    }
+
+    #[test]
+    fn a_stub_that_only_a_later_part_lists_is_listed() {
+        let first = entry(1, None, vec![moves("main", None, Some(A))]);
+        let second = entry(2, None, vec![moves("other", None, Some(B))]);
+        let part = |number, commits, stubs: &[u64]| {
+            Entry::of(
+                number,
+                Record::Purge(Purge::new(TIME, human(), commits, stubs).unwrap()),
+            )
+            .unwrap()
+        };
+        let parts = [part(3, 1, &[]), part(4, 0, &[2])];
+        let stubbed = [first.clone(), second.to_stub().unwrap()];
+        let log: Vec<Entry> = stubbed.iter().chain(&parts).cloned().collect();
+        check_stubs(&log).unwrap();
+        assert!(pending_stubs(&log).is_empty());
+        let log: Vec<Entry> = [first, second].iter().chain(&parts).cloned().collect();
+        check_stubs(&log).unwrap();
+        assert_eq!(pending_stubs(&log), [2]);
+    }
+
+    #[test]
     fn a_damaged_entry_cannot_become_a_stub() {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 1, &[1]))
+        log.append_purge(Purge::new(TIME, human(), 1, &[1]).unwrap())
             .unwrap();
         fs::write(dir.path().join("oplog/000000000001"), "junk").unwrap();
         assert!(matches!(
@@ -4502,7 +4743,7 @@ mod tests {
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
         log.append(&change("b", None, B)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 2, &[1, 2]))
+        log.append_purge(Purge::new(TIME, human(), 2, &[1, 2]).unwrap())
             .unwrap();
         log.replace_with_stub(1).unwrap();
         assert_eq!(pending_stubs(&log.entries().unwrap()), [2]);
