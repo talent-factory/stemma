@@ -171,10 +171,12 @@ are prior art, not a template.
   actor is not refused. Enforcement comes with the second working copy (a worktree, phase 3, see
   the open items), which needs a mechanism for owning a directory anyway. Until then the rule is
   a convention that the people and the agents who use a repository keep.
-- **The lease of ADR-004 covers the working-copy commit through its branch.** The lease is a
-  property of a branch and is enforced by a server (ADR-004). The working-copy commit is a child
-  of the branch it was made on, so the one write owner of a branch is also the one actor of its
-  working copy. No lease of its own for the working copy exists, and none is needed locally.
+- **The lease of ADR-004 and the rule are independent.** ADR-004 proposes a lease on a branch,
+  which a server would enforce: it governs who may move the branch. It does not govern who
+  writes into a local directory, and a server cannot see that. The rule above is what covers
+  the directory, and the working-copy commit has no lease of its own. Once the lease exists, an
+  actor that holds the lease of a branch is the natural owner of the working copy that follows
+  it; that link is part of the enforcement in the open items.
 
 ## Open items
 
@@ -208,8 +210,9 @@ are prior art, not a template.
 - [x] Who the actor of a snapshot is when two actors use one directory, and how the lease of
       ADR-004 applies. Decided above (STEMMA-38): one actor per working copy, kept by convention.
 - [ ] Enforcing that rule: an owner in the file `working-copy`, and a command of another actor
-      that takes a snapshot is refused unless it takes the working copy over explicitly. Comes
-      with the second working copy (phase 3).
+      that takes a snapshot is refused unless it takes the working copy over explicitly (one
+      possible design). The file has the form of a branch file today, so an owner changes its
+      format. Comes with the second working copy (phase 3).
 - [x] The cost of a snapshot for a large working directory: reading every file at every
       command. It is twice the tracked files today, because `Index::write_tree` verifies the
       blobs again (the code points here and does not repeat it). Measured in STEMMA-37 (release
