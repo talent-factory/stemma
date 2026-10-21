@@ -400,11 +400,24 @@ fn check_name(path: &str) -> Result<(), CheckoutError> {
     Ok(())
 }
 
-/// Whether the name is `.stemma` or `.git`, as a file system that ignores case and drops trailing
-/// dots and spaces would read it.
+/// Whether the name is `.stemma` or `.git`, or an alias of one on a common file system. It reads
+/// the name as Windows does (the same rules as the reserved name of ADR-005): a backslash
+/// separates parts, a colon starts a stream that is dropped, trailing dots and spaces are
+/// dropped, case is folded by Unicode uppercase (which catches the long s), and the short names
+/// `STEMMA~N` and `GIT~N` count as well.
 fn is_metadata_name(name: &str) -> bool {
-    let trimmed = name.trim_end_matches(['.', ' ']);
-    trimmed.eq_ignore_ascii_case(METADATA_DIR) || trimmed.eq_ignore_ascii_case(GIT_DIR)
+    name.split('\\').any(|segment| {
+        let file_name = segment.split(':').next().unwrap_or(segment);
+        let folded = file_name.trim_end_matches(['.', ' ']).to_uppercase();
+        [METADATA_DIR, GIT_DIR].iter().any(|metadata| {
+            let metadata = metadata.to_uppercase();
+            let short = format!("{}~", metadata.trim_start_matches('.'));
+            folded == metadata
+                || folded.strip_prefix(&short).is_some_and(|digits| {
+                    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+                })
+        })
+    })
 }
 
 /// Why Windows cannot hold the name as it is, or `None` if it can. The tree format allows `\` and
@@ -1030,11 +1043,31 @@ mod tests {
     #[test]
     fn the_names_of_the_metadata_are_found_as_a_file_system_reads_them() {
         for name in [
-            ".git", ".GIT", ".git.", ".git ", ".stemma", ".Stemma.", ".stemma ",
+            ".git",
+            ".GIT",
+            ".git.",
+            ".git ",
+            ".stemma",
+            ".Stemma.",
+            ".stemma ",
+            "GIT~1",
+            "git~12.",
+            "STEMMA~1",
+            "x\\.git\\y",
+            ".git:stream",
+            ".stemma::$INDEX_ALLOCATION",
         ] {
             assert!(is_metadata_name(name), "{name}");
         }
-        for name in [".gitignore", ".github", "git", ".stemmaignore"] {
+        for name in [
+            ".gitignore",
+            ".github",
+            "git",
+            ".stemmaignore",
+            "GIT~",
+            "git~a",
+            "a:.git",
+        ] {
             assert!(!is_metadata_name(name), "{name}");
         }
     }
