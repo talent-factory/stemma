@@ -470,7 +470,10 @@ Bei einem Zug, der stattfand, fehlt die Zeile.
 mit Nummer, Zeit und Akteur und \type{(purged)} an der Stelle der Operation, ohne weitere
 Zeile. Der Eintrag eines Purge zeigt in einer zweiten Zeile die Zahl der umgeschriebenen
 Commits und die Nummern der Stubs als Bereiche. Beide nennen keine ID und haben keine Zeile
-über den Zug.
+über den Zug. Der Ausgang jedes Eintrags vor dem jüngsten Stub ist unbekannt (\type{?}), denn
+der Stub ersetzt Züge, die niemand mehr kennt. Nennt ein Purge einen Eintrag, der noch kein
+Stub ist, weil der Purge vorher anhielt, folgt die Zeile
+\type{! a purge lists this entry and has not finished}.
 
 \starttyping
 4  2023-11-14T22:13:20Z  human daniel  purge
@@ -484,7 +487,8 @@ Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits} und \type{
 eine Liste von Bereichen \type{[start, end]}.
 Für eine Änderung sind die weiteren Felder \type{time} (Sekunden seit dem 1.1.1970,
 wie im Eintrag), \type{actor}, \type{operation}, \type{head}, \type{working_copy},
-\type{branches} und \type{took_effect}. \type{took_effect} ist \type{true},
+\type{branches}, \type{purge_pending} (\type{true}, wenn ein unfertiger Purge den Eintrag
+nennt) und \type{took_effect}. \type{took_effect} ist \type{true},
 wenn der Zug stattfand, \type{false}, wenn er nicht stattfand, und \type{null},
 wenn das Log und die Referenzen es nicht entscheiden. \type{head} und \type{working_copy}
 sind \type{null}, wenn die Operation den Zeiger nicht berührt hat, sonst ein Objekt
@@ -629,10 +633,12 @@ Das gilt auch für \type{--dry-run}.
 nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
 HEAD oder den Working-Copy-Commit angelegt hat (das tut nur der erste Eintrag, und
 beide können nicht fehlen).
-Ebenso endet er bei einem Stub, denn was der Eintrag bewegt hat, ist mit dem Purge weg, und
-beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-014).
-Ein Eintrag vor einem Stub verliert den Beleg, den der nächste Zug seines Zeigers gab;
-sein Ausgang ist dann unbekannt, und er braucht \type{--force}.
+Ebenso endet er bei einem Stub, denn was der Eintrag bewegt hat, ist mit dem Purge weg,
+beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-014), und bei
+einem Eintrag, den ein Purge nennt, der noch nicht fertig ist; diese Fälle hebt auch
+\type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren Züge niemand mehr kennt;
+der Ausgang jedes Eintrags vor dem jüngsten Stub ist deshalb unbekannt, und er braucht
+\type{--force}. Nennt kein Purge einen Stub im Log, endet der Befehl ebenfalls mit Exit-Code 1.
 Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt,
 eine Sperre der Referenzen (ein anderer Vorgang schreibt: später noch einmal) und eine Datei
 oder ein Verzeichnis, das nicht verfolgt wird und dort liegt, wo der Baum eine Datei braucht.

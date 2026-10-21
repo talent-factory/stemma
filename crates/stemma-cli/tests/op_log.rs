@@ -178,13 +178,13 @@ fn the_json_form_is_one_object_per_line() {
              \"operation\":\"snapshot\",\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
              \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
-             \"took_effect\":false}}"
+             \"purge_pending\":false,\"took_effect\":false}}"
         )
     );
     assert!(
         lines[1].starts_with("{\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
-            && lines[1].ends_with("\"branches\":[],\"took_effect\":true}"),
+            && lines[1].ends_with("\"branches\":[],\"purge_pending\":false,\"took_effect\":true}"),
         "{}",
         lines[1]
     );
@@ -653,5 +653,44 @@ fn a_stub_that_no_purge_lists_is_reported() {
             .contains("entry 2 is a stub, but no purge entry lists it"),
         "{}",
         result.stderr
+    );
+}
+
+#[test]
+fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_is_marked() {
+    let dir = repository();
+    let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    snapshot(dir.path(), 2, &first, A);
+    snapshot(dir.path(), 3, A, B);
+    write_entry_2(dir.path(), 2, "stub\n");
+    write_entry_2(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
+
+    let result = run(dir.path(), &["op", "log", "-n", "1"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(result.stdout.starts_with("4  "), "{}", result.stdout);
+
+    // Entry 3 is listed but not a stub yet: the purge stopped before it.
+    let result = run(dir.path(), &["op", "log", "-n", "2"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result
+            .stdout
+            .ends_with("    ! a purge lists this entry and has not finished\n"),
+        "{}",
+        result.stdout
+    );
+    let result = run(dir.path(), &["op", "log", "-n", "2", "--json"]);
+    assert!(
+        result
+            .stdout
+            .lines()
+            .nth(1)
+            .unwrap()
+            .contains("\"purge_pending\":true"),
+        "{}",
+        result.stdout
     );
 }

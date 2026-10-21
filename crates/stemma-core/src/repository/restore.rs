@@ -15,7 +15,8 @@ use super::snapshot::{read_commit, SnapshotError};
 use super::{now, Repository, UpdateError};
 use crate::object::{CommitId, TreeId};
 use crate::oplog::{
-    outcomes, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome, Pointer, Record,
+    outcomes, pending_stubs, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome,
+    Pointer, Record,
 };
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
 use crate::{Actor, Authorizer};
@@ -307,6 +308,9 @@ impl Repository {
             Record::Stub(_) => return Err(RestoreError::Purged { number }),
             Record::Purge(_) => return Err(RestoreError::IsPurge { number }),
         };
+        if pending_stubs(&entries).contains(&number) {
+            return Err(RestoreError::PurgePending { number });
+        }
         if self.outcome_of(&entries, position)? == Outcome::Unknown && !force {
             return Err(RestoreError::OutcomeUnknown { number });
         }
@@ -408,8 +412,9 @@ impl Repository {
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `OutcomeUnknown`, `NoOldValue`, `Refs`,
-/// `Snapshot`, `Checkout`) wrote nothing of the restore; those with an `entry` wrote it.
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `PurgePending`,
+/// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
+/// those with an `entry` wrote it.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RestoreError {
@@ -432,6 +437,12 @@ pub enum RestoreError {
     /// The entry is that of a purge, which cannot be restored: it removed history for good
     /// (ADR-014).
     IsPurge {
+        /// The number.
+        number: u64,
+    },
+    /// A purge lists the entry but stopped before it replaced it by a stub, so the entry is about
+    /// to be purged and names commits that the purge rewrote (ADR-014).
+    PurgePending {
         /// The number.
         number: u64,
     },
@@ -529,6 +540,7 @@ impl RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
         }
@@ -600,6 +612,11 @@ impl fmt::Display for RestoreError {
             Self::IsPurge { number } => write!(
                 f,
                 "entry {number} is a purge, which removed history for good and cannot be restored"
+            ),
+            Self::PurgePending { number } => write!(
+                f,
+                "entry {number} is listed by a purge that has not finished, so it is about to be \
+                 purged and cannot be restored; finish the purge first"
             ),
             Self::OutcomeUnknown { number } => write!(
                 f,
@@ -705,6 +722,7 @@ impl Error for RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
         }
@@ -1496,5 +1514,22 @@ mod tests {
         ));
         done(repository.restore(snapshot, true, &actor(), &AllowAll));
         assert_eq!(read(&dir, "a.txt"), "one");
+    }
+
+    #[test]
+    fn an_entry_that_an_unfinished_purge_lists_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        repository
+            .oplog()
+            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[snapshot]))
+            .unwrap();
+        let count = numbers(&repository).len();
+        assert!(matches!(
+            repository.restore(snapshot, true, &actor(), &AllowAll),
+            Err(RestoreError::PurgePending { number }) if number == snapshot
+        ));
+        assert_eq!(numbers(&repository).len(), count, "nothing was written");
     }
 }

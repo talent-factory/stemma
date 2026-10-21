@@ -1312,4 +1312,36 @@ mod tests {
             other => panic!("expected a leftover, got {other:?}"),
         }
     }
+
+    #[test]
+    fn a_second_purge_plans_over_stubs_and_lists_neither_a_stub_nor_a_purge_entry() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let first = plan(&repository);
+        let log = repository.oplog();
+        let purge = log
+            .append_purge(crate::oplog::Purge::new(
+                1,
+                actor(),
+                first.rewrites().len() as u64,
+                first.entries(),
+            ))
+            .unwrap()[0]
+            .number();
+        for number in first.entries() {
+            log.replace_with_stub(*number).unwrap();
+        }
+        // Another secret, saved after the purge.
+        write(&dir, "other", "token=swordfish");
+        track(&repository, &["other"]);
+        let other = Blob::new("token=swordfish").id().object_id();
+        let second = repository.plan_purge(other, &actor(), &AllowAll).unwrap();
+        assert!(!second.entries().is_empty());
+        assert!(!second.entries().contains(&purge));
+        assert!(second
+            .entries()
+            .iter()
+            .all(|number| !first.entries().contains(number)));
+    }
 }

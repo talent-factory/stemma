@@ -50,8 +50,8 @@ use crate::{Actor, Authorizer, Decision};
 const FORMAT_VERSION: u32 = 2;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
-/// `purge` entry to the operation log (ADR-014); a repository moves to it with its first purge,
-/// so that a program that knows only version 2 refuses a log that it cannot read.
+/// `purge` entry to the operation log (ADR-014). A repository will move to it with its first purge
+/// (STEMMA-48), so that a program that knows only version 2 refuses a log that it cannot read.
 const READ_VERSIONS: [u32; 2] = [2, 3];
 
 /// The name that the file `format` starts with, followed by the version.
@@ -1151,8 +1151,13 @@ impl fmt::Display for OpenError {
             Self::UnsupportedFormat { path, found } => write!(
                 f,
                 "the format file `{}` names version {found}, but this code supports versions \
-                 2 and 3",
-                path.display()
+                 {}",
+                path.display(),
+                READ_VERSIONS
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" and ")
             ),
             Self::Io {
                 operation,

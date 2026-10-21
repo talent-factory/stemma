@@ -186,9 +186,15 @@ a person to repair.
       encoding `stemma-oplog 2`, written only for these two (STEMMA-47; see ADR-011). A
       `purge` entry has `commits <n>` and `stubs <ranges>`, and a list that does not fit is
       split, the count in the first part.
-- [ ] The hash that a stub keeps when the chain exists (STEMMA-41, which then takes encoding 3).
-- [ ] An entry before a stub loses the evidence of the next move of its pointer, so its outcome
-      is unknown and `op restore` needs `--force` for it, as foreseen under the consequences.
+- [ ] The hash that a stub keeps when the chain exists (STEMMA-41, which then takes entry
+      encoding `stemma-oplog 3`).
+- [x] The outcome of an entry before a stub: a stub replaced a change whose moves are no longer
+      known, so it is a barrier, and every entry before the newest stub is unknown; `op restore`
+      needs `--force` for it (STEMMA-47). This is stricter than the consequences above foresaw,
+      as a stub can have moved a pointer back to an old value and so turn a verdict around.
+- [x] A purge that stopped between its entry and its stubs: an entry that a `purge` entry lists
+      and that is not a stub yet is no error of the log, `op log` marks it, and `op restore`
+      refuses it (STEMMA-47). Finishing the purge comes with `--resume` (STEMMA-48).
 - [ ] How the user names the secret. The blob ID is the unit; a path or a pattern that finds the
       blobs in the history is a convenience, and a text that is replaced inside a file (instead
       of removing the file from the tree) would keep the file tracked. The first version takes
@@ -212,5 +218,6 @@ a person to repair.
 Slices: the plan (`Repository::plan_purge` and `stemma purge BLOB`, which writes nothing,
 STEMMA-46), the stubs and the `purge` entry in the log with its reader and `op restore` refusing
 a stub (STEMMA-47), and `--apply` with the snapshot, the new objects, the journal, the removal of
-the objects, resume, and abort (STEMMA-48). The apply waits for the other two, as a pointer moves
+the objects, resume, and abort, and the move of the repository to format 3 with its first purge
+(STEMMA-48). The apply waits for the other two, as a pointer moves
 only with an entry and a purge without stubs and removal would leave the secret in place.

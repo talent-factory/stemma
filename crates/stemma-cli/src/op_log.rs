@@ -71,8 +71,9 @@ pub(crate) fn stubs_text(stubs: &[(u64, u64)]) -> String {
 /// An entry for a person: a line with the number, the time, the actor, and the operation, then
 /// one indented line for each pointer that moved, and a last line if the move did not take effect
 /// or if that is not known. A stub has only the first line, with `(purged)` for the operation; a
-/// purge has a second line with the count of commits and the stubs (ADR-014).
-pub fn text(entry: &Entry, outcome: Outcome) -> String {
+/// purge has a second line with the count of commits and the stubs (ADR-014). `pending` says that
+/// a purge lists the entry and has not replaced it yet, which a last line says.
+pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
     let head = |operation: &dyn Display| {
         format!(
             "{}  {}  {}  {operation}\n",
@@ -92,7 +93,6 @@ pub fn text(entry: &Entry, outcome: Outcome) -> String {
                 stubs_text(purge.stubs())
             );
         }
-        _ => return head(&"(unknown)"),
     };
     let mut out = head(change.operation());
     let mut line = |name: String, old: String, new: String| {
@@ -124,6 +124,9 @@ pub fn text(entry: &Entry, outcome: Outcome) -> String {
         Outcome::Took => {}
         Outcome::NotTaken => out.push_str("    ! the move did not take effect\n"),
         Outcome::Unknown => out.push_str("    ? it is not known whether the move took effect\n"),
+    }
+    if pending {
+        out.push_str("    ! a purge lists this entry and has not finished\n");
     }
     out
 }
@@ -165,11 +168,13 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// that did not exist or does not exist any more has `null` as its old or new value.
 ///
 /// Every line starts with `number` and `kind`: `change`, `stub`, or `purge`. A stub has only
-/// `time` and `actor` besides; a purge has `operation`, `commits`, and `stubs`, a list of ranges
-/// `[start, end]` (ADR-014).
-pub fn json(entry: &Entry, outcome: Outcome) -> String {
+/// `time` and `actor` besides; a purge has `time`, `actor`, `operation`, `commits`, and `stubs`, a
+/// list of ranges `[start, end]` (ADR-014). The fields above are those of a change, which has
+/// `purge_pending` before `took_effect` as well: `true` if a purge lists it and has not replaced
+/// it yet.
+pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
     match entry.record() {
-        Record::Change(change) => change_json(entry, change, outcome),
+        Record::Change(change) => change_json(entry, change, outcome, pending),
         Record::Stub(_) => format!(
             "{{\"number\":{},\"kind\":\"stub\",\"time\":{},\"actor\":{}}}",
             entry.number(),
@@ -177,7 +182,6 @@ pub fn json(entry: &Entry, outcome: Outcome) -> String {
             quote(&entry.actor().to_string())
         ),
         Record::Purge(purge) => purge_json(entry, purge),
-        _ => format!("{{\"number\":{},\"kind\":\"unknown\"}}", entry.number()),
     }
 }
 
@@ -198,7 +202,7 @@ fn purge_json(entry: &Entry, purge: &Purge) -> String {
     )
 }
 
-fn change_json(entry: &Entry, change: &Change, outcome: Outcome) -> String {
+fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) -> String {
     let took_effect = match outcome {
         Outcome::Took => "true",
         Outcome::NotTaken => "false",
@@ -232,7 +236,8 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome) -> String {
     format!(
         "{{\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
          \"head\":{head},\
-         \"working_copy\":{working_copy},\"branches\":[{}],\"took_effect\":{took_effect}}}",
+         \"working_copy\":{working_copy},\"branches\":[{}],\"purge_pending\":{pending},\
+         \"took_effect\":{took_effect}}}",
         entry.number(),
         change.time(),
         quote(&change.actor().to_string()),
