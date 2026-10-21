@@ -79,9 +79,10 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **Only a change writes an entry** *(confirmed)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
-- **Nothing is deleted** *(confirmed)*. No operation removes an entry, and no garbage collection
+- **Nothing is deleted** *(confirmed)*. No operation removes an entry, except the purge that
+  replaces entries by stubs (ADR-014), and no garbage collection
   runs in phase 1 (ADR-007). Removing a secret replaces the entries that name it by a stub that
-  keeps the number (STEMMA-26), so the numbering has no gap.
+  keeps the number (ADR-014, STEMMA-26), so the numbering has no gap.
 - **The format is strict text** *(confirmed)*. A reader accepts what the writer writes and nothing
   else, as in ADR-005, so one entry has exactly one encoding. The sketch below is the format.
   The time is the one the writer claims, in seconds since the Unix epoch, written as in a commit
@@ -188,7 +189,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - The log grows with every change, and a snapshot at every command makes many entries. Nothing
   removes them in phase 1; the open items name the measure that decides about retention.
 - The log keeps commits that a rewrite or a purge would otherwise drop. A secret in a tracked file
-  is therefore in the log until it is purged (STEMMA-26), which is why the log is local.
+  is therefore in the log until it is purged (ADR-014, STEMMA-26), which is why the log is local.
 - A hub never sees the log. What a hub keeps is its own record of ref updates (ADR-003).
 - `Repository::init` creates `oplog/` and writes entry 1, so the order "entry, then move" holds
   from the first pointer on. Entry 1 moves HEAD and the working-copy commit (ADR-010).
@@ -224,7 +225,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       time, and what a garbage collection may remove (nothing before ADR-007's collection
       exists). Decide with a measurement of a real session.
 - [ ] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
-      audited without keeping the secret (STEMMA-26).
+      audited without keeping the secret. Proposed in ADR-014 (STEMMA-26).
 - [x] A recovery when the highest number is missing: the tip file (STEMMA-30). What remains is
       a command that repairs a log with a lost last entry (the tip has to be set back by hand
       today), and the hash chain (STEMMA-41).
