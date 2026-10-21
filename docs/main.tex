@@ -9,7 +9,8 @@
   title={Stemma},
   shorttitle={Stemma: Grundlagendokument},
   subtitle={Ein API-first Versionskontrollsystem für Menschen und Agenten},
-  kind={Grundlagendokument, Entwurf},
+  kind={Grundlagendokument},
+  status={Entwurf},
   author={Daniel Senften},
   institution={Talent Factory GmbH},
   version={0.2}
@@ -32,15 +33,37 @@
 \starttext
 
 % ------------------------------------------------------------------
+% Status: a sash in the colour of the logo across a corner of the title page.
+% It disappears when status is empty.
+% ------------------------------------------------------------------
+\definecolor[logocolor][h=B5442B]
+
+\startuniqueMPgraphic{statussash}
+  pair c ; c := (OverlayWidth-2.6cm, OverlayHeight-2.6cm) ;
+  fill ((-4cm,-.55cm)--(4cm,-.55cm)--(4cm,.55cm)--(-4cm,.55cm)--cycle)
+    rotated -45 shifted c withcolor \MPcolor{logocolor} ;
+  draw textext("\ss\bf\tfa\color[white]{\getvariable{document}{status}}")
+    rotated -45 shifted c ;
+  clip currentpicture to OverlayBox ;
+  setbounds currentpicture to OverlayBox ;
+\stopuniqueMPgraphic
+\defineoverlay[statussash][\useMPgraphic{statussash}]
+
+\doifsomething{\getvariable{document}{status}}
+  {\setupbackgrounds[page][background=statussash]}
+
+% ------------------------------------------------------------------
 % Titelblatt
 % ------------------------------------------------------------------
-\startstandardmakeup
+\startstandardmakeup[page=no]
 \vfill
-\midaligned{\bfd\ss\color[primarycolor]{\getvariable{document}{title}}}
+\midaligned{\externalfigure[images/stemma.pdf][width=6cm]}
+\blank[2*big]
+\midaligned{\bfd\ss\color[tftext]{\getvariable{document}{title}}}
 \blank[2*big]
 \midaligned{\bfa\ss\color[mutedcolor]{\getvariable{document}{subtitle}}}
-\vfill
-\midaligned{\bf\ss \getvariable{document}{kind}}
+\blank[big]
+\midaligned{\ss\color[mutedcolor]{\getvariable{document}{kind}}}
 \vfill
 \midaligned{
   \getvariable{document}{author} \\
@@ -49,6 +72,9 @@
 }
 \vfill
 \stopstandardmakeup
+\page
+
+\setupbackgrounds[page][background=]
 
 % ------------------------------------------------------------------
 % Inhaltsverzeichnis
