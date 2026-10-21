@@ -25,12 +25,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod checkout;
 mod commit;
+mod restore;
 mod snapshot;
 mod status;
 mod track;
 
 pub use checkout::{CheckoutError, CheckoutPlan, PlannedWrite};
 pub use commit::{CommitError, Committed};
+pub use restore::{RestoreError, RestorePlan, Restored};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use track::{normalize_path, TrackError, Tracking};
@@ -260,6 +262,11 @@ impl Repository {
     /// directory is not stopped.
     pub fn refs(&self) -> RefsView<'_> {
         RefsView { refs: &self.refs }
+    }
+
+    /// The store of the references, for the code of this crate that moves several pointers at once.
+    pub(crate) fn refs_store(&self) -> &FsRefStore {
+        &self.refs
     }
 
     /// The operation log of this repository. It can be read; entries are added only by

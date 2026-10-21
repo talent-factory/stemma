@@ -21,7 +21,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::num::NonZeroUsize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::snapshot::{lookup, read_object, SnapshotError};
 use super::Repository;
@@ -77,6 +77,8 @@ impl PlannedWrite {
 /// go no further.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckoutPlan {
+    /// The working directory the plan was made for.
+    root: PathBuf,
     writes: Vec<PlannedWrite>,
     removals: Vec<String>,
     /// Every directory that the new tree needs, so that the layer does not remove it.
@@ -186,6 +188,14 @@ impl Repository {
                     });
                 }
             }
+            // A file that is there already with this content and mode is done: this lets a
+            // restore that stopped after the files be run again.
+            if previous.is_none()
+                && !removed.contains(path)
+                && self.is_there_already(path, mode, blob)?
+            {
+                continue;
+            }
             self.check_place(path, previous.is_some(), &removed)?;
             read_object(objects, blob.object_id(), Kind::Blob)?;
             writes.push(PlannedWrite {
@@ -209,6 +219,7 @@ impl Repository {
             }
         }
         Ok(CheckoutPlan {
+            root: self.path().to_path_buf(),
             writes,
             removals,
             kept: directories_of(new.keys().map(String::as_str)),
@@ -236,11 +247,17 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`CheckoutError::ThroughLink`], [`CheckoutError::InTheWay`], and
+    /// Returns [`CheckoutError::ForeignPlan`] if the plan was made for another working directory,
+    /// before anything is touched, [`CheckoutError::ThroughLink`], [`CheckoutError::InTheWay`], and
     /// [`CheckoutError::ChangedSincePlan`] for what has changed since the plan, and
     /// [`CheckoutError::Snapshot`] for a blob that cannot be read and a file system that fails,
     /// all of them as [`CheckoutError::Interrupted`] once a file was removed or written.
     pub fn apply_checkout(&self, plan: &CheckoutPlan) -> Result<(), CheckoutError> {
+        if plan.root != self.path() {
+            return Err(CheckoutError::ForeignPlan {
+                made_for: plan.root.clone(),
+            });
+        }
         let mut progress = Progress::default();
         self.apply_steps(plan, &mut progress).map_err(|source| {
             if progress.removed + progress.written == 0 {
@@ -289,6 +306,60 @@ impl Repository {
             progress.written += 1;
         }
         Ok(())
+    }
+
+    /// Whether the working directory has the file already, with the content and the mode of the
+    /// tree. A link on the way or a different kind of file is not a match.
+    fn is_there_already(
+        &self,
+        path: &str,
+        mode: FileMode,
+        blob: BlobId,
+    ) -> Result<bool, CheckoutError> {
+        let Some((full, metadata)) = lookup(self.path(), path)? else {
+            return Ok(false);
+        };
+        // The file system may read another spelling of the name as this file (case, a form of
+        // Unicode normalization, a short name). Only a file under exactly this name counts as
+        // done, so that no alias is taken for a file that a removal of the old tree deletes.
+        let exact = full
+            .parent()
+            .zip(full.file_name())
+            .map(|(parent, name)| {
+                fs::read_dir(parent).map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .any(|entry| entry.file_name() == name)
+                })
+            })
+            .transpose()
+            .map_err(|source| io_error("list", &full, source))?
+            .unwrap_or(false);
+        if !exact {
+            return Ok(false);
+        }
+        let expected = read_object(self.objects(), blob.object_id(), Kind::Blob)?;
+        if mode == FileMode::Symlink {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                return Ok(metadata.file_type().is_symlink()
+                    && fs::read_link(&full)
+                        .is_ok_and(|target| target.as_os_str().as_bytes() == expected.body()));
+            }
+        }
+        if !metadata.is_file() {
+            return Ok(false);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = metadata.permissions().mode() & 0o111 != 0;
+            if executable != (mode == FileMode::Executable) {
+                return Ok(false);
+            }
+        }
+        Ok(fs::read(&full).is_ok_and(|content| content == expected.body()))
     }
 
     /// Checks the place of a path that is written: no link on the way, nothing untracked in it.
@@ -724,6 +795,11 @@ pub enum CheckoutError {
         /// The path.
         path: String,
     },
+    /// The plan was made for another working directory. Nothing was touched.
+    ForeignPlan {
+        /// The directory the plan was made for.
+        made_for: PathBuf,
+    },
     /// The apply stopped after it had changed the directory. The files named are done, and the
     /// rest is not; nothing is rolled back.
     Interrupted {
@@ -789,6 +865,11 @@ impl fmt::Display for CheckoutError {
                 "`{}` changed after the plan was made, or another file already has its name; \
                  nothing was replaced there",
                 path.escape_debug()
+            ),
+            Self::ForeignPlan { made_for } => write!(
+                f,
+                "the plan was made for the directory `{}` and is not applied to another one",
+                made_for.display()
             ),
             Self::Interrupted {
                 removed,
@@ -1479,6 +1560,71 @@ mod tests {
             "{error}"
         );
         assert_eq!(read(&dir, "b/c"), "1", "nothing was removed");
+    }
+
+    #[test]
+    fn a_plan_is_not_applied_to_another_working_directory() {
+        let (dir, other) = (TempDir::new(), TempDir::new());
+        let (repository, foreign) = (repository(&dir), repository(&other));
+        let to = tree(&repository, &[plain("a", "1")]);
+        let plan = repository.plan_checkout(None, to).unwrap();
+        // The other repository needs the objects only if the check failed.
+        let error = foreign.apply_checkout(&plan).unwrap_err();
+        assert!(
+            matches!(error, CheckoutError::ForeignPlan { .. }),
+            "{error}"
+        );
+        assert!(!exists(&other, "a"));
+        repository.apply_checkout(&plan).unwrap();
+        assert_eq!(read(&dir, "a"), "1");
+    }
+
+    #[test]
+    fn an_untracked_file_with_the_content_and_mode_of_the_tree_is_done_already() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "same", "1");
+        write(&dir, "other", "mine");
+        let to = tree(&repository, &[plain("same", "1"), plain("other", "theirs")]);
+        // `other` has other content and is in the way; `same` alone would be fine.
+        let error = repository.plan_checkout(None, to).unwrap_err();
+        assert!(
+            matches!(&error, CheckoutError::InTheWay { path } if path == "other"),
+            "{error}"
+        );
+        let to = tree(&repository, &[plain("same", "1")]);
+        let plan = repository.plan_checkout(None, to).unwrap();
+        assert!(plan.is_empty(), "{plan:?}");
+        assert_eq!(read(&dir, "same"), "1");
+    }
+
+    #[test]
+    fn a_file_that_the_new_tree_renames_by_case_is_not_taken_for_done() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let files = [plain("README", "1")];
+        write(&dir, "README", "1");
+        let from = tree(&repository, &files);
+        let to = tree(&repository, &[plain("readme", "1")]);
+        let plan = repository.plan_checkout(Some(from), to).unwrap();
+        repository.apply_checkout(&plan).unwrap();
+        assert_eq!(read(&dir, "readme"), "1");
+    }
+
+    #[test]
+    fn a_name_in_another_normalization_form_is_never_taken_for_done() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (decomposed, composed) = ("cafe\u{301}.txt", "caf\u{e9}.txt");
+        write(&dir, decomposed, "1");
+        let from = tree(&repository, &[plain(decomposed, "1")]);
+        let to = tree(&repository, &[plain(composed, "1")]);
+        // Where the file system reads both names as one file, the plan must refuse or the apply
+        // must leave a file; it must never report success and have deleted the file.
+        if let Ok(plan) = repository.plan_checkout(Some(from), to) {
+            repository.apply_checkout(&plan).unwrap();
+            assert_eq!(read(&dir, composed), "1");
+        }
     }
 
     #[test]
