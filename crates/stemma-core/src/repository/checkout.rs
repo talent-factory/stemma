@@ -11,8 +11,9 @@
 //! path it needs. A path of the new tree that is new, and that `.stemmaignore` excludes, is an
 //! error, as is any path with a part that names `.stemma` or `.git` that the checkout changes or
 //! removes, in the old tree or in the new one. A file that the old tree tracks is changed or
-//! removed even if `.stemmaignore` excludes it now (ADR-012: tracked stays tracked). The caller starts with a snapshot, so that the files of
-//! the old tree are what the directory holds; the layer does not compare their content.
+//! removed even if `.stemmaignore` excludes it now (ADR-012: tracked stays tracked). The caller
+//! starts with a snapshot, so that the files of the old tree are what the directory holds; the
+//! layer does not compare their content.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
