@@ -20,13 +20,14 @@ use std::error::Error;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::object::{
     hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
-    TreeParseError,
+    TreeParseError, PREFIX,
 };
 
 /// Why a stored object is rejected.
@@ -494,6 +495,138 @@ impl FsObjectStore {
             .join(&hex[2..])
     }
 
+    /// Lists the IDs of the objects in the store, in no particular order, without reading them. A
+    /// file whose path is not that of an ID is left out, as no ID can name it and no read reaches
+    /// it; the files in `tmp/` are not objects. The scan of a purge needs the list (ADR-014).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Io`] if a directory cannot be listed, if a directory of the fan out is
+    /// a link (a read follows it), and if a name is that of an ID in capitals (a file system that
+    /// ignores case finds it): in both cases its objects exist for a read but not for the list.
+    pub(crate) fn ids(&self) -> Result<Vec<ObjectId>, StoreError> {
+        self.require_root()?;
+        let algorithm = self.root.join("objects").join(PREFIX.trim_end_matches(':'));
+        let mut ids = Vec::new();
+        let fan_outs = match fs::read_dir(&algorithm) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ids),
+            Err(error) => return Err(io_error("list the objects in", &algorithm)(error)),
+        };
+        for fan_out in fan_outs {
+            let fan_out = fan_out.map_err(io_error("list the objects in", &algorithm))?;
+            let path = fan_out.path();
+            let kind = fan_out.file_type().map_err(io_error("inspect", &path))?;
+            if kind.is_symlink() {
+                return Err(StoreError::Io {
+                    operation: "list the objects in",
+                    path,
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a directory of the object store is a link",
+                    ),
+                });
+            }
+            if !kind.is_dir() {
+                continue;
+            }
+            let prefix = fan_out.file_name();
+            for object in fs::read_dir(&path).map_err(io_error("list the objects in", &path))? {
+                let object = object.map_err(io_error("list the objects in", &path))?;
+                let name = object.file_name();
+                let (Some(prefix), Some(rest)) = (prefix.to_str(), name.to_str()) else {
+                    continue;
+                };
+                let text = format!("{PREFIX}{prefix}{rest}");
+                if let Ok(id) = ObjectId::from_str(&text) {
+                    if self.object_path(&id) == object.path() {
+                        ids.push(id);
+                    }
+                } else if ObjectId::from_str(&text.to_ascii_lowercase()).is_ok() {
+                    return Err(StoreError::Io {
+                        operation: "list the objects in",
+                        path: object.path(),
+                        source: io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "the name of an object is not in lower case",
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Returns the kind of a stored object from its header, without reading or checking the body,
+    /// or `None` if the store has no object with the ID. The scan of a purge needs only the kind
+    /// of each object and would otherwise read and hash every blob (ADR-014). A body that does not
+    /// match its ID is found only by a full read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] for a path that is not a regular file and for a header that
+    /// is not one that [`Kind::header`] writes, and [`StoreError::Io`] if the file cannot be read.
+    pub(crate) fn kind_of(&self, id: &ObjectId) -> Result<Option<Kind>, StoreError> {
+        // The longest header: the longest kind name, a space, the digits of `usize::MAX`, NUL.
+        const MAX_HEADER: u64 = 6 + 1 + 20 + 1;
+        let path = self.object_path(id);
+        let corrupt = |reason| StoreError::Corrupt {
+            id: *id,
+            path: path.clone(),
+            reason,
+        };
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.require_root()?;
+                return Ok(None);
+            }
+            Err(error) => return Err(io_error("inspect the object file", &path)(error)),
+        };
+        if !metadata.is_file() {
+            return Err(corrupt(CorruptReason::NotARegularFile));
+        }
+        let mut head = Vec::new();
+        match File::open(&path) {
+            Ok(file) => file
+                .take(MAX_HEADER)
+                .read_to_end(&mut head)
+                .map_err(io_error("read the object file", &path))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error("read the object file", &path)(error)),
+        };
+        let nul = head
+            .iter()
+            .position(|&byte| byte == 0)
+            .ok_or_else(|| corrupt(CorruptReason::NoHeaderEnd))?;
+        let header =
+            std::str::from_utf8(&head[..nul]).map_err(|_| corrupt(CorruptReason::HeaderNotUtf8))?;
+        let (kind_name, length) = header
+            .split_once(' ')
+            .ok_or_else(|| corrupt(CorruptReason::HeaderShape))?;
+        let kind = Kind::from_name(kind_name)
+            .ok_or_else(|| corrupt(CorruptReason::UnknownKind(kind_name.to_owned())))?;
+        let expected = length
+            .parse::<usize>()
+            .ok()
+            .and_then(|length| u64::try_from(length).ok().map(|body| (length, body)))
+            .filter(|(length, body)| {
+                kind.header(*length) == format!("{header}\0")
+                    && metadata.len() == (nul as u64 + 1 + body)
+            });
+        if expected.is_none() {
+            let found = metadata.len().saturating_sub(nul as u64 + 1);
+            return Err(corrupt(CorruptReason::HeaderMismatch {
+                found: header.to_owned(),
+                expected: kind
+                    .header(usize::try_from(found).unwrap_or(usize::MAX))
+                    .trim_end_matches('\0')
+                    .to_owned(),
+            }));
+        }
+        Ok(Some(kind))
+    }
+
     /// Fails unless `root` is an existing directory.
     fn require_root(&self) -> Result<(), StoreError> {
         let operation = "open the object store directory";
@@ -829,6 +962,104 @@ mod tests {
         let dir = TempDir::new();
         takes_a_trait_object(&dir.store());
         is_send_and_sync::<FsObjectStore>();
+    }
+
+    #[test]
+    fn ids_lists_every_object_and_nothing_else() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        assert_eq!(store.ids().unwrap(), []);
+        let mut stored = vec![
+            ObjectId::from(store.put_blob(&Blob::new("one")).unwrap()),
+            ObjectId::from(store.put_blob(&Blob::new("two")).unwrap()),
+            ObjectId::from(store.put_tree(&Tree::new(vec![]).unwrap()).unwrap()),
+        ];
+        let fan_out = store.object_path(&stored[0]);
+        let fan_out = fan_out.parent().unwrap();
+        fs::write(fan_out.join("not-an-id"), "junk").unwrap();
+        fs::write(dir.path().join("objects/b3/stray"), "junk").unwrap();
+        let mut ids = store.ids().unwrap();
+        ids.sort();
+        stored.sort();
+        assert_eq!(ids, stored);
+    }
+
+    #[test]
+    fn kind_of_reads_the_kind_from_the_header_and_rejects_a_damaged_one() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = ObjectId::from(store.put_blob(&Blob::new("one")).unwrap());
+        let tree = ObjectId::from(store.put_tree(&Tree::new(vec![]).unwrap()).unwrap());
+        assert_eq!(store.kind_of(&blob).unwrap(), Some(Kind::Blob));
+        assert_eq!(store.kind_of(&tree).unwrap(), Some(Kind::Tree));
+        let absent = id_of(b"absent");
+        assert_eq!(store.kind_of(&absent).unwrap(), None);
+
+        for content in [&b"junk"[..], b"blob 9\0one", b"tree 01\0", b"thing 0\0"] {
+            let path = store.object_path(&absent);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, content).unwrap();
+            assert!(
+                matches!(store.kind_of(&absent), Err(StoreError::Corrupt { .. })),
+                "{content:?}"
+            );
+            fs::remove_file(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn ids_refuses_a_name_in_capitals() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let upper = dir.path().join("objects/b3/AB");
+        fs::create_dir_all(&upper).unwrap();
+        fs::write(upper.join("c".repeat(62)), "x").unwrap();
+        assert!(matches!(store.ids(), Err(StoreError::Io { .. })));
+        fs::remove_dir_all(&upper).unwrap();
+        let lower = dir.path().join("objects/b3/ab");
+        fs::create_dir_all(&lower).unwrap();
+        fs::write(lower.join("C".repeat(62)), "x").unwrap();
+        assert!(matches!(store.ids(), Err(StoreError::Io { .. })));
+    }
+
+    #[test]
+    fn kind_of_does_not_follow_a_link_and_rejects_a_header_without_its_shape() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let absent = id_of(b"absent");
+        let path = store.object_path(&absent);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (content, reason) in [
+            (&b"\xff\xfe 0\0"[..], CorruptReason::HeaderNotUtf8),
+            (b"blob\0", CorruptReason::HeaderShape),
+        ] {
+            fs::write(&path, content).unwrap();
+            match store.kind_of(&absent) {
+                Err(StoreError::Corrupt { reason: found, .. }) => assert_eq!(found, reason),
+                other => panic!("{content:?}: {other:?}"),
+            }
+            fs::remove_file(&path).unwrap();
+        }
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            store.kind_of(&absent),
+            Err(StoreError::Corrupt {
+                reason: CorruptReason::NotARegularFile,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ids_refuses_a_fan_out_directory_that_is_a_link() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        store.put_blob(&Blob::new("one")).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join("objects/b3/zz")).unwrap();
+        assert!(matches!(store.ids(), Err(StoreError::Io { .. })));
     }
 
     #[test]

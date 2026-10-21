@@ -10,11 +10,12 @@
 //! and the same `op restore` run again moves the rest. Running `status` again is safe, but it
 //! finds nothing to save and so does not make an unflushed snapshot durable.
 //!
-//! A command that only reads (`op log`, `status`, and `op restore --dry-run`) has made nothing by
-//! its output, so a failed write of its output is code 1; some of the output may already be
-//! written, and a script discards it. A closed pipe is not a failure, and it does not hide an
-//! error of flushing that comes after the output. The one exception is a closed pipe after an
-//! `op restore` that was made: the output is the only place that names its entry, so it is code 3.
+//! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge`, which only
+//! plans until STEMMA-48) has made nothing by its output, so a failed write of its output is code
+//! 1; some of the output may already be written, and a script discards it. A closed pipe is not a
+//! failure, and it does not hide an error of flushing that comes after the output. The one
+//! exception is a closed pipe after an `op restore` that was made: the output is the only place
+//! that names its entry, so it is code 3.
 //! An `op restore` writes its result before an error that follows a restore that was made, as
 //! `commit` does.
 //!
@@ -45,13 +46,13 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 
 use crate::op_log;
-use stemma_core::object::METADATA_DIR;
+use stemma_core::object::{ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
-    normalize_path, CommitError, Committed, InitError, InitOptions, OpenError, Repository,
-    RestoreError, RestorePlan, SnapshotError, Status, StatusError, TrackError, Tracking,
-    UpdateError,
+    normalize_path, CommitError, Committed, InitError, InitOptions, OpenError, PurgeError,
+    PurgePlan, Repository, RestoreError, RestorePlan, SnapshotError, Status, StatusError,
+    TrackError, Tracking, UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -84,6 +85,29 @@ enum Command {
         #[command(subcommand)]
         command: OpCommand,
     },
+    /// Show what removing a secret from the history and the log would do; nothing is written
+    Purge(PurgeArgs),
+}
+
+#[derive(Debug, Args)]
+struct PurgeArgs {
+    /// The ID of the blob that holds the secret, `b3:` and 64 hexadecimal digits
+    #[arg(value_name = "BLOB")]
+    blob: ObjectId,
+
+    /// The directory of the repository, the one that contains `.stemma`
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>`; an agent may not purge. Required unless the
+    /// environment sets STEMMA_ACTOR
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -303,6 +327,11 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The purge was refused, or it could not be planned. Nothing was written.
+    Purge(PurgeError),
+    /// The plan of a purge could not be written to the output. Nothing was written to the
+    /// repository.
+    PurgeOutput(io::Error),
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
@@ -355,6 +384,8 @@ impl CliError {
             | Self::StatusOutput { .. }
             | Self::Restore(_)
             | Self::RestoreOutput { .. }
+            | Self::Purge(_)
+            | Self::PurgeOutput(_)
             | Self::OpLog(_)
             | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
@@ -380,7 +411,8 @@ impl fmt::Display for CliError {
             Self::Open(error @ OpenError::NotARepository { .. }) => write!(
                 f,
                 "{error}; stemma looks only in the directory it is given, not in its parents \
-                 (see `-C` of `track`, `commit`, and `status`, and the argument of `op log`)"
+                 (see `-C` of `track`, `commit`, `status`, `op restore`, and `purge`, and the \
+                 argument of `op log`)"
             ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
@@ -471,6 +503,11 @@ impl fmt::Display for CliError {
                     None => Ok(()),
                 }
             }
+            Self::Purge(error) => error.fmt(f),
+            Self::PurgeOutput(source) => write!(
+                f,
+                "could not write the plan of the purge, and nothing was written: {source}"
+            ),
             Self::OpLog(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
@@ -505,7 +542,90 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
         Command::Op {
             command: OpCommand::Restore(args),
         } => restore(args, out),
+        Command::Purge(args) => purge(args, out),
     }
+}
+
+/// Shows what a purge of the blob would do (ADR-014): the commits it rewrites, the pointers it
+/// moves, the entries it replaces by stubs, and the objects it deletes. The core refuses an agent
+/// before it reads the history. Only the plan is built until STEMMA-48, so the command writes
+/// nothing, not even a snapshot; a closed pipe is not a failure.
+fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let plan = repository
+        .plan_purge(args.blob, &actor, &AllowAll)
+        .map_err(CliError::Purge)?;
+    match out.write_all(purge_text(&plan).as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(CliError::PurgeOutput(error)),
+    }
+}
+
+/// What a purge would do: a first line, one line for each commit, pointer, and object, one line
+/// for the stubs, and a last line that says that only the plan is built.
+fn purge_text(plan: &PurgePlan) -> String {
+    use crate::op_log::{value, HeadValue};
+    let mut text = format!("Would purge blob {}; nothing is written\n", plan.blob());
+    for (old, new) in plan.rewrites() {
+        text.push_str(&format!("    rewrite {old} -> {new}\n"));
+    }
+    if let Some(head) = plan.head() {
+        text.push_str(&format!(
+            "    head  {} -> {}\n",
+            value(head.before().map(HeadValue).as_ref()),
+            value(head.after().map(HeadValue).as_ref())
+        ));
+    }
+    if let Some(moved) = plan.working_copy() {
+        text.push_str(&format!(
+            "    working-copy  {} -> {}\n",
+            value(moved.before()),
+            value(moved.after())
+        ));
+    }
+    for (name, moved) in plan.branches() {
+        text.push_str(&format!(
+            "    branch {}  {} -> {}\n",
+            name.to_string().escape_debug(),
+            value(moved.before()),
+            value(moved.after())
+        ));
+    }
+    if !plan.entries().is_empty() {
+        text.push_str(&format!("    stub entries {}\n", ranges(plan.entries())));
+    }
+    for commit in plan.deleted_commits() {
+        text.push_str(&format!("    delete commit {commit}\n"));
+    }
+    for tree in plan.deleted_trees() {
+        text.push_str(&format!("    delete tree {tree}\n"));
+    }
+    text.push_str(&format!("    delete blob {}\n", plan.blob()));
+    text.push_str("Only the plan is built so far; the purge itself is not\n");
+    text
+}
+
+/// Numbers in ascending order as ranges: `3, 5-7`.
+fn ranges(numbers: &[u64]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < numbers.len() {
+        let start = numbers[index];
+        let mut end = start;
+        while index + 1 < numbers.len() && numbers[index + 1] == end + 1 {
+            index += 1;
+            end = numbers[index];
+        }
+        parts.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}-{end}")
+        });
+        index += 1;
+    }
+    parts.join(", ")
 }
 
 /// Puts back the old values of an entry, or shows what that would do. The core plans first, so a
@@ -1703,6 +1823,13 @@ mod tests {
             "{walk}"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_numbers_of_the_stubs_are_written_as_ranges() {
+        assert_eq!(ranges(&[]), "");
+        assert_eq!(ranges(&[4]), "4");
+        assert_eq!(ranges(&[3, 5, 6, 7, 9, 10]), "3, 5-7, 9-10");
     }
 
     #[test]

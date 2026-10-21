@@ -25,6 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod checkout;
 mod commit;
+mod purge;
 mod restore;
 mod snapshot;
 mod status;
@@ -32,6 +33,7 @@ mod track;
 
 pub use checkout::{CheckoutError, CheckoutPlan, PlannedWrite};
 pub use commit::{CommitError, Committed};
+pub use purge::{PurgeError, PurgePlan};
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};

@@ -1,10 +1,10 @@
 # ADR-014: Removing a secret from the history and the operation log
 
-**Status:** Accepted, not implemented. The decisions marked *(confirmed)* were agreed with the
-author on 2026-10-21 (STEMMA-26), and the author confirmed the whole ADR on the same day,
-including the steps, the journal, the lock, resume, and abort. The slices are listed at the end.
-The open items at the end are questions for the slices and for later; none of them changes a
-decision above.
+**Status:** Accepted; the plan is implemented (STEMMA-46), the purge itself is not. The
+decisions marked *(confirmed)* were agreed with the author on 2026-10-21 (STEMMA-26), and the
+author confirmed the whole ADR on the same day, including the steps, the journal, the lock,
+resume, and abort. The slices are listed at the end. The open items at the end are questions for
+the slices and for later; none of them changes a decision above.
 
 ## Context
 
@@ -78,8 +78,11 @@ Facts that bound the design:
   only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
   does not make ADR-007's collection necessary. The plan also scans the store for trees that name
-  the blob and for the commits of such trees. One that no kept root reaches (the leftover of a
-  crash before its entry) is deleted with them, so that no tree is left that names a missing blob.
+  the blob, for the commits of such trees, and for the commits after them. One that no kept root
+  reaches (the leftover of a crash before its entry) is deleted with them and not rewritten, so
+  that no tree is left that names a missing blob and no commit that names a deleted parent. A
+  leftover that holds no secret and follows no such commit stays. The plan checks at the end
+  that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
   The scratch files of `tmp/` are not touched (see the limits).
 - **A synchronized repository stays open** *(confirmed)*. A secret that was pushed (phase 5) is
   also on the hub, and a purge here does not reach it. The rule for users is that a pushed secret
@@ -151,12 +154,14 @@ a person to repair.
   exists (STEMMA-31); the purge cannot tell a stale file from the live file of a writer that does
   not take the lock. Other objects that were unreachable before and name no blob stay. The commit
   messages and path names are kept as they are and can hold the secret too; the unit of the
-  purge is the blob. Nothing stops a later `track` from taking the secret in again unless
-  `.stemmaignore` names it.
+  purge is the blob. A file below `objects/` whose path is not that of an ID is not looked at, as
+  no read reaches it, and the scan reads only the header of a blob, so a tree whose header was
+  damaged into that of a blob is not found. Nothing stops a later `track` from taking the secret
+  in again unless `.stemmaignore` names it.
 - Commit IDs change for the rewritten commits and their descendants. Anything that holds an old ID
   outside the repository (a note, a message) points at nothing afterwards. Change IDs stay. Two
-  commits that differed only in the blob can become one, and the rewrite needs a constructor that
-  takes new parents (`Commit::rewrite` keeps them).
+  commits that differed only in the blob can become one. The rewrite takes new parents with
+  `Commit::reparent`, as `Commit::rewrite` keeps them.
 - The log needs a reader that tells a stub from an entry. `outcomes` (ADR-011) takes entries, so
   it either takes the stubs as well or skips them. If it skips them, the entry before a stub
   finds a later old value that is neither its old nor its new one and is unknown, and a restore of
@@ -180,11 +185,13 @@ a person to repair.
       hash that a stub keeps when the chain exists (STEMMA-41).
 - [ ] How the user names the secret. The blob ID is the unit; a path or a pattern that finds the
       blobs in the history is a convenience, and a text that is replaced inside a file (instead
-      of removing the file from the tree) would keep the file tracked.
+      of removing the file from the tree) would keep the file tracked. The first version takes
+      the full blob ID (STEMMA-46).
 - [ ] Whether the purge may keep a file tracked with the secret replaced by a given content,
       for a `config` that should stay in the history.
-- [ ] A tree that becomes empty when its only file leaves: whether it is dropped from its parent,
-      as a snapshot builds trees from files (to be checked against the snapshot in the slice).
+- [x] A tree that becomes empty when its only file leaves: it is dropped from its parent, as a
+      snapshot never makes an empty directory; the tree of a commit can become empty. A test
+      compares the new tree with the one that a snapshot makes of the same files (STEMMA-46).
 - [ ] A record of purged blob IDs that `track` and `status` check, so that the secret does not
       come back by accident.
 - [ ] The rewrite of commits with several parents (phase 3), where two parents can become one
@@ -193,7 +200,11 @@ a person to repair.
 - [ ] The reachability check of the last step has to know every kind of reference that holds
       objects, including those that come later (tags, remote references).
 - [ ] The removal on a hub and the rule for a repository that was synchronized (phase 5).
+- [ ] A secret blob whose file is damaged cannot be purged: the plan does not know that it is a
+      blob. Deleting it needs no knowledge of its content, so a later version may allow it.
 
-Slices: the rewrite of commits with the plan (`Repository::purge`, STEMMA-46), the stubs and
-the `purge` entry in the log with its reader and `op restore` refusing a stub (STEMMA-47), and
-the journal, the removal of the objects, resume, and abort (STEMMA-48).
+Slices: the plan (`Repository::plan_purge` and `stemma purge BLOB`, which writes nothing,
+STEMMA-46), the stubs and the `purge` entry in the log with its reader and `op restore` refusing
+a stub (STEMMA-47), and `--apply` with the snapshot, the new objects, the journal, the removal of
+the objects, resume, and abort (STEMMA-48). The apply waits for the other two, as a pointer moves
+only with an entry and a purge without stubs and removal would leave the secret in place.
