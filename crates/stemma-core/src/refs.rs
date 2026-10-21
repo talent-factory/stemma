@@ -1476,7 +1476,11 @@ impl FsRefStore {
 
     /// Deletes the file of a branch, and the directories above it that this empties, up to the
     /// directory of the branches, which stays. Returns `false` if the file was gone already, so
-    /// that nothing moved and nothing needs a flush. A flush that fails after the deletion is
+    /// that nothing moved and nothing needs a flush.
+    ///
+    /// Once the file is gone the branch is gone: a directory that cannot be removed is left, and
+    /// is no failure of the move (it is an empty directory, which a later lookup clears). The
+    /// deepest directory that changed is flushed; if that fails, the result is
     /// [`RefError::NotFlushed`]: the branch is gone, but may come back after a crash.
     fn delete_branch_file(&self, name: &BranchName) -> Result<bool, RefError> {
         let path = self.branch_path(name);
@@ -1486,24 +1490,20 @@ impl FsRefStore {
             Err(error) => return Err(io_error("remove the reference", &path)(error)),
         }
         let heads = self.heads_dir();
-        let mut directory = path.parent().map(Path::to_path_buf);
-        while let Some(dir) = directory {
-            if dir == heads {
-                break;
+        let mut changed = path
+            .parent()
+            .map_or_else(|| heads.clone(), Path::to_path_buf);
+        while changed != heads && fs::remove_dir(&changed).is_ok() {
+            match changed.parent() {
+                Some(parent) => changed = parent.to_path_buf(),
+                None => break,
             }
-            match fs::remove_dir(&dir) {
-                Ok(()) => {}
-                // Another branch is below it: the directory stays.
-                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => break,
-                Err(error) => return Err(io_error("remove the empty directory", &dir)(error)),
-            }
-            directory = dir.parent().map(Path::to_path_buf);
         }
-        sync_directory(&heads)
+        sync_directory(&changed)
             .map(|()| true)
             .map_err(|error| match error {
                 StoreError::Io { source, .. } => RefError::NotFlushed {
-                    path: heads.clone(),
+                    path: changed.clone(),
                     source,
                 },
                 other => RefError::Store(Box::new(other)),

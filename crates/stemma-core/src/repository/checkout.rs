@@ -319,6 +319,25 @@ impl Repository {
         let Some((full, metadata)) = lookup(self.path(), path)? else {
             return Ok(false);
         };
+        // The file system may read another spelling of the name as this file (case, a form of
+        // Unicode normalization, a short name). Only a file under exactly this name counts as
+        // done, so that no alias is taken for a file that a removal of the old tree deletes.
+        let exact = full
+            .parent()
+            .zip(full.file_name())
+            .map(|(parent, name)| {
+                fs::read_dir(parent).map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .any(|entry| entry.file_name() == name)
+                })
+            })
+            .transpose()
+            .map_err(|source| io_error("list", &full, source))?
+            .unwrap_or(false);
+        if !exact {
+            return Ok(false);
+        }
         let expected = read_object(self.objects(), blob.object_id(), Kind::Blob)?;
         if mode == FileMode::Symlink {
             #[cfg(unix)]
@@ -1590,6 +1609,22 @@ mod tests {
         let plan = repository.plan_checkout(Some(from), to).unwrap();
         repository.apply_checkout(&plan).unwrap();
         assert_eq!(read(&dir, "readme"), "1");
+    }
+
+    #[test]
+    fn a_name_in_another_normalization_form_is_never_taken_for_done() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (decomposed, composed) = ("cafe\u{301}.txt", "caf\u{e9}.txt");
+        write(&dir, decomposed, "1");
+        let from = tree(&repository, &[plain(decomposed, "1")]);
+        let to = tree(&repository, &[plain(composed, "1")]);
+        // Where the file system reads both names as one file, the plan must refuse or the apply
+        // must leave a file; it must never report success and have deleted the file.
+        if let Ok(plan) = repository.plan_checkout(Some(from), to) {
+            repository.apply_checkout(&plan).unwrap();
+            assert_eq!(read(&dir, composed), "1");
+        }
     }
 
     #[test]
