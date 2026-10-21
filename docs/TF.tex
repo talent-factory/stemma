@@ -135,12 +135,28 @@
             handle:close()
         end
 
-        return branch, commit
+        -- Date of the commit in German long form, e.g. "18. Oktober 2026"
+        local date = "unbekannt"
+        handle = io.popen("git log -1 --format=%cd --date=format:%Y-%m-%d 2>/dev/null")
+        if handle then
+            local y, m, d = handle:read("*a"):match("(%d+)-(%d+)-(%d+)")
+            handle:close()
+            if y then
+                local months = {
+                    "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+                    "August", "September", "Oktober", "November", "Dezember",
+                }
+                date = tonumber(d) .. ". " .. months[tonumber(m)] .. " " .. y
+            end
+        end
+
+        return branch, commit, date
     end
 
-    local branch, commit = get_git_info()
+    local branch, commit, date = get_git_info()
     document.gitbranch = branch
     document.gitcommit = commit
+    document.gitdate = date
     document.gitinfo = "[git] • Branch: " .. branch .. "@" .. commit
 \stopluacode
 
@@ -148,6 +164,7 @@
 \def\gitinfo{\ctxlua{context(document.gitinfo)}}
 \def\gitbranch{\ctxlua{context(document.gitbranch)}}
 \def\gitcommit{\ctxlua{context(document.gitcommit)}}
+\def\gitdate{\ctxlua{context(document.gitdate)}}
 
 % =============================================================================
 % HEADERS AND FOOTERS
