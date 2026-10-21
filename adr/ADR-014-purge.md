@@ -1,10 +1,11 @@
 # ADR-014: Removing a secret from the history and the operation log
 
-**Status:** Accepted; the plan is implemented (STEMMA-46), the purge itself is not. The
-decisions marked *(confirmed)* were agreed with the author on 2026-10-21 (STEMMA-26), and the
-author confirmed the whole ADR on the same day, including the steps, the journal, the lock,
-resume, and abort. The slices are listed at the end. The open items at the end are questions for
-the slices and for later; none of them changes a decision above.
+**Status:** Accepted; the plan (STEMMA-46) and the stub with the `purge` entry in the log
+(STEMMA-47) are implemented, the purge itself is not. The decisions marked *(confirmed)* were
+agreed with the author on 2026-10-21 (STEMMA-26), and the author confirmed the whole ADR on the
+same day, including the steps, the journal, the lock, resume, and abort. The slices are listed at
+the end. The open items at the end are questions for the slices and for later; none of them
+changes a decision above.
 
 ## Context
 
@@ -181,8 +182,13 @@ a person to repair.
 
 ## Open items
 
-- [ ] The format of the stub and of the `purge` entry, in the strict text form of ADR-011, and the
-      hash that a stub keeps when the chain exists (STEMMA-41).
+- [x] The format of the stub and of the `purge` entry, in the strict text form of ADR-011: entry
+      encoding `stemma-oplog 2`, written only for these two (STEMMA-47; see ADR-011). A
+      `purge` entry has `commits <n>` and `stubs <ranges>`, and a list that does not fit is
+      split, the count in the first part.
+- [ ] The hash that a stub keeps when the chain exists (STEMMA-41, which then takes encoding 3).
+- [ ] An entry before a stub loses the evidence of the next move of its pointer, so its outcome
+      is unknown and `op restore` needs `--force` for it, as foreseen under the consequences.
 - [ ] How the user names the secret. The blob ID is the unit; a path or a pattern that finds the
       blobs in the history is a convenience, and a text that is replaced inside a file (instead
       of removing the file from the tree) would keep the file tracked. The first version takes

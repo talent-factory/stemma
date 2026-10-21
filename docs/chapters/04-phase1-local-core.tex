@@ -308,8 +308,19 @@ die Stubs und die Objekte und schreibt nichts. Ein Verzeichnis, das nur den Blob
 fällt dabei aus dem Baum, so wie ein Snapshot nie ein leeres Verzeichnis anlegt. Der Plan
 durchsucht auch den Objektspeicher nach solchen Resten, die nichts erreicht. Zum Schluss
 prüft er, dass nichts Behaltenes den Blob noch enthält oder etwas erreicht, das er löscht;
-sonst bricht er ab. Die Stubs mit dem Eintrag \type{purge} folgen
-mit STEMMA-47, das Umschreiben und das Löschen mit Journal mit STEMMA-48.
+sonst bricht er ab.
+
+Das Log kennt die Stubs und den Eintrag \type{purge} (STEMMA-47). Beide haben die Version 2
+der Kodierung, und sonst hat sie kein Eintrag, damit jeder Eintrag genau eine Form behält.
+Ein Stub behält Nummer, Zeit und Akteur und verliert die Operation und jede ID. Der Eintrag
+des Purge nennt keinen Zeiger und keine ID, nur die Zahl der umgeschriebenen Commits und die
+Nummern der Stubs als Bereiche; eine lange Liste verteilt sich auf mehrere Einträge. Ein Stub,
+den kein Purge nennt, ist ein Fehler des Logs wie eine Lücke. \type{op restore} lehnt einen
+Stub und einen Purge ab. Weil ein Stub den Beleg für den nächsten Zug eines Zeigers nimmt,
+braucht ein Eintrag davor \type{--force}. Ein Hash, den der Stub behalten müsste, kommt erst
+mit einer Hash-Kette (STEMMA-41). Das Umschreiben selbst und das Löschen mit Journal folgen
+mit STEMMA-48; mit dem ersten Purge wechselt das Repository auf das Format 3, das ältere
+Programme ablehnen.
 
 \section{Offene Fragen}
 

@@ -74,8 +74,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   cannot be read. The working-copy commit has its place in the references since STEMMA-22
   (`.stemma/working-copy`); a caller that does not give its value to `oplog::Current` leaves the
   last entry that moves it unknown. A lock that a crashed writer left makes the newest entries unknown until
-  someone removes it. A separate marker can come with a later version of the entry encoding
-  (`stemma-oplog 2`) if a use appears.
+  someone removes it. A separate marker can come with a later version of the entry encoding if a
+  use appears; version 2 went to the stub and the `purge` entry (ADR-014).
 - **Only a change writes an entry** *(confirmed)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
@@ -178,6 +178,12 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - A branch and the working-copy commit have a commit ID or `-`. HEAD has `branch:<name>` or
   `commit:<id>` or `-`.
 - The file ends with a newline and has no message and no further lines.
+- Version 2 of the encoding is written only for a stub and for the entry of a purge (ADR-014,
+  STEMMA-47). A stub has the header, `number`, `time`, `actor`, and the line `stub`. A `purge`
+  entry has the header, `number`, `time`, `actor`, `operation purge`, `commits <n>`, and
+  `stubs <ranges>` (`4-5 7`, or `-`), and no pointer. A change cannot have the operation `purge`,
+  so every entry still has one encoding. A stub that no `purge` entry lists is an error of the
+  log, like a gap.
 
 ## Consequences
 
@@ -225,8 +231,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       time, and what a garbage collection may remove (nothing before ADR-007's collection
       exists). Decide with a measurement of a real session.
 - [ ] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
-      audited without keeping the secret. Decided in ADR-014 (STEMMA-26); to be built in
-      STEMMA-46 to STEMMA-48.
+      audited without keeping the secret. Decided in ADR-014 (STEMMA-26). The plan (STEMMA-46)
+      and the stub with the `purge` entry in the log (STEMMA-47) are built; the purge itself is
+      to be built in STEMMA-48.
 - [x] A recovery when the highest number is missing: the tip file (STEMMA-30). What remains is
       a command that repairs a log with a lost last entry (the tip has to be set back by hand
       today), and the hash chain (STEMMA-41).

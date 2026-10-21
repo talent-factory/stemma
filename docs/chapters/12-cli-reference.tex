@@ -466,7 +466,23 @@ Bei einem Zug, der stattfand, fehlt die Zeile.
 
 (Im Beispiel sind die Commit-IDs gekürzt; der Befehl gibt sie vollständig aus.)
 
-{\bf JSON-Form.} Die Felder sind \type{number}, \type{time} (Sekunden seit dem 1.1.1970,
+{\bf Stubs und Purge.} Ein Eintrag, den ein Purge ersetzt hat (ADR-014), erscheint als Stub
+mit Nummer, Zeit und Akteur und \type{(purged)} an der Stelle der Operation, ohne weitere
+Zeile. Der Eintrag eines Purge zeigt in einer zweiten Zeile die Zahl der umgeschriebenen
+Commits und die Nummern der Stubs als Bereiche. Beide nennen keine ID und haben keine Zeile
+über den Zug.
+
+\starttyping
+4  2023-11-14T22:13:20Z  human daniel  purge
+    commits 2  stubs 2-3
+3  2023-11-14T22:13:20Z  human daniel  (purged)
+\stoptyping
+
+{\bf JSON-Form.} Jede Zeile beginnt mit \type{number} und \type{kind}: \type{change},
+\type{stub} oder \type{purge}. Ein Stub hat dazu nur \type{time} und \type{actor}; ein
+Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits} und \type{stubs},
+eine Liste von Bereichen \type{[start, end]}.
+Für eine Änderung sind die weiteren Felder \type{time} (Sekunden seit dem 1.1.1970,
 wie im Eintrag), \type{actor}, \type{operation}, \type{head}, \type{working_copy},
 \type{branches} und \type{took_effect}. \type{took_effect} ist \type{true},
 wenn der Zug stattfand, \type{false}, wenn er nicht stattfand, und \type{null},
@@ -477,7 +493,8 @@ mit \type{old} und \type{new}. \type{branches} ist eine Liste von Objekten mit \
 den es nicht gibt, ist \type{null}. HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
-Fehlt eine Nummer im Log, ist ein Eintrag nicht in kanonischer Form, passt die Nummer
+Fehlt eine Nummer im Log, ist ein Eintrag ein Stub, den kein Purge nennt,
+ist ein Eintrag nicht in kanonischer Form, passt die Nummer
 im Eintrag nicht zum Dateinamen, steht in \type{oplog/} eine fremde Datei,
 ist die Datei \type{oplog-tip} nicht kanonisch oder nennt sie einen Eintrag, den das
 Verzeichnis nicht hat, oder ist das Log ganz leer, bricht er ab, gibt nichts aus und
@@ -612,6 +629,10 @@ Das gilt auch für \type{--dry-run}.
 nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
 HEAD oder den Working-Copy-Commit angelegt hat (das tut nur der erste Eintrag, und
 beide können nicht fehlen).
+Ebenso endet er bei einem Stub, denn was der Eintrag bewegt hat, ist mit dem Purge weg, und
+beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-014).
+Ein Eintrag vor einem Stub verliert den Beleg, den der nächste Zug seines Zeigers gab;
+sein Ausgang ist dann unbekannt, und er braucht \type{--force}.
 Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt,
 eine Sperre der Referenzen (ein anderer Vorgang schreibt: später noch einmal) und eine Datei
 oder ein Verzeichnis, das nicht verfolgt wird und dort liegt, wo der Baum eine Datei braucht.
