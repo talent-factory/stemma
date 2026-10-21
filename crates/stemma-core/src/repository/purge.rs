@@ -109,8 +109,9 @@ impl Repository {
     ///
     /// [`PurgeError::Agent`] for an agent, [`PurgeError::Update`] for a refusal of the authorizer,
     /// [`PurgeError::NoSuchBlob`] if the store has no blob with the ID,
-    /// [`PurgeError::BlobUnreadable`] if its file cannot be read or is damaged, [`PurgeError::Refs`] and
-    /// [`PurgeError::Log`] if the pointers or the log cannot be read, [`PurgeError::Read`] for a
+    /// [`PurgeError::BlobUnreadable`] if its file cannot be read or is damaged,
+    /// [`PurgeError::Refs`] and [`PurgeError::Log`] if the pointers or the log cannot be read,
+    /// [`PurgeError::Read`] for a
     /// commit or a tree that is missing or cannot be read, [`PurgeError::Store`] if the store
     /// cannot be listed or an object in it is damaged, [`PurgeError::DuplicateParent`] if a
     /// rewrite makes two parents of a commit the same, [`PurgeError::Leftover`] for one of these
