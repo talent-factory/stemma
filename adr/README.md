@@ -11,7 +11,7 @@
 | [ADR-007](ADR-007-object-storage.md) | Object storage | Proposal, partially confirmed |
 | [ADR-008](ADR-008-references.md) | References: branches and HEAD | Proposal, partially confirmed |
 | [ADR-009](ADR-009-repository-layout.md) | Repository layout and `init` | Proposal, partially confirmed |
-| [ADR-010](ADR-010-working-copy.md) | The working copy is a commit | Partially confirmed, implemented |
+| [ADR-010](ADR-010-working-copy.md) | The working copy is a commit | Accepted, implemented |
 | [ADR-011](ADR-011-operation-log.md) | The operation log | Accepted, implemented |
 | [ADR-012](ADR-012-exclusion-file.md) | The exclusion file `.stemmaignore` | Confirmed, implemented |
 | [ADR-013](ADR-013-restore.md) | Restoring the state before an entry | Accepted, implemented |

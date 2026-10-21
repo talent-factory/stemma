@@ -18,7 +18,20 @@ Branches und Tags sind Zeiger auf Commits. HEAD zeigt auf den aktuellen Branch. 
 
 \section{Arbeitskopie und Index}
 
-Git trennt drei Zustände: die Arbeitskopie, den Index als Staging-Bereich und den letzten Commit. Der Index ist eine Zwischenstufe, die Entwicklerinnen und Entwickler bewusst füllen. Für Agenten ist diese Stufe eine Fehlerquelle, wenn unvollständige Zustände committet werden. Ein anderer Ansatz betrachtet die Arbeitskopie selbst als Commit, wie es Jujutsu tut \cite[jujutsu]. Stemma folgt ihm (ADR-010, Entwurf, teilweise bestätigt): Bei jedem Befehl wird der Arbeitsordner als Commit gesichert, sodass der Zustand eines Agenten nicht verloren geht, auch wenn er nichts bestätigt hat. Jeder Commit trägt dafür eine Change-ID, die bei jedem Umschreiben derselben Änderung gleich bleibt. Ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue. Neue Dateien kommen erst in den Verlauf, wenn ein Befehl sie bestätigt, und eine Ausschlussdatei hält Pfade wie Build-Ausgaben und Geheimnisse heraus. Zwischen zwei Aufrufen kann Stemma nichts sichern, einen Dateiwächter gibt es in Phase 1 nicht.
+Git trennt drei Zustände: die Arbeitskopie, den Index als Staging-Bereich und den letzten Commit.
+Der Index ist eine Zwischenstufe, die Entwicklerinnen und Entwickler bewusst füllen.
+Für Agenten ist diese Stufe eine Fehlerquelle, wenn unvollständige Zustände committet werden.
+Ein anderer Ansatz betrachtet die Arbeitskopie selbst als Commit, wie es Jujutsu tut
+\cite[jujutsu].
+Stemma folgt ihm (ADR-010):
+Bei jedem Befehl wird der Arbeitsordner als Commit gesichert, sodass der Zustand eines Agenten
+nicht verloren geht, auch wenn er nichts bestätigt hat.
+Jeder Commit trägt dafür eine Change-ID, die bei jedem Umschreiben derselben Änderung gleich
+bleibt.
+Ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue.
+Neue Dateien kommen erst in den Verlauf, wenn ein Befehl sie bestätigt, und eine Ausschlussdatei
+hält Pfade wie Build-Ausgaben und Geheimnisse heraus.
+Zwischen zwei Aufrufen kann Stemma nichts sichern, einen Dateiwächter gibt es in Phase 1 nicht.
 
 \section{Konflikte und Operation Log}
 

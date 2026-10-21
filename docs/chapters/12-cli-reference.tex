@@ -48,6 +48,11 @@ setzen die Variable voraus. Einen Standardwert aus
 dem Benutzernamen gibt es nicht. Die Angabe belegt nicht, wer den Befehl wirklich ausführt,
 sie nennt nur, in wessen Namen er läuft.
 
+Ein Befehl, der einen Snapshot macht (\type{track}, \type{commit}, \type{status},
+\type{restore}), trägt diesen Akteur für alles ein, was er im Verzeichnis speichert.
+Deshalb arbeitet jeder Akteur in einer eigenen Arbeitskopie; zwei Akteure in einem
+Verzeichnis sind kein unterstützter Betrieb (ADR-010). Das Programm prüft es nicht.
+
 {\bf Exit-Codes.} Ein Skript kann sich auf diese Werte verlassen.
 
 \startitemize
