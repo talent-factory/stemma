@@ -1,7 +1,8 @@
 # ADR-010: The working copy is a commit
 
-**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed with the
-author on 2026-10-19; the others are proposals.
+**Status:** Partially confirmed. Decisions marked *(confirmed)* were agreed with the author on
+2026-10-19, and `commit` and the tracked set on 2026-10-21. The ADR becomes *Accepted* when the
+actor of a snapshot is decided (STEMMA-38); the other open items at the end do not hold it back.
 
 ## Context
 
@@ -68,7 +69,7 @@ are prior art, not a template.
   `.stemmaignore` (ADR-012) is read by `track`: an excluded file below a directory is skipped
   like those names, and an excluded path that the caller names is an error. A file whose name a
   tree refuses is skipped as well if a pattern excludes it, and it stops the call otherwise.
-- **`commit` names the working-copy commit and starts a new one** *(proposal, implemented in
+- **`commit` names the working-copy commit and starts a new one** *(confirmed, implemented in
   `Repository::commit`)*. The current working-copy commit gets its message, and its change keeps
   its ID. A new, empty working-copy commit starts on top of it. HEAD keeps naming a branch
   (ADR-008); the working-copy commit is a child of the commit of that branch. Details:
@@ -120,7 +121,7 @@ are prior art, not a template.
   - `op log` still takes no snapshot, because the snapshot would change the log it is about to
     show. A tracked file that a pattern excludes stays in the changes; a report "tracked and
     excluded" is an open item of ADR-012.
-- **The tracked set is the tree of the working-copy commit** *(proposal)*. There is no index file
+- **The tracked set is the tree of the working-copy commit** *(confirmed)*. There is no index file
   as a staging area. `Index` stays in the code as the model that builds a tree from a set of
   paths and as the format of a cache, if one is needed for speed.
 - **Where the working-copy commit is recorded** *(confirmed)*. A file `.stemma/working-copy`

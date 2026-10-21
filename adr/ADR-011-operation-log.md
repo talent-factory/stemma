@@ -1,8 +1,9 @@
 # ADR-011: The operation log
 
-**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed with the
-author on 2026-10-19; those marked *(implemented)* are built and tested in the first slice and
-still wait for confirmation; the others are proposals.
+**Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
+2026-10-19, and the rest on 2026-10-21; all are implemented. The open items at the end are
+questions for later (retention, who may read the log, the width of the number, Windows) and
+none of them changes a decision.
 
 ## Context
 
@@ -63,7 +64,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   lost, and then a move that happened would look as if it had not. A reader reads the outcome
   from the chain of the entries of one pointer: a later entry whose old value is the new value of
   this one confirms the move, and the current value of the pointer confirms the last one. The
-  reading is `oplog::outcomes` *(implemented)*. "The move did not take effect" is the strongest
+  reading is `oplog::outcomes`. "The move did not take effect" is the strongest
   statement of the log, so it is made only on clear evidence: a later entry whose old value is the
   *old* value of this one, or a current value that equals the old value while no writer is at work
   (the lock of the references is not held before and after the references are read, and the log
@@ -75,21 +76,21 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   last entry that moves it unknown. A lock that a crashed writer left makes the newest entries unknown until
   someone removes it. A separate marker can come with a later version of the entry encoding
   (`stemma-oplog 2`) if a use appears.
-- **Only a change writes an entry** *(implemented for pointers; the snapshot is not built)*. A snapshot of an unchanged directory creates no
+- **Only a change writes an entry** *(confirmed)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
-- **Nothing is deleted** *(implemented; no operation deletes)*. No operation removes an entry, and no garbage collection
+- **Nothing is deleted** *(confirmed)*. No operation removes an entry, and no garbage collection
   runs in phase 1 (ADR-007). Removing a secret replaces the entries that name it by a stub that
   keeps the number (STEMMA-26), so the numbering has no gap.
-- **The format is strict text** *(implemented)*. A reader accepts what the writer writes and nothing
+- **The format is strict text** *(confirmed)*. A reader accepts what the writer writes and nothing
   else, as in ADR-005, so one entry has exactly one encoding. The sketch below is the format.
   The time is the one the writer claims, in seconds since the Unix epoch, written as in a commit
   (ADR-005); it is not a proof, and the order is the number, not the time.
-- **The repository format version rises to 2 with the log** *(implemented)*. `oplog/` is part of
+- **The repository format version rises to 2 with the log** *(confirmed)*. `oplog/` is part of
   the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again.
-- **A tip file names the last entry** *(proposed, implemented in STEMMA-30)*. `.stemma/oplog-tip`
+- **A tip file names the last entry** *(confirmed; STEMMA-30)*. `.stemma/oplog-tip`
   holds the number of the last entry in the strict form `stemma-oplog-tip 1\nnumber <n>\n`. The
   writer replaces it after the entry is in place and before the pointer moves, with a temporary
   file that is flushed and a rename. The flush of the directory is best effort: a tip that is not
@@ -127,7 +128,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   the same directory is not stopped. A refusal by the authorizer, a name that is in the way, a
   branch that is not where the caller saw it (seen under the lock), and a commit that is not in the
   store write no entry. A move to the value that a pointer has writes none either.
-- **The caller is told whether an entry exists, and whether the pointer moved** *(implemented)*. An
+- **The caller is told whether an entry exists, and whether the pointer moved** *(confirmed)*. An
   error that leaves an entry carries it (`UpdateError::entry()`): `MoveFailed` (the move failed
   after the entry; the pointer did not move), `PartlyMoved` (an operation that moves two pointers
   moved the first and failed on the second; do not repeat it, read the pointers), `NotDurable` (the
@@ -137,11 +138,11 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   second question: it is true for `NotDurable` and `PartlyMoved`. Any other error of the log means
   that no entry was written. `op log` marks the entry of a `PartlyMoved` as not taken (`!`),
   because not every pointer of it reached its new value, although one did.
-- **An entry has a size limit that the writer keeps** *(implemented)*. The reader refuses an entry
+- **An entry has a size limit that the writer keeps** *(confirmed)*. The reader refuses an entry
   above 64 KiB, so the writer refuses it before it writes anything (`EntryTooLarge`). The actor
   and the names in an entry have no limit of their own, so this is the only bound; without it, an
   actor of 70 000 characters would make a log that cannot be read from its first entry.
-- **An entry is published with a hard link** *(implemented)*. The writer writes the entry to a
+- **An entry is published with a hard link** *(confirmed)*. The writer writes the entry to a
   temporary file in `tmp/`, flushes it, and links it to the name of the next free number. The link
   fails if the name exists, so the entry is whole from the first moment it can be seen, and a
   writer that loses looks for the end of the log again and tries the next number. Writers of
