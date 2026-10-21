@@ -407,7 +407,9 @@ fn the_help_names_the_command_and_its_flags() {
 
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
-        result.stdout.contains("Usage: stemma status")
+        // The binary is `stemma.exe` on Windows, so the name is matched without its suffix.
+        result.stdout.contains("Usage: stemma")
+            && result.stdout.contains(" status")
             && result.stdout.contains("--repository")
             && result.stdout.contains("--actor"),
         "{}",
