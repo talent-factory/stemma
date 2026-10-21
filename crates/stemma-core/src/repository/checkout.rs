@@ -188,6 +188,14 @@ impl Repository {
                     });
                 }
             }
+            // A file that is there already with this content and mode is done: this lets a
+            // restore that stopped after the files be run again.
+            if previous.is_none()
+                && !removed.contains(path)
+                && self.is_there_already(path, mode, blob)?
+            {
+                continue;
+            }
             self.check_place(path, previous.is_some(), &removed)?;
             read_object(objects, blob.object_id(), Kind::Blob)?;
             writes.push(PlannedWrite {
@@ -298,6 +306,41 @@ impl Repository {
             progress.written += 1;
         }
         Ok(())
+    }
+
+    /// Whether the working directory has the file already, with the content and the mode of the
+    /// tree. A link on the way or a different kind of file is not a match.
+    fn is_there_already(
+        &self,
+        path: &str,
+        mode: FileMode,
+        blob: BlobId,
+    ) -> Result<bool, CheckoutError> {
+        let Some((full, metadata)) = lookup(self.path(), path)? else {
+            return Ok(false);
+        };
+        let expected = read_object(self.objects(), blob.object_id(), Kind::Blob)?;
+        if mode == FileMode::Symlink {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                return Ok(metadata.file_type().is_symlink()
+                    && fs::read_link(&full)
+                        .is_ok_and(|target| target.as_os_str().as_bytes() == expected.body()));
+            }
+        }
+        if !metadata.is_file() {
+            return Ok(false);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = metadata.permissions().mode() & 0o111 != 0;
+            if executable != (mode == FileMode::Executable) {
+                return Ok(false);
+            }
+        }
+        Ok(fs::read(&full).is_ok_and(|content| content == expected.body()))
     }
 
     /// Checks the place of a path that is written: no link on the way, nothing untracked in it.
@@ -1515,6 +1558,38 @@ mod tests {
         assert!(!exists(&other, "a"));
         repository.apply_checkout(&plan).unwrap();
         assert_eq!(read(&dir, "a"), "1");
+    }
+
+    #[test]
+    fn an_untracked_file_with_the_content_and_mode_of_the_tree_is_done_already() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "same", "1");
+        write(&dir, "other", "mine");
+        let to = tree(&repository, &[plain("same", "1"), plain("other", "theirs")]);
+        // `other` has other content and is in the way; `same` alone would be fine.
+        let error = repository.plan_checkout(None, to).unwrap_err();
+        assert!(
+            matches!(&error, CheckoutError::InTheWay { path } if path == "other"),
+            "{error}"
+        );
+        let to = tree(&repository, &[plain("same", "1")]);
+        let plan = repository.plan_checkout(None, to).unwrap();
+        assert!(plan.is_empty(), "{plan:?}");
+        assert_eq!(read(&dir, "same"), "1");
+    }
+
+    #[test]
+    fn a_file_that_the_new_tree_renames_by_case_is_not_taken_for_done() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let files = [plain("README", "1")];
+        write(&dir, "README", "1");
+        let from = tree(&repository, &files);
+        let to = tree(&repository, &[plain("readme", "1")]);
+        let plan = repository.plan_checkout(Some(from), to).unwrap();
+        repository.apply_checkout(&plan).unwrap();
+        assert_eq!(read(&dir, "readme"), "1");
     }
 
     #[test]

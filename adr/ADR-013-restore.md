@@ -1,7 +1,8 @@
 # ADR-013: Restoring the state before an entry
 
-**Status:** Proposal. Nothing is confirmed or built yet. The decisions below are meant for the
-author to confirm or change before the slices are built (STEMMA-42, STEMMA-43, STEMMA-44).
+**Status:** Proposal. The checkout layer (STEMMA-42) and `Repository::restore` (STEMMA-43) are
+built; the command (STEMMA-44) is not. The decisions below are meant for the author to confirm or
+change.
 
 ## Context
 
@@ -30,10 +31,12 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   that the pointer does not exist afterwards. Pointers that the entry does not name stay as they
   are. The restore writes an entry of its own, the operation `restore`, like every operation that
   moves a pointer. The log is never rewritten, so a restore can itself be restored.
-- **A snapshot comes first** *(proposed)*. Like every command, the restore starts with a snapshot
-  of the directory under the actor of the command. A change that was not saved yet lands in the
-  log, so no state is lost. The output names the number of that entry and says that the restore
-  can be undone by restoring it.
+- **A snapshot comes first** *(proposed)*. Like every command, the restore saves the directory in
+  a snapshot under the actor of the command, once it knows that there is something to restore
+  (the plan is made before, so that a missing commit or a file in the way is found before the
+  snapshot is written). A change that was not saved yet lands in the log, so no state is lost.
+  The output names the number of that entry and says that the restore can be undone by restoring
+  it. If a later step fails, the error names the entry of the snapshot.
 - **The directory is written by a checkout layer** *(proposed; STEMMA-42)*. It brings the
   directory from the tree of one commit to the tree of another and has no command of its own.
   - It plans first and writes after. A conflict that the plan can see is found before the first
@@ -61,18 +64,22 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   names a move that did not happen, which the log already allows. A stop after the directory
   leaves the target tree in the directory and the old pointers; the next snapshot saves it as an
   ordinary change of the actor. Nothing is lost in either case.
-- **An entry that did not take effect is no work** *(proposed)*. The entry is an intent (ADR-011).
-  The restore reads its outcome with `oplog::outcomes`. If the move did not take effect, the
-  state before the entry is the current state, and the command says so and changes nothing (exit
-  code 0). If the outcome is unknown, the command refuses and names the reason; `--force` restores
-  anyway.
+- **Each pointer is judged on its own** *(proposed)*. The entry is an intent (ADR-011), and it may
+  have moved only some of its pointers: a `commit` that stopped after the branch has moved one of
+  two. The restore therefore does not ask whether the entry as a whole took effect. It puts the
+  old value of every pointer that the entry names back and leaves alone a pointer that has it
+  already; if there is nothing to move, the command says so and changes nothing (exit code 0).
+  This also holds for an entry that did not take effect and for a pointer that other entries
+  moved afterwards. The outcome that `oplog::outcomes` reads is used for one thing: if it is
+  unknown, the command refuses and names the reason, and `--force` restores anyway.
 - **A missing object is an error before anything is written** *(proposed)*. The restore checks
   that every commit it needs is in the object store. After a garbage collection (ADR-007) a
   commit that no entry names may be gone; the log keeps the roots, so this is not expected for a
   commit that an entry names.
-- **`--dry-run` plans and reports** *(proposed)*. It prints the pointers that would move, the
-  files that would be written and removed, and the conflicts, and it writes nothing, not even the
-  snapshot.
+- **`--dry-run` plans and reports** *(proposed)*. It prints the pointers that would move and the
+  files that would be written and removed, and a conflict is its error; it writes nothing, not
+  even the snapshot. In the code it is a function of its own, `plan_restore`, so that it cannot
+  write.
 - **The actor and the authorizer** *(proposed; built in STEMMA-43)*. The command needs an actor
   like every command that changes a repository (ADR-002). The authorizer is asked for the
   operation `restore` first, with the entry as the target; the snapshot that follows asks its
@@ -104,11 +111,21 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] A restore of an entry whose old value is a commit with a conflict (phase 3).
 - [ ] The risk level of a restore in ADR-004.
 - [ ] A dry run does not take the snapshot, so a change that is not saved yet is not in its plan.
-      The real run can find a conflict that the dry run did not.
+      The real run can find a conflict that the dry run did not, and replaces a file with such a
+      change (it is in the snapshot). The plan does not say which files have unsaved changes.
 - [ ] If the files cannot be written after the entry, the entry names a restore that did not
-      happen and no pointer moved. `op log` shows it as not taken; a repeated restore writes a
-      second entry. The moves of the pointers are in this order: branches, working-copy commit,
-      HEAD. A stop between two of them is reported as a partial move.
+      happen and no pointer moved. `op log` shows it as not taken, and a repeated restore of the
+      same entry writes a second entry; a file that is there already with the right content is
+      left as it is, so the second run completes the first.
+- [ ] After the pointers moved in this order (branches, working-copy commit, HEAD), a stop
+      between two of them leaves the files at the old state and some pointers at the new one. The
+      error says so and says to run the same restore again. A first move that fails leaves all
+      pointers new and the files old.
+- [ ] If the clock or the log fails after the snapshot but before the entry, the snapshot stays
+      and the error names it; the snapshot is not undone.
+- [ ] The plan is made before the snapshot, and again under the lock. A snapshot that changes
+      what the plan sees (an unsaved change in a file that the restore removes) is not planned
+      for; the second plan is the one that counts.
 - [ ] A directory in the way that is not empty because of untracked files: the first version
       refuses; a way to move them aside is open.
 - [ ] Windows and file systems that ignore case: the functions for Windows names and for case
@@ -124,6 +141,9 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       on macOS, and another call on Windows), which `std::fs::rename` does not offer.
 - [ ] The layer does not compare the content of a file that it removes or replaces with the
       old tree. It relies on the snapshot that the restore takes first (proposed above).
+- [ ] The plan decides by platform whether names ignore case. A case-sensitive volume on macOS,
+      or a rename that changes only the normalization form of a name, can pass or fail the plan
+      for the wrong reason; the apply stops with a clear error, but halfway.
 - [ ] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
       and the rename; `track .` would pick it up as a new file.
 - [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the

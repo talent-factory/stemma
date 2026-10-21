@@ -1037,8 +1037,9 @@ pub(crate) struct WorkingCopyMove {
     pub(crate) new: CommitId,
 }
 
-/// The values that a restore gives the pointers (ADR-013). A pointer that is `None` is not
-/// touched.
+/// The values that a restore gives the pointers (ADR-013). A `head` or a `working_copy` that is
+/// `None` is not touched. A branch is touched when it is listed; its `None` means that it does
+/// not exist afterwards.
 pub(crate) struct RestoreTargets<'a> {
     /// The value of HEAD.
     pub(crate) head: Option<&'a Head>,
@@ -1048,8 +1049,8 @@ pub(crate) struct RestoreTargets<'a> {
     pub(crate) branches: &'a [(BranchName, Option<CommitId>)],
 }
 
-/// The pointers that a restore moves, each with the value it has now and the one it takes. A
-/// pointer that has its target value already is left out.
+/// The pointers that a restore moves, each as `(value now, value after)`; for a branch, `None`
+/// means that it does not exist. A pointer that has its target value already is left out.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct RestoreMoves {
     pub(crate) head: Option<(Head, Head)>,
@@ -1083,9 +1084,10 @@ pub(crate) enum Logged<T, E> {
     /// The step ran and the pointer moved, but the directory could not be flushed to disk
     /// ([`RefError::NotFlushed`]).
     NotFlushed(T, RefError),
-    /// The step ran and the first of two pointers moved, but the second did not: the file system
-    /// failed. The step stays done, and the entry names a move that was half made. Only
-    /// [`FsRefStore::update_branch_and_working_copy_after`] returns it.
+    /// The step ran and at least one pointer moved, but a later one did not: the file system
+    /// failed. The step stays done, and the entry names a move that was half made.
+    /// [`FsRefStore::update_branch_and_working_copy_after`] (two pointers) and
+    /// [`FsRefStore::restore_after`] (any number) return it.
     PartlyMoved(T, RefError),
 }
 
@@ -1319,13 +1321,16 @@ impl FsRefStore {
     }
 
     /// Reads the pointers and returns the moves that a restore would make, without a lock and
-    /// without a write. The commits that the targets name have to be in `objects`.
+    /// without a write, and the empty directories that stand where a branch that moves is created
+    /// or deleted (`restore_after` removes them). The commits that the targets name have to be in
+    /// `objects`.
     ///
     /// # Errors
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
-    /// does not have, [`RefError::Conflict`] for a branch name that is in the way, and the errors
-    /// of reading the pointers.
+    /// does not have, [`RefError::Conflict`] for a name that is in the way of a branch that is to
+    /// exist afterwards (a branch that is to be deleted is not blocked), and the errors of
+    /// reading the pointers.
     pub(crate) fn plan_restore(
         &self,
         targets: &RestoreTargets<'_>,
@@ -1371,8 +1376,8 @@ impl FsRefStore {
             }
             if current.commit != *target {
                 moves.branches.push((name.clone(), current.commit, *target));
+                empty_directories.extend(current.empty_directory);
             }
-            empty_directories.extend(current.empty_directory);
         }
         Ok((moves, empty_directories))
     }
@@ -1382,9 +1387,13 @@ impl FsRefStore {
     /// the entry of the log and brings the working directory to the new tree. If the moves are
     /// empty, so that every pointer has its target value, the step does not run.
     ///
-    /// The values are read under the lock, so the step sees the ones that the moves replace. The
-    /// branches move first, then the working-copy commit, then HEAD; a branch whose target is
-    /// `None` is deleted. A stop between two moves is [`Logged::PartlyMoved`].
+    /// The values are read under the lock, so the step sees the ones that the moves replace. Empty
+    /// directories that stand where a branch is created or deleted are removed before the step; if
+    /// one removal fails, the ones before it stay removed. The branches move first, then the
+    /// working-copy commit, then HEAD (ADR-013); a branch whose target is `None` is deleted. A
+    /// failure at the first move is [`Logged::MoveFailed`], a failure after a pointer moved is
+    /// [`Logged::PartlyMoved`], and a failure to flush a directory
+    /// ([`RefError::NotFlushed`]) does not stop the later moves.
     ///
     /// # Errors
     ///
@@ -1404,7 +1413,11 @@ impl FsRefStore {
             return Ok(Logged::Unchanged);
         }
         for empty in &empty_directories {
-            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+            match fs::remove_dir_all(empty) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error("remove the empty directory", empty)(error)),
+            }
         }
         let done = match step(&moves) {
             Ok(done) => done,
@@ -1412,7 +1425,7 @@ impl FsRefStore {
         };
         // The steps run one after the other and stop at the first failure, so that the pointers
         // after it are not moved.
-        type Step<'s> = Box<dyn Fn() -> Result<(), RefError> + 's>;
+        type Step<'s> = Box<dyn Fn() -> Result<bool, RefError> + 's>;
         let mut steps: Vec<Step<'_>> = Vec::new();
         for (name, _, target) in &moves.branches {
             steps.push(match target {
@@ -1422,6 +1435,7 @@ impl FsRefStore {
                         &encode_branch(commit),
                         &self.heads_dir(),
                     )
+                    .map(|()| true)
                 }),
                 None => Box::new(move || self.delete_branch_file(name)),
             });
@@ -1429,19 +1443,23 @@ impl FsRefStore {
         if let Some((_, new)) = &moves.working_copy {
             steps.push(Box::new(move || {
                 self.write_replacing(&self.working_copy_path(), &encode_branch(new), &self.root)
+                    .map(|()| true)
             }));
         }
-        // HEAD last: a stop before it leaves the pointer that leads to the commits unchanged.
+        // HEAD last: a stop before it leaves the file of HEAD as it was. A HEAD that names a
+        // branch follows that branch, so it already leads to the commit that the branch has.
         if let Some((_, new)) = &moves.head {
             steps.push(Box::new(move || {
                 self.write_replacing(&self.head_path(), &new.encode(), &self.root)
+                    .map(|()| true)
             }));
         }
         let mut moved_any = false;
         let mut unflushed: Option<RefError> = None;
         for step in steps {
             match step() {
-                Ok(()) => moved_any = true,
+                // A branch whose file was gone already did not move.
+                Ok(changed) => moved_any |= changed,
                 Err(error @ RefError::NotFlushed { .. }) => {
                     moved_any = true;
                     unflushed.get_or_insert(error);
@@ -1457,29 +1475,39 @@ impl FsRefStore {
     }
 
     /// Deletes the file of a branch, and the directories above it that this empties, up to the
-    /// directory of the branches, which stays.
-    fn delete_branch_file(&self, name: &BranchName) -> Result<(), RefError> {
+    /// directory of the branches, which stays. Returns `false` if the file was gone already, so
+    /// that nothing moved and nothing needs a flush. A flush that fails after the deletion is
+    /// [`RefError::NotFlushed`]: the branch is gone, but may come back after a crash.
+    fn delete_branch_file(&self, name: &BranchName) -> Result<bool, RefError> {
         let path = self.branch_path(name);
         match fs::remove_file(&path) {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(io_error("remove the reference", &path)(error)),
         }
         let heads = self.heads_dir();
         let mut directory = path.parent().map(Path::to_path_buf);
         while let Some(dir) = directory {
-            if dir == heads || fs::remove_dir(&dir).is_err() {
+            if dir == heads {
                 break;
+            }
+            match fs::remove_dir(&dir) {
+                Ok(()) => {}
+                // Another branch is below it: the directory stays.
+                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => break,
+                Err(error) => return Err(io_error("remove the empty directory", &dir)(error)),
             }
             directory = dir.parent().map(Path::to_path_buf);
         }
-        sync_directory(&heads).map_err(|error| match error {
-            StoreError::Io { source, .. } => RefError::NotFlushed {
-                path: heads.clone(),
-                source,
-            },
-            other => RefError::Store(Box::new(other)),
-        })
+        sync_directory(&heads)
+            .map(|()| true)
+            .map_err(|error| match error {
+                StoreError::Io { source, .. } => RefError::NotFlushed {
+                    path: heads.clone(),
+                    source,
+                },
+                other => RefError::Store(Box::new(other)),
+            })
     }
 
     /// The outcome of two moves, the second of which runs only if the first moved its pointer

@@ -15,8 +15,7 @@ use super::snapshot::{read_commit, SnapshotError};
 use super::{now, Repository, UpdateError};
 use crate::object::{CommitId, TreeId};
 use crate::oplog::{
-    outcomes, Change, Current, Entry, EntryError, Moved, OpLogError, OperationName, Outcome,
-    Pointer,
+    outcomes, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome, Pointer,
 };
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
 use crate::{Actor, Authorizer};
@@ -25,8 +24,13 @@ use crate::{Actor, Authorizer};
 const OPERATION: &str = "restore";
 
 /// What a restore does, or would do: the pointers it moves and the files it writes and removes.
+///
+/// The plan is made from the pointers as they are now. A real restore saves the unsaved changes
+/// of the directory first, which the plan does not know: a file with such a change is replaced
+/// all the same, and what was in it is in the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestorePlan {
+    entry: u64,
     head: Option<Moved<Head>>,
     working_copy: Option<Moved<CommitId>>,
     branches: Vec<(BranchName, Moved<CommitId>)>,
@@ -34,6 +38,11 @@ pub struct RestorePlan {
 }
 
 impl RestorePlan {
+    /// The number of the entry that is restored.
+    pub fn entry(&self) -> u64 {
+        self.entry
+    }
+
     /// The move of HEAD, if it moves.
     pub fn head(&self) -> Option<&Moved<Head>> {
         self.head.as_ref()
@@ -44,8 +53,8 @@ impl RestorePlan {
         self.working_copy.as_ref()
     }
 
-    /// The branches that move, sorted by name. A branch that the restore deletes has no value
-    /// after.
+    /// The branches that move, sorted by name. A branch that the restore creates has no value
+    /// before, and one that it deletes has no value after.
     pub fn branches(&self) -> &[(BranchName, Moved<CommitId>)] {
         &self.branches
     }
@@ -61,13 +70,13 @@ impl RestorePlan {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Restored {
-    /// The pointers have the old values of the entry already, or the entry did not take effect:
-    /// its state before is the state now. Nothing was changed, and no entry was written (a
-    /// snapshot may have been).
-    NothingToRestore,
-    /// A dry run: what the restore would do. Nothing was written, not even the snapshot, so a
-    /// change that is not saved yet is not in the plan.
-    Planned(Box<RestorePlan>),
+    /// The pointers have the old values of the entry already. Nothing was moved and no entry of
+    /// the restore was written. A snapshot of unsaved changes was taken only if the pointers
+    /// changed between the check and the move, so `snapshot` is `None` in practice.
+    NothingToRestore {
+        /// The entry of the snapshot, if one was taken.
+        snapshot: Option<Box<Entry>>,
+    },
     /// The pointers were moved back.
     Done {
         /// The entry of the snapshot that came first, if the directory had unsaved changes.
@@ -77,43 +86,170 @@ pub enum Restored {
     },
 }
 
+/// What is read from the log before anything is done.
+struct Prepared {
+    head: Option<Head>,
+    working_copy: Option<CommitId>,
+    branches: Vec<(BranchName, Option<CommitId>)>,
+    /// The plan, or `None` if every pointer has its old value already.
+    plan: Option<RestorePlan>,
+}
+
+impl Prepared {
+    fn targets(&self) -> RestoreTargets<'_> {
+        RestoreTargets {
+            head: self.head.as_ref(),
+            working_copy: self.working_copy,
+            branches: &self.branches,
+        }
+    }
+}
+
 impl Repository {
-    /// Puts back the values that the pointers had before the entry `number`, and writes an entry
-    /// of its own for it (ADR-013).
+    /// Plans the restore of the entry `number` and writes nothing, not even a snapshot. Returns
+    /// `None` if every pointer that the entry moved has its old value already.
     ///
-    /// The steps are: the authorizer is asked for `restore`; the entry and the outcomes of the log
-    /// are read; a snapshot of the directory is taken, so that no unsaved change is lost; then,
-    /// under the lock of the references, the plan is made (every commit must be in the store, and
-    /// every file must be placeable), the entry is written and flushed, the directory is brought
-    /// to the old tree, and the pointers move, the branches first and HEAD last (ADR-011).
-    ///
-    /// An entry whose move did not take effect is no work: the state before it is the state now,
-    /// and the call returns [`Restored::NothingToRestore`]. If the log and the references do not
-    /// decide whether it took effect, the call is refused with [`RestoreError::OutcomeUnknown`]
-    /// unless `force` is set. The restore puts the old values back even if other entries moved the
-    /// pointers afterwards. A pointer that has its old value already is left alone, and a branch
-    /// that the entry created is deleted.
-    ///
-    /// With `dry_run` nothing is written, not even the snapshot: the call returns the plan.
+    /// The authorizer is asked for `restore`, as for [`restore`](Self::restore). See there for the
+    /// rules about the outcome of the entry and `force`.
     ///
     /// # Errors
     ///
-    /// Returns [`RestoreError::Update`] for a refusal of the authorizer and for what goes wrong
-    /// when the pointers move, [`RestoreError::NoSuchEntry`] and [`RestoreError::Log`] for the
-    /// entry, [`RestoreError::OutcomeUnknown`], [`RestoreError::NoOldValue`] for HEAD or the
-    /// working-copy commit that the entry created (they cannot be absent), [`RestoreError::Refs`]
-    /// for a commit the store lacks or a lock that is held, [`RestoreError::Snapshot`] for the
-    /// snapshot and for reading a commit, and [`RestoreError::Checkout`] for a file in the way
-    /// (nothing was written then) or a failure while the files were written (the entry is in the
-    /// log, no pointer moved, and the next snapshot saves what was done as a change of the actor).
+    /// Returns what [`restore`](Self::restore) returns before it takes the snapshot.
+    pub fn plan_restore(
+        &self,
+        number: u64,
+        force: bool,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Option<RestorePlan>, RestoreError> {
+        Ok(self.prepare(number, force, actor, authorizer)?.plan)
+    }
+
+    /// Puts back the values that the pointers had before the entry `number`, and writes an entry
+    /// of its own for it (ADR-013).
+    ///
+    /// The steps are: the authorizer is asked for `restore` (the target is the entry); the log is
+    /// read and the outcome of the entry is judged; the plan is made once, so that a missing
+    /// commit or a file in the way is found before anything is written; a snapshot of the
+    /// directory is taken (a second question to the authorizer, `snapshot`), so that no unsaved
+    /// change is lost; then, under the lock of the references, the plan is made again from the
+    /// values the lock sees, the entry is written and flushed, the directory is brought to the old
+    /// tree, and the pointers move: the branches first, then the working-copy commit, and HEAD
+    /// last (ADR-013).
+    ///
+    /// Each pointer is judged on its own: the restore puts the old value of every pointer that the
+    /// entry names back, whether or not the entry took effect and even if other entries moved the
+    /// pointer afterwards. A pointer that has its old value already is left alone, so an entry
+    /// that stopped half way can be restored, and so can a restore that stopped half way. A branch
+    /// that the entry created is deleted. If the log and the references do not decide whether the
+    /// entry took effect, the call is refused with [`RestoreError::OutcomeUnknown`] unless
+    /// `force` is set.
+    ///
+    /// # Errors
+    ///
+    /// Before the snapshot: [`RestoreError::Update`] for a refusal of the question `restore`,
+    /// [`RestoreError::Log`] and [`RestoreError::NoSuchEntry`] for the entry,
+    /// [`RestoreError::OutcomeUnknown`], [`RestoreError::NoOldValue`] for HEAD or the working-copy
+    /// commit that the entry created (they cannot be absent), [`RestoreError::Refs`] for a commit
+    /// the store lacks, a name in the way, or references that cannot be read,
+    /// [`RestoreError::Snapshot`] for a commit or a tree that cannot be read, and
+    /// [`RestoreError::Checkout`] for a file in the way. Nothing is written then.
+    ///
+    /// After the snapshot, the same errors can come again if the pointers changed meanwhile, and
+    /// [`RestoreError::Snapshot`] covers the snapshot itself (a refusal of the question
+    /// `snapshot` is one). When the snapshot wrote an entry and a later step fails, the error is
+    /// wrapped in [`RestoreError::AfterSnapshot`], which names that entry. The restore wrote
+    /// nothing in these cases. Then [`RestoreError::Update`] covers the entry that could not be
+    /// written, [`RestoreError::CheckoutFailed`] a failure while the files were applied (the entry
+    /// is in the log and no pointer moved), and [`RestoreError::MoveFailed`],
+    /// [`RestoreError::PartlyMoved`], and [`RestoreError::NotDurable`] the moves of the pointers.
     pub fn restore(
         &self,
         number: u64,
         force: bool,
-        dry_run: bool,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Restored, RestoreError> {
+        let prepared = self.prepare(number, force, actor, authorizer)?;
+        if prepared.plan.is_none() {
+            return Ok(Restored::NothingToRestore { snapshot: None });
+        }
+        let snapshot = match self.snapshot(actor, authorizer) {
+            Ok(entry) => entry,
+            // The snapshot was made and the pointer moved; only the flush is not known.
+            Err(SnapshotError::Update(UpdateError::NotDurable { entry, .. })) => Some(*entry),
+            Err(error) => return Err(RestoreError::Snapshot(error)),
+        };
+        let snapshot = snapshot.map(Box::new);
+        let operation = OperationName::new(OPERATION).expect("`restore` is a valid operation name");
+        let logged =
+            self.refs_store()
+                .restore_after(&prepared.targets(), self.objects(), |moves| {
+                    let plan = self.make_plan(number, moves)?;
+                    let change = Change::new(
+                        now(),
+                        actor.clone(),
+                        operation.clone(),
+                        plan.head.clone(),
+                        plan.working_copy.clone(),
+                        plan.branches.clone(),
+                    )
+                    .map_err(|error| {
+                        RestoreError::Update(UpdateError::Log(OpLogError::Entry(error)))
+                    })?;
+                    let entry = self
+                        .oplog()
+                        .append(&change)
+                        .map_err(|error| RestoreError::Update(UpdateError::Log(error)))?;
+                    if let Some(checkout) = &plan.checkout {
+                        self.apply_checkout(checkout).map_err(|source| {
+                            RestoreError::CheckoutFailed {
+                                entry: Box::new(entry.clone()),
+                                source,
+                            }
+                        })?;
+                    }
+                    Ok(entry)
+                });
+        let wrap = |error: RestoreError| match &snapshot {
+            Some(saved) => RestoreError::AfterSnapshot {
+                snapshot: saved.clone(),
+                source: Box::new(error),
+            },
+            None => error,
+        };
+        match logged {
+            Err(error) => Err(wrap(RestoreError::Refs(error))),
+            Ok(Logged::Unchanged) => Ok(Restored::NothingToRestore { snapshot }),
+            Ok(Logged::Moved(entry)) => Ok(Restored::Done {
+                snapshot,
+                entry: Box::new(entry),
+            }),
+            Ok(Logged::StepFailed(error)) => Err(wrap(error)),
+            Ok(Logged::MoveFailed(entry, source)) => Err(wrap(RestoreError::MoveFailed {
+                entry: Box::new(entry),
+                source,
+            })),
+            Ok(Logged::PartlyMoved(entry, source)) => Err(wrap(RestoreError::PartlyMoved {
+                entry: Box::new(entry),
+                source,
+            })),
+            Ok(Logged::NotFlushed(entry, source)) => Err(wrap(RestoreError::NotDurable {
+                entry: Box::new(entry),
+                source,
+            })),
+        }
+    }
+
+    /// Everything a restore needs before it writes: the authorization, the entry, its outcome,
+    /// the target values, and the plan.
+    fn prepare(
+        &self,
+        number: u64,
+        force: bool,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Prepared, RestoreError> {
         let operation = OperationName::new(OPERATION).expect("`restore` is a valid operation name");
         self.authorize(actor, authorizer, &operation, &format!("entry {number}"))
             .map_err(RestoreError::Update)?;
@@ -121,10 +257,8 @@ impl Repository {
         let Some(position) = entries.iter().position(|entry| entry.number() == number) else {
             return Err(RestoreError::NoSuchEntry { number });
         };
-        match self.outcome_of(&entries, position)? {
-            Outcome::NotTaken => return Ok(Restored::NothingToRestore),
-            Outcome::Unknown if !force => return Err(RestoreError::OutcomeUnknown { number }),
-            Outcome::Took | Outcome::Unknown => {}
+        if self.outcome_of(&entries, position)? == Outcome::Unknown && !force {
+            return Err(RestoreError::OutcomeUnknown { number });
         }
         let change = entries[position].change();
         let head = match change.head() {
@@ -141,105 +275,42 @@ impl Repository {
             })?),
             None => None,
         };
-        let branches: Vec<(BranchName, Option<CommitId>)> = change
+        let branches = change
             .branches()
             .iter()
             .map(|(name, moved)| (name.clone(), moved.before().copied()))
             .collect();
-        let targets = RestoreTargets {
-            head: head.as_ref(),
+        let mut prepared = Prepared {
+            head,
             working_copy,
-            branches: &branches,
+            branches,
+            plan: None,
         };
-        if dry_run {
-            let (moves, _) = self
-                .refs_store()
-                .plan_restore(&targets, self.objects())
-                .map_err(RestoreError::Refs)?;
-            if moves.is_empty() {
-                return Ok(Restored::NothingToRestore);
-            }
-            let plan = self
-                .make_plan(&moves)
-                .map_err(|source| RestoreError::Checkout {
-                    entry: None,
-                    source,
-                })?;
-            return Ok(Restored::Planned(Box::new(plan)));
-        }
-        let snapshot = self.snapshot(actor, authorizer)?;
-        let logged = self
+        let (moves, _) = self
             .refs_store()
-            .restore_after(&targets, self.objects(), |moves| {
-                let plan = self
-                    .make_plan(moves)
-                    .map_err(|source| RestoreError::Checkout {
-                        entry: None,
-                        source,
-                    })?;
-                let change = Change::new(
-                    now(),
-                    actor.clone(),
-                    operation.clone(),
-                    plan.head.clone(),
-                    plan.working_copy.clone(),
-                    plan.branches.clone(),
-                )
-                .map_err(OpLogError::Entry)
-                .map_err(|error| RestoreError::Update(UpdateError::Log(error)))?;
-                let entry = self
-                    .oplog()
-                    .append(&change)
-                    .map_err(|error| RestoreError::Update(UpdateError::Log(error)))?;
-                if let Some(checkout) = &plan.checkout {
-                    self.apply_checkout(checkout)
-                        .map_err(|source| RestoreError::Checkout {
-                            entry: Some(Box::new(entry.clone())),
-                            source,
-                        })?;
-                }
-                Ok(entry)
-            })
+            .plan_restore(&prepared.targets(), self.objects())
             .map_err(RestoreError::Refs)?;
-        match logged {
-            Logged::Unchanged => Ok(Restored::NothingToRestore),
-            Logged::Moved(entry) => Ok(Restored::Done {
-                snapshot: snapshot.map(Box::new),
-                entry: Box::new(entry),
-            }),
-            Logged::StepFailed(error) => Err(error),
-            Logged::MoveFailed(entry, source) => {
-                Err(RestoreError::Update(UpdateError::MoveFailed {
-                    entry: Box::new(entry),
-                    source,
-                }))
-            }
-            Logged::PartlyMoved(entry, source) => {
-                Err(RestoreError::Update(UpdateError::PartlyMoved {
-                    entry: Box::new(entry),
-                    source,
-                }))
-            }
-            Logged::NotFlushed(entry, source) => {
-                Err(RestoreError::Update(UpdateError::NotDurable {
-                    entry: Box::new(entry),
-                    source,
-                }))
-            }
+        if !moves.is_empty() {
+            prepared.plan = Some(self.make_plan(number, &moves)?);
         }
+        Ok(prepared)
     }
 
     /// The plan of the moves: the values, and the files if the working-copy commit moves.
-    fn make_plan(&self, moves: &RestoreMoves) -> Result<RestorePlan, CheckoutError> {
+    fn make_plan(&self, number: u64, moves: &RestoreMoves) -> Result<RestorePlan, RestoreError> {
         let checkout = match &moves.working_copy {
             Some((current, target)) => {
                 let from = self.tree_of(*current)?;
                 let to = self.tree_of(*target)?;
-                Some(self.plan_checkout(Some(from), to)?)
+                Some(
+                    self.plan_checkout(Some(from), to)
+                        .map_err(RestoreError::Checkout)?,
+                )
             }
             None => None,
         };
         Ok(RestorePlan {
+            entry: number,
             head: moves
                 .head
                 .as_ref()
@@ -257,8 +328,10 @@ impl Repository {
         })
     }
 
-    fn tree_of(&self, commit: CommitId) -> Result<TreeId, SnapshotError> {
-        Ok(read_commit(self.objects(), commit)?.tree())
+    fn tree_of(&self, commit: CommitId) -> Result<TreeId, RestoreError> {
+        read_commit(self.objects(), commit)
+            .map(|commit| commit.tree())
+            .map_err(RestoreError::Snapshot)
     }
 
     /// Whether the entry took effect, judged from the log and the references as `op log` does.
@@ -284,12 +357,15 @@ impl Repository {
     }
 }
 
-/// Why [`Repository::restore`] fails.
+/// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `OutcomeUnknown`, `NoOldValue`, `Refs`,
+/// `Snapshot`, `Checkout`) wrote nothing of the restore; those with an `entry` wrote it.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RestoreError {
-    /// The authorizer refused, or the log or the pointers failed when they were moved. See
-    /// [`UpdateError`] for what is in the log and whether a pointer moved.
+    /// The authorizer refused `restore`, or the entry of the restore could not be written (see
+    /// [`UpdateError::Log`]; with [`OpLogError::NotFlushed`] the entry is in the log). No pointer
+    /// moved and no file was written.
     Update(UpdateError),
     /// The log cannot be read.
     Log(OpLogError),
@@ -308,22 +384,56 @@ pub enum RestoreError {
     NoOldValue {
         /// The number.
         number: u64,
-        /// The pointer.
+        /// The pointer: HEAD or the working-copy commit.
         pointer: Pointer,
     },
     /// A commit that a pointer takes is not in the object store, a name is in the way, a lock is
-    /// held, or the references cannot be read. Nothing was written.
+    /// held, or the references cannot be read. The restore wrote nothing.
     Refs(RefError),
-    /// The snapshot that comes first failed, or a commit cannot be read.
+    /// The snapshot failed (a refusal of the question `snapshot` is one), or a commit or a tree
+    /// cannot be read. The restore wrote nothing.
     Snapshot(SnapshotError),
-    /// The files could not be brought to the old tree. Without an entry, nothing was written. With
-    /// one, the entry is in the log and names a move that did not happen; no pointer moved, and
-    /// the files done so far stay (see [`CheckoutError::Interrupted`]).
-    Checkout {
-        /// The entry that was written, if it was.
-        entry: Option<Box<Entry>>,
+    /// A file is in the way, or the files cannot be planned. The restore wrote nothing.
+    Checkout(CheckoutError),
+    /// The files could not be brought to the old tree after the entry was written. The entry is in
+    /// the log and names a restore that did not happen; no pointer moved, and the files done so
+    /// far stay (see [`CheckoutError::Interrupted`]). The next snapshot saves them as a change.
+    CheckoutFailed {
+        /// The entry that was written.
+        entry: Box<Entry>,
         /// Why.
         source: CheckoutError,
+    },
+    /// The entry was written and the files are at the old state, but the first pointer did not
+    /// move: the file system failed.
+    MoveFailed {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// Why.
+        source: RefError,
+    },
+    /// The entry was written and the files are at the old state, but only some of the pointers
+    /// moved: the file system failed.
+    PartlyMoved {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// Why the next pointer did not move.
+        source: RefError,
+    },
+    /// The restore was made, but a directory could not be flushed to disk, so it may not survive
+    /// a crash.
+    NotDurable {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// The error of the flush.
+        source: RefError,
+    },
+    /// The snapshot that comes first wrote an entry, and a later step failed with `source`.
+    AfterSnapshot {
+        /// The entry of the snapshot.
+        snapshot: Box<Entry>,
+        /// The failure.
+        source: Box<RestoreError>,
     },
 }
 
@@ -333,27 +443,48 @@ impl RestoreError {
         match self {
             Self::Update(error) => error.io_error(),
             Self::Log(error) => error.io_error(),
-            Self::Refs(error) => error.io_error(),
+            Self::Refs(error)
+            | Self::MoveFailed { source: error, .. }
+            | Self::PartlyMoved { source: error, .. }
+            | Self::NotDurable { source: error, .. } => error.io_error(),
             Self::Snapshot(error) => error.io_error(),
-            Self::Checkout { source, .. } => source.io_error(),
+            Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
+            Self::AfterSnapshot { source, .. } => source.io_error(),
             Self::NoSuchEntry { .. } | Self::OutcomeUnknown { .. } | Self::NoOldValue { .. } => {
                 None
             }
         }
     }
 
-    /// The entry that was written, if the error leaves one in the log.
+    /// The entry of the restore, if the error leaves one in the log.
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::Update(error) => error.entry(),
-            Self::Checkout { entry, .. } => entry.as_deref(),
+            Self::CheckoutFailed { entry, .. }
+            | Self::MoveFailed { entry, .. }
+            | Self::PartlyMoved { entry, .. }
+            | Self::NotDurable { entry, .. } => Some(entry),
+            Self::AfterSnapshot { source, .. } => source.entry(),
             _ => None,
         }
     }
 
-    /// Whether a pointer moved although the call failed.
+    /// The entry of the snapshot that came first, if it wrote one and a later step failed.
+    pub fn snapshot(&self) -> Option<&Entry> {
+        match self {
+            Self::AfterSnapshot { snapshot, .. } => Some(snapshot),
+            _ => None,
+        }
+    }
+
+    /// Whether a pointer of the restore moved although the call failed. The snapshot that comes
+    /// first is not counted; see [`snapshot`](Self::snapshot).
     pub fn pointer_moved(&self) -> bool {
-        matches!(self, Self::Update(error) if error.pointer_moved())
+        match self {
+            Self::PartlyMoved { .. } | Self::NotDurable { .. } => true,
+            Self::AfterSnapshot { source, .. } => source.pointer_moved(),
+            _ => false,
+        }
     }
 }
 
@@ -379,38 +510,66 @@ impl fmt::Display for RestoreError {
                     Pointer::Branch(name) => format!("the branch `{name}`"),
                 }
             ),
-            Self::Refs(error) => write!(f, "could not restore, nothing was written: {error}"),
+            Self::Refs(error) => write!(f, "could not restore, nothing of it was written: {error}"),
             Self::Snapshot(error) => {
-                write!(f, "could not save the working directory first: {error}")
+                write!(f, "could not restore, nothing of it was written: {error}")
             }
-            Self::Checkout {
-                entry: None,
-                source,
-            } => write!(f, "could not restore, nothing was written: {source}"),
-            Self::Checkout {
-                entry: Some(entry),
-                source,
-            } => write!(
+            Self::Checkout(error) => {
+                write!(f, "could not restore, nothing of it was written: {error}")
+            }
+            Self::CheckoutFailed { entry, source } => write!(
                 f,
                 "could not write the files; entry {} names a restore that did not happen and no \
-                 pointer moved: {source}",
+                 pointer moved, and the files done so far stay: {source}",
                 entry.number()
+            ),
+            Self::MoveFailed { entry, source } => write!(
+                f,
+                "entry {} was written and the files are at the old state, but no pointer moved: \
+                 {source}; run the same restore again, as a snapshot would save the files as a \
+                 change",
+                entry.number()
+            ),
+            Self::PartlyMoved { entry, source } => write!(
+                f,
+                "entry {} was written and the files are at the old state, but only some of the \
+                 pointers moved: {source}; run the same restore again, it moves only the pointers \
+                 that have not moved",
+                entry.number()
+            ),
+            Self::NotDurable { entry, source } => write!(
+                f,
+                "the restore was made as entry {}, but a directory could not be flushed, so it \
+                 may not survive a crash: {source}",
+                entry.number()
+            ),
+            Self::AfterSnapshot { snapshot, source } => write!(
+                f,
+                "{source}; the unsaved changes were saved first as entry {}",
+                snapshot.number()
             ),
         }
     }
 }
 
-impl Error for RestoreError {}
-
-impl From<SnapshotError> for RestoreError {
-    fn from(error: SnapshotError) -> Self {
-        Self::Snapshot(error)
-    }
-}
-
-impl From<EntryError> for RestoreError {
-    fn from(error: EntryError) -> Self {
-        Self::Update(UpdateError::Log(OpLogError::Entry(error)))
+impl Error for RestoreError {
+    /// The cause of the cause: `Display` includes the message of the wrapped error, so the chain
+    /// leaves it out and continues behind it, as the other errors of the crate do.
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Update(error) => error.source(),
+            Self::Log(error) => error.source(),
+            Self::Refs(error)
+            | Self::MoveFailed { source: error, .. }
+            | Self::PartlyMoved { source: error, .. }
+            | Self::NotDurable { source: error, .. } => error.source(),
+            Self::Snapshot(error) => error.source(),
+            Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.source(),
+            Self::AfterSnapshot { source, .. } => source.source(),
+            Self::NoSuchEntry { .. } | Self::OutcomeUnknown { .. } | Self::NoOldValue { .. } => {
+                None
+            }
+        }
     }
 }
 
@@ -462,7 +621,7 @@ mod tests {
     }
 
     fn restore(repository: &Repository, number: u64) -> Result<Restored, RestoreError> {
-        repository.restore(number, false, false, &actor(), &AllowAll)
+        repository.restore(number, false, &actor(), &AllowAll)
     }
 
     fn done(result: Result<Restored, RestoreError>) -> (Option<Entry>, Entry) {
@@ -575,29 +734,43 @@ mod tests {
             .number();
         done(restore(&repository, created));
         assert_eq!(repository.refs().branch(&main()).unwrap(), None);
-        assert!(
-            repository.refs().head().is_ok(),
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(main()),
             "HEAD still names the branch that is not there"
         );
     }
 
     #[test]
-    fn a_dry_run_writes_nothing_and_reports_the_plan() {
+    fn a_plan_writes_nothing_and_reports_what_a_restore_would_do() {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let (snapshot, _) = two_commits(&dir, &repository);
         write(&dir, "a.txt", "unsaved");
         let before = numbers(&repository);
-        let result = repository
-            .restore(snapshot, false, true, &actor(), &AllowAll)
-            .unwrap();
-        let Restored::Planned(plan) = result else {
-            panic!("expected a plan, got {result:?}");
-        };
+        let plan = repository
+            .plan_restore(snapshot, false, &actor(), &AllowAll)
+            .unwrap()
+            .expect("the pointers have other values");
+        assert_eq!(plan.entry(), snapshot);
         assert!(plan.working_copy().is_some());
-        assert!(plan.checkout().is_some_and(|checkout| !checkout.is_empty()));
+        let checkout = plan.checkout().expect("the working copy moves");
+        let writes: Vec<&str> = checkout.writes().iter().map(|write| write.path()).collect();
+        assert_eq!(writes, ["a.txt"]);
         assert_eq!(numbers(&repository), before, "not even a snapshot");
         assert_eq!(read(&dir, "a.txt"), "unsaved");
+    }
+
+    #[test]
+    fn a_plan_for_pointers_that_are_there_already_is_none() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        done(restore(&repository, snapshot));
+        let plan = repository
+            .plan_restore(snapshot, false, &actor(), &AllowAll)
+            .unwrap();
+        assert!(plan.is_none());
     }
 
     #[test]
@@ -608,7 +781,10 @@ mod tests {
         done(restore(&repository, snapshot));
         let before = numbers(&repository);
         let result = restore(&repository, snapshot).unwrap();
-        assert!(matches!(result, Restored::NothingToRestore), "{result:?}");
+        assert!(
+            matches!(result, Restored::NothingToRestore { snapshot: None }),
+            "{result:?}"
+        );
         assert_eq!(numbers(&repository), before);
     }
 
@@ -629,7 +805,16 @@ mod tests {
         let repository = repository(&dir);
         let first = numbers(&repository)[0];
         let error = restore(&repository, first).unwrap_err();
-        assert!(matches!(error, RestoreError::NoOldValue { .. }), "{error}");
+        assert!(
+            matches!(
+                error,
+                RestoreError::NoOldValue {
+                    pointer: Pointer::Head,
+                    ..
+                }
+            ),
+            "{error}"
+        );
     }
 
     #[test]
@@ -640,7 +825,7 @@ mod tests {
         write(&dir, "a.txt", "unsaved");
         let before = numbers(&repository);
         let error = repository
-            .restore(snapshot, false, false, &actor(), &DenyAll)
+            .restore(snapshot, false, &actor(), &DenyAll)
             .unwrap_err();
         assert!(
             matches!(error, RestoreError::Update(UpdateError::Denied { .. })),
@@ -671,10 +856,7 @@ mod tests {
         write_inside(&dir, "a.txt/x", "mine");
         let before = numbers(&repository);
         let error = restore(&repository, dropped).unwrap_err();
-        assert!(
-            matches!(&error, RestoreError::Checkout { entry: None, .. }),
-            "{error}"
-        );
+        assert!(matches!(&error, RestoreError::Checkout(_)), "{error}");
         assert_eq!(numbers(&repository), before, "no entry was written");
         assert_eq!(read(&dir, "a.txt/x"), "mine");
     }
@@ -702,7 +884,7 @@ mod tests {
             "{error}"
         );
         let forced = repository
-            .restore(snapshot + 1, true, false, &actor(), &AllowAll)
+            .restore(snapshot + 1, true, &actor(), &AllowAll)
             .unwrap();
         assert!(matches!(forced, Restored::Done { .. }), "{forced:?}");
     }
@@ -765,5 +947,313 @@ mod tests {
         );
         assert_eq!(numbers(&repository), before);
         assert_eq!(read(&dir, "a.txt"), "two");
+    }
+
+    fn op(name: &str) -> OperationName {
+        OperationName::new(name).unwrap()
+    }
+
+    /// The tip of `main` and its parent, after `two_commits`.
+    fn tip_and_first(repository: &Repository) -> (CommitId, CommitId) {
+        let tip = repository.refs().branch(&main()).unwrap().unwrap();
+        let first = read_commit(repository.objects(), tip).unwrap().parents()[0];
+        (tip, first)
+    }
+
+    #[test]
+    fn head_goes_back_to_the_branch_and_to_a_detached_commit() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_commits(&dir, &repository);
+        let (tip, first) = tip_and_first(&repository);
+        let detach = repository
+            .set_head(&op("checkout"), &Head::Detached(first), &actor(), &AllowAll)
+            .unwrap()
+            .unwrap();
+        let attach = repository
+            .set_head(&op("checkout"), &Head::Branch(main()), &actor(), &AllowAll)
+            .unwrap()
+            .unwrap();
+        // Undo the second move: HEAD is detached again, at `first`.
+        done(restore(&repository, attach.number()));
+        assert_eq!(repository.refs().head().unwrap(), Head::Detached(first));
+        // Undo the first move: HEAD names the branch again.
+        done(restore(&repository, detach.number()));
+        assert_eq!(repository.refs().head().unwrap(), Head::Branch(main()));
+        assert_eq!(repository.refs().branch(&main()).unwrap(), Some(tip));
+    }
+
+    #[test]
+    fn a_detached_commit_that_the_store_lacks_is_found_before_anything_is_written() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_commits(&dir, &repository);
+        let (_, first) = tip_and_first(&repository);
+        repository
+            .set_head(&op("checkout"), &Head::Detached(first), &actor(), &AllowAll)
+            .unwrap();
+        let attach = repository
+            .set_head(&op("checkout"), &Head::Branch(main()), &actor(), &AllowAll)
+            .unwrap()
+            .unwrap();
+        let path = repository.objects().object_path(&first.object_id());
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&path, permissions).unwrap();
+        fs::remove_file(&path).unwrap();
+        write(&dir, "a.txt", "unsaved");
+        let before = numbers(&repository);
+        let error = restore(&repository, attach.number()).unwrap_err();
+        assert!(
+            matches!(error, RestoreError::Refs(RefError::MissingCommit(_))),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before, "not even a snapshot");
+        assert_eq!(repository.refs().head().unwrap(), Head::Branch(main()));
+    }
+
+    #[test]
+    fn a_commit_that_stopped_after_the_branch_can_be_restored() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, commit) = two_commits(&dir, &repository);
+        let (_, first) = tip_and_first(&repository);
+        let entry = repository.oplog().read(commit).unwrap();
+        // The commit moved the branch and stopped before the working-copy commit moved.
+        let wc_before = *entry.change().working_copy().unwrap().before().unwrap();
+        fs::write(
+            repository.metadata_dir().join("working-copy"),
+            format!("{wc_before}\n"),
+        )
+        .unwrap();
+        let result = restore(&repository, commit).unwrap();
+        assert!(matches!(result, Restored::Done { .. }), "{result:?}");
+        assert_eq!(repository.refs().branch(&main()).unwrap(), Some(first));
+    }
+
+    #[test]
+    fn a_restore_puts_the_old_value_back_although_the_pointer_moved_on() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_commits(&dir, &repository);
+        let (tip, first) = tip_and_first(&repository);
+        let wc = repository.refs().working_copy().unwrap();
+        let older = repository
+            .update_branch(
+                &op("branch"),
+                &main(),
+                Some(tip),
+                first,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap()
+            .unwrap();
+        repository
+            .update_branch(&op("branch"), &main(), Some(first), wc, &actor(), &AllowAll)
+            .unwrap();
+        let (_, entry) = done(restore(&repository, older.number()));
+        assert_eq!(repository.refs().branch(&main()).unwrap(), Some(tip));
+        let moved = &entry.change().branches()[0].1;
+        assert_eq!((moved.before(), moved.after()), (Some(&wc), Some(&tip)));
+    }
+
+    #[test]
+    fn several_branches_of_one_entry_all_go_back() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_commits(&dir, &repository);
+        let (tip, first) = tip_and_first(&repository);
+        let (x, y) = (BranchName::new("x").unwrap(), BranchName::new("y").unwrap());
+        for name in [&x, &y] {
+            repository
+                .update_branch(&op("branch"), name, None, tip, &actor(), &AllowAll)
+                .unwrap();
+        }
+        // One entry that claims to have moved `x` from `first` and to have created `y`.
+        let change = Change::new(
+            now(),
+            actor(),
+            op("branch"),
+            None,
+            None,
+            vec![
+                (x.clone(), Moved::from_to(Some(first), Some(tip))),
+                (y.clone(), Moved::from_to(None, Some(tip))),
+            ],
+        )
+        .unwrap();
+        let entry = repository.oplog().append(&change).unwrap();
+        let (_, restored) = done(restore(&repository, entry.number()));
+        assert_eq!(repository.refs().branch(&x).unwrap(), Some(first));
+        assert_eq!(repository.refs().branch(&y).unwrap(), None);
+        let names: Vec<&str> = restored
+            .change()
+            .branches()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names, ["x", "y"]);
+    }
+
+    #[test]
+    fn a_sibling_branch_keeps_the_directory_when_a_branch_is_deleted() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_commits(&dir, &repository);
+        let (tip, _) = tip_and_first(&repository);
+        let a = BranchName::new("feature/a").unwrap();
+        let b = BranchName::new("feature/b").unwrap();
+        let created = repository
+            .update_branch(&op("branch"), &a, None, tip, &actor(), &AllowAll)
+            .unwrap()
+            .unwrap();
+        repository
+            .update_branch(&op("branch"), &b, None, tip, &actor(), &AllowAll)
+            .unwrap();
+        done(restore(&repository, created.number()));
+        assert_eq!(repository.refs().branch(&a).unwrap(), None);
+        assert_eq!(repository.refs().branch(&b).unwrap(), Some(tip));
+    }
+
+    #[test]
+    fn an_entry_without_a_working_copy_leaves_the_files_alone() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_commits(&dir, &repository);
+        let (tip, first) = tip_and_first(&repository);
+        let entry = repository
+            .update_branch(
+                &op("branch"),
+                &main(),
+                Some(tip),
+                first,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap()
+            .unwrap();
+        write(&dir, "a.txt", "unsaved");
+        let (saved, _) = done(restore(&repository, entry.number()));
+        assert!(saved.is_some(), "the unsaved change is saved first");
+        assert_eq!(read(&dir, "a.txt"), "unsaved");
+        assert_eq!(repository.refs().branch(&main()).unwrap(), Some(tip));
+    }
+
+    #[test]
+    fn a_lock_that_is_held_stops_the_restore_and_stays() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        let lock = repository.metadata_dir().join("refs.lock");
+        fs::write(&lock, "someone").unwrap();
+        let before = numbers(&repository);
+        let error = restore(&repository, snapshot).unwrap_err();
+        assert!(
+            matches!(error, RestoreError::Refs(RefError::Locked { .. })),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(read(&dir, "a.txt"), "two");
+        assert!(lock.exists(), "the lock of the other writer is not removed");
+    }
+
+    #[test]
+    fn a_name_in_the_way_of_a_branch_that_comes_back_stops_the_restore() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_commits(&dir, &repository);
+        let (tip, first) = tip_and_first(&repository);
+        let below = BranchName::new("a/b").unwrap();
+        repository
+            .update_branch(&op("branch"), &below, None, tip, &actor(), &AllowAll)
+            .unwrap();
+        // An entry that claims to have moved `a` from `first`; `a` is a directory now.
+        let a = BranchName::new("a").unwrap();
+        let change = Change::new(
+            now(),
+            actor(),
+            op("branch"),
+            None,
+            None,
+            vec![(a, Moved::from_to(Some(first), Some(tip)))],
+        )
+        .unwrap();
+        let entry = repository.oplog().append(&change).unwrap();
+        let before = numbers(&repository);
+        let error = repository
+            .restore(entry.number(), true, &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, RestoreError::Refs(RefError::Conflict { .. })),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+    }
+
+    #[test]
+    fn a_restore_that_stopped_after_the_files_can_be_run_again() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        let before = repository.refs().working_copy().unwrap();
+        done(restore(&repository, snapshot));
+        // The files are at the old state, but the working-copy commit is still the new one.
+        fs::write(
+            repository.metadata_dir().join("working-copy"),
+            format!("{before}\n"),
+        )
+        .unwrap();
+        let (_, entry) = done(restore(&repository, snapshot));
+        assert_eq!(read(&dir, "a.txt"), "one");
+        assert_eq!(entry.change().operation().as_str(), "restore");
+    }
+
+    #[test]
+    fn an_unsaved_change_is_named_when_a_later_step_fails() {
+        let snapshot = {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            let (number, _) = two_commits(&dir, &repository);
+            repository.oplog().read(number).unwrap()
+        };
+        let error = RestoreError::AfterSnapshot {
+            snapshot: Box::new(snapshot.clone()),
+            source: Box::new(RestoreError::Refs(RefError::Locked {
+                path: "refs.lock".into(),
+            })),
+        };
+        assert_eq!(error.snapshot().map(Entry::number), Some(snapshot.number()));
+        assert!(error.entry().is_none());
+        assert!(!error.pointer_moved());
+        assert!(
+            error.to_string().contains("saved first as entry"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_text_of_a_half_made_restore_says_what_to_do() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        let entry = Box::new(repository.oplog().read(snapshot).unwrap());
+        let source = RefError::Locked { path: "x".into() };
+        let moved = RestoreError::PartlyMoved {
+            entry: entry.clone(),
+            source,
+        };
+        assert!(moved.pointer_moved());
+        assert!(
+            moved.to_string().contains("run the same restore again"),
+            "{moved}"
+        );
+        let failed = RestoreError::MoveFailed {
+            entry,
+            source: RefError::Locked { path: "x".into() },
+        };
+        assert!(!failed.pointer_moved());
+        assert!(failed.entry().is_some());
     }
 }
