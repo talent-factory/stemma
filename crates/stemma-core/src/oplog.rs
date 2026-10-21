@@ -1909,7 +1909,10 @@ impl FsOpLog {
             .filter(|later| *later > number)
             .map(|later| self.read(later))
             .any(|entry| {
-                matches!(entry, Ok(Entry { record: Record::Purge(ref purge), .. }) if purge.lists(number))
+                matches!(
+                    entry,
+                    Ok(Entry { record: Record::Purge(ref purge), .. }) if purge.lists(number)
+                )
             });
         if !listed {
             return Err(OpLogError::NotListed { number });
