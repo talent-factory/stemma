@@ -206,8 +206,8 @@ are prior art, not a template.
 - [ ] How long the operation log keeps the replaced commits of many snapshots (retention). The
       format and what an entry holds are decided in ADR-011. Tracked in STEMMA-39.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the commits,
-      replaces log entries by stubs, and deletes what the rewrite replaced. Proposed in ADR-014
-      (STEMMA-26).
+      replaces log entries by stubs, and deletes what the rewrite replaced. Decided in ADR-014
+      (STEMMA-26); to be built in STEMMA-46 to STEMMA-48.
 - [x] Who the actor of a snapshot is when two actors use one directory, and how the lease of
       ADR-004 applies. Decided above (STEMMA-38): one actor per working copy, kept by convention.
 - [ ] Enforcing that rule: an owner in the file `working-copy`, and a command of another actor
