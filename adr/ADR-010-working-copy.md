@@ -206,7 +206,7 @@ are prior art, not a template.
 - [ ] How long the operation log keeps the replaced commits of many snapshots (retention). The
       format and what an entry holds are decided in ADR-011. Tracked in STEMMA-39.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the log and
-      lets garbage collection delete what only the log held. Tracked in STEMMA-26.
+      lets garbage collection delete what only the log held. Proposed in ADR-014 (STEMMA-26).
 - [x] Who the actor of a snapshot is when two actors use one directory, and how the lease of
       ADR-004 applies. Decided above (STEMMA-38): one actor per working copy, kept by convention.
 - [ ] Enforcing that rule: an owner in the file `working-copy`, and a command of another actor

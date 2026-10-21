@@ -81,7 +81,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   entry (operation `init`, HEAD from nothing to the initial branch).
 - **Nothing is deleted** *(confirmed)*. No operation removes an entry, and no garbage collection
   runs in phase 1 (ADR-007). Removing a secret replaces the entries that name it by a stub that
-  keeps the number (STEMMA-26), so the numbering has no gap.
+  keeps the number (ADR-014, STEMMA-26), so the numbering has no gap.
 - **The format is strict text** *(confirmed)*. A reader accepts what the writer writes and nothing
   else, as in ADR-005, so one entry has exactly one encoding. The sketch below is the format.
   The time is the one the writer claims, in seconds since the Unix epoch, written as in a commit
@@ -224,7 +224,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       time, and what a garbage collection may remove (nothing before ADR-007's collection
       exists). Decide with a measurement of a real session.
 - [ ] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
-      audited without keeping the secret (STEMMA-26).
+      audited without keeping the secret. Proposed in ADR-014 (STEMMA-26).
 - [x] A recovery when the highest number is missing: the tip file (STEMMA-30). What remains is
       a command that repairs a log with a lost last entry (the tip has to be set back by hand
       today), and the hash chain (STEMMA-41).

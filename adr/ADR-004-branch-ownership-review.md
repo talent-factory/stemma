@@ -22,7 +22,7 @@
 | 0 | Docs, examples, formatting, tests only | One independent agent, merge by agent |
 | 1 | New CLI commands, output formats, logic without persistence | Two independent agents, merge by agent |
 | 2 | Object format, hash, ref updates, lease, merge, network, migrations, new dependencies | Two agents plus a human maintainer |
-| 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files | Human owner only, plus an ADR |
+| 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files, removing history (purge, ADR-014) | Human owner only, plus an ADR |
 
 ## Open Points
 
