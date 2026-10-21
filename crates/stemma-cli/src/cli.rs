@@ -1635,6 +1635,8 @@ mod tests {
     #[test]
     fn the_path_in_the_result_is_absolute() {
         assert!(absolute(Path::new("a/b")).is_absolute());
-        assert_eq!(absolute(Path::new("/a/b")), PathBuf::from("/a/b"));
+        // `/a/b` has no drive on Windows and would be completed, so the path comes from the system.
+        let given = std::env::temp_dir().join("a").join("b");
+        assert_eq!(absolute(&given), given);
     }
 }
