@@ -182,6 +182,13 @@ impl Repository {
     /// written, [`RestoreError::CheckoutFailed`] a failure while the files were applied (the entry
     /// is in the log and no pointer moved), and [`RestoreError::MoveFailed`],
     /// [`RestoreError::PartlyMoved`], and [`RestoreError::NotDurable`] the moves of the pointers.
+    ///
+    /// If the snapshot moved the working-copy commit and a directory could not be flushed, the
+    /// restore goes on, and the flush is reported at the end: as
+    /// [`RestoreError::SnapshotNotDurable`] when the restore was made (its `restored` is the
+    /// entry of the restore, or `None` if there was nothing to restore, and the restore is *not*
+    /// to be repeated), and in the `late` field of [`RestoreError::AfterSnapshot`] when a later
+    /// step failed. [`RestoreError::pointer_moved`] is true in both.
     pub fn restore(
         &self,
         number: u64,
@@ -193,7 +200,7 @@ impl Repository {
         if prepared.plan.is_none() {
             return Ok(Restored::NothingToRestore { snapshot: None });
         }
-        let (snapshot, snapshot_late) = match self.snapshot(actor, authorizer) {
+        let (snapshot, mut snapshot_late) = match self.snapshot(actor, authorizer) {
             Ok(entry) => (entry, None),
             // The snapshot was made and the pointer moved; only the flush is not known. The
             // restore goes on, as the unsaved work is in the log, and reports the flush at the end.
@@ -233,9 +240,11 @@ impl Repository {
                     }
                     Ok(entry)
                 });
-        let wrap = |error: RestoreError| match &snapshot {
+        // A failure after the snapshot names it, and the flush that did not succeed with it.
+        let mut wrap = |error: RestoreError| match &snapshot {
             Some(saved) => RestoreError::AfterSnapshot {
                 snapshot: saved.clone(),
+                late: snapshot_late.take(),
                 source: Box::new(error),
             },
             None => error,
@@ -479,6 +488,9 @@ pub enum RestoreError {
     AfterSnapshot {
         /// The entry of the snapshot.
         snapshot: Box<Entry>,
+        /// The error of the flush, if a directory of the snapshot could not be flushed: the saved
+        /// unsaved work may not survive a crash.
+        late: Option<RefError>,
         /// The failure.
         source: Box<RestoreError>,
     },
@@ -548,7 +560,7 @@ impl RestoreError {
             Self::PartlyMoved { .. }
             | Self::NotDurable { .. }
             | Self::SnapshotNotDurable { .. } => true,
-            Self::AfterSnapshot { source, .. } => source.pointer_moved(),
+            Self::AfterSnapshot { late, source, .. } => late.is_some() || source.pointer_moved(),
             _ => false,
         }
     }
@@ -626,11 +638,24 @@ impl fmt::Display for RestoreError {
                     snapshot.number()
                 )
             }
-            Self::AfterSnapshot { snapshot, source } => write!(
-                f,
-                "{source}; the unsaved changes were saved first as entry {}",
-                snapshot.number()
-            ),
+            Self::AfterSnapshot {
+                snapshot,
+                late,
+                source,
+            } => {
+                write!(
+                    f,
+                    "{source}; the unsaved changes were saved first as entry {}",
+                    snapshot.number()
+                )?;
+                match late {
+                    Some(late) => write!(
+                        f,
+                        ", but that could not be flushed to disk and may not survive a crash: {late}"
+                    ),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
@@ -1304,6 +1329,7 @@ mod tests {
         };
         let error = RestoreError::AfterSnapshot {
             snapshot: Box::new(snapshot.clone()),
+            late: None,
             source: Box::new(RestoreError::Refs(RefError::Locked {
                 path: "refs.lock".into(),
             })),
@@ -1339,5 +1365,66 @@ mod tests {
         };
         assert!(!failed.pointer_moved());
         assert!(failed.entry().is_some());
+    }
+
+    #[test]
+    fn a_snapshot_that_is_not_durable_is_named_when_a_later_step_fails() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        let entry = Box::new(repository.oplog().read(snapshot).unwrap());
+        let late = RestoreError::AfterSnapshot {
+            snapshot: entry.clone(),
+            late: Some(RefError::Locked { path: "x".into() }),
+            source: Box::new(RestoreError::Refs(RefError::Locked { path: "y".into() })),
+        };
+        assert!(
+            late.pointer_moved(),
+            "the saved work may not survive a crash"
+        );
+        assert!(
+            late.to_string().contains("could not be flushed to disk"),
+            "{late}"
+        );
+        let plain = RestoreError::AfterSnapshot {
+            snapshot: entry,
+            late: None,
+            source: Box::new(RestoreError::Refs(RefError::Locked { path: "y".into() })),
+        };
+        assert!(!plain.pointer_moved());
+        assert!(!plain.to_string().contains("flushed"), "{plain}");
+    }
+
+    #[test]
+    fn a_made_restore_with_a_snapshot_that_is_not_durable_is_an_error_with_both_entries() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        let entry = Box::new(repository.oplog().read(snapshot).unwrap());
+        let made = RestoreError::SnapshotNotDurable {
+            snapshot: entry.clone(),
+            restored: Some(entry.clone()),
+            source: RefError::Locked { path: "x".into() },
+        };
+        assert!(made.pointer_moved());
+        assert_eq!(made.snapshot().map(Entry::number), Some(snapshot));
+        assert_eq!(made.entry().map(Entry::number), Some(snapshot));
+        assert!(
+            made.to_string()
+                .starts_with("the restore was made as entry"),
+            "{made}"
+        );
+        let nothing = RestoreError::SnapshotNotDurable {
+            snapshot: entry,
+            restored: None,
+            source: RefError::Locked { path: "x".into() },
+        };
+        assert!(nothing.entry().is_none());
+        assert!(
+            nothing
+                .to_string()
+                .starts_with("there was nothing to restore"),
+            "{nothing}"
+        );
     }
 }

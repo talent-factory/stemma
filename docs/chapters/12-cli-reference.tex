@@ -624,7 +624,7 @@ Er sichert die geschriebenen Dateien zuerst in einem Snapshot (die Ausgabe nennt
 lässt Dateien, die schon den Inhalt und den Modus des Ziels haben, wie sie sind
 und bewegt die Zeiger.
 
-Exit-Code 3 gilt in drei Fällen:
+Exit-Code 3 gilt in diesen Fällen:
 Ein Teil der Zeiger hat sich bewegt und ein späterer nicht (die Ausgabe nennt
 \type{Half made} und den Aufruf, der es beendet), der Eintrag und die Zeiger sind geschrieben,
 aber ein Verzeichnis liess sich nicht auf den Datenträger sichern, oder das Restore ist gemacht
@@ -636,10 +636,13 @@ oder die Meldung nennt den Eintrag, mit dem sich das Restore zurücksetzen läss
 Das Restore schreibt sein Ergebnis auf die Standardausgabe, bevor es einen solchen
 Fehler meldet; eine geschlossene Pipe nach einem gemachten Restore ist deshalb Exit-Code 3
 und nicht still ein Erfolg.
-Konnte ein Snapshot vor dem Restore nicht gesichert werden, endet der Befehl ebenfalls
-mit 3, nachdem das Restore gemacht ist; die Meldung nennt den Eintrag des Snapshots.
+Konnte ein Verzeichnis des Snapshots vor dem Restore nicht gesichert werden, endet der Befehl
+ebenfalls mit 3: nachdem das Restore gemacht ist (oder nichts zu tun war), und auch dann, wenn
+ein späterer Schritt scheiterte. Die ungesicherte Arbeit steht dann im Log, überlebt aber
+einen Absturz vielleicht nicht; die Meldung nennt den Eintrag des Snapshots.
 Ein Fehler beim Schreiben der Ausgabe von \type{--dry-run} oder bei
-\type{Nothing to restore} ist Exit-Code 1, denn es wurde nichts gemacht.
+\type{Nothing to restore} ohne Snapshot ist Exit-Code 1, denn es wurde nichts gemacht;
+hatte der Befehl einen Snapshot gemacht, ist es Exit-Code 3, und die Meldung nennt ihn.
 
 {\bf Grenzen.} Die Version nimmt eine Eintragsnummer und keinen Zeitpunkt; ein
 \type{undo} für den letzten Eintrag gibt es nicht.

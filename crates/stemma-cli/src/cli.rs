@@ -1093,6 +1093,7 @@ mod tests {
         assert_eq!(
             code(RestoreError::AfterSnapshot {
                 snapshot: entry.clone(),
+                late: None,
                 source: Box::new(RestoreError::PartlyMoved {
                     entry: entry.clone(),
                     source: locked()
@@ -1121,6 +1122,7 @@ mod tests {
         assert_eq!(
             code(RestoreError::AfterSnapshot {
                 snapshot: entry.clone(),
+                late: None,
                 source: Box::new(RestoreError::CheckoutFailed {
                     entry: entry.clone(),
                     source: stemma_core::repository::CheckoutError::InTheWay {
@@ -1250,6 +1252,7 @@ mod tests {
         let entry = Box::new(entry);
         let half = RestoreError::AfterSnapshot {
             snapshot: entry.clone(),
+            late: None,
             source: Box::new(RestoreError::PartlyMoved {
                 entry: entry.clone(),
                 source: RefError::Locked { path: dir.clone() },
