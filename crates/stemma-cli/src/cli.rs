@@ -801,9 +801,12 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         .map(|number| log.read(*number))
         .collect::<Result<Vec<_>, _>>()
         .map_err(CliError::OpLog)?;
+    // The purge entry of a shown stub comes after it, so it is shown too.
+    oplog::check_stubs(&entries).map_err(CliError::OpLog)?;
     let names: BTreeSet<&BranchName> = entries
         .iter()
-        .flat_map(|entry| entry.change().branches().iter().map(|(name, _)| name))
+        .filter_map(oplog::Entry::change)
+        .flat_map(|change| change.branches().iter().map(|(name, _)| name))
         .collect();
     let read = || -> Result<_, RefError> {
         let refs = repository.refs();
@@ -1276,7 +1279,7 @@ mod tests {
             .unwrap()
             .iter()
             .rev()
-            .find(|entry| entry.change().operation().as_str() == "commit")
+            .find(|entry| entry.change().unwrap().operation().as_str() == "commit")
             .unwrap()
             .number();
         let args = OpRestoreArgs {
@@ -1303,7 +1306,7 @@ mod tests {
         );
         let repository = Repository::open(&dir).unwrap();
         let last = repository.oplog().entries().unwrap().pop().unwrap();
-        assert_eq!(last.change().operation().as_str(), "restore");
+        assert_eq!(last.change().unwrap().operation().as_str(), "restore");
         let _ = std::fs::remove_dir_all(dir);
     }
 

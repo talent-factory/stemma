@@ -163,7 +163,7 @@ impl Repository {
         if let Head::Detached(commit) = &head {
             roots.push(*commit);
         }
-        roots.extend(log.iter().flat_map(|entry| entry.change().commits()));
+        roots.extend(log.iter().flat_map(|entry| entry.commits()));
         for root in &roots {
             planner.commit(*root)?;
         }
@@ -193,7 +193,6 @@ impl Repository {
             .collect();
         let (replaced, kept): (Vec<&Entry>, Vec<&Entry>) = log.iter().partition(|entry| {
             entry
-                .change()
                 .commits()
                 .iter()
                 .any(|commit| rewritten.contains(commit))
@@ -206,7 +205,7 @@ impl Repository {
         if let Head::Detached(commit) = &head {
             kept_roots.push(new(*commit));
         }
-        kept_roots.extend(kept.iter().flat_map(|entry| entry.change().commits()));
+        kept_roots.extend(kept.iter().flat_map(|entry| entry.commits()));
 
         planner.scan()?;
         let mut commits: Vec<CommitId> = planner.rewrites.iter().map(|(old, _)| *old).collect();

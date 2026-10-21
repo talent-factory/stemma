@@ -46,8 +46,13 @@ use crate::refs::{encode_branch, BranchName, FsRefStore, Head, Logged, RefError,
 use crate::store::{unique_temp_name, FsObjectStore, ObjectStore, StoreError};
 use crate::{Actor, Authorizer, Decision};
 
-/// The version of the repository format that this code writes and reads.
+/// The version of the repository format that `init` writes.
 const FORMAT_VERSION: u32 = 2;
+
+/// The versions of the repository format that this code reads. Version 3 adds the stub and the
+/// `purge` entry to the operation log (ADR-014); a repository moves to it with its first purge,
+/// so that a program that knows only version 2 refuses a log that it cannot read.
+const READ_VERSIONS: [u32; 2] = [2, 3];
 
 /// The name that the file `format` starts with, followed by the version.
 const FORMAT_PREFIX: &str = "stemma-repository ";
@@ -219,7 +224,13 @@ impl Repository {
         let format_path = metadata_dir.join("format");
         let bytes = read_format(&format_path)?;
         match parse_format(&bytes) {
-            Some(version) if version == FORMAT_VERSION.to_string() => Ok(Self::at(path)),
+            Some(version)
+                if READ_VERSIONS
+                    .iter()
+                    .any(|known| version == known.to_string()) =>
+            {
+                Ok(Self::at(path))
+            }
             Some(found) => Err(OpenError::UnsupportedFormat {
                 path: format_path,
                 found: found.to_owned(),
@@ -1139,8 +1150,8 @@ impl fmt::Display for OpenError {
             ),
             Self::UnsupportedFormat { path, found } => write!(
                 f,
-                "the format file `{}` names version {found}, but this code supports version \
-                 {FORMAT_VERSION}",
+                "the format file `{}` names version {found}, but this code supports versions \
+                 2 and 3",
                 path.display()
             ),
             Self::Io {
@@ -1329,9 +1340,12 @@ mod tests {
             .unwrap();
         assert_eq!(repository.refs().working_copy().unwrap(), new);
         assert_eq!(entry.number(), 2);
-        let moved = entry.change().working_copy().unwrap();
+        let moved = entry.change().unwrap().working_copy().unwrap();
         assert_eq!((moved.before(), moved.after()), (Some(&old), Some(&new)));
-        assert!(entry.change().head().is_none() && entry.change().branches().is_empty());
+        assert!(
+            entry.change().unwrap().head().is_none()
+                && entry.change().unwrap().branches().is_empty()
+        );
     }
 
     #[test]
@@ -1810,7 +1824,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "3",
+            "4",
             "99",
             "4294967295",
             "4294967296",
@@ -1826,6 +1840,16 @@ mod tests {
             );
             assert!(error.to_string().contains(version), "{error}");
         }
+    }
+
+    #[test]
+    fn open_reads_version_3_and_init_writes_version_2() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
+        assert_eq!(format, "stemma-repository 2\n");
+        set_format(dir.path(), "stemma-repository 3\n");
+        Repository::open(dir.path()).unwrap();
     }
 
     #[test]
@@ -2000,7 +2024,7 @@ mod tests {
                     path: path.clone(),
                     found: "7".to_string(),
                 },
-                "version 7, but this code supports version 2",
+                "version 7, but this code supports versions 2 and 3",
             ),
         ];
         for (error, text) in cases {
@@ -2067,7 +2091,7 @@ mod tests {
         let after = now();
         assert_eq!(numbers(&repository), [1]);
         let entry = repository.oplog().read(1).unwrap();
-        let change = entry.change();
+        let change = entry.change().unwrap();
         assert_eq!(change.operation().as_str(), "init");
         assert_eq!(change.actor(), &actor());
         assert!(
@@ -2107,9 +2131,9 @@ mod tests {
         let options = InitOptions::new(branch("trunk/main"));
         let repository = Repository::init(dir.path(), &options, &agent, &AllowAll).unwrap();
         let entry = repository.oplog().read(1).unwrap();
-        assert_eq!(entry.change().actor(), &agent);
+        assert_eq!(entry.change().unwrap().actor(), &agent);
         assert_eq!(
-            entry.change().head().unwrap().after(),
+            entry.change().unwrap().head().unwrap().after(),
             Some(&Head::Branch(branch("trunk/main")))
         );
     }
@@ -2135,7 +2159,7 @@ mod tests {
         assert_eq!((created.number(), moved.number()), (2, 3));
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(b));
         for (entry, old, new) in [(&created, None, a), (&moved, Some(a), b)] {
-            let change = entry.change();
+            let change = entry.change().unwrap();
             assert_eq!(change.operation().as_str(), "commit");
             assert_eq!(change.actor(), &actor());
             assert!(change.head().is_none() && change.working_copy().is_none());
@@ -2345,7 +2369,7 @@ mod tests {
         // The entry is in the log and names the move; the branch did not move.
         assert_eq!(numbers(&repository), [1, 2]);
         let read = repository.oplog().read(2).unwrap();
-        let [(name, pair)] = read.change().branches() else {
+        let [(name, pair)] = read.change().unwrap().branches() else {
             panic!("one branch")
         };
         assert_eq!(name, &branch("main"));
@@ -2519,7 +2543,7 @@ mod tests {
         );
         let mut previous = Head::Branch(branch("main"));
         for entry in &entries {
-            let head = entry.change().head().unwrap();
+            let head = entry.change().unwrap().head().unwrap();
             assert_eq!(head.before(), Some(&previous), "entry {}", entry.number());
             previous = head.after().unwrap().clone();
         }
@@ -2600,14 +2624,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(repository.refs().head().unwrap(), Head::Detached(a));
-        let first = to_branch.change().head().unwrap();
+        let first = to_branch.change().unwrap().head().unwrap();
         assert_eq!(first.before(), Some(&Head::Branch(branch("main"))));
         assert_eq!(first.after(), Some(&Head::Branch(branch("dev"))));
-        let second = detached.change().head().unwrap();
+        let second = detached.change().unwrap().head().unwrap();
         assert_eq!(second.before(), Some(&Head::Branch(branch("dev"))));
         assert_eq!(second.after(), Some(&Head::Detached(a)));
         // The commit that HEAD named is a root of the log.
-        assert!(detached.change().commits().contains(&a));
+        assert!(detached.change().unwrap().commits().contains(&a));
     }
 
     #[test]
@@ -2703,7 +2727,10 @@ mod tests {
         let moved = repository.refs().branch(&branch("main")).unwrap().unwrap();
         let entry = repository.oplog().read(2).unwrap();
         assert_eq!(&entry, winners[0]);
-        assert_eq!(entry.change().branches()[0].1.after(), Some(&moved));
+        assert_eq!(
+            entry.change().unwrap().branches()[0].1.after(),
+            Some(&moved)
+        );
         assert!(commits.contains(&moved));
     }
 

@@ -525,7 +525,7 @@ fn the_actor_comes_from_the_environment_and_the_flag_wins() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let repository = Repository::open(dir.path()).unwrap();
     let last = repository.oplog().entries().unwrap().pop().unwrap();
-    assert_eq!(last.change().actor().to_string(), "human erika");
+    assert_eq!(last.change().unwrap().actor().to_string(), "human erika");
 
     let again = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
@@ -547,7 +547,7 @@ fn the_actor_comes_from_the_environment_and_the_flag_wins() {
         .unwrap()
         .pop()
         .unwrap();
-    assert_eq!(last.change().actor().to_string(), "human max");
+    assert_eq!(last.change().unwrap().actor().to_string(), "human max");
 }
 
 #[test]
@@ -638,5 +638,59 @@ fn a_restore_whose_pointers_cannot_move_names_the_way_on_and_the_same_call_finis
         branch(dir.path()),
         tip,
         "the branch is back at its old commit"
+    );
+}
+
+/// Writes a version-2 entry file as a purge would (ADR-014).
+fn write_entry_2(dir: &Path, number: u64, body: &str) {
+    let text =
+        format!("stemma-oplog 2\nnumber {number}\ntime 1700000000\nactor human daniel\n{body}");
+    fs::write(
+        dir.join(".stemma/oplog").join(format!("{number:012}")),
+        text,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_stub_and_a_purge_cannot_be_restored() {
+    let (dir, snapshot) = two_commits();
+    let last = *numbers(dir.path()).last().unwrap();
+    let purge = last + 1;
+    write_entry_2(dir.path(), snapshot, "stub\n");
+    write_entry_2(
+        dir.path(),
+        purge,
+        &format!("operation purge\ncommits 1\nstubs {snapshot}\n"),
+    );
+
+    let result = run(
+        dir.path(),
+        &["op", "restore", &snapshot.to_string(), "--actor", ACTOR],
+    );
+    assert_eq!(result.code, 1);
+    assert!(
+        result
+            .stderr
+            .contains("was replaced by a stub when a secret was purged"),
+        "{}",
+        result.stderr
+    );
+    let result = run(
+        dir.path(),
+        &["op", "restore", &purge.to_string(), "--actor", ACTOR],
+    );
+    assert_eq!(result.code, 1);
+    assert!(
+        result
+            .stderr
+            .contains("is a purge, which removed history for good"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(
+        *numbers(dir.path()).last().unwrap(),
+        purge,
+        "nothing was written"
     );
 }

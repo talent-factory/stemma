@@ -775,8 +775,11 @@ mod tests {
 
         let snapshot = first.snapshot.expect("the changed file is saved");
         assert!(snapshot.late.is_none());
-        assert_eq!(snapshot.entry.change().actor(), &other());
-        assert_eq!(snapshot.entry.change().operation().as_str(), "snapshot");
+        assert_eq!(snapshot.entry.change().unwrap().actor(), &other());
+        assert_eq!(
+            snapshot.entry.change().unwrap().operation().as_str(),
+            "snapshot"
+        );
         assert!(second.snapshot.is_none());
         assert_eq!(repository.oplog().entries().unwrap().len(), entries + 1);
         assert_eq!(first.working_copy, second.working_copy);
@@ -1126,7 +1129,10 @@ mod tests {
         let saved = status.snapshot.as_ref().expect("the snapshot is a result");
         assert!(matches!(&saved.late, Some(RefError::NotFlushed { .. })));
         assert!(status.late().is_some());
-        assert_eq!(saved.entry.change().operation().as_str(), "snapshot");
+        assert_eq!(
+            saved.entry.change().unwrap().operation().as_str(),
+            "snapshot"
+        );
         assert_eq!(
             status.working_copy,
             repository.refs().working_copy().unwrap()
@@ -1156,7 +1162,7 @@ mod tests {
         );
         assert!(error.pointer_moved());
         let entry = error.entry().expect("the snapshot entry is in the log");
-        assert_eq!(entry.change().operation().as_str(), "snapshot");
+        assert_eq!(entry.change().unwrap().operation().as_str(), "snapshot");
         assert!(
             error
                 .to_string()

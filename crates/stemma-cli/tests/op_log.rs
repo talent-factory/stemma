@@ -174,7 +174,7 @@ fn the_json_form_is_one_object_per_line() {
     assert_eq!(
         lines[0],
         format!(
-            "{{\"number\":2,\"time\":1700000000,\"actor\":\"human daniel\",\
+            "{{\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
              \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
@@ -587,5 +587,71 @@ fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_leaves_it_unkn
             .contains("    ? it is not known whether the move took effect\n"),
         "{}",
         result.stdout
+    );
+}
+
+/// Writes a version-2 entry file as a purge would (ADR-014).
+fn write_entry_2(dir: &Path, number: u64, body: &str) {
+    let text =
+        format!("stemma-oplog 2\nnumber {number}\ntime 1700000000\nactor human daniel\n{body}");
+    fs::write(
+        dir.join(".stemma/oplog").join(format!("{number:012}")),
+        text,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_stub_and_a_purge_are_shown_without_ids() {
+    let dir = repository();
+    let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    snapshot(dir.path(), 2, &first, A);
+    snapshot(dir.path(), 3, A, B);
+    write_entry_2(dir.path(), 2, "stub\n");
+    write_entry_2(dir.path(), 3, "stub\n");
+    write_entry_2(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
+
+    let result = run(dir.path(), &["op", "log", "-n", "3"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "4  2023-11-14T22:13:20Z  human daniel  purge\n    commits 2  stubs 2-3\n\
+         3  2023-11-14T22:13:20Z  human daniel  (purged)\n\
+         2  2023-11-14T22:13:20Z  human daniel  (purged)\n"
+    );
+    let result = run(dir.path(), &["op", "log", "-n", "3", "--json"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        "{\"number\":4,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
+         \"operation\":\"purge\",\"commits\":2,\"stubs\":[[2,3]]}"
+    );
+    assert_eq!(
+        lines[1],
+        "{\"number\":3,\"kind\":\"stub\",\"time\":1700000000,\"actor\":\"human daniel\"}"
+    );
+}
+
+#[test]
+fn a_stub_that_no_purge_lists_is_reported() {
+    let dir = repository();
+    let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    snapshot(dir.path(), 2, &first, A);
+    write_entry_2(dir.path(), 2, "stub\n");
+    let result = run(dir.path(), &["op", "log"]);
+    assert_eq!(result.code, 1);
+    assert!(
+        result
+            .stderr
+            .contains("entry 2 is a stub, but no purge entry lists it"),
+        "{}",
+        result.stderr
     );
 }
