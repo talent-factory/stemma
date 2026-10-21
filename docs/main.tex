@@ -33,41 +33,64 @@
 \starttext
 
 % ------------------------------------------------------------------
-% Status: a sash in the primary colour across a corner of the title page.
-% It disappears when status is empty.
+% Title page in the style of the seal series: a cream ground with a thin
+% frame, the emblem, and a spaced serif word mark.
 % ------------------------------------------------------------------
+\definecolor[sealcolor][h=B5442B]
+\definecolor[sealground][h=F4EFE6]
+\definecolor[sealink][h=1E1A16]
+\definecolor[sealmuted][h=6B6358]
+
+\definefont[SealWord][name:libertinusserifregular at 32pt]
+\definefont[SealLine][name:libertinusserifregular at 12pt]
+\definecharacterkerning[sealspacing][factor=.2]
+
+\startuniqueMPgraphic{sealframe}
+  fill OverlayBox withcolor \MPcolor{sealground} ;
+  draw OverlayBox enlarged -1.6cm
+    withpen pencircle scaled 1pt withcolor \MPcolor{sealink} ;
+\stopuniqueMPgraphic
+\defineoverlay[sealframe][\useMPgraphic{sealframe}]
+
+% Status: a sash across the top right corner; it disappears when status is empty.
 \startuniqueMPgraphic{statussash}
   pair c ; c := (OverlayWidth-2.6cm, OverlayHeight-2.6cm) ;
   fill ((-4cm,-.55cm)--(4cm,-.55cm)--(4cm,.55cm)--(-4cm,.55cm)--cycle)
-    rotated -45 shifted c withcolor \MPcolor{primarycolor} ;
-  draw textext("\ss\bf\tfa\color[white]{\getvariable{document}{status}}")
+    rotated -45 shifted c withcolor \MPcolor{sealcolor} ;
+  draw textext("\ss\bf\tfa\color[sealground]{\getvariable{document}{status}}")
     rotated -45 shifted c ;
   clip currentpicture to OverlayBox ;
   setbounds currentpicture to OverlayBox ;
 \stopuniqueMPgraphic
 \defineoverlay[statussash][\useMPgraphic{statussash}]
 
+\setupbackgrounds[page][background=sealframe]
 \doifsomething{\getvariable{document}{status}}
-  {\setupbackgrounds[page][background=statussash]}
+  {\setupbackgrounds[page][background={sealframe,statussash}]}
 
 % ------------------------------------------------------------------
 % Titelblatt
 % ------------------------------------------------------------------
 \startstandardmakeup[page=no]
 \vfill
-\midaligned{\externalfigure[images/stemma.pdf][width=6cm]}
-\blank[2*big]
-\midaligned{\bfd\ss\color[tftext]{\getvariable{document}{title}}}
-\blank[2*big]
-\midaligned{\bfa\ss\color[mutedcolor]{\getvariable{document}{subtitle}}}
+\midaligned{\externalfigure[images/stemma.pdf][width=9cm]}
 \blank[big]
-\midaligned{\ss\color[mutedcolor]{\getvariable{document}{kind}}}
+\midaligned{\SealWord\color[sealink]{\setcharacterkerning[sealspacing]%
+  \WORD{\getvariable{document}{title}}}}
+\blank[medium]
+\midaligned{\SealLine\color[sealmuted]{gr. στέμμα, Kranz · Stammbaum der Handschriften}}
+\blank[3*big]
+\midaligned{\bfa\ss\color[sealink]{\getvariable{document}{subtitle}}}
+\blank[big]
+\midaligned{\ss\color[sealmuted]{\getvariable{document}{kind}}}
 \vfill
+\startcolor[sealink]
 \midaligned{
   \getvariable{document}{author} \\
   \getvariable{document}{institution} \\
   Version \getvariable{document}{version} · \gitdate
 }
+\stopcolor
 \vfill
 \stopstandardmakeup
 \page
