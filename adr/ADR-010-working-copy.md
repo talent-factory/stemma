@@ -1,8 +1,9 @@
 # ADR-010: The working copy is a commit
 
-**Status:** Partially confirmed. Decisions marked *(confirmed)* were agreed with the author on
-2026-10-19, and `commit` and the tracked set on 2026-10-21. The ADR becomes *Accepted* when the
-actor of a snapshot is decided (STEMMA-38); the other open items at the end do not hold it back.
+**Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
+2026-10-19, `commit` and the tracked set on 2026-10-21, and the actor of a snapshot on
+2026-10-21 (STEMMA-38). The open items at the end are limits that the first version has and
+questions for later; none of them changes a decision above.
 
 ## Context
 
@@ -160,8 +161,20 @@ are prior art, not a template.
   key. Removing a secret from the log is an operation of its own (see the open items).
 - **Conflicts can be data in a commit.** This model allows it, because every state is a commit.
   It does not decide it; the conflict model stays with phase 3 (STEMMA-19).
-- **The working copy has an owner.** A snapshot has an actor. For an agent that shares a
-  directory with others, the lease of ADR-004 has to cover the working-copy commit too.
+- **A working copy belongs to one actor** *(confirmed)*. A snapshot is made by the actor of the
+  command that takes it, and the log names that actor. A snapshot saves whatever is in the
+  directory, so when two actors (a human and an agent, say) work in one directory, a change of
+  one can be saved by a command of the other, and the log then names the actor who saved it,
+  not the one who made the change. The rule is therefore: **every actor works in a working copy
+  of its own**. Two actors in one directory are not a supported mode. The core does not enforce
+  the rule yet: nothing records an owner in the file `working-copy`, and a command of another
+  actor is not refused. Enforcement comes with the second working copy (a worktree, phase 3, see
+  the open items), which needs a mechanism for owning a directory anyway. Until then the rule is
+  a convention that the people and the agents who use a repository keep.
+- **The lease of ADR-004 covers the working-copy commit through its branch.** The lease is a
+  property of a branch and is enforced by a server (ADR-004). The working-copy commit is a child
+  of the branch it was made on, so the one write owner of a branch is also the one actor of its
+  working copy. No lease of its own for the working copy exists, and none is needed locally.
 
 ## Open items
 
@@ -192,8 +205,11 @@ are prior art, not a template.
       format and what an entry holds are decided in ADR-011. Tracked in STEMMA-39.
 - [ ] Removing a secret from the history and from the log: a purge that rewrites the log and
       lets garbage collection delete what only the log held. Tracked in STEMMA-26.
-- [ ] Who the actor of a snapshot is when two actors use one directory, and how the lease of
-      ADR-004 applies. Tracked in STEMMA-38.
+- [x] Who the actor of a snapshot is when two actors use one directory, and how the lease of
+      ADR-004 applies. Decided above (STEMMA-38): one actor per working copy, kept by convention.
+- [ ] Enforcing that rule: an owner in the file `working-copy`, and a command of another actor
+      that takes a snapshot is refused unless it takes the working copy over explicitly. Comes
+      with the second working copy (phase 3).
 - [x] The cost of a snapshot for a large working directory: reading every file at every
       command. It is twice the tracked files today, because `Index::write_tree` verifies the
       blobs again (the code points here and does not repeat it). Measured in STEMMA-37 (release
