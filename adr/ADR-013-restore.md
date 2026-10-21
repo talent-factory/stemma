@@ -36,16 +36,25 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   can be undone by restoring it.
 - **The directory is written by a checkout layer** *(proposed; STEMMA-42)*. It brings the
   directory from the tree of one commit to the tree of another and has no command of its own.
-  - It plans first and writes after. A conflict is found before the first file is written.
-  - It touches only a path that the old or the new tree knows. It never touches `.stemma`, `.git`,
-    a file that is not tracked, or a path that `.stemmaignore` excludes. A path of the new tree
-    that is in the way of one of these is an error that names the path, and nothing is written.
+  - It plans first and writes after. A conflict that the plan can see is found before the first
+    file is written; one that appears later stops the apply, which leaves what it did (see
+    below).
+  - It changes only a path that the old or the new tree names. It never reads, writes, or removes
+    the content of a file that is not tracked. It never touches `.stemma` or `.git`, in the old
+    tree or in the new one, also under their aliases (case, trailing dots, `GIT~1`, streams). A
+    path that is new in the new tree and that `.stemmaignore` excludes is an error; a file that
+    the old tree tracks is changed or removed even if a pattern excludes it now (ADR-012: tracked
+    stays tracked). A file, a link, or a directory that holds a file and is in the way of a path
+    of the new tree is an error that names it, and nothing is written. An empty directory in the
+    way is removed.
   - A file is written to a temporary file in its own directory and renamed, so a reader sees the
     old or the new content. A file that the old tree had and the new one lacks is removed, and so
-    is a directory that this emptied; no other directory is removed.
-  - It keeps the duties of ADR-005: it rejects or escapes the names that are dangerous on
-    Windows, it detects names that collide on a file system that ignores case or normalizes, and
-    it never writes through a link.
+    is a directory that this emptied; no other directory is removed. A stop leaves what was done
+    and reports how many files it removed and wrote; the next snapshot saves it as a change of
+    the actor.
+  - It keeps the duties of ADR-005: it rejects the names that are dangerous on Windows, it
+    detects names that collide on a file system that ignores case, and it never writes through a
+    link. Names that collide only in Unicode normalization form are an open item below.
 - **The order is: entry, directory, pointers** *(proposed)*. Under the lock of the references the
   restore checks, writes the entry, flushes it, brings the directory to the target tree, and
   moves the pointers last (ADR-011). A stop after the entry leaves the old state, and the entry
@@ -94,5 +103,26 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] The risk level of a restore in ADR-004.
 - [ ] A directory in the way that is not empty because of untracked files: the first version
       refuses; a way to move them aside is open.
-- [ ] Windows and file systems that ignore case: the checkout layer needs a test on both
-      (STEMMA-33).
+- [ ] Windows and file systems that ignore case: the functions for Windows names and for case
+      collisions are tested on every platform, but the Windows branch of the name check has never
+      run end to end, and no test ran on Windows (STEMMA-33).
+- [ ] Names that differ only in Unicode normalization form are not found by the plan, as the
+      crate has no normalization tables. The apply finds them when the second file is written, if
+      the second path is new (the first file is there already), and stops. If the second path is
+      also in the old tree, it replaces the first file without a word.
+- [ ] A file that appears between the last check and the rename of a write is replaced. The
+      window is as short as it can be with `rename`. Closing it needs a rename that fails when the
+      target exists (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL`
+      on macOS, and another call on Windows), which `std::fs::rename` does not offer.
+- [ ] The layer does not compare the content of a file that it removes or replaces with the
+      old tree. It relies on the snapshot that the restore takes first (proposed above).
+- [ ] A plan is not bound to the repository it was made for. Applied to another one, it would
+      rewrite that directory. Ticketed as STEMMA-45, to be done with the restore (STEMMA-43),
+      where a second caller makes the mix-up possible.
+- [ ] The plan decides by platform whether names ignore case. A case-sensitive volume on macOS,
+      or a rename that changes only the normalization form of a name, can pass or fail the plan
+      for the wrong reason; the apply stops with a clear error, but halfway.
+- [ ] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
+      and the rename; `track .` would pick it up as a new file.
+- [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the
+      file of the old tree.
