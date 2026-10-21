@@ -794,16 +794,14 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         return Err(CliError::EmptyLog);
     }
     // The shown entries are the newest ones, so every later entry of a pointer is among them, and
-    // only the last entry of a pointer needs its value now.
-    let shown = &numbers[numbers.len().saturating_sub(args.limit.get())..];
-    let entries = shown
-        .iter()
-        .map(|number| log.read(*number))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(CliError::OpLog)?;
+    // only the last entry of a pointer needs its value now. The purge entry of a shown stub comes
+    // after it, so it is shown too, and `tail` checks the stubs.
+    let entries = log.tail(args.limit.get()).map_err(CliError::OpLog)?;
+    let pending = oplog::pending_stubs(&entries);
     let names: BTreeSet<&BranchName> = entries
         .iter()
-        .flat_map(|entry| entry.change().branches().iter().map(|(name, _)| name))
+        .filter_map(oplog::Entry::change)
+        .flat_map(|change| change.branches().iter().map(|(name, _)| name))
         .collect();
     let read = || -> Result<_, RefError> {
         let refs = repository.refs();
@@ -854,10 +852,11 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     };
     let outcomes = oplog::outcomes(&entries, current.as_ref());
     for (entry, outcome) in entries.iter().zip(outcomes).rev() {
+        let pending = pending.contains(&entry.number());
         let written = if args.json {
-            writeln!(out, "{}", op_log::json(entry, outcome))
+            writeln!(out, "{}", op_log::json(entry, outcome, pending))
         } else {
-            write!(out, "{}", op_log::text(entry, outcome))
+            write!(out, "{}", op_log::text(entry, outcome, pending))
         };
         match written {
             // The reader of a pipe, such as `head`, has had enough: that is not a failure.
@@ -1276,7 +1275,7 @@ mod tests {
             .unwrap()
             .iter()
             .rev()
-            .find(|entry| entry.change().operation().as_str() == "commit")
+            .find(|entry| entry.change().unwrap().operation().as_str() == "commit")
             .unwrap()
             .number();
         let args = OpRestoreArgs {
@@ -1303,7 +1302,7 @@ mod tests {
         );
         let repository = Repository::open(&dir).unwrap();
         let last = repository.oplog().entries().unwrap().pop().unwrap();
-        assert_eq!(last.change().operation().as_str(), "restore");
+        assert_eq!(last.change().unwrap().operation().as_str(), "restore");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -654,9 +654,9 @@ mod tests {
         assert_eq!(after.message(), "work");
         assert_eq!(after.author(), &other_actor());
         // The entry names both commits, so the log keeps the one that was replaced.
-        assert_eq!(entry.change().operation().as_str(), "snapshot");
-        assert_eq!(entry.change().actor(), &other_actor());
-        let moved = entry.change().working_copy().unwrap();
+        assert_eq!(entry.change().unwrap().operation().as_str(), "snapshot");
+        assert_eq!(entry.change().unwrap().actor(), &other_actor());
+        let moved = entry.change().unwrap().working_copy().unwrap();
         assert_eq!((moved.before(), moved.after()), (Some(&old), Some(&new)));
         assert!(repository.objects().contains(&old.object_id()).unwrap());
         // The content is in the tree.
@@ -1123,7 +1123,13 @@ mod tests {
         assert_ne!(after, before);
         assert_eq!(repository.oplog().numbers().unwrap().len(), numbers + 1);
         let entries = repository.oplog().entries().unwrap();
-        let moves = entries.last().unwrap().change().working_copy().unwrap();
+        let moves = entries
+            .last()
+            .unwrap()
+            .change()
+            .unwrap()
+            .working_copy()
+            .unwrap();
         assert_eq!(
             (moves.before(), moves.after()),
             (Some(&before), Some(&after))

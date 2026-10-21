@@ -557,8 +557,8 @@ mod tests {
         assert_eq!(after.message(), before.message());
         assert_eq!(after.author(), &other_actor());
         let entry = tracking.entry.unwrap();
-        assert_eq!(entry.change().operation().as_str(), "track");
-        let moved = entry.change().working_copy().unwrap();
+        assert_eq!(entry.change().unwrap().operation().as_str(), "track");
+        let moved = entry.change().unwrap().working_copy().unwrap();
         let new = repository.refs().working_copy().unwrap();
         assert_eq!((moved.before(), moved.after()), (Some(&old), Some(&new)));
     }
@@ -878,7 +878,7 @@ mod tests {
             .snapshot(&other_actor(), &AllowAll)
             .unwrap()
             .unwrap();
-        assert_eq!(entry.change().operation().as_str(), "snapshot");
+        assert_eq!(entry.change().unwrap().operation().as_str(), "snapshot");
     }
 
     #[test]

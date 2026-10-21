@@ -1,8 +1,9 @@
 //! Restoring the state before an entry of the operation log (ADR-013).
 //!
 //! A restore puts back the old values of the pointers that one entry moved: HEAD, the
-//! working-copy commit, and the branches. It writes an entry of its own, so the log is never
-//! rewritten and a restore can itself be restored. Because the working copy is a commit that
+//! working-copy commit, and the branches. It writes an entry of its own, so a restore never
+//! rewrites the log (only a purge replaces entries by stubs, ADR-014) and a restore can itself be
+//! restored. Because the working copy is a commit that
 //! stands for the directory (ADR-010), a restore that moves it also brings the files of the
 //! directory to the old tree, through the checkout layer.
 
@@ -15,7 +16,8 @@ use super::snapshot::{read_commit, SnapshotError};
 use super::{now, Repository, UpdateError};
 use crate::object::{CommitId, TreeId};
 use crate::oplog::{
-    outcomes, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome, Pointer,
+    outcomes, pending_stubs, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome,
+    Pointer, Record,
 };
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
 use crate::{Actor, Authorizer};
@@ -162,12 +164,15 @@ impl Repository {
     /// that stopped half way can be restored, and so can a restore that stopped half way. A branch
     /// that the entry created is deleted. If the log and the references do not decide whether the
     /// entry took effect, the call is refused with [`RestoreError::OutcomeUnknown`] unless
-    /// `force` is set.
+    /// `force` is set; this is so for every entry before the newest stub (ADR-014). A stub, the
+    /// entry of a purge, and an entry that an unfinished purge lists are refused even with `force`.
     ///
     /// # Errors
     ///
     /// Before the snapshot: [`RestoreError::Update`] for a refusal of the question `restore`,
     /// [`RestoreError::Log`] and [`RestoreError::NoSuchEntry`] for the entry,
+    /// [`RestoreError::Purged`] for a stub, [`RestoreError::IsPurge`] for the entry of a purge,
+    /// [`RestoreError::PurgePending`] for an entry that an unfinished purge lists,
     /// [`RestoreError::OutcomeUnknown`], [`RestoreError::NoOldValue`] for HEAD or the working-copy
     /// commit that the entry created (they cannot be absent), [`RestoreError::Refs`] for a commit
     /// the store lacks, a name in the way, or references that cannot be read,
@@ -302,10 +307,17 @@ impl Repository {
         let Some(position) = entries.iter().position(|entry| entry.number() == number) else {
             return Err(RestoreError::NoSuchEntry { number });
         };
+        let change = match entries[position].record() {
+            Record::Change(change) => change,
+            Record::Stub(_) => return Err(RestoreError::Purged { number }),
+            Record::Purge(_) => return Err(RestoreError::IsPurge { number }),
+        };
+        if pending_stubs(&entries).contains(&number) {
+            return Err(RestoreError::PurgePending { number });
+        }
         if self.outcome_of(&entries, position)? == Outcome::Unknown && !force {
             return Err(RestoreError::OutcomeUnknown { number });
         }
-        let change = entries[position].change();
         let head = match change.head() {
             Some(moved) => Some(moved.before().cloned().ok_or(RestoreError::NoOldValue {
                 number,
@@ -387,7 +399,8 @@ impl Repository {
         let working_copy = refs.working_copy().map_err(RestoreError::Refs)?;
         let names: BTreeSet<&BranchName> = entries
             .iter()
-            .flat_map(|entry| entry.change().branches().iter().map(|(name, _)| name))
+            .filter_map(Entry::change)
+            .flat_map(|change| change.branches().iter().map(|(name, _)| name))
             .collect();
         let mut branches = Vec::new();
         for name in names {
@@ -403,8 +416,9 @@ impl Repository {
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `OutcomeUnknown`, `NoOldValue`, `Refs`,
-/// `Snapshot`, `Checkout`) wrote nothing of the restore; those with an `entry` wrote it.
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `PurgePending`,
+/// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
+/// those with an `entry` wrote it.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RestoreError {
@@ -416,6 +430,23 @@ pub enum RestoreError {
     Log(OpLogError),
     /// The log has no entry with the number.
     NoSuchEntry {
+        /// The number.
+        number: u64,
+    },
+    /// The entry was replaced by a stub when a secret was purged (ADR-014): what it moved is gone.
+    Purged {
+        /// The number.
+        number: u64,
+    },
+    /// The entry is that of a purge, which cannot be restored: it removed history for good
+    /// (ADR-014).
+    IsPurge {
+        /// The number.
+        number: u64,
+    },
+    /// A purge lists the entry but stopped before it replaced it by a stub, so the entry is about
+    /// to be purged and names commits that the purge rewrote (ADR-014).
+    PurgePending {
         /// The number.
         number: u64,
     },
@@ -510,9 +541,12 @@ impl RestoreError {
             Self::Snapshot(error) => error.io_error(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
             Self::AfterSnapshot { source, .. } => source.io_error(),
-            Self::NoSuchEntry { .. } | Self::OutcomeUnknown { .. } | Self::NoOldValue { .. } => {
-                None
-            }
+            Self::NoSuchEntry { .. }
+            | Self::Purged { .. }
+            | Self::IsPurge { .. }
+            | Self::PurgePending { .. }
+            | Self::OutcomeUnknown { .. }
+            | Self::NoOldValue { .. } => None,
         }
     }
 
@@ -574,6 +608,20 @@ impl fmt::Display for RestoreError {
             Self::NoSuchEntry { number } => {
                 write!(f, "the operation log has no entry {number}")
             }
+            Self::Purged { number } => write!(
+                f,
+                "entry {number} was replaced by a stub when a secret was purged, so what it moved \
+                 is gone and it cannot be restored"
+            ),
+            Self::IsPurge { number } => write!(
+                f,
+                "entry {number} is a purge, which removed history for good and cannot be restored"
+            ),
+            Self::PurgePending { number } => write!(
+                f,
+                "entry {number} is listed by a purge that has not finished, so it is about to be \
+                 purged and cannot be restored; finish the purge first"
+            ),
             Self::OutcomeUnknown { number } => write!(
                 f,
                 "the log does not show whether entry {number} took effect, so the state before \
@@ -675,9 +723,12 @@ impl Error for RestoreError {
             Self::Snapshot(error) => error.source(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.source(),
             Self::AfterSnapshot { source, .. } => source.source(),
-            Self::NoSuchEntry { .. } | Self::OutcomeUnknown { .. } | Self::NoOldValue { .. } => {
-                None
-            }
+            Self::NoSuchEntry { .. }
+            | Self::Purged { .. }
+            | Self::IsPurge { .. }
+            | Self::PurgePending { .. }
+            | Self::OutcomeUnknown { .. }
+            | Self::NoOldValue { .. } => None,
         }
     }
 }
@@ -773,6 +824,7 @@ mod tests {
             .find(|entry| entry.number() == snapshot)
             .unwrap()
             .change()
+            .unwrap()
             .working_copy()
             .unwrap()
             .before()
@@ -782,9 +834,9 @@ mod tests {
         assert!(saved.is_none(), "nothing was unsaved");
         assert_eq!(read(&dir, "a.txt"), "one");
         assert_eq!(repository.refs().working_copy().unwrap(), old);
-        assert_eq!(entry.change().operation().as_str(), "restore");
+        assert_eq!(entry.change().unwrap().operation().as_str(), "restore");
         assert_eq!(numbers(&repository).len(), count + 1);
-        let moved = entry.change().working_copy().unwrap();
+        let moved = entry.change().unwrap().working_copy().unwrap();
         assert_eq!(moved.after(), Some(&old));
     }
 
@@ -807,7 +859,7 @@ mod tests {
         write(&dir, "a.txt", "scratch");
         let (saved, restored) = done(restore(&repository, snapshot));
         let saved = saved.expect("the unsaved change is saved first");
-        assert_eq!(saved.change().operation().as_str(), "snapshot");
+        assert_eq!(saved.change().unwrap().operation().as_str(), "snapshot");
         assert!(saved.number() < restored.number());
         assert_eq!(read(&dir, "a.txt"), "one");
         done(restore(&repository, restored.number()));
@@ -835,6 +887,7 @@ mod tests {
             .find(|entry| {
                 entry
                     .change()
+                    .unwrap()
                     .branches()
                     .iter()
                     .any(|(_, moved)| moved.before().is_none())
@@ -1038,6 +1091,7 @@ mod tests {
             .read(snapshot)
             .unwrap()
             .change()
+            .unwrap()
             .working_copy()
             .unwrap()
             .before()
@@ -1130,7 +1184,13 @@ mod tests {
         let (_, first) = tip_and_first(&repository);
         let entry = repository.oplog().read(commit).unwrap();
         // The commit moved the branch and stopped before the working-copy commit moved.
-        let wc_before = *entry.change().working_copy().unwrap().before().unwrap();
+        let wc_before = *entry
+            .change()
+            .unwrap()
+            .working_copy()
+            .unwrap()
+            .before()
+            .unwrap();
         fs::write(
             repository.metadata_dir().join("working-copy"),
             format!("{wc_before}\n"),
@@ -1164,7 +1224,7 @@ mod tests {
             .unwrap();
         let (_, entry) = done(restore(&repository, older.number()));
         assert_eq!(repository.refs().branch(&main()).unwrap(), Some(tip));
-        let moved = &entry.change().branches()[0].1;
+        let moved = &entry.change().unwrap().branches()[0].1;
         assert_eq!((moved.before(), moved.after()), (Some(&wc), Some(&tip)));
     }
 
@@ -1199,6 +1259,7 @@ mod tests {
         assert_eq!(repository.refs().branch(&y).unwrap(), None);
         let names: Vec<&str> = restored
             .change()
+            .unwrap()
             .branches()
             .iter()
             .map(|(name, _)| name.as_str())
@@ -1316,7 +1377,7 @@ mod tests {
         .unwrap();
         let (_, entry) = done(restore(&repository, snapshot));
         assert_eq!(read(&dir, "a.txt"), "one");
-        assert_eq!(entry.change().operation().as_str(), "restore");
+        assert_eq!(entry.change().unwrap().operation().as_str(), "restore");
     }
 
     #[test]
@@ -1426,5 +1487,53 @@ mod tests {
                 .starts_with("there was nothing to restore"),
             "{nothing}"
         );
+    }
+
+    #[test]
+    fn a_stub_and_a_purge_are_refused_and_an_entry_before_them_needs_force() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, commit) = two_commits(&dir, &repository);
+        let log = repository.oplog();
+        let purge = log
+            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[commit]).unwrap())
+            .unwrap()[0]
+            .number();
+        log.replace_with_stub(commit).unwrap();
+
+        assert!(matches!(
+            restore(&repository, commit),
+            Err(RestoreError::Purged { number }) if number == commit
+        ));
+        assert!(matches!(
+            restore(&repository, purge),
+            Err(RestoreError::IsPurge { number }) if number == purge
+        ));
+        let count = numbers(&repository).len();
+        assert_eq!(count, purge as usize, "the refusals wrote nothing");
+        // The stub took the evidence that the next move of the working copy gave (ADR-014).
+        assert!(matches!(
+            restore(&repository, snapshot),
+            Err(RestoreError::OutcomeUnknown { .. })
+        ));
+        done(repository.restore(snapshot, true, &actor(), &AllowAll));
+        assert_eq!(read(&dir, "a.txt"), "one");
+    }
+
+    #[test]
+    fn an_entry_that_an_unfinished_purge_lists_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (snapshot, _) = two_commits(&dir, &repository);
+        repository
+            .oplog()
+            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[snapshot]).unwrap())
+            .unwrap();
+        let count = numbers(&repository).len();
+        assert!(matches!(
+            repository.restore(snapshot, true, &actor(), &AllowAll),
+            Err(RestoreError::PurgePending { number }) if number == snapshot
+        ));
+        assert_eq!(numbers(&repository).len(), count, "nothing was written");
     }
 }

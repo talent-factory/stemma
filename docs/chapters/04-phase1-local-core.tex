@@ -288,8 +288,8 @@ nicht bewegt haben, und ein Abbruch zwischen zwei Zeigern lässt einige bewegt u
 In beiden Fällen beendet derselbe Aufruf noch einmal das Restore: Er lässt, was schon stimmt,
 wie es ist, und bewegt den Rest.
 Das Restore beurteilt jeden Zeiger für sich, denn ein Eintrag kann zur Hälfte stattgefunden haben.
-Es ist eine Operation mit eigenem Eintrag, und das Log wird nie umgeschrieben:
-Ein Restore lässt sich wieder zurücksetzen.
+Es ist eine Operation mit eigenem Eintrag, und kein Restore schreibt das Log um; nur ein
+Purge ersetzt Einträge durch Stubs (siehe unten). Ein Restore lässt sich wieder zurücksetzen.
 
 \subsection{Ein Geheimnis aus Verlauf und Log entfernen}
 
@@ -308,8 +308,20 @@ die Stubs und die Objekte und schreibt nichts. Ein Verzeichnis, das nur den Blob
 fällt dabei aus dem Baum, so wie ein Snapshot nie ein leeres Verzeichnis anlegt. Der Plan
 durchsucht auch den Objektspeicher nach solchen Resten, die nichts erreicht. Zum Schluss
 prüft er, dass nichts Behaltenes den Blob noch enthält oder etwas erreicht, das er löscht;
-sonst bricht er ab. Die Stubs mit dem Eintrag \type{purge} folgen
-mit STEMMA-47, das Umschreiben und das Löschen mit Journal mit STEMMA-48.
+sonst bricht er ab.
+
+Das Log kennt die Stubs und den Eintrag \type{purge} (STEMMA-47). Beide haben die Version 2
+der Kodierung, und sonst hat sie kein Eintrag, damit jeder Eintrag genau eine Form behält.
+Ein Stub behält Nummer, Zeit und Akteur und verliert die Operation und jede ID. Der Eintrag
+des Purge nennt keinen Zeiger und keine ID, nur die Zahl der umgeschriebenen Commits und die
+Nummern der Stubs als Bereiche; eine lange Liste verteilt sich auf mehrere Einträge. Ein Stub,
+den kein Purge nennt, ist ein Fehler des Logs wie eine Lücke. \type{op restore} lehnt einen
+Stub und einen Purge ab, ebenso einen Eintrag, den ein Purge nennt, der noch nicht fertig ist.
+Ein Stub ersetzt eine Änderung, deren Züge niemand mehr kennt. Deshalb ist der Ausgang jedes
+Eintrags vor dem jüngsten Stub unbekannt, und ein Restore eines solchen Eintrags braucht
+\type{--force}. Ein Hash, den der Stub behalten müsste, kommt erst mit einer Hash-Kette
+(STEMMA-41). Das Umschreiben selbst und das Löschen mit Journal folgen mit STEMMA-48; mit dem
+ersten Purge wird das Repository auf das Format 3 wechseln, das ältere Programme ablehnen.
 
 \section{Offene Fragen}
 

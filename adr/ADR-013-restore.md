@@ -31,7 +31,8 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   working-copy commit, and the branches. A value that the entry records as missing (`-`) means
   that the pointer does not exist afterwards. Pointers that the entry does not name stay as they
   are. The restore writes an entry of its own, the operation `restore`, like every operation that
-  moves a pointer. The log is never rewritten, so a restore can itself be restored.
+  moves a pointer. A restore never rewrites the log, so a restore can itself be restored; only a
+  purge replaces entries by stubs (ADR-014).
 - **A snapshot comes first** *(confirmed)*. Like every command, the restore saves the directory in
   a snapshot under the actor of the command, once it knows that there is something to restore
   (the plan is made before, so that a missing commit or a file in the way is found before the

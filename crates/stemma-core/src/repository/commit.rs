@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(all.len(), entries + 1);
         let last = all.last().unwrap();
         assert_eq!(last, &done.entry);
-        let change = last.change();
+        let change = last.change().unwrap();
         assert_eq!(change.operation().as_str(), "commit");
         assert_eq!(change.actor(), &other_actor());
         assert_eq!(
@@ -582,7 +582,7 @@ mod tests {
         let all = repository.oplog().entries().unwrap();
         let names: Vec<&str> = all[entries..]
             .iter()
-            .map(|entry| entry.change().operation().as_str())
+            .map(|entry| entry.change().unwrap().operation().as_str())
             .collect();
         assert_eq!(names, ["snapshot", "commit"]);
     }
@@ -1036,7 +1036,7 @@ mod tests {
         }
         let names: Vec<String> = repository.oplog().entries().unwrap()[entries..]
             .iter()
-            .map(|entry| entry.change().operation().as_str().to_owned())
+            .map(|entry| entry.change().unwrap().operation().as_str().to_owned())
             .filter(|name| name == "commit")
             .collect();
         assert_eq!(names.len(), 1);
@@ -1053,7 +1053,7 @@ mod tests {
 
         let second = commit(&repository, "two").unwrap();
 
-        let change = second.entry.change();
+        let change = second.entry.change().unwrap();
         // The snapshot before the commit moved the working-copy commit, so the commit starts from
         // that one.
         let (name, moved) = change.branches().first().unwrap();
@@ -1065,9 +1065,9 @@ mod tests {
         assert_eq!(working.after(), Some(&second.working_copy));
         let log = repository.oplog().entries().unwrap();
         let snapshot = &log[log.len() - 2];
-        assert_eq!(snapshot.change().operation().as_str(), "snapshot");
+        assert_eq!(snapshot.change().unwrap().operation().as_str(), "snapshot");
         assert_eq!(
-            snapshot.change().working_copy().unwrap().after(),
+            snapshot.change().unwrap().working_copy().unwrap().after(),
             working.before()
         );
     }
@@ -1166,7 +1166,7 @@ mod tests {
         let log = repository.oplog().entries().unwrap();
         let names: Vec<&str> = log[after_move..]
             .iter()
-            .map(|entry| entry.change().operation().as_str())
+            .map(|entry| entry.change().unwrap().operation().as_str())
             .collect();
         assert_eq!(names, ["snapshot"]);
     }

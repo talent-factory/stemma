@@ -1,10 +1,11 @@
 # ADR-014: Removing a secret from the history and the operation log
 
-**Status:** Accepted; the plan is implemented (STEMMA-46), the purge itself is not. The
-decisions marked *(confirmed)* were agreed with the author on 2026-10-21 (STEMMA-26), and the
-author confirmed the whole ADR on the same day, including the steps, the journal, the lock,
-resume, and abort. The slices are listed at the end. The open items at the end are questions for
-the slices and for later; none of them changes a decision above.
+**Status:** Accepted; the plan (STEMMA-46) and the stub with the `purge` entry in the log
+(STEMMA-47) are implemented, the purge itself is not. The decisions marked *(confirmed)* were
+agreed with the author on 2026-10-21 (STEMMA-26), and the author confirmed the whole ADR on the
+same day, including the steps, the journal, the lock, resume, and abort. The slices are listed at
+the end. The open items at the end are questions for the slices and for later; none of them
+changes a decision above.
 
 ## Context
 
@@ -181,8 +182,19 @@ a person to repair.
 
 ## Open items
 
-- [ ] The format of the stub and of the `purge` entry, in the strict text form of ADR-011, and the
-      hash that a stub keeps when the chain exists (STEMMA-41).
+- [x] The format of the stub and of the `purge` entry, in the strict text form of ADR-011: entry
+      encoding `stemma-oplog 2`, written only for these two (STEMMA-47; see ADR-011). A
+      `purge` entry has `commits <n>` and `stubs <ranges>`, and a list that does not fit is
+      split, the count in the first part.
+- [ ] The hash that a stub keeps when the chain exists (STEMMA-41, which then takes entry
+      encoding `stemma-oplog 3`).
+- [x] The outcome of an entry before a stub: a stub replaced a change whose moves are no longer
+      known, so it is a barrier, and every entry before the newest stub is unknown; `op restore`
+      needs `--force` for it (STEMMA-47). This is stricter than the consequences above foresaw,
+      as a stub can have moved a pointer back to an old value and so turn a verdict around.
+- [x] A purge that stopped between its entry and its stubs: an entry that a `purge` entry lists
+      and that is not a stub yet is no error of the log, `op log` marks it, and `op restore`
+      refuses it (STEMMA-47). Finishing the purge comes with `--resume` (STEMMA-48).
 - [ ] How the user names the secret. The blob ID is the unit; a path or a pattern that finds the
       blobs in the history is a convenience, and a text that is replaced inside a file (instead
       of removing the file from the tree) would keep the file tracked. The first version takes
@@ -206,5 +218,6 @@ a person to repair.
 Slices: the plan (`Repository::plan_purge` and `stemma purge BLOB`, which writes nothing,
 STEMMA-46), the stubs and the `purge` entry in the log with its reader and `op restore` refusing
 a stub (STEMMA-47), and `--apply` with the snapshot, the new objects, the journal, the removal of
-the objects, resume, and abort (STEMMA-48). The apply waits for the other two, as a pointer moves
-only with an entry and a purge without stubs and removal would leave the secret in place.
+the objects, resume, and abort, and the move of the repository to format 3 with its first purge
+(STEMMA-48). The apply waits for the other two, as a pointer moves only with an entry and a
+purge without stubs and removal would leave the secret in place.
