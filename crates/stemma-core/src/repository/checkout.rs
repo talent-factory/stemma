@@ -9,9 +9,9 @@
 //! Only a path that the old or the new tree names is changed. The content of a file that is not
 //! tracked is never read, written, or removed; the layer only looks at what is in the place of a
 //! path it needs. A path of the new tree that is new, and that `.stemmaignore` excludes, is an
-//! error, as is any path with a part that names `.stemma` or `.git`, in the old tree or in the new
-//! one. A file that the old tree tracks is changed or removed even if `.stemmaignore` excludes it
-//! now (ADR-012: tracked stays tracked). The caller starts with a snapshot, so that the files of
+//! error, as is any path with a part that names `.stemma` or `.git` that the checkout changes or
+//! removes, in the old tree or in the new one. A file that the old tree tracks is changed or
+//! removed even if `.stemmaignore` excludes it now (ADR-012: tracked stays tracked). The caller starts with a snapshot, so that the files of
 //! the old tree are what the directory holds; the layer does not compare their content.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -227,16 +227,18 @@ impl Repository {
     /// and so is one that is gone. `.stemmaignore` is not read again.
     ///
     /// A stop leaves the files done so far. Nothing is rolled back: the next snapshot reads what
-    /// is there as an ordinary change of the actor (ADR-013). A stop after the first change is
-    /// reported as [`CheckoutError::Interrupted`], which says how many files were removed and
-    /// written. A killed process can leave a temporary file `.stemma-checkout-*` next to its
+    /// is there as an ordinary change of the actor (ADR-013). A stop after the first file was
+    /// removed or written is reported as [`CheckoutError::Interrupted`], which says how many files
+    /// were removed and written; a stop before that, after directories were created or removed,
+    /// is reported as it is. A killed process can leave a temporary file `.stemma-checkout-*` next to its
     /// target. Directories are not flushed.
     ///
     /// # Errors
     ///
     /// Returns [`CheckoutError::ThroughLink`], [`CheckoutError::InTheWay`], and
     /// [`CheckoutError::ChangedSincePlan`] for what has changed since the plan, and
-    /// [`CheckoutError::Snapshot`] for a blob that cannot be read and a file system that fails.
+    /// [`CheckoutError::Snapshot`] for a blob that cannot be read and a file system that fails,
+    /// all of them as [`CheckoutError::Interrupted`] once a file was removed or written.
     pub fn apply_checkout(&self, plan: &CheckoutPlan) -> Result<(), CheckoutError> {
         let mut progress = Progress::default();
         self.apply_steps(plan, &mut progress).map_err(|source| {

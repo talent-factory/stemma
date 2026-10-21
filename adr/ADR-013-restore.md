@@ -119,6 +119,9 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] A plan is not bound to the repository it was made for. Applied to another one, it would
       rewrite that directory. Ticketed as STEMMA-45, to be done with the restore (STEMMA-43),
       where a second caller makes the mix-up possible.
+- [ ] The plan decides by platform whether names ignore case. A case-sensitive volume on macOS,
+      or a rename that changes only the normalization form of a name, can pass or fail the plan
+      for the wrong reason; the apply stops with a clear error, but halfway.
 - [ ] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
       and the rename; `track .` would pick it up as a new file.
 - [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the
