@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240">
+  <title>stemma – Hirschgeweih als Stammbaum</title>
+  <circle cx="120" cy="120" r="88" fill="#B5442B"/>
+  <circle cx="120" cy="120" r="72" fill="none" stroke="#F4EFE6" stroke-width="3" stroke-dasharray="6 6"/>
+  <g transform="translate(-1.6 25.2) translate(120 120) scale(0.8) translate(-120 -120)">
+    <g fill="#F4EFE6" stroke="#F4EFE6" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M104 140 Q120 170 136 140 L132 112 Q120 104 108 112 Z"/>
+      <path fill="none" d="M104 118 L84 110 M136 118 L156 110 M120 104 L120 40 M120 84 L96 66 L84 44 M120 70 L144 52 L156 30 M96 66 L76 62 M144 52 L168 48 M120 40 L108 22 M120 40 L132 22"/>
+    </g>
+    <g fill="#B5442B">
+      <circle cx="120" cy="84" r="5"/>
+      <circle cx="120" cy="70" r="5"/>
+      <circle cx="96" cy="66" r="5"/>
+      <circle cx="144" cy="52" r="5"/>
+      <circle cx="120" cy="40" r="5"/>
+      <circle cx="112" cy="124" r="4"/>
+    </g>
+  </g>
+</svg>

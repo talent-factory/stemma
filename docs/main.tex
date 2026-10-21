@@ -9,7 +9,8 @@
   title={Stemma},
   shorttitle={Stemma: Grundlagendokument},
   subtitle={Ein API-first Versionskontrollsystem für Menschen und Agenten},
-  kind={Grundlagendokument, Entwurf},
+  kind={Grundlagendokument},
+  status={Entwurf},
   author={Daniel Senften},
   institution={Talent Factory GmbH},
   version={0.2}
@@ -32,23 +33,69 @@
 \starttext
 
 % ------------------------------------------------------------------
+% Title page in the style of the seal series: a cream ground with a thin
+% frame, the emblem, and a spaced serif word mark.
+% ------------------------------------------------------------------
+\definecolor[sealcolor][h=B5442B]
+\definecolor[sealground][h=F4EFE6]
+\definecolor[sealink][h=1E1A16]
+\definecolor[sealmuted][h=6B6358]
+
+\definefont[SealWord][name:libertinusserifregular at 32pt]
+\definefont[SealLine][name:libertinusserifregular at 12pt]
+\definecharacterkerning[sealspacing][factor=.2]
+
+\startuniqueMPgraphic{sealframe}
+  fill OverlayBox withcolor \MPcolor{sealground} ;
+  draw OverlayBox enlarged -1.6cm
+    withpen pencircle scaled 1pt withcolor \MPcolor{sealink} ;
+\stopuniqueMPgraphic
+\defineoverlay[sealframe][\useMPgraphic{sealframe}]
+
+% Status: a sash across the top right corner; it disappears when status is empty.
+\startuniqueMPgraphic{statussash}
+  pair c ; c := (OverlayWidth-2.6cm, OverlayHeight-2.6cm) ;
+  fill ((-4cm,-.55cm)--(4cm,-.55cm)--(4cm,.55cm)--(-4cm,.55cm)--cycle)
+    rotated -45 shifted c withcolor \MPcolor{sealcolor} ;
+  draw textext("\ss\bf\tfa\color[sealground]{\getvariable{document}{status}}")
+    rotated -45 shifted c ;
+  clip currentpicture to OverlayBox ;
+  setbounds currentpicture to OverlayBox ;
+\stopuniqueMPgraphic
+\defineoverlay[statussash][\useMPgraphic{statussash}]
+
+\setupbackgrounds[page][background=sealframe]
+\doifsomething{\getvariable{document}{status}}
+  {\setupbackgrounds[page][background={sealframe,statussash}]}
+
+% ------------------------------------------------------------------
 % Titelblatt
 % ------------------------------------------------------------------
-\startstandardmakeup
+\startstandardmakeup[page=no]
 \vfill
-\midaligned{\bfd\ss\color[primarycolor]{\getvariable{document}{title}}}
-\blank[2*big]
-\midaligned{\bfa\ss\color[mutedcolor]{\getvariable{document}{subtitle}}}
+\midaligned{\externalfigure[images/stemma.pdf][width=9cm]}
+\blank[big]
+\midaligned{\SealWord\color[sealink]{\setcharacterkerning[sealspacing]%
+  \WORD{\getvariable{document}{title}}}}
+\blank[medium]
+\midaligned{\SealLine\color[sealmuted]{gr. στέμμα, Kranz · Stammbaum der Handschriften}}
+\blank[3*big]
+\midaligned{\bfa\ss\color[sealink]{\getvariable{document}{subtitle}}}
+\blank[big]
+\midaligned{\ss\color[sealmuted]{\getvariable{document}{kind}}}
 \vfill
-\midaligned{\bf\ss \getvariable{document}{kind}}
-\vfill
+\startcolor[sealink]
 \midaligned{
   \getvariable{document}{author} \\
   \getvariable{document}{institution} \\
   Version \getvariable{document}{version} · \gitdate
 }
+\stopcolor
 \vfill
 \stopstandardmakeup
+\page
+
+\setupbackgrounds[page][background=]
 
 % ------------------------------------------------------------------
 % Inhaltsverzeichnis
