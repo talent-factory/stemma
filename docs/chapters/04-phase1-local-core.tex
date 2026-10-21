@@ -298,15 +298,17 @@ behält jeden Commit, den eine Operation verlassen hat. Ein Purge entfernt ihn w
 (ADR-014). Er nimmt die ID des Blobs. Jeder Commit, dessen Baum den Blob enthält, bekommt
 einen Baum ohne ihn, und jeder Commit danach neue Eltern; die Change-ID bleibt, damit sich
 eine Änderung über den Purge hinweg verfolgen lässt. Die Einträge des Logs, die einen
-umgeschriebenen Commit nennen, werden zu Stubs mit derselben Nummer, und gelöscht wird nur,
-was das Umschreiben ersetzt hat und nichts Behaltenes mehr erreicht.
+umgeschriebenen Commit nennen, werden zu Stubs mit derselben Nummer. Gelöscht wird, was das
+Umschreiben ersetzt hat, und dazu Reste im Objektspeicher, die den Blob enthalten oder auf
+einen Commit mit ihm folgen.
 Nur ein Mensch darf purgen, denn der Purge lässt sich nicht zurücksetzen.
 
 Gebaut ist bisher der Plan (STEMMA-46): \type{stemma purge} nennt die Commits, die Zeiger,
 die Stubs und die Objekte und schreibt nichts. Ein Verzeichnis, das nur den Blob enthielt,
 fällt dabei aus dem Baum, so wie ein Snapshot nie ein leeres Verzeichnis anlegt. Der Plan
-durchsucht auch den Objektspeicher nach Resten, die nichts erreicht, und prüft zum Schluss,
-dass nichts Behaltenes den Blob noch enthält. Die Stubs mit dem Eintrag \type{purge} folgen
+durchsucht auch den Objektspeicher nach solchen Resten, die nichts erreicht. Zum Schluss
+prüft er, dass nichts Behaltenes den Blob noch enthält oder etwas erreicht, das er löscht;
+sonst bricht er ab. Die Stubs mit dem Eintrag \type{purge} folgen
 mit STEMMA-47, das Umschreiben und das Löschen mit Journal mit STEMMA-48.
 
 \section{Offene Fragen}

@@ -697,8 +697,7 @@ enthielt, fällt aus dem Baum, wie es auch ein Snapshot nie anlegen würde.
 Der Plan nennt die Zeiger, die auf die neuen Commits gehen, die Einträge des Logs, die
 einen umgeschriebenen Commit nennen und deshalb zu Stubs werden, und die Objekte, die
 gelöscht werden: die alten Commits, die Bäume mit dem Blob und den Blob selbst.
-Was ein behaltener Zeiger oder ein behaltener Eintrag noch erreicht, wird nicht gelöscht.
-Zum Schluss durchsucht der Plan den ganzen Objektspeicher nach Bäumen und Commits, die
+Danach durchsucht der Plan den ganzen Objektspeicher nach Bäumen und Commits, die
 kein Zeiger und kein Eintrag erreicht, etwa Reste eines Absturzes. Enthält ein solcher Rest
 den Blob oder folgt er auf einen Commit, der ihn enthält, wird er gelöscht und nicht
 umgeschrieben, denn nichts nennt ihn. Von einem Blob liest der Plan dabei nur den Kopf.
@@ -740,7 +739,7 @@ der ID hat (auch wenn die ID einen Commit oder einen Baum nennt) oder die Datei 
 beschädigt ist, wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
 und wenn ein Objekt im Speicher beschädigt ist: Dann ist nicht bekannt, ob es den Blob nennt.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.
-Jede Meldung nach der Prüfung des Akteurs beginnt mit
+Ist das Repository geöffnet, beginnt jede Meldung außer der Ablehnung eines Agenten mit
 \type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
 erst ein Merge (Phase 3).

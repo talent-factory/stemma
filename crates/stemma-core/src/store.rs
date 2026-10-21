@@ -501,8 +501,9 @@ impl FsObjectStore {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Io`] if a directory cannot be listed, and if a directory of the fan
-    /// out is a link: a read follows it, so its objects exist for a read but not for the list.
+    /// Returns [`StoreError::Io`] if a directory cannot be listed, if a directory of the fan out is
+    /// a link (a read follows it), and if a name is that of an ID in capitals (a file system that
+    /// ignores case finds it): in both cases its objects exist for a read but not for the list.
     pub(crate) fn ids(&self) -> Result<Vec<ObjectId>, StoreError> {
         self.require_root()?;
         let algorithm = self.root.join("objects").join(PREFIX.trim_end_matches(':'));
@@ -536,10 +537,20 @@ impl FsObjectStore {
                 let (Some(prefix), Some(rest)) = (prefix.to_str(), name.to_str()) else {
                     continue;
                 };
-                if let Ok(id) = ObjectId::from_str(&format!("{PREFIX}{prefix}{rest}")) {
+                let text = format!("{PREFIX}{prefix}{rest}");
+                if let Ok(id) = ObjectId::from_str(&text) {
                     if self.object_path(&id) == object.path() {
                         ids.push(id);
                     }
+                } else if ObjectId::from_str(&text.to_ascii_lowercase()).is_ok() {
+                    return Err(StoreError::Io {
+                        operation: "list the objects in",
+                        path: object.path(),
+                        source: io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "the name of an object is not in lower case",
+                        ),
+                    });
                 }
             }
         }
@@ -994,6 +1005,49 @@ mod tests {
             );
             fs::remove_file(&path).unwrap();
         }
+    }
+
+    #[test]
+    fn ids_refuses_a_name_in_capitals() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let upper = dir.path().join("objects/b3/AB");
+        fs::create_dir_all(&upper).unwrap();
+        fs::write(upper.join("c".repeat(62)), "x").unwrap();
+        assert!(matches!(store.ids(), Err(StoreError::Io { .. })));
+        fs::remove_dir_all(&upper).unwrap();
+        let lower = dir.path().join("objects/b3/ab");
+        fs::create_dir_all(&lower).unwrap();
+        fs::write(lower.join("C".repeat(62)), "x").unwrap();
+        assert!(matches!(store.ids(), Err(StoreError::Io { .. })));
+    }
+
+    #[test]
+    fn kind_of_does_not_follow_a_link_and_rejects_a_header_without_its_shape() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let absent = id_of(b"absent");
+        let path = store.object_path(&absent);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (content, reason) in [
+            (&b"\xff\xfe 0\0"[..], CorruptReason::HeaderNotUtf8),
+            (b"blob\0", CorruptReason::HeaderShape),
+        ] {
+            fs::write(&path, content).unwrap();
+            match store.kind_of(&absent) {
+                Err(StoreError::Corrupt { reason: found, .. }) => assert_eq!(found, reason),
+                other => panic!("{content:?}: {other:?}"),
+            }
+            fs::remove_file(&path).unwrap();
+        }
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            store.kind_of(&absent),
+            Err(StoreError::Corrupt {
+                reason: CorruptReason::NotARegularFile,
+                ..
+            })
+        ));
     }
 
     #[cfg(unix)]

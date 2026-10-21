@@ -12,9 +12,10 @@
 //!
 //! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge`, which only
 //! plans until STEMMA-48) has made nothing by its output, so a failed write of its output is code
-//! 1; some of the output may already be written, and a script discards it. A closed pipe is not a failure, and it does not hide an
-//! error of flushing that comes after the output. The one exception is a closed pipe after an
-//! `op restore` that was made: the output is the only place that names its entry, so it is code 3.
+//! 1; some of the output may already be written, and a script discards it. A closed pipe is not a
+//! failure, and it does not hide an error of flushing that comes after the output. The one
+//! exception is a closed pipe after an `op restore` that was made: the output is the only place
+//! that names its entry, so it is code 3.
 //! An `op restore` writes its result before an error that follows a restore that was made, as
 //! `commit` does.
 //!
@@ -562,7 +563,8 @@ fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     }
 }
 
-/// What a purge would do, one line for each commit, pointer, and object.
+/// What a purge would do: a first line, one line for each commit, pointer, and object, one line
+/// for the stubs, and a last line that says that only the plan is built.
 fn purge_text(plan: &PurgePlan) -> String {
     use crate::op_log::{value, HeadValue};
     let mut text = format!("Would purge blob {}; nothing is written\n", plan.blob());
