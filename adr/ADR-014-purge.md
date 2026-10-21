@@ -2,9 +2,9 @@
 
 **Status:** Accepted, not implemented. The decisions marked *(confirmed)* were agreed with the
 author on 2026-10-21 (STEMMA-26), and the author confirmed the whole ADR on the same day,
-including the steps, the journal, the lock, resume, and abort. No code exists yet; the slices are
-STEMMA-46, STEMMA-47, and STEMMA-48. The open items at the end are questions for the slices and
-for later; none of them changes a decision above.
+including the steps, the journal, the lock, resume, and abort. The slices are listed at the end.
+The open items at the end are questions for the slices and for later; none of them changes a
+decision above.
 
 ## Context
 
@@ -194,6 +194,6 @@ a person to repair.
       objects, including those that come later (tags, remote references).
 - [ ] The removal on a hub and the rule for a repository that was synchronized (phase 5).
 
-Slices, once the ADR is confirmed: the rewrite of commits with the plan (`Repository::purge`),
-the stub in the log with its reader and `op restore` refusing it, and the removal of the
-objects.
+Slices: the rewrite of commits with the plan (`Repository::purge`, STEMMA-46), the stubs and
+the `purge` entry in the log with its reader and `op restore` refusing a stub (STEMMA-47), and
+the journal, the removal of the objects, resume, and abort (STEMMA-48).

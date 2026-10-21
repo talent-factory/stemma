@@ -28,6 +28,7 @@
 
 - [ ] Level of runtime operations that remove history (purge, ADR-014): proposed level 3, a human
       owner only. The table classifies changes by the paths they touch, not operations at run time.
+      Decided for the purge in ADR-014: only a human may purge.
 - [ ] Corporate customers might demand stricter floors. Relevant only once there are concrete customers.
 - [ ] Define concrete path lists per level. The categories exist, the directories do not yet.
 - [ ] Agent identities: a dedicated role, or a role with a human sponsor.
