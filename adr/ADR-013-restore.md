@@ -117,8 +117,8 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] The layer does not compare the content of a file that it removes or replaces with the
       old tree. It relies on the snapshot that the restore takes first (proposed above).
 - [ ] A plan is not bound to the repository it was made for. Applied to another one, it would
-      rewrite that directory. Ticketed as STEMMA-45, to be done with the restore (STEMMA-43), where a second caller makes
-      the mix-up possible.
+      rewrite that directory. Ticketed as STEMMA-45, to be done with the restore (STEMMA-43),
+      where a second caller makes the mix-up possible.
 - [ ] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
       and the rename; `track .` would pick it up as a new file.
 - [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the
