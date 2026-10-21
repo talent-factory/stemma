@@ -21,7 +21,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::num::NonZeroUsize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::snapshot::{lookup, read_object, SnapshotError};
 use super::Repository;
@@ -77,6 +77,8 @@ impl PlannedWrite {
 /// go no further.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckoutPlan {
+    /// The working directory the plan was made for.
+    root: PathBuf,
     writes: Vec<PlannedWrite>,
     removals: Vec<String>,
     /// Every directory that the new tree needs, so that the layer does not remove it.
@@ -209,6 +211,7 @@ impl Repository {
             }
         }
         Ok(CheckoutPlan {
+            root: self.path().to_path_buf(),
             writes,
             removals,
             kept: directories_of(new.keys().map(String::as_str)),
@@ -236,11 +239,17 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`CheckoutError::ThroughLink`], [`CheckoutError::InTheWay`], and
+    /// Returns [`CheckoutError::ForeignPlan`] if the plan was made for another working directory,
+    /// before anything is touched, [`CheckoutError::ThroughLink`], [`CheckoutError::InTheWay`], and
     /// [`CheckoutError::ChangedSincePlan`] for what has changed since the plan, and
     /// [`CheckoutError::Snapshot`] for a blob that cannot be read and a file system that fails,
     /// all of them as [`CheckoutError::Interrupted`] once a file was removed or written.
     pub fn apply_checkout(&self, plan: &CheckoutPlan) -> Result<(), CheckoutError> {
+        if plan.root != self.path() {
+            return Err(CheckoutError::ForeignPlan {
+                made_for: plan.root.clone(),
+            });
+        }
         let mut progress = Progress::default();
         self.apply_steps(plan, &mut progress).map_err(|source| {
             if progress.removed + progress.written == 0 {
@@ -724,6 +733,11 @@ pub enum CheckoutError {
         /// The path.
         path: String,
     },
+    /// The plan was made for another working directory. Nothing was touched.
+    ForeignPlan {
+        /// The directory the plan was made for.
+        made_for: PathBuf,
+    },
     /// The apply stopped after it had changed the directory. The files named are done, and the
     /// rest is not; nothing is rolled back.
     Interrupted {
@@ -789,6 +803,11 @@ impl fmt::Display for CheckoutError {
                 "`{}` changed after the plan was made, or another file already has its name; \
                  nothing was replaced there",
                 path.escape_debug()
+            ),
+            Self::ForeignPlan { made_for } => write!(
+                f,
+                "the plan was made for the directory `{}` and is not applied to another one",
+                made_for.display()
             ),
             Self::Interrupted {
                 removed,
@@ -1479,6 +1498,23 @@ mod tests {
             "{error}"
         );
         assert_eq!(read(&dir, "b/c"), "1", "nothing was removed");
+    }
+
+    #[test]
+    fn a_plan_is_not_applied_to_another_working_directory() {
+        let (dir, other) = (TempDir::new(), TempDir::new());
+        let (repository, foreign) = (repository(&dir), repository(&other));
+        let to = tree(&repository, &[plain("a", "1")]);
+        let plan = repository.plan_checkout(None, to).unwrap();
+        // The other repository needs the objects only if the check failed.
+        let error = foreign.apply_checkout(&plan).unwrap_err();
+        assert!(
+            matches!(error, CheckoutError::ForeignPlan { .. }),
+            "{error}"
+        );
+        assert!(!exists(&other, "a"));
+        repository.apply_checkout(&plan).unwrap();
+        assert_eq!(read(&dir, "a"), "1");
     }
 
     #[test]

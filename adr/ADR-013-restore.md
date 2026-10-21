@@ -73,8 +73,10 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - **`--dry-run` plans and reports** *(proposed)*. It prints the pointers that would move, the
   files that would be written and removed, and the conflicts, and it writes nothing, not even the
   snapshot.
-- **The actor and the authorizer** *(proposed)*. The command needs an actor like every command
-  that changes a repository (ADR-002). The authorizer is asked once for the operation `restore`.
+- **The actor and the authorizer** *(proposed; built in STEMMA-43)*. The command needs an actor
+  like every command that changes a repository (ADR-002). The authorizer is asked for the
+  operation `restore` first, with the entry as the target; the snapshot that follows asks its
+  own question, `snapshot`, as it does for every command.
   The risk level of ADR-004 is not decided here: moving a branch back is a branch move, and the
   level follows the one that ADR-004 gives to those.
 
@@ -101,6 +103,12 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       in between, is open.
 - [ ] A restore of an entry whose old value is a commit with a conflict (phase 3).
 - [ ] The risk level of a restore in ADR-004.
+- [ ] A dry run does not take the snapshot, so a change that is not saved yet is not in its plan.
+      The real run can find a conflict that the dry run did not.
+- [ ] If the files cannot be written after the entry, the entry names a restore that did not
+      happen and no pointer moved. `op log` shows it as not taken; a repeated restore writes a
+      second entry. The moves of the pointers are in this order: branches, working-copy commit,
+      HEAD. A stop between two of them is reported as a partial move.
 - [ ] A directory in the way that is not empty because of untracked files: the first version
       refuses; a way to move them aside is open.
 - [ ] Windows and file systems that ignore case: the functions for Windows names and for case
@@ -116,12 +124,6 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       on macOS, and another call on Windows), which `std::fs::rename` does not offer.
 - [ ] The layer does not compare the content of a file that it removes or replaces with the
       old tree. It relies on the snapshot that the restore takes first (proposed above).
-- [ ] A plan is not bound to the repository it was made for. Applied to another one, it would
-      rewrite that directory. Ticketed as STEMMA-45, to be done with the restore (STEMMA-43),
-      where a second caller makes the mix-up possible.
-- [ ] The plan decides by platform whether names ignore case. A case-sensitive volume on macOS,
-      or a rename that changes only the normalization form of a name, can pass or fail the plan
-      for the wrong reason; the apply stops with a clear error, but halfway.
 - [ ] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
       and the rename; `track .` would pick it up as a new file.
 - [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the

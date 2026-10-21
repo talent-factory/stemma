@@ -1037,6 +1037,32 @@ pub(crate) struct WorkingCopyMove {
     pub(crate) new: CommitId,
 }
 
+/// The values that a restore gives the pointers (ADR-013). A pointer that is `None` is not
+/// touched.
+pub(crate) struct RestoreTargets<'a> {
+    /// The value of HEAD.
+    pub(crate) head: Option<&'a Head>,
+    /// The working-copy commit.
+    pub(crate) working_copy: Option<CommitId>,
+    /// The branches, each with the commit it takes, or `None` if it does not exist afterwards.
+    pub(crate) branches: &'a [(BranchName, Option<CommitId>)],
+}
+
+/// The pointers that a restore moves, each with the value it has now and the one it takes. A
+/// pointer that has its target value already is left out.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct RestoreMoves {
+    pub(crate) head: Option<(Head, Head)>,
+    pub(crate) working_copy: Option<(CommitId, CommitId)>,
+    pub(crate) branches: Vec<(BranchName, Option<CommitId>, Option<CommitId>)>,
+}
+
+impl RestoreMoves {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.head.is_none() && self.working_copy.is_none() && self.branches.is_empty()
+    }
+}
+
 impl crate::store::sealed::Sealed for FsRefStore {}
 
 /// The outcome of a change of a pointer that a step precedes, such as the entry of the operation
@@ -1290,6 +1316,170 @@ impl FsRefStore {
                 &self.root,
             )
         }))
+    }
+
+    /// Reads the pointers and returns the moves that a restore would make, without a lock and
+    /// without a write. The commits that the targets name have to be in `objects`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
+    /// does not have, [`RefError::Conflict`] for a branch name that is in the way, and the errors
+    /// of reading the pointers.
+    pub(crate) fn plan_restore(
+        &self,
+        targets: &RestoreTargets<'_>,
+        objects: &dyn ObjectStore,
+    ) -> Result<(RestoreMoves, Vec<PathBuf>), RefError> {
+        self.require_root()?;
+        if let Some(Head::Detached(commit)) = targets.head {
+            Self::require_commit(commit, objects)?;
+        }
+        if let Some(commit) = &targets.working_copy {
+            Self::require_commit(commit, objects)?;
+        }
+        for (_, commit) in targets.branches {
+            if let Some(commit) = commit {
+                Self::require_commit(commit, objects)?;
+            }
+        }
+        let mut moves = RestoreMoves::default();
+        let mut empty_directories = Vec::new();
+        if let Some(target) = targets.head {
+            let current = self.head()?;
+            if &current != target {
+                moves.head = Some((current, target.clone()));
+            }
+        }
+        if let Some(target) = targets.working_copy {
+            let current = self.working_copy()?;
+            if current != target {
+                moves.working_copy = Some((current, target));
+            }
+        }
+        for (name, target) in targets.branches {
+            let current = self.current(name)?;
+            if let Some((with, kind)) = current.in_the_way {
+                // A branch that is to be deleted is not in the way of itself.
+                if target.is_some() {
+                    return Err(RefError::Conflict {
+                        name: name.clone(),
+                        with,
+                        kind,
+                    });
+                }
+            }
+            if current.commit != *target {
+                moves.branches.push((name.clone(), current.commit, *target));
+            }
+            empty_directories.extend(current.empty_directory);
+        }
+        Ok((moves, empty_directories))
+    }
+
+    /// Moves the pointers back as a restore does (ADR-013), and runs `step` with the moves after
+    /// the checks and before the first move, all under the lock of the references. The step writes
+    /// the entry of the log and brings the working directory to the new tree. If the moves are
+    /// empty, so that every pointer has its target value, the step does not run.
+    ///
+    /// The values are read under the lock, so the step sees the ones that the moves replace. The
+    /// branches move first, then the working-copy commit, then HEAD; a branch whose target is
+    /// `None` is deleted. A stop between two moves is [`Logged::PartlyMoved`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`plan_restore`](Self::plan_restore) and [`RefError::Locked`]. Once
+    /// `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn restore_after<T, E>(
+        &self,
+        targets: &RestoreTargets<'_>,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce(&RestoreMoves) -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let _lock = self.lock()?;
+        let (moves, empty_directories) = self.plan_restore(targets, objects)?;
+        if moves.is_empty() {
+            return Ok(Logged::Unchanged);
+        }
+        for empty in &empty_directories {
+            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        let done = match step(&moves) {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        // The steps run one after the other and stop at the first failure, so that the pointers
+        // after it are not moved.
+        type Step<'s> = Box<dyn Fn() -> Result<(), RefError> + 's>;
+        let mut steps: Vec<Step<'_>> = Vec::new();
+        for (name, _, target) in &moves.branches {
+            steps.push(match target {
+                Some(commit) => Box::new(move || {
+                    self.write_replacing(
+                        &self.branch_path(name),
+                        &encode_branch(commit),
+                        &self.heads_dir(),
+                    )
+                }),
+                None => Box::new(move || self.delete_branch_file(name)),
+            });
+        }
+        if let Some((_, new)) = &moves.working_copy {
+            steps.push(Box::new(move || {
+                self.write_replacing(&self.working_copy_path(), &encode_branch(new), &self.root)
+            }));
+        }
+        // HEAD last: a stop before it leaves the pointer that leads to the commits unchanged.
+        if let Some((_, new)) = &moves.head {
+            steps.push(Box::new(move || {
+                self.write_replacing(&self.head_path(), &new.encode(), &self.root)
+            }));
+        }
+        let mut moved_any = false;
+        let mut unflushed: Option<RefError> = None;
+        for step in steps {
+            match step() {
+                Ok(()) => moved_any = true,
+                Err(error @ RefError::NotFlushed { .. }) => {
+                    moved_any = true;
+                    unflushed.get_or_insert(error);
+                }
+                Err(error) if moved_any => return Ok(Logged::PartlyMoved(done, error)),
+                Err(error) => return Ok(Logged::MoveFailed(done, error)),
+            }
+        }
+        Ok(match unflushed {
+            Some(error) => Logged::NotFlushed(done, error),
+            None => Logged::Moved(done),
+        })
+    }
+
+    /// Deletes the file of a branch, and the directories above it that this empties, up to the
+    /// directory of the branches, which stays.
+    fn delete_branch_file(&self, name: &BranchName) -> Result<(), RefError> {
+        let path = self.branch_path(name);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(io_error("remove the reference", &path)(error)),
+        }
+        let heads = self.heads_dir();
+        let mut directory = path.parent().map(Path::to_path_buf);
+        while let Some(dir) = directory {
+            if dir == heads || fs::remove_dir(&dir).is_err() {
+                break;
+            }
+            directory = dir.parent().map(Path::to_path_buf);
+        }
+        sync_directory(&heads).map_err(|error| match error {
+            StoreError::Io { source, .. } => RefError::NotFlushed {
+                path: heads.clone(),
+                source,
+            },
+            other => RefError::Store(Box::new(other)),
+        })
     }
 
     /// The outcome of two moves, the second of which runs only if the first moved its pointer
