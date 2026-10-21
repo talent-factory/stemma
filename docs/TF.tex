@@ -35,9 +35,12 @@
 % Sans-serif for headings, serif for body text, mono for code
 \definefontfamily[mainface][sans][TeX Gyre Heros]
 \definefontfamily[mainface][serif][TeX Gyre Pagella]
-\definefontfamily[mainface][mono][TeX Gyre Cursor][scale=0.85]
+\definefontfamily[mainface][mono][TeX Gyre Cursor][scale=1.0]
 
 \setupbodyfont[mainface, 11pt]
+
+% Plain \starttyping blocks match the size of the code environments below
+\setuptyping[style=\tt\small]
 
 % =============================================================================
 % COLORS
@@ -354,7 +357,7 @@
 ]
 
 % Inline-Code
-\definetype[code][style=\tt\small]
+\definetype[code][style=\tt]
 
 % =============================================================================
 % NOTICE BOXES
