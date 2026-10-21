@@ -95,4 +95,13 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] A directory in the way that is not empty because of untracked files: the first version
       refuses; a way to move them aside is open.
 - [ ] Windows and file systems that ignore case: the checkout layer needs a test on both
-      (STEMMA-33).
+      (STEMMA-33). The rules for Windows names are written and tested as a function, but they only
+      run on Windows, where no test has run yet.
+- [ ] Names that differ only in Unicode normalization form are not found by the plan, as the
+      crate has no normalization tables. The apply finds them when the second file is written
+      (the new path exists already) and stops with a collision. Files written before stay.
+- [ ] A file that appears between the last check and the rename of a write is replaced. The
+      window is as short as it can be with `rename`; closing it needs a rename that fails when
+      the target exists, which the platforms do not offer in one call.
+- [ ] The layer does not compare the content of a file that it removes or replaces with the
+      old tree. It relies on the snapshot that the restore takes first.
