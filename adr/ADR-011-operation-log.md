@@ -230,10 +230,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - [ ] Retention: whether many snapshot entries of one working-copy change are merged after some
       time, and what a garbage collection may remove (nothing before ADR-007's collection
       exists). Decide with a measurement of a real session.
-- [ ] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
-      audited without keeping the secret. Decided in ADR-014 (STEMMA-26). The plan (STEMMA-46)
-      and the stub with the `purge` entry in the log (STEMMA-47) are built; the purge itself is
-      to be built in STEMMA-48.
+- [x] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
+      audited without keeping the secret. Decided in ADR-014 (STEMMA-26) and built: the plan
+      (STEMMA-46), the stub with the `purge` entry in the log (STEMMA-47), and the purge itself
+      (STEMMA-48).
 - [x] A recovery when the highest number is missing: the tip file (STEMMA-30). What remains is
       a command that repairs a log with a lost last entry (the tip has to be set back by hand
       today), and the hash chain (STEMMA-41).

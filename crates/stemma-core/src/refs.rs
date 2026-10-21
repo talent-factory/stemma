@@ -413,6 +413,18 @@ pub enum RefError {
         /// The commit the working copy has.
         found: CommitId,
     },
+    /// A purge has not finished: its journal exists (ADR-014). No other change may write until
+    /// `stemma purge --resume` has finished it or `stemma purge --abort` has undone it.
+    PurgePending {
+        /// The journal.
+        path: PathBuf,
+    },
+    /// A pointer that a purge moves is at neither the value before the purge nor the one after
+    /// it: another change came first, after the lock was removed by hand (ADR-014).
+    PurgeStale {
+        /// The pointer: `HEAD`, `working-copy`, or the name of a branch.
+        pointer: String,
+    },
 }
 
 /// What stands in the way of a new branch name.
@@ -497,6 +509,17 @@ impl fmt::Display for RefError {
                 "the working-copy commit has moved: it was expected to be at {expected}, but it \
                  is at {found}"
             ),
+            Self::PurgePending { path } => write!(
+                f,
+                "a purge has not finished (its journal is `{}`); run `stemma purge --resume` to \
+                 finish it or `stemma purge --abort` to undo it first",
+                path.display()
+            ),
+            Self::PurgeStale { pointer } => write!(
+                f,
+                "`{pointer}` is at neither the value before the purge nor the one after it; \
+                 another change came first"
+            ),
         }
     }
 }
@@ -535,7 +558,9 @@ impl Error for RefError {
             | Self::Locked { .. }
             | Self::NoHead { .. }
             | Self::NoWorkingCopy { .. }
-            | Self::StaleWorkingCopy { .. } => None,
+            | Self::StaleWorkingCopy { .. }
+            | Self::PurgePending { .. }
+            | Self::PurgeStale { .. } => None,
         }
     }
 }
@@ -672,6 +697,32 @@ impl Drop for Lock {
     }
 }
 
+/// The lock of the references while a purge holds it, from its plan to its end (ADR-014). The
+/// lock is not re-entrant, so the purge moves the pointers through
+/// [`FsRefStore::purge_moves`], which takes this value as the proof that the lock is held.
+#[must_use]
+pub(crate) struct PurgeLock {
+    _lock: Lock,
+}
+
+impl PurgeLock {
+    /// Leaves the lock file in place, as a crash does. A test stops a purge with it.
+    pub(crate) fn leak(self) {
+        std::mem::forget(self);
+    }
+}
+
+/// The name of the journal of a purge in the metadata directory (ADR-014).
+pub(crate) const PURGE_JOURNAL: &str = "purge-pending";
+
+/// The pointers that a purge moves, each from the value before the purge to the one after it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct PurgeMoves {
+    pub(crate) head: Option<(Head, Head)>,
+    pub(crate) working_copy: Option<(CommitId, CommitId)>,
+    pub(crate) branches: Vec<(BranchName, CommitId, CommitId)>,
+}
+
 impl FsRefStore {
     /// Creates a store that keeps its files below `root`, the repository's metadata directory.
     /// The directory is not checked here; every operation checks it.
@@ -746,7 +797,89 @@ impl FsRefStore {
         }
     }
 
+    fn journal_path(&self) -> PathBuf {
+        self.root.join(PURGE_JOURNAL)
+    }
+
+    /// Fails with [`RefError::PurgePending`] if the journal of a purge exists (ADR-014). Every
+    /// command that writes calls it before it writes its first object, and [`lock`](Self::lock)
+    /// checks again under the lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::PurgePending`], and [`RefError::Io`] if the journal cannot be inspected.
+    pub(crate) fn refuse_pending_purge(&self) -> Result<(), RefError> {
+        if self.purge_pending()? {
+            return Err(RefError::PurgePending {
+                path: self.journal_path(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether the journal of a purge exists (ADR-014). Anything at its path counts.
+    fn purge_pending(&self) -> Result<bool, RefError> {
+        let path = self.journal_path();
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_error("inspect the journal of the purge", &path)(error)),
+        }
+    }
+
+    /// Takes the lock for a change of the references. The journal of a purge is checked under
+    /// the lock, so a change that was waiting for it does not slip in while a purge runs, and a
+    /// lock that a purge holds or left behind is reported as the purge (ADR-014).
     fn lock(&self) -> Result<Lock, RefError> {
+        let lock = match self.acquire() {
+            Err(RefError::Locked { path }) => {
+                return Err(if self.purge_pending()? {
+                    RefError::PurgePending {
+                        path: self.journal_path(),
+                    }
+                } else {
+                    RefError::Locked { path }
+                })
+            }
+            other => other?,
+        };
+        self.refuse_pending_purge()?;
+        Ok(lock)
+    }
+
+    /// Takes the lock for a purge that starts: as [`lock`](Self::lock), and a journal that exists
+    /// is [`RefError::PurgePending`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Locked`] or [`RefError::PurgePending`], and [`RefError::Io`] if the
+    /// lock file cannot be made.
+    pub(crate) fn lock_purge(&self) -> Result<PurgeLock, RefError> {
+        self.require_root()?;
+        self.lock().map(|lock| PurgeLock { _lock: lock })
+    }
+
+    /// Takes the lock for `--resume` or `--abort` of a purge whose journal exists. A lock that is
+    /// there is taken for the one that the purge left behind when it stopped, and is removed
+    /// (ADR-014). The caller checks the journal before and after.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Io`] if the lock file cannot be removed or made, and
+    /// [`RefError::Locked`] if another process took the lock in between.
+    pub(crate) fn take_over_lock(&self) -> Result<PurgeLock, RefError> {
+        self.require_root()?;
+        let path = self.lock_path();
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error("remove the lock file", &path)(error)),
+        }
+        self.acquire().map(|lock| PurgeLock { _lock: lock })
+    }
+
+    /// Makes the lock file, without looking at the journal of a purge.
+    fn acquire(&self) -> Result<Lock, RefError> {
         let path = self.lock_path();
         let token = unique_temp_name();
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -1423,6 +1556,74 @@ impl FsRefStore {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
+        Ok(self.apply_moves(done, &moves))
+    }
+
+    /// Moves the pointers that a purge moves (ADR-014), with the lock that the purge holds, and
+    /// runs `step` after the checks and before the first move. The step writes the `purge` entry;
+    /// it runs also when no pointer moves, as the entry is written in any case.
+    ///
+    /// Every pointer is checked first: one that has its value after the purge already is skipped
+    /// (a purge that is resumed), one at its value before is moved, and one at any other value is
+    /// [`RefError::PurgeStale`] before anything is written. The moves are made in the order of
+    /// [`restore_after`](Self::restore_after): branches, the working-copy commit, then HEAD.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::PurgeStale`], [`RefError::MissingCommit`] for a new commit that is not
+    /// in `objects`, and the errors of reading the pointers. Once `step` has run, nothing is an
+    /// error of this call; see [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn purge_moves<T, E>(
+        &self,
+        _lock: &PurgeLock,
+        planned: &PurgeMoves,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let stale = |pointer: &str| RefError::PurgeStale {
+            pointer: pointer.to_owned(),
+        };
+        let mut moves = RestoreMoves::default();
+        if let Some((old, new)) = &planned.head {
+            if let Head::Detached(commit) = new {
+                Self::require_commit(commit, objects)?;
+            }
+            let current = self.head()?;
+            if current == *old {
+                moves.head = Some((old.clone(), new.clone()));
+            } else if current != *new {
+                return Err(stale("HEAD"));
+            }
+        }
+        if let Some((old, new)) = planned.working_copy {
+            Self::require_commit(&new, objects)?;
+            let current = self.working_copy()?;
+            if current == old {
+                moves.working_copy = Some((old, new));
+            } else if current != new {
+                return Err(stale("working-copy"));
+            }
+        }
+        for (name, old, new) in &planned.branches {
+            Self::require_commit(new, objects)?;
+            let current = self.current(name)?.commit;
+            if current == Some(*old) {
+                moves.branches.push((name.clone(), Some(*old), Some(*new)));
+            } else if current != Some(*new) {
+                return Err(stale(name.as_str()));
+            }
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        Ok(self.apply_moves(done, &moves))
+    }
+
+    /// Makes the moves after the step ran: the branches, the working-copy commit, then HEAD, one
+    /// after the other.
+    fn apply_moves<T, E>(&self, done: T, moves: &RestoreMoves) -> Logged<T, E> {
         // The steps run one after the other and stop at the first failure, so that the pointers
         // after it are not moved.
         type Step<'s> = Box<dyn Fn() -> Result<bool, RefError> + 's>;
@@ -1464,14 +1665,14 @@ impl FsRefStore {
                     moved_any = true;
                     unflushed.get_or_insert(error);
                 }
-                Err(error) if moved_any => return Ok(Logged::PartlyMoved(done, error)),
-                Err(error) => return Ok(Logged::MoveFailed(done, error)),
+                Err(error) if moved_any => return Logged::PartlyMoved(done, error),
+                Err(error) => return Logged::MoveFailed(done, error),
             }
         }
-        Ok(match unflushed {
+        match unflushed {
             Some(error) => Logged::NotFlushed(done, error),
             None => Logged::Moved(done),
-        })
+        }
     }
 
     /// Deletes the file of a branch, and the directories above it that this empties, up to the

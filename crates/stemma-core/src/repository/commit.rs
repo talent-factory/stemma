@@ -92,6 +92,9 @@ impl Repository {
             return Err(CommitError::EmptyMessage);
         }
         let operation = OperationName::new(OPERATION).expect("`commit` is a valid operation name");
+        self.refs_store()
+            .refuse_pending_purge()
+            .map_err(|error| CommitError::Update(UpdateError::Refs(error)))?;
         let name = match self.refs().head().map_err(CommitError::Refs)? {
             Head::Branch(name) => name,
             Head::Detached(commit) => return Err(CommitError::DetachedHead(commit)),

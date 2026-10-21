@@ -201,6 +201,9 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Restored, RestoreError> {
+        self.refs_store()
+            .refuse_pending_purge()
+            .map_err(RestoreError::Refs)?;
         let prepared = self.prepare(number, force, actor, authorizer)?;
         if prepared.plan.is_none() {
             return Ok(Restored::NothingToRestore { snapshot: None });

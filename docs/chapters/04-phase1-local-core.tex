@@ -26,18 +26,21 @@ damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
 
 \starttyping
 .stemma/
-    format        stemma-repository 2
+    format        stemma-repository 2 (3 nach dem ersten Purge)
     HEAD          branch main
     working-copy  ID des Working-Copy-Commits
     objects/      lose Objekte
     oplog/        Operation Log, eine nummerierte Datei je Eintrag
     oplog-tip     Nummer des letzten Eintrags des Logs
     refs/heads/   Branches
+    purge-pending Journal eines Purge, nur solange er läuft oder nachdem er abbrach
     tmp/          temporäre Dateien des Objektspeichers, der Referenzen und des Logs
 \stoptyping
 
-Die Datei \type{format} trägt eine Versionsnummer. Beim Öffnen lehnt der Kern eine fehlende,
-eine nicht kanonische und jede andere Version ab, auch die Version 1 der Repositories ohne Log.
+Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 2,
+und der erste Purge hebt sie auf 3 (siehe unten). Beim Öffnen nimmt der Kern beide an und lehnt
+eine fehlende, eine nicht kanonische und jede andere Version ab, auch die Version 1 der
+Repositories ohne Log.
 Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
 
 Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben
@@ -64,7 +67,8 @@ und das Ausführbit gehört zum Dateimodus. Eine verfolgte Spezialdatei (Gerät,
 bricht den Snapshot mit einem Fehler ab, statt still aus der History zu fallen.
 Der neue Commit behält Eltern, Change-ID und Nachricht des alten, sein Autor ist der
 Akteur des Snapshots. Ist der Baum unverändert, entstehen weder Commit noch Eintrag.
-Ein Snapshot (\type{track}, \type{commit}, \type{status} und \type{restore}) speichert,
+Ein Snapshot (\type{track}, \type{commit}, \type{status}, \type{restore} und
+\type{purge --apply}) speichert,
 was im Verzeichnis liegt, und trägt den Akteur des Befehls ein. Arbeiten zwei Akteure im
 selben Verzeichnis, kann der Befehl des einen die Änderung des anderen speichern, und das
 Log nennt dann nicht den Akteur, der die Änderung gemacht hat. Deshalb gilt die Regel:
@@ -303,8 +307,8 @@ Umschreiben ersetzt hat, und dazu Reste im Objektspeicher, die den Blob enthalte
 einen Commit mit ihm folgen.
 Nur ein Mensch darf purgen, denn der Purge lässt sich nicht zurücksetzen.
 
-Gebaut ist bisher der Plan (STEMMA-46): \type{stemma purge} nennt die Commits, die Zeiger,
-die Stubs und die Objekte und schreibt nichts. Ein Verzeichnis, das nur den Blob enthielt,
+Ohne \type{--apply} zeigt \type{stemma purge} nur den Plan: die Commits, die Zeiger,
+die Stubs und die Objekte, und schreibt nichts. Ein Verzeichnis, das nur den Blob enthielt,
 fällt dabei aus dem Baum, so wie ein Snapshot nie ein leeres Verzeichnis anlegt. Der Plan
 durchsucht auch den Objektspeicher nach solchen Resten, die nichts erreicht. Zum Schluss
 prüft er, dass nichts Behaltenes den Blob noch enthält oder etwas erreicht, das er löscht;
@@ -320,8 +324,35 @@ Stub und einen Purge ab, ebenso einen Eintrag, den ein Purge nennt, der noch nic
 Ein Stub ersetzt eine Änderung, deren Züge niemand mehr kennt. Deshalb ist der Ausgang jedes
 Eintrags vor dem jüngsten Stub unbekannt, und ein Restore eines solchen Eintrags braucht
 \type{--force}. Ein Hash, den der Stub behalten müsste, kommt erst mit einer Hash-Kette
-(STEMMA-41). Das Umschreiben selbst und das Löschen mit Journal folgen mit STEMMA-48; mit dem
-ersten Purge wird das Repository auf das Format 3 wechseln, das ältere Programme ablehnen.
+(STEMMA-41).
+
+Mit \type{--apply} wird der Purge gemacht. Er speichert zuerst das Verzeichnis in einem
+Snapshot, damit eine Änderung mit dem Geheimnis in einem Commit und im Plan steht. Dann
+nimmt er die Sperre der Referenzen und hält sie bis zum Ende, plant unter ihr neu, und sein
+Plan kann daher vom gezeigten abweichen. Er hebt das Repository auf das Format 3 und schreibt
+das Journal \type{.stemma/purge-pending}. Es nennt den Blob, die Nummer des letzten Eintrags,
+jeden umgeschriebenen Commit, die Züge der Zeiger, die Stubs, die neuen Objekte und die
+Objekte, die gelöscht werden. Das Format kommt vor dem Journal, denn ein Programm, das nur die
+Version 2 kennt, kennt auch das Journal nicht und würde an ihm vorbei schreiben; so lehnt es
+das Repository ab.
+
+Danach schreibt der Purge die neuen Bäume und Commits. Er prüft, dass jeder Zeiger noch auf
+seinem alten Wert steht, schreibt den Eintrag \type{purge} und bewegt die Zeiger. Dann
+ersetzt er die Einträge durch Stubs, löscht die alten Commits, die alten Bäume und den Blob
+und entfernt zuletzt das Journal. Solange das Journal besteht, lehnt jeder andere Befehl, der
+schreibt, ab, bevor er ein Objekt schreibt, und noch einmal unter der Sperre. Die Meldung
+nennt \type{stemma purge --resume} und \type{--abort}.
+
+Bricht der Purge ab, beendet ihn \type{stemma purge --resume} aus dem Journal. Eine Sperre,
+die der Abbruch zurückliess, nimmt es als die des Purge und entfernt sie. Jeder Schritt lässt
+sich wiederholen: Ein Objekt, das schon da ist, bleibt, ein Zeiger auf seinem neuen Wert wird
+übersprungen, ein geschriebener Eintrag \type{purge} wird gefunden und nicht noch einmal
+geschrieben, ein Stub ersetzt sich selbst, und ein gelöschtes Objekt ist weg. Ein Zeiger, der
+auf keinem der beiden Werte steht, hält das Fortsetzen an, und die Meldung nennt ihn.
+Solange der Eintrag \type{purge} fehlt, ist nichts verloren, und \type{stemma purge --abort}
+entfernt die neuen Objekte und das Journal; ein Objekt, das der Speicher schon vorher hatte,
+bleibt. Das Format bleibt dabei 3, denn eine Version sinkt nie. Ist der Eintrag geschrieben,
+geht der Purge nur noch vorwärts, und \type{--abort} lehnt ab.
 
 \section{Offene Fragen}
 
