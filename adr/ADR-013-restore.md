@@ -1,8 +1,9 @@
 # ADR-013: Restoring the state before an entry
 
-**Status:** Proposal. The checkout layer (STEMMA-42), `Repository::restore` (STEMMA-43), and the
-command `stemma op restore` (STEMMA-44) are built. The decisions below are meant for the author
-to confirm or change.
+**Status:** Accepted. Confirmed by the author on 2026-10-21 and implemented: the checkout layer
+(STEMMA-42, PR #74), `Repository::restore` (STEMMA-43 and STEMMA-45, PR #75), and the command
+`stemma op restore` (STEMMA-44, PR #79). The open items at the end are limits that the first
+version has and questions for later; none of them changes a decision above.
 
 ## Context
 
@@ -25,19 +26,19 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 
 ## Decision
 
-- **A restore puts back the old values of one entry** *(proposed)*. `stemma op restore NUMBER`
+- **A restore puts back the old values of one entry** *(confirmed)*. `stemma op restore NUMBER`
   brings every pointer that the entry names to the value it had before the entry: HEAD, the
   working-copy commit, and the branches. A value that the entry records as missing (`-`) means
   that the pointer does not exist afterwards. Pointers that the entry does not name stay as they
   are. The restore writes an entry of its own, the operation `restore`, like every operation that
   moves a pointer. The log is never rewritten, so a restore can itself be restored.
-- **A snapshot comes first** *(proposed)*. Like every command, the restore saves the directory in
+- **A snapshot comes first** *(confirmed)*. Like every command, the restore saves the directory in
   a snapshot under the actor of the command, once it knows that there is something to restore
   (the plan is made before, so that a missing commit or a file in the way is found before the
   snapshot is written). A change that was not saved yet lands in the log, so no state is lost.
   The output names the number of that entry and says that the restore can be undone by restoring
   it. If a later step fails, the error names the entry of the snapshot.
-- **The directory is written by a checkout layer** *(proposed; STEMMA-42)*. It brings the
+- **The directory is written by a checkout layer** *(confirmed; STEMMA-42)*. It brings the
   directory from the tree of one commit to the tree of another and has no command of its own.
   - It plans first and writes after. A conflict that the plan can see is found before the first
     file is written; one that appears later stops the apply, which leaves what it did (see
@@ -58,13 +59,13 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   - It keeps the duties of ADR-005: it rejects the names that are dangerous on Windows, it
     detects names that collide on a file system that ignores case, and it never writes through a
     link. Names that collide only in Unicode normalization form are an open item below.
-- **The order is: entry, directory, pointers** *(proposed)*. Under the lock of the references the
+- **The order is: entry, directory, pointers** *(confirmed)*. Under the lock of the references the
   restore checks, writes the entry, flushes it, brings the directory to the target tree, and
   moves the pointers last (ADR-011). A stop after the entry leaves the old state, and the entry
   names a move that did not happen, which the log already allows. A stop after the directory
   leaves the target tree in the directory and the old pointers; the next snapshot saves it as an
   ordinary change of the actor. Nothing is lost in either case.
-- **Each pointer is judged on its own** *(proposed)*. The entry is an intent (ADR-011), and it may
+- **Each pointer is judged on its own** *(confirmed)*. The entry is an intent (ADR-011), and it may
   have moved only some of its pointers: a `commit` that stopped after the branch has moved one of
   two. The restore therefore does not ask whether the entry as a whole took effect. It puts the
   old value of every pointer that the entry names back and leaves alone a pointer that has it
@@ -72,15 +73,15 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   This also holds for an entry that did not take effect and for a pointer that other entries
   moved afterwards. The outcome that `oplog::outcomes` reads is used for one thing: if it is
   unknown, the command refuses and names the reason, and `--force` restores anyway.
-- **A missing object is an error before anything is written** *(proposed)*. The restore checks
+- **A missing object is an error before anything is written** *(confirmed)*. The restore checks
   that every commit it needs is in the object store. After a garbage collection (ADR-007) a
   commit that no entry names may be gone; the log keeps the roots, so this is not expected for a
   commit that an entry names.
-- **`--dry-run` plans and reports** *(proposed)*. It prints the pointers that would move and the
+- **`--dry-run` plans and reports** *(confirmed)*. It prints the pointers that would move and the
   files that would be written and removed, and a conflict is its error; it writes nothing, not
   even the snapshot. In the code it is a function of its own, `plan_restore`, so that it cannot
   write.
-- **The actor and the authorizer** *(proposed; built in STEMMA-43)*. The command needs an actor
+- **The actor and the authorizer** *(confirmed; built in STEMMA-43)*. The command needs an actor
   like every command that changes a repository (ADR-002). The authorizer is asked for the
   operation `restore` first, with the entry as the target; the snapshot that follows asks its
   own question, `snapshot`, as it does for every command.
@@ -140,7 +141,7 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       target exists (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL`
       on macOS, and another call on Windows), which `std::fs::rename` does not offer.
 - [ ] The layer does not compare the content of a file that it removes or replaces with the
-      old tree. It relies on the snapshot that the restore takes first (proposed above).
+      old tree. It relies on the snapshot that the restore takes first (decided above).
 - [ ] The plan decides by platform whether names ignore case. A case-sensitive volume on macOS,
       or a rename that changes only the normalization form of a name, can pass or fail the plan
       for the wrong reason; the apply stops with a clear error, but halfway.
