@@ -250,7 +250,32 @@ Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen und das Log 
 Lesen heraus; der Schreiber des Logs und der Konstruktor eines Eintrags sind nur im
 Crate sichtbar. Das ist eine Vereinbarung der Schnittstelle und keine Grenze, denn
 die Dateien sind gewöhnliche Dateien. \type{init} schreibt den ersten Eintrag.
-Der Befehl \type{stemma op log}, der die Einträge anzeigt, folgt als eigene Scheibe.
+Der Befehl \type{stemma op log} zeigt die Einträge, und \type{stemma op restore} setzt die
+Zeiger auf die Werte vor einem Eintrag zurück (siehe unten und die Befehlsreferenz).
+
+\subsection{Den Zustand vor einem Eintrag wiederherstellen}
+
+Weil jeder Eintrag den alten und den neuen Wert seiner Zeiger trägt, genügt es, die alten
+Werte zurückzusetzen (ADR-011, ADR-013). Ein Restore, das nur die Zeiger bewegte, hielte
+nicht lange. Der Working-Copy-Commit ist der Zustand des Verzeichnisses (ADR-010), und der
+nächste Snapshot läse das unveränderte Verzeichnis und stellte den neuen Stand wieder her.
+Das Restore schreibt deshalb die Dateien des alten Baums ins Verzeichnis. Das tut eine eigene
+Schicht, die auch der spätere Checkout von Branches braucht. Sie plant zuerst und schreibt
+danach, fasst nur Pfade an, die der alte oder der neue Baum nennt, und lässt nicht verfolgte
+Dateien, ausgeschlossene Pfade, \type{.stemma} und \type{.git} in Ruhe. Sie schreibt nie
+durch einen Link, lehnt Namen ab, die Windows nicht halten kann, und erkennt Namen, die auf
+einem Dateisystem ohne Unterscheidung der Gross- und Kleinschreibung zusammenfallen.
+Jede Datei geht über eine temporäre Datei und ein \type{rename}, damit ein Leser die alte
+oder die neue Fassung sieht.
+
+Der Ablauf folgt der Regel des Logs: Zuerst der Snapshot, damit keine ungesicherte Änderung
+verloren geht, dann der Eintrag, dann das Verzeichnis, dann die Zeiger. Ein Abbruch nach dem
+Eintrag lässt die alten Zeiger, und der Eintrag nennt ein Restore, das nicht stattfand,
+was das Log schon kennt. Ein Abbruch nach dem Verzeichnis lässt die neuen Zeiger über
+alten Dateien; derselbe Aufruf noch einmal beendet das Restore. Das Restore beurteilt jeden Zeiger
+für sich, denn ein Eintrag kann zur Hälfte stattgefunden haben. Es ist eine Operation mit
+eigenem Eintrag, und das Log wird nie umgeschrieben: Ein Restore lässt sich wieder
+zurücksetzen.
 
 \section{Offene Fragen}
 

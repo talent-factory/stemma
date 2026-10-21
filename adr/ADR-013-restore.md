@@ -1,8 +1,8 @@
 # ADR-013: Restoring the state before an entry
 
-**Status:** Proposal. The checkout layer (STEMMA-42) and `Repository::restore` (STEMMA-43) are
-built; the command (STEMMA-44) is not. The decisions below are meant for the author to confirm or
-change.
+**Status:** Proposal. The checkout layer (STEMMA-42), `Repository::restore` (STEMMA-43), and the
+command `stemma op restore` (STEMMA-44) are built. The decisions below are meant for the author
+to confirm or change.
 
 ## Context
 

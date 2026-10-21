@@ -7,12 +7,12 @@ use stemma_core::oplog::{Entry, Moved, Outcome};
 use stemma_core::refs::Head;
 
 /// The value of a pointer as the log writes it: `-` if it does not exist.
-fn value<T: Display>(value: Option<&T>) -> String {
+pub(crate) fn value<T: Display>(value: Option<&T>) -> String {
     value.map_or_else(|| "-".to_owned(), ToString::to_string)
 }
 
 /// HEAD as the log writes it: `branch:<name>`, `commit:<id>`, or `-`.
-struct HeadValue<'a>(&'a Head);
+pub(crate) struct HeadValue<'a>(pub(crate) &'a Head);
 
 impl Display for HeadValue<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
