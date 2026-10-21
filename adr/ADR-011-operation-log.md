@@ -188,7 +188,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - The log grows with every change, and a snapshot at every command makes many entries. Nothing
   removes them in phase 1; the open items name the measure that decides about retention.
 - The log keeps commits that a rewrite or a purge would otherwise drop. A secret in a tracked file
-  is therefore in the log until it is purged (STEMMA-26), which is why the log is local.
+  is therefore in the log until it is purged (ADR-014, STEMMA-26), which is why the log is local.
 - A hub never sees the log. What a hub keeps is its own record of ref updates (ADR-003).
 - `Repository::init` creates `oplog/` and writes entry 1, so the order "entry, then move" holds
   from the first pointer on. Entry 1 moves HEAD and the working-copy commit (ADR-010).
