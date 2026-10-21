@@ -1,8 +1,10 @@
 # ADR-014: Removing a secret from the history and the operation log
 
-**Status:** Proposal, partially confirmed. The decisions marked *(confirmed)* were agreed with the
-author on 2026-10-21 (STEMMA-26). The details that follow from them (the order of the steps, the
-plan before the purge, the form of the stub) are proposals. No code exists yet.
+**Status:** Accepted, not implemented. The decisions marked *(confirmed)* were agreed with the
+author on 2026-10-21 (STEMMA-26), and the author confirmed the whole ADR on the same day,
+including the steps, the journal, the lock, resume, and abort. No code exists yet; the slices are
+STEMMA-46, STEMMA-47, and STEMMA-48. The open items at the end are questions for the slices and
+for later; none of them changes a decision above.
 
 ## Context
 
