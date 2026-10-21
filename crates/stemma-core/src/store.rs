@@ -22,11 +22,12 @@ use std::fs::{self, File, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::object::{
     hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
-    TreeParseError,
+    TreeParseError, PREFIX,
 };
 
 /// Why a stored object is rejected.
@@ -494,6 +495,45 @@ impl FsObjectStore {
             .join(&hex[2..])
     }
 
+    /// Lists the IDs of the objects in the store, in no particular order, without reading them. A
+    /// file whose path is not that of an ID is left out, as no ID can name it; the files in `tmp/`
+    /// are not objects. The scan of a purge needs the list (ADR-014).
+    pub(crate) fn ids(&self) -> Result<Vec<ObjectId>, StoreError> {
+        self.require_root()?;
+        let algorithm = self.root.join("objects").join(PREFIX.trim_end_matches(':'));
+        let mut ids = Vec::new();
+        let fan_outs = match fs::read_dir(&algorithm) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ids),
+            Err(error) => return Err(io_error("list the objects in", &algorithm)(error)),
+        };
+        for fan_out in fan_outs {
+            let fan_out = fan_out.map_err(io_error("list the objects in", &algorithm))?;
+            let path = fan_out.path();
+            if !fan_out
+                .file_type()
+                .map_err(io_error("inspect", &path))?
+                .is_dir()
+            {
+                continue;
+            }
+            let prefix = fan_out.file_name();
+            for object in fs::read_dir(&path).map_err(io_error("list the objects in", &path))? {
+                let object = object.map_err(io_error("list the objects in", &path))?;
+                let name = object.file_name();
+                let (Some(prefix), Some(rest)) = (prefix.to_str(), name.to_str()) else {
+                    continue;
+                };
+                if let Ok(id) = ObjectId::from_str(&format!("{PREFIX}{prefix}{rest}")) {
+                    if self.object_path(&id) == object.path() {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        Ok(ids)
+    }
+
     /// Fails unless `root` is an existing directory.
     fn require_root(&self) -> Result<(), StoreError> {
         let operation = "open the object store directory";
@@ -829,6 +869,26 @@ mod tests {
         let dir = TempDir::new();
         takes_a_trait_object(&dir.store());
         is_send_and_sync::<FsObjectStore>();
+    }
+
+    #[test]
+    fn ids_lists_every_object_and_nothing_else() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        assert_eq!(store.ids().unwrap(), []);
+        let mut stored = vec![
+            ObjectId::from(store.put_blob(&Blob::new("one")).unwrap()),
+            ObjectId::from(store.put_blob(&Blob::new("two")).unwrap()),
+            ObjectId::from(store.put_tree(&Tree::new(vec![]).unwrap()).unwrap()),
+        ];
+        let fan_out = store.object_path(&stored[0]);
+        let fan_out = fan_out.parent().unwrap();
+        fs::write(fan_out.join("not-an-id"), "junk").unwrap();
+        fs::write(dir.path().join("objects/b3/stray"), "junk").unwrap();
+        let mut ids = store.ids().unwrap();
+        ids.sort();
+        stored.sort();
+        assert_eq!(ids, stored);
     }
 
     #[test]

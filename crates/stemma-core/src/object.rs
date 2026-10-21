@@ -28,7 +28,7 @@ use crate::change::{ChangeId, ChangeIdParseError};
 use crate::{Actor, ActorParseError};
 
 /// Algorithm prefix of BLAKE3 object IDs (ADR-001).
-const PREFIX: &str = "b3:";
+pub(crate) const PREFIX: &str = "b3:";
 
 /// Name of Stemma's own metadata directory. A tree entry name or an index path component must
 /// not use it or the aliases listed at [`NameProblem::ReservedName`], so that a checkout does
@@ -960,6 +960,25 @@ impl Commit {
         }
     }
 
+    /// Creates the commit that replaces this one when its tree or its history is rewritten (a
+    /// purge, ADR-014): the change ID, the author, the time, and the message are kept, and the
+    /// tree and the parents are the new ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommitError::DuplicateParent`] if a parent is listed twice, which happens when two
+    /// parents differed only in what the rewrite removed.
+    pub fn reparent(&self, tree: TreeId, parents: Vec<CommitId>) -> Result<Self, CommitError> {
+        Self::new(
+            tree,
+            parents,
+            self.change,
+            self.author.clone(),
+            self.timestamp,
+            self.message.clone(),
+        )
+    }
+
     /// Returns the ID of the tree this commit snapshots.
     pub fn tree(&self) -> TreeId {
         self.tree
@@ -1413,6 +1432,38 @@ mod tests {
         assert_eq!(new.timestamp(), 20);
         assert_eq!(new.message(), "new");
         assert_ne!(new, old);
+    }
+
+    #[test]
+    fn a_reparent_keeps_the_change_the_author_the_time_and_the_message() {
+        let one = commit_id("b3:3333333333333333333333333333333333333333333333333333333333333333");
+        let two = commit_id("b3:4444444444444444444444444444444444444444444444444444444444444444");
+        let change = ChangeId::generate().unwrap();
+        let author = Actor::human("daniel").unwrap();
+        let old = Commit::new(
+            tree_id_of("b3:1111111111111111111111111111111111111111111111111111111111111111"),
+            vec![one],
+            change,
+            author.clone(),
+            10,
+            "old",
+        )
+        .unwrap();
+        let tree =
+            tree_id_of("b3:2222222222222222222222222222222222222222222222222222222222222222");
+
+        let new = old.reparent(tree, vec![two]).unwrap();
+
+        assert_eq!(new.parents(), [two]);
+        assert_eq!(new.tree(), tree);
+        assert_eq!(new.change(), change);
+        assert_eq!(new.author(), &author);
+        assert_eq!(new.timestamp(), 10);
+        assert_eq!(new.message(), "old");
+        assert_eq!(
+            old.reparent(tree, vec![two, two]),
+            Err(CommitError::DuplicateParent(two))
+        );
     }
 
     #[test]
