@@ -33,15 +33,13 @@
 \starttext
 
 % ------------------------------------------------------------------
-% Status: a sash in the colour of the logo across a corner of the title page.
+% Status: a sash in the primary colour across a corner of the title page.
 % It disappears when status is empty.
 % ------------------------------------------------------------------
-\definecolor[logocolor][h=B5442B]
-
 \startuniqueMPgraphic{statussash}
   pair c ; c := (OverlayWidth-2.6cm, OverlayHeight-2.6cm) ;
   fill ((-4cm,-.55cm)--(4cm,-.55cm)--(4cm,.55cm)--(-4cm,.55cm)--cycle)
-    rotated -45 shifted c withcolor \MPcolor{logocolor} ;
+    rotated -45 shifted c withcolor \MPcolor{primarycolor} ;
   draw textext("\ss\bf\tfa\color[white]{\getvariable{document}{status}}")
     rotated -45 shifted c ;
   clip currentpicture to OverlayBox ;
