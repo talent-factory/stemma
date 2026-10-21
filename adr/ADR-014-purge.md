@@ -219,5 +219,5 @@ Slices: the plan (`Repository::plan_purge` and `stemma purge BLOB`, which writes
 STEMMA-46), the stubs and the `purge` entry in the log with its reader and `op restore` refusing
 a stub (STEMMA-47), and `--apply` with the snapshot, the new objects, the journal, the removal of
 the objects, resume, and abort, and the move of the repository to format 3 with its first purge
-(STEMMA-48). The apply waits for the other two, as a pointer moves
-only with an entry and a purge without stubs and removal would leave the secret in place.
+(STEMMA-48). The apply waits for the other two, as a pointer moves only with an entry and a
+purge without stubs and removal would leave the secret in place.

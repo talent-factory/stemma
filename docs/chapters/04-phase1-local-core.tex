@@ -288,7 +288,7 @@ nicht bewegt haben, und ein Abbruch zwischen zwei Zeigern lässt einige bewegt u
 In beiden Fällen beendet derselbe Aufruf noch einmal das Restore: Er lässt, was schon stimmt,
 wie es ist, und bewegt den Rest.
 Das Restore beurteilt jeden Zeiger für sich, denn ein Eintrag kann zur Hälfte stattgefunden haben.
-Es ist eine Operation mit eigenem Eintrag, und keine Operation schreibt das Log um; nur ein
+Es ist eine Operation mit eigenem Eintrag, und kein Restore schreibt das Log um; nur ein
 Purge ersetzt Einträge durch Stubs (siehe unten). Ein Restore lässt sich wieder zurücksetzen.
 
 \subsection{Ein Geheimnis aus Verlauf und Log entfernen}
