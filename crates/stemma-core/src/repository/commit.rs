@@ -175,7 +175,7 @@ impl Repository {
                         vec![(name.clone(), Moved::from_to(tip, Some(named_id)))],
                     )
                     .map_err(OpLogError::Entry)?;
-                    self.oplog.append(&change)
+                    self.append(&change)
                 },
             )
             .map_err(UpdateError::Refs)?;

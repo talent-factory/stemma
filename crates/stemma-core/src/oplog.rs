@@ -14,8 +14,9 @@
 //!
 //! # The encoding
 //!
-//! Version 1 of the entry encoding is strict text. A reader accepts what [`Entry::encode`] writes
-//! and nothing else, so one entry has exactly one encoding (ADR-005):
+//! Version 1 of the entry encoding, from before the hash chain, is strict text. A reader accepts
+//! what [`Entry::encode`] writes and nothing else, so one entry has exactly one encoding
+//! (ADR-005):
 //!
 //! ```text
 //! stemma-oplog 1
@@ -58,8 +59,39 @@
 //! `-` for none. A list that does not fit into one entry is split over several, and the first has
 //! the count. A stub that no `purge` entry lists is an error of the log ([`check_stubs`]); a
 //! listed entry that is not a stub yet is not, as the purge writes its entry first. A change
-//! cannot have the operation `purge`. The stub keeps no hash, as the log has no chain yet
-//! (STEMMA-41).
+//! cannot have the operation `purge`.
+//!
+//! # The hash chain (version 3)
+//!
+//! Every entry that the writer makes names the hash of the entry before it (ADR-011, STEMMA-41).
+//! A change, a stub, and a `purge` entry of version 3 have the line `previous` after the actor,
+//! with the hash, or `-` for the entry that starts the chain:
+//!
+//! ```text
+//! stemma-oplog 3         stemma-oplog 3         stemma-oplog 3
+//! number 42              number 5               number 9
+//! time 1700000000        time 1700000000        time 1700000500
+//! actor human daniel     actor human daniel     actor human daniel
+//! previous b3:7f0c…91aa  previous b3:20d4…6c03  previous b3:e5b1…0f7d
+//! operation snapshot     stub b3:9a33…d215      operation purge
+//! working-copy … …                              commits 3
+//!                                               stubs 4-5 7
+//! ```
+//!
+//! The hash of an entry ([`Entry::hash`]) is BLAKE3 over its envelope: the line
+//! `stemma-oplog-hash 1`, then `number`, `time`, `actor`, `previous`, and `body` with the hash of
+//! the body. The hash of the body ([`Entry::body_hash`]) is BLAKE3 over `stemma-oplog-body 1` and
+//! the lines after `previous`: the operation and the pointers, or the operation, the count, and
+//! the stubs. A stub keeps the hash of the body that it replaced, so it has the hash of the entry,
+//! and a purge does not break the chain; time and actor stay covered.
+//!
+//! The reader checks the chain ([`check_chain`]): a change, a removal, an insertion, or a swap of
+//! entries breaks it at that place, and an entry of version 1 or 2 after the chain is refused. A
+//! log from before the chain keeps its old entries in front, and the first new entry starts the
+//! chain. The tip file names the hash of the last entry as well, so a replaced last entry is found.
+//! The chain shows that the entries agree with one another, not who wrote them: whoever can write
+//! `.stemma` can compute every later hash and the tip again. Only an anchor kept outside the
+//! repository, a hash that `stemma op verify` printed, shows that (ADR-011).
 //!
 //! # Numbers and writers
 //!
@@ -87,9 +119,11 @@
 //! holds the number of the last entry. The writer replaces it after the entry is published. A tip
 //! beyond the largest number in the directory means that the last entries are lost: the writer
 //! refuses ([`OpLogError::TipAhead`]) and the reader reports it, as the number would go to another
-//! move otherwise. A tip one behind or a missing file is no fault. The tip guards against
-//! accidents and crashes, not against an attack: who removes the tip and the entry is not noticed
-//! (STEMMA-41, ADR-011).
+//! move otherwise. A tip one behind or a missing file is no fault. The tip file of version 2 names
+//! the hash of the last entry too (`stemma-oplog-tip 2`, `number <n>`, `hash <hash>`), and the
+//! writer refuses to link a new entry to one whose hash differs from it
+//! ([`OpLogError::TipMismatch`]). The tip guards against accidents and crashes, not against an
+//! attack: who removes the tip and the entry is not noticed (ADR-011).
 //!
 //! `tmp/` holds scratch files. A temporary name is removed after the entry is published, on a best
 //! effort basis: a name that stays is harmless and costs only space, and no operation of this slice
@@ -118,6 +152,16 @@ const HEADER: &str = "stemma-oplog 1";
 /// The first line of a stub and of a `purge` entry (ADR-014). Version 2 is written only for these
 /// two, so that every entry has exactly one encoding.
 const HEADER_2: &str = "stemma-oplog 2";
+
+/// The first line of every entry in the hash chain: a change, a stub, or a `purge` entry that
+/// names the hash of the entry before it (ADR-011, STEMMA-41). A writer writes only this version.
+const HEADER_3: &str = "stemma-oplog 3";
+
+/// The first line of the text that the hash of an entry in the chain is computed over.
+const HASH_HEADER: &str = "stemma-oplog-hash 1";
+
+/// The first line of the text that the hash of the body of an entry is computed over.
+const BODY_HEADER: &str = "stemma-oplog-body 1";
 
 /// The name of the operation of a purge. A change cannot have it: a purge entry names no pointer
 /// (ADR-014).
@@ -313,6 +357,9 @@ pub enum EntryError {
     StubOutOfRange(u64),
     /// The entry of a purge cannot become a stub. Carries its number.
     PurgeNotReplaceable(u64),
+    /// A stub has the hash of a body but is not in the chain, or is in the chain without one.
+    /// Carries its number.
+    StubBody(u64),
 }
 
 impl fmt::Display for EntryError {
@@ -348,6 +395,10 @@ impl fmt::Display for EntryError {
                     "entry {number} is the entry of a purge and cannot become a stub"
                 )
             }
+            Self::StubBody(number) => write!(
+                f,
+                "the stub {number} keeps the hash of a body exactly when it is in the hash chain"
+            ),
         }
     }
 }
@@ -468,12 +519,60 @@ impl Change {
     }
 }
 
+/// The hash of an entry in the chain, or of its body (ADR-011, STEMMA-41). Its text is that of an
+/// object ID, `b3:` and 64 lowercase hexadecimal digits, but it names an entry, not an object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EntryHash(ObjectId);
+
+impl EntryHash {
+    /// Hashes `text` after the line `header`, so that a hash of one kind of text cannot pass for
+    /// one of another kind.
+    fn of(header: &str, text: &str) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(header.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(text.as_bytes());
+        Self(ObjectId::from_digest(hasher.finalize()))
+    }
+}
+
+impl fmt::Display for EntryHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for EntryHash {
+    type Err = ObjectIdParseError;
+
+    /// Reads the canonical form only, as [`ObjectId`] does.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        ObjectId::from_str(text).map(Self)
+    }
+}
+
+/// How an entry belongs to the hash chain of the log (ADR-011, STEMMA-41).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chain {
+    /// The entry has version 1 or 2: it was written before the chain and names no hash. Such
+    /// entries can only come before the first entry of the chain.
+    Unchained,
+    /// The entry starts the chain (`previous -`): it is entry 1, or the first entry after the
+    /// entries written before the chain.
+    Start,
+    /// The entry names the hash of the entry before it.
+    After(EntryHash),
+}
+
 /// What remains of an entry that a purge replaced (ADR-014): its time and its actor; the
-/// [`Entry`] keeps its number. The operation and every ID are gone, so it cannot be restored.
+/// [`Entry`] keeps its number. The operation and every ID are gone, so it cannot be restored. A
+/// stub of an entry in the chain keeps the hash of the body it replaced, so that the hash of the
+/// entry, which the next one names, stays the same (ADR-014, STEMMA-41).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stub {
     time: i64,
     actor: Actor,
+    body: Option<EntryHash>,
 }
 
 impl Stub {
@@ -485,6 +584,12 @@ impl Stub {
     /// The actor of the entry that the stub replaced.
     pub fn actor(&self) -> &Actor {
         &self.actor
+    }
+
+    /// The hash of the body of the entry that the stub replaced, or `None` for a stub of an entry
+    /// written before the chain.
+    pub fn body(&self) -> Option<EntryHash> {
+        self.body
     }
 }
 
@@ -593,8 +698,10 @@ impl Purge {
         };
         for range in self.stubs {
             current.stubs.push(range);
+            // The size of an entry in the chain, whose line `previous` is the longest.
             let size = Entry {
                 number: MAX_NUMBER,
+                chain: Chain::After(EntryHash::of(HASH_HEADER, "")),
                 record: Record::Purge(current.clone()),
             }
             .encode()
@@ -626,10 +733,12 @@ pub enum Record {
     Purge(Purge),
 }
 
-/// An entry of the log: a number and a record, which is a change, a stub, or a purge.
+/// An entry of the log: a number, its place in the hash chain, and a record, which is a change,
+/// a stub, or a purge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     number: u64,
+    chain: Chain,
     record: Record,
 }
 
@@ -639,31 +748,51 @@ impl Entry {
     /// # Errors
     ///
     /// Returns [`EntryError::NumberOutOfRange`] if the number is 0 or larger than [`MAX_NUMBER`].
+    #[cfg(test)]
     pub(crate) fn new(number: u64, change: Change) -> Result<Self, EntryError> {
         Self::of(number, Record::Change(change))
     }
 
-    /// Builds an entry of any record.
+    /// Builds an entry of any record, written before the chain (version 1 or 2).
+    ///
+    /// # Errors
+    ///
+    /// See [`linked`](Self::linked).
+    #[cfg(test)]
+    pub(crate) fn of(number: u64, record: Record) -> Result<Self, EntryError> {
+        Self::linked(number, Chain::Unchained, record)
+    }
+
+    /// Builds an entry of any record with its place in the chain.
     ///
     /// # Errors
     ///
     /// Returns [`EntryError::NumberOutOfRange`] if the number is 0 or larger than [`MAX_NUMBER`],
-    /// and [`EntryError::StubNotBefore`] if a purge lists its own number or a later one. A
-    /// [`Purge`] checks its own bounds when it is built, so every entry that is built here reads
-    /// back equal.
-    pub(crate) fn of(number: u64, record: Record) -> Result<Self, EntryError> {
+    /// [`EntryError::StubNotBefore`] if a purge lists its own number or a later one, and
+    /// [`EntryError::StubBody`] for a stub that has the hash of a body outside the chain or none
+    /// in it. A [`Purge`] checks its own bounds when it is built, so every entry that is built here
+    /// reads back equal.
+    pub(crate) fn linked(number: u64, chain: Chain, record: Record) -> Result<Self, EntryError> {
         if !(1..=MAX_NUMBER).contains(&number) {
             return Err(EntryError::NumberOutOfRange(number));
         }
-        if let Record::Purge(purge) = &record {
-            if purge.last_stub() >= number {
+        match &record {
+            Record::Purge(purge) if purge.last_stub() >= number => {
                 return Err(EntryError::StubNotBefore {
                     stub: purge.last_stub(),
                     purge: number,
                 });
             }
+            Record::Stub(stub) if stub.body.is_some() == (chain == Chain::Unchained) => {
+                return Err(EntryError::StubBody(number));
+            }
+            _ => {}
         }
-        Ok(Self { number, record })
+        Ok(Self {
+            number,
+            chain,
+            record,
+        })
     }
 
     /// The number of the entry, which is also the name of its file.
@@ -674,6 +803,94 @@ impl Entry {
     /// What the entry holds.
     pub fn record(&self) -> &Record {
         &self.record
+    }
+
+    /// The place of the entry in the hash chain.
+    pub fn chain(&self) -> Chain {
+        self.chain
+    }
+
+    /// The hash of the entry, which the next entry names, or `None` for an entry written before
+    /// the chain. It covers the number, the time, the actor, the hash of the entry before, and
+    /// the hash of the body: the operation and the pointers of a change, and the count and the
+    /// stubs of a purge. A stub keeps the hash of the body it replaced, so its hash is the hash of
+    /// the entry it replaced (ADR-014).
+    pub fn hash(&self) -> Option<EntryHash> {
+        let previous = match self.chain {
+            Chain::Unchained => return None,
+            Chain::Start => "-".to_owned(),
+            Chain::After(hash) => hash.to_string(),
+        };
+        let body = self.body_hash()?;
+        Some(EntryHash::of(
+            HASH_HEADER,
+            &format!(
+                "number {}\ntime {}\nactor {}\nprevious {previous}\nbody {body}\n",
+                self.number,
+                self.time(),
+                self.actor()
+            ),
+        ))
+    }
+
+    /// The hash of the body of the entry, which its hash covers: of the operation and the pointers
+    /// of a change, or of the count and the stubs of a purge. A stub has the one of the entry it
+    /// replaced. `None` for an entry written before the chain.
+    pub fn body_hash(&self) -> Option<EntryHash> {
+        if self.chain == Chain::Unchained {
+            return None;
+        }
+        match &self.record {
+            Record::Stub(stub) => stub.body,
+            _ => self
+                .body_text()
+                .map(|text| EntryHash::of(BODY_HEADER, &text)),
+        }
+    }
+
+    /// The lines after the header lines of a change or a purge, which the hash of the body covers:
+    /// the operation and the pointers, or the operation, the count, and the stubs. `None` for a
+    /// stub, which has no body left.
+    fn body_text(&self) -> Option<String> {
+        match &self.record {
+            Record::Stub(_) => None,
+            Record::Purge(purge) => {
+                let stubs = if purge.stubs.is_empty() {
+                    "-".to_owned()
+                } else {
+                    ranges_text(&purge.stubs)
+                };
+                Some(format!(
+                    "operation {PURGE}\ncommits {}\nstubs {stubs}\n",
+                    purge.commits
+                ))
+            }
+            Record::Change(change) => {
+                let mut out = format!("operation {}\n", change.operation);
+                if let Some(head) = &change.head {
+                    out.push_str(&format!(
+                        "head {} {}\n",
+                        head_value(head.old.as_ref()),
+                        head_value(head.new.as_ref())
+                    ));
+                }
+                if let Some(moved) = &change.working_copy {
+                    out.push_str(&format!(
+                        "working-copy {} {}\n",
+                        commit_value(moved.old.as_ref()),
+                        commit_value(moved.new.as_ref())
+                    ));
+                }
+                for (name, moved) in &change.branches {
+                    out.push_str(&format!(
+                        "branch {name} {} {}\n",
+                        commit_value(moved.old.as_ref()),
+                        commit_value(moved.new.as_ref())
+                    ));
+                }
+                Some(out)
+            }
+        }
     }
 
     /// What the operation did, or `None` for a stub and a purge.
@@ -709,7 +926,9 @@ impl Entry {
         self.change().map(Change::commits).unwrap_or_default()
     }
 
-    /// The stub that replaces this entry: the same number, time, and actor.
+    /// The stub that replaces this entry: the same number, time, actor, and place in the chain.
+    /// The stub of an entry in the chain keeps the hash of its body, so it has the hash of the
+    /// entry (ADR-014). A stub is its own stub.
     ///
     /// # Errors
     ///
@@ -719,64 +938,45 @@ impl Entry {
         if matches!(self.record, Record::Purge(_)) {
             return Err(EntryError::PurgeNotReplaceable(self.number));
         }
+        let body = self.body_hash();
         Ok(Self {
             number: self.number,
+            chain: self.chain,
             record: Record::Stub(Stub {
                 time: self.time(),
                 actor: self.actor().clone(),
+                body,
             }),
         })
     }
 
     /// Returns the canonical encoding (see the module documentation).
     pub fn encode(&self) -> Vec<u8> {
-        let change = match &self.record {
-            Record::Change(change) => change,
-            Record::Stub(stub) => {
-                return format!(
-                    "{HEADER_2}\nnumber {}\ntime {}\nactor {}\nstub\n",
-                    self.number, stub.time, stub.actor
-                )
-                .into_bytes();
-            }
-            Record::Purge(purge) => {
-                let stubs = if purge.stubs.is_empty() {
-                    "-".to_owned()
-                } else {
-                    ranges_text(&purge.stubs)
-                };
-                return format!(
-                    "{HEADER_2}\nnumber {}\ntime {}\nactor {}\noperation {PURGE}\ncommits {}\n\
-                     stubs {stubs}\n",
-                    self.number, purge.time, purge.actor, purge.commits
-                )
-                .into_bytes();
-            }
+        let envelope = |header: &str| {
+            format!(
+                "{header}\nnumber {}\ntime {}\nactor {}\n",
+                self.number,
+                self.time(),
+                self.actor()
+            )
         };
-        let mut out = format!(
-            "{HEADER}\nnumber {}\ntime {}\nactor {}\noperation {}\n",
-            self.number, change.time, change.actor, change.operation
-        );
-        if let Some(head) = &change.head {
-            out.push_str(&format!(
-                "head {} {}\n",
-                head_value(head.old.as_ref()),
-                head_value(head.new.as_ref())
-            ));
-        }
-        if let Some(moved) = &change.working_copy {
-            out.push_str(&format!(
-                "working-copy {} {}\n",
-                commit_value(moved.old.as_ref()),
-                commit_value(moved.new.as_ref())
-            ));
-        }
-        for (name, moved) in &change.branches {
-            out.push_str(&format!(
-                "branch {name} {} {}\n",
-                commit_value(moved.old.as_ref()),
-                commit_value(moved.new.as_ref())
-            ));
+        let previous = match self.chain {
+            Chain::Unchained => None,
+            Chain::Start => Some("-".to_owned()),
+            Chain::After(hash) => Some(hash.to_string()),
+        };
+        let mut out = match (&previous, &self.record) {
+            (None, Record::Change(_)) => envelope(HEADER),
+            (None, _) => envelope(HEADER_2),
+            (Some(previous), _) => envelope(HEADER_3) + &format!("previous {previous}\n"),
+        };
+        match (&self.record, self.body_text()) {
+            (Record::Stub(stub), _) => match stub.body {
+                Some(body) => out.push_str(&format!("stub {body}\n")),
+                None => out.push_str("stub\n"),
+            },
+            (_, Some(body)) => out.push_str(&body),
+            (_, None) => {}
         }
         out.into_bytes()
     }
@@ -815,9 +1015,10 @@ impl Entry {
 
         // The header and its version.
         let header = line_at(0, EntryMalformed::ExpectedHeader)?;
-        let version_2 = match header.strip_prefix(HEADER_PREFIX) {
-            Some("1") => false,
-            Some("2") => true,
+        let version = match header.strip_prefix(HEADER_PREFIX) {
+            Some("1") => 1,
+            Some("2") => 2,
+            Some("3") => 3,
             Some(version) if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit()) => {
                 return Err(EntryParseError::UnsupportedVersion(version.to_owned()));
             }
@@ -838,18 +1039,40 @@ impl Entry {
         let actor = value(3, "actor ", EntryMalformed::ExpectedActor)?;
         let actor = Actor::from_str(actor)
             .map_err(|source| EntryParseError::InvalidActor { line: 4, source })?;
-        if version_2 {
-            return parse_version_2(&lines, number, time, actor);
+        // An entry in the chain names the entry before it; its body starts one line later.
+        let (chain, body) = if version == 3 {
+            let previous = value(4, "previous ", EntryMalformed::ExpectedPrevious)?;
+            let chain = if previous == "-" {
+                Chain::Start
+            } else {
+                Chain::After(
+                    EntryHash::from_str(previous)
+                        .map_err(|source| EntryParseError::InvalidHash { line: 5, source })?,
+                )
+            };
+            (chain, 5)
+        } else {
+            (Chain::Unchained, 4)
+        };
+        let is_stub = lines
+            .get(body)
+            .is_some_and(|line| *line == "stub" || line.starts_with("stub "));
+        let is_purge = lines.get(body).copied() == Some(&format!("operation {PURGE}"));
+        if version == 2 || (version == 3 && (is_stub || is_purge)) {
+            return parse_stub_or_purge(&lines, body, number, chain, time, actor);
         }
-        let operation = value(4, "operation ", EntryMalformed::ExpectedOperation)?;
-        let operation = OperationName::new(operation)
-            .map_err(|source| EntryParseError::InvalidOperation { line: 5, source })?;
+        let operation = value(body, "operation ", EntryMalformed::ExpectedOperation)?;
+        let operation =
+            OperationName::new(operation).map_err(|source| EntryParseError::InvalidOperation {
+                line: body + 1,
+                source,
+            })?;
 
         // The pointers, in the fixed order: head, working-copy, branches.
         let mut head = None;
         let mut working_copy = None;
         let mut branches: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
-        for (index, line) in lines.iter().enumerate().skip(5) {
+        for (index, line) in lines.iter().enumerate().skip(body + 1) {
             let number = index + 1;
             let tokens: Vec<&str> = line.split(' ').collect();
             let after_branches = !branches.is_empty();
@@ -917,42 +1140,62 @@ impl Entry {
         // report the line; this builds the value through the constructor, so that a reader cannot
         // return a change that the constructor would reject.
         Change::new(time, actor, operation, head, working_copy, branches)
-            .and_then(|change| Entry::new(number, change))
+            .and_then(|change| Entry::linked(number, chain, Record::Change(change)))
             .map_err(EntryParseError::Entry)
     }
 }
 
-/// Reads the lines after the actor of a version-2 entry: `stub` alone, or `operation purge`,
+/// Reads the body of a stub or a `purge` entry, which starts at the line with the index `body`:
+/// `stub` alone (version 2) or `stub <hash of the body>` (version 3), or `operation purge`,
 /// `commits <n>`, and `stubs <ranges>`.
-fn parse_version_2(
+fn parse_stub_or_purge(
     lines: &[&str],
+    body: usize,
     number: u64,
+    chain: Chain,
     time: i64,
     actor: Actor,
 ) -> Result<Entry, EntryParseError> {
     let malformed = |line, reason| EntryParseError::Malformed { line, reason };
-    let record = match lines.get(4).copied() {
-        Some("stub") => {
-            if lines.len() > 5 {
-                return Err(malformed(6, EntryMalformed::TrailingLine));
+    let first = lines.get(body).copied();
+    let record = match first {
+        Some(line) if line == "stub" || line.starts_with("stub ") => {
+            let hash = match (line.strip_prefix("stub "), chain) {
+                (None, Chain::Unchained) => None,
+                (Some(hash), Chain::Start | Chain::After(_)) => {
+                    Some(EntryHash::from_str(hash).map_err(|source| {
+                        EntryParseError::InvalidHash {
+                            line: body + 1,
+                            source,
+                        }
+                    })?)
+                }
+                _ => return Err(malformed(body + 1, EntryMalformed::ExpectedStubOrPurge)),
+            };
+            if lines.len() > body + 1 {
+                return Err(malformed(body + 2, EntryMalformed::TrailingLine));
             }
-            Record::Stub(Stub { time, actor })
+            Record::Stub(Stub {
+                time,
+                actor,
+                body: hash,
+            })
         }
         Some(line) if line == format!("operation {PURGE}") => {
             let commits = lines
-                .get(5)
+                .get(body + 1)
                 .and_then(|line| line.strip_prefix("commits "))
-                .ok_or_else(|| malformed(6, EntryMalformed::ExpectedCommits))?;
+                .ok_or_else(|| malformed(body + 2, EntryMalformed::ExpectedCommits))?;
             let commits = parse_count(commits)
-                .ok_or_else(|| malformed(6, EntryMalformed::ExpectedCommits))?;
+                .ok_or_else(|| malformed(body + 2, EntryMalformed::ExpectedCommits))?;
             let stubs = lines
-                .get(6)
+                .get(body + 2)
                 .and_then(|line| line.strip_prefix("stubs "))
-                .ok_or_else(|| malformed(7, EntryMalformed::ExpectedStubs))?;
+                .ok_or_else(|| malformed(body + 3, EntryMalformed::ExpectedStubs))?;
             let stubs =
-                parse_ranges(stubs).ok_or_else(|| malformed(7, EntryMalformed::BadStubs))?;
-            if lines.len() > 7 {
-                return Err(malformed(8, EntryMalformed::TrailingLine));
+                parse_ranges(stubs).ok_or_else(|| malformed(body + 3, EntryMalformed::BadStubs))?;
+            if lines.len() > body + 3 {
+                return Err(malformed(body + 4, EntryMalformed::TrailingLine));
             }
             Record::Purge(Purge {
                 time,
@@ -961,9 +1204,9 @@ fn parse_version_2(
                 stubs,
             })
         }
-        _ => return Err(malformed(5, EntryMalformed::ExpectedStubOrPurge)),
+        _ => return Err(malformed(body + 1, EntryMalformed::ExpectedStubOrPurge)),
     };
-    Entry::of(number, record).map_err(EntryParseError::Entry)
+    Entry::linked(number, chain, record).map_err(EntryParseError::Entry)
 }
 
 /// Writes ranges as the log and the command line do: `4-5 7`.
@@ -1134,13 +1377,15 @@ pub enum EntryMalformed {
     BadStubs,
     /// A stub or a `purge` entry has a line after its last one.
     TrailingLine,
+    /// The fifth line of a version-3 entry is not `previous <hash>` or `previous -`.
+    ExpectedPrevious,
 }
 
 impl fmt::Display for EntryMalformed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::CutOff => "the last line has no terminating newline",
-            Self::ExpectedHeader => "expected the header `stemma-oplog 1` or `2` first",
+            Self::ExpectedHeader => "expected the header `stemma-oplog 1`, `2`, or `3` first",
             Self::ExpectedNumber => "expected the header `number <n>`",
             Self::ExpectedTime => "expected the header `time <seconds>`",
             Self::ExpectedActor => "expected the header `actor <actor>`",
@@ -1153,13 +1398,16 @@ impl fmt::Display for EntryMalformed {
             }
             Self::UnknownHeadValue => "expected `-`, `branch:<name>`, or `commit:<id>`",
             Self::TooLong => "the file is too large to be an entry",
-            Self::ExpectedStubOrPurge => "expected `stub` or `operation purge`",
+            Self::ExpectedStubOrPurge => {
+                "expected `stub` (version 2), `stub <hash>` (version 3), or `operation purge`"
+            }
             Self::ExpectedCommits => "expected `commits <n>`",
             Self::ExpectedStubs => "expected `stubs <ranges>`",
             Self::BadStubs => {
                 "expected `-` or ranges such as `4-5 7`, ascending, that neither overlap nor touch"
             }
             Self::TrailingLine => "the entry has a line after its last one",
+            Self::ExpectedPrevious => "expected the header `previous <hash>` or `previous -`",
         })
     }
 }
@@ -1180,7 +1428,7 @@ pub enum EntryParseError {
         /// What is wrong with it.
         reason: EntryMalformed,
     },
-    /// The header names another version than 1 or 2, in decimal digits.
+    /// The header names another version than 1, 2, or 3, in decimal digits.
     UnsupportedVersion(String),
     /// The number is not canonical.
     InvalidNumber {
@@ -1215,6 +1463,13 @@ pub enum EntryParseError {
         /// Number of the line.
         line: usize,
         /// Why the ID is invalid.
+        source: ObjectIdParseError,
+    },
+    /// A hash of the chain is not in canonical form.
+    InvalidHash {
+        /// Number of the line.
+        line: usize,
+        /// Why the hash is invalid.
         source: ObjectIdParseError,
     },
     /// A branch name is rejected.
@@ -1252,7 +1507,7 @@ impl fmt::Display for EntryParseError {
             Self::Malformed { line, reason } => write!(f, "line {line}: {reason}"),
             Self::UnsupportedVersion(version) => write!(
                 f,
-                "the entry has version {version}, but this code reads versions 1 and 2"
+                "the entry has version {version}, but this code reads versions 1 to 3"
             ),
             Self::InvalidNumber { line, reason } => write!(f, "line {line}: {reason}"),
             Self::InvalidTime { line, reason } => write!(f, "line {line}: {reason}"),
@@ -1260,6 +1515,9 @@ impl fmt::Display for EntryParseError {
             Self::InvalidOperation { line, source } => write!(f, "line {line}: {source}"),
             Self::InvalidObjectId { line, source } => {
                 write!(f, "line {line}: invalid commit ID: {source}")
+            }
+            Self::InvalidHash { line, source } => {
+                write!(f, "line {line}: invalid hash: {source}")
             }
             Self::InvalidBranchName { line, source } => write!(f, "line {line}: {source}"),
             Self::Unchanged { line } => {
@@ -1284,7 +1542,9 @@ impl Error for EntryParseError {
             Self::InvalidTime { reason, .. } => reason.source(),
             Self::InvalidActor { source, .. } => source.source(),
             Self::InvalidOperation { source, .. } => source.source(),
-            Self::InvalidObjectId { source, .. } => source.source(),
+            Self::InvalidObjectId { source, .. } | Self::InvalidHash { source, .. } => {
+                source.source()
+            }
             Self::InvalidBranchName { source, .. } => source.source(),
             _ => None,
         }
@@ -1341,6 +1601,34 @@ pub enum OpLogError {
     BadTip {
         /// The file.
         path: PathBuf,
+    },
+    /// The tip file names the hash of an entry, but the entry with its number has another hash:
+    /// the entry was replaced, or the tip file was.
+    TipMismatch {
+        /// The tip file.
+        path: PathBuf,
+        /// The number that the tip file names.
+        number: u64,
+    },
+    /// An entry does not name the hash of the entry before it, or starts the chain again: an entry
+    /// at this place or before it was changed, removed, or inserted (ADR-011, STEMMA-41).
+    ChainBroken {
+        /// The number of the entry whose link does not hold.
+        number: u64,
+    },
+    /// An entry written before the chain (version 1 or 2) follows an entry in the chain: it was
+    /// written by a program that does not know the chain, or put in its place.
+    Unchained {
+        /// The number of the entry.
+        number: u64,
+    },
+    /// The writer cannot read the entry before the one it writes, so it cannot name its hash.
+    /// Nothing was written.
+    Predecessor {
+        /// The number of the entry before.
+        number: u64,
+        /// Why it cannot be read.
+        source: Box<OpLogError>,
     },
     /// The directory of the log holds something that is not an entry.
     UnexpectedFile {
@@ -1434,7 +1722,7 @@ impl OpLogError {
 
     /// The error of a helper of the object store. They fail only with a failure of the file system;
     /// any other error is kept as text in an I/O error, so that no cause is dropped.
-    fn from_store(error: StoreError) -> Self {
+    pub(crate) fn from_store(error: StoreError) -> Self {
         match error {
             StoreError::Io {
                 operation,
@@ -1461,7 +1749,9 @@ impl OpLogError {
             Self::Io { source, .. }
             | Self::NotFlushed { source, .. }
             | Self::PurgeNotFlushed { source, .. } => Some(source),
-            Self::PurgeIncomplete { source, .. } => source.io_error(),
+            Self::PurgeIncomplete { source, .. } | Self::Predecessor { source, .. } => {
+                source.io_error()
+            }
             _ => None,
         }
     }
@@ -1511,8 +1801,8 @@ impl fmt::Display for OpLogError {
             Self::TipAhead { path, tip, last } => write!(
                 f,
                 "the operation log ends at entry {last}, but the tip file names entry {tip}: \
-                 the last entries are lost; restore them, or, once the loss is understood, set \
-                 the number in `{}` back to {last}",
+                 the last entries are lost; restore them, or, once the loss is understood, \
+                 remove `{}`, which the next entry writes again",
                 path.display().to_string().escape_debug()
             ),
             Self::BadTip { path } => write!(
@@ -1520,6 +1810,29 @@ impl fmt::Display for OpLogError {
                 "the tip file `{}` of the operation log is not in canonical form; write the \
                  number of the last entry into it, or remove it",
                 path.display().to_string().escape_debug()
+            ),
+            Self::TipMismatch { path, number } => write!(
+                f,
+                "the tip file `{}` names another hash for entry {number} than the entry has: the \
+                 entry or the tip file was replaced; restore it from a backup of `.stemma`, or, \
+                 once the change is understood, remove the tip file",
+                path.display().to_string().escape_debug()
+            ),
+            Self::ChainBroken { number } => write!(
+                f,
+                "entry {number} does not name the hash of the entry before it: an entry up to \
+                 {number} was changed, removed, or inserted; restore the log from a backup of \
+                 `.stemma`, as no command repairs the log yet"
+            ),
+            Self::Unchained { number } => write!(
+                f,
+                "entry {number} is written in the form from before the hash chain, but follows an \
+                 entry in the chain; it was written by an older program or put in its place"
+            ),
+            Self::Predecessor { number, source } => write!(
+                f,
+                "the new entry cannot name the hash of entry {number}, and nothing was written: \
+                 {source}"
             ),
             Self::UnexpectedFile { path } => write!(
                 f,
@@ -1614,7 +1927,9 @@ impl Error for OpLogError {
             | Self::PurgeNotFlushed { source, .. } => source.source(),
             Self::Corrupt { source, .. } => source.source(),
             Self::Entry(error) => error.source(),
-            Self::PurgeIncomplete { source, .. } => source.source(),
+            Self::PurgeIncomplete { source, .. } | Self::Predecessor { source, .. } => {
+                source.source()
+            }
             _ => None,
         }
     }
@@ -1625,8 +1940,19 @@ impl Error for OpLogError {
 /// until the next entry writes it.
 const TIP_FILE: &str = "oplog-tip";
 
-/// The first line of the tip file.
+/// The first line of the tip file that names only the number of the last entry, as it was
+/// written before the hash chain. It is still read.
 const TIP_HEADER: &str = "stemma-oplog-tip 1\n";
+
+/// The first line of the tip file that names the number and the hash of the last entry.
+const TIP_HEADER_2: &str = "stemma-oplog-tip 2\n";
+
+/// What the tip file names: the number of the last entry and, from version 2 on, its hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Tip {
+    number: u64,
+    hash: Option<EntryHash>,
+}
 
 /// The operation log of a repository, as files below its metadata directory.
 #[derive(Debug, Clone)]
@@ -1695,6 +2021,11 @@ impl FsOpLog {
     /// entry that the directory lacks, [`OpLogError::BadTip`] if the tip file is not in canonical
     /// form, and [`OpLogError::Io`] if the directory or the tip file cannot be read.
     pub fn numbers(&self) -> Result<Vec<u64>, OpLogError> {
+        self.listing().map(|(numbers, _)| numbers)
+    }
+
+    /// The numbers, as [`numbers`](Self::numbers) lists them, and the tip that was read before.
+    fn listing(&self) -> Result<(Vec<u64>, Option<Tip>), OpLogError> {
         let tip = self.read_tip()?;
         let mut numbers = self.scan()?;
         numbers.sort_unstable();
@@ -1706,50 +2037,68 @@ impl FsOpLog {
             }
         }
         self.check_tip(tip, numbers.last().copied().unwrap_or(0))?;
-        Ok(numbers)
+        Ok((numbers, tip))
     }
 
     fn tip_path(&self) -> PathBuf {
         self.root.join(TIP_FILE)
     }
 
-    /// Reads the number of the last entry from the tip file. A missing file is `None`: a log
-    /// without a tip yet (a repository made before the tip file, or a log that was never written).
+    /// Reads the number of the last entry, and its hash from version 2 on, from the tip file. A
+    /// missing file is `None`: a log without a tip yet (a repository made before the tip file, or a
+    /// log that was never written).
     ///
     /// # Errors
     ///
     /// Returns [`OpLogError::BadTip`] if the file is not in canonical form, and
     /// [`OpLogError::Io`] if it cannot be read.
-    fn read_tip(&self) -> Result<Option<u64>, OpLogError> {
+    fn read_tip(&self) -> Result<Option<Tip>, OpLogError> {
         let path = self.tip_path();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(OpLogError::io("read the tip file", &path)(error)),
         };
-        let number = std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|text| text.strip_prefix(TIP_HEADER))
-            .and_then(|rest| rest.strip_prefix("number "))
-            .and_then(|rest| rest.strip_suffix('\n'))
-            .filter(|digits| {
-                !digits.is_empty()
-                    && digits.bytes().all(|b| b.is_ascii_digit())
-                    && !(digits.len() > 1 && digits.starts_with('0'))
-            })
-            .and_then(|digits| digits.parse::<u64>().ok())
-            .filter(|number| *number <= MAX_NUMBER);
-        number.map(Some).ok_or(OpLogError::BadTip { path })
+        let parse = |text: &str| -> Option<Tip> {
+            let (rest, chained) = match text.strip_prefix(TIP_HEADER) {
+                Some(rest) => (rest, false),
+                None => (text.strip_prefix(TIP_HEADER_2)?, true),
+            };
+            let (digits, rest) = rest.strip_prefix("number ")?.split_once('\n')?;
+            let canonical = !digits.is_empty()
+                && digits.bytes().all(|b| b.is_ascii_digit())
+                && !(digits.len() > 1 && digits.starts_with('0'));
+            let number = digits
+                .parse::<u64>()
+                .ok()
+                .filter(|number| canonical && *number <= MAX_NUMBER)?;
+            let hash = if chained {
+                let hash = rest.strip_prefix("hash ")?.strip_suffix('\n')?;
+                Some(EntryHash::from_str(hash).ok()?)
+            } else if rest.is_empty() {
+                None
+            } else {
+                return None;
+            };
+            Some(Tip { number, hash })
+        };
+        let tip = std::str::from_utf8(&bytes).ok().and_then(parse);
+        tip.map(Some).ok_or(OpLogError::BadTip { path })
     }
 
-    /// Replaces the tip file with the number: a temporary file that is flushed, then a rename. The
-    /// directory is flushed on a best effort basis, because a tip that is not on disk after a
-    /// crash is one behind or missing, which the writer accepts; the next entry writes it again.
-    fn write_tip(&self, number: u64) -> Result<(), OpLogError> {
+    /// Replaces the tip file with the number and the hash of the entry: a temporary file that is
+    /// flushed, then a rename. An entry written before the chain gets a tip of version 1, which
+    /// names no hash. The directory is flushed on a best effort basis, because a tip that is not on
+    /// disk after a crash is one behind or missing, which the writer accepts; the next entry writes
+    /// it again.
+    fn write_tip(&self, entry: &Entry) -> Result<(), OpLogError> {
         let temp_dir = self.root.join("tmp");
         let (mut file, mut temp) =
             create_temp(&temp_dir, &mut unique_temp_name).map_err(OpLogError::from_store)?;
-        let content = format!("{TIP_HEADER}number {number}\n");
+        let content = match entry.hash() {
+            Some(hash) => format!("{TIP_HEADER_2}number {}\nhash {hash}\n", entry.number),
+            None => format!("{TIP_HEADER}number {}\n", entry.number),
+        };
         file.write_all(content.as_bytes())
             .map_err(OpLogError::io("write the temporary file", &temp.path))?;
         file.sync_all()
@@ -1763,6 +2112,18 @@ impl FsOpLog {
         Ok(())
     }
 
+    /// Fails with [`OpLogError::TipMismatch`] if the tip names a hash and `entry`, the entry with
+    /// its number, has another one. A tip of version 1 names no hash and is not compared.
+    fn check_tip_hash(&self, tip: Tip, entry: &Entry) -> Result<(), OpLogError> {
+        match tip.hash {
+            Some(hash) if entry.hash() != Some(hash) => Err(OpLogError::TipMismatch {
+                path: self.tip_path(),
+                number: tip.number,
+            }),
+            _ => Ok(()),
+        }
+    }
+
     /// Fails with [`OpLogError::TipAhead`] if the tip names an entry beyond the largest number in
     /// the directory. A tip one behind is no fault: a stop between the entry and the tip.
     ///
@@ -1770,11 +2131,11 @@ impl FsOpLog {
     /// it writes tip *n*, so a tip that was read first is covered by the listing that follows,
     /// unless the entry is really lost. In the other order a reader could see the listing without
     /// entry *n* and the tip with it, and report a loss that did not happen.
-    fn check_tip(&self, tip: Option<u64>, last: u64) -> Result<(), OpLogError> {
+    fn check_tip(&self, tip: Option<Tip>, last: u64) -> Result<(), OpLogError> {
         match tip {
-            Some(tip) if tip > last => Err(OpLogError::TipAhead {
+            Some(tip) if tip.number > last => Err(OpLogError::TipAhead {
                 path: self.tip_path(),
-                tip,
+                tip: tip.number,
                 last,
             }),
             _ => Ok(()),
@@ -1831,12 +2192,14 @@ impl FsOpLog {
         Ok(entry)
     }
 
-    /// Reads every entry, in the order of the numbers.
+    /// Reads every entry, in the order of the numbers, and checks the whole hash chain (see
+    /// [`check_chain`]) and the hash that the tip file names.
     ///
     /// # Errors
     ///
-    /// See [`numbers`](Self::numbers) and [`read`](Self::read), and [`OpLogError::UnlistedStub`]
-    /// for a stub that no `purge` entry lists.
+    /// See [`numbers`](Self::numbers) and [`read`](Self::read), [`OpLogError::UnlistedStub`] for
+    /// a stub that no `purge` entry lists, what [`check_chain`] returns, and
+    /// [`OpLogError::TipMismatch`] if the tip names another hash than its entry has.
     pub fn entries(&self) -> Result<Vec<Entry>, OpLogError> {
         self.tail(usize::MAX)
     }
@@ -1844,6 +2207,11 @@ impl FsOpLog {
     /// Reads the last `count` entries, in the order of the numbers, and checks their stubs (see
     /// [`check_stubs`]). The entry of a purge comes after the stubs that it lists, so a window at
     /// the end of the log holds it.
+    ///
+    /// It checks the hash chain of the window and the link of its first entry to the one before
+    /// (see [`check_chain`]), which it reads too, unless that one cannot be read, and the hash that
+    /// the tip file names if the tip is in the window or just before it. A change before the
+    /// window is found only by reading the whole log ([`entries`](Self::entries)).
     ///
     /// A reader takes no lock, and a purge writes its entry first and the stubs after it. A reader
     /// that listed the numbers before the purge entry and read an entry after it became a stub
@@ -1858,23 +2226,40 @@ impl FsOpLog {
     ///
     /// See [`entries`](Self::entries).
     pub fn tail(&self, count: usize) -> Result<Vec<Entry>, OpLogError> {
-        let read = || -> Result<Vec<Entry>, OpLogError> {
-            let numbers = self.numbers()?;
-            numbers[numbers.len().saturating_sub(count)..]
+        // Reads the window and the entry before it, and returns them with the number of entries
+        // in front of the window: 1 or 0.
+        let read = || -> Result<(Vec<Entry>, usize), OpLogError> {
+            let (numbers, tip) = self.listing()?;
+            let window = numbers.len().saturating_sub(count);
+            let mut entries = numbers[window..]
                 .iter()
                 .map(|number| self.read(*number))
-                .collect()
-        };
-        let entries = read()?;
-        match check_stubs(&entries) {
-            Ok(()) => Ok(entries),
-            Err(OpLogError::UnlistedStub { .. }) => {
-                let entries = read()?;
-                check_stubs(&entries)?;
-                Ok(entries)
+                .collect::<Result<Vec<_>, _>>()?;
+            // The entry before the window is read for the link only: if it cannot be read, the
+            // window is shown all the same, as a limit spares the entries it does not show.
+            let before = window
+                .checked_sub(1)
+                .and_then(|index| self.read(numbers[index]).ok());
+            let from = usize::from(before.is_some());
+            if let Some(before) = before {
+                entries.insert(0, before);
             }
-            Err(other) => Err(other),
+            check_chain(&entries)?;
+            // A stub keeps the hash of its entry, so the tip holds while a purge runs.
+            if let Some(tip) = tip {
+                if let Some(entry) = entries.iter().find(|entry| entry.number == tip.number) {
+                    self.check_tip_hash(tip, entry)?;
+                }
+            }
+            Ok((entries, from))
+        };
+        let (mut entries, before) = read()?;
+        if let Err(OpLogError::UnlistedStub { .. }) = check_stubs(&entries) {
+            (entries, _) = read()?;
+            check_stubs(&entries)?;
         }
+        entries.drain(..before);
+        Ok(entries)
     }
 
     /// Writes a new entry for the change under the next free number, flushes it, and returns it.
@@ -2036,6 +2421,17 @@ impl FsOpLog {
         let last = self.scan()?.into_iter().max().unwrap_or(0);
         // A lost last entry must not hand its number to another move.
         self.check_tip(tip, last)?;
+        // A replaced last entry must not be named by the next one, which would take it into the
+        // chain. A tip one behind is compared with the entry it names.
+        if let Some(tip) = tip.filter(|tip| tip.number >= 1 && tip.number + 1 >= last) {
+            let entry = self
+                .read(tip.number)
+                .map_err(|source| OpLogError::Predecessor {
+                    number: tip.number,
+                    source: Box::new(source),
+                })?;
+            self.check_tip_hash(tip, &entry)?;
+        }
         let result = self.publish(
             record,
             last + 1,
@@ -2050,9 +2446,28 @@ impl FsOpLog {
         // Only a flushed entry advances the tip. A failure to write it is no error of the move: the
         // entry is in place, and the tip is one behind, which the next writer accepts.
         if let Ok(entry) = &result {
-            let _ = self.write_tip(entry.number);
+            let _ = self.write_tip(entry);
         }
         result
+    }
+
+    /// The place in the chain of a new entry with the number: the start for entry 1 and after an
+    /// entry written before the chain, and otherwise after the hash of the entry before it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpLogError::Predecessor`] if the entry before cannot be read.
+    fn link_to(&self, number: u64) -> Result<Chain, OpLogError> {
+        if number <= 1 {
+            return Ok(Chain::Start);
+        }
+        let before = self
+            .read(number - 1)
+            .map_err(|source| OpLogError::Predecessor {
+                number: number - 1,
+                source: Box::new(source),
+            })?;
+        Ok(before.hash().map_or(Chain::Start, Chain::After))
     }
 
     /// The loop of [`append`](Self::append), with the steps that a test has to be able to change:
@@ -2072,7 +2487,12 @@ impl FsOpLog {
         let temp_dir = self.root.join("tmp");
         let mut number = start;
         for _ in 0..ATTEMPTS {
-            let entry = match Entry::of(number, record.clone()) {
+            if number > MAX_NUMBER {
+                return Err(OpLogError::Full);
+            }
+            // The entry names the hash of the one before it, which is new after a lost race.
+            let chain = self.link_to(number)?;
+            let entry = match Entry::linked(number, chain, record.clone()) {
                 Ok(entry) => entry,
                 Err(EntryError::NumberOutOfRange(_)) => return Err(OpLogError::Full),
                 Err(other) => return Err(OpLogError::Entry(other)),
@@ -2152,6 +2572,57 @@ pub fn check_stubs(entries: &[Entry]) -> Result<(), OpLogError> {
         }),
         None => Ok(()),
     }
+}
+
+/// Checks the hash chain of `entries`, which must ascend without a gap (ADR-011, STEMMA-41).
+///
+/// Each entry is linked to the one before it in `entries`: an entry in the chain names its hash,
+/// or starts the chain if the one before was written before the chain. Entry 1 starts the chain
+/// or was written before it. The first entry of `entries` is not linked to anything else, so a
+/// caller that reads a window passes the entry before it as well. A stub has the hash of the
+/// entry it replaced, so a purge does not break the chain; that a `purge` entry lists the stub
+/// is checked by [`check_stubs`].
+///
+/// The chain shows that the entries agree with one another, not who wrote them: whoever can
+/// write `.stemma` can compute every later hash and the tip again. The entries before the
+/// first entry of the chain are not covered.
+///
+/// # Errors
+///
+/// Returns [`OpLogError::ChainBroken`] for the first entry that does not name the hash of the
+/// one before it or starts the chain again, and [`OpLogError::Unchained`] for an entry written
+/// before the chain that follows an entry in the chain.
+pub fn check_chain(entries: &[Entry]) -> Result<(), OpLogError> {
+    debug_assert!(
+        entries
+            .windows(2)
+            .all(|pair| pair[0].number + 1 == pair[1].number),
+        "the entries must ascend without a gap"
+    );
+    if let Some(first) = entries.first() {
+        if first.number == 1 && matches!(first.chain, Chain::After(_)) {
+            return Err(OpLogError::ChainBroken { number: 1 });
+        }
+    }
+    for pair in entries.windows(2) {
+        let (before, entry) = (&pair[0], &pair[1]);
+        let holds = match (entry.chain, before.hash()) {
+            (Chain::Unchained, Some(_)) => {
+                return Err(OpLogError::Unchained {
+                    number: entry.number,
+                })
+            }
+            (Chain::Unchained, None) | (Chain::Start, None) => true,
+            (Chain::Start, Some(_)) | (Chain::After(_), None) => false,
+            (Chain::After(hash), Some(expected)) => hash == expected,
+        };
+        if !holds {
+            return Err(OpLogError::ChainBroken {
+                number: entry.number,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The numbers of the changes that a `purge` entry lists: a purge stopped before it replaced them
@@ -2941,9 +3412,9 @@ mod tests {
     }
 
     #[test]
-    fn a_version_other_than_1_and_2_is_unsupported_and_not_malformed() {
+    fn a_version_other_than_1_to_3_is_unsupported_and_not_malformed() {
         let text = golden();
-        for version in ["0", "3", "10", "99999999999999999999"] {
+        for version in ["0", "4", "10", "99999999999999999999"] {
             assert_eq!(
                 parse_error(with(
                     &text,
@@ -2954,9 +3425,9 @@ mod tests {
                 "{version}"
             );
         }
-        let message = parse_error(with(&text, "stemma-oplog 1", "stemma-oplog 3")).to_string();
+        let message = parse_error(with(&text, "stemma-oplog 1", "stemma-oplog 4")).to_string();
         assert!(
-            message.contains("version 3") && message.contains("versions 1 and 2"),
+            message.contains("version 4") && message.contains("versions 1 to 3"),
             "{message}"
         );
     }
@@ -3331,6 +3802,20 @@ mod tests {
         log
     }
 
+    /// The number that the tip file names.
+    fn tip_number(log: &FsOpLog) -> Option<u64> {
+        log.read_tip().unwrap().map(|tip| tip.number)
+    }
+
+    /// Sets the tip by hand, in version 1, which names no hash.
+    fn set_tip(dir: &TempDir, number: u64) {
+        fs::write(
+            dir.path().join("oplog-tip"),
+            format!("stemma-oplog-tip 1\nnumber {number}\n"),
+        )
+        .unwrap();
+    }
+
     fn entry_file(dir: &TempDir, number: u64) -> PathBuf {
         dir.path().join("oplog").join(format!("{number:012}"))
     }
@@ -3341,14 +3826,17 @@ mod tests {
         let log = log_in(&dir);
         assert!(!dir.path().join("oplog-tip").exists());
 
-        log.append(&change("main", None, A)).unwrap();
+        let first = log.append(&change("main", None, A)).unwrap();
         assert_eq!(
-            fs::read(dir.path().join("oplog-tip")).unwrap(),
-            b"stemma-oplog-tip 1\nnumber 1\n"
+            fs::read_to_string(dir.path().join("oplog-tip")).unwrap(),
+            format!(
+                "stemma-oplog-tip 2\nnumber 1\nhash {}\n",
+                first.hash().unwrap()
+            )
         );
         log.append(&change("main", Some(A), B)).unwrap();
 
-        assert_eq!(log.read_tip().unwrap(), Some(2));
+        assert_eq!(tip_number(&log), Some(2));
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
     }
 
@@ -3378,7 +3866,7 @@ mod tests {
             }
         ));
         assert_eq!(files(&dir.path().join("oplog")).len(), 3);
-        assert_eq!(log.read_tip().unwrap(), Some(4));
+        assert_eq!(tip_number(&log), Some(4));
     }
 
     #[test]
@@ -3414,7 +3902,7 @@ mod tests {
             // The writer does not refuse a gap: that would stop the move that repairs the log.
             let appended = log.append(&change("main", Some(B), A)).unwrap();
             assert_eq!(appended.number(), 5, "{lost}");
-            assert_eq!(log.read_tip().unwrap(), Some(5), "{lost}");
+            assert_eq!(tip_number(&log), Some(5), "{lost}");
         }
     }
 
@@ -3423,13 +3911,13 @@ mod tests {
         let dir = TempDir::new();
         let log = four_entries(&dir);
         // The stop: entry 4 is in place, the tip still names 3.
-        log.write_tip(3).unwrap();
+        set_tip(&dir, 3);
 
         assert_eq!(log.numbers().unwrap(), [1, 2, 3, 4]);
         let appended = log.append(&change("main", Some(B), A)).unwrap();
 
         assert_eq!(appended.number(), 5);
-        assert_eq!(log.read_tip().unwrap(), Some(5));
+        assert_eq!(tip_number(&log), Some(5));
     }
 
     #[test]
@@ -3441,7 +3929,7 @@ mod tests {
         assert_eq!(log.numbers().unwrap(), [1, 2, 3, 4]);
         log.append(&change("main", Some(B), A)).unwrap();
 
-        assert_eq!(log.read_tip().unwrap(), Some(5));
+        assert_eq!(tip_number(&log), Some(5));
     }
 
     #[test]
@@ -3473,9 +3961,9 @@ mod tests {
     fn the_largest_number_is_a_valid_tip() {
         let dir = TempDir::new();
         let log = four_entries(&dir);
-        log.write_tip(MAX_NUMBER).unwrap();
+        set_tip(&dir, MAX_NUMBER);
 
-        assert_eq!(log.read_tip().unwrap(), Some(MAX_NUMBER));
+        assert_eq!(tip_number(&log), Some(MAX_NUMBER));
         // It is a tip far beyond the entries, so the log reports the loss.
         assert!(matches!(log.numbers(), Err(OpLogError::TipAhead { .. })));
     }
@@ -3487,7 +3975,7 @@ mod tests {
         fs::remove_file(entry_file(&dir, 4)).unwrap();
         assert!(log.append(&change("main", Some(B), A)).is_err());
 
-        log.write_tip(3).unwrap();
+        set_tip(&dir, 3);
         let appended = log.append(&change("main", Some(B), A)).unwrap();
 
         assert_eq!(appended.number(), 4);
@@ -3523,7 +4011,7 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("oplog-tip"), "{message}");
-        assert!(message.contains("back to 3"), "{message}");
+        assert!(message.contains("remove"), "{message}");
     }
 
     #[test]
@@ -3561,11 +4049,11 @@ mod tests {
 
         assert_eq!(result.unwrap().number(), 5);
         // The tip is one behind, which the reader and the next writer accept.
-        assert_eq!(log.read_tip().unwrap(), Some(4));
+        assert_eq!(tip_number(&log), Some(4));
         assert_eq!(log.numbers().unwrap(), [1, 2, 3, 4, 5]);
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
         assert_eq!(log.append(&change("main", Some(A), B)).unwrap().number(), 6);
-        assert_eq!(log.read_tip().unwrap(), Some(6));
+        assert_eq!(tip_number(&log), Some(6));
     }
 
     #[test]
@@ -3857,6 +4345,12 @@ mod tests {
             log.read(5).unwrap().change().unwrap().branches()[0].0,
             branch("late")
         );
+        // The second try named the hash of the entry that the last of the others wrote.
+        assert_eq!(
+            log.read(5).unwrap().chain(),
+            Chain::After(log.read(4).unwrap().hash().unwrap())
+        );
+        assert!(log.entries().is_ok());
         // The three entries of the others are whole, and nothing is left in `tmp/`.
         for n in 2..=4 {
             assert_eq!(
@@ -3871,7 +4365,12 @@ mod tests {
     fn a_writer_that_is_overtaken_every_time_gives_up_as_contended_and_leaves_nothing() {
         let dir = TempDir::new();
         let log = log_in(&dir);
-        let always_taken = |_: &Path, _: &Path| Err(io::ErrorKind::AlreadyExists.into());
+        // Another writer takes each number first: the name exists when this writer links it. The
+        // entries of the other writer are those of this one, so the chain holds.
+        let always_taken = |from: &Path, to: &Path| {
+            fs::hard_link(from, to)?;
+            Err(io::ErrorKind::AlreadyExists.into())
+        };
         let error = log
             .publish(
                 &Record::Change(change("main", None, A)),
@@ -3887,13 +4386,17 @@ mod tests {
         );
         assert!(error.to_string().contains("busy"), "{error}");
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
-        assert_eq!(log.numbers().unwrap(), Vec::<u64>::new());
+        // Each attempt named the hash of the entry the other writer had written before it.
+        assert_eq!(log.entries().unwrap().len(), ATTEMPTS);
     }
 
     #[test]
     fn the_largest_number_is_written_and_the_next_one_is_a_full_log() {
         let dir = TempDir::new();
         let log = log_in(&dir);
+        // The entry before, written before the chain, so that the next one starts it.
+        let before = Entry::of(MAX_NUMBER - 1, Record::Change(change("z", None, C))).unwrap();
+        fs::write(log.path_of(MAX_NUMBER - 1), before.encode()).unwrap();
         let entry = log
             .publish(
                 &Record::Change(change("a", None, A)),
@@ -3904,7 +4407,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(entry.number(), MAX_NUMBER);
-        assert_eq!(files(&dir.path().join("oplog")), ["999999999999"]);
+        assert_eq!(entry.chain(), Chain::Start);
+        assert_eq!(
+            files(&dir.path().join("oplog")),
+            ["999999999998", "999999999999"]
+        );
         // The file is there, and a reader reports the gap before it, as for any other loss.
         assert!(matches!(log.numbers(), Err(OpLogError::Gap { missing: 1 })));
         assert_eq!(log.read(MAX_NUMBER).unwrap(), entry);
@@ -4066,7 +4573,10 @@ mod tests {
             .unwrap();
             (
                 change.clone(),
-                Entry::new(1, change).unwrap().encode().len(),
+                Entry::linked(1, Chain::Start, Record::Change(change))
+                    .unwrap()
+                    .encode()
+                    .len(),
             )
         };
         // Find the id length that gives exactly the largest entry.
@@ -4077,12 +4587,20 @@ mod tests {
         // The largest entry that the writer makes can be read back.
         let entry = log.append(&change_fit).unwrap();
         assert_eq!(log.read(1).unwrap(), entry);
-        // One byte more is refused before anything is written.
-        let (change_over, size) = size_of(fit + 1);
-        assert_eq!(size as u64, MAX_ENTRY_LEN + 1);
+        // The next entry names the hash of the first, so a change of the same size is too large.
+        let size = Entry::linked(
+            2,
+            Chain::After(entry.hash().unwrap()),
+            Record::Change(change_fit),
+        )
+        .unwrap()
+        .encode()
+        .len();
+        assert!(size as u64 > MAX_ENTRY_LEN);
+        let (change_over, _) = size_of(fit);
         let error = log.append(&change_over).unwrap_err();
         assert!(
-            matches!(error, OpLogError::EntryTooLarge { size } if size as u64 == MAX_ENTRY_LEN + 1),
+            matches!(error, OpLogError::EntryTooLarge { size: refused } if refused == size),
             "{error}"
         );
         assert!(error.to_string().contains("nothing was written"), "{error}");
@@ -4287,8 +4805,8 @@ mod tests {
             Err(EntryParseError::Entry(EntryError::ReservedOperation))
         ));
         assert!(matches!(
-            Entry::parse(b"stemma-oplog 3\n"),
-            Err(EntryParseError::UnsupportedVersion(version)) if version == "3"
+            Entry::parse(b"stemma-oplog 4\n"),
+            Err(EntryParseError::UnsupportedVersion(version)) if version == "4"
         ));
     }
 
@@ -4315,7 +4833,9 @@ mod tests {
             other => panic!("expected a purge, got {other:?}"),
         }
         let text = fs::read_to_string(dir.path().join("oplog/000000000002")).unwrap();
-        assert!(!text.contains("b3:"), "a stub names no ID: {text}");
+        for id in [A, B, C] {
+            assert!(!text.contains(id), "a stub names no ID: {text}");
+        }
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
     }
 
@@ -4542,10 +5062,7 @@ mod tests {
             .iter()
             .all(|entry| !matches!(entry.record(), Record::Purge(p) if p.lists(second))));
         assert!(matches!(written.last().unwrap().record(), Record::Purge(p) if p.lists(last)));
-        assert_eq!(
-            log.read_tip().unwrap(),
-            Some(written.last().unwrap().number())
-        );
+        assert_eq!(tip_number(&log), Some(written.last().unwrap().number()));
     }
 
     #[test]
@@ -4558,8 +5075,9 @@ mod tests {
             .flat_map(|part| part.stubs().to_vec())
             .collect();
         assert_eq!(joined, whole.stubs());
+        let previous = Chain::After(EntryHash::of(HASH_HEADER, ""));
         let size = |purge: Purge| {
-            Entry::of(MAX_NUMBER, Record::Purge(purge))
+            Entry::linked(MAX_NUMBER, previous, Record::Purge(purge))
                 .unwrap()
                 .encode()
                 .len() as u64
@@ -4587,7 +5105,7 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(log.numbers().unwrap(), [1]);
-        assert_eq!(log.read_tip().unwrap(), Some(1));
+        assert_eq!(tip_number(&log), Some(1));
     }
 
     #[test]
@@ -4744,5 +5262,374 @@ mod tests {
         let numbers: Vec<u64> = log.tail(2).unwrap().iter().map(Entry::number).collect();
         assert_eq!(numbers, [3, 4]);
         assert_eq!(log.tail(9).unwrap().len(), 4);
+    }
+
+    // The hash chain (STEMMA-41)
+
+    /// A log of four entries in the chain, written by the writer.
+    fn chained(dir: &TempDir) -> (FsOpLog, Vec<Entry>) {
+        let log = log_in(dir);
+        let entries = vec![
+            log.append(&change("main", None, A)).unwrap(),
+            log.append(&change("main", Some(A), B)).unwrap(),
+            log.append(&change("main", Some(B), C)).unwrap(),
+            log.append(&change("main", Some(C), A)).unwrap(),
+        ];
+        (log, entries)
+    }
+
+    #[test]
+    fn an_entry_in_the_chain_has_one_encoding_and_names_its_predecessor() {
+        let first = Entry::linked(1, Chain::Start, Record::Change(sample_change())).unwrap();
+        let text = golden()
+            .replacen("stemma-oplog 1", "stemma-oplog 3", 1)
+            .replacen("number 42", "number 1", 1)
+            .replacen(
+                "actor human daniel\n",
+                "actor human daniel\nprevious -\n",
+                1,
+            );
+        assert_eq!(String::from_utf8(first.encode()).unwrap(), text);
+        assert_eq!(Entry::parse(text.as_bytes()).unwrap(), first);
+
+        let hash = first.hash().unwrap();
+        let second = Entry::linked(2, Chain::After(hash), Record::Change(sample_change())).unwrap();
+        let encoded = String::from_utf8(second.encode()).unwrap();
+        assert!(
+            encoded.contains(&format!("\nprevious {hash}\n")),
+            "{encoded}"
+        );
+        assert_eq!(Entry::parse(encoded.as_bytes()).unwrap(), second);
+        // An entry written before the chain has no hash.
+        assert_eq!(sample_entry().hash(), None);
+        assert_eq!(sample_entry().chain(), Chain::Unchained);
+    }
+
+    #[test]
+    fn the_hash_of_an_entry_is_computed_over_its_envelope_and_its_body() {
+        // The rule, written out: BLAKE3 of the envelope text, which names the BLAKE3 of the body
+        // text. A change of the rule changes the hashes of every log, so this pins it.
+        let entry =
+            Entry::linked(1, Chain::Start, Record::Change(change("main", None, A))).unwrap();
+        let body = format!("stemma-oplog-body 1\noperation commit\nbranch main - {A}\n");
+        let body = format!("b3:{}", blake3::hash(body.as_bytes()).to_hex());
+        let envelope = format!(
+            "stemma-oplog-hash 1\nnumber 1\ntime {TIME}\nactor human daniel\nprevious -\n\
+             body {body}\n"
+        );
+        let expected = format!("b3:{}", blake3::hash(envelope.as_bytes()).to_hex());
+        assert_eq!(entry.body_hash().unwrap().to_string(), body);
+        assert_eq!(entry.hash().unwrap().to_string(), expected);
+    }
+
+    #[test]
+    fn the_reader_rejects_every_other_form_of_an_entry_in_the_chain() {
+        let start = "stemma-oplog 3\nnumber 2\ntime 1700000000\nactor human daniel\n";
+        let hash = format!("b3:{}", "a".repeat(64));
+        for rest in [
+            "operation snapshot\nbranch main - b3:".to_owned() + &"1".repeat(64) + "\n",
+            "previous\noperation snapshot\n".to_owned(),
+            "previous b3:00\noperation snapshot\n".to_owned(),
+            format!("previous {}\noperation snapshot\n", hash.to_uppercase()),
+            format!("previous {hash}\n"),
+            format!("previous {hash}\nstub\n"),
+            format!("previous {hash}\nstub b3:11\n"),
+            format!("previous {hash}\nstub {hash}\nmore\n"),
+            format!("previous {hash}\noperation snapshot\n"),
+        ] {
+            let text = format!("{start}{rest}");
+            assert!(Entry::parse(text.as_bytes()).is_err(), "{text:?}");
+        }
+        let error = Entry::parse(format!("{start}operation snapshot\n").as_bytes()).unwrap_err();
+        assert_eq!(error, malformed(5, EntryMalformed::ExpectedPrevious));
+        let error = Entry::parse(format!("{start}previous b3:00\n").as_bytes()).unwrap_err();
+        assert!(
+            matches!(error, EntryParseError::InvalidHash { line: 5, .. }),
+            "{error}"
+        );
+        // A stub of version 2 keeps no hash, and one of version 3 has to.
+        let error = Entry::parse(format!("{start}previous {hash}\nstub\n").as_bytes()).unwrap_err();
+        assert_eq!(error, malformed(6, EntryMalformed::ExpectedStubOrPurge));
+        let old = "stemma-oplog 2\nnumber 2\ntime 1700000000\nactor human daniel\n";
+        assert!(Entry::parse(format!("{old}stub {hash}\n").as_bytes()).is_err());
+        // The stub and the purge of version 3 read back.
+        for rest in [
+            format!("previous {hash}\nstub {hash}\n"),
+            "previous -\noperation purge\ncommits 1\nstubs 1\n".to_owned(),
+        ] {
+            let text = format!("{start}{rest}");
+            let entry = Entry::parse(text.as_bytes()).unwrap();
+            assert_eq!(String::from_utf8(entry.encode()).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn the_writer_links_every_entry_and_the_tip_names_the_last_hash() {
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        assert_eq!(entries[0].chain(), Chain::Start);
+        for pair in entries.windows(2) {
+            assert_eq!(pair[1].chain(), Chain::After(pair[0].hash().unwrap()));
+        }
+        assert_eq!(log.entries().unwrap(), entries);
+        let tip = log.read_tip().unwrap().unwrap();
+        assert_eq!((tip.number, tip.hash), (4, entries[3].hash()));
+    }
+
+    #[test]
+    fn a_changed_entry_in_the_middle_breaks_the_chain_at_the_next_one() {
+        let dir = TempDir::new();
+        let (log, _) = chained(&dir);
+        // The entry is still canonical, only its time differs.
+        let text = fs::read_to_string(entry_file(&dir, 2)).unwrap();
+        fs::write(
+            entry_file(&dir, 2),
+            text.replace("time 1700000000", "time 1700000001"),
+        )
+        .unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::ChainBroken { number: 3 })
+        ));
+        // `op log` with a limit sees the break if the window reaches the entry after it.
+        assert!(matches!(
+            log.tail(2),
+            Err(OpLogError::ChainBroken { number: 3 })
+        ));
+        assert!(log.tail(1).is_ok());
+        let message = log.entries().unwrap_err().to_string();
+        assert!(
+            message.contains("entry 3 does not name the hash"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_removed_inserted_or_swapped_entry_breaks_the_chain() {
+        let renumber = |dir: &TempDir, from: u64, to: u64| {
+            let text = fs::read_to_string(entry_file(dir, from)).unwrap();
+            fs::write(
+                entry_file(dir, to),
+                text.replacen(&format!("number {from}\n"), &format!("number {to}\n"), 1),
+            )
+            .unwrap();
+        };
+        // Removed: entry 2 is gone, and 3 and 4 move down, so that no gap shows.
+        let dir = TempDir::new();
+        let (log, _) = chained(&dir);
+        renumber(&dir, 3, 2);
+        renumber(&dir, 4, 3);
+        fs::remove_file(entry_file(&dir, 4)).unwrap();
+        set_tip(&dir, 3);
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::ChainBroken { number: 2 })
+        ));
+
+        // Inserted: a copy of entry 2 goes in as entry 3, and the later ones move up.
+        let dir = TempDir::new();
+        let (log, _) = chained(&dir);
+        renumber(&dir, 4, 5);
+        renumber(&dir, 3, 4);
+        renumber(&dir, 2, 3);
+        set_tip(&dir, 5);
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::ChainBroken { number: 3 })
+        ));
+
+        // Swapped: entries 2 and 3 change places.
+        let dir = TempDir::new();
+        let (log, _) = chained(&dir);
+        let two = fs::read_to_string(entry_file(&dir, 2)).unwrap();
+        renumber(&dir, 3, 2);
+        fs::write(
+            entry_file(&dir, 3),
+            two.replacen("number 2\n", "number 3\n", 1),
+        )
+        .unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::ChainBroken { number: 2 })
+        ));
+    }
+
+    #[test]
+    fn a_replaced_last_entry_is_found_by_the_hash_of_the_tip() {
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        // A new last entry with the right link: only the tip tells.
+        let forged = Entry::linked(
+            4,
+            Chain::After(entries[2].hash().unwrap()),
+            Record::Change(change("main", Some(C), B)),
+        )
+        .unwrap();
+        fs::write(entry_file(&dir, 4), forged.encode()).unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::TipMismatch { number: 4, .. })
+        ));
+        assert!(matches!(
+            log.tail(1),
+            Err(OpLogError::TipMismatch { number: 4, .. })
+        ));
+        // The writer refuses to take a replaced entry into the chain.
+        let error = log.append(&change("main", Some(B), A)).unwrap_err();
+        assert!(matches!(error, OpLogError::TipMismatch { .. }), "{error}");
+        assert_eq!(files(&dir.path().join("oplog")).len(), 4);
+        assert!(error.to_string().contains("oplog-tip"), "{error}");
+    }
+
+    #[test]
+    fn a_tip_one_behind_is_compared_with_the_entry_it_names() {
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        // The stop between entry 4 and its tip: the tip of entry 3.
+        log.write_tip(&entries[2]).unwrap();
+        assert!(log.entries().is_ok());
+        let appended = log.append(&change("main", Some(A), B)).unwrap();
+        assert_eq!(appended.chain(), Chain::After(entries[3].hash().unwrap()));
+        assert_eq!(tip_number(&log), Some(5));
+    }
+
+    #[test]
+    fn a_tip_of_version_2_is_strict() {
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        let hash = entries[3].hash().unwrap();
+        for content in [
+            "stemma-oplog-tip 2\nnumber 4\n".to_owned(),
+            format!("stemma-oplog-tip 2\nnumber 4\nhash {hash}"),
+            format!(
+                "stemma-oplog-tip 2\nnumber 4\nhash {}\n",
+                hash.to_string().to_uppercase()
+            ),
+            format!("stemma-oplog-tip 2\nnumber 4\nhash {hash}\nmore\n"),
+            format!("stemma-oplog-tip 1\nnumber 4\nhash {hash}\n"),
+        ] {
+            fs::write(dir.path().join("oplog-tip"), &content).unwrap();
+            assert!(
+                matches!(log.numbers(), Err(OpLogError::BadTip { .. })),
+                "{content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stub_keeps_the_hash_of_its_entry_and_a_changed_stub_breaks_the_chain() {
+        let dir = TempDir::new();
+        let log = purged_log(&dir);
+        let entries = log.entries().unwrap();
+        for stub in &entries[1..3] {
+            let Record::Stub(record) = stub.record() else {
+                panic!("a stub");
+            };
+            assert!(record.body().is_some());
+            assert!(matches!(stub.chain(), Chain::After(_)));
+        }
+        // The stub has the hash of the entry it replaced, so the next entry still links to it.
+        check_chain(&entries).unwrap();
+        // A purge changes the entries before the last one only, so the tip still holds.
+        assert_eq!(log.read_tip().unwrap().unwrap().hash, entries[3].hash());
+        // A stub whose time differs from that of its entry breaks the chain.
+        let text = fs::read_to_string(entry_file(&dir, 2)).unwrap();
+        fs::write(
+            entry_file(&dir, 2),
+            text.replace("time 1700000000", "time 1700000001"),
+        )
+        .unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::ChainBroken { number: 3 })
+        ));
+    }
+
+    #[test]
+    fn entries_from_before_the_chain_come_first_and_the_chain_starts_after_them() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        for number in 1..=2 {
+            let entry = Entry::of(number, Record::Change(change("main", None, A))).unwrap();
+            fs::write(entry_file(&dir, number), entry.encode()).unwrap();
+        }
+        set_tip(&dir, 2);
+        let third = log.append(&change("main", Some(A), B)).unwrap();
+        assert_eq!(third.chain(), Chain::Start);
+        let fourth = log.append(&change("main", Some(B), C)).unwrap();
+        assert_eq!(fourth.chain(), Chain::After(third.hash().unwrap()));
+        assert_eq!(log.entries().unwrap().len(), 4);
+
+        // An entry from before the chain after it is refused.
+        let old = Entry::of(5, Record::Change(change("main", Some(C), A))).unwrap();
+        fs::write(entry_file(&dir, 5), old.encode()).unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::Unchained { number: 5 })
+        ));
+        // And so is a second start of the chain.
+        let again =
+            Entry::linked(5, Chain::Start, Record::Change(change("main", Some(C), A))).unwrap();
+        fs::write(entry_file(&dir, 5), again.encode()).unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::ChainBroken { number: 5 })
+        ));
+    }
+
+    #[test]
+    fn a_first_entry_that_names_a_predecessor_breaks_the_chain() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let first = Entry::linked(
+            1,
+            Chain::After(EntryHash::of(HASH_HEADER, "")),
+            Record::Change(change("main", None, A)),
+        )
+        .unwrap();
+        fs::write(entry_file(&dir, 1), first.encode()).unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::ChainBroken { number: 1 })
+        ));
+    }
+
+    #[test]
+    fn a_writer_that_cannot_read_the_entry_before_refuses_and_writes_nothing() {
+        let dir = TempDir::new();
+        let (log, _) = chained(&dir);
+        fs::remove_file(dir.path().join("oplog-tip")).unwrap();
+        fs::write(entry_file(&dir, 4), "damaged").unwrap();
+        let error = log.append(&change("main", Some(A), B)).unwrap_err();
+        assert!(
+            matches!(&error, OpLogError::Predecessor { number: 4, .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("entry 4"), "{error}");
+        assert_eq!(files(&dir.path().join("oplog")).len(), 4);
+        assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn whoever_writes_the_log_can_compute_the_chain_again() {
+        // The limit of the chain (ADR-011): an entry changed and every later hash and the tip
+        // computed again is not found. Only an anchor outside `.stemma` would find it.
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        let mut previous = Chain::Start;
+        let mut last = None;
+        for entry in &entries {
+            let record = if entry.number() == 2 {
+                Record::Change(change("main", Some(A), C))
+            } else {
+                entry.record().clone()
+            };
+            let forged = Entry::linked(entry.number(), previous, record).unwrap();
+            fs::write(entry_file(&dir, forged.number()), forged.encode()).unwrap();
+            previous = Chain::After(forged.hash().unwrap());
+            last = Some(forged);
+        }
+        log.write_tip(&last.unwrap()).unwrap();
+        assert!(log.entries().is_ok());
     }
 }

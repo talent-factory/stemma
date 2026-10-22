@@ -800,6 +800,7 @@ fn entry_line(error: &EntryParseError) -> Option<usize> {
         | EntryParseError::InvalidActor { line, .. }
         | EntryParseError::InvalidOperation { line, .. }
         | EntryParseError::InvalidObjectId { line, .. }
+        | EntryParseError::InvalidHash { line, .. }
         | EntryParseError::InvalidBranchName { line, .. }
         | EntryParseError::Unchanged { line }
         | EntryParseError::OutOfOrder { line, .. } => Some(*line),

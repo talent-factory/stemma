@@ -52,12 +52,13 @@ use std::io::{self, Write};
 use std::num::NonZeroUsize;
 use std::path::{self, Path, PathBuf};
 use std::process::ExitCode;
+use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
 
 use crate::op_log;
 use stemma_core::object::{ObjectId, METADATA_DIR};
-use stemma_core::oplog::{self, OpLogError};
+use stemma_core::oplog::{self, Chain, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
     normalize_path, ApplyPurgeError, CommitError, Committed, InitError, InitOptions, OpenError,
@@ -143,6 +144,47 @@ enum OpCommand {
     Log(OpLogArgs),
     /// Put back the state before an entry: HEAD, the working copy, and the branches it moved
     Restore(OpRestoreArgs),
+    /// Check the hash chain of the whole log, and print the anchor of its last entry
+    Verify(OpVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+struct OpVerifyArgs {
+    /// The directory of the repository, the one that contains `.stemma`
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// An anchor that an earlier `op verify` printed, `<number>:<hash>`, kept outside the
+    /// repository: the entry with the number must still have the hash
+    #[arg(long, value_name = "NUMBER:HASH", value_parser = parse_anchor)]
+    anchor: Option<Anchor>,
+}
+
+/// An entry and the hash that it had when `op verify` printed it (ADR-011).
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    number: u64,
+    hash: EntryHash,
+}
+
+/// Reads an anchor, `<number>:<hash>`, as `op verify` prints it.
+fn parse_anchor(text: &str) -> Result<Anchor, String> {
+    let (number, hash) = text
+        .split_once(':')
+        .ok_or_else(|| "expected `<number>:<hash>`, such as `12:b3:…`".to_owned())?;
+    let number = number
+        .parse::<u64>()
+        .ok()
+        // The canonical form only: no sign, no leading zero, and not 0.
+        .filter(|parsed| *parsed >= 1 && parsed.to_string() == number)
+        .ok_or_else(|| format!("`{number}` is not the number of an entry"))?;
+    let hash = EntryHash::from_str(hash).map_err(|error| format!("invalid hash: {error}"))?;
+    Ok(Anchor { number, hash })
 }
 
 #[derive(Debug, Args)]
@@ -371,6 +413,20 @@ enum CliError {
     },
     /// The operation log cannot be read.
     OpLog(OpLogError),
+    /// The entry that an anchor names is not in the log, or was written before the chain.
+    AnchorMissing {
+        /// The number of the entry.
+        number: u64,
+    },
+    /// The entry that an anchor names has another hash now.
+    AnchorMismatch {
+        /// The anchor.
+        anchor: Anchor,
+        /// The hash that the entry has now.
+        found: EntryHash,
+    },
+    /// The log was checked, but the result could not be written.
+    VerifyOutput(io::Error),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
     /// repository was tampered with.
     EmptyLog,
@@ -432,6 +488,9 @@ impl CliError {
             | Self::PurgeOutput(_)
             | Self::ApplyPurge(_)
             | Self::OpLog(_)
+            | Self::AnchorMissing { .. }
+            | Self::AnchorMismatch { .. }
+            | Self::VerifyOutput(_)
             | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
         }
@@ -558,6 +617,21 @@ impl fmt::Display for CliError {
                 write!(f, "{made}, but the result could not be written: {source}")
             }
             Self::OpLog(error) => error.fmt(f),
+            Self::AnchorMissing { number } => write!(
+                f,
+                "the anchor names entry {number}, but the log has no such entry in its hash chain: \
+                 the entry was lost, or the anchor belongs to another repository"
+            ),
+            Self::AnchorMismatch { anchor, found } => write!(
+                f,
+                "entry {} has the hash {found}, not the hash {} of the anchor: the log was \
+                 changed and its chain computed again since the anchor was taken",
+                anchor.number, anchor.hash
+            ),
+            Self::VerifyOutput(source) => write!(
+                f,
+                "checked the operation log, but could not write the result: {source}"
+            ),
             Self::EmptyLog => write!(
                 f,
                 "the operation log is empty: `init` always writes entry 1, so entries were lost \
@@ -591,6 +665,9 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
         Command::Op {
             command: OpCommand::Restore(args),
         } => restore(args, out),
+        Command::Op {
+            command: OpCommand::Verify(args),
+        } => verify_op_log(args, out),
         Command::Purge(args) => purge(args, out),
     }
 }
@@ -986,6 +1063,57 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Checks the hash chain of the whole log and the hash that the tip file names, and the anchor
+/// if one is given, and prints the anchor of the last entry (ADR-011). The chain shows that the
+/// entries agree with one another; whoever can write `.stemma` can compute it again, so only an
+/// anchor kept outside the repository shows that the log was not rewritten. It only reads, and a
+/// closed pipe is not a failure.
+fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let entries = repository.oplog().entries().map_err(CliError::OpLog)?;
+    let last = entries.last().ok_or(CliError::EmptyLog)?;
+    if let Some(anchor) = args.anchor {
+        let found = entries
+            .iter()
+            .find(|entry| entry.number() == anchor.number)
+            .and_then(oplog::Entry::hash)
+            .ok_or(CliError::AnchorMissing {
+                number: anchor.number,
+            })?;
+        if found != anchor.hash {
+            return Err(CliError::AnchorMismatch { anchor, found });
+        }
+    }
+    let start = entries
+        .iter()
+        .find(|entry| entry.chain() != Chain::Unchained)
+        .map(oplog::Entry::number);
+    let mut text = format!("Checked {} entries of the operation log", entries.len());
+    match start {
+        Some(1) => text.push_str(": the hash chain holds.\n"),
+        Some(start) => text.push_str(&format!(
+            ": the hash chain holds from entry {start}; entries 1 to {} were written before it \
+             and are not covered.\n",
+            start - 1
+        )),
+        None => text.push_str(": no entry is in the hash chain yet.\n"),
+    }
+    if let Some(anchor) = args.anchor {
+        text.push_str(&format!(
+            "Entry {} still has the hash of the anchor.\n",
+            anchor.number
+        ));
+    }
+    if let Some(hash) = last.hash() {
+        text.push_str(&format!("anchor {}:{hash}\n", last.number()));
+    }
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(CliError::VerifyOutput(source)),
+        Ok(()) => Ok(()),
+    }
 }
 
 /// Tracks the files and lists the ones that are new. `track` saves the tracked files as well, so
@@ -2341,11 +2469,14 @@ mod tests {
         )
         .unwrap();
         for number in 2..=3 {
+            let oplog = dir.join(".stemma/oplog");
+            let before = std::fs::read(oplog.join(format!("{:012}", number - 1))).unwrap();
+            let previous = oplog::Entry::parse(&before).unwrap().hash().unwrap();
             std::fs::write(
-                dir.join(".stemma/oplog").join(format!("{number:012}")),
+                oplog.join(format!("{number:012}")),
                 format!(
-                    "stemma-oplog 1\nnumber {number}\ntime 1700000000\nactor human daniel\n\
-                     operation snapshot\nworking-copy - b3:{}\n",
+                    "stemma-oplog 3\nnumber {number}\ntime 1700000000\nactor human daniel\n\
+                     previous {previous}\noperation snapshot\nworking-copy - b3:{}\n",
                     "1".repeat(64)
                 ),
             )

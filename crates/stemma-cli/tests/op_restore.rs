@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use stemma_core::oplog::Entry;
 use stemma_core::repository::Repository;
 
 /// A directory below the system temp directory that is removed on drop.
@@ -641,10 +642,45 @@ fn a_restore_whose_pointers_cannot_move_names_the_way_on_and_the_same_call_finis
     );
 }
 
-/// Writes a version-2 entry file as a purge would (ADR-014).
+/// The `previous` line that entry `number` of the log names: the hash of the entry before it, or
+/// `-` at the start of the chain (ADR-011).
+fn previous(dir: &Path, number: u64) -> String {
+    if number == 1 {
+        return "-".to_owned();
+    }
+    // An entry that is missing (a test of a gap) starts the chain again.
+    let path = dir
+        .join(".stemma/oplog")
+        .join(format!("{:012}", number - 1));
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| Entry::parse(&bytes).ok())
+        .and_then(|entry| entry.hash())
+        .map_or_else(|| "-".to_owned(), |hash| hash.to_string())
+}
+
+/// The stub of entry `number`, as a purge writes it: the header lines of the entry, up to its line
+/// `previous`, and the hash of its body.
+fn stub_text(dir: &Path, number: u64) -> String {
+    let path = dir.join(".stemma/oplog").join(format!("{number:012}"));
+    let text = fs::read_to_string(path).unwrap();
+    let entry = Entry::parse(text.as_bytes()).unwrap();
+    let head: String = text.split_inclusive('\n').take(5).collect();
+    format!("{head}stub {}\n", entry.body_hash().unwrap())
+}
+
+/// Writes a stub or a `purge` entry file as a purge would, in the hash chain (ADR-014). A body of
+/// `stub` alone becomes the stub of the entry with the number.
 fn write_entry_2(dir: &Path, number: u64, body: &str) {
-    let text =
-        format!("stemma-oplog 2\nnumber {number}\ntime 1700000000\nactor human daniel\n{body}");
+    let text = if body == "stub\n" {
+        stub_text(dir, number)
+    } else {
+        format!(
+            "stemma-oplog 3\nnumber {number}\ntime 1700000000\nactor human daniel\n\
+             previous {}\n{body}",
+            previous(dir, number)
+        )
+    };
     fs::write(
         dir.join(".stemma/oplog").join(format!("{number:012}")),
         text,
