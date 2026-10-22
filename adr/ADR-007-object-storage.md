@@ -82,7 +82,11 @@ server will later keep objects elsewhere (API-first). The implementation is
 - Many small files are slow on some file systems and large repositories. Pack files are the
   planned answer.
 - Stale files can remain in `tmp/` after a crash. Their names are never reused, so they are
-  harmless and can be removed when no writer is active.
+  harmless until the next writer that takes the lock of the references removes them (ADR-011,
+  STEMMA-31). An object is written under that lock by every command, so no file of a write in
+  progress is removed; a caller of the library that stores objects through
+  `Repository::objects()` without the lock is not protected (ADR-011). On Windows the read-only
+  flag of an object file is cleared before the removal.
 - Writing holds the body and a copy with the header in memory, and reading holds the file once.
   A very large file has to fit in memory.
 - A hostile store directory cannot make the store follow a symbolic link, but a very large
@@ -94,7 +98,9 @@ server will later keep objects elsewhere (API-first). The implementation is
 ## Open
 
 - [ ] Pack files and compression: format, and when objects are packed.
-- [ ] Garbage collection of unreachable objects, and removal of stale files in `tmp/`.
+- [ ] Garbage collection of unreachable objects.
+- [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
+      them (ADR-011, STEMMA-31).
 - [ ] Streaming for large blobs, so that neither writing nor reading needs the whole body in
       memory.
 - [x] A repository format file (`.stemma/format`) is checked before a repository opens

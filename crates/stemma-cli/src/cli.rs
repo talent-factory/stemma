@@ -607,6 +607,7 @@ fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let purged = repository
             .resume_purge(&actor, &AllowAll)
             .map_err(CliError::ApplyPurge)?;
+        warn_scratch_left(&purged);
         purged_text("Finished the purge of", &purged)
     } else if args.abort {
         let aborted = repository
@@ -635,12 +636,27 @@ fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let purged = repository
             .apply_purge(blob, &actor, &AllowAll)
             .map_err(CliError::ApplyPurge)?;
+        warn_scratch_left(&purged);
         purged_text("Purged", &purged)
     };
     match out.write_all(text.as_bytes()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(source) => Err(CliError::PurgedOutput { made, source }),
+    }
+}
+
+/// Warns about each scratch file in `tmp/` that the purge could not remove: it may hold the secret
+/// after a failed write (ADR-014). The purge itself succeeded, so this is no error.
+fn warn_scratch_left(purged: &Purged) {
+    for path in purged.scratch_left() {
+        // A warning that cannot be written is dropped on purpose, as in `main`.
+        let _ = writeln!(
+            io::stderr(),
+            "stemma: warning: could not remove the scratch file `{}`; it may hold the secret, \
+             remove it by hand",
+            path.display()
+        );
     }
 }
 

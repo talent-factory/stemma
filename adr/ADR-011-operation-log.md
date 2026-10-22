@@ -1,7 +1,8 @@
 # ADR-011: The operation log
 
 **Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
-2026-10-19, and the rest on 2026-10-21; all are implemented. The open items at the end are
+2026-10-19, and the rest on 2026-10-21 (the cleanup of `tmp/` on 2026-10-22, STEMMA-31); all
+are implemented. The open items at the end are
 questions for later (retention, who may read the log, the width of the number, Windows) and
 none of them changes a decision.
 
@@ -159,8 +160,31 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **`tmp/` is scratch** *(confirmed)*. A temporary name is removed after the link on a best effort
   basis. If the removal fails, the entry is whole and flushed, so the write succeeds and the move
   goes ahead; a failure of a cleanup must not stop a move, and it must not leave an entry that
-  names a move that was never made. A name that stays costs only space. No operation of this
-  slice empties `tmp/`; a cleanup is an open item.
+  names a move that was never made. A name that stays costs only space until the next writer.
+- **The writer that holds the lock empties `tmp/`** *(confirmed, STEMMA-31, 2026-10-22)*. Every
+  writer of `tmp/` holds the lock of the references while it writes there: the commands that write
+  from before their first object (ADR-014), the moves of `Repository`, and the purge with its
+  resume and abort. Whoever takes the lock is therefore the only writer (but see the advisory lock
+  below), and every file in `tmp/` is left over from a write that failed or was interrupted. Right
+  after the lock is taken and no journal of a purge is found (or `--resume` or `--abort` took the
+  lock over), every name in `tmp/` that is not a directory is removed, without following a link,
+  and so is every directory next to `.stemma` whose name is exactly one that `init` gives its
+  temporary directory, `.stemma-init-<pid>-<n>-<16 lowercase hexadecimal digits>` (ADR-009). A
+  directory of the working copy whose name only starts like it, such as `.stemma-init-notes`, is
+  content and stays. A change that the journal of a purge refuses removes nothing; the resume or
+  the abort does it. The cleanup is best effort, like the removal after the link: a name that
+  cannot be removed stays, and the next writer tries again. The lock decides and not the age of a
+  file, so a slow writer, such as the first `track` of many files, is never cut short, and there
+  is no command to remember. Two other ways were weighed: a cleanup in `open` or a garbage
+  collection after an age, which is a guess, and the process ID in the name, which is reused and
+  cannot be checked without platform code. The lock is advisory: a person who removes the lock of
+  a running process by hand lets the next writer remove its temporary file, and that writer then
+  fails at its rename or link without damage. The same holds for `purge --resume` or `--abort`
+  while the purge still runs in another terminal, which ADR-014 already warns against: the
+  take-over removes the scratch of the running purge, and that purge fails and can be resumed. A
+  caller of the library that stores objects through `Repository::objects()` without the lock is
+  not protected either. A lock that stays after `kill -9` stops the cleanup, as it stops every
+  change, until it is removed.
 
 ### Sketch of an entry
 
@@ -241,8 +265,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - [x] A recovery when the highest number is missing: the tip file (STEMMA-30). What remains is
       a command that repairs a log with a lost last entry (the tip has to be set back by hand
       today), and the hash chain (STEMMA-41).
-- [ ] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of
-      the references.
+- [x] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of
+      the references. The writer that takes the lock removes them (STEMMA-31).
 - [ ] Restoring: what `stemma op restore` does when the working directory has changed since, and
       the entry that the restore writes (STEMMA-28). Decided in ADR-013 and implemented (STEMMA-28).
 - [ ] Who may read the log (ADR-003): it holds IDs and the actor, no paths, but it makes

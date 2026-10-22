@@ -126,6 +126,34 @@ fn a_new_repository_is_clean_and_status_writes_no_entry() {
 }
 
 #[test]
+fn status_removes_the_scratch_that_an_interrupted_command_left() {
+    let dir = repository();
+    let scratch = dir.path().join(".stemma").join("tmp").join("1-0-stale");
+    fs::write(&scratch, "left behind").unwrap();
+    let init = dir.path().join(".stemma-init-1-0-0123456789abcdef");
+    fs::create_dir(&init).unwrap();
+
+    let result = status(dir.path());
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(!scratch.exists());
+    assert!(!init.exists());
+}
+
+#[test]
+fn status_keeps_a_directory_of_the_working_copy_named_like_the_one_of_init() {
+    let dir = repository();
+    write(dir.path(), ".stemma-init-notes/plan.md", "mine");
+    track(dir.path(), ".stemma-init-notes/plan.md");
+
+    let result = status(dir.path());
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let plan = dir.path().join(".stemma-init-notes").join("plan.md");
+    assert_eq!(fs::read_to_string(plan).unwrap(), "mine");
+}
+
+#[test]
 fn tracked_files_before_the_first_commit_are_added() {
     let dir = repository();
     write(dir.path(), "b.txt", "b");
