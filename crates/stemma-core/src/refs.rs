@@ -2523,6 +2523,23 @@ mod tests {
         assert!(stale.exists());
     }
 
+    #[test]
+    fn a_root_not_named_like_the_metadata_directory_leaves_its_neighbours_alone() {
+        // Only a metadata directory named `.stemma` has the directory of `init` next to it; the
+        // directory around any other root is not looked at.
+        let dir = TempDir::new();
+        let root = dir.path().join("meta");
+        fs::create_dir(&root).unwrap();
+        let objects = FsObjectStore::new(&root);
+        let refs = FsRefStore::new(&root);
+        let id = commit(&objects, "c");
+        let neighbour = dir.path().join(".stemma-init-1-0-0123456789abcdef");
+        fs::create_dir(&neighbour).unwrap();
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert!(neighbour.is_dir());
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_cleanup_of_scratch_follows_no_link_and_keeps_a_directory() {

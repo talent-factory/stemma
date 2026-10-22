@@ -162,27 +162,29 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   goes ahead; a failure of a cleanup must not stop a move, and it must not leave an entry that
   names a move that was never made. A name that stays costs only space until the next writer.
 - **The writer that holds the lock empties `tmp/`** *(confirmed, STEMMA-31, 2026-10-22)*. Every
-  writer of `tmp/` holds the lock of the references while it writes there: the commands that
-  write from before their first object (ADR-014), the moves of `Repository`, and the purge with
-  its resume and abort. Whoever takes the lock is therefore the only writer, and every file in
-  `tmp/` is left over from a write that failed or was interrupted. Right after the lock is taken
-  and no journal of a purge is found (or `--resume` or `--abort` took the lock over), every name
-  in `tmp/` that is not a directory is removed, without following a link, and so is every
-  directory next to `.stemma` whose name is exactly one that `init` gives its temporary
-  directory, `.stemma-init-<pid>-<n>-<16 hexadecimal digits>` (ADR-009). A directory of the
-  working copy whose name only starts like it, such as `.stemma-init-notes`, is content and
-  stays. A change that the journal of a purge refuses removes nothing; the resume or the abort
-  does it.
-  The cleanup is best effort, like the removal after the link: a name that cannot be removed
-  stays, and the next writer tries again. The lock decides and not the age of a file, so a slow
-  writer, such as the first `track` of many files, is never cut short, and there is no command
-  to remember. Two other ways were weighed: a cleanup in `open` or a garbage collection after an
-  age, which is a guess, and the process ID in the name, which is reused and cannot be checked
-  without platform code. The lock is advisory: a person who removes the lock of a running
-  process by hand lets the next writer remove its temporary file, and that writer then fails at
-  its rename or link without damage. A caller of the library that stores objects through
-  `Repository::objects()` without the lock is not protected either. A lock that stays after
-  `kill -9` stops the cleanup, as it stops every change, until it is removed.
+  writer of `tmp/` holds the lock of the references while it writes there: the commands that write
+  from before their first object (ADR-014), the moves of `Repository`, and the purge with its
+  resume and abort. Whoever takes the lock is therefore the only writer (but see the advisory lock
+  below), and every file in `tmp/` is left over from a write that failed or was interrupted. Right
+  after the lock is taken and no journal of a purge is found (or `--resume` or `--abort` took the
+  lock over), every name in `tmp/` that is not a directory is removed, without following a link,
+  and so is every directory next to `.stemma` whose name is exactly one that `init` gives its
+  temporary directory, `.stemma-init-<pid>-<n>-<16 lowercase hexadecimal digits>` (ADR-009). A
+  directory of the working copy whose name only starts like it, such as `.stemma-init-notes`, is
+  content and stays. A change that the journal of a purge refuses removes nothing; the resume or
+  the abort does it. The cleanup is best effort, like the removal after the link: a name that
+  cannot be removed stays, and the next writer tries again. The lock decides and not the age of a
+  file, so a slow writer, such as the first `track` of many files, is never cut short, and there
+  is no command to remember. Two other ways were weighed: a cleanup in `open` or a garbage
+  collection after an age, which is a guess, and the process ID in the name, which is reused and
+  cannot be checked without platform code. The lock is advisory: a person who removes the lock of
+  a running process by hand lets the next writer remove its temporary file, and that writer then
+  fails at its rename or link without damage. The same holds for `purge --resume` or `--abort`
+  while the purge still runs in another terminal, which ADR-014 already warns against: the
+  take-over removes the scratch of the running purge, and that purge fails and can be resumed. A
+  caller of the library that stores objects through `Repository::objects()` without the lock is
+  not protected either. A lock that stays after `kill -9` stops the cleanup, as it stops every
+  change, until it is removed.
 
 ### Sketch of an entry
 

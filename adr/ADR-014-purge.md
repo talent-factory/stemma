@@ -86,7 +86,8 @@ Facts that bound the design:
   that no tree is left that names a missing blob and no commit that names a deleted parent. A
   leftover that holds no secret and follows no such commit stays. The plan checks at the end
   that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
-  The scratch files of `tmp/` are not touched (see the limits).
+  The scratch files of `tmp/` are removed when the purge takes the lock (ADR-011); see the
+  limits.
 - **A synchronized repository stays open** *(confirmed)*. A secret that was pushed (phase 5) is
   also on the hub, and a purge here does not reach it. The rule for users is that a pushed secret
   counts as compromised and has to be replaced, whatever a purge does. The hub needs a removal of
@@ -197,9 +198,11 @@ object, an unreadable log) is left for a person to repair.
 - **What a purge does not guarantee.** The file system may keep the bytes of a deleted file (wear
   levelling of an SSD, a snapshot of APFS, a backup). A scratch file in `tmp/` can hold the
   secret after a failed write (ADR-007). The purge takes the lock, so no writer owns such a
-  file, and it removes them with the rest of the scratch (ADR-011, STEMMA-31); only a file that
-  cannot be removed stays. A temporary file `.stemma-checkout-…` of a failed checkout lies in
-  the working directory (ADR-013), not in `tmp/`, and is not looked at. Other objects that were
+  file, and it removes them with the rest of the scratch (ADR-011, STEMMA-31). A file that cannot
+  be removed stays: `purge --apply` and `--resume` name each one in a warning and still succeed,
+  as the purge itself is done. On Windows the read-only flag of an object file is cleared before
+  the removal. A temporary file `.stemma-checkout-…` of a failed checkout lies in the working
+  directory (ADR-013), not in `tmp/`, and is not looked at. Other objects that were
   unreachable before and name no blob stay. The commit messages and path names are kept as they
   are and can hold the secret too; the unit of the purge is the blob. A file below `objects/`
   whose path is not that of an ID is not looked at, as no read reaches it, and the scan reads

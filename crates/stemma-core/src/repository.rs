@@ -859,6 +859,9 @@ fn install(
         Ok(()) => Ok(()),
         Err(error) => match fs::remove_dir_all(staging) {
             Ok(()) => Err(error),
+            // The directory is gone already: a writer of a repository that another `init` made
+            // here in the meantime removed it as stale (ADR-009). Nothing is left behind.
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Err(error),
             Err(source) => Err(InitError::Leftover {
                 path: staging.to_path_buf(),
                 error: Box::new(error),
@@ -1020,7 +1023,8 @@ pub enum InitError {
     /// The change ID of the first working-copy commit could not be made.
     ChangeId(GenerateError),
     /// An operation failed, and the temporary directory could not be removed afterwards. It is
-    /// named here and can be removed by hand.
+    /// named here and can be removed by hand; the next command that writes in a repository in the
+    /// same directory also removes it (ADR-009, STEMMA-31).
     Leftover {
         /// The temporary directory that stayed behind.
         path: PathBuf,
@@ -1854,6 +1858,9 @@ mod tests {
         fs::write(content.join("plan.md"), b"mine").unwrap();
         let near = dir.path().join(".stemma-init-1-1-0123456789ABCDEF");
         fs::create_dir(&near).unwrap();
+        // A file whose name is exactly one of `init` is no directory of `init`.
+        let exact_file = dir.path().join(".stemma-init-1-2-0123456789abcdef");
+        fs::write(&exact_file, b"x").unwrap();
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");
         repository
@@ -1863,6 +1870,7 @@ mod tests {
         assert!(file.exists());
         assert_eq!(fs::read(content.join("plan.md")).unwrap(), b"mine");
         assert!(near.is_dir());
+        assert!(exact_file.is_file());
         assert_eq!(
             names(&dir.path().join(".stemma").join("tmp")),
             Vec::<String>::new()
@@ -1914,6 +1922,23 @@ mod tests {
             .unwrap();
         assert!(fs::symlink_metadata(&link).is_ok(), "the link stays");
         assert!(target.join("file").exists());
+    }
+
+    #[test]
+    fn an_init_whose_directory_was_removed_under_it_reports_the_failure_and_no_leftover() {
+        // A writer of a repository that another `init` made here may remove the directory of a
+        // running `init` as stale (ADR-009). The `init` fails, and nothing is left behind.
+        let dir = TempDir::new();
+        let staging = dir.path().join(".stemma-init-1-0-0123456789abcdef");
+        let error = install(
+            &staging,
+            &dir.path().join(".stemma"),
+            &InitOptions::default(),
+            &actor(),
+        )
+        .unwrap_err();
+        assert!(!matches!(error, InitError::Leftover { .. }), "{error}");
+        assert!(!staging.exists());
     }
 
     #[test]

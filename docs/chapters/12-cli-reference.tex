@@ -902,8 +902,11 @@ schreibt; der Purge bricht dann mit Exit-Code 1 ab, bevor er das Format hebt ode
 schreibt, und lässt sich danach wiederholen. So kann kein Befehl ein Objekt nennen, das der
 Purge gelöscht hat (STEMMA-49).
 Liegengebliebene Dateien in \type{.stemma/tmp/} entfernt der Purge, sobald er die Sperre hält.
-Was ein Purge nicht garantiert (Kopien im Dateisystem, eine Datei in \type{tmp/}, die sich
-nicht entfernen lässt, Nachrichten und Pfadnamen), steht in ADR-014.
+Lässt sich eine nicht entfernen, nennt \type{purge --apply} oder \type{--resume} sie in einer
+Warnung auf der Standardfehlerausgabe, denn sie kann das Geheimnis enthalten;
+der Purge selbst gelingt trotzdem (Exit-Code 0), und die Datei ist von Hand zu entfernen.
+Was ein Purge nicht garantiert (Kopien im Dateisystem, Nachrichten und Pfadnamen),
+steht in ADR-014.
 
 {\bf Beispiele.}
 

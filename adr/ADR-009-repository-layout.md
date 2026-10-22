@@ -66,8 +66,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
   must not treat it as content of the working copy (ADR-005 reserves `.stemma` and its aliases;
   this name is not one of them). The next writer that takes the lock of the references removes
   it (ADR-011, STEMMA-31): once `.stemma` exists, an `init` that still builds such a directory
-  fails, at the latest at its rename (earlier with `Io` or `Leftover` if its directory goes away
-  under it). Only a directory whose name is exactly `.stemma-init-<pid>-<n>-<16 lowercase
+  fails, at the latest at its rename (earlier, with the error of the step that found its
+  directory gone, if a writer removes it under it; `init` then reports no `Leftover`, as nothing
+  is left). Only a directory whose name is exactly `.stemma-init-<pid>-<n>-<16 lowercase
   hexadecimal digits>` is removed; a link, a file, and a directory of the working copy whose name
   only starts with the prefix, such as `.stemma-init-notes`, stay.
 - `Repository` hands out the object store, but the references only as a view for reading
