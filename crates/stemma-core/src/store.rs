@@ -15,7 +15,9 @@
 //! body. There is no compression. A read hashes the content again and rejects an object that
 //! does not match its ID, so a damaged object is reported and never passed on.
 
+use std::cell::RefCell;
 use std::collections::hash_map::RandomState;
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -699,42 +701,71 @@ impl FsObjectStore {
     /// is not a regular file is an error.
     pub(crate) fn put_raw(&self, kind: Kind, body: &[u8]) -> Result<ObjectId, StoreError> {
         let id = hash_encoding(kind, body);
-        let path = self.object_path(&id);
         self.require_root()?;
-        match self.get(&id) {
-            Ok(Some(_)) => return Ok(id),
-            Ok(None) => {}
-            Err(StoreError::Corrupt { ref reason, .. })
-                if REPLACE_DAMAGED && *reason != CorruptReason::NotARegularFile => {}
-            Err(error) => return Err(error),
+        if self.present(&id)? {
+            return Ok(id);
         }
-
-        let mut content = kind.header(body.len()).into_bytes();
-        content.extend_from_slice(body);
-        self.publish(&id, &path, &content)?;
+        let (file, temp) = self.write_temp(kind, body)?;
+        let fan_out = self.place(&id, file, temp)?;
+        sync_directory(&fan_out)?;
         Ok(id)
     }
 
-    /// Writes `content` to a temporary file, flushes it, makes it read-only, and renames it to
-    /// `path`.
+    /// Starts a [`Batch`]: objects that are flushed together when it is finished.
+    pub(crate) fn batch(&self) -> Batch<'_> {
+        Batch {
+            store: self,
+            pending: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Whether the object is in place and reads back correctly, so that it need not be written. A
+    /// damaged object counts as absent where it can be replaced (see [`REPLACE_DAMAGED`]); else
+    /// its error is returned, as is the error for an entry that is not a regular file.
+    fn present(&self, id: &ObjectId) -> Result<bool, StoreError> {
+        match self.get(id) {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(StoreError::Corrupt { ref reason, .. })
+                if REPLACE_DAMAGED && *reason != CorruptReason::NotARegularFile =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Writes the file of an object (header and body) to a new temporary file below
+    /// `<root>/tmp/`, without a flush. The file is removed when the guard is dropped.
+    fn write_temp(&self, kind: Kind, body: &[u8]) -> Result<(File, TempFile), StoreError> {
+        let temp_dir = self.root.join("tmp");
+        create_dirs_synced(&self.root, &temp_dir)?;
+        let (mut file, temp) = create_temp(&temp_dir, &mut unique_temp_name)?;
+        file.write_all(kind.header(body.len()).as_bytes())
+            .and_then(|()| file.write_all(body))
+            .map_err(io_error("write the temporary file", &temp.path))?;
+        Ok((file, temp))
+    }
+
+    /// Makes the temporary file of an object read-only, flushes it, and renames it to the path of
+    /// the object, after creating its directory. Returns that directory, which is not flushed
+    /// here: the caller flushes it once for all the objects that it moved there.
     ///
     /// If the rename fails but another writer has stored the same object meanwhile, the call
     /// succeeds, because the content is the same by construction. Any other failure is reported
     /// with the original error. On Unix a rename replaces a file that is already there, so two
     /// writers that race leave one file with identical content.
-    fn publish(&self, id: &ObjectId, path: &Path, content: &[u8]) -> Result<(), StoreError> {
-        let temp_dir = self.root.join("tmp");
-        let fan_out = path.parent().ok_or_else(|| StoreError::Io {
-            operation: "find the directory of the object",
-            path: path.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::InvalidInput, "the path has no parent"),
-        })?;
-        create_dirs_synced(&self.root, &temp_dir)?;
-        create_dirs_synced(&self.root, fan_out)?;
-
-        let (mut file, mut temp) = create_temp(&temp_dir, &mut unique_temp_name)?;
-        file.write_all(content)
-            .map_err(io_error("write the temporary file", &temp.path))?;
+    fn place(&self, id: &ObjectId, file: File, mut temp: TempFile) -> Result<PathBuf, StoreError> {
+        let path = self.object_path(id);
+        let fan_out = path
+            .parent()
+            .ok_or_else(|| StoreError::Io {
+                operation: "find the directory of the object",
+                path: path.clone(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "the path has no parent"),
+            })?
+            .to_path_buf();
+        create_dirs_synced(&self.root, &fan_out)?;
         let mut permissions = file
             .metadata()
             .map_err(io_error("inspect the temporary file", &temp.path))?
@@ -746,62 +777,50 @@ impl FsObjectStore {
             .map_err(io_error("flush the temporary file", &temp.path))?;
         drop(file);
 
-        match fs::rename(&temp.path, path) {
+        match fs::rename(&temp.path, &path) {
             Ok(()) => temp.disarm(),
             Err(error) => {
                 // Another writer may have stored the object in the meantime. Only an object that
                 // reads back correctly counts; the temporary file is removed on drop.
                 return match self.get(id) {
-                    Ok(Some(_)) => Ok(()),
+                    Ok(Some(_)) => Ok(fan_out),
                     _ => Err(StoreError::Io {
                         operation: "move the object into place at",
-                        path: path.to_path_buf(),
+                        path,
                         source: error,
                     }),
                 };
             }
         }
-        sync_directory(fan_out)
-    }
-}
-
-impl ObjectStore for FsObjectStore {
-    fn put_blob(&self, blob: &Blob) -> Result<BlobId, StoreError> {
-        self.put_raw(Kind::Blob, blob.content()).map(BlobId::new)
+        Ok(fan_out)
     }
 
-    fn put_tree(&self, tree: &Tree) -> Result<TreeId, StoreError> {
-        self.put_raw(Kind::Tree, &tree.encode()).map(TreeId::new)
-    }
-
-    fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError> {
-        self.put_raw(Kind::Commit, &commit.encode())
-            .map(CommitId::new)
-    }
-
-    fn get(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
-        let path = self.object_path(id);
-        let metadata = match fs::symlink_metadata(&path) {
+    /// Reads the file at `path` as the object with the ID and checks it, as [`get`] does for
+    /// the file of the object. `None` if there is no file.
+    ///
+    /// [`get`]: ObjectStore::get
+    fn read_checked(&self, id: &ObjectId, path: &Path) -> Result<Option<RawObject>, StoreError> {
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.require_root()?;
                 return Ok(None);
             }
-            Err(error) => return Err(io_error("inspect the object file", &path)(error)),
+            Err(error) => return Err(io_error("inspect the object file", path)(error)),
         };
         let corrupt = |reason| StoreError::Corrupt {
             id: *id,
-            path: path.clone(),
+            path: path.to_path_buf(),
             reason,
         };
         if !metadata.is_file() {
             return Err(corrupt(CorruptReason::NotARegularFile));
         }
-        let mut bytes = match fs::read(&path) {
+        let mut bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             // The object was removed after the check above.
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(io_error("read the object file", &path)(error)),
+            Err(error) => return Err(io_error("read the object file", path)(error)),
         };
 
         let nul = bytes
@@ -832,6 +851,25 @@ impl ObjectStore for FsObjectStore {
         bytes.drain(..=nul);
         Ok(Some(RawObject { kind, body: bytes }))
     }
+}
+
+impl ObjectStore for FsObjectStore {
+    fn put_blob(&self, blob: &Blob) -> Result<BlobId, StoreError> {
+        self.put_raw(Kind::Blob, blob.content()).map(BlobId::new)
+    }
+
+    fn put_tree(&self, tree: &Tree) -> Result<TreeId, StoreError> {
+        self.put_raw(Kind::Tree, &tree.encode()).map(TreeId::new)
+    }
+
+    fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError> {
+        self.put_raw(Kind::Commit, &commit.encode())
+            .map(CommitId::new)
+    }
+
+    fn get(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
+        self.read_checked(id, &self.object_path(id))
+    }
 
     fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
         let path = self.object_path(id);
@@ -843,6 +881,103 @@ impl ObjectStore for FsObjectStore {
             }
             Err(error) => Err(io_error("inspect the object file", &path)(error)),
         }
+    }
+}
+
+/// Objects that are written together and flushed together (ADR-007): each is written to a
+/// temporary file below `tmp/` without a flush, and [`finish`](Self::finish) flushes every file,
+/// moves it into place, and then flushes each directory that received one, once. The one flush of
+/// a directory for many objects is what a batch saves; the first `track` of many files was slowed
+/// by one per object (STEMMA-40).
+///
+/// Until it is finished, a batch answers [`get`](ObjectStore::get) and
+/// [`contains`](ObjectStore::contains) for its own objects as well, so that a tree can be checked
+/// against the blobs of the same batch. Nothing outside the batch sees them. A batch that is
+/// dropped unfinished, because a step failed, removes its files; after a crash they stay in `tmp/`
+/// until the next writer takes the lock (ADR-011). So a crash loses the objects of an unfinished
+/// batch and nothing else: the caller finishes it before a log entry or a pointer names one of
+/// them (ADR-011), and an object that nothing names is harmless (ADR-007).
+///
+/// The caller holds the lock of the references, as every writer of `tmp/` does, so that the
+/// cleanup of `tmp/` cannot remove a file of the batch.
+pub(crate) struct Batch<'a> {
+    store: &'a FsObjectStore,
+    /// The temporary file of each object that is not in place yet.
+    pending: RefCell<HashMap<ObjectId, TempFile>>,
+}
+
+impl Batch<'_> {
+    /// Adds the object, unless the batch or the store has it already. A damaged object in the
+    /// store is replaced where the platform allows it, as [`FsObjectStore::put_raw`] does.
+    fn put_raw(&self, kind: Kind, body: &[u8]) -> Result<ObjectId, StoreError> {
+        let id = hash_encoding(kind, body);
+        if self.pending.borrow().contains_key(&id) {
+            return Ok(id);
+        }
+        self.store.require_root()?;
+        if self.store.present(&id)? {
+            return Ok(id);
+        }
+        let (file, temp) = self.store.write_temp(kind, body)?;
+        drop(file);
+        self.pending.borrow_mut().insert(id, temp);
+        Ok(id)
+    }
+
+    /// Flushes every object of the batch and moves it into place, then flushes the directories
+    /// that received one. After an error, the objects that were moved stay, which is harmless, and
+    /// the files of the others are removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Io`] if a file cannot be opened, flushed, or moved, or a directory
+    /// cannot be created or flushed, and [`StoreError::Corrupt`] as [`FsObjectStore::put_raw`]
+    /// does for an entry in the way.
+    pub(crate) fn finish(self) -> Result<(), StoreError> {
+        let mut directories = BTreeSet::new();
+        for (id, temp) in self.pending.into_inner() {
+            // The file is opened again to flush it, so that a large batch keeps no file open.
+            let file = OpenOptions::new()
+                .write(true)
+                .open(&temp.path)
+                .map_err(io_error("open the temporary file", &temp.path))?;
+            directories.insert(self.store.place(&id, file, temp)?);
+        }
+        for directory in &directories {
+            sync_directory(directory)?;
+        }
+        Ok(())
+    }
+}
+
+impl sealed::Sealed for Batch<'_> {}
+
+impl ObjectStore for Batch<'_> {
+    fn put_blob(&self, blob: &Blob) -> Result<BlobId, StoreError> {
+        self.put_raw(Kind::Blob, blob.content()).map(BlobId::new)
+    }
+
+    fn put_tree(&self, tree: &Tree) -> Result<TreeId, StoreError> {
+        self.put_raw(Kind::Tree, &tree.encode()).map(TreeId::new)
+    }
+
+    fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError> {
+        self.put_raw(Kind::Commit, &commit.encode())
+            .map(CommitId::new)
+    }
+
+    fn get(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
+        match self.pending.borrow().get(id) {
+            Some(temp) => self.store.read_checked(id, &temp.path),
+            None => self.store.get(id),
+        }
+    }
+
+    fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
+        if self.pending.borrow().contains_key(id) {
+            return Ok(true);
+        }
+        self.store.contains(id)
     }
 }
 
@@ -1836,6 +1971,118 @@ mod tests {
             assert!(metadata.permissions().readonly());
             assert_eq!(temp_entries(&dir), 0);
         }
+    }
+
+    // Batch
+
+    #[test]
+    fn a_batch_stores_the_objects_that_single_writes_store() {
+        let single = TempDir::new();
+        let batched = TempDir::new();
+        let entry = |name: &str, id: BlobId| TreeEntry::file(name, FileMode::File, id).unwrap();
+        let objects = |store: &dyn ObjectStore| {
+            let one = store.put_blob(&Blob::new("one")).unwrap();
+            let two = store.put_blob(&Blob::new("two")).unwrap();
+            let again = store.put_blob(&Blob::new("one")).unwrap();
+            assert_eq!(one, again);
+            let tree = store
+                .put_tree(&Tree::new(vec![entry("a", one), entry("b", two)]).unwrap())
+                .unwrap();
+            vec![one.object_id(), two.object_id(), tree.object_id()]
+        };
+        let expected = objects(&single.store());
+        let store = batched.store();
+        let batch = store.batch();
+        assert_eq!(objects(&batch), expected);
+        for id in &expected {
+            assert!(
+                !store.contains(id).unwrap(),
+                "nothing is in place before the finish"
+            );
+            assert!(batch.contains(id).unwrap());
+            assert!(batch.get(id).unwrap().is_some());
+        }
+        assert_eq!(temp_entries(&batched), 3, "one file for each object");
+        batch.finish().unwrap();
+        for id in &expected {
+            let path = store.object_path(id);
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                fs::read(single.store().object_path(id)).unwrap()
+            );
+            assert!(fs::metadata(&path).unwrap().permissions().readonly());
+        }
+        assert_eq!(temp_entries(&batched), 0);
+    }
+
+    #[test]
+    fn a_batch_writes_no_object_that_the_store_has() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let stored = store.put_blob(&Blob::new("hello")).unwrap();
+        let batch = store.batch();
+        assert_eq!(batch.put_blob(&Blob::new("hello")).unwrap(), stored);
+        assert_eq!(temp_entries(&dir), 0);
+        batch.finish().unwrap();
+        assert_eq!(
+            store.get(&stored.object_id()).unwrap().unwrap().body(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn a_batch_that_is_dropped_leaves_no_object_and_removes_its_files() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let batch = store.batch();
+        let id = batch.put_blob(&Blob::new("hello")).unwrap();
+        assert_eq!(temp_entries(&dir), 1);
+        drop(batch);
+        assert!(!store.contains(&id.object_id()).unwrap());
+        assert_eq!(temp_entries(&dir), 0);
+    }
+
+    #[test]
+    fn a_batch_replaces_a_damaged_object_where_a_single_write_does() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let stored = store.put_blob(&Blob::new("hello")).unwrap();
+        overwrite(&store.object_path(&stored.object_id()), b"garbage");
+        let batch = store.batch();
+        let result = batch.put_blob(&Blob::new("hello"));
+        if REPLACE_DAMAGED {
+            assert_eq!(result.unwrap(), stored);
+            assert_eq!(
+                batch.get(&stored.object_id()).unwrap().unwrap().body(),
+                b"hello",
+                "the batch reads its own copy"
+            );
+            batch.finish().unwrap();
+            assert_eq!(
+                store.get(&stored.object_id()).unwrap().unwrap().body(),
+                b"hello"
+            );
+        } else {
+            assert!(matches!(result, Err(StoreError::Corrupt { .. })));
+        }
+    }
+
+    #[test]
+    fn a_batch_that_cannot_move_an_object_names_it_and_removes_its_file() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blocked = Blob::new("blocked").id();
+        let blocked_path = store.object_path(&blocked.object_id());
+        let batch = store.batch();
+        batch.put_blob(&Blob::new("blocked")).unwrap();
+        // A directory takes the path of the object after it was written to the batch.
+        fs::create_dir_all(blocked_path.join("inner")).unwrap();
+        let error = batch.finish().unwrap_err();
+        assert!(
+            matches!(&error, StoreError::Io { path, .. } if *path == blocked_path),
+            "{error:?}"
+        );
+        assert_eq!(temp_entries(&dir), 0, "the file of the object is removed");
     }
 
     #[test]
