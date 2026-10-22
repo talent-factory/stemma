@@ -102,7 +102,7 @@ jobs:
       - name: Fuzz every reader
         run: just fuzz-all 60
       - name: Keep the findings
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v6
         with:
           name: fuzz-artifacts

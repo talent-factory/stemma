@@ -123,11 +123,12 @@ ci: format-check lint doc-check doc-lines test
 # Needs nightly and cargo-fuzz (rustup toolchain install nightly; cargo install cargo-fuzz
 # --locked), so it is not part of `ci`. New inputs go to fuzz/corpus/TARGET, a finding to
 # fuzz/artifacts/TARGET; fuzz/seeds/TARGET holds the valid encodings that the fuzzer starts from.
+# An input that takes longer than ten seconds is a finding, so that a hang cannot use up the run.
 [group('Quality')]
 fuzz target seconds="300":
     mkdir -p fuzz/corpus/{{target}}
     cargo +nightly fuzz run {{target}} fuzz/corpus/{{target}} fuzz/seeds/{{target}} -- \
-        -max_total_time={{seconds}}
+        -max_total_time={{seconds}} -timeout=10
 
 # Fuzz every strict reader in turn, SECONDS seconds each (see `fuzz`). Every target runs; the
 # recipe fails at the end if one of them failed, and names those.
@@ -135,9 +136,10 @@ fuzz target seconds="300":
 fuzz-all seconds="60":
     #!/usr/bin/env bash
     set -uo pipefail
+    trap 'exit 130' INT
     failed=()
     for target in tree commit actor index entry journal; do
-        {{just_executable()}} fuzz "$target" {{seconds}} || failed+=("$target")
+        "{{just_executable()}}" fuzz "$target" {{seconds}} || failed+=("$target")
     done
     if (( ${#failed[@]} > 0 )); then
         echo "fuzzing failed for: ${failed[*]}" >&2
