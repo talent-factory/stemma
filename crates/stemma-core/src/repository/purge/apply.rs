@@ -418,7 +418,8 @@ impl Repository {
     ///
     /// Returns [`ApplyPurgeError::Plan`] for the errors of [`plan_purge`](Self::plan_purge),
     /// [`ApplyPurgeError::Pending`] if a purge has not finished, [`ApplyPurgeError::Snapshot`] if
-    /// the snapshot fails, [`ApplyPurgeError::Start`] if the purge cannot start under the lock, and
+    /// the snapshot fails (with [`RefError::Locked`] while another command holds the lock; nothing
+    /// is written then), [`ApplyPurgeError::Start`] if the purge cannot start under the lock, and
     /// [`ApplyPurgeError::Stopped`] if a step after the journal fails; then the journal stays.
     pub fn apply_purge(
         &self,
@@ -887,7 +888,8 @@ mod tests {
     use crate::object::{Blob, Kind, Tree};
     use crate::oplog::{check_stubs, OperationName};
     use crate::refs::{encode_branch, BranchName, Head};
-    use crate::repository::{InitOptions, RestoreError, UpdateError};
+    use crate::repository::snapshot::pause::Stage;
+    use crate::repository::{InitOptions, RestoreError, Restored, UpdateError};
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
 
@@ -1541,7 +1543,8 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         history(&dir, &repository);
-        // Another process changes the references.
+        // Another process changes the references. The snapshot of the purge takes the lock
+        // first, before its first object, and is refused.
         fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let before = ids(&repository);
         let error = repository
@@ -1550,7 +1553,9 @@ mod tests {
         assert!(
             matches!(
                 error,
-                ApplyPurgeError::Start(PurgeFailure::Refs(RefError::Locked { .. }))
+                ApplyPurgeError::Snapshot(SnapshotError::Update(UpdateError::Refs(
+                    RefError::Locked { .. }
+                )))
             ),
             "{error:?}"
         );
@@ -1688,5 +1693,197 @@ mod tests {
         stop_at(&repository, Stop::Journal);
         let aborted = repository.abort_purge(&actor(), &AllowAll).unwrap();
         assert!(aborted.removed().is_empty(), "{:?}", aborted.removed());
+    }
+
+    /// The objects that the pointers reach, through parents and tree entries, are all in the
+    /// store: no pointer names a commit with a dangling reference.
+    fn assert_reachable_objects_exist(repository: &Repository) {
+        let store = repository.objects();
+        let refs = repository.refs();
+        let mut todo: Vec<ObjectId> = vec![refs.working_copy().unwrap().object_id()];
+        todo.extend(
+            refs.branches()
+                .unwrap()
+                .iter()
+                .map(|(_, id)| id.object_id()),
+        );
+        if let Head::Detached(commit) = refs.head().unwrap() {
+            todo.push(commit.object_id());
+        }
+        let mut seen = BTreeSet::new();
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let raw = store.get(&id).unwrap();
+            let raw = raw.unwrap_or_else(|| panic!("{id} is reachable but missing"));
+            match store.kind_of(&id).unwrap() {
+                Some(Kind::Commit) => {
+                    let commit = crate::object::Commit::parse(raw.body()).unwrap();
+                    todo.push(commit.tree().object_id());
+                    todo.extend(commit.parents().iter().map(|parent| parent.object_id()));
+                }
+                Some(Kind::Tree) => {
+                    let tree = Tree::parse(raw.body()).unwrap();
+                    todo.extend(tree.entries().iter().map(|entry| entry.id()));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Runs a purge of the secret when this thread next reaches `stage`, while the writer holds
+    /// the lock, as a second process in the same repository would, and returns its error.
+    fn purge_at_the_stop_point(
+        dir: &TempDir,
+        stage: Stage,
+    ) -> std::rc::Rc<std::cell::RefCell<Option<String>>> {
+        let result = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let (path, seen) = (dir.path().to_path_buf(), result.clone());
+        crate::repository::snapshot::pause::at_next(stage, move || {
+            let other = Repository::open(&path).unwrap();
+            let error = other
+                .apply_purge(secret(), &actor(), &AllowAll)
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    ApplyPurgeError::Snapshot(SnapshotError::Update(UpdateError::Refs(
+                        RefError::Locked { .. }
+                    )))
+                ),
+                "{error:?}"
+            );
+            assert!(!error.pending());
+            assert!(!journal_exists_at(&path), "the purge wrote no journal");
+            *seen.borrow_mut() = Some(error.to_string());
+        });
+        result
+    }
+
+    fn journal_exists_at(path: &std::path::Path) -> bool {
+        path.join(".stemma").join("purge-pending").exists()
+    }
+
+    #[test]
+    fn a_purge_cannot_overtake_a_snapshot_that_saved_the_secret_again() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        // The writer saves the secret again (the blob exists, so its save is no change) and
+        // another file that changed, so that it moves the working-copy commit.
+        write(&dir, "a.txt", "changed again");
+        let refused = purge_at_the_stop_point(&dir, Stage::Saved);
+        let entry = repository.snapshot(&actor(), &AllowAll).unwrap();
+        assert!(
+            entry.is_some(),
+            "the snapshot moved the working-copy commit"
+        );
+        assert!(
+            refused.borrow().is_some(),
+            "the purge ran at the stop point"
+        );
+        assert_eq!(format(&dir), "stemma-repository 2\n");
+        assert!(!lock_exists(&dir));
+        assert!(repository.objects().contains(&secret()).unwrap());
+        assert_reachable_objects_exist(&repository);
+        // Run again afterwards, the purge sees the snapshot and removes the secret from it too.
+        let purged = apply(&repository);
+        assert_purged(&dir, &repository, &purged);
+        assert_reachable_objects_exist(&repository);
+    }
+
+    #[test]
+    fn a_purge_cannot_overtake_a_commit_between_its_snapshot_and_its_moves() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        write(&dir, "a.txt", "fourth");
+        let refused = purge_at_the_stop_point(&dir, Stage::Moves);
+        let committed = repository.commit("fourth", &actor(), &AllowAll).unwrap();
+        assert!(
+            refused.borrow().is_some(),
+            "the purge ran at the stop point"
+        );
+        assert!(!lock_exists(&dir));
+        let refs = repository.refs();
+        let main = BranchName::new("main").unwrap();
+        assert_eq!(refs.branch(&main).unwrap(), Some(committed.commit));
+        assert_eq!(refs.working_copy().unwrap(), committed.working_copy);
+        assert_reachable_objects_exist(&repository);
+        let purged = apply(&repository);
+        assert_purged(&dir, &repository, &purged);
+    }
+
+    #[test]
+    fn a_purge_cannot_overtake_a_restore_between_its_snapshot_and_its_moves() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let last = repository
+            .oplog()
+            .numbers()
+            .unwrap()
+            .into_iter()
+            .max()
+            .unwrap();
+        write(&dir, "a.txt", "unsaved");
+        let refused = purge_at_the_stop_point(&dir, Stage::Moves);
+        let restored = repository.restore(last, true, &actor(), &AllowAll).unwrap();
+        assert!(matches!(restored, Restored::Done { .. }), "{restored:?}");
+        assert!(
+            refused.borrow().is_some(),
+            "the purge ran at the stop point"
+        );
+        assert!(!lock_exists(&dir));
+        assert_reachable_objects_exist(&repository);
+        let purged = apply(&repository);
+        assert_purged(&dir, &repository, &purged);
+    }
+
+    #[test]
+    fn a_writer_after_a_stopped_purge_writes_no_object_and_the_abort_is_clean() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Objects);
+        let before = ids(&repository);
+        write(&dir, "a.txt", "changed");
+        let error = repository.snapshot(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                SnapshotError::Update(UpdateError::Refs(RefError::PurgePending { .. }))
+            ),
+            "{error:?}"
+        );
+        assert_eq!(ids(&repository), before, "the writer wrote no object");
+        repository.abort_purge(&actor(), &AllowAll).unwrap();
+        assert!(!journal_exists(&dir));
+        assert!(!lock_exists(&dir));
+        assert_reachable_objects_exist(&repository);
+        repository.snapshot(&actor(), &AllowAll).unwrap();
+        assert_reachable_objects_exist(&repository);
+    }
+
+    #[test]
+    fn a_snapshot_holds_the_lock_from_its_objects_to_its_move_and_releases_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        write(&dir, "a.txt", "changed");
+        let path = dir.path().to_path_buf();
+        crate::repository::snapshot::pause::at_next(Stage::Saved, move || {
+            assert!(path.join(".stemma").join("refs.lock").exists());
+        });
+        repository.snapshot(&actor(), &AllowAll).unwrap();
+        assert!(!lock_exists(&dir));
+        // A snapshot that fails after its lock releases it too.
+        fs::remove_file(dir.path().join("a.txt")).unwrap();
+        let error = repository
+            .track(&["a.txt".to_owned()], &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(error.to_string().contains("a.txt"), "{error}");
+        assert!(!lock_exists(&dir));
     }
 }

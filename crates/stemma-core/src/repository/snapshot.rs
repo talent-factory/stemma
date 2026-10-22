@@ -21,7 +21,7 @@ use crate::object::{
     TreeParseError,
 };
 use crate::oplog::{Entry, OperationName};
-use crate::refs::RefError;
+use crate::refs::{RefError, WriteLock};
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
 
@@ -70,6 +70,11 @@ impl Repository {
     /// file cannot be read or is replaced while it is read, and [`SnapshotError::Index`] if the
     /// working directory changes so that one path is a file and a directory. Nothing but objects
     /// is written before the move, and an object that no commit names is harmless.
+    ///
+    /// The lock of the references is taken after the authorizer agreed and before the first file
+    /// is read, and held to the move (ADR-014): a purge cannot start in between, and a lock that
+    /// another command holds is `UpdateError::Refs` with [`RefError::Locked`], as is the journal
+    /// of a purge that has not finished with [`RefError::PurgePending`]. Both write nothing.
     pub fn snapshot(
         &self,
         actor: &Actor,
@@ -111,10 +116,53 @@ impl Repository {
     ) -> Result<Replaced, E> {
         self.authorize(actor, authorizer, operation, "working-copy")
             .map_err(SnapshotError::Update)?;
-        // A purge that has not finished keeps every writer out, before its first object (ADR-014).
+        let lock = self.lock_writer()?;
+        self.replace_locked(&lock, operation, actor, additions)
+    }
+
+    /// Takes the lock of the references for a command that writes, before its first object
+    /// (ADR-014). The lock refuses while the journal of a purge exists, and a purge cannot start
+    /// while it is held, so no purge deletes an object that the command saves and names.
+    pub(super) fn lock_writer(&self) -> Result<WriteLock, SnapshotError> {
         self.refs_store()
-            .refuse_pending_purge()
-            .map_err(|error| SnapshotError::Update(UpdateError::Refs(error)))?;
+            .lock_writer()
+            .map_err(|error| SnapshotError::Update(UpdateError::Refs(error)))
+    }
+
+    /// The [`snapshot`](Self::snapshot) of a command that holds the lock already: `commit` and
+    /// `op restore` take it before their snapshot and keep it to their own move.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`snapshot`](Self::snapshot) returns.
+    pub(super) fn snapshot_locked(
+        &self,
+        lock: &WriteLock,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Option<Entry>, SnapshotError> {
+        let operation =
+            OperationName::new(OPERATION).expect("`snapshot` is a valid operation name");
+        self.authorize(actor, authorizer, &operation, "working-copy")
+            .map_err(SnapshotError::Update)?;
+        let replaced = self.replace_locked(lock, &operation, actor, |_| {
+            Ok::<_, SnapshotError>(Vec::new())
+        })?;
+        match replaced.late {
+            Some(error) => Err(SnapshotError::Update(error)),
+            None => Ok(replaced.entry),
+        }
+    }
+
+    /// The work of [`replace_working_copy`](Self::replace_working_copy) under the lock, after the
+    /// authorizer agreed.
+    fn replace_locked<E: From<SnapshotError>>(
+        &self,
+        lock: &WriteLock,
+        operation: &OperationName,
+        actor: &Actor,
+        additions: impl FnOnce(&Path) -> Result<Vec<Tracked>, E>,
+    ) -> Result<Replaced, E> {
         let current = self.refs().working_copy().map_err(SnapshotError::Refs)?;
         let commit = read_commit(self.objects(), current)?;
         let tracked = tracked_files(self.objects(), commit.tree())?;
@@ -140,6 +188,8 @@ impl Repository {
                 return Err(SnapshotError::Gone { path: file.path }.into());
             }
         }
+        #[cfg(test)]
+        pause::reached(pause::Stage::Saved);
         let tree = index
             .write_tree(self.objects())
             .map_err(SnapshotError::WriteTree)?;
@@ -155,7 +205,7 @@ impl Repository {
             .objects()
             .put_commit(&replacement)
             .map_err(|error| SnapshotError::Store(Box::new(error)))?;
-        match self.move_working_copy(operation, current, new, actor) {
+        match self.move_working_copy(lock, operation, current, new, actor) {
             Ok(entry) => Ok(Replaced {
                 entry,
                 added: saved,
@@ -531,6 +581,52 @@ impl fmt::Display for SnapshotError {
 }
 
 impl Error for SnapshotError {}
+
+/// The stop points of a writer for a test: a step that runs while the writer holds the lock. A
+/// test runs another command there to reproduce an interleaving of two processes (ADR-014).
+#[cfg(test)]
+pub(super) mod pause {
+    use std::cell::RefCell;
+
+    /// Where the step runs.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(in crate::repository) enum Stage {
+        /// In a snapshot, after the files are saved and before the tree is written and the
+        /// working-copy commit moves.
+        Saved,
+        /// In `commit` and `op restore`, after their snapshot and before their moves.
+        Moves,
+    }
+
+    /// A step that a test set, with the stage where it runs.
+    type Step = (Stage, Box<dyn FnOnce()>);
+
+    thread_local! {
+        static STEP: RefCell<Option<Step>> = RefCell::new(None);
+    }
+
+    /// Runs `step` when this thread next reaches `stage`.
+    pub(in crate::repository) fn at_next(stage: Stage, step: impl FnOnce() + 'static) {
+        STEP.with(|cell| *cell.borrow_mut() = Some((stage, Box::new(step))));
+    }
+
+    /// A stop point: runs the step that a test set for `stage`, once.
+    pub(in crate::repository) fn reached(stage: Stage) {
+        let step = STEP.with(|cell| {
+            let mut cell = cell.borrow_mut();
+            match cell.take() {
+                Some((at, step)) if at == stage => Some(step),
+                other => {
+                    *cell = other;
+                    None
+                }
+            }
+        });
+        if let Some(step) = step {
+            step();
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

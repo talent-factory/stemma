@@ -1,8 +1,9 @@
 # ADR-014: Removing a secret from the history and the operation log
 
 **Status:** Accepted and implemented: the plan (STEMMA-46), the stub with the `purge` entry in
-the log (STEMMA-47), and the purge itself with the journal, resume, abort, and format 3
-(STEMMA-48). The decisions marked *(confirmed)* were
+the log (STEMMA-47), the purge itself with the journal, resume, abort, and format 3
+(STEMMA-48), and the lock that a writer takes before its first object (STEMMA-49, agreed with
+the author on 2026-10-22). The decisions marked *(confirmed)* were
 agreed with the author on 2026-10-21 (STEMMA-26), and the author confirmed the whole ADR on the
 same day, including the steps, the journal, the lock, resume, and abort. The slices are listed at
 the end. The open items at the end are questions for the slices and for later; none of them
@@ -96,8 +97,10 @@ Facts that bound the design:
 A purge holds the repository lock from the plan to the end and keeps a journal. The lock is the
 file `refs.lock`, which is not re-entrant, so the purge needs an internal path that writes the
 `purge` entry and moves the pointers while it holds the lock (`Lock` is private to the references
-today). The lock does not cover the writes of objects, which a snapshot makes before it takes the
-lock, so the journal is what keeps other writers out.
+today). Every other command that writes takes the same lock before its first object and keeps it
+to its last move (STEMMA-49, see "Writers refuse"), so a purge and a writer cannot overlap. The
+journal keeps writers out while a purge that stopped has not been resumed or aborted, when no
+lock may be held.
 
 1. **Refuse an agent** before anything is written. `stemma purge BLOB` without `--apply` prints
    the plan and writes nothing, not even a snapshot, as `op restore --dry-run` does (ADR-013).
@@ -128,12 +131,37 @@ lock, so the journal is what keeps other writers out.
      repository. An abort leaves format 3, as a format is never lowered, and `init` still writes
      version 2.
    - **Writers refuse.** Every command that writes (`track`, `commit`, `status`, `op restore`)
-     checks for the journal first, before it writes any object, and again under the lock, and
-     says that `stemma purge --resume` or `--abort` has to come first. The lock alone cannot do
-     this: it only answers "locked". The check before the first object is in the snapshot that
-     every writer takes first, and at the start of `commit` and `op restore`; the check under the
-     lock is in the lock itself, so every pointer that moves is covered, and a lock that a purge
-     holds or left behind is reported as the purge (`RefError::PurgePending`).
+     takes the lock of the references before it writes its first object and keeps it to its
+     last move (STEMMA-49). The journal is checked under the lock, in the lock itself, so a
+     writer refuses while a purge has not finished and says that `stemma purge --resume` or
+     `--abort` has to come first; a lock that a purge holds or left behind is reported as the
+     purge (`RefError::PurgePending`), not as "locked". The snapshot takes the lock after the
+     authorizer agreed and before the first file is read; `commit` and `op restore` take it
+     before their snapshot and keep it over the snapshot and their own moves, through an internal
+     path, as the lock is not re-entrant. `op restore` also checks for the journal before it
+     judges the entry, so a pending purge is named first.
+   - **Why the writer locks before its first object** (STEMMA-49). A writer that checked for the
+     journal before the purge wrote it, and moved its pointer after the purge removed it, could
+     name an object that the purge deleted: a blob that its snapshot saved again (a no-op, as the
+     blob still existed), or a tree that the purge had written as new and an abort removed. With
+     the lock held from the first object, a purge cannot start while a writer saves, and a writer
+     cannot start while a purge runs, so the window is closed. Two other ways were weighed. A
+     counter of purges in `.stemma/` that a writer reads before its first object and compares
+     under the lock would close it as well, with a new file in the layout (ADR-009) and an order
+     of reads and writes that every writer and the purge must keep. A check under the lock that
+     every object the new commit reaches exists would cost a walk of the whole tree at every
+     `status`, under the lock, and a walk of its own for every kind of pointer. The lock is the
+     simplest rule and also covers a later deleter (a garbage collection, ADR-007).
+   - **The price of the longer lock.** A writer holds the lock as long as its snapshot takes:
+     about 0.04 s for 100 files, 0.7 s for 10,000, and 3.3 s for 50,000 (STEMMA-37, ADR-010), and
+     longer for the first `track`, which flushes every object (STEMMA-40). A second command that
+     writes in the same repository meanwhile fails at once with `Locked` (two processes in one
+     repository are not supported, ADR-010), and `op log` reads the newest entry as possibly
+     unfinished while the lock is held (ADR-011). Ctrl-C and a termination signal remove the lock
+     before the process ends (exit code 130), so an interrupted command does not leave it behind;
+     an interrupted writer is left as a crash leaves it, with objects that no commit names and at
+     most an entry without its move. `kill -9` and a crash of the system still leave the lock, as
+     before (ADR-008).
 5. Write the new trees and commits. They are new objects, so nothing is lost yet.
 6. Check all pointers against the values of the plan, then write the `purge` entry and move the
    pointers. If a pointer differs before the first move, nothing has moved: the call fails and
@@ -145,10 +173,10 @@ lock, so the journal is what keeps other writers out.
 
 **Resume.** `stemma purge --resume` reads the journal and repeats the steps from step 5. A crash
 leaves `refs.lock` behind (ADR-011), and the lock would stop the resume. While the journal exists,
-`--resume` and `--abort` treat the lock as the purge's own and remove it, and the message of
-`Locked` of any other command names the journal. Each step can be repeated: a new object that
-exists is a no-op (ADR-007), a pointer that already has its new value is skipped, a stub is
-replaced by itself, and a deleted object is gone. The `purge` entry is found, not written again:
+`--resume` and `--abort` treat the lock as the purge's own and remove it, and any other command that
+writes fails with `PurgePending`, whose message names the journal. Each step can be repeated: a new
+object that exists is a no-op (ADR-007), a pointer that already has its new value is skipped, a stub
+is replaced by itself, and a deleted object is gone. The `purge` entry is found, not written again:
 it is the entry with an operation `purge` and a number above the one that the journal recorded.
 A pointer that is at neither its old nor its new value (a foreign change after the lock was
 removed by hand) makes `--resume` refuse and name the pointer. Because the journal holds the delete
@@ -194,13 +222,14 @@ object, an unreadable log) is left for a person to repair.
 - The tip file (ADR-011) is not affected: a stub keeps the number.
 - The layout (ADR-009) gets the file `.stemma/purge-pending`, and `Repository::open` has to
   accept it and the writers have to check for it.
-- The journal keeps out a writer that starts while it exists, not one that started before it.
-  A command that checked before the journal was written and takes the lock after the purge
-  removed it finds no journal, and can name an object that the purge deleted (a blob that its
-  snapshot saved again, or a tree that an abort removed). The window needs two processes in one
-  repository at once, which ADR-010 does not support; a check of every object under the lock,
-  or a counter of purges that a writer reads first and compares under the lock, would close it
-  (STEMMA-49).
+- A writer that started before a purge cannot overtake it (STEMMA-49): it holds the lock from
+  its first object to its last move, so the purge fails with `Locked` before its format and its
+  journal, and can be run again once the writer is done. The window that the journal alone left
+  open (a writer that checked before the journal and moved after the purge) is closed. A test
+  runs a purge at a stop point of a snapshot, a `commit`, and an `op restore` and shows that the
+  purge is refused and that no pointer reaches a missing object. The public moves of
+  `Repository` (`update_branch`, `set_head`, `update_working_copy`) take the lock only for the
+  move: their caller writes its objects itself, before the call, and is responsible for them.
 - `--resume` and `--abort` take any lock for the one that the purge left behind. A purge that is
   still running in another terminal loses its lock that way; this is advisory, as the lock is,
   and the documentation says not to resume a purge that runs.
@@ -225,6 +254,8 @@ object, an unreadable log) is left for a person to repair.
 - [x] The form of the journal, when the format moves to 3, and how a writer is kept out: see
       step 4 (STEMMA-48). A purge that is resumed before its entry makes the new objects again
       from the old ones, which are still there, and checks them against the journal.
+- [x] A writer that checked before the journal and moves after the purge: it takes the lock
+      before its first object and keeps it to its last move (STEMMA-49, see step 4).
 - [ ] How the user names the secret. The blob ID is the unit; a path or a pattern that finds the
       blobs in the history is a convenience, and a text that is replaced inside a file (instead
       of removing the file from the tree) would keep the file tracked. The first version takes
@@ -251,4 +282,5 @@ refusing a stub (STEMMA-47), and `--apply` with the snapshot, the new objects, t
 removal of the objects, resume, and abort, and the move of the repository to format 3 with its
 first purge (STEMMA-48: `Repository::apply_purge`, `resume_purge`, and `abort_purge`). The apply
 waited for the other two, as a pointer moves only with an entry and a purge without stubs and
-removal would leave the secret in place.
+removal would leave the secret in place. The lock of a writer from its first object, with the
+removal of the lock on Ctrl-C, closed the window of an early writer (STEMMA-49).

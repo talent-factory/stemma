@@ -151,12 +151,13 @@ impl Repository {
     ///
     /// The steps are: the authorizer is asked for `restore` (the target is the entry); the log is
     /// read and the outcome of the entry is judged; the plan is made once, so that a missing
-    /// commit or a file in the way is found before anything is written; a snapshot of the
-    /// directory is taken (a second question to the authorizer, `snapshot`), so that no unsaved
-    /// change is lost; then, under the lock of the references, the plan is made again from the
-    /// values the lock sees, the entry is written and flushed, the directory is brought to the old
-    /// tree, and the pointers move: the branches first, then the working-copy commit, and HEAD
-    /// last (ADR-013).
+    /// commit or a file in the way is found before anything is written; the lock of the
+    /// references is taken and held to the last move, so that no purge comes in between
+    /// (ADR-014); a snapshot of the directory is taken (a second question to the authorizer,
+    /// `snapshot`), so that no unsaved change is lost; then the plan is made again from the values
+    /// the lock sees, the entry is written and flushed, the directory is brought to the old tree,
+    /// and the pointers move: the branches first, then the working-copy commit, and HEAD last
+    /// (ADR-013).
     ///
     /// Each pointer is judged on its own: the restore puts the old value of every pointer that the
     /// entry names back, whether or not the entry took effect and even if other entries moved the
@@ -201,6 +202,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Restored, RestoreError> {
+        // A purge that has not finished is named first, before the entry is judged; the lock
+        // below refuses it again.
         self.refs_store()
             .refuse_pending_purge()
             .map_err(RestoreError::Refs)?;
@@ -208,7 +211,15 @@ impl Repository {
         if prepared.plan.is_none() {
             return Ok(Restored::NothingToRestore { snapshot: None });
         }
-        let (snapshot, mut snapshot_late) = match self.snapshot(actor, authorizer) {
+        // One lock from the first object of the snapshot to the last move, so that no purge
+        // comes in between and deletes an object that the restore names (ADR-014). It is taken
+        // after the plan above: the plan judges the newest entry by the lock (`is_locked`), and
+        // would take the lock of this call for one of an unfinished command.
+        let lock = self
+            .refs_store()
+            .lock_writer()
+            .map_err(RestoreError::Refs)?;
+        let (snapshot, mut snapshot_late) = match self.snapshot_locked(&lock, actor, authorizer) {
             Ok(entry) => (entry, None),
             // The snapshot was made and the pointer moved; only the flush is not known. The
             // restore goes on, as the unsaved work is in the log, and reports the flush at the end.
@@ -218,10 +229,12 @@ impl Repository {
             Err(error) => return Err(RestoreError::Snapshot(error)),
         };
         let snapshot = snapshot.map(Box::new);
+        #[cfg(test)]
+        super::snapshot::pause::reached(super::snapshot::pause::Stage::Moves);
         let operation = OperationName::new(OPERATION).expect("`restore` is a valid operation name");
         let logged =
             self.refs_store()
-                .restore_after(&prepared.targets(), self.objects(), |moves| {
+                .restore_after(&lock, &prepared.targets(), self.objects(), |moves| {
                     let plan = self.make_plan(number, moves)?;
                     let change = Change::new(
                         now(),

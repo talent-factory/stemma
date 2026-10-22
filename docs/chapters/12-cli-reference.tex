@@ -82,11 +82,26 @@ Bei \type{purge} heisst Code 3 meist, dass das Journal eines Purge besteht: Er b
 Dann muss \type{purge --resume} oder \type{purge --abort} kommen (siehe dort).
 Code 3 gilt auch für einen Purge, der gemacht ist, dessen Ausgabe oder Sicherung aber
 scheiterte; dann besteht kein Journal mehr.
+\item {\bf 130:} Der Befehl wurde mit Ctrl-C (oder einem Signal zum Beenden) unterbrochen.
+Er hat die Sperre der Referenzen entfernt, bevor er endete. Was er bis dahin schrieb, bleibt
+wie nach einem Absturz: Objekte, die kein Commit nennt, und höchstens ein Eintrag ohne seinen
+Zug. Ein erneuter Aufruf ist unbedenklich; nur nach einem unterbrochenen \type{purge --apply},
+dessen Journal schon besteht, muss zuerst \type{purge --resume} oder \type{purge --abort} kommen.
 \stopitemize
 
+{\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{status},
+\type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt
+schreibt, und hält sie bis zu seinem letzten Zug, also mindestens so lange, wie sein Snapshot
+dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
+Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit
+Exit-Code 1 ab und meldet die Sperre; er wartet nicht. Zwei Prozesse in einem Repository
+sind ohnehin nicht vorgesehen. Eine Sperre bleibt nur nach \type{kill -9} oder einem Absturz
+liegen (oder wenn das Programm Ctrl-C nicht abfangen konnte); dann nennt die Meldung die Datei,
+die zu entfernen ist.
+
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
-lehnen \type{track}, \type{commit}, \type{status} und \type{op restore} ab, bevor sie ein
-Objekt schreiben, und noch einmal unter der Sperre der Referenzen (Exit-Code 1). Die Meldung
+lehnen \type{track}, \type{commit}, \type{status} und \type{op restore} ab, wenn sie die
+Sperre nehmen, also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
 nennt das Journal, \type{stemma purge --resume} und \type{--abort}. Lesen bleibt möglich:
 \type{op log}, \type{op restore --dry-run} und \type{purge} ohne \type{--apply} laufen.
 
@@ -872,10 +887,10 @@ das Verzeichnis zuerst und plant unter der Sperre neu.
 Eine Datei, deren Blob entfernt wird, verlässt den Baum und ist danach nicht mehr verfolgt;
 das Verzeichnis bleibt, wie es ist, und ein späteres \type{track} nähme das Geheimnis wieder
 auf, wenn \type{.stemmaignore} es nicht nennt.
-Ein Befehl, der vor dem Journal begann und den Purge überdauert, findet unter der Sperre kein
-Journal mehr und kann ein Objekt nennen, das der Purge gelöscht hat. Deshalb läuft ein Purge
-allein, wie jeder Akteur in seiner eigenen Arbeitskopie arbeitet (ADR-010); die Lücke zu
-schliessen ist offen (STEMMA-49).
+Ein Befehl, der vor dem Purge begann, hält die Sperre schon, bevor er sein erstes Objekt
+schreibt; der Purge bricht dann mit Exit-Code 1 ab, bevor er das Format hebt oder das Journal
+schreibt, und lässt sich danach wiederholen. So kann kein Befehl ein Objekt nennen, das der
+Purge gelöscht hat (STEMMA-49).
 Was ein Purge nicht garantiert (Kopien im Dateisystem, Dateien in \type{tmp/},
 Nachrichten und Pfadnamen), steht in ADR-014.
 
