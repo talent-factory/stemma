@@ -627,6 +627,55 @@ impl FsObjectStore {
         Ok(Some(kind))
     }
 
+    /// Removes the file of an object and flushes its directory, so that the removal survives a
+    /// crash. Only the purge deletes objects (ADR-014), and only those that nothing kept reaches.
+    /// Returns `false` if the store has no file for the ID, so a repeated call is harmless. A link
+    /// at the path is removed as a link and never followed; a directory there is an error. An
+    /// object is read-only, which Windows refuses to remove, so the flag is cleared first there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] if the path is a directory, and [`StoreError::Io`] if the
+    /// file cannot be inspected or removed, or the directory cannot be flushed.
+    pub(crate) fn remove(&self, id: &ObjectId) -> Result<bool, StoreError> {
+        let path = self.object_path(id);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.require_root()?;
+                return Ok(false);
+            }
+            Err(error) => return Err(io_error("inspect the object file", &path)(error)),
+        };
+        if metadata.is_dir() {
+            return Err(StoreError::Corrupt {
+                id: *id,
+                path,
+                reason: CorruptReason::NotARegularFile,
+            });
+        }
+        if cfg!(windows) && metadata.permissions().readonly() {
+            let mut permissions = metadata.permissions();
+            #[expect(
+                clippy::permissions_set_readonly_false,
+                reason = "Windows has no other bits, and the file is removed next"
+            )]
+            permissions.set_readonly(false);
+            fs::set_permissions(&path, permissions)
+                .map_err(io_error("make the object file writable", &path))?;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(io_error("remove the object file", &path)(error)),
+        }
+        let fan_out = path
+            .parent()
+            .expect("the path of an object has a directory");
+        sync_directory(fan_out)?;
+        Ok(true)
+    }
+
     /// Fails unless `root` is an existing directory.
     fn require_root(&self) -> Result<(), StoreError> {
         let operation = "open the object store directory";
@@ -982,6 +1031,26 @@ mod tests {
         ids.sort();
         stored.sort();
         assert_eq!(ids, stored);
+    }
+
+    #[test]
+    fn remove_deletes_an_object_once_and_is_harmless_when_repeated() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let id = store.put_blob(&Blob::new("hello")).unwrap().object_id();
+        assert!(store.remove(&id).unwrap());
+        assert!(!store.contains(&id).unwrap());
+        assert!(!store.remove(&id).unwrap(), "a second call finds nothing");
+    }
+
+    #[test]
+    fn remove_refuses_a_directory_at_the_path_of_an_object() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let id = Blob::new("hello").id().object_id();
+        fs::create_dir_all(store.object_path(&id)).unwrap();
+        let error = store.remove(&id).unwrap_err();
+        assert!(matches!(error, StoreError::Corrupt { .. }), "{error:?}");
     }
 
     #[test]

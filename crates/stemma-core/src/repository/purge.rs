@@ -6,8 +6,15 @@
 //! that the rewrite replaced are deleted, and so are leftovers in the store that hold the blob or
 //! come after a commit that does. The plan fails if anything that is kept still reaches them.
 //!
-//! This module makes the plan and writes nothing (STEMMA-46). The stubs and the `purge` entry come
-//! with STEMMA-47, and the new objects, the deletion, and the journal with STEMMA-48.
+//! This module makes the plan and writes nothing (STEMMA-46). The log knows the stubs and the
+//! `purge` entry (STEMMA-47); [`apply`] carries the plan out, with the journal of [`journal`], and
+//! finishes or undoes a purge that stopped (STEMMA-48).
+
+mod apply;
+mod journal;
+
+pub use apply::{Aborted, ApplyPurgeError, PurgeFailure, PurgeStep, Purged};
+pub use journal::JournalError;
 
 use std::collections::{hash_map, HashMap, HashSet};
 use std::error::Error;
@@ -29,8 +36,9 @@ const OPERATION: &str = "purge";
 /// What a purge would do: the commits it rewrites, the pointers it moves, the entries it replaces
 /// by stubs, and the objects it deletes.
 ///
-/// The plan is made from the pointers and the log as they are now. The purge itself (STEMMA-48)
-/// will save the directory in a snapshot first and plan again, so its plan can differ (ADR-014).
+/// The plan is made from the pointers and the log as they are now. The purge itself
+/// ([`Repository::apply_purge`]) saves the directory in a snapshot first and plans again under the
+/// lock, so its plan can differ (ADR-014).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PurgePlan {
     blob: BlobId,
@@ -123,34 +131,51 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<PurgePlan, PurgeError> {
-        if let ActorRef::Agent { .. } = actor.view() {
-            return Err(PurgeError::Agent);
-        }
-        let operation = OperationName::new(OPERATION).expect("`purge` is a valid operation name");
-        self.authorize(actor, authorizer, &operation, &blob.to_string())
-            .map_err(PurgeError::Update)?;
-        let blob = match self.objects().resolve_blob(&blob) {
-            Ok(Some(found)) => found,
-            Ok(None) => {
-                return Err(PurgeError::NoSuchBlob {
-                    id: blob,
-                    found: None,
-                })
-            }
-            Err(StoreError::KindMismatch { found, .. }) => {
-                return Err(PurgeError::NoSuchBlob {
-                    id: blob,
-                    found: Some(found),
-                })
-            }
-            Err(source) => {
-                return Err(PurgeError::BlobUnreadable {
-                    id: blob,
-                    source: Box::new(source),
-                })
-            }
-        };
+        let blob = self.check_purge(blob, actor, authorizer)?;
+        self.plan_blob(blob).map(|(plan, _)| plan)
+    }
 
+    /// Refuses an agent, asks the authorizer, and finds the blob: what comes before a plan.
+    fn check_purge(
+        &self,
+        blob: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<BlobId, PurgeError> {
+        refuse_agent(actor)?;
+        self.authorize_purge(actor, authorizer, &blob.to_string())?;
+        match self.objects().resolve_blob(&blob) {
+            Ok(Some(found)) => Ok(found),
+            Ok(None) => Err(PurgeError::NoSuchBlob {
+                id: blob,
+                found: None,
+            }),
+            Err(StoreError::KindMismatch { found, .. }) => Err(PurgeError::NoSuchBlob {
+                id: blob,
+                found: Some(found),
+            }),
+            Err(source) => Err(PurgeError::BlobUnreadable {
+                id: blob,
+                source: Box::new(source),
+            }),
+        }
+    }
+
+    /// Asks the authorizer for `purge`, with the blob as the target.
+    fn authorize_purge(
+        &self,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+        target: &str,
+    ) -> Result<(), PurgeError> {
+        let operation = OperationName::new(OPERATION).expect("`purge` is a valid operation name");
+        self.authorize(actor, authorizer, &operation, target)
+            .map_err(PurgeError::Update)
+    }
+
+    /// Plans the purge of a blob that is in the store, and returns the planner with the new
+    /// objects in memory as well.
+    fn plan_blob(&self, blob: BlobId) -> Result<(PurgePlan, Planner<'_>), PurgeError> {
         let refs = self.refs();
         let head = refs.head().map_err(PurgeError::Refs)?;
         let working_copy = refs.working_copy().map_err(PurgeError::Refs)?;
@@ -219,7 +244,7 @@ impl Repository {
         trees.sort();
         planner.check(&kept_roots, &commits, &trees)?;
 
-        Ok(PurgePlan {
+        let plan = PurgePlan {
             blob,
             rewrites,
             head: head_move,
@@ -228,7 +253,40 @@ impl Repository {
             entries: replaced.iter().map(|entry| entry.number()).collect(),
             commits,
             trees,
-        })
+        };
+        Ok((plan, planner))
+    }
+}
+
+/// Refuses an agent: only a human may purge (ADR-014).
+fn refuse_agent(actor: &Actor) -> Result<(), PurgeError> {
+    match actor.view() {
+        ActorRef::Agent { .. } => Err(PurgeError::Agent),
+        _ => Ok(()),
+    }
+}
+
+/// A tree or a commit that a purge writes.
+#[derive(Debug, Clone)]
+enum NewObject {
+    Tree(Tree),
+    Commit(Commit),
+}
+
+impl NewObject {
+    fn id(&self) -> ObjectId {
+        match self {
+            Self::Tree(tree) => tree.id().object_id(),
+            Self::Commit(commit) => commit.id().object_id(),
+        }
+    }
+
+    /// Stores the object; one that the store has already is left alone (ADR-007).
+    fn put(&self, objects: &FsObjectStore) -> Result<(), StoreError> {
+        match self {
+            Self::Tree(tree) => objects.put_tree(tree).map(|_| ()),
+            Self::Commit(commit) => objects.put_commit(commit).map(|_| ()),
+        }
     }
 }
 
@@ -470,6 +528,34 @@ impl<'a> Planner<'a> {
             trees.extend(subtrees);
         }
         Ok(seen)
+    }
+
+    /// The new trees and commits of the rewrites, in the order in which they are written: the
+    /// subtrees before their tree, the tree before its commit, and the parents first. A leftover
+    /// that the scan rewrote in memory is not among them, as it is deleted and not rewritten.
+    fn new_objects(&self, rewrites: &[(CommitId, CommitId)]) -> Vec<NewObject> {
+        let mut objects = Vec::new();
+        let mut seen = HashSet::new();
+        for (_, new) in rewrites {
+            let commit = &self.new_commits[new];
+            self.push_tree(commit.tree(), &mut seen, &mut objects);
+            objects.push(NewObject::Commit(commit.clone()));
+        }
+        objects
+    }
+
+    /// Adds a new tree after its new subtrees. A tree that is not new is in the store already.
+    fn push_tree(&self, id: TreeId, seen: &mut HashSet<TreeId>, objects: &mut Vec<NewObject>) {
+        let Some(tree) = self.new_trees.get(&id) else {
+            return;
+        };
+        if !seen.insert(id) {
+            return;
+        }
+        for subtree in &self.tree_links[&id].0 {
+            self.push_tree(*subtree, seen, objects);
+        }
+        objects.push(NewObject::Tree(tree.clone()));
     }
 }
 

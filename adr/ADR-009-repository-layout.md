@@ -19,13 +19,15 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
   repository.
 - **Layout** *(confirmed)*. A repository is a directory that contains `.stemma/`. Inside:
   `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007), `oplog/` and `oplog-tip` (ADR-011),
-  `refs/heads/` (ADR-008), and `tmp/` (the temporary files of the object store, the references,
-  and the log).
+  `refs/heads/` (ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
+  it stopped, ADR-014), and `tmp/` (the temporary files of the object store, the references, the
+  log, and the purge).
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
-  missing file, a file that is not in canonical form, and any version other than the one it
-  supports. The version stays text, so a number larger than any integer is an unsupported
+  missing file, a file that is not in canonical form, and any version other than the ones it
+  supports: `init` writes version 2, and the first purge raises it to 3 (ADR-014), so `open`
+  reads both. The version stays text, so a number larger than any integer is an unsupported
   version and not a damaged file. The file is read up to 64 bytes. The hash function needs no
   entry, because every ID carries its algorithm (ADR-001). `open` checks nothing but `format`
   (and that `.stemma` is a directory); the stores report what is wrong with the rest when they

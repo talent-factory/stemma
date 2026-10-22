@@ -1,5 +1,6 @@
-//! The command `stemma purge`, run as a process, as a person or an agent would run it. Only the
-//! plan is built so far (ADR-014): the command shows it and writes nothing.
+//! The command `stemma purge`, run as a process, as a person or an agent would run it (ADR-014):
+//! the plan, which writes nothing, the purge with `--apply`, and `--resume` and `--abort` of a
+//! purge that stopped.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -127,7 +128,7 @@ fn the_plan_names_the_rewrites_the_moves_the_stubs_and_the_deletions_and_writes_
     assert_eq!(count("    delete blob "), 1);
     assert_eq!(
         lines.last(),
-        Some(&"Only the plan is built so far; the purge itself is not")
+        Some(&"Run it with --apply; a purge cannot be undone")
     );
     assert_eq!(files(dir.path()), before, "nothing was written");
 }
@@ -175,4 +176,215 @@ fn the_actor_is_required() {
     let result = run(dir.path(), &["purge", &secret()]);
     assert_eq!(result.code, 1);
     assert!(result.stderr.contains("no actor"), "{}", result.stderr);
+}
+
+/// The path of an object of the store.
+fn object_path(dir: &Path, id: &str) -> PathBuf {
+    let hex = id.strip_prefix("b3:").unwrap();
+    dir.join(".stemma/objects/b3")
+        .join(&hex[..2])
+        .join(&hex[2..])
+}
+
+#[test]
+fn apply_purges_the_blob_and_moves_the_repository_to_format_3() {
+    let dir = with_secret();
+    let result = ok(
+        dir.path(),
+        &["purge", &secret(), "--apply", "--actor", ACTOR],
+    );
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert!(
+        lines[0].starts_with(&format!("Purged blob {} as entry ", secret())),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(
+        lines.last(),
+        Some(&format!("    delete blob {}", secret()).as_str())
+    );
+    assert!(lines.iter().any(|line| line.starts_with("    rewrite ")));
+    assert!(
+        !object_path(dir.path(), &secret()).exists(),
+        "the blob is gone"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
+        "stemma-repository 3\n"
+    );
+    assert!(!dir.path().join(".stemma/purge-pending").exists());
+
+    // The log shows the stubs and the purge, and a restore of them is refused.
+    let log = ok(dir.path(), &["op", "log"]);
+    assert!(log.stdout.contains("purge"), "{}", log.stdout);
+    assert!(log.stdout.contains("stub"), "{}", log.stdout);
+    // Entry 4 saved the secret with `track`; it names a rewritten commit, so it is a stub now.
+    let restore = run(
+        dir.path(),
+        &["op", "restore", "4", "--force", "--actor", ACTOR],
+    );
+    assert_eq!(restore.code, 1, "{}", restore.stderr);
+    assert!(restore.stderr.contains("stub"), "{}", restore.stderr);
+
+    // A second plan finds no blob, and the next commands work.
+    let again = run(dir.path(), &["purge", &secret(), "--actor", ACTOR]);
+    assert_eq!(again.code, 1);
+    ok(dir.path(), &["status", "--actor", ACTOR]);
+}
+
+#[test]
+fn an_agent_may_not_apply_resume_or_abort() {
+    let dir = with_secret();
+    let before = files(dir.path());
+    for args in [
+        vec!["purge", &secret(), "--apply"],
+        vec!["purge", "--resume"],
+        vec!["purge", "--abort"],
+    ] {
+        let mut args = args.clone();
+        args.extend(["--actor", AGENT]);
+        let result = run(dir.path(), &args);
+        assert_eq!(result.code, 1, "{args:?}");
+        assert!(
+            result.stderr.contains("an agent may not purge"),
+            "{}",
+            result.stderr
+        );
+    }
+    assert_eq!(files(dir.path()), before);
+}
+
+#[test]
+fn resume_and_abort_without_a_purge_are_refused() {
+    let dir = with_secret();
+    for flag in ["--resume", "--abort"] {
+        let result = run(dir.path(), &["purge", flag, "--actor", ACTOR]);
+        assert_eq!(result.code, 1, "{flag}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("no purge is pending"),
+            "{}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn the_modes_exclude_each_other_and_the_blob_is_required_otherwise() {
+    let dir = with_secret();
+    for args in [
+        vec!["purge", "--apply"],
+        vec!["purge", "--resume", "--abort"],
+        vec!["purge", &secret(), "--resume"],
+        vec!["purge", &secret(), "--apply", "--abort"],
+    ] {
+        let result = run(dir.path(), &args);
+        assert_eq!(result.code, 2, "{args:?}: {}", result.stderr);
+    }
+}
+
+#[test]
+fn a_writer_refuses_while_a_journal_exists_and_names_resume() {
+    let dir = with_secret();
+    fs::write(dir.path().join(".stemma/purge-pending"), "damaged").unwrap();
+    fs::write(dir.path().join("a.txt"), "two").unwrap();
+    // A writer is refused with code 1; a second purge finds the journal of another, code 3.
+    for (args, code) in [
+        (vec!["track", "a.txt"], 1),
+        (vec!["commit", "-m", "more"], 1),
+        (vec!["status"], 1),
+        (vec!["op", "restore", "2"], 1),
+        (vec!["purge", &secret(), "--apply"], 3),
+    ] {
+        let mut args = args.clone();
+        args.extend(["--actor", ACTOR]);
+        let result = run(dir.path(), &args);
+        assert_eq!(result.code, code, "{args:?}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("stemma purge --resume"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+    // A journal that cannot be read stops the resume, and the journal stays.
+    let result = run(dir.path(), &["purge", "--resume", "--actor", ACTOR]);
+    assert_eq!(result.code, 3, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("not the journal of a purge"),
+        "{}",
+        result.stderr
+    );
+}
+
+/// Makes the directory of the log read-only, so that the purge stops at its entry after the new
+/// objects are written, and returns the stopped run.
+#[cfg(unix)]
+fn stop_at_the_entry(dir: &Path) -> Run {
+    use std::os::unix::fs::PermissionsExt;
+    let oplog = dir.join(".stemma/oplog");
+    fs::set_permissions(&oplog, fs::Permissions::from_mode(0o555)).unwrap();
+    let result = run(dir, &["purge", &secret(), "--apply", "--actor", ACTOR]);
+    fs::set_permissions(&oplog, fs::Permissions::from_mode(0o755)).unwrap();
+    result
+}
+
+#[cfg(unix)]
+#[test]
+fn a_purge_that_stopped_is_finished_by_resume() {
+    let dir = with_secret();
+    let stopped = stop_at_the_entry(dir.path());
+    assert_eq!(stopped.code, 3, "{}", stopped.stderr);
+    assert!(
+        stopped.stderr.contains("the purge stopped at"),
+        "{}",
+        stopped.stderr
+    );
+    assert!(
+        stopped.stderr.contains("stemma purge --abort"),
+        "no entry is written, so it can be undone: {}",
+        stopped.stderr
+    );
+    assert!(dir.path().join(".stemma/purge-pending").exists());
+    assert!(
+        object_path(dir.path(), &secret()).exists(),
+        "nothing is lost yet"
+    );
+
+    let result = ok(dir.path(), &["purge", "--resume", "--actor", ACTOR]);
+    assert!(
+        result
+            .stdout
+            .starts_with(&format!("Finished the purge of blob {}", secret())),
+        "{}",
+        result.stdout
+    );
+    assert!(!object_path(dir.path(), &secret()).exists());
+    assert!(!dir.path().join(".stemma/purge-pending").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_purge_that_stopped_before_its_entry_is_undone_by_abort() {
+    let dir = with_secret();
+    let before: Vec<(PathBuf, Vec<u8>)> = files(dir.path())
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("format"))
+        .collect();
+    let stopped = stop_at_the_entry(dir.path());
+    assert_eq!(stopped.code, 3, "{}", stopped.stderr);
+    let result = ok(dir.path(), &["purge", "--abort", "--actor", ACTOR]);
+    assert!(
+        result
+            .stdout
+            .starts_with(&format!("Undid the purge of blob {}", secret())),
+        "{}",
+        result.stdout
+    );
+    let after: Vec<(PathBuf, Vec<u8>)> = files(dir.path())
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("format"))
+        .collect();
+    assert_eq!(
+        after, before,
+        "the repository is as it was, but for its format"
+    );
 }

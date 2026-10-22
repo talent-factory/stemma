@@ -5,13 +5,14 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 2" and a newline
+//! ├── format          "stemma-repository 2" and a newline, 3 after the first purge (ADR-014)
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
 //! ├── oplog-tip       the number of the last entry of the log (ADR-011)
+//! ├── purge-pending   the journal of a purge, only while it runs or after it stopped (ADR-014)
 //! └── tmp/            temporary files of the object store, the references, and the log
 //! ```
 
@@ -33,7 +34,9 @@ mod track;
 
 pub use checkout::{CheckoutError, CheckoutPlan, PlannedWrite};
 pub use commit::{CommitError, Committed};
-pub use purge::{PurgeError, PurgePlan};
+pub use purge::{
+    Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
+};
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
@@ -43,16 +46,26 @@ use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName};
 use crate::refs::{encode_branch, BranchName, FsRefStore, Head, Logged, RefError, RefStore};
-use crate::store::{unique_temp_name, FsObjectStore, ObjectStore, StoreError};
+use crate::store::{
+    create_dirs_synced as create_store_dirs, create_temp, sync_directory as flush_store_directory,
+    unique_temp_name, FsObjectStore, ObjectStore, StoreError,
+};
 use crate::{Actor, Authorizer, Decision};
 
 /// The version of the repository format that `init` writes.
 const FORMAT_VERSION: u32 = 2;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
-/// `purge` entry to the operation log (ADR-014). A repository will move to it with its first purge
-/// (STEMMA-48), so that a program that knows only version 2 refuses a log that it cannot read.
+/// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
+/// moves to it with its first purge, before the journal is written, so that a program that knows
+/// only version 2 refuses a log that it cannot read and does not write past a journal it does not
+/// know.
 const READ_VERSIONS: [u32; 2] = [2, 3];
+
+/// The version of the repository format that a purge moves a repository to (ADR-014). It is the
+/// highest that this code reads, so a purge never lowers a version.
+const PURGE_FORMAT_VERSION: u32 = 3;
+const _: () = assert!(PURGE_FORMAT_VERSION == READ_VERSIONS[READ_VERSIONS.len() - 1]);
 
 /// The name that the file `format` starts with, followed by the version.
 const FORMAT_PREFIX: &str = "stemma-repository ";
@@ -63,9 +76,51 @@ const FORMAT_MAX_LEN: u64 = 64;
 /// How many names are tried for the temporary directory of `init` before it gives up.
 const STAGING_ATTEMPTS: usize = 16;
 
-/// The content of the file `format`: the prefix, the version, and a newline.
+/// The content of the file `format` that `init` writes: the prefix, the version, and a newline.
 fn format_content() -> String {
-    format!("{FORMAT_PREFIX}{FORMAT_VERSION}\n")
+    format_of(FORMAT_VERSION)
+}
+
+/// The content of the file `format` for a version.
+fn format_of(version: u32) -> String {
+    format!("{FORMAT_PREFIX}{version}\n")
+}
+
+/// Moves the repository whose metadata directory is `dir` to `version` of the format, unless the
+/// file `format` names it already. The new content goes to a temporary file in `tmp/`, is flushed,
+/// and is renamed over the file, and the directory is flushed, so a reader sees the old or the new
+/// version and never a mix. A purge calls it (ADR-014). The version is never lowered: the
+/// repository was opened, so its version is one of [`READ_VERSIONS`], and a purge raises it to
+/// the highest of them.
+fn raise_format(dir: &Path, version: u32) -> Result<(), StoreError> {
+    let path = dir.join("format");
+    let current = fs::read(&path).map_err(|source| StoreError::Io {
+        operation: "read the format file",
+        path: path.clone(),
+        source,
+    })?;
+    if current == format_of(version).as_bytes() {
+        return Ok(());
+    }
+    let temp_dir = dir.join("tmp");
+    create_store_dirs(dir, &temp_dir)?;
+    let (mut file, mut temp) = create_temp(&temp_dir, &mut unique_temp_name)?;
+    let io = |operation: &'static str, path: &Path| {
+        let path = path.to_path_buf();
+        move |source| StoreError::Io {
+            operation,
+            path,
+            source,
+        }
+    };
+    file.write_all(format_of(version).as_bytes())
+        .map_err(io("write the temporary file", &temp.path))?;
+    file.sync_all()
+        .map_err(io("flush the temporary file", &temp.path))?;
+    drop(file);
+    fs::rename(&temp.path, &path).map_err(io("replace the format file", &path))?;
+    temp.disarm();
+    flush_store_directory(dir)
 }
 
 /// Reads the file `format` and returns the version as the decimal digits that it holds. It

@@ -111,6 +111,10 @@ impl Repository {
     ) -> Result<Replaced, E> {
         self.authorize(actor, authorizer, operation, "working-copy")
             .map_err(SnapshotError::Update)?;
+        // A purge that has not finished keeps every writer out, before its first object (ADR-014).
+        self.refs_store()
+            .refuse_pending_purge()
+            .map_err(|error| SnapshotError::Update(UpdateError::Refs(error)))?;
         let current = self.refs().working_copy().map_err(SnapshotError::Refs)?;
         let commit = read_commit(self.objects(), current)?;
         let tracked = tracked_files(self.objects(), commit.tree())?;

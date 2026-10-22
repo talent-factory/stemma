@@ -49,7 +49,8 @@ dem Benutzernamen gibt es nicht. Die Angabe belegt nicht, wer den Befehl wirklic
 sie nennt nur, in wessen Namen er läuft.
 
 Ein Befehl, der einen Snapshot macht (\type{track}, \type{commit}, \type{status},
-\type{restore}), trägt diesen Akteur für alles ein, was er im Verzeichnis speichert.
+\type{restore}, \type{purge --apply}), trägt diesen Akteur für alles ein, was er im
+Verzeichnis speichert.
 Deshalb arbeitet jeder Akteur in einer eigenen Arbeitskopie; zwei Akteure in einem
 Verzeichnis sind kein unterstützter Betrieb (ADR-010). Das Programm prüft es nicht.
 
@@ -76,7 +77,18 @@ nur ein weiterer \type{commit} beendet einen halben (siehe dort), und ein halbes
 \type{op restore} beendet derselbe Aufruf, noch einmal ausgeführt (siehe dort).
 Ein \type{op restore}, das gemacht ist, nennt in der Ausgabe den Eintrag, der es zurücksetzt.
 Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht.
+Bei \type{purge} heisst Code 3 meist, dass das Journal eines Purge besteht: Er brach ab,
+\type{--apply} fand das Journal eines anderen, oder \type{--abort} kam nach dem Eintrag.
+Dann muss \type{purge --resume} oder \type{purge --abort} kommen (siehe dort).
+Code 3 gilt auch für einen Purge, der gemacht ist, dessen Ausgabe oder Sicherung aber
+scheiterte; dann besteht kein Journal mehr.
 \stopitemize
+
+{\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
+lehnen \type{track}, \type{commit}, \type{status} und \type{op restore} ab, bevor sie ein
+Objekt schreiben, und noch einmal unter der Sperre der Referenzen (Exit-Code 1). Die Meldung
+nennt das Journal, \type{stemma purge --resume} und \type{--abort}. Lesen bleibt möglich:
+\type{op log}, \type{op restore --dry-run} und \type{purge} ohne \type{--apply} laufen.
 
 Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
 \type{stemma: <Meldung>} aus und läuft keine Kette von Ursachen ab.
@@ -175,8 +187,8 @@ entsteht weder ein Commit noch ein Eintrag.
 oder auf \type{.stemma} zeigt, und ein Pfad, dessen Schreibweise nicht der auf
 dem Datenträger entspricht (ein Dateisystem ohne Unterscheidung von Gross- und Kleinschreibung
 nähme sonst \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal),
-beenden den Befehl mit Exit-Code 1, bevor sich etwas ändert. Dasselbe gilt für
-eine Spezialdatei (Gerät, Socket, Pipe) oder einen Namen ohne UTF-8 unter einem
+beenden den Befehl mit Exit-Code 1, bevor sich etwas ändert, ebenso ein offener Purge.
+Dasselbe gilt für eine Spezialdatei (Gerät, Socket, Pipe) oder einen Namen ohne UTF-8 unter einem
 genannten Verzeichnis und für einen Namen, den ein Baum ablehnt: Der Befehl nennt
 den Pfad und ändert nichts. Namen, die auf \type{.stemma} hinauslaufen,
 überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so
@@ -280,9 +292,9 @@ Der Befehl gibt eine Zeile mit der ID des Commits und dem Branch aus:
 Committed b3:4a0b66... on main
 \stoptyping
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einer leeren Nachricht
-und bei einem HEAD, der einen Commit und keinen Branch nennt.
-Beide Fälle brechen ab, bevor der Snapshot läuft, und ändern nichts.
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einer leeren Nachricht,
+bei einem offenen Purge und bei einem HEAD, der einen Commit und keinen Branch nennt.
+Diese Fälle brechen ab, bevor der Snapshot läuft, und ändern nichts.
 Mit Exit-Code 1 endet er auch, wenn nichts zu committen ist,
 weil der Baum der des Elternteils ist (beim ersten Commit: leer),
 und wenn der Branch nicht beim Elternteil des Working-Copy-Commits steht,
@@ -387,8 +399,9 @@ Bei \type{track} gilt dieselbe Regel.
 Eine verfolgte Datei, die ein Muster der Ausschlussdatei ausschliesst, bleibt in den
 Änderungen; sie wird weiter gespeichert.
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist
-und wenn das Repository nicht im angegebenen Verzeichnis liegt (die Meldung nennt \type{-C}).
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist,
+wenn das Repository nicht im angegebenen Verzeichnis liegt (die Meldung nennt \type{-C})
+und wenn ein Purge offen ist.
 Ebenso endet er bei einem Fehler im Repository, zum Beispiel einer beschädigten Datei
 \type{working-copy}, und bei einer Datei, die der Snapshot nicht lesen kann:
 Der Snapshot bricht ab, bevor sich ein Zeiger bewegt.
@@ -476,7 +489,8 @@ Stub und Purge nennen keine ID und haben keine Zeile über den Zug.
 Der Ausgang jedes Eintrags vor dem jüngsten Stub ist unbekannt (\type{?}), denn der Stub
 ersetzt Züge, die niemand mehr kennt. Nennt ein Purge einen Eintrag, der noch kein
 Stub ist, weil der Purge vorher anhielt, folgt die Zeile
-\type{! a purge lists this entry and has not finished}.
+\type{! a purge lists this entry and has not finished}; \type{stemma purge --resume} beendet
+den Purge.
 
 \starttyping
 4  2023-11-14T22:13:20Z  human daniel  purge
@@ -632,8 +646,8 @@ stattfand (er ist in \type{op log} mit \type{?} markiert), bricht der Befehl ab,
 Zustand davor muss dann nicht stimmen. \type{--force} setzt trotzdem zurück.
 Das gilt auch für \type{--dry-run}.
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, der Eintrag
-nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, ein Purge offen ist,
+der Eintrag nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
 HEAD oder den Working-Copy-Commit angelegt hat (das tut nur der erste Eintrag, und
 beide können nicht fehlen).
 Ebenso endet er bei einem Stub, denn was der Eintrag bewegt hat, ist mit dem Purge weg,
@@ -696,29 +710,40 @@ stemma op restore 13 -C projekt --actor "human daniel"
 
 \section{purge}
 
-Zeigt, was das Entfernen eines Geheimnisses aus dem Verlauf und dem Operation Log täte
-(ADR-014). Gebaut ist bisher nur der Plan: Der Befehl schreibt nichts, auch keinen Snapshot.
-Die Stubs im Log folgen mit STEMMA-47, das Umschreiben und das Löschen mit \type{--apply}
-in STEMMA-48.
+Entfernt ein Geheimnis aus dem Verlauf und dem Operation Log (ADR-014). Ohne \type{--apply}
+zeigt der Befehl nur, was der Purge täte, und schreibt nichts, auch keinen Snapshot.
+Mit \type{--apply} wird der Purge gemacht; er lässt sich nicht zurücksetzen.
+\type{--resume} beendet einen Purge, der abbrach, und \type{--abort} nimmt einen zurück,
+solange sein Eintrag nicht geschrieben ist.
 
 \starttyping
-stemma purge BLOB [-C VERZEICHNIS] --actor AKTEUR
+stemma purge BLOB [--apply] [-C VERZEICHNIS] --actor AKTEUR
+stemma purge --resume [-C VERZEICHNIS] --actor AKTEUR
+stemma purge --abort [-C VERZEICHNIS] --actor AKTEUR
 \stoptyping
 
 \startitemize
 \item {\bf BLOB:} Die volle ID des Blobs, der das Geheimnis enthält: \type{b3:} und
 64 Hexadezimalziffern in Kleinbuchstaben. Eine andere Form ist ein Fehler der Argumente
-(Exit-Code 2). Pfade oder Muster nimmt der Befehl noch nicht.
+(Exit-Code 2). Pfade oder Muster nimmt der Befehl noch nicht. Ohne \type{--resume} und
+\type{--abort} ist die ID nötig, mit ihnen ist sie ein Fehler der Argumente.
+\item {\bf \type{--apply}:} Macht den Purge: schreibt die neuen Commits, den Eintrag
+\type{purge} und die Stubs und löscht die alten Objekte.
+\item {\bf \type{--resume}:} Beendet einen Purge, der abbrach, aus seinem Journal.
+\item {\bf \type{--abort}:} Nimmt einen Purge zurück, der vor seinem Eintrag abbrach.
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
 also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Es muss ein Mensch sein.
 \stopitemize
 
+\type{--apply}, \type{--resume} und \type{--abort} schliessen einander aus; zwei davon sind
+ein Fehler der Argumente.
+
 {\bf Nur ein Mensch.} Ein Purge entfernt Verlauf, der sich nicht zurückholen lässt.
 Deshalb lehnt der Befehl einen Agenten ab, bevor er den Verlauf liest, gleich was die Rollen
-erlauben (ADR-014). Das ist eine Ausnahme von ADR-002 und nur ein Hinweis, solange sich
-Akteure nicht belegen lassen; ein Mensch kann den Purge für einen Agenten ausführen,
-zum Beispiel dessen Sponsor.
+erlauben (ADR-014), auch bei \type{--resume} und \type{--abort}. Das ist eine Ausnahme von
+ADR-002 und nur ein Hinweis, solange sich Akteure nicht belegen lassen; ein Mensch kann den
+Purge für einen Agenten ausführen, zum Beispiel dessen Sponsor.
 
 {\bf Was der Plan enthält.} Jeder Commit, dessen Baum den Blob in irgendeiner Tiefe enthält,
 bekommt einen neuen Baum ohne ihn; jeder Commit danach bekommt neue Eltern. Die neuen
@@ -734,22 +759,41 @@ umgeschrieben, denn nichts nennt ihn. Von einem Blob liest der Plan dabei nur de
 Am Ende prüft der Plan, dass nichts Behaltenes den Blob enthält oder etwas erreicht, das er
 löscht; schlägt das fehl, ist es ein Fehler von Stemma, und der Befehl bricht ab.
 
-{\bf Ausgabe.}
+{\bf Ablauf mit \type{--apply}.} Der Purge speichert zuerst das Verzeichnis in einem
+Snapshot, damit eine Änderung mit dem Geheimnis im Plan steht. Dann nimmt er die Sperre der
+Referenzen, hält sie bis zum Ende und plant unter ihr neu; sein Plan kann also von einem
+zuvor gezeigten abweichen. Er hebt das Repository auf das Format 3, das ältere Programme
+ablehnen, und schreibt das Journal \type{.stemma/purge-pending}. Ab hier lehnt jeder andere
+Befehl ab, der schreibt (siehe die gemeinsamen Regeln). Dann schreibt der Purge die neuen
+Bäume und Commits, prüft jeden Zeiger, schreibt den Eintrag \type{purge} und bewegt die
+Zeiger. Zuletzt ersetzt er die Einträge durch Stubs, löscht die alten Commits, die alten
+Bäume und den Blob und entfernt das Journal. Der Eintrag \type{purge} ist der Punkt ohne
+Rückkehr: Vor ihm ist nichts verloren, nach ihm geht der Purge nur noch vorwärts.
+
+{\bf Fortsetzen und Zurücknehmen.} \type{--resume} liest das Journal und wiederholt die
+Schritte ab den neuen Objekten. Eine Sperre, die der Abbruch zurückliess, nimmt es als die
+des Purge und entfernt sie; läuft der Purge in einem anderen Terminal noch, darf es deshalb
+nicht laufen. Jeder Schritt lässt sich wiederholen, und ein geschriebener Eintrag
+\type{purge} wird gefunden und nicht noch einmal geschrieben. \type{--abort} entfernt die
+Objekte, die der Purge neu geschrieben hat, und das Journal; ein Objekt, das der Speicher
+schon vorher hatte, bleibt. Das Format bleibt 3.
+
+{\bf Ausgabe.} Ohne \type{--apply}:
 
 \starttyping
 Would purge blob b3:f60c…; nothing is written
-    rewrite b3:0051… -> b3:c478…
-    rewrite b3:35ee… -> b3:546a…
-    rewrite b3:e6c1… -> b3:53c4…
-    working-copy  b3:35ee… -> b3:546a…
-    branch main  b3:0051… -> b3:c478…
+    rewrite b3:d8b6… -> b3:6269…
+    rewrite b3:507e… -> b3:8575…
+    rewrite b3:a44e… -> b3:df79…
+    working-copy  b3:507e… -> b3:8575…
+    branch main  b3:d8b6… -> b3:6269…
     stub entries 4-5
-    delete commit b3:0051…
-    delete commit b3:35ee…
-    delete commit b3:e6c1…
+    delete commit b3:507e…
+    delete commit b3:a44e…
+    delete commit b3:d8b6…
     delete tree b3:63bc…
     delete blob b3:f60c…
-Only the plan is built so far; the purge itself is not
+Run it with --apply; a purge cannot be undone
 \stoptyping
 
 Die Ausgabe stammt aus einem Repository, in dem \type{a.txt} committet und danach
@@ -757,11 +801,28 @@ die Datei \type{key} mit dem Geheimnis verfolgt und committet wurde. Die IDs sin
 das Programm schreibt sie ganz. Umgeschrieben werden der Commit von \type{commit}, die neue
 Arbeitskopie danach und die Fassung der Arbeitskopie, die \type{track} gespeichert hat;
 diese nennt nur noch das Log.
-Die Zeilen \type{rewrite} stehen in der Reihenfolge, in der die Commits entstehen würden,
+Die Zeilen \type{rewrite} stehen in der Reihenfolge, in der die Commits entstehen,
 Eltern vor Kindern. Die Zeilen der Zeiger folgen der Form von \type{op restore --dry-run}.
 \type{stub entries} nennt die Nummern als Bereiche, zum Beispiel \type{3, 5-7}.
 Liegt der Blob in keinem Commit, fehlen die Zeilen \type{rewrite} und \type{stub entries};
 gelöscht werden der Blob und allenfalls Reste im Objektspeicher, die ihn enthalten.
+
+Mit \type{--apply} nennt die erste Zeile den Eintrag des Purge, darunter stehen dieselben
+Zeilen wie im Plan, nun für das, was gemacht wurde. Hat der Snapshot das Verzeichnis
+gespeichert, nennt eine Zeile davor seinen Eintrag, wie bei \type{op restore}.
+\type{--resume} beginnt mit \type{Finished the purge of blob}, \type{--abort} gibt eine Zeile aus:
+
+\starttyping
+Purged blob b3:f60c… as entry 6 of the operation log
+    rewrite b3:d8b6… -> b3:6269…
+    …
+    delete blob b3:f60c…
+Finished the purge of blob b3:f60c… as entry 6 of the operation log
+Undid the purge of blob b3:f60c…; removed 2 new objects
+\stoptyping
+
+Danach zeigt \type{op log} den Eintrag \type{purge} mit der Zahl der Commits und den Stubs,
+und die ersetzten Einträge als \type{(purged)}; \type{op restore} lehnt beide ab.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, ungültig oder ein
 Agent ist, wenn das Verzeichnis kein Repository ist, wenn der Objektspeicher keinen Blob mit
@@ -769,16 +830,52 @@ der ID hat (auch wenn die ID einen Commit oder einen Baum nennt) oder die Datei 
 beschädigt ist, wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
 und wenn ein Objekt im Speicher beschädigt ist: Dann ist nicht bekannt, ob es den Blob nennt.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.
-Ist das Repository geöffnet, beginnt jede Meldung außer der Ablehnung eines Agenten mit
-\type{could not plan the purge, nothing was written}.
+Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung eines Agenten
+mit \type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
 erst ein Merge (Phase 3).
-Ein Fehler beim Schreiben der Ausgabe ist Exit-Code 1, denn es wurde nichts gemacht;
+Mit \type{--apply} endet er mit Exit-Code 1 auch, wenn der Snapshot scheitert oder der Purge
+unter der Sperre nicht beginnen kann, etwa weil die Sperre gehalten wird; dann besteht kein
+Journal, das Format kann aber schon 3 sein. Hat der Snapshot das Verzeichnis gespeichert,
+nennt die Meldung am Ende seinen Eintrag. Hat der Snapshot den Zeiger bewegt, aber nicht
+gesichert, ist es Exit-Code 3 wie bei \type{commit}. \type{--resume} und \type{--abort} ohne Journal
+enden mit Exit-Code 1 und der Meldung \type{no purge is pending}.
+Ein Fehler beim Schreiben der Ausgabe des Plans ist Exit-Code 1, denn es wurde nichts gemacht;
 eine geschlossene Pipe ist kein Fehler.
 
-{\bf Grenzen.} Der Plan geht vom heutigen Stand aus. Der Purge mit \type{--apply}
-(STEMMA-48) wird das Arbeitsverzeichnis zuerst sichern und unter der Sperre neu planen,
-sein Plan kann also abweichen.
+Exit-Code 3 gilt in diesen Fällen:
+
+\startitemize
+\item Ein Schritt nach dem Journal scheitert. Die Meldung beginnt mit
+\type{the purge stopped at} und nennt den Schritt; das Journal bleibt.
+\type{--resume} beendet den Purge, \type{--abort} nimmt ihn zurück, solange sein Eintrag fehlt.
+Ist der Eintrag schon geschrieben, nennt die Meldung ihn und nur noch \type{--resume}.
+Steht ein Zeiger auf keinem seiner beiden Werte, nennt die Meldung ihn.
+Fehlt nach dem Eintrag ein neuer Commit, kann \type{--resume} ihn nicht neu machen;
+er muss zuerst wiederhergestellt werden.
+\item Der Purge oder das Zurücknehmen ist gemacht und das Journal entfernt, aber das
+Verzeichnis liess sich nicht sichern. Nach einem Absturz kann das Journal wiederkommen;
+dann beendet es derselbe Befehl.
+\item \type{--apply} findet das Journal eines anderen Purge, oder \type{--abort} findet den
+Eintrag \type{purge} schon geschrieben (\type{the purge cannot be undone}); dann bleibt nur
+\type{--resume}.
+\item Das Journal lässt sich nicht lesen; die Meldung beginnt mit
+\type{the journal of a purge cannot be read}. Es bleibt, und weder \type{--resume} noch
+\type{--abort} kommt weiter, bis jemand es von Hand repariert.
+\item Der Purge, das Fortsetzen oder das Zurücknehmen ist gemacht, aber die Ausgabe liess sich
+nicht schreiben. Eine geschlossene Pipe ist hier kein Fehler: Das Log nennt den Eintrag eines
+Purge, und ein Zurücknehmen lässt das Repository wie vor dem Purge.
+\stopitemize
+
+{\bf Grenzen.} Der Plan ohne \type{--apply} geht vom heutigen Stand aus; der Purge sichert
+das Verzeichnis zuerst und plant unter der Sperre neu.
+Eine Datei, deren Blob entfernt wird, verlässt den Baum und ist danach nicht mehr verfolgt;
+das Verzeichnis bleibt, wie es ist, und ein späteres \type{track} nähme das Geheimnis wieder
+auf, wenn \type{.stemmaignore} es nicht nennt.
+Ein Befehl, der vor dem Journal begann und den Purge überdauert, findet unter der Sperre kein
+Journal mehr und kann ein Objekt nennen, das der Purge gelöscht hat. Deshalb läuft ein Purge
+allein, wie jeder Akteur in seiner eigenen Arbeitskopie arbeitet (ADR-010); die Lücke zu
+schliessen ist offen (STEMMA-49).
 Was ein Purge nicht garantiert (Kopien im Dateisystem, Dateien in \type{tmp/},
 Nachrichten und Pfadnamen), steht in ADR-014.
 
@@ -788,7 +885,9 @@ Nachrichten und Pfadnamen), steht in ADR-014.
 stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55 \
     --actor "human daniel"
 stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55 \
-    -C projekt --actor "human daniel"
+    --apply --actor "human daniel"
+stemma purge --resume -C projekt --actor "human daniel"
+stemma purge --abort --actor "human daniel"
 \stoptyping
 
 \stopappendices

@@ -508,10 +508,6 @@ impl Purge {
     /// Returns [`EntryError::StubOutOfRange`] for a stub that is 0 or larger than [`MAX_NUMBER`],
     /// and [`EntryError::TooManyCommits`] for a count larger than [`MAX_NUMBER`], which the reader
     /// would reject.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the purge of STEMMA-48 calls it")
-    )]
     pub(crate) fn new(
         time: i64,
         actor: Actor,
@@ -719,10 +715,6 @@ impl Entry {
     ///
     /// Returns [`EntryError::PurgeNotReplaceable`] for the entry of a purge, which a later purge
     /// keeps as the record of the first.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the purge of STEMMA-48 calls it")
-    )]
     pub(crate) fn to_stub(&self) -> Result<Self, EntryError> {
         if matches!(self.record, Record::Purge(_)) {
             return Err(EntryError::PurgeNotReplaceable(self.number));
@@ -999,7 +991,7 @@ fn parse_count(text: &str) -> Option<u64> {
 
 /// Reads the ranges of a `purge` entry: `-` for none, or ranges in ascending order that neither
 /// overlap nor touch, each a number or `<start>-<end>` with the start below the end.
-fn parse_ranges(text: &str) -> Option<Vec<(u64, u64)>> {
+pub(crate) fn parse_ranges(text: &str) -> Option<Vec<(u64, u64)>> {
     if text == "-" {
         return Some(Vec::new());
     }
@@ -1932,10 +1924,6 @@ impl FsOpLog {
     /// a retry must not write the count again. If every part is in place but some are not known to
     /// be flushed, the error is [`OpLogError::NotFlushed`] for a single part and
     /// [`OpLogError::PurgeNotFlushed`] for several.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the purge of STEMMA-48 calls it")
-    )]
     pub(crate) fn append_purge(&self, purge: Purge) -> Result<Vec<Entry>, OpLogError> {
         for (start, end) in purge.stubs() {
             for number in *start..=*end {
@@ -2001,10 +1989,6 @@ impl FsOpLog {
     /// storage fails before the stub is in place, and
     /// [`OpLogError::NotFlushed`] with the stub if it is in place but the directory could not be
     /// flushed; a repeated call is harmless.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the purge of STEMMA-48 calls it")
-    )]
     pub(crate) fn replace_with_stub(&self, number: u64) -> Result<Entry, OpLogError> {
         let stub = self.read(number)?.to_stub().map_err(OpLogError::Entry)?;
         // A later entry that cannot be read is an error of its own: it may be the purge entry.

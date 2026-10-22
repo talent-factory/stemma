@@ -10,12 +10,20 @@
 //! and the same `op restore` run again moves the rest. Running `status` again is safe, but it
 //! finds nothing to save and so does not make an unflushed snapshot durable.
 //!
-//! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge`, which only
-//! plans until STEMMA-48) has made nothing by its output, so a failed write of its output is code
-//! 1; some of the output may already be written, and a script discards it. A closed pipe is not a
-//! failure, and it does not hide an error of flushing that comes after the output. The one
-//! exception is a closed pipe after an `op restore` that was made: the output is the only place
-//! that names its entry, so it is code 3.
+//! A `purge` that stopped after its journal was written is code 3 as well, and so is a
+//! `purge --apply` that finds the journal of another purge and an `--abort` that is refused after
+//! the entry of the purge: until `purge --resume` (or `--abort`) has run, no other command
+//! writes. A `purge --apply`, `--resume`, or `--abort` that has done its work but could not flush
+//! the removal of the journal, or whose result cannot be written, is code 3 too; a closed pipe is
+//! no failure there, as the log names the entry of a purge, an abort leaves the repository as it
+//! was before the purge, and nothing can undo either.
+//!
+//! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge` without
+//! `--apply`, `--resume`, or `--abort`) has made nothing by its output, so a failed write of its
+//! output is code 1; some of the output may already be written, and a script discards it. A
+//! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
+//! output. The one exception is a closed pipe after an `op restore` that was made: the output is
+//! the only place that names its entry, so it is code 3.
 //! An `op restore` writes its result before an error that follows a restore that was made, as
 //! `commit` does.
 //!
@@ -25,12 +33,14 @@
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
 //! is refused for nothing to commit or for a branch that moved, `status` when it cannot read the
-//! repository or write its output, and `op restore` when a later step fails. The message of such
-//! a failure names the entry, and repeating the command is safe.
+//! repository or write its output, `op restore` when a later step fails, and `purge --apply`
+//! when the purge cannot be planned or started after it. The message of such a failure names the
+//! entry, and repeating the command is safe.
 //!
 //! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
 //! status is written, for `commit` without a commit (it can be repeated), for `op restore` after
-//! the restore is made, and for `track` as the other flush errors.
+//! the restore is made, for `purge --apply` before the purge, and for `track` as the other flush
+//! errors.
 //!
 //! A failing command prints `stemma: <message>`, a complete message (see the crate documentation
 //! of `stemma-core`). The argument parser prints its own errors.
@@ -50,9 +60,9 @@ use stemma_core::object::{ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
-    normalize_path, CommitError, Committed, InitError, InitOptions, OpenError, PurgeError,
-    PurgePlan, Repository, RestoreError, RestorePlan, SnapshotError, Status, StatusError,
-    TrackError, Tracking, UpdateError,
+    normalize_path, ApplyPurgeError, CommitError, Committed, InitError, InitOptions, OpenError,
+    PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan, SnapshotError, Status,
+    StatusError, TrackError, Tracking, UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -85,15 +95,32 @@ enum Command {
         #[command(subcommand)]
         command: OpCommand,
     },
-    /// Show what removing a secret from the history and the log would do; nothing is written
+    /// Remove a secret from the history and the log; without --apply, only show what it would do
     Purge(PurgeArgs),
 }
 
 #[derive(Debug, Args)]
 struct PurgeArgs {
     /// The ID of the blob that holds the secret, `b3:` and 64 hexadecimal digits
-    #[arg(value_name = "BLOB")]
-    blob: ObjectId,
+    #[arg(
+        value_name = "BLOB",
+        required_unless_present_any = ["resume", "abort"],
+        conflicts_with_all = ["resume", "abort"]
+    )]
+    blob: Option<ObjectId>,
+
+    /// Purge: rewrite the history, replace the entries by stubs, and delete the objects; a purge
+    /// cannot be undone
+    #[arg(long, conflicts_with_all = ["resume", "abort"])]
+    apply: bool,
+
+    /// Finish a purge that stopped, from its journal
+    #[arg(long, conflicts_with = "abort")]
+    resume: bool,
+
+    /// Undo a purge that stopped before its entry was written
+    #[arg(long)]
+    abort: bool,
 
     /// The directory of the repository, the one that contains `.stemma`
     #[arg(
@@ -332,6 +359,16 @@ enum CliError {
     /// The plan of a purge could not be written to the output. Nothing was written to the
     /// repository.
     PurgeOutput(io::Error),
+    /// The purge, its resume, or its abort was refused or stopped.
+    /// [`ApplyPurgeError::pending`] says whether its journal stays.
+    ApplyPurge(ApplyPurgeError),
+    /// The purge, its resume, or its abort was made, but the result could not be written.
+    PurgedOutput {
+        /// What was made, as the first line of the output says it.
+        made: String,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
@@ -364,6 +401,7 @@ impl CliError {
             | Self::CommitNotDurable { .. }
             | Self::CommitOutput { .. }
             | Self::StatusNotDurable { .. }
+            | Self::PurgedOutput { .. }
             | Self::RestoreOutput {
                 restored: Some(_), ..
             }
@@ -373,6 +411,12 @@ impl CliError {
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
+            Self::ApplyPurge(error) if error.made() => ExitCode::from(3),
+            Self::ApplyPurge(ApplyPurgeError::Snapshot(SnapshotError::Update(error)))
+                if error.pointer_moved() =>
+            {
+                ExitCode::from(3)
+            }
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
@@ -386,6 +430,7 @@ impl CliError {
             | Self::RestoreOutput { .. }
             | Self::Purge(_)
             | Self::PurgeOutput(_)
+            | Self::ApplyPurge(_)
             | Self::OpLog(_)
             | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
@@ -508,6 +553,10 @@ impl fmt::Display for CliError {
                 f,
                 "could not write the plan of the purge, and nothing was written: {source}"
             ),
+            Self::ApplyPurge(error) => error.fmt(f),
+            Self::PurgedOutput { made, source } => {
+                write!(f, "{made}, but the result could not be written: {source}")
+            }
             Self::OpLog(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
@@ -546,28 +595,95 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
     }
 }
 
-/// Shows what a purge of the blob would do (ADR-014): the commits it rewrites, the pointers it
-/// moves, the entries it replaces by stubs, and the objects it deletes. The core refuses an agent
-/// before it reads the history. Only the plan is built until STEMMA-48, so the command writes
-/// nothing, not even a snapshot; a closed pipe is not a failure.
+/// Purges a blob (ADR-014), or shows what that would do. The core refuses an agent before it
+/// reads the history. Without `--apply` the command writes nothing, not even a snapshot, and a
+/// closed pipe is not a failure. With `--apply` the purge is made: it takes a snapshot, rewrites
+/// the history, replaces the entries by stubs, and deletes the objects; `--resume` finishes a
+/// purge that stopped, and `--abort` undoes one that stopped before its entry was written.
 fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
-    let plan = repository
-        .plan_purge(args.blob, &actor, &AllowAll)
-        .map_err(CliError::Purge)?;
-    match out.write_all(purge_text(&plan).as_bytes()) {
+    let (made, text) = if args.resume {
+        let purged = repository
+            .resume_purge(&actor, &AllowAll)
+            .map_err(CliError::ApplyPurge)?;
+        purged_text("Finished the purge of", &purged)
+    } else if args.abort {
+        let aborted = repository
+            .abort_purge(&actor, &AllowAll)
+            .map_err(CliError::ApplyPurge)?;
+        let made = format!(
+            "Undid the purge of blob {}; removed {} new objects",
+            aborted.plan().blob(),
+            aborted.removed().len()
+        );
+        (made.clone(), format!("{made}\n"))
+    } else {
+        let blob = args
+            .blob
+            .expect("the parser requires the blob without --resume or --abort");
+        if !args.apply {
+            let plan = repository
+                .plan_purge(blob, &actor, &AllowAll)
+                .map_err(CliError::Purge)?;
+            return match out.write_all(purge_text(&plan).as_bytes()) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+                Err(error) => Err(CliError::PurgeOutput(error)),
+            };
+        }
+        let purged = repository
+            .apply_purge(blob, &actor, &AllowAll)
+            .map_err(CliError::ApplyPurge)?;
+        purged_text("Purged", &purged)
+    };
+    match out.write_all(text.as_bytes()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(error) => Err(CliError::PurgeOutput(error)),
+        Err(source) => Err(CliError::PurgedOutput { made, source }),
     }
 }
 
-/// What a purge would do: a first line, one line for each commit, pointer, and object, one line
-/// for the stubs, and a last line that says that only the plan is built.
+/// What a purge would do: a first line, the lines of [`plan_lines`], and a last line that says how
+/// to make it.
 fn purge_text(plan: &PurgePlan) -> String {
+    format!(
+        "Would purge blob {}; nothing is written\n{}{}",
+        plan.blob(),
+        plan_lines(plan),
+        "Run it with --apply; a purge cannot be undone\n"
+    )
+}
+
+/// What a purge did: the snapshot that came first, a line with the blob and the `purge` entries,
+/// and the lines of [`plan_lines`]. `done` says what was done: the purge, or its end. Returns the
+/// line with the entries as well, for an error of the output.
+fn purged_text(done: &str, purged: &Purged) -> (String, String) {
+    let numbers: Vec<String> = purged
+        .entries()
+        .iter()
+        .map(|entry| entry.number().to_string())
+        .collect();
+    let entries = match numbers.as_slice() {
+        [one] => format!("entry {one}"),
+        more => format!("entries {}", more.join(", ")),
+    };
+    let made = format!(
+        "{done} blob {} as {entries} of the operation log",
+        purged.plan().blob()
+    );
+    let text = format!(
+        "{}{made}\n{}",
+        saved_text(purged.snapshot()),
+        plan_lines(purged.plan())
+    );
+    (made, text)
+}
+
+/// One line for each commit, pointer, and object of a purge, and one line for the stubs.
+fn plan_lines(plan: &PurgePlan) -> String {
     use crate::op_log::{value, HeadValue};
-    let mut text = format!("Would purge blob {}; nothing is written\n", plan.blob());
+    let mut text = String::new();
     for (old, new) in plan.rewrites() {
         text.push_str(&format!("    rewrite {old} -> {new}\n"));
     }
@@ -603,7 +719,6 @@ fn purge_text(plan: &PurgePlan) -> String {
         text.push_str(&format!("    delete tree {tree}\n"));
     }
     text.push_str(&format!("    delete blob {}\n", plan.blob()));
-    text.push_str("Only the plan is built so far; the purge itself is not\n");
     text
 }
 
@@ -1186,6 +1301,62 @@ mod tests {
             ExitCode::from(3)
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_purge_that_leaves_its_journal_ends_with_code_3_and_one_that_did_not_start_with_code_1() {
+        use stemma_core::repository::{PurgeFailure, PurgeStep};
+        let path = PathBuf::from(".stemma/purge-pending");
+        let code = |error: ApplyPurgeError| CliError::ApplyPurge(error).exit_code();
+        assert_eq!(
+            code(ApplyPurgeError::Stopped {
+                step: PurgeStep::Entry,
+                entries: Vec::new(),
+                source: Box::new(PurgeFailure::Refs(RefError::Locked { path: path.clone() })),
+            }),
+            ExitCode::from(3)
+        );
+        assert_eq!(
+            code(ApplyPurgeError::Pending { path: path.clone() }),
+            ExitCode::from(3),
+            "no other command may write until the purge is resumed or undone"
+        );
+        assert_eq!(
+            code(ApplyPurgeError::PastNoReturn { entries: vec![7] }),
+            ExitCode::from(3)
+        );
+        assert_eq!(
+            code(ApplyPurgeError::NotDurable {
+                entries: vec![7],
+                source: Box::new(stemma_core::repository::JournalError::Malformed {
+                    path: path.clone(),
+                }),
+            }),
+            ExitCode::from(3),
+            "the purge is made, although the journal that is gone may come back"
+        );
+        assert_eq!(
+            CliError::PurgedOutput {
+                made: "Purged blob".to_owned(),
+                source: io::Error::other("disk full"),
+            }
+            .exit_code(),
+            ExitCode::from(3)
+        );
+        assert_eq!(
+            code(ApplyPurgeError::NotPending { path: path.clone() }),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            code(ApplyPurgeError::Plan(PurgeError::Agent)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            code(ApplyPurgeError::Start(PurgeFailure::Refs(
+                RefError::Locked { path }
+            ))),
+            ExitCode::FAILURE
+        );
     }
 
     #[test]
