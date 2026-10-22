@@ -418,7 +418,8 @@ impl Repository {
     ///
     /// Returns [`ApplyPurgeError::Plan`] for the errors of [`plan_purge`](Self::plan_purge),
     /// [`ApplyPurgeError::Pending`] if a purge has not finished, [`ApplyPurgeError::Snapshot`] if
-    /// the snapshot fails, [`ApplyPurgeError::Start`] if the purge cannot start under the lock, and
+    /// the snapshot fails (with [`RefError::Locked`] while another command holds the lock; nothing
+    /// is written then), [`ApplyPurgeError::Start`] if the purge cannot start under the lock, and
     /// [`ApplyPurgeError::Stopped`] if a step after the journal fails; then the journal stays.
     pub fn apply_purge(
         &self,
@@ -887,6 +888,7 @@ mod tests {
     use crate::object::{Blob, Kind, Tree};
     use crate::oplog::{check_stubs, OperationName};
     use crate::refs::{encode_branch, BranchName, Head};
+    use crate::repository::snapshot::pause::Stage;
     use crate::repository::{InitOptions, RestoreError, Restored, UpdateError};
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
@@ -1730,13 +1732,15 @@ mod tests {
         }
     }
 
-    /// Runs a purge of the secret at the stop point of the next snapshot of this thread, while
-    /// that snapshot holds the lock, as a second process in the same repository would, and
-    /// returns its error.
-    fn purge_at_the_stop_point(dir: &TempDir) -> std::rc::Rc<std::cell::RefCell<Option<String>>> {
+    /// Runs a purge of the secret when this thread next reaches `stage`, while the writer holds
+    /// the lock, as a second process in the same repository would, and returns its error.
+    fn purge_at_the_stop_point(
+        dir: &TempDir,
+        stage: Stage,
+    ) -> std::rc::Rc<std::cell::RefCell<Option<String>>> {
         let result = std::rc::Rc::new(std::cell::RefCell::new(None));
         let (path, seen) = (dir.path().to_path_buf(), result.clone());
-        crate::repository::snapshot::pause::at_next(move || {
+        crate::repository::snapshot::pause::at_next(stage, move || {
             let other = Repository::open(&path).unwrap();
             let error = other
                 .apply_purge(secret(), &actor(), &AllowAll)
@@ -1769,7 +1773,7 @@ mod tests {
         // The writer saves the secret again (the blob exists, so its save is no change) and
         // another file that changed, so that it moves the working-copy commit.
         write(&dir, "a.txt", "changed again");
-        let refused = purge_at_the_stop_point(&dir);
+        let refused = purge_at_the_stop_point(&dir, Stage::Saved);
         let entry = repository.snapshot(&actor(), &AllowAll).unwrap();
         assert!(
             entry.is_some(),
@@ -1795,7 +1799,7 @@ mod tests {
         let repository = repository(&dir);
         history(&dir, &repository);
         write(&dir, "a.txt", "fourth");
-        let refused = purge_at_the_stop_point(&dir);
+        let refused = purge_at_the_stop_point(&dir, Stage::Moves);
         let committed = repository.commit("fourth", &actor(), &AllowAll).unwrap();
         assert!(
             refused.borrow().is_some(),
@@ -1824,7 +1828,7 @@ mod tests {
             .max()
             .unwrap();
         write(&dir, "a.txt", "unsaved");
-        let refused = purge_at_the_stop_point(&dir);
+        let refused = purge_at_the_stop_point(&dir, Stage::Moves);
         let restored = repository.restore(last, true, &actor(), &AllowAll).unwrap();
         assert!(matches!(restored, Restored::Done { .. }), "{restored:?}");
         assert!(
@@ -1869,7 +1873,7 @@ mod tests {
         history(&dir, &repository);
         write(&dir, "a.txt", "changed");
         let path = dir.path().to_path_buf();
-        crate::repository::snapshot::pause::at_next(move || {
+        crate::repository::snapshot::pause::at_next(Stage::Saved, move || {
             assert!(path.join(".stemma").join("refs.lock").exists());
         });
         repository.snapshot(&actor(), &AllowAll).unwrap();

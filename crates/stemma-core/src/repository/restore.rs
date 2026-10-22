@@ -212,9 +212,9 @@ impl Repository {
             return Ok(Restored::NothingToRestore { snapshot: None });
         }
         // One lock from the first object of the snapshot to the last move, so that no purge
-        // comes in between and deletes an object that the restore names (ADR-014). The plan
-        // above judged the entry before it, so the lock of this call is not mistaken for that
-        // of another writer.
+        // comes in between and deletes an object that the restore names (ADR-014). It is taken
+        // after the plan above: the plan judges the newest entry by the lock (`is_locked`), and
+        // would take the lock of this call for one of an unfinished command.
         let lock = self
             .refs_store()
             .lock_writer()
@@ -229,6 +229,8 @@ impl Repository {
             Err(error) => return Err(RestoreError::Snapshot(error)),
         };
         let snapshot = snapshot.map(Box::new);
+        #[cfg(test)]
+        super::snapshot::pause::reached(super::snapshot::pause::Stage::Moves);
         let operation = OperationName::new(OPERATION).expect("`restore` is a valid operation name");
         let logged =
             self.refs_store()

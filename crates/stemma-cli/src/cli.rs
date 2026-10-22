@@ -1233,10 +1233,10 @@ fn actor(text: Option<String>) -> Result<Actor, CliError> {
 }
 
 pub fn main() -> ExitCode {
-    // A command that writes holds the lock of the references for as long as its snapshot takes
+    // A command that writes holds the lock of the references at least as long as its snapshot takes
     // (ADR-014). Ctrl-C (or a termination signal) removes it before the process ends, so that the
     // next command does not find it; the process ends with 130, as a shell reports an interrupt.
-    // Without the handler (it could not be installed) an interrupt leaves the lock, as before.
+    // Without the handler (it could not be installed) an interrupt leaves the lock behind.
     let _ = ctrlc::set_handler(|| {
         stemma_core::refs::release_locks_for_exit();
         std::process::exit(INTERRUPTED);

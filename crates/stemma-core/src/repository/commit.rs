@@ -58,16 +58,17 @@ impl Repository {
     /// same tree, an empty message, and a change ID of its own. The same tree is what makes it
     /// empty, since the tracked set is the tree (ADR-010).
     ///
-    /// The lock of the references is taken after the authorizer agreed and before the snapshot,
-    /// and held to the last move, so that no purge comes in between and deletes an object that the
-    /// commit names (ADR-014). The branch moves first and the working-copy commit second, with one
-    /// entry. If a stop or a failure comes between the two, the branch has the named commit and
-    /// the working-copy commit is still the old one. The next call finds that state (the tip of
-    /// the branch has the parents and the change ID of the working-copy commit, and a message,
-    /// which the working-copy commit has not) and finishes the
-    /// first commit: it starts the new working-copy commit and moves only that pointer, with an
-    /// entry of its own. The result says [`resumed`](Committed::resumed), and the message of the
-    /// second call is not used.
+    /// The lock of the references is taken after the authorizer agreed and before the snapshot (a
+    /// lock that is held, or the journal of a purge, is a [`CommitError::Update`] before anything
+    /// is written), and held to the last move, so that no purge comes in between and deletes an
+    /// object that the commit names (ADR-014). The branch moves first and the working-copy commit
+    /// second, with one entry. If a stop or a failure comes between the two, the branch has the
+    /// named commit and the working-copy commit is still the old one. The next call finds that
+    /// state (the tip of the branch has the parents and the change ID of the working-copy commit,
+    /// and a message, which the working-copy commit has not) and finishes the first commit: it
+    /// starts the new working-copy commit and moves only that pointer, with an entry of its own.
+    /// The result says [`resumed`](Committed::resumed), and the message of the second call is not
+    /// used.
     ///
     /// # Errors
     ///
@@ -106,6 +107,8 @@ impl Repository {
             .lock_writer()
             .map_err(|error| CommitError::Update(UpdateError::Refs(error)))?;
         self.snapshot_locked(&lock, actor, authorizer)?;
+        #[cfg(test)]
+        super::snapshot::pause::reached(super::snapshot::pause::Stage::Moves);
 
         let current = self.refs().working_copy().map_err(CommitError::Refs)?;
         let working = read_commit(self.objects(), current)?;

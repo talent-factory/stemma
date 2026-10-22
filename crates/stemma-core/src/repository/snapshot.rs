@@ -189,7 +189,7 @@ impl Repository {
             }
         }
         #[cfg(test)]
-        pause::reached();
+        pause::reached(pause::Stage::Saved);
         let tree = index
             .write_tree(self.objects())
             .map_err(SnapshotError::WriteTree)?;
@@ -582,25 +582,47 @@ impl fmt::Display for SnapshotError {
 
 impl Error for SnapshotError {}
 
-/// The stop point of a snapshot for a test: a step that runs after the files are saved and before
-/// the tree is written and the working-copy commit moves, while the snapshot holds the lock. A
+/// The stop points of a writer for a test: a step that runs while the writer holds the lock. A
 /// test runs another command there to reproduce an interleaving of two processes (ADR-014).
 #[cfg(test)]
 pub(super) mod pause {
     use std::cell::RefCell;
 
+    /// Where the step runs.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(in crate::repository) enum Stage {
+        /// In a snapshot, after the files are saved and before the tree is written and the
+        /// working-copy commit moves.
+        Saved,
+        /// In `commit` and `op restore`, after their snapshot and before their moves.
+        Moves,
+    }
+
+    /// A step that a test set, with the stage where it runs.
+    type Step = (Stage, Box<dyn FnOnce()>);
+
     thread_local! {
-        static STEP: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+        static STEP: RefCell<Option<Step>> = RefCell::new(None);
     }
 
-    /// Runs `step` at the stop point of the next snapshot on this thread.
-    pub(in crate::repository) fn at_next(step: impl FnOnce() + 'static) {
-        STEP.with(|cell| *cell.borrow_mut() = Some(Box::new(step)));
+    /// Runs `step` when this thread next reaches `stage`.
+    pub(in crate::repository) fn at_next(stage: Stage, step: impl FnOnce() + 'static) {
+        STEP.with(|cell| *cell.borrow_mut() = Some((stage, Box::new(step))));
     }
 
-    /// The stop point: runs the step that a test set, once.
-    pub(super) fn reached() {
-        if let Some(step) = STEP.with(|cell| cell.borrow_mut().take()) {
+    /// A stop point: runs the step that a test set for `stage`, once.
+    pub(in crate::repository) fn reached(stage: Stage) {
+        let step = STEP.with(|cell| {
+            let mut cell = cell.borrow_mut();
+            match cell.take() {
+                Some((at, step)) if at == stage => Some(step),
+                other => {
+                    *cell = other;
+                    None
+                }
+            }
+        });
+        if let Some(step) = step {
             step();
         }
     }

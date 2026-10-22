@@ -173,10 +173,10 @@ lock may be held.
 
 **Resume.** `stemma purge --resume` reads the journal and repeats the steps from step 5. A crash
 leaves `refs.lock` behind (ADR-011), and the lock would stop the resume. While the journal exists,
-`--resume` and `--abort` treat the lock as the purge's own and remove it, and the message of
-`Locked` of any other command names the journal. Each step can be repeated: a new object that
-exists is a no-op (ADR-007), a pointer that already has its new value is skipped, a stub is
-replaced by itself, and a deleted object is gone. The `purge` entry is found, not written again:
+`--resume` and `--abort` treat the lock as the purge's own and remove it, and any other command that
+writes fails with `PurgePending`, whose message names the journal. Each step can be repeated: a new
+object that exists is a no-op (ADR-007), a pointer that already has its new value is skipped, a stub
+is replaced by itself, and a deleted object is gone. The `purge` entry is found, not written again:
 it is the entry with an operation `purge` and a number above the one that the journal recorded.
 A pointer that is at neither its old nor its new value (a foreign change after the lock was
 removed by hand) makes `--resume` refuse and name the pointer. Because the journal holds the delete

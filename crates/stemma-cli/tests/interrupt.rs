@@ -79,6 +79,11 @@ fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
         .unwrap();
     assert!(killed.success());
     let status = child.wait().unwrap();
+    if status.success() {
+        // The command ended between the check of the lock and the signal.
+        eprintln!("skipped: the command ended before the signal");
+        return;
+    }
     assert_eq!(status.code(), Some(130), "{status:?}");
     assert!(!lock.exists(), "the interrupted command removed its lock");
     let status = stemma(dir.path(), &["status", "--actor", "human daniel"])

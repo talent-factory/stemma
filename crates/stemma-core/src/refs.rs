@@ -494,7 +494,8 @@ impl fmt::Display for RefError {
             Self::Store(source) => write!(f, "{source}"),
             Self::Locked { path } => write!(
                 f,
-                "the references are locked by `{}`; if no process changes them, the file is left \
+                "the references are locked by `{}`: another stemma command is running, and holds \
+                 the lock while it saves the working directory; if none runs, the file is left \
                  from a crash and can be removed",
                 path.display()
             ),
@@ -723,10 +724,10 @@ fn remove_if_own(path: &Path, token: &str) {
 /// it was interrupted (Ctrl-C), so that the next command does not find a lock left behind.
 ///
 /// A command that writes holds the lock from before its first object to after its last move
-/// (ADR-014), which is as long as its snapshot takes. The caller ends the process right after the
-/// call: the list stays locked, so no lock can be made or released any more, and a thread that
-/// tries waits until the end. A lock file that holds another token (a person removed the lock,
-/// and another process holds a new one) stays.
+/// (ADR-014), at least as long as its snapshot takes. The caller ends the process right after the
+/// call: the list stays locked, so no lock can be made or released and no pointer moved any more,
+/// and a thread that tries waits until the end. A lock file that holds another token (a person
+/// removed the lock, and another process holds a new one) stays.
 ///
 /// An interrupted writer is left as a crash leaves it: objects that no commit names are harmless,
 /// and an entry without its move is one that did not take effect (ADR-011). A process that ends
@@ -997,9 +998,15 @@ impl FsRefStore {
         file.sync_all()
             .map_err(io_error("flush the temporary file", &temp.path))?;
         drop(file);
-        self.place(&temp.path, path, parent, top, |from, to| {
-            fs::rename(from, to)
-        })?;
+        {
+            // The list of held locks is held around the move. An interruption keeps the list
+            // once it has removed the locks, so a move waits for the end of the process and
+            // does not happen after another process took the lock (ADR-014).
+            let _held = held_locks();
+            self.place(&temp.path, path, parent, top, |from, to| {
+                fs::rename(from, to)
+            })?;
+        }
         temp.disarm();
         sync_directory(parent).map_err(|error| match error {
             StoreError::Io { source, .. } => RefError::NotFlushed {
@@ -1299,7 +1306,7 @@ pub(crate) enum Logged<T, E> {
 impl FsRefStore {
     /// Moves a branch to `new`, or creates it, if it is still at `expected`, and runs `step` after
     /// the checks and before the move, all under the lock of the references that the caller holds
-    /// (`_lock`, taken before the caller wrote its first object, ADR-014).
+    /// (`_lock`; a command that writes takes it before its first object, ADR-014).
     ///
     /// The checks are the ones of [`RefStore::update_branch`]: a name that is in the way is a
     /// [`RefError::Conflict`], a branch that is not at `expected` is [`RefError::Stale`], and the
@@ -3083,6 +3090,22 @@ mod tests {
         fs::write(&path, b"other").unwrap();
         release(&mut vec![(path.clone(), "mine".to_owned())]);
         assert_eq!(fs::read(&path).unwrap(), b"other");
+    }
+
+    #[test]
+    fn a_move_waits_while_the_list_of_held_locks_is_held() {
+        let (dir, _objects, refs) = setup();
+        let path = dir.path().join("moved");
+        // An interruption holds the list from the removal of the locks to the end.
+        let held = held_locks();
+        std::thread::scope(|scope| {
+            let mover = scope.spawn(|| refs.write_replacing(&path, b"new", dir.path()));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(!path.exists(), "the move waits");
+            drop(held);
+            mover.join().unwrap().unwrap();
+        });
+        assert_eq!(fs::read(&path).unwrap(), b"new");
     }
 
     /// The lock of a writer, for a step that needs it.

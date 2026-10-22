@@ -85,16 +85,19 @@ scheiterte; dann besteht kein Journal mehr.
 \item {\bf 130:} Der Befehl wurde mit Ctrl-C (oder einem Signal zum Beenden) unterbrochen.
 Er hat die Sperre der Referenzen entfernt, bevor er endete. Was er bis dahin schrieb, bleibt
 wie nach einem Absturz: Objekte, die kein Commit nennt, und höchstens ein Eintrag ohne seinen
-Zug. Ein erneuter Aufruf ist unbedenklich.
+Zug. Ein erneuter Aufruf ist unbedenklich; nur nach einem unterbrochenen \type{purge --apply},
+dessen Journal schon besteht, muss zuerst \type{purge --resume} oder \type{purge --abort} kommen.
 \stopitemize
 
 {\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{status},
-\type{op restore}, \type{purge --apply}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er
-das erste Objekt schreibt, und hält sie bis zu seinem letzten Zug, also so lange, wie sein
-Snapshot dauert. Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit
+\type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt
+schreibt, und hält sie bis zu seinem letzten Zug, also mindestens so lange, wie sein Snapshot
+dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
+Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit
 Exit-Code 1 ab und meldet die Sperre; er wartet nicht. Zwei Prozesse in einem Repository
 sind ohnehin nicht vorgesehen. Eine Sperre bleibt nur nach \type{kill -9} oder einem Absturz
-liegen; dann nennt die Meldung die Datei, die zu entfernen ist.
+liegen (oder wenn das Programm Ctrl-C nicht abfangen konnte); dann nennt die Meldung die Datei,
+die zu entfernen ist.
 
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
 lehnen \type{track}, \type{commit}, \type{status} und \type{op restore} ab, wenn sie die
