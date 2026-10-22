@@ -225,9 +225,10 @@ are prior art, not a template.
       modification time and size for now. A snapshot stays under one second up to about 10,000
       files, and the cache is a risk for correctness. Look at it again when repositories with more
       than 50,000 files are realistic, and measure on Linux and Windows first (STEMMA-33). The
-      flush of the first `track` is tracked in STEMMA-40. The time of the snapshot is also the
-      time that a command holds the lock of the references, as it takes the lock before its
-      first object (ADR-014, STEMMA-49).
+      first `track` flushes the new objects of a snapshot together since STEMMA-40, which halved
+      it (49 s for 10,000 files, ADR-007). The time of the snapshot is also the time that a
+      command holds the lock of the references, as it takes the lock before its first object
+      (ADR-014, STEMMA-49).
 - [ ] Files that change during a snapshot. Each file is read once and its blob is made from what
       was read, so a file is consistent in itself, but the files together are not one instant.
       Special files are refused; whether a link that is not UTF-8 may be saved is open.

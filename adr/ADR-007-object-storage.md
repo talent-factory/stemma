@@ -46,6 +46,20 @@ server will later keep objects elsewhere (API-first). The implementation is
   `Corrupt`. When two writers race, the second rename replaces the file with one of identical
   content, which no reader can tell apart. After an error an object may or may not be stored;
   storing it again is safe.
+- **Objects of a snapshot are flushed together** *(confirmed, STEMMA-40)*. A snapshot (ADR-010)
+  writes its new blobs, trees, and commit as a batch: each object goes to its own file in `tmp/`
+  without a flush, and before the log entry and the move of the pointer name any of them, every
+  file is flushed and renamed, and then each directory that received one is flushed once. A
+  read inside the snapshot sees the objects of the batch, so a tree is still checked against its
+  blobs. What a batch may lose is decided by ADR-011: an object that nothing names is harmless,
+  but no entry and no pointer may name an object that is not on disk. A crash before the batch
+  is finished therefore loses its objects and nothing else; their files stay in `tmp/` until the
+  next writer removes them. A batch that fails removes its files, and the objects that it had
+  moved stay, unnamed. The flush of each directory once for many objects is what the batch
+  saves; each file is still flushed on its own, which on macOS is a full flush of the device
+  cache. Measured with `scripts/measure-track.sh` (release build, macOS with APFS on an SSD, one
+  run each, files of 1 KiB, 100 to a directory, other processes running): the first `track` of
+  10,000 files took 97 s before and 49 s after, of 1,000 files 11.3 s and 6.7 s.
 - **Read-only files.** Objects are made read-only to protect them from accidental edits. It is
   not a security measure: whoever can write to the directory can replace the file, and the next
   read detects it.
@@ -101,6 +115,10 @@ server will later keep objects elsewhere (API-first). The implementation is
 - [ ] Garbage collection of unreachable objects.
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31).
+- [ ] A cheaper flush of each file of a batch: an ordinary `fsync` per file and one full flush
+      of the device at the end, as Git does in its batch mode. On macOS this would remove most
+      of the remaining cost of the first `track`; it needs `fcntl` through `libc` and `unsafe`
+      code, which the crate does not have so far.
 - [ ] Streaming for large blobs, so that neither writing nor reading needs the whole body in
       memory.
 - [x] A repository format file (`.stemma/format`) is checked before a repository opens
