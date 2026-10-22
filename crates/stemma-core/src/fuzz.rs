@@ -1,10 +1,13 @@
-//! The checks of the fuzz targets in `fuzz/` (STEMMA-20), one for each strict reader. The module
-//! exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, so it is not
-//! part of the interface.
+//! The checks of the fuzz targets in `fuzz/` (STEMMA-20), one for each of the strict readers of
+//! a tree, a commit, an actor line, the index, an entry of the log, and the journal of a purge.
+//! The readers of HEAD and of a branch file are a single line and have only the property tests.
+//! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, so
+//! it is not part of the interface.
 //!
 //! Each check holds the two rules of ADR-005 for one input, as `properties.rs` does for generated
 //! input: the reader either accepts the input, and then encoding what it read gives exactly the
-//! input, or it rejects it with a message and a chain of causes that ends. A panic, a second
+//! input, or it rejects it with a message and a chain of causes that ends. The reader of the
+//! journal returns `None`, so only its round trip is checked. A panic, a second
 //! spelling, or a reader that does not stop is a finding. The property tests run on every
 //! `just ci`; the fuzzer follows the coverage of the readers and finds the inputs that the
 //! generator of the property tests does not make.

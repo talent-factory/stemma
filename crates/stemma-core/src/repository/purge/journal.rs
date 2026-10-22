@@ -45,9 +45,10 @@ const MAX_LEN: u64 = 1 << 30;
 
 /// The most entries that a journal lists as stubs. The ranges of the line `stubs` are short, so a
 /// few bytes can name up to [`MAX_NUMBER`](crate::oplog::MAX_NUMBER) entries, which the reader
-/// would hold one by one. A purge reads every entry of the log, so a log with more entries than
-/// this cannot be purged in the first place; a journal that lists more is damage.
-const MAX_STUBS: u64 = 1 << 24;
+/// would hold one by one. A plan that replaces more entries is refused
+/// ([`PurgeError::TooManyEntries`](super::PurgeError::TooManyEntries)), so no purge writes a
+/// journal that lists more, and a journal that does is damage.
+pub(super) const MAX_STUBS: u64 = 1 << 24;
 
 /// What the journal holds: the plan that the purge carries out, the last entry of the log before
 /// it, and the objects that it writes and the store did not have.
@@ -149,19 +150,7 @@ impl Journal {
                         .push((BranchName::new(name).ok()?, moved(old, new)));
                 }
                 "stubs" if rest == "-" => {}
-                "stubs" => {
-                    // The ranges are checked before they are expanded, so that a short line
-                    // cannot make the reader hold more numbers than a log can have.
-                    let ranges = parse_ranges(rest)?;
-                    let count: u64 = ranges.iter().map(|(start, end)| end - start + 1).sum();
-                    let after_last = ranges.last().is_some_and(|(_, end)| *end > last);
-                    if after_last || plan.entries.len() as u64 + count > MAX_STUBS {
-                        return None;
-                    }
-                    for (start, end) in ranges {
-                        plan.entries.extend(start..=end);
-                    }
-                }
+                "stubs" => add_stubs(&mut plan.entries, rest, last)?,
                 "new" => new.push(id(rest)?),
                 "delete" => match rest.split_once(' ')? {
                     ("commit", id_text) => plan.commits.push(CommitId::new(id(id_text)?)),
@@ -218,6 +207,23 @@ fn id(text: &str) -> Option<ObjectId> {
 fn pair(text: &str) -> Option<(ObjectId, ObjectId)> {
     let (old, new) = text.split_once(' ')?;
     Some((id(old)?, id(new)?))
+}
+
+/// Adds the numbers of a line `stubs` to those of the lines before. The ranges are checked before
+/// they are expanded, so that a short line cannot make the reader hold more numbers than a purge
+/// can list; the count includes the lines before, so several lines cannot add up past the limit
+/// either. A second line is not canonical, but that is known only after all are read.
+fn add_stubs(entries: &mut Vec<u64>, text: &str, last: u64) -> Option<()> {
+    let ranges = parse_ranges(text)?;
+    let count: u64 = ranges.iter().map(|(start, end)| end - start + 1).sum();
+    let after_last = ranges.last().is_some_and(|(_, end)| *end > last);
+    if after_last || entries.len() as u64 + count > MAX_STUBS {
+        return None;
+    }
+    for (start, end) in ranges {
+        entries.extend(start..=end);
+    }
+    Some(())
 }
 
 /// Folds ascending numbers into inclusive ranges that neither overlap nor touch.
@@ -536,6 +542,22 @@ mod tests {
         for case in cases {
             assert_eq!(Journal::parse(case.as_bytes()), None, "{case}");
         }
+        // Two lines, each under the limit and together over it. The check of the canonical form
+        // refuses the journal anyway, but only after the lines are read, so the second line has
+        // to be refused before it is expanded.
+        let mut entries = Vec::new();
+        add_stubs(&mut entries, &format!("1-{}", MAX_STUBS - 1), 2 * MAX_STUBS).unwrap();
+        let too_many = format!("{} {}", MAX_STUBS + 1, 2 * MAX_STUBS);
+        assert_eq!(add_stubs(&mut entries, &too_many, 2 * MAX_STUBS), None);
+        assert_eq!(
+            entries.len() as u64,
+            MAX_STUBS - 1,
+            "nothing of the second line is added"
+        );
+        // A stub may be the last entry itself.
+        let at_last = text.replace("stubs 3-5 7", "stubs 3-5 9");
+        let read = Journal::parse(at_last.as_bytes()).expect("a stub at the last entry");
+        assert_eq!(read.plan.entries, [3, 4, 5, 9]);
         let mut journal = sample();
         journal.last = MAX_STUBS + 9;
         journal.plan.entries = vec![2, 4];
@@ -635,9 +657,20 @@ mod tests {
     #[test]
     fn every_journal_the_code_can_build_is_read_back() {
         let (seed, mut rng) = (seed(), Rng::new(seed(), 22));
+        let mut shapes = [false; 5];
         for case in 0..cases() {
             let context = format!("seed {seed}, case {case}");
             let journal = random_journal(&mut rng);
+            let entries = &journal.plan.entries;
+            for (seen, now) in shapes.iter_mut().zip([
+                journal.plan.head.is_some() && journal.plan.working_copy.is_some(),
+                entries.is_empty(),
+                entries.len() > 1,
+                entries.last() == Some(&journal.last),
+                journal.last == MAX_NUMBER,
+            ]) {
+                *seen |= now;
+            }
             let bytes = journal.encode();
             assert_eq!(
                 Journal::parse(&bytes).as_ref(),
@@ -646,6 +679,11 @@ mod tests {
                 String::from_utf8_lossy(&bytes)
             );
         }
+        // Both moves, no stubs, several stubs, a stub at the last entry, and the largest number.
+        assert_eq!(
+            shapes, [true; 5],
+            "the run did not build every shape of journal"
+        );
     }
 
     /// The rule of ADR-005 on generated input (see `properties.rs`): every input that the reader

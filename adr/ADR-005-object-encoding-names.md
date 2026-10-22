@@ -303,8 +303,11 @@ them.
 - [x] Fuzz the strict readers (STEMMA-20). Done: the generator of the property tests does not see
       which branches of a reader it reaches, so `fuzz/` adds six `cargo fuzz` targets that follow
       the coverage: `tree`, `commit`, `actor`, `index`, `entry` (both encodings), and `journal`.
-      Each checks the rule above for one input: it is rejected with a message and a chain of
-      causes that ends, or it is the encoding of what was read. The checks are in
+      Each checks the rule above for one input: it is rejected, with a message and a chain of
+      causes that ends (except the journal, whose reader returns `None`), or it is the encoding
+      of what was read. The actor target skips input that is not UTF-8, as the actor line is
+      read from text. The readers of HEAD and of a branch file have no target; their grammar is a
+      single line, and the property tests cover them. The checks are in
       `stemma_core::fuzz`, which exists only under `cfg(fuzzing)`, so the interface does not
       change. libFuzzer needs nightly, so the targets are a workspace of their own and stay out of
       `just ci`; `just fuzz TARGET [SECONDS]` and `just fuzz-all [SECONDS]` run them from the
