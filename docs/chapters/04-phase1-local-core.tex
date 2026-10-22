@@ -364,6 +364,47 @@ entfernt die neuen Objekte und das Journal; ein Objekt, das der Speicher schon v
 bleibt. Das Format bleibt dabei 3, denn eine Version sinkt nie. Ist der Eintrag geschrieben,
 geht der Purge nur noch vorwärts, und \type{--abort} lehnt ab.
 
+\section{Wie die strengen Leser geprüft werden}
+
+Jeder Leser einer Datei des Repositories ist streng: Er nimmt nur an, was der Schreiber
+geschrieben hätte (ADR-005). Das gilt für Bäume, Commits, die Zeile des Akteurs, den Index,
+die Einträge des Operation Log in beiden Kodierungen und das Journal eines Purge. Daraus folgt
+eine Regel, die sich an jeder beliebigen Eingabe prüfen lässt: Entweder lehnt der Leser sie ab,
+mit einer Meldung, oder das Kodieren dessen, was er gelesen hat, ergibt genau die Eingabe.
+Eine zweite Schreibweise derselben Sache gibt es dann nicht, und damit auch keine zweite ID.
+
+Drei Arten von Tests prüfen diese Regel. Die Golden Vectors legen die Bytes einzelner Objekte
+fest und ändern sie an je einer Stelle. Die Property-Tests in \type{properties.rs} erzeugen
+Tausende Eingaben: gültige Kodierungen, die an mehreren Stellen zugleich verändert sind,
+zusammengeklebte Stücke zweier Kodierungen, Bruchstücke des Formats und rohe Bytes. Der
+Startwert des Generators ist fest, damit ein Fehler wiederholbar ist; mit
+\type{STEMMA_PROPERTY_SEED} und \type{STEMMA_PROPERTY_CASES} lassen sich andere und mehr
+Eingaben prüfen. Beide Arten laufen in \type{just ci}.
+
+Der Generator sieht aber nicht, welche Zweige eines Lesers er erreicht. Das tut ein Fuzzer,
+der der Abdeckung folgt: \type{cargo fuzz} mit libFuzzer verändert die Eingaben so, dass sie
+neue Zweige erreichen. Im Verzeichnis \type{fuzz/} gibt es dafür sechs Ziele, eines je Leser:
+\type{tree}, \type{commit}, \type{actor}, \type{index}, \type{entry} und \type{journal}. Sie
+beginnen bei gültigen Kodierungen in \type{fuzz/seeds/}. libFuzzer braucht die Nightly-Version
+von Rust, deshalb gehört das Fuzzing nicht zu \type{just ci}. Es läuft von Hand:
+
+\starttyping
+rustup toolchain install nightly
+cargo install cargo-fuzz --locked
+just fuzz entry 300      # ein Leser, 300 Sekunden
+just fuzz-all 60         # alle Leser, je 60 Sekunden
+\stoptyping
+
+Ein Fund liegt danach in \type{fuzz/artifacts/} und lässt sich mit
+\type{cargo +nightly fuzz run entry DATEI} wiederholen. Der von Hand gestartete Workflow der
+CI hat einen Job, der jedes Ziel eine Minute lang laufen lässt.
+
+Schon der Property-Test des Journals hat einen Fehler gefunden. Die Zeile
+\type{stubs 1-999999999999} ist nur wenige Bytes lang, doch der Leser schrieb jede Nummer des
+Bereichs einzeln in eine Liste, und das Programm lief aus dem Speicher, statt das Journal als
+beschädigt zu melden. Der Leser prüft die Bereiche jetzt, bevor er sie ausschreibt: Ein Stub
+nach dem letzten Eintrag, den das Journal nennt, und mehr als $2^{24}$ Stubs sind Schaden.
+
 \section{Offene Fragen}
 
 \startitemize
