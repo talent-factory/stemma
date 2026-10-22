@@ -107,6 +107,85 @@ Das Grundlagendokument stützt sich auf fünf Aussagen:
 \item Der Umfang bleibt bewusst klein: zuerst ein Nutzer, dann Mitarbeitende, danach Studierende und weitere Nutzer.
 \stopitemize
 
+\section{Der Name}
+
+{\em Stemma} (gesprochen [ˈʃtɛma], Plural {\em Stemmata}) ist ein altes Wort für Stammbaum.
+Auf dem Weg dorthin hat es mehrere Bedeutungen angesammelt,
+und jede davon passt zu einem Versionskontrollsystem.
+
+{\bf Vom Kranz zur Ahnentafel.}
+Das Wort stammt aus dem Griechischen: στέμμα ({\em stémma}) ist ein Kranz, eine Girlande,
+etwas, das man um etwas windet \cite[wiktionary-stemma].
+In der Apostelgeschichte (14,13) sind es die Kränze, die man vor die Stadttore bringt.
+Im Rom der Republik bewahrten Adelsfamilien Bilder ihrer Vorfahren ({\em imagines}) im Haus auf,
+und der Kranz, mit dem man diese Bilder schmückte, hiess ebenfalls {\em stemma}.
+Plinius der Ältere erwähnt in seiner Naturgeschichte (Buch 35) {\em stemmata},
+deren Linien zu den gemalten Ahnenbildern führten
+({\em stemmata vero lineis discurrebant ad imagines pictas}) \cite[piggin-stemma-latin].
+Ob damit schon ein Diagramm im heutigen Sinn gemeint war, ist unklar.
+Aus dem Kranz um die Ahnenbilder wurde jedenfalls die Ahnentafel selbst, also der Stammbaum.
+
+{\bf Die Frage des Juvenal.}
+Der Satiriker Juvenal eröffnet seine achte Satire mit einem Spott auf den Adelsstolz:
+{\em Stemmata quid faciunt?}, was nützen Stammbäume? \cite[juvenal-satire8]
+Seine Antwort lautet sinngemäss: nichts,
+solange man nur auf die Herkunft pocht und sie nicht belegen kann.
+Ein Versionskontrollsystem kann diese Frage technisch beantworten.
+Jeder Commit nennt seine Eltern,
+und die Kennung eines Commits ist ein Hash über genau diese Angabe.
+Wer die Herkunft ändert, ändert die Kennung.
+Die Ahnentafel ist damit nicht behauptet, sondern prüfbar.
+
+{\bf Der Stammbaum der Handschriften.}
+In der Textkritik heisst ein Diagramm, das zeigt,
+wie erhaltene Abschriften eines Werks voneinander abstammen, {\em stemma codicum}.
+Die Methode ist im 19.~Jahrhundert mit dem Namen Karl Lachmanns verbunden
+\cite[roelli2020handbook].
+Ihr Gedanke: Beim Abschreiben entstehen Fehler, und Abschriften,
+die dieselben auffälligen Fehler teilen, gehen vermutlich auf eine gemeinsame Vorlage zurück.
+Am Ende steht der Versuch, den Archetypus zu rekonstruieren,
+den Text, von dem alle Abschriften abstammen.
+Greift ein Schreiber auf mehrere Vorlagen zurück, spricht man von Kontamination,
+und aus dem Baum wird ein Geflecht.
+
+Das ist die Lage eines Versionskontrollsystems, nur mit einem Unterschied:
+Der Textkritiker muss die Abstammung aus den Fehlern erschliessen, eine Hypothese.
+Stemma zeichnet sie auf, als Tatsache.
+\in{Tabelle}[tab:name] stellt die Begriffe einander gegenüber.
+
+\startplacetable[title={Was der Name für das Projekt bedeutet},reference=tab:name]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Textkritik} \stopxcell
+\startxcell {\bf Stemma} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Abschrift (Handschrift) \stopxcell
+\startxcell Commit \stopxcell
+\stopxrow
+\startxrow
+\startxcell Abstammung von einer Vorlage \stopxcell
+\startxcell Elternverweis des Commits \stopxcell
+\stopxrow
+\startxrow
+\startxcell Kontamination (mehrere Vorlagen) \stopxcell
+\startxcell Merge-Commit mit mehreren Eltern \stopxcell
+\stopxrow
+\startxrow
+\startxcell Schreiber, dessen Hand man bestimmt \stopxcell
+\startxcell Akteur, Mensch oder Agent mit Auftraggeber (ADR-002) \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Abstammung wird erschlossen \stopxcell
+\startxcell Abstammung wird aufgezeichnet und durch den Hash geprüft \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Praktisch spielt mit: Der Name hat sechs Buchstaben und lässt sich gut tippen,
+und das Programm heisst wie das Verzeichnis, in dem ein Repository seine Daten ablegt
+(\type{stemma}, \type{.stemma}).
+
 \section{Ziele und Nicht-Ziele}
 
 \subsection{Ziele}
