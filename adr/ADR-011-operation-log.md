@@ -142,7 +142,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
     old entries are not covered; to write them again as old entries, one has to compute the whole
     chain after them again, which only an anchor finds.
   - **Where it is checked.** Reading the whole log (`FsOpLog::entries`, which `op restore` and
-    the purge use) checks the whole chain and the tip. Reading a window (`FsOpLog::tail`, for
+    the purge use) checks the whole chain and the tip. Reading a window (`FsOpLog::window`, for
     `stemma op log -n`) checks the window, the link of its first entry to the entry before it
     if that can be read, and the tip if it is in the window; `op log` warns if the link was not
     checked. The command `stemma op verify` checks the whole log and the tip strictly, and

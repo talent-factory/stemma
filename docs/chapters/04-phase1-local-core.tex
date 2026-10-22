@@ -279,8 +279,8 @@ jeden weiteren Schreiber. Fehlt die Datei (ein Repository vor ihrer Einführung)
 nächste Eintrag sie an. Eine Lücke in der Mitte
 hält den Schreiber dagegen nicht auf, denn eine Weigerung verhinderte den Zug, der das Log
 reparieren soll. Die Datei schützt vor Unfällen, nicht vor einem Angriff: Wer sie löscht,
-fällt erst \type{stemma op verify} auf, und wer den Eintrag und die Datei neu schreibt,
-bleibt unbemerkt.
+fällt erst \type{stemma op verify} auf, sofern der letzte Eintrag in der Kette steht, und wer
+den Eintrag und die Datei neu schreibt, bleibt unbemerkt.
 
 \subsection{Die Hash-Kette}
 
@@ -298,14 +298,15 @@ Der Schreiber liest den Eintrag vor der Nummer, die er versucht, und nennt desse
 Verliert er das Rennen um eine Nummer, baut er seinen Eintrag für die nächste Nummer neu,
 mit dem Hash ihres Vorgängers. Kann er den Vorgänger nicht lesen, schreibt er nichts, denn ein
 Neubeginn der Kette würde den Schaden verdecken. Aus demselben Grund schreibt er nichts hinter
-einen alten Eintrag, der auf einen Eintrag der Kette folgt. Ein Log aus der Zeit vor der Kette
-behält
-seine alten Einträge vorne, und der erste neue Eintrag beginnt die Kette. Diese alten Einträge
-deckt die Kette nicht ab, und einen alten Eintrag hinter der Kette lehnt der Leser ab.
+einen alten Eintrag, der auf einen Eintrag der Kette folgt.
+Ein Log aus der Zeit vor der Kette behält seine alten Einträge vorne,
+und der erste neue Eintrag beginnt die Kette. Diese alten Einträge deckt die Kette nicht ab,
+und einen alten Eintrag hinter der Kette lehnt der Leser ab.
 
 \type{op log} prüft mit einer Grenze nur das gezeigte Fenster und dessen Anschluss an den
 Eintrag davor; lässt sich dieser nicht lesen, warnt der Befehl. \type{stemma op verify} prüft
-das ganze Log und gibt einen Anker aus, die Nummer und den Hash des letzten Eintrags. Die Datei
+das ganze Log und gibt einen Anker aus, die Nummer und den Hash des letzten Eintrags,
+sofern dieser in der Kette steht. Die Datei
 \type{oplog-tip} prüft er strenger als die übrigen Befehle: Fehlt sie oder liegt sie mehr als
 einen Eintrag zurück, obwohl der letzte Eintrag in der Kette steht, meldet er das, denn dann
 haben die Schreiber nichts mit ihr verglichen.

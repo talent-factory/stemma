@@ -187,7 +187,7 @@ set, a crash after step 7 does not leave the blob behind as an object that "was 
 unreachable".
 
 **Abort.** `stemma purge --abort` removes the journal and the objects that step 5 wrote, as long
-as the `purge` entry is not written; the format stays at 3. Once the entry is written, the purge
+as the `purge` entry is not written; the format stays where the purge raised it. Once the entry is written, the purge
 can only go forward: that is the point of no return, and a purge that cannot finish (a missing
 object, an unreadable log) is left for a person to repair.
 
@@ -291,7 +291,7 @@ Slices, all built: the plan (`Repository::plan_purge` and `stemma purge BLOB`, w
 nothing, STEMMA-46), the stubs and the `purge` entry in the log with its reader and `op restore`
 refusing a stub (STEMMA-47), and `--apply` with the snapshot, the new objects, the journal, the
 removal of the objects, resume, and abort, and the move of the repository to format 3 with its
-first purge (STEMMA-48: `Repository::apply_purge`, `resume_purge`, and `abort_purge`). The apply
+first purge, which is format 4 since the hash chain (STEMMA-48: `Repository::apply_purge`, `resume_purge`, and `abort_purge`). The apply
 waited for the other two, as a pointer moves only with an entry and a purge without stubs and
 removal would leave the secret in place. The lock of a writer from its first object, with the
 removal of the lock on Ctrl-C, closed the window of an early writer (STEMMA-49).
