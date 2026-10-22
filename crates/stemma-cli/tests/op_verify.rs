@@ -169,12 +169,17 @@ fn a_log_whose_chain_was_computed_again_is_found_only_by_the_anchor() {
     let number = kept.split(':').next().unwrap().parse::<u64>().unwrap();
     let text = fs::read_to_string(entry_file(dir.path(), number)).unwrap();
     let time = text.lines().nth(2).unwrap();
+    let changed = text.replacen(time, "time 1", 1);
+    fs::write(entry_file(dir.path(), number), &changed).unwrap();
+    let hash = stemma_core::oplog::Entry::parse(changed.as_bytes())
+        .unwrap()
+        .hash()
+        .unwrap();
     fs::write(
-        entry_file(dir.path(), number),
-        text.replacen(time, "time 1", 1),
+        dir.path().join(".stemma/oplog-tip"),
+        format!("stemma-oplog-tip 2\nnumber {number}\nhash {hash}\n"),
     )
     .unwrap();
-    fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();
     let result = run(dir.path(), &["op", "verify"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
 
@@ -226,4 +231,108 @@ fn verify_outside_a_repository_fails() {
     let result = run(dir.path(), &["op", "verify"]);
     assert_eq!(result.code, 1);
     assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
+}
+
+/// Writes the log of the repository again in the form from before the hash chain, with a tip of
+/// version 1, at format 3, as a program before the chain left it.
+fn to_the_form_before_the_chain(dir: &Path) {
+    let last = last(dir);
+    for number in 1..=last {
+        let text = fs::read_to_string(entry_file(dir, number)).unwrap();
+        let old: String = text
+            .replacen("stemma-oplog 3\n", "stemma-oplog 1\n", 1)
+            .lines()
+            .filter(|line| !line.starts_with("previous "))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(entry_file(dir, number), old).unwrap();
+    }
+    fs::write(
+        dir.join(".stemma/oplog-tip"),
+        format!("stemma-oplog-tip 1\nnumber {last}\n"),
+    )
+    .unwrap();
+    fs::write(dir.join(".stemma/format"), "stemma-repository 3\n").unwrap();
+}
+
+#[test]
+fn a_log_from_before_the_chain_has_no_anchor_until_op_restore_starts_the_chain() {
+    let dir = repository();
+    let kept = anchor(dir.path());
+    to_the_form_before_the_chain(dir.path());
+    let old = last(dir.path());
+
+    let result = run(dir.path(), &["op", "verify"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Checked {old} entries of the operation log: no entry is in the hash chain yet, so \
+             there is no anchor; the next entry starts it.\n"
+        )
+    );
+    // The entry of an anchor from before is now from before the chain, with no hash.
+    let result = run(dir.path(), &["op", "verify", "--anchor", &kept]);
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("written before the hash chain"),
+        "{}",
+        result.stderr
+    );
+
+    // `op restore` writes the first entry of the chain and moves the repository to format 4.
+    let result = run(
+        dir.path(),
+        &["op", "restore", &old.to_string(), "--actor", ACTOR],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
+        "stemma-repository 4\n"
+    );
+    let result = run(dir.path(), &["op", "verify"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let start = old + 1;
+    assert!(
+        result.stdout.starts_with(&format!(
+            "Checked {} entries of the operation log: the hash chain holds from entry {start}; \
+             entries 1 to {old} were written before it and are not covered.\n",
+            last(dir.path())
+        )),
+        "{}",
+        result.stdout
+    );
+    assert!(result.stdout.contains("\nanchor "), "{}", result.stdout);
+}
+
+#[test]
+fn a_missing_tip_file_is_reported() {
+    let dir = repository();
+    fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();
+    let result = run(dir.path(), &["op", "verify"]);
+    assert_eq!(result.code, 1);
+    assert_eq!(result.stdout, "");
+    assert!(result.stderr.contains("no tip file"), "{}", result.stderr);
+    // `op log` reads the log all the same.
+    let result = run(dir.path(), &["op", "log"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+}
+
+#[test]
+fn op_log_warns_when_it_cannot_check_the_link_of_its_oldest_entry() {
+    let dir = repository();
+    let last = last(dir.path());
+    fs::write(entry_file(dir.path(), last - 1), "damaged").unwrap();
+    let result = run(dir.path(), &["op", "log", "-n", "1"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stderr.starts_with(&format!(
+            "stemma: warning: the link of the oldest shown entry to entry {} was not checked",
+            last - 1
+        )),
+        "{}",
+        result.stderr
+    );
+    let result = run(dir.path(), &["op", "verify"]);
+    assert_eq!(result.code, 1);
 }

@@ -58,7 +58,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::op_log;
 use stemma_core::object::{ObjectId, METADATA_DIR};
-use stemma_core::oplog::{self, Chain, EntryHash, OpLogError};
+use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
     normalize_path, ApplyPurgeError, CommitError, Committed, InitError, InitOptions, OpenError,
@@ -144,7 +144,8 @@ enum OpCommand {
     Log(OpLogArgs),
     /// Put back the state before an entry: HEAD, the working copy, and the branches it moved
     Restore(OpRestoreArgs),
-    /// Check the hash chain of the whole log, and print the anchor of its last entry
+    /// Check the hash chain of the whole log, and print the anchor of its last entry if that is in
+    /// the chain
     Verify(OpVerifyArgs),
 }
 
@@ -161,30 +162,41 @@ struct OpVerifyArgs {
 
     /// An anchor that an earlier `op verify` printed, `<number>:<hash>`, kept outside the
     /// repository: the entry with the number must still have the hash
-    #[arg(long, value_name = "NUMBER:HASH", value_parser = parse_anchor)]
+    #[arg(long, value_name = "NUMBER:HASH")]
     anchor: Option<Anchor>,
 }
 
-/// An entry and the hash that it had when `op verify` printed it (ADR-011).
+/// An entry and the hash that it had when `op verify` printed it (ADR-011). Its text is
+/// `<number>:<hash>`, which `op verify` prints and `--anchor` reads.
 #[derive(Debug, Clone, Copy)]
 struct Anchor {
     number: u64,
     hash: EntryHash,
 }
 
-/// Reads an anchor, `<number>:<hash>`, as `op verify` prints it.
-fn parse_anchor(text: &str) -> Result<Anchor, String> {
-    let (number, hash) = text
-        .split_once(':')
-        .ok_or_else(|| "expected `<number>:<hash>`, such as `12:b3:…`".to_owned())?;
-    let number = number
-        .parse::<u64>()
-        .ok()
-        // The canonical form only: no sign, no leading zero, and not 0.
-        .filter(|parsed| *parsed >= 1 && parsed.to_string() == number)
-        .ok_or_else(|| format!("`{number}` is not the number of an entry"))?;
-    let hash = EntryHash::from_str(hash).map_err(|error| format!("invalid hash: {error}"))?;
-    Ok(Anchor { number, hash })
+impl fmt::Display for Anchor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.number, self.hash)
+    }
+}
+
+impl FromStr for Anchor {
+    type Err = String;
+
+    /// Reads the canonical form only, as `Display` writes it.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (number, hash) = text
+            .split_once(':')
+            .ok_or_else(|| "expected `<number>:<hash>`, such as `12:b3:…`".to_owned())?;
+        let number = number
+            .parse::<u64>()
+            .ok()
+            // The canonical form only: no sign, no leading zero, and not 0.
+            .filter(|parsed| *parsed >= 1 && parsed.to_string() == number)
+            .ok_or_else(|| format!("`{number}` is not the number of an entry"))?;
+        let hash = EntryHash::from_str(hash).map_err(|error| format!("invalid hash: {error}"))?;
+        Ok(Self { number, hash })
+    }
 }
 
 #[derive(Debug, Args)]
@@ -413,8 +425,13 @@ enum CliError {
     },
     /// The operation log cannot be read.
     OpLog(OpLogError),
-    /// The entry that an anchor names is not in the log, or was written before the chain.
+    /// The entry that an anchor names is not in the log.
     AnchorMissing {
+        /// The number of the entry.
+        number: u64,
+    },
+    /// The entry that an anchor names was written before the chain, so it has no hash.
+    AnchorUnchained {
         /// The number of the entry.
         number: u64,
     },
@@ -489,6 +506,7 @@ impl CliError {
             | Self::ApplyPurge(_)
             | Self::OpLog(_)
             | Self::AnchorMissing { .. }
+            | Self::AnchorUnchained { .. }
             | Self::AnchorMismatch { .. }
             | Self::VerifyOutput(_)
             | Self::EmptyLog
@@ -619,8 +637,14 @@ impl fmt::Display for CliError {
             Self::OpLog(error) => error.fmt(f),
             Self::AnchorMissing { number } => write!(
                 f,
-                "the anchor names entry {number}, but the log has no such entry in its hash chain: \
-                 the entry was lost, or the anchor belongs to another repository"
+                "the anchor names entry {number}, but the log has no such entry: the entry was \
+                 lost, or the anchor belongs to another repository"
+            ),
+            Self::AnchorUnchained { number } => write!(
+                f,
+                "the anchor names entry {number}, but that entry was written before the hash \
+                 chain and has no hash: the entry was replaced, or the anchor belongs to another \
+                 repository"
             ),
             Self::AnchorMismatch { anchor, found } => write!(
                 f,
@@ -988,7 +1012,17 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     // The shown entries are the newest ones, so every later entry of a pointer is among them, and
     // only the last entry of a pointer needs its value now. The purge entry of a shown stub comes
     // after it, so it is shown too, and `tail` checks the stubs.
-    let entries = log.tail(args.limit.get()).map_err(CliError::OpLog)?;
+    let window = log.window(args.limit.get()).map_err(CliError::OpLog)?;
+    if let Some((number, error)) = window.unchecked() {
+        // A warning that cannot be written is dropped on purpose, as in `main`.
+        let _ = writeln!(
+            io::stderr(),
+            "stemma: warning: the link of the oldest shown entry to entry {number} was not \
+             checked, as that entry cannot be read: {error}; `stemma op verify` checks the whole \
+             log"
+        );
+    }
+    let entries = window.into_entries();
     let pending = oplog::pending_stubs(&entries);
     let names: BTreeSet<&BranchName> = entries
         .iter()
@@ -1065,31 +1099,30 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Checks the hash chain of the whole log and the hash that the tip file names, and the anchor
-/// if one is given, and prints the anchor of the last entry (ADR-011). The chain shows that the
-/// entries agree with one another; whoever can write `.stemma` can compute it again, so only an
-/// anchor kept outside the repository shows that the log was not rewritten. It only reads, and a
-/// closed pipe is not a failure.
+/// Checks the hash chain of the whole log and the tip file (see `FsOpLog::verify`), and the
+/// anchor if one is given, and prints the anchor of the last entry (ADR-011). The chain shows that
+/// the entries agree with one another; whoever can write `.stemma` can compute it again, so only
+/// an anchor kept outside the repository shows that the log was not rewritten. It only reads, and
+/// a closed pipe is not a failure.
 fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
-    let entries = repository.oplog().entries().map_err(CliError::OpLog)?;
+    let entries = repository.oplog().verify().map_err(CliError::OpLog)?;
     let last = entries.last().ok_or(CliError::EmptyLog)?;
     if let Some(anchor) = args.anchor {
-        let found = entries
+        let entry = entries
             .iter()
             .find(|entry| entry.number() == anchor.number)
-            .and_then(oplog::Entry::hash)
             .ok_or(CliError::AnchorMissing {
                 number: anchor.number,
             })?;
+        let found = entry.hash().ok_or(CliError::AnchorUnchained {
+            number: anchor.number,
+        })?;
         if found != anchor.hash {
             return Err(CliError::AnchorMismatch { anchor, found });
         }
     }
-    let start = entries
-        .iter()
-        .find(|entry| entry.chain() != Chain::Unchained)
-        .map(oplog::Entry::number);
+    let start = oplog::chain_start(&entries);
     let mut text = format!("Checked {} entries of the operation log", entries.len());
     match start {
         Some(1) => text.push_str(": the hash chain holds.\n"),
@@ -1098,7 +1131,10 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
              and are not covered.\n",
             start - 1
         )),
-        None => text.push_str(": no entry is in the hash chain yet.\n"),
+        None => text.push_str(
+            ": no entry is in the hash chain yet, so there is no anchor; the next entry starts \
+             it.\n",
+        ),
     }
     if let Some(anchor) = args.anchor {
         text.push_str(&format!(
@@ -1107,7 +1143,11 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
         ));
     }
     if let Some(hash) = last.hash() {
-        text.push_str(&format!("anchor {}:{hash}\n", last.number()));
+        let anchor = Anchor {
+            number: last.number(),
+            hash,
+        };
+        text.push_str(&format!("anchor {anchor}\n"));
     }
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
@@ -2518,5 +2558,23 @@ mod tests {
         // `/a/b` has no drive on Windows and would be completed, so the path comes from the system.
         let given = std::env::temp_dir().join("a").join("b");
         assert_eq!(absolute(&given), given);
+    }
+
+    #[test]
+    fn an_anchor_reads_back_what_it_writes_and_nothing_else() {
+        let hash = format!("b3:{}", "0a".repeat(32));
+        let text = format!("12:{hash}");
+        let anchor = Anchor::from_str(&text).unwrap();
+        assert_eq!(anchor.to_string(), text);
+        for other in [
+            format!("012:{hash}"),
+            format!("0:{hash}"),
+            format!("+12:{hash}"),
+            format!("12:{}", hash.to_uppercase()),
+            format!("12 {hash}"),
+            "12:".to_owned(),
+        ] {
+            assert!(Anchor::from_str(&other).is_err(), "{other}");
+        }
     }
 }

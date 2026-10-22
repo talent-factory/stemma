@@ -247,8 +247,8 @@ impl Repository {
                     .map_err(|error| {
                         RestoreError::Update(UpdateError::Log(OpLogError::Entry(error)))
                     })?;
+                    // Through the repository, which moves it to the format of the chain first.
                     let entry = self
-                        .oplog()
                         .append(&change)
                         .map_err(|error| RestoreError::Update(UpdateError::Log(error)))?;
                     if let Some(checkout) = &plan.checkout {

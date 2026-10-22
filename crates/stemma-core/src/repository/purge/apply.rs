@@ -1,7 +1,7 @@
 //! The purge itself: `stemma purge BLOB --apply`, `--resume`, and `--abort` (ADR-014).
 //!
 //! A purge takes a snapshot, takes the lock of the references, plans again under it, moves the
-//! repository to format 3, and writes the journal. Then it writes the new trees and commits,
+//! repository to format 4, and writes the journal. Then it writes the new trees and commits,
 //! checks the pointers, writes the `purge` entry, moves the pointers, replaces the entries by
 //! stubs, deletes the delete set, and removes the journal. Each step after the journal can be
 //! repeated, so `--resume` runs them again from the journal. Until the `purge` entry is written,
@@ -407,7 +407,7 @@ impl Repository {
     /// The actor must be a human, and the authorizer is asked for `purge` with the blob, as for
     /// [`plan_purge`](Self::plan_purge). Then the purge takes a snapshot of the working directory,
     /// takes the lock of the references and keeps it to the end, and plans again under it, so its
-    /// plan can differ from one printed before. It moves the repository to format 3 and writes
+    /// plan can differ from one printed before. It moves the repository to format 4 and writes
     /// the journal `.stemma/purge-pending`, and from then on every other command that writes
     /// refuses. It writes the new trees and commits, checks that every pointer is at its value
     /// before the purge, writes the `purge` entry, and moves the pointers. Last, it replaces the
@@ -736,7 +736,9 @@ impl Repository {
                         | OpLogError::BadTip { .. }
                         | OpLogError::TipMismatch { .. }
                         | OpLogError::ChainBroken { .. }
-                        | OpLogError::Unchained { .. }
+                        | OpLogError::UnchainedAfterChain { .. }
+                        | OpLogError::TipMissing { .. }
+                        | OpLogError::TipBehind { .. }
                         | OpLogError::Predecessor { .. }
                         | OpLogError::UnexpectedFile { .. }
                         | OpLogError::Missing { .. }

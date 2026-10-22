@@ -189,6 +189,15 @@ fn object_path(dir: &Path, id: &str) -> PathBuf {
 #[test]
 fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
     let dir = with_secret();
+    // An anchor kept before the purge: the stubs keep the hashes, so it still holds after it.
+    let before = ok(dir.path(), &["op", "verify"]);
+    let kept = before
+        .stdout
+        .lines()
+        .last()
+        .and_then(|line| line.strip_prefix("anchor "))
+        .unwrap()
+        .to_owned();
     let result = ok(
         dir.path(),
         &["purge", &secret(), "--apply", "--actor", ACTOR],
@@ -221,6 +230,7 @@ fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
         "{}",
         verified.stdout
     );
+    ok(dir.path(), &["op", "verify", "--anchor", &kept]);
 
     // The log shows the stubs and the purge, and a restore of them is refused.
     let log = ok(dir.path(), &["op", "log"]);
