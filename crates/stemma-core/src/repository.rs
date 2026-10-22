@@ -50,7 +50,7 @@ use crate::refs::{
 };
 use crate::store::{
     create_dirs_synced as create_store_dirs, create_temp, sync_directory as flush_store_directory,
-    unique_temp_name, FsObjectStore, ObjectStore, StoreError,
+    unique_temp_name, FsObjectStore, ObjectStore, StoreError, INIT_STAGING_PREFIX,
 };
 use crate::{Actor, Authorizer, Decision};
 
@@ -190,8 +190,10 @@ impl Repository {
     /// `.stemma-init-<pid>-<n>-<random>`, and moved into place with one rename. A failure
     /// removes the temporary directory again, so it leaves no half-made `.stemma`. If that
     /// removal fails too, the error says so and names the directory, and a process that is
-    /// killed in the middle leaves it behind; it can be removed by hand. HEAD points to the
-    /// initial branch of `options`, which does not exist yet.
+    /// killed in the middle leaves it behind. The next command that writes in the repository
+    /// that then exists in `path` removes it under the lock of the references (ADR-009,
+    /// STEMMA-31); otherwise it can be removed by hand. HEAD points to the initial branch of
+    /// `options`, which does not exist yet.
     ///
     /// The check for an existing `.stemma` and the rename are two steps. If another process
     /// creates `.stemma` in between, the rename fails and the call returns
@@ -233,7 +235,7 @@ impl Repository {
             return Err(InitError::AlreadyExists { path: target });
         }
         let staging = create_staging(path, &mut || {
-            format!("{METADATA_DIR}-init-{}", unique_temp_name())
+            format!("{INIT_STAGING_PREFIX}{}", unique_temp_name())
         })?;
         install(&staging, &target, options, actor)?;
         sync_directory(path).map_err(|source| InitError::NotDurable {
@@ -1846,6 +1848,12 @@ mod tests {
         // A file with the prefix is not what `init` makes, and it stays.
         let file = dir.path().join(".stemma-init-file");
         fs::write(&file, b"x").unwrap();
+        // Nor is a directory of the working copy whose name only starts like it.
+        let content = dir.path().join(".stemma-init-notes");
+        fs::create_dir(&content).unwrap();
+        fs::write(content.join("plan.md"), b"mine").unwrap();
+        let near = dir.path().join(".stemma-init-1-1-0123456789ABCDEF");
+        fs::create_dir(&near).unwrap();
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");
         repository
@@ -1853,10 +1861,40 @@ mod tests {
             .unwrap();
         assert!(!stale.exists());
         assert!(file.exists());
+        assert_eq!(fs::read(content.join("plan.md")).unwrap(), b"mine");
+        assert!(near.is_dir());
         assert_eq!(
             names(&dir.path().join(".stemma").join("tmp")),
             Vec::<String>::new()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cleanup_that_cannot_remove_a_directory_does_not_stop_the_change() {
+        // The cleanup is best effort (ADR-011): what cannot be removed stays, and the move is made.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let stale = dir.path().join(".stemma-init-1-0-0123456789abcdef");
+        let sealed = stale.join("objects");
+        fs::create_dir_all(&sealed).unwrap();
+        fs::write(sealed.join("object"), b"x").unwrap();
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+        if fs::remove_file(sealed.join("object")).is_ok() {
+            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
+            return;
+        }
+        let old = repository.refs().working_copy().unwrap();
+        let new = next_commit(&repository, "x");
+        let result =
+            repository.update_working_copy(&operation("snapshot"), old, new, &actor(), &AllowAll);
+        let left = sealed.join("object").exists();
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+        result.unwrap();
+        assert_eq!(repository.refs().working_copy().unwrap(), new);
+        assert!(left, "what cannot be removed stays");
     }
 
     #[cfg(unix)]
@@ -1867,7 +1905,7 @@ mod tests {
         let target = dir.path().join("kept");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("file"), b"x").unwrap();
-        let link = dir.path().join(".stemma-init-link");
+        let link = dir.path().join(".stemma-init-1-0-0123456789abcdef");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");

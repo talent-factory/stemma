@@ -864,7 +864,7 @@ impl Drop for TempFile {
     fn drop(&mut self) {
         if self.armed {
             // Best effort: a file that stays behind is harmless, because temporary names are
-            // never reused.
+            // never reused, and the next writer that takes the lock removes it (ADR-011).
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -908,15 +908,19 @@ pub(crate) fn create_temp(
     })
 }
 
-/// Removes the scratch that writers left behind (ADR-011): every file in `<root>/tmp/`, and, if
-/// `root` is named [`METADATA_DIR`], every directory `.stemma-init-…` next to it that an
-/// interrupted `init` left (ADR-009). The caller holds the lock of the references, and every
-/// writer of `tmp/` holds that lock while it writes, so no name there belongs to a write in
-/// progress. An `init` that still runs next to an existing `.stemma` fails at its rename anyway.
+/// Removes the scratch that writers left behind (ADR-011): every name in `<root>/tmp/` that is not
+/// a directory, and, if `root` is named [`METADATA_DIR`], every directory next to it whose name is
+/// exactly one that `init` gives its temporary directory (ADR-009, [`is_init_staging_name`]). The
+/// caller holds the lock of the references, and every writer of `tmp/` in this crate holds that
+/// lock while it writes, so no name there belongs to a write in progress. A caller of the library
+/// that stores objects through `Repository::objects()` without the lock is not protected. An
+/// `init` that still builds its directory next to an existing `.stemma` fails, at the latest at
+/// its rename.
 ///
 /// It is best effort: a name that cannot be removed stays, and the next writer tries again, as a
 /// cleanup must not stop a change. An entry is never followed: a symbolic link is removed as a
-/// name, and a directory in `tmp/`, which no writer makes, stays.
+/// name, and a directory in `tmp/`, which no writer makes, stays. A directory of the working copy
+/// whose name only starts like the one of `init` is content and stays.
 pub(crate) fn remove_scratch(root: &Path) {
     if let Ok(entries) = fs::read_dir(root.join("tmp")) {
         for entry in entries.flatten() {
@@ -931,15 +935,37 @@ pub(crate) fn remove_scratch(root: &Path) {
     let Some(Ok(entries)) = root.parent().map(fs::read_dir) else {
         return;
     };
-    let prefix = format!("{METADATA_DIR}-init-");
     for entry in entries.flatten() {
-        let named = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(&prefix));
+        let named = entry.file_name().to_str().is_some_and(is_init_staging_name);
         if named && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             let _ = fs::remove_dir_all(entry.path());
         }
+    }
+}
+
+/// The prefix of the temporary directory that `init` builds next to its final place (ADR-009).
+pub(crate) const INIT_STAGING_PREFIX: &str = ".stemma-init-";
+
+/// Whether `name` is exactly a name that `init` gives its temporary directory: the prefix
+/// [`INIT_STAGING_PREFIX`] and a name of [`unique_temp_name`], which is a decimal process ID, a
+/// decimal counter, and 16 lowercase hexadecimal digits, separated by `-`. A name of the working
+/// copy such as `.stemma-init-notes` is not one.
+pub(crate) fn is_init_staging_name(name: &str) -> bool {
+    let decimal = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let Some(rest) = name.strip_prefix(INIT_STAGING_PREFIX) else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(pid), Some(counter), Some(random), None) => {
+            decimal(pid)
+                && decimal(counter)
+                && random.len() == 16
+                && random
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        }
+        _ => false,
     }
 }
 
@@ -1038,6 +1064,28 @@ mod tests {
     }
 
     // Contract
+
+    #[test]
+    fn only_the_names_that_init_gives_its_directory_are_its_names() {
+        let made = format!("{INIT_STAGING_PREFIX}{}", unique_temp_name());
+        assert!(is_init_staging_name(&made), "{made}");
+        assert!(is_init_staging_name(".stemma-init-1-0-0123456789abcdef"));
+        for name in [
+            ".stemma-init-",
+            ".stemma-init-notes",
+            ".stemma-init-1-0",
+            ".stemma-init-1-0-stale",
+            ".stemma-init-1-0-0123456789ABCDEF",
+            ".stemma-init-1-0-0123456789abcde",
+            ".stemma-init-1-0-0123456789abcdef0",
+            ".stemma-init-1-0-0123456789abcdef-x",
+            ".stemma-init--0-0123456789abcdef",
+            ".stemma-init-a-0-0123456789abcdef",
+            "stemma-init-1-0-0123456789abcdef",
+        ] {
+            assert!(!is_init_staging_name(name), "{name}");
+        }
+    }
 
     #[test]
     fn the_trait_is_object_safe_and_the_store_can_be_shared() {

@@ -892,8 +892,9 @@ impl FsRefStore {
     /// Takes the lock for a change of the references. The journal of a purge is checked under
     /// the lock, so a change that was waiting for it does not slip in while a purge runs, and a
     /// lock that a purge holds or left behind is reported as the purge (ADR-014).
-    /// With the lock held, the scratch in `tmp/` that no writer owns any more is removed
-    /// ([`remove_scratch`], ADR-011).
+    /// If no journal exists, the scratch in `tmp/` that no writer owns any more is then removed
+    /// ([`remove_scratch`], ADR-011); a change that a journal refuses leaves it to the resume or
+    /// the abort.
     fn lock(&self) -> Result<Lock, RefError> {
         let lock = match self.acquire() {
             Err(RefError::Locked { path }) => {
@@ -2491,6 +2492,35 @@ mod tests {
             .update_branch(&name("main"), None, id, &objects)
             .unwrap();
         assert!(!live.exists());
+    }
+
+    #[test]
+    fn the_take_over_of_a_stopped_purge_removes_the_scratch() {
+        // `--resume` and `--abort` take the lock that a stopped purge left behind, and then own
+        // `tmp/` as any writer does.
+        let (dir, _objects, refs) = setup();
+        fs::write(dir.path().join(PURGE_JOURNAL), b"journal").unwrap();
+        fs::write(dir.path().join("refs.lock"), b"left by the purge").unwrap();
+        let stale = dir.path().join("tmp").join("1-0-stale");
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(&stale, b"secret").unwrap();
+        let lock = refs.take_over_lock().unwrap();
+        assert!(!stale.exists());
+        drop(lock);
+    }
+
+    #[test]
+    fn a_change_that_a_pending_purge_refuses_leaves_the_scratch_to_the_purge() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        fs::write(dir.path().join(PURGE_JOURNAL), b"journal").unwrap();
+        let stale = dir.path().join("tmp").join("1-0-stale");
+        fs::write(&stale, b"secret").unwrap();
+        let error = refs
+            .update_branch(&name("main"), None, id, &objects)
+            .unwrap_err();
+        assert!(matches!(error, RefError::PurgePending { .. }), "{error}");
+        assert!(stale.exists());
     }
 
     #[cfg(unix)]

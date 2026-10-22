@@ -1,8 +1,8 @@
 # ADR-011: The operation log
 
 **Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
-2026-10-19, and the rest on 2026-10-21, apart from the cleanup of `tmp/` (2026-10-22,
-STEMMA-31); all are implemented. The open items at the end are
+2026-10-19, and the rest on 2026-10-21 (the cleanup of `tmp/` on 2026-10-22, STEMMA-31); all
+are implemented. The open items at the end are
 questions for later (retention, who may read the log, the width of the number, Windows) and
 none of them changes a decision.
 
@@ -165,9 +165,14 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   writer of `tmp/` holds the lock of the references while it writes there: the commands that
   write from before their first object (ADR-014), the moves of `Repository`, and the purge with
   its resume and abort. Whoever takes the lock is therefore the only writer, and every file in
-  `tmp/` is left over from a write that failed or was interrupted. Right after the lock is taken,
-  every name in `tmp/` that is not a directory is removed, without following a link, and so is
-  every directory `.stemma-init-…` next to `.stemma` that an interrupted `init` left (ADR-009).
+  `tmp/` is left over from a write that failed or was interrupted. Right after the lock is taken
+  and no journal of a purge is found (or `--resume` or `--abort` took the lock over), every name
+  in `tmp/` that is not a directory is removed, without following a link, and so is every
+  directory next to `.stemma` whose name is exactly one that `init` gives its temporary
+  directory, `.stemma-init-<pid>-<n>-<16 hexadecimal digits>` (ADR-009). A directory of the
+  working copy whose name only starts like it, such as `.stemma-init-notes`, is content and
+  stays. A change that the journal of a purge refuses removes nothing; the resume or the abort
+  does it.
   The cleanup is best effort, like the removal after the link: a name that cannot be removed
   stays, and the next writer tries again. The lock decides and not the age of a file, so a slow
   writer, such as the first `track` of many files, is never cut short, and there is no command

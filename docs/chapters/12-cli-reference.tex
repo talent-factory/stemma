@@ -100,8 +100,11 @@ liegen (oder wenn das Programm Ctrl-C nicht abfangen konnte); dann nennt die Mel
 die zu entfernen ist.
 
 {\bf Aufräumen.} Wer die Sperre nimmt, entfernt gleich danach, was ein gescheitertes oder
-abgebrochenes Schreiben zurückliess: jede Datei in \type{.stemma/tmp/} und jedes Verzeichnis
-\type{.stemma-init-*} eines abgebrochenen \type{init} neben \type{.stemma}.
+abgebrochenes Schreiben zurückliess: jede Datei in \type{.stemma/tmp/} und das Verzeichnis
+eines abgebrochenen \type{init} neben \type{.stemma}. Dieses wird nur entfernt, wenn sein Name
+genau so gebaut ist, wie \type{init} ihn vergibt (\type{.stemma-init-}, Prozessnummer, Zähler,
+16 kleine Hexadezimalziffern); ein Verzeichnis wie \type{.stemma-init-notes} bleibt.
+Ein Befehl, den das Journal eines Purge abweist, räumt nicht auf.
 Da jeder Schreiber die Sperre hält, gehört keine dieser Dateien einem laufenden Befehl.
 Was sich nicht entfernen lässt, bleibt, ohne dass der Befehl scheitert;
 der nächste versucht es wieder.
