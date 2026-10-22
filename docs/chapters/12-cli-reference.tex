@@ -557,7 +557,8 @@ in Meldungen und in der Textform maskiert (wie bei \type{escape_debug} von Rust)
 die JSON-Form maskiert nach den Regeln von JSON.
 
 {\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge und den Eintrag davor, wenn er
-sich lesen lässt. Eine Lücke findet er auch dann,
+sich lesen lässt; lässt er sich nicht lesen, warnt der Befehl auf der Fehlerausgabe, dass der
+Anschluss des ältesten gezeigten Eintrags nicht geprüft ist. Eine Lücke findet er auch dann,
 wenn der fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten oder
 geänderten älteren Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug, das ist
 \type{op verify}. Hat das Log nur
@@ -595,7 +596,7 @@ stemma op log --json | head -1
 \section{op verify}
 
 Prüft die Hash-Kette des ganzen Operation Logs (ADR-011) und gibt einen Anker aus: die Nummer
-und den Hash des letzten Eintrags.
+und den Hash des letzten Eintrags, sofern dieser in der Kette steht.
 
 \starttyping
 stemma op verify [-C VERZEICHNIS] [--anchor NUMMER:HASH]
@@ -613,13 +614,17 @@ der Nummer 0 oder mit Grossbuchstaben im Hash, ist ein Aufruffehler (Exit-Code 2
 Der Befehl liest nur und braucht keinen Akteur. Er liest jeden Eintrag, prüft die Lücken,
 die Stubs und die Datei \type{oplog-tip} wie \type{op log} und dazu die ganze Kette: Jeder
 Eintrag muss den Hash seines Vorgängers nennen. Ein Stub hat den Hash des Eintrags, den er
-ersetzt, deshalb hält die Kette über einen Purge hinweg.
+ersetzt, deshalb hält die Kette über einen Purge hinweg. Die Datei \type{oplog-tip} prüft
+er strenger als die anderen Befehle: Steht der letzte Eintrag in der Kette, muss sie ihn oder
+den Eintrag davor nennen.
 
 {\bf Ausgabe.} Die erste Zeile nennt die Zahl der Einträge und ob die Kette hält. Beginnt
 die Kette erst nach Einträgen aus der Zeit vor ihr, nennt die Zeile diese Einträge, denn die
 Kette deckt sie nicht ab. Mit \type{--anchor} folgt eine Zeile, die den Anker bestätigt.
 Die letzte Zeile ist der Anker des letzten Eintrags, \type{anchor <nummer>:<hash>}; was nach
-\type{anchor} steht, nimmt \type{--anchor} später wieder an.
+\type{anchor} steht, nimmt \type{--anchor} später wieder an. Steht noch kein Eintrag in der
+Kette, ein Log aus der Zeit vor ihr, sagt das die erste Zeile, und eine Zeile
+\type{anchor} fehlt; der nächste Eintrag beginnt die Kette.
 
 \starttyping
 Checked 12 entries of the operation log: the hash chain holds.
@@ -635,10 +640,16 @@ ersten Eintrag, der nicht den Hash seines Vorgängers nennt
 eingefügter oder vertauschter Eintrag bricht die Kette an dieser Stelle. Ebenso endet er bei
 einem Eintrag aus der Zeit vor der Kette, der hinter ihr steht, bei einer Datei
 \type{oplog-tip}, die für ihren Eintrag einen anderen Hash nennt, und bei jedem Fehler, den
-auch \type{op log} meldet. Mit \type{--anchor} endet er mit Exit-Code 1, wenn der Eintrag des
-Ankers einen anderen Hash hat oder nicht in der Kette steht. Die Ausgabe erscheint nur, wenn
-alles hält. Lässt sie sich nicht schreiben, ist das Exit-Code 1; eine Pipe, die der Leser
-früh schliesst, ist kein Fehler.
+auch \type{op log} meldet. Ebenso endet er, wenn der letzte Eintrag in der Kette steht und
+die Datei \type{oplog-tip} fehlt oder einen Eintrag nennt, der mehr als einen vor dem
+letzten liegt: Dann haben die Schreiber nichts mit ihr verglichen. Die übrigen Befehle nehmen
+das hin, denn ein Abbruch direkt nach einem Eintrag oder ein fehlgeschlagenes Schreiben der
+Datei hinterlässt es; der nächste Eintrag schreibt sie neu. Eine Datei \type{oplog-tip} der
+Version 1, die einen Eintrag der Kette nennt, ist nicht kanonisch. Mit \type{--anchor} endet
+der Befehl mit Exit-Code 1, wenn der Eintrag des Ankers fehlt, aus der Zeit vor der Kette
+stammt oder einen anderen Hash hat. Die Ausgabe erscheint nur, wenn alles hält. Lässt sie
+sich nicht schreiben, ist das Exit-Code 1; eine Pipe, die der Leser früh schliesst, ist kein
+Fehler.
 
 {\bf Grenzen.} Die Kette zeigt, dass die Einträge zueinander passen, nicht wer sie schrieb.
 Wer \type{.stemma} schreiben kann, kann alle späteren Hashes und die Datei \type{oplog-tip}
@@ -651,7 +662,7 @@ deckt sie nicht ab.
 \starttyping
 stemma op verify
 stemma op verify -C projekt --anchor 12:b3:5c0e...7a41
-stemma op verify | tail -1 >> ~/stemma-anker.txt
+stemma op verify | sed -n 's/^anchor //p' >> ~/stemma-anker.txt
 \stoptyping
 
 \section{op restore}

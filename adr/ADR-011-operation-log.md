@@ -99,9 +99,10 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   the hash chain (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
-  that starts the chain. The writer writes only this version, for a change, a stub, and a `purge`
-  entry, and the reader checks the chain: a change, a removal, an insertion, or a swap of entries
-  breaks it at that place (`OpLogError::ChainBroken`).
+  that starts the chain. The writer writes this version for a change, a stub, and a `purge` entry;
+  only the stub of an entry from before the chain keeps version 2. The reader checks the chain: a
+  change, a removal, an insertion, or a swap of entries breaks it at that place
+  (`OpLogError::ChainBroken`, which names the hash it expected and the one it found).
   - **What the hash covers: an envelope.** The hash of an entry is BLAKE3 over the text
     `stemma-oplog-hash 1`, `number`, `time`, `actor`, `previous`, and `body <hash of the body>`.
     The hash of the body is BLAKE3 over `stemma-oplog-body 1` and the lines after `previous`:
@@ -117,26 +118,35 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   - **The tip names the hash too.** The tip file of version 2,
     `stemma-oplog-tip 2\nnumber <n>\nhash <hash>\n`, names the hash of the last entry, so a
     replaced last entry, which no later entry links to, is found (`OpLogError::TipMismatch`).
-    A tip one behind is compared with the entry it names. The writer checks the tip before it
-    links a new entry, and refuses to take a replaced entry into the chain. The tip of version 1
-    is still read and names no hash.
+    A tip that is behind is compared with the entry it names. The writer checks the tip before
+    it links a new entry, and refuses to take a replaced entry into the chain. The tip of
+    version 1 is still read and names no hash; naming an entry in the chain it is refused
+    (`OpLogError::BadTip`), as only a program from before the chain writes it. The readers and
+    the writers accept a tip that is missing or more than one behind, which a stop or a failed
+    write of the tip leaves; `stemma op verify` reports both when the last entry is in the chain
+    (`OpLogError::TipMissing`, `OpLogError::TipBehind`), as the writers then compared nothing.
   - **The writer links under the lock and after a lost race.** The writer reads the entry
     before the number it tries and names its hash; after a lost race (the hard link of the
     publication fails) it builds the entry again for the next number, with the hash of the new
     entry before it. If the entry before cannot be read, the writer refuses and writes nothing
-    (`OpLogError::Predecessor`): starting the chain again would hide the damage.
+    (`OpLogError::Predecessor`): starting the chain again would hide the damage. It refuses as
+    well if the entry before was written before the chain but follows an entry in the chain.
+    The tip is compared once, before the first attempt; an entry that another writer linked in
+    between is covered by the chain, as its writer compared the tip in turn.
   - **A log from before the chain.** The repository format rises to 4 with the first new
-    entry: `Repository` raises it under the lock before it writes the entry, as the purge raises
-    it to 3 (ADR-014), so a program that knows only version 3 refuses the repository instead of
-    writing entries outside the chain. A format is never lowered; `init` writes version 4. The
+    entry: `Repository` raises it under the lock before it writes the entry, and the purge raises
+    it as well (ADR-014), so a program that knows only version 3 refuses the repository instead
+    of writing entries outside the chain. A format is never lowered; `init` writes version 4. The
     old entries (versions 1 and 2) stay in front, and the first new entry starts the chain; an
-    entry of version 1 or 2 after the chain is refused (`OpLogError::Unchained`). The old entries
-    are not covered.
+    entry of version 1 or 2 after the chain is refused (`OpLogError::UnchainedAfterChain`). The
+    old entries are not covered; to write them again as old entries, one has to compute the whole
+    chain after them again, which only an anchor finds.
   - **Where it is checked.** Reading the whole log (`FsOpLog::entries`, which `op restore` and
     the purge use) checks the whole chain and the tip. Reading a window (`FsOpLog::tail`, for
     `stemma op log -n`) checks the window, the link of its first entry to the entry before it
-    if that can be read, and the tip if it is in the window. The command `stemma op verify`
-    checks the whole log and prints the anchor of the last entry, `<number>:<hash>`; with
+    if that can be read, and the tip if it is in the window; `op log` warns if the link was not
+    checked. The command `stemma op verify` checks the whole log and the tip strictly, and
+    prints the anchor of the last entry, `<number>:<hash>`, if it is in the chain; with
     `--anchor` it checks that the entry of an anchor kept from earlier still has that hash.
   - **What it does not prove.** The chain shows that the entries agree with one another, not
     who wrote them: whoever can write `.stemma` can compute every later hash and the tip again,
@@ -144,7 +154,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
     (ADR-004) and a hub that confirms the tip (phase 5) are anchors that the actor cannot change;
     they are open items.
 - **A tip file names the last entry** *(confirmed; STEMMA-30)*. `.stemma/oplog-tip`
-  holds the number of the last entry in the strict form `stemma-oplog-tip 1\nnumber <n>\n`. The
+  holds the number of the last entry in the strict form `stemma-oplog-tip 1\nnumber <n>\n`, or,
+  since the hash chain, `stemma-oplog-tip 2` with its hash as well (above). The number is not 0. The
   writer replaces it after the entry is in place and before the pointer moves, with a temporary
   file that is flushed and a rename. The flush of the directory is best effort: a tip that is not
   on disk after a crash is one behind or missing, and both are accepted.
@@ -239,7 +250,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   so every entry still has one encoding. A stub that no `purge` entry lists is an error of the
   log, like a gap.
 - Version 3 is the encoding of the hash chain (STEMMA-41), and the only one that the writer
-  writes since. It has the line `previous <hash>` or `previous -` after `actor`, and then the
+  writes since, except for the stub of an entry from before the chain, which stays version 2.
+  Version 3 has the line `previous <hash>` or `previous -` after `actor`, and then the
   lines of a change, `stub <hash of the body>`, or the lines of a `purge` entry:
 
   ```text

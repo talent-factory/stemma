@@ -126,12 +126,12 @@ lock may be held.
      blob is implied). The moves let `--resume` compare a pointer with its two values without a
      new plan; the lines `new` let `--abort` remove only what the purge wrote, as a new tree can
      be one that an unaffected commit already has.
-   - **Format 3 comes first.** The repository moves to format 3 just before the journal is
+   - **The format rises first.** The repository moves to format 4 just before the journal is
      written, as a temporary file and a rename of `format`. A program that knows only version 2
-     does not know the journal either and would write past it; with format 3 it refuses the
-     repository. An abort leaves format 3, as a format is never lowered. Since the hash chain
-     `init` writes version 4 and every new entry raises a repository to it (ADR-011, STEMMA-41),
-     so the purge raises to 4 as well, which also refuses a program that knows only version 2.
+     does not know the journal either and would write past it; with the higher format it refuses
+     the repository. An abort leaves the format, as a format is never lowered. The purge came
+     with format 3; since the hash chain `init` writes version 4 and every new entry raises a
+     repository to it (ADR-011, STEMMA-41), so the purge raises to 4 as well.
    - **Writers refuse.** Every command that writes (`track`, `commit`, `status`, `op restore`)
      takes the lock of the references before it writes its first object and keeps it to its
      last move (STEMMA-49). The journal is checked under the lock, in the lock itself, so a
