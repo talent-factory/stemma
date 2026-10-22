@@ -240,7 +240,7 @@ fn ranges(numbers: &[u64]) -> Vec<(u64, u64)> {
 
 /// The check of the fuzz target `journal` (see `crate::fuzz`): an input that the reader accepts is
 /// the encoding of what it read.
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, test))]
 pub(crate) fn fuzz(input: &[u8]) {
     if let Some(journal) = Journal::parse(input) {
         assert_eq!(journal.encode(), input, "a second spelling was accepted");
@@ -654,6 +654,17 @@ mod tests {
         }
     }
 
+    /// The seeds of the fuzz target `journal` are journals, and the check holds for each prefix.
+    #[test]
+    fn every_seed_of_the_fuzz_target_is_a_journal() {
+        for (name, seed) in crate::fuzz::tests::seeds("journal") {
+            assert!(Journal::parse(&seed).is_some(), "{name} is not a journal");
+            for end in 0..=seed.len() {
+                fuzz(&seed[..end]);
+            }
+        }
+    }
+
     #[test]
     fn every_journal_the_code_can_build_is_read_back() {
         let (seed, mut rng) = (seed(), Rng::new(seed(), 22));
@@ -679,7 +690,11 @@ mod tests {
                 String::from_utf8_lossy(&bytes)
             );
         }
-        // Both moves, no stubs, several stubs, a stub at the last entry, and the largest number.
+        // Both moves, no stubs, several stubs, a stub at the last entry, and the largest number;
+        // a short run, with few cases, may miss one.
+        if cases() < 1000 {
+            return;
+        }
         assert_eq!(
             shapes, [true; 5],
             "the run did not build every shape of journal"

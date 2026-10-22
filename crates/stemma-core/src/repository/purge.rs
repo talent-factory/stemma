@@ -12,7 +12,7 @@
 
 mod apply;
 mod journal;
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, test))]
 pub(crate) use journal::fuzz as fuzz_journal;
 
 pub use apply::{Aborted, ApplyPurgeError, PurgeFailure, PurgeStep, Purged};
@@ -246,6 +246,8 @@ impl Repository {
             .collect();
         trees.sort();
         planner.check(&kept_roots, &commits, &trees)?;
+        // A log with 2^24 entries is too large for a test, so no test notices if this goes.
+        // Without it, a purge writes a journal that `--resume` and `--abort` cannot read.
         check_entries(replaced.len())?;
 
         let plan = PurgePlan {

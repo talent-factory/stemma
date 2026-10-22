@@ -1,8 +1,9 @@
 //! The checks of the fuzz targets in `fuzz/` (STEMMA-20), one for each of the strict readers of
 //! a tree, a commit, an actor line, the index, an entry of the log, and the journal of a purge.
 //! The readers of HEAD and of a branch file are a single line and have only the property tests.
-//! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, so
-//! it is not part of the interface.
+//! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, or
+//! for its tests, so it is not part of the interface. The tests run the checks on the seeds in
+//! `fuzz/seeds/` with stable, so that `just ci` notices a seed that a reader no longer accepts.
 //!
 //! Each check holds the two rules of ADR-005 for one input, as `properties.rs` does for generated
 //! input: the reader either accepts the input, and then encoding what it read gives exactly the
@@ -87,4 +88,60 @@ fn check_rejection(error: &dyn Error) {
         link = next;
     }
     panic!("the cause chain does not end");
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// The seeds of a target, by name, from `fuzz/seeds/TARGET`.
+    pub(crate) fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/seeds")
+            .join(target);
+        let mut seeds: Vec<(String, Vec<u8>)> = fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .map(|file| {
+                let path = file.unwrap().path();
+                (path.display().to_string(), fs::read(&path).unwrap())
+            })
+            .collect();
+        seeds.sort();
+        assert!(!seeds.is_empty(), "no seeds in {}", dir.display());
+        seeds
+    }
+
+    /// Every seed is accepted, so that the fuzzer starts from valid encodings, and the check of
+    /// its target holds for it and for each of its prefixes, which the readers mostly reject.
+    #[test]
+    fn every_seed_is_read_and_the_checks_hold_for_it_and_its_prefixes() {
+        type Check = fn(&[u8]);
+        type Accepts = fn(&[u8]) -> bool;
+        let targets: [(&str, Check, Accepts); 5] = [
+            ("tree", super::tree, |b| {
+                crate::object::Tree::parse(b).is_ok()
+            }),
+            ("commit", super::commit, |b| {
+                crate::object::Commit::parse(b).is_ok()
+            }),
+            ("actor", super::actor, |b| {
+                std::str::from_utf8(b).is_ok_and(|s| s.parse::<crate::Actor>().is_ok())
+            }),
+            ("index", super::index, |b| {
+                crate::index::Index::parse(b).is_ok()
+            }),
+            ("entry", super::entry, |b| {
+                crate::oplog::Entry::parse(b).is_ok()
+            }),
+        ];
+        for (target, check, accepts) in targets {
+            for (name, seed) in seeds(target) {
+                assert!(accepts(&seed), "{name} is not accepted");
+                for end in 0..=seed.len() {
+                    check(&seed[..end]);
+                }
+            }
+        }
+    }
 }
