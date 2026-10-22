@@ -296,7 +296,25 @@ them.
       failure is reproducible; `STEMMA_PROPERTY_SEED` and `STEMMA_PROPERTY_CASES` explore further.
       A round trip cannot see a rule that the encoder and the reader share, such as a name rule,
       because both agree on it. A separate list of forbidden names and actor fields, written apart
-      from the rules, has to be rejected by every entry point.
+      from the rules, has to be rejected by every entry point. Since STEMMA-20 the same properties
+      cover the entries of the operation log in both encodings (a change; a stub and a `purge`
+      entry, ADR-011 and ADR-014) and the journal of a purge (`purge/journal.rs`, whose reader
+      returns no error to check, only the round trip and the single spelling).
+- [x] Fuzz the strict readers (STEMMA-20). Done: the generator of the property tests does not see
+      which branches of a reader it reaches, so `fuzz/` adds six `cargo fuzz` targets that follow
+      the coverage: `tree`, `commit`, `actor`, `index`, `entry` (both encodings), and `journal`.
+      Each checks the rule above for one input: it is rejected, with a message and a chain of
+      causes that ends (except the journal, whose reader returns `None`), or it is the encoding
+      of what was read. The actor target skips input that is not UTF-8, as the actor line is
+      read from text. The readers of HEAD and of a branch file have no target; their grammar is a
+      single line, and the property tests cover them. The checks are in
+      `stemma_core::fuzz`, which exists only under `cfg(fuzzing)`, so the interface does not
+      change. libFuzzer needs nightly, so the targets are a workspace of their own and stay out of
+      `just ci`; `just fuzz TARGET [SECONDS]` and `just fuzz-all [SECONDS]` run them from the
+      valid encodings in `fuzz/seeds/`, and the manual CI workflow has a job that runs each for a
+      minute. The property tests stay the check of every commit. The new property test of the
+      journal found that a few bytes (`stubs 1-999999999999`) made the reader expand a trillion
+      numbers; the reader now refuses stubs after `last` and more than 2^24 of them (ADR-014).
 - [x] Give the reasons of the parse errors a type. Done: `Malformed` in `TreeParseError`,
       `CommitParseError`, `IndexParseError`, and `ActorParseError` carries an enum instead of a
       `&'static str`: `TreeMalformed`, `CommitMalformed`, `IndexMalformed`, and `ActorMalformed`.

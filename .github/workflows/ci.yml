@@ -80,3 +80,31 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+
+  # The fuzz targets of the strict readers (STEMMA-20) need nightly, so they are not part of
+  # `just ci`. Each target runs a minute from its seeds; a finding fails the job and is kept as an
+  # artifact, so that it can be run again with `cargo +nightly fuzz run TARGET FILE`.
+  fuzz:
+    name: Fuzz (Linux, nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal --no-self-update
+          cargo install cargo-fuzz --locked
+      - uses: extractions/setup-just@v4
+        with:
+          just-version: "1.49.0"
+      - name: Fuzz every reader
+        run: just fuzz-all 60
+      - name: Keep the findings
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: warn

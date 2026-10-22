@@ -1,4 +1,7 @@
-//! Property tests of the readers and encoders of trees, commits, indexes, and actor lines.
+//! Property tests of the readers and encoders of trees, commits, indexes, actor lines, the entries
+//! of the operation log in both encodings (a change; a stub and a purge), and the files of HEAD and
+//! the branches. The journal of a purge keeps its type to its module, so its properties are tested
+//! there, with the generator of this module.
 //!
 //! The unit tests change a golden encoding at one place at a time. These tests complement them
 //! with generated input and check the two rules of ADR-005 on all of it:
@@ -26,7 +29,9 @@ use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
     TreeParseError,
 };
-use crate::oplog::{Change, Entry, EntryParseError, Moved, OperationName, MAX_NUMBER};
+use crate::oplog::{
+    Change, Entry, EntryParseError, Moved, OperationName, Purge, Record, MAX_NUMBER,
+};
 use crate::refs::{BranchName, Head, RefParseError};
 use crate::store::{ObjectStore, StoreError};
 use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
@@ -39,14 +44,14 @@ const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 /// set.
 const DEFAULT_CASES: usize = 4_000;
 
-fn seed() -> u64 {
+pub(crate) fn seed() -> u64 {
     std::env::var("STEMMA_PROPERTY_SEED")
         .ok()
         .and_then(|text| text.parse().ok())
         .unwrap_or(DEFAULT_SEED)
 }
 
-fn cases() -> usize {
+pub(crate) fn cases() -> usize {
     std::env::var("STEMMA_PROPERTY_CASES")
         .ok()
         .and_then(|text| text.parse().ok())
@@ -54,10 +59,10 @@ fn cases() -> usize {
 }
 
 /// xorshift64*: small, fast, and good enough to vary inputs. Not for anything else.
-struct Rng(u64);
+pub(crate) struct Rng(u64);
 
 impl Rng {
-    fn new(seed: u64, stream: u64) -> Self {
+    pub(crate) fn new(seed: u64, stream: u64) -> Self {
         // One step of splitmix64 over the seed and the stream, so that every seed and every
         // property starts from another state, and the state is never zero.
         const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -70,7 +75,7 @@ impl Rng {
         Self(if z == 0 { GOLDEN } else { z })
     }
 
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
@@ -78,16 +83,16 @@ impl Rng {
     }
 
     /// A number below `bound`, which must not be zero.
-    fn below(&mut self, bound: usize) -> usize {
+    pub(crate) fn below(&mut self, bound: usize) -> usize {
         (self.next() % bound as u64) as usize
     }
 
-    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+    pub(crate) fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
         &items[self.below(items.len())]
     }
 
     /// True once in `n` on average.
-    fn one_in(&mut self, n: usize) -> bool {
+    pub(crate) fn one_in(&mut self, n: usize) -> bool {
         self.below(n) == 0
     }
 }
@@ -170,6 +175,19 @@ const PIECES: &[&str] = &[
     "commit ",
     "branch main\n",
     "stemma-index 2\n",
+    "stemma-oplog 2\n",
+    "stub\n",
+    "operation purge\n",
+    "commits ",
+    "stubs ",
+    "3-5 7",
+    "stemma-purge 1\n",
+    "blob ",
+    "last ",
+    "rewrite ",
+    "new ",
+    "delete commit ",
+    "delete tree ",
     ".stemma",
     "9223372036854775807",
     "9223372036854775808",
@@ -258,7 +276,7 @@ const NAMES: &[&str] = &[
     "AUX",
 ];
 
-fn random_blob(rng: &mut Rng) -> BlobId {
+pub(crate) fn random_blob(rng: &mut Rng) -> BlobId {
     let len = rng.below(6);
     let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
     Blob::new(bytes).id()
@@ -339,7 +357,7 @@ const BRANCH_NAMES: &[&str] = &[
 
 const OPERATION_NAMES: &[&str] = &["init", "snapshot", "commit", "op-9", "a", "checkout"];
 
-fn random_branch(rng: &mut Rng) -> BranchName {
+pub(crate) fn random_branch(rng: &mut Rng) -> BranchName {
     BranchName::new(*rng.pick(BRANCH_NAMES)).expect("valid branch name")
 }
 
@@ -374,10 +392,30 @@ fn random_moved<T: PartialEq>(
     }
 }
 
+/// An entry of either encoding: the entry of a change (encoding 1), or a stub or the entry of a
+/// purge (encoding 2).
 fn random_entry(rng: &mut Rng) -> Entry {
-    let number = *rng.pick(&[1, 2, 41, 999, MAX_NUMBER - 1, MAX_NUMBER]);
+    match rng.below(4) {
+        0 => random_change_entry(rng)
+            .to_stub()
+            .expect("the entry of a change can become a stub"),
+        1 => random_purge_entry(rng),
+        _ => random_change_entry(rng),
+    }
+}
+
+fn random_number(rng: &mut Rng) -> u64 {
+    *rng.pick(&[1, 2, 41, 999, MAX_NUMBER - 1, MAX_NUMBER])
+}
+
+fn random_time(rng: &mut Rng) -> i64 {
     let random_time = rng.next() as i64;
-    let time = *rng.pick(&[0, 1, -1, 1_700_000_000, i64::MAX, i64::MIN, random_time]);
+    *rng.pick(&[0, 1, -1, 1_700_000_000, i64::MAX, i64::MIN, random_time])
+}
+
+fn random_change_entry(rng: &mut Rng) -> Entry {
+    let number = random_number(rng);
+    let time = random_time(rng);
     let head = rng.one_in(2).then(|| random_moved(rng, random_head_value));
     let working_copy = rng
         .one_in(2)
@@ -403,6 +441,25 @@ fn random_entry(rng: &mut Rng) -> Entry {
     )
     .expect("a random change is valid");
     Entry::new(number, change).expect("a random number is valid")
+}
+
+/// The entry of a purge. The stubs come in any order, with repeats, and only those below the
+/// number of the entry are kept, so ranges of one number, ranges of several, and no stub at all
+/// all occur.
+fn random_purge_entry(rng: &mut Rng) -> Entry {
+    let number = random_number(rng);
+    let time = random_time(rng);
+    let commits = *rng.pick(&[0, 1, 7, MAX_NUMBER]);
+    let stubs: Vec<u64> = (0..rng.below(8))
+        .map(|_| match rng.below(4) {
+            0 => *rng.pick(&[1, 2, 3, 5, 6, 40]),
+            1 => number.saturating_sub(1 + rng.below(3) as u64),
+            _ => 1 + rng.next() % number,
+        })
+        .filter(|stub| (1..number).contains(stub))
+        .collect();
+    let purge = Purge::new(time, random_actor(rng), commits, &stubs).expect("a valid purge");
+    Entry::of(number, Record::Purge(purge)).expect("the stubs are before the purge")
 }
 
 fn random_change(rng: &mut Rng) -> ChangeId {
@@ -713,7 +770,7 @@ fn raw_bytes(rng: &mut Rng) -> Vec<u8> {
 
 /// One input of the third kind of source, chosen at random: a changed valid encoding, a splice of
 /// two, a soup, or raw bytes.
-fn arbitrary_input(rng: &mut Rng, valid: &[Vec<u8>]) -> Vec<u8> {
+pub(crate) fn arbitrary_input(rng: &mut Rng, valid: &[Vec<u8>]) -> Vec<u8> {
     match rng.below(8) {
         0..=3 => {
             let base = rng.pick(valid).clone();
@@ -838,9 +895,9 @@ fn index_line(error: &IndexParseError) -> Option<usize> {
 
 /// What a property run saw, so that a test can check that it was not vacuous.
 #[derive(Default)]
-struct Tally {
-    accepted: usize,
-    rejected: usize,
+pub(crate) struct Tally {
+    pub(crate) accepted: usize,
+    pub(crate) rejected: usize,
 }
 
 #[test]
@@ -970,14 +1027,18 @@ fn the_commit_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
 #[test]
 fn every_entry_the_code_can_build_is_read_back() {
     let (seed, mut rng) = (seed(), Rng::new(seed(), 20));
+    let mut kinds = std::collections::HashSet::new();
     for case in 0..cases() {
         let context = format!("seed {seed}, case {case}");
         let entry = random_entry(&mut rng);
+        kinds.insert(std::mem::discriminant(entry.record()));
         let bytes = entry.encode();
         let again = Entry::parse(&bytes).unwrap_or_else(|e| panic!("{context}: {e} for {entry:?}"));
         assert_eq!(again, entry, "{context}");
         assert_eq!(again.encode(), bytes, "{context}");
     }
+    // Both encodings: the entry of a change, a stub, and the entry of a purge.
+    assert_eq!(kinds.len(), 3, "the run did not build every kind of entry");
 }
 
 #[test]
@@ -1090,15 +1151,17 @@ fn the_actor_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
 #[test]
 fn every_seed_and_every_property_starts_from_another_state() {
     let mut firsts = std::collections::HashSet::new();
+    // Every stream that a property of this crate uses, here and in `repository/purge/journal.rs`.
+    let streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23];
     for seed in 0..64 {
-        for stream in 1..=8 {
+        for stream in streams {
             let mut rng = Rng::new(seed, stream);
             assert_ne!(rng.0, 0, "seed {seed}, stream {stream}");
             firsts.insert(rng.next());
         }
     }
     // Consecutive seeds do not repeat each other, and the properties do not share a sequence.
-    assert_eq!(firsts.len(), 64 * 8);
+    assert_eq!(firsts.len(), 64 * streams.len());
 }
 
 /// The round trip cannot see a rule that the encoder and the reader share: if a name rule were

@@ -858,7 +858,8 @@ Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als s
 Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung eines Agenten
 mit \type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
-erst ein Merge (Phase 3).
+erst ein Merge (Phase 3). Er endet auch, wenn der Purge mehr als $2^{24}$ Einträge des Log
+ersetzen würde, mehr, als sein Journal aufnimmt.
 Mit \type{--apply} endet er mit Exit-Code 1 auch, wenn der Snapshot scheitert oder der Purge
 unter der Sperre nicht beginnen kann, etwa weil die Sperre gehalten wird; dann besteht kein
 Journal, das Format kann aber schon 3 sein. Hat der Snapshot das Verzeichnis gespeichert,

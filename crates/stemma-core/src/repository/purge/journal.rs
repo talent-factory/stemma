@@ -43,6 +43,13 @@ const HEADER: &str = "stemma-purge 1";
 /// object, so it is bounded only by the history. A larger file is damage.
 const MAX_LEN: u64 = 1 << 30;
 
+/// The most entries that a journal lists as stubs. The ranges of the line `stubs` are short, so a
+/// few bytes can name up to [`MAX_NUMBER`](crate::oplog::MAX_NUMBER) entries, which the reader
+/// would hold one by one. A plan that replaces more entries is refused
+/// ([`PurgeError::TooManyEntries`](super::PurgeError::TooManyEntries)), so no purge writes a
+/// journal that lists more, and a journal that does is damage.
+pub(super) const MAX_STUBS: u64 = 1 << 24;
+
 /// What the journal holds: the plan that the purge carries out, the last entry of the log before
 /// it, and the objects that it writes and the store did not have.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +104,8 @@ impl Journal {
 
     /// Reads a journal as [`encode`](Self::encode) writes it, and nothing else: the input has to
     /// be exactly the encoding of what it holds, and the lists that are sorted have to be sorted.
-    /// Returns `None` for any other input.
+    /// The stubs are entries that existed when the plan was made, so none is after `last`, and
+    /// there are at most [`MAX_STUBS`]. Returns `None` for any other input.
     pub(super) fn parse(bytes: &[u8]) -> Option<Self> {
         let text = std::str::from_utf8(bytes).ok()?;
         let mut lines = text.strip_suffix('\n')?.split('\n');
@@ -142,11 +150,7 @@ impl Journal {
                         .push((BranchName::new(name).ok()?, moved(old, new)));
                 }
                 "stubs" if rest == "-" => {}
-                "stubs" => {
-                    for (start, end) in parse_ranges(rest)? {
-                        plan.entries.extend(start..=end);
-                    }
-                }
+                "stubs" => add_stubs(&mut plan.entries, rest, last)?,
                 "new" => new.push(id(rest)?),
                 "delete" => match rest.split_once(' ')? {
                     ("commit", id_text) => plan.commits.push(CommitId::new(id(id_text)?)),
@@ -205,6 +209,23 @@ fn pair(text: &str) -> Option<(ObjectId, ObjectId)> {
     Some((id(old)?, id(new)?))
 }
 
+/// Adds the numbers of a line `stubs` to those of the lines before. The ranges are checked before
+/// they are expanded, so that a short line cannot make the reader hold more numbers than a purge
+/// can list; the count includes the lines before, so several lines cannot add up past the limit
+/// either. A second line is not canonical, but that is known only after all are read.
+fn add_stubs(entries: &mut Vec<u64>, text: &str, last: u64) -> Option<()> {
+    let ranges = parse_ranges(text)?;
+    let count: u64 = ranges.iter().map(|(start, end)| end - start + 1).sum();
+    let after_last = ranges.last().is_some_and(|(_, end)| *end > last);
+    if after_last || entries.len() as u64 + count > MAX_STUBS {
+        return None;
+    }
+    for (start, end) in ranges {
+        entries.extend(start..=end);
+    }
+    Some(())
+}
+
 /// Folds ascending numbers into inclusive ranges that neither overlap nor touch.
 fn ranges(numbers: &[u64]) -> Vec<(u64, u64)> {
     let mut ranges: Vec<(u64, u64)> = Vec::new();
@@ -215,6 +236,15 @@ fn ranges(numbers: &[u64]) -> Vec<(u64, u64)> {
         }
     }
     ranges
+}
+
+/// The check of the fuzz target `journal` (see `crate::fuzz`): an input that the reader accepts is
+/// the encoding of what it read.
+#[cfg(any(fuzzing, test))]
+pub(crate) fn fuzz(input: &[u8]) {
+    if let Some(journal) = Journal::parse(input) {
+        assert_eq!(journal.encode(), input, "a second spelling was accepted");
+    }
 }
 
 /// The path of the journal in the metadata directory.
@@ -405,6 +435,8 @@ impl Error for JournalError {
 mod tests {
     use super::*;
     use crate::object::Blob;
+    use crate::oplog::MAX_NUMBER;
+    use crate::properties::{arbitrary_input, cases, random_blob, random_branch, seed, Rng, Tally};
     use crate::testutil::TempDir;
 
     fn commit(text: &str) -> CommitId {
@@ -493,6 +525,48 @@ mod tests {
         assert_eq!(Journal::parse(&journal.encode()), None);
     }
 
+    /// A line of a few bytes names a range of up to a trillion entries. The reader has to refuse
+    /// it before it expands the range, and not run out of memory (found by the property test).
+    #[test]
+    fn a_journal_with_too_many_stubs_or_stubs_after_the_last_entry_is_refused() {
+        let text = String::from_utf8(sample().encode()).unwrap();
+        let cases = [
+            // After `last 9`.
+            text.replace("stubs 3-5 7", "stubs 3-5 10"),
+            text.replace("stubs 3-5 7", "stubs 1-999999999999"),
+            text.replace("last 9", &format!("last {MAX_NUMBER}"))
+                .replace("stubs 3-5 7", &format!("stubs 1-{MAX_NUMBER}")),
+            text.replace("last 9", &format!("last {}", MAX_STUBS + 1))
+                .replace("stubs 3-5 7", &format!("stubs 1-{}", MAX_STUBS + 1)),
+        ];
+        for case in cases {
+            assert_eq!(Journal::parse(case.as_bytes()), None, "{case}");
+        }
+        // Two lines, each under the limit and together over it. The check of the canonical form
+        // refuses the journal anyway, but only after the lines are read, so the second line has
+        // to be refused before it is expanded.
+        let mut entries = Vec::new();
+        add_stubs(&mut entries, &format!("1-{}", MAX_STUBS - 1), 2 * MAX_STUBS).unwrap();
+        let too_many = format!("{} {}", MAX_STUBS + 1, 2 * MAX_STUBS);
+        assert_eq!(add_stubs(&mut entries, &too_many, 2 * MAX_STUBS), None);
+        assert_eq!(
+            entries.len() as u64,
+            MAX_STUBS - 1,
+            "nothing of the second line is added"
+        );
+        // A stub may be the last entry itself.
+        let at_last = text.replace("stubs 3-5 7", "stubs 3-5 9");
+        let read = Journal::parse(at_last.as_bytes()).expect("a stub at the last entry");
+        assert_eq!(read.plan.entries, [3, 4, 5, 9]);
+        let mut journal = sample();
+        journal.last = MAX_STUBS + 9;
+        journal.plan.entries = vec![2, 4];
+        let mut text = String::from_utf8(journal.encode()).unwrap();
+        text = text.replace("stubs 2 4", &format!("stubs 1-{MAX_STUBS}"));
+        let read = Journal::parse(text.as_bytes()).expect("the most stubs that a journal can list");
+        assert_eq!(read.plan.entries.len() as u64, MAX_STUBS);
+    }
+
     #[test]
     fn a_journal_is_written_read_and_removed() {
         let dir = TempDir::new();
@@ -514,5 +588,143 @@ mod tests {
         let error = read(dir.path()).unwrap_err();
         assert!(matches!(error, JournalError::Malformed { .. }), "{error:?}");
         assert!(error.to_string().contains("purge-pending"));
+    }
+
+    fn random_id(rng: &mut Rng) -> ObjectId {
+        ObjectId::from(random_blob(rng))
+    }
+
+    fn random_commit(rng: &mut Rng) -> CommitId {
+        CommitId::new(random_id(rng))
+    }
+
+    /// Up to `max` values in ascending order and without repeats, as the journal keeps its sorted
+    /// lists.
+    fn sorted<T: Ord>(rng: &mut Rng, max: usize, mut value: impl FnMut(&mut Rng) -> T) -> Vec<T> {
+        let mut values: Vec<T> = (0..rng.below(max + 1)).map(|_| value(rng)).collect();
+        values.sort();
+        values.dedup();
+        values
+    }
+
+    /// A journal of any shape that a purge can write: any of the optional moves and lists, the
+    /// numbers of the stubs as one range, several, or none, and numbers at the limit.
+    fn random_journal(rng: &mut Rng) -> Journal {
+        let rewrites = (0..rng.below(4))
+            .map(|_| (random_commit(rng), random_commit(rng)))
+            .collect();
+        let head = rng.one_in(2).then(|| {
+            Moved::from_to(
+                Some(Head::Detached(random_commit(rng))),
+                Some(Head::Detached(random_commit(rng))),
+            )
+        });
+        let working_copy = rng
+            .one_in(2)
+            .then(|| Moved::from_to(Some(random_commit(rng)), Some(random_commit(rng))));
+        let mut branches: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
+        for name in sorted(rng, 3, random_branch) {
+            let moved = Moved::from_to(Some(random_commit(rng)), Some(random_commit(rng)));
+            branches.push((name, moved));
+        }
+        let last = *rng.pick(&[0, 1, 9, 40, MAX_NUMBER - 1, MAX_NUMBER]);
+        // The stubs are entries of the log up to `last`.
+        let entries = sorted(rng, 6, |rng| match rng.below(3) {
+            0 => *rng.pick(&[1, 2, 3, 5, 6, 40]),
+            1 => last.saturating_sub(rng.below(3) as u64),
+            _ => 1 + rng.next() % last.max(1),
+        })
+        .into_iter()
+        .filter(|number| (1..=last).contains(number))
+        .collect();
+        let plan = PurgePlan {
+            blob: random_blob(rng),
+            rewrites,
+            head,
+            working_copy,
+            branches,
+            entries,
+            commits: sorted(rng, 3, random_commit),
+            trees: sorted(rng, 3, |rng| TreeId::new(random_id(rng))),
+        };
+        Journal {
+            plan,
+            last,
+            new: sorted(rng, 3, random_id),
+        }
+    }
+
+    /// The seeds of the fuzz target `journal` are journals, and the check holds for each prefix.
+    #[test]
+    fn every_seed_of_the_fuzz_target_is_a_journal() {
+        for (name, seed) in crate::fuzz::tests::seeds("journal") {
+            assert!(Journal::parse(&seed).is_some(), "{name} is not a journal");
+            for end in 0..=seed.len() {
+                fuzz(&seed[..end]);
+            }
+        }
+    }
+
+    #[test]
+    fn every_journal_the_code_can_build_is_read_back() {
+        let (seed, mut rng) = (seed(), Rng::new(seed(), 22));
+        let mut shapes = [false; 5];
+        for case in 0..cases() {
+            let context = format!("seed {seed}, case {case}");
+            let journal = random_journal(&mut rng);
+            let entries = &journal.plan.entries;
+            for (seen, now) in shapes.iter_mut().zip([
+                journal.plan.head.is_some() && journal.plan.working_copy.is_some(),
+                entries.is_empty(),
+                entries.len() > 1,
+                entries.last() == Some(&journal.last),
+                journal.last == MAX_NUMBER,
+            ]) {
+                *seen |= now;
+            }
+            let bytes = journal.encode();
+            assert_eq!(
+                Journal::parse(&bytes).as_ref(),
+                Some(&journal),
+                "{context}: {:?}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        // Both moves, no stubs, several stubs, a stub at the last entry, and the largest number;
+        // a short run, with few cases, may miss one.
+        if cases() < 1000 {
+            return;
+        }
+        assert_eq!(
+            shapes, [true; 5],
+            "the run did not build every shape of journal"
+        );
+    }
+
+    /// The rule of ADR-005 on generated input (see `properties.rs`): every input that the reader
+    /// accepts is the encoding of what it read, and no input makes it panic. A rejection has no
+    /// message to check, as the reader returns `None` and the caller names the file.
+    #[test]
+    fn the_journal_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
+        let (seed, mut rng) = (seed(), Rng::new(seed(), 23));
+        let valid: Vec<Vec<u8>> = (0..64).map(|_| random_journal(&mut rng).encode()).collect();
+        let mut tally = Tally::default();
+        for case in 0..cases() * 5 {
+            let context = format!("seed {seed}, case {case}");
+            let input = arbitrary_input(&mut rng, &valid);
+            match Journal::parse(&input) {
+                Some(journal) => {
+                    tally.accepted += 1;
+                    assert_eq!(
+                        journal.encode(),
+                        input,
+                        "{context}: a second spelling was accepted: {:?}",
+                        String::from_utf8_lossy(&input)
+                    );
+                }
+                None => tally.rejected += 1,
+            }
+        }
+        assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
     }
 }

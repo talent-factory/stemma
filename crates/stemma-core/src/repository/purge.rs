@@ -12,6 +12,8 @@
 
 mod apply;
 mod journal;
+#[cfg(any(fuzzing, test))]
+pub(crate) use journal::fuzz as fuzz_journal;
 
 pub use apply::{Aborted, ApplyPurgeError, PurgeFailure, PurgeStep, Purged};
 pub use journal::JournalError;
@@ -123,8 +125,9 @@ impl Repository {
     /// commit or a tree that is missing or cannot be read, [`PurgeError::Store`] if the store
     /// cannot be listed or an object in it is damaged, [`PurgeError::DuplicateParent`] if a
     /// rewrite makes two parents of a commit the same, [`PurgeError::Leftover`] for one of these
-    /// failures in an object that only the scan found, and [`PurgeError::Unsound`] if the check
-    /// fails.
+    /// failures in an object that only the scan found, [`PurgeError::TooManyEntries`] if the
+    /// plan would replace more entries of the log than a journal lists, and
+    /// [`PurgeError::Unsound`] if the check fails.
     pub fn plan_purge(
         &self,
         blob: ObjectId,
@@ -243,6 +246,9 @@ impl Repository {
             .collect();
         trees.sort();
         planner.check(&kept_roots, &commits, &trees)?;
+        // A log with 2^24 entries is too large for a test, so no test notices if this goes.
+        // Without it, a purge writes a journal that `--resume` and `--abort` cannot read.
+        check_entries(replaced.len())?;
 
         let plan = PurgePlan {
             blob,
@@ -256,6 +262,15 @@ impl Repository {
         };
         Ok((plan, planner))
     }
+}
+
+/// Refuses a plan that replaces more entries of the log than the reader of the journal accepts,
+/// so that no purge writes a journal that it cannot read back to resume or abort.
+fn check_entries(count: usize) -> Result<(), PurgeError> {
+    if count as u64 > journal::MAX_STUBS {
+        return Err(PurgeError::TooManyEntries { count });
+    }
+    Ok(())
 }
 
 /// Refuses an agent: only a human may purge (ADR-014).
@@ -618,6 +633,12 @@ pub enum PurgeError {
         /// Why it cannot be planned.
         source: Box<PurgeError>,
     },
+    /// The plan would replace more entries of the log than the journal of a purge lists
+    /// (2^24), so that the purge could not be resumed or aborted after a crash.
+    TooManyEntries {
+        /// The number of entries that the plan would replace.
+        count: usize,
+    },
     /// The plan would keep an object reachable that holds the blob or that it deletes. This is a
     /// mistake of the plan and not of the repository; it is an error so that the secret does not
     /// stay without a word.
@@ -669,6 +690,12 @@ impl PurgeError {
                 )?;
                 source.reason(f)
             }
+            Self::TooManyEntries { count } => write!(
+                f,
+                "the purge would replace {count} entries of the operation log, more than the \
+                 {} that its journal can list",
+                journal::MAX_STUBS
+            ),
             Self::Unsound { id } => write!(
                 f,
                 "the plan would keep {id} reachable although it holds the blob or is deleted; \
@@ -704,6 +731,7 @@ impl Error for PurgeError {
             Self::Agent
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
+            | Self::TooManyEntries { .. }
             | Self::Unsound { .. } => None,
         }
     }
@@ -852,6 +880,19 @@ mod tests {
             repository.objects().ids().unwrap().len(),
             repository.oplog().entries().unwrap().len(),
         )
+    }
+
+    /// A log with 2^24 entries is too large to build in a test, so the limit is checked alone.
+    #[test]
+    fn a_plan_that_replaces_more_entries_than_a_journal_lists_is_refused() {
+        let most = journal::MAX_STUBS as usize;
+        assert!(check_entries(most).is_ok());
+        let error = check_entries(most + 1).unwrap_err();
+        assert!(
+            matches!(error, PurgeError::TooManyEntries { count } if count == most + 1),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("16777217 entries"), "{error}");
     }
 
     #[test]
