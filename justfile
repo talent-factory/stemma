@@ -129,10 +129,20 @@ fuzz target seconds="300":
     cargo +nightly fuzz run {{target}} fuzz/corpus/{{target}} fuzz/seeds/{{target}} -- \
         -max_total_time={{seconds}}
 
-# Fuzz every strict reader in turn, SECONDS seconds each (see `fuzz`).
+# Fuzz every strict reader in turn, SECONDS seconds each (see `fuzz`). Every target runs; the
+# recipe fails at the end if one of them failed, and names those.
 [group('Quality')]
 fuzz-all seconds="60":
-    for target in tree commit actor index entry journal; do just fuzz "$target" {{seconds}}; done
+    #!/usr/bin/env bash
+    set -uo pipefail
+    failed=()
+    for target in tree commit actor index entry journal; do
+        {{just_executable()}} fuzz "$target" {{seconds}} || failed+=("$target")
+    done
+    if (( ${#failed[@]} > 0 )); then
+        echo "fuzzing failed for: ${failed[*]}" >&2
+        exit 1
+    fi
 
 # Test coverage summary (needs `cargo install cargo-llvm-cov --locked`).
 [group('Quality')]
