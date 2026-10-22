@@ -33,6 +33,10 @@
 % =============================================================================
 
 % Sans-serif for headings, serif for body text, mono for code
+% Heros lacks accented Greek and IPA glyphs; take them from Libertinus Sans.
+% A fallback must be defined before the family it extends.
+\definefallbackfamily[mainface][sans][Libertinus Sans]
+  [range={greekandcoptic,greekextended,ipaextensions,spacingmodifierletters},force=yes]
 \definefontfamily[mainface][sans][TeX Gyre Heros]
 \definefontfamily[mainface][serif][TeX Gyre Pagella]
 \definefontfamily[mainface][mono][TeX Gyre Cursor][scale=1.0]
