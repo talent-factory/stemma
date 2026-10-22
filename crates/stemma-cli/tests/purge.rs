@@ -287,17 +287,18 @@ fn a_writer_refuses_while_a_journal_exists_and_names_resume() {
     let dir = with_secret();
     fs::write(dir.path().join(".stemma/purge-pending"), "damaged").unwrap();
     fs::write(dir.path().join("a.txt"), "two").unwrap();
-    for args in [
-        vec!["track", "a.txt"],
-        vec!["commit", "-m", "more"],
-        vec!["status"],
-        vec!["op", "restore", "2"],
-        vec!["purge", &secret(), "--apply"],
+    // A writer is refused with code 1; a second purge finds the journal of another, code 3.
+    for (args, code) in [
+        (vec!["track", "a.txt"], 1),
+        (vec!["commit", "-m", "more"], 1),
+        (vec!["status"], 1),
+        (vec!["op", "restore", "2"], 1),
+        (vec!["purge", &secret(), "--apply"], 3),
     ] {
         let mut args = args.clone();
         args.extend(["--actor", ACTOR]);
         let result = run(dir.path(), &args);
-        assert_ne!(result.code, 0, "{args:?}");
+        assert_eq!(result.code, code, "{args:?}: {}", result.stderr);
         assert!(
             result.stderr.contains("stemma purge --resume"),
             "{args:?}: {}",

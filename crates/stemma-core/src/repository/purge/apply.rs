@@ -14,10 +14,12 @@ use std::path::PathBuf;
 
 use super::journal::{self, Journal, JournalError};
 use super::{refuse_agent, Planner, PurgeError, PurgePlan};
-use crate::object::{CommitId, ObjectId};
+use crate::object::{BlobId, CommitId, ObjectId};
 use crate::oplog::{Entry, EntryError, OpLogError, Purge, Record};
 use crate::refs::{Logged, PurgeLock, RefError};
-use crate::repository::{now, raise_format, Repository, SnapshotError, PURGE_FORMAT_VERSION};
+use crate::repository::{
+    now, raise_format, Repository, SnapshotError, UpdateError, PURGE_FORMAT_VERSION,
+};
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
 
@@ -61,7 +63,8 @@ impl Aborted {
         &self.plan
     }
 
-    /// The objects that the purge had written and the abort removed, as the journal names them.
+    /// The objects that the journal names as new and that the abort removed. One that the purge
+    /// had not written yet, or that an earlier abort removed, is not among them.
     pub fn removed(&self) -> &[ObjectId] {
         &self.removed
     }
@@ -188,14 +191,24 @@ impl Error for PurgeFailure {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ApplyPurgeError {
-    /// The purge was refused or could not be planned. Nothing of the purge was written; the
-    /// snapshot that it took first stays, as any snapshot does.
+    /// The purge was refused or could not be planned. Nothing of the purge was written. No
+    /// journal exists.
     Plan(PurgeError),
-    /// The snapshot before the purge failed. Nothing of the purge was written.
+    /// The snapshot before the purge failed. Nothing of the purge was written. No journal exists.
     Snapshot(SnapshotError),
-    /// The purge could not start under the lock: the lock, the format file, or the journal could
-    /// not be written. No journal exists; the format can be 3 already.
+    /// The purge could not start under the lock: the lock could not be taken, the log or the
+    /// store could not be read, or the format file or the journal could not be written. No
+    /// journal exists; the format can be 3 already.
     Start(PurgeFailure),
+    /// The purge failed after the snapshot that it took first had saved the working directory.
+    /// The snapshot stays, as any snapshot does; `source` says what failed, and whether a journal
+    /// exists.
+    AfterSnapshot {
+        /// The entry of the snapshot.
+        snapshot: Box<Entry>,
+        /// What failed after it.
+        source: Box<ApplyPurgeError>,
+    },
     /// A purge has not finished: its journal exists. Only `--resume` or `--abort` may run.
     Pending {
         /// The journal.
@@ -211,8 +224,20 @@ pub enum ApplyPurgeError {
     Stopped {
         /// The step.
         step: PurgeStep,
+        /// The numbers of the `purge` entries that are written; empty if none is known to be,
+        /// so that `--abort` can still undo the purge.
+        entries: Vec<u64>,
         /// What failed.
-        source: PurgeFailure,
+        source: Box<PurgeFailure>,
+    },
+    /// The purge is finished, or undone by `--abort`, and its journal is removed, but the
+    /// directory could not be flushed, so the removal may not survive a crash. No journal
+    /// exists now; after a crash, `--resume` or `--abort` finds it again and finishes.
+    NotDurable {
+        /// The numbers of the `purge` entries; empty for an abort, as a purge writes at least one.
+        entries: Vec<u64>,
+        /// The error of the flush.
+        source: Box<JournalError>,
     },
     /// `--abort` was refused, because the `purge` entry is written: that is the point of no
     /// return, and only `--resume` can finish the purge.
@@ -226,10 +251,21 @@ impl ApplyPurgeError {
     /// Whether the journal of a purge exists after the failure, so that `--resume` or `--abort`
     /// has to come before any other command that writes.
     pub fn pending(&self) -> bool {
-        matches!(
-            self,
-            Self::Pending { .. } | Self::Stopped { .. } | Self::PastNoReturn { .. }
-        )
+        match self {
+            Self::Pending { .. } | Self::Stopped { .. } | Self::PastNoReturn { .. } => true,
+            Self::AfterSnapshot { source, .. } => source.pending(),
+            Self::Plan(_)
+            | Self::Snapshot(_)
+            | Self::Start(_)
+            | Self::NotPending { .. }
+            | Self::NotDurable { .. } => false,
+        }
+    }
+
+    /// Whether the call made something that stays although it failed: a journal, or a purge or
+    /// an abort that is not known to be flushed. A command ends with code 3 then.
+    pub fn made(&self) -> bool {
+        self.pending() || matches!(self, Self::NotDurable { .. })
     }
 }
 
@@ -251,24 +287,59 @@ impl fmt::Display for ApplyPurgeError {
                 "no purge is pending: there is no journal `{}`",
                 path.display()
             ),
-            Self::Stopped { step, source } => write!(
+            Self::AfterSnapshot { snapshot, source } => write!(
+                f,
+                "{source} (the working copy was saved first as entry {})",
+                snapshot.number()
+            ),
+            Self::Stopped {
+                step,
+                entries,
+                source,
+            } if entries.is_empty() => write!(
                 f,
                 "the purge stopped at {step}: {source}; its journal stays, `stemma purge --resume` \
                  finishes it, and `stemma purge --abort` undoes it as long as its entry is not \
                  written"
             ),
+            Self::Stopped {
+                step,
+                entries,
+                source,
+            } => write!(
+                f,
+                "the purge stopped at {step} after its entry {} was written: {source}; its \
+                 journal stays, and only `stemma purge --resume` finishes it",
+                numbers(entries)
+            ),
+            Self::NotDurable { entries, source } if entries.is_empty() => write!(
+                f,
+                "the purge was undone and its journal removed, but flushing failed: {source}; \
+                 after a crash, run `stemma purge --abort` again"
+            ),
+            Self::NotDurable { entries, source } => write!(
+                f,
+                "the purge was made as entry {} and its journal removed, but flushing failed: \
+                 {source}; after a crash, run `stemma purge --resume`",
+                numbers(entries)
+            ),
             Self::PastNoReturn { entries } => write!(
                 f,
                 "the purge cannot be undone, as its entry {} is written; `stemma purge --resume` \
                  finishes it",
-                entries
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                numbers(entries)
             ),
         }
     }
+}
+
+/// The numbers of entries, for a message: `7` or `7, 8`.
+fn numbers(entries: &[u64]) -> String {
+    entries
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl Error for ApplyPurgeError {
@@ -276,7 +347,10 @@ impl Error for ApplyPurgeError {
         match self {
             Self::Plan(error) => error.source(),
             Self::Snapshot(error) => error.source(),
-            Self::Start(source) | Self::Stopped { source, .. } => source.source(),
+            Self::Start(source) => source.source(),
+            Self::Stopped { source, .. } => source.source(),
+            Self::AfterSnapshot { source, .. } => source.source(),
+            Self::NotDurable { source, .. } => source.source(),
             Self::Pending { .. } | Self::NotPending { .. } | Self::PastNoReturn { .. } => None,
         }
     }
@@ -284,7 +358,9 @@ impl Error for ApplyPurgeError {
 
 /// The error of a step that runs between the checks of the pointers and their moves.
 enum EntryStep {
-    Failed(PurgeFailure),
+    /// The entry could not be written; carries the numbers of the `purge` entries that are in
+    /// the log nonetheless.
+    Failed(Vec<u64>, Box<PurgeFailure>),
     /// A test stopped the purge after the entry.
     Halted,
 }
@@ -352,25 +428,31 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Aborted, ApplyPurgeError> {
         let (journal, lock) = self.take_over(actor, authorizer)?;
-        let written = self
-            .written_purge(&journal)
-            .map_err(stopped(PurgeStep::Abort, PurgeFailure::Log))?;
+        let written = self.written_purge(&journal).map_err(stopped(
+            PurgeStep::Abort,
+            &[],
+            PurgeFailure::Log,
+        ))?;
         if !written.is_empty() {
             return Err(ApplyPurgeError::PastNoReturn {
                 entries: written.iter().map(Entry::number).collect(),
             });
         }
+        let mut removed = Vec::new();
         for id in &journal.new {
-            self.objects()
+            if self
+                .objects()
                 .remove(id)
-                .map_err(stopped(PurgeStep::Abort, store))?;
+                .map_err(stopped(PurgeStep::Abort, &[], store))?
+            {
+                removed.push(*id);
+            }
         }
-        journal::remove(&self.metadata_dir())
-            .map_err(stopped(PurgeStep::Finish, PurgeFailure::Journal))?;
+        self.remove_journal(&[])?;
         drop(lock);
         Ok(Aborted {
             plan: journal.plan,
-            removed: journal.new,
+            removed,
         })
     }
 
@@ -391,9 +473,34 @@ impl Repository {
             other => ApplyPurgeError::Start(PurgeFailure::Refs(other)),
         };
         self.refs_store().refuse_pending_purge().map_err(pending)?;
+        // A purge that wrote its journal since the check above is refused by the snapshot.
         let snapshot = self
             .snapshot(actor, authorizer)
-            .map_err(ApplyPurgeError::Snapshot)?;
+            .map_err(|error| match error {
+                SnapshotError::Update(UpdateError::Refs(RefError::PurgePending { path })) => {
+                    ApplyPurgeError::Pending { path }
+                }
+                other => ApplyPurgeError::Snapshot(other),
+            })?;
+        let purged = self.start_purge(blob, actor, stop, pending);
+        match (purged, snapshot) {
+            (Ok(purged), snapshot) => Ok(purged.map(|purged| Purged { snapshot, ..purged })),
+            (Err(error), Some(snapshot)) => Err(ApplyPurgeError::AfterSnapshot {
+                snapshot: Box::new(snapshot),
+                source: Box::new(error),
+            }),
+            (Err(error), None) => Err(error),
+        }
+    }
+
+    /// The purge after its snapshot: the lock, the plan, the format, the journal, and the steps.
+    fn start_purge(
+        &self,
+        blob: BlobId,
+        actor: &Actor,
+        stop: Option<Stop>,
+        pending: impl Fn(RefError) -> ApplyPurgeError,
+    ) -> Result<Option<Purged>, ApplyPurgeError> {
         let lock = self.refs_store().lock_purge().map_err(pending)?;
         let (plan, planner) = self.plan_blob(blob).map_err(ApplyPurgeError::Plan)?;
         let start = |source| ApplyPurgeError::Start(source);
@@ -424,7 +531,8 @@ impl Repository {
             if error.made() {
                 ApplyPurgeError::Stopped {
                     step: PurgeStep::Journal,
-                    source: PurgeFailure::Journal(error),
+                    entries: Vec::new(),
+                    source: Box::new(PurgeFailure::Journal(error)),
                 }
             } else {
                 start(PurgeFailure::Journal(error))
@@ -437,7 +545,7 @@ impl Repository {
         Ok(self
             .carry_out(&journal, actor, lock, stop)?
             .map(|entries| Purged {
-                snapshot,
+                snapshot: None,
                 plan: journal.plan,
                 entries,
             }))
@@ -476,16 +584,18 @@ impl Repository {
             }),
             Err(error) => Err(ApplyPurgeError::Stopped {
                 step: PurgeStep::Journal,
-                source: PurgeFailure::Journal(error),
+                entries: Vec::new(),
+                source: Box::new(PurgeFailure::Journal(error)),
             }),
         };
         let journal = read()?;
         self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
             .map_err(ApplyPurgeError::Plan)?;
-        let lock = self
-            .refs_store()
-            .take_over_lock()
-            .map_err(stopped(PurgeStep::Journal, PurgeFailure::Refs))?;
+        let lock = self.refs_store().take_over_lock().map_err(stopped(
+            PurgeStep::Journal,
+            &[],
+            PurgeFailure::Refs,
+        ))?;
         Ok((read()?, lock))
     }
 
@@ -514,25 +624,35 @@ impl Repository {
         stop: Option<Stop>,
     ) -> Result<Option<Vec<Entry>>, ApplyPurgeError> {
         let plan = &journal.plan;
-        let mut written = self
-            .written_purge(journal)
-            .map_err(stopped(PurgeStep::Objects, PurgeFailure::Log))?;
+        let mut written = self.written_purge(journal).map_err(stopped(
+            PurgeStep::Objects,
+            &[],
+            PurgeFailure::Log,
+        ))?;
+        // The numbers of the `purge` entries that are written, for an error: once there is one,
+        // only `--resume` can finish the purge.
+        let numbers = |written: &[Entry]| written.iter().map(Entry::number).collect::<Vec<_>>();
 
         // Step 5: the new objects. Nothing is deleted before the entry, so the old ones are there
         // to make them again from.
         if written.is_empty() {
-            self.write_new_objects(journal)
-                .map_err(stopped(PurgeStep::Objects, |failure| failure))?;
+            self.write_new_objects(journal).map_err(stopped(
+                PurgeStep::Objects,
+                &[],
+                |failure| failure,
+            ))?;
         } else {
             for (_, new) in &plan.rewrites {
-                let present = self
-                    .objects()
-                    .contains(&new.object_id())
-                    .map_err(stopped(PurgeStep::Objects, store))?;
+                let present = self.objects().contains(&new.object_id()).map_err(stopped(
+                    PurgeStep::Objects,
+                    &numbers(&written),
+                    store,
+                ))?;
                 if !present {
                     return Err(ApplyPurgeError::Stopped {
                         step: PurgeStep::Objects,
-                        source: PurgeFailure::Missing(*new),
+                        entries: numbers(&written),
+                        source: Box::new(PurgeFailure::Missing(*new)),
                     });
                 }
             }
@@ -564,12 +684,20 @@ impl Repository {
         let step = || {
             let mut entries = Vec::new();
             if written.is_empty() || !missing.is_empty() {
-                let purge = Purge::new(now(), actor.clone(), commits, &missing)
-                    .map_err(|error| EntryStep::Failed(PurgeFailure::Entry(error)))?;
-                entries = self
-                    .oplog()
-                    .append_purge(purge)
-                    .map_err(|error| EntryStep::Failed(PurgeFailure::Log(error)))?;
+                let purge =
+                    Purge::new(now(), actor.clone(), commits, &missing).map_err(|error| {
+                        EntryStep::Failed(Vec::new(), Box::new(PurgeFailure::Entry(error)))
+                    })?;
+                entries = self.oplog().append_purge(purge).map_err(|error| {
+                    // An entry that is in the log although the call failed is written.
+                    let made = match &error {
+                        OpLogError::NotFlushed { entry, .. } => vec![entry.number()],
+                        OpLogError::PurgeIncomplete { written, .. }
+                        | OpLogError::PurgeNotFlushed { written, .. } => numbers(written),
+                        _ => Vec::new(),
+                    };
+                    EntryStep::Failed(made, Box::new(PurgeFailure::Log(error)))
+                })?;
             }
             if stop == Some(Stop::Entry) {
                 return Err(EntryStep::Halted);
@@ -579,33 +707,51 @@ impl Repository {
         let outcome = self
             .refs_store()
             .purge_moves(&lock, &journal.moves(), self.objects(), step)
-            .map_err(stopped(PurgeStep::Entry, PurgeFailure::Refs))?;
-        let entry_failed = |source| ApplyPurgeError::Stopped {
+            .map_err(stopped(
+                PurgeStep::Entry,
+                &numbers(&written),
+                PurgeFailure::Refs,
+            ))?;
+        let entry_failed = |entries: Vec<u64>, source| ApplyPurgeError::Stopped {
             step: PurgeStep::Entry,
+            entries,
             source,
         };
         match outcome {
             Logged::Moved(entries) => written.extend(entries),
-            Logged::Unchanged => {}
-            Logged::StepFailed(EntryStep::Failed(source)) => return Err(entry_failed(source)),
+            Logged::Unchanged => unreachable!("a purge runs its step even if no pointer moves"),
+            Logged::StepFailed(EntryStep::Failed(made, source)) => {
+                let mut entries = numbers(&written);
+                entries.extend(made);
+                return Err(entry_failed(entries, source));
+            }
             Logged::StepFailed(EntryStep::Halted) => {
                 lock.leak();
                 return Ok(None);
             }
-            Logged::MoveFailed(_, error)
-            | Logged::NotFlushed(_, error)
-            | Logged::PartlyMoved(_, error) => return Err(entry_failed(PurgeFailure::Refs(error))),
+            Logged::MoveFailed(done, error)
+            | Logged::NotFlushed(done, error)
+            | Logged::PartlyMoved(done, error) => {
+                written.extend(done);
+                return Err(entry_failed(
+                    numbers(&written),
+                    Box::new(PurgeFailure::Refs(error)),
+                ));
+            }
         }
         if stop == Some(Stop::Moves) {
             lock.leak();
             return Ok(None);
         }
+        let entries = numbers(&written);
 
         // Step 7: the stubs.
         for number in &plan.entries {
-            self.oplog()
-                .replace_with_stub(*number)
-                .map_err(stopped(PurgeStep::Stubs, PurgeFailure::Log))?;
+            self.oplog().replace_with_stub(*number).map_err(stopped(
+                PurgeStep::Stubs,
+                &entries,
+                PurgeFailure::Log,
+            ))?;
         }
         if stop == Some(Stop::Stubs) {
             lock.leak();
@@ -623,16 +769,35 @@ impl Repository {
         for id in deleted {
             self.objects()
                 .remove(&id)
-                .map_err(stopped(PurgeStep::Delete, store))?;
+                .map_err(stopped(PurgeStep::Delete, &entries, store))?;
         }
         if stop == Some(Stop::Delete) {
             lock.leak();
             return Ok(None);
         }
-        journal::remove(&self.metadata_dir())
-            .map_err(stopped(PurgeStep::Finish, PurgeFailure::Journal))?;
+        self.remove_journal(&entries)?;
         drop(lock);
         Ok(Some(written))
+    }
+
+    /// Removes the journal: the last step of a purge (`entries` are its `purge` entries) and of
+    /// an abort (no entries). A journal that is gone but not known to be flushed is
+    /// [`ApplyPurgeError::NotDurable`], as the work is done.
+    fn remove_journal(&self, entries: &[u64]) -> Result<(), ApplyPurgeError> {
+        journal::remove(&self.metadata_dir()).map_err(|error| {
+            if error.made() {
+                ApplyPurgeError::NotDurable {
+                    entries: entries.to_vec(),
+                    source: Box::new(error),
+                }
+            } else {
+                ApplyPurgeError::Stopped {
+                    step: PurgeStep::Finish,
+                    entries: entries.to_vec(),
+                    source: Box::new(PurgeFailure::Journal(error)),
+                }
+            }
+        })
     }
 
     /// Makes the new trees and commits again from the old ones, checks that they are the ones
@@ -664,14 +829,18 @@ fn store(error: StoreError) -> PurgeFailure {
     PurgeFailure::Store(Box::new(error))
 }
 
-/// Maps the error of a step to [`ApplyPurgeError::Stopped`].
+/// Maps the error of a step to [`ApplyPurgeError::Stopped`], with the numbers of the `purge`
+/// entries that are written.
 fn stopped<E>(
     step: PurgeStep,
+    entries: &[u64],
     failure: impl FnOnce(E) -> PurgeFailure,
 ) -> impl FnOnce(E) -> ApplyPurgeError {
+    let entries = entries.to_vec();
     move |error| ApplyPurgeError::Stopped {
         step,
-        source: failure(error),
+        entries,
+        source: Box::new(failure(error)),
     }
 }
 
@@ -1128,8 +1297,15 @@ mod tests {
         match &error {
             ApplyPurgeError::Stopped {
                 step: PurgeStep::Entry,
-                source: PurgeFailure::Refs(RefError::PurgeStale { pointer }),
-            } => assert_eq!(pointer, "main"),
+                entries,
+                source,
+            } => {
+                let PurgeFailure::Refs(RefError::PurgeStale { pointer }) = &**source else {
+                    panic!("expected a stale pointer, got {source:?}");
+                };
+                assert_eq!(pointer, "main");
+                assert!(entries.is_empty(), "no entry, so the abort is offered");
+            }
             other => panic!("expected a stale pointer, got {other:?}"),
         }
         assert!(error.to_string().contains("`main` is at neither"));
@@ -1188,11 +1364,12 @@ mod tests {
         let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
         assert!(
             matches!(
-                error,
+                &error,
                 ApplyPurgeError::Stopped {
                     step: PurgeStep::Journal,
-                    source: PurgeFailure::Journal(JournalError::Malformed { .. }),
-                }
+                    source,
+                    ..
+                } if matches!(**source, PurgeFailure::Journal(JournalError::Malformed { .. }))
             ),
             "{error:?}"
         );
@@ -1211,10 +1388,18 @@ mod tests {
         let other = Blob::new("token=swordfish").id().object_id();
         let purged = repository.apply_purge(other, &actor(), &AllowAll).unwrap();
         assert!(!repository.objects().contains(&other).unwrap());
-        let entries = repository.oplog().entries().unwrap();
-        check_stubs(&entries).unwrap();
-        assert!(!journal_exists(&dir));
         assert!(!purged.plan().rewrites().is_empty());
+        // `assert_purged` checks the numbering and that every kept entry names existing commits;
+        // the entry of the first purge is kept and is no stub.
+        assert_purged(&dir, &repository, &purged);
+        let purges = repository
+            .oplog()
+            .entries()
+            .unwrap()
+            .into_iter()
+            .filter(|entry| matches!(entry.record(), Record::Purge(_)))
+            .count();
+        assert_eq!(purges, 2);
     }
 
     #[test]
@@ -1230,5 +1415,180 @@ mod tests {
         let moved = purged.plan().head().unwrap();
         assert_eq!(repository.refs().head().unwrap(), *moved.after().unwrap());
         assert_purged(&dir, &repository, &purged);
+    }
+
+    #[test]
+    fn a_purge_entry_that_stopped_after_a_part_is_finished_with_the_rest() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Objects);
+        let journal = journal::read(&repository.metadata_dir()).unwrap().unwrap();
+        let stubs = journal.plan.entries().to_vec();
+        assert!(stubs.len() > 1, "{stubs:?}");
+        // The first part of a split entry: the count and some of the stubs.
+        let first = Purge::new(
+            0,
+            actor(),
+            journal.plan.rewrites().len() as u64,
+            &stubs[..1],
+        )
+        .unwrap();
+        repository.oplog().append_purge(first).unwrap();
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_purged(&dir, &repository, &purged);
+        let parts: Vec<Purge> = purged
+            .entries()
+            .iter()
+            .map(|entry| match entry.record() {
+                Record::Purge(purge) => purge.clone(),
+                other => panic!("a purge entry, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(parts.len(), 2, "the first part and the rest");
+        assert_eq!(parts[0].commits(), journal.plan.rewrites().len() as u64);
+        assert_eq!(parts[1].commits(), 0, "the count is not written twice");
+        assert!(stubs[1..].iter().all(|number| parts[1].lists(*number)));
+        assert!(!parts[1].lists(stubs[0]));
+    }
+
+    #[test]
+    fn a_working_copy_at_neither_value_stops_the_resume_and_is_named() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        stop_at(&repository, Stop::Objects);
+        fs::write(
+            dir.path().join(".stemma/working-copy"),
+            encode_branch(&first),
+        )
+        .unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ApplyPurgeError::Stopped { source, .. }
+                    if matches!(&**source, PurgeFailure::Refs(RefError::PurgeStale { pointer })
+                        if pointer == "working-copy")
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_detached_head_at_neither_value_stops_the_resume_and_is_named() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let operation = OperationName::new("checkout").unwrap();
+        repository
+            .set_head(&operation, &Head::Detached(second), &actor(), &AllowAll)
+            .unwrap();
+        stop_at(&repository, Stop::Objects);
+        fs::write(
+            dir.path().join(".stemma/HEAD"),
+            Head::Detached(first).encode(),
+        )
+        .unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ApplyPurgeError::Stopped { source, .. }
+                    if matches!(&**source, PurgeFailure::Refs(RefError::PurgeStale { pointer })
+                        if pointer == "HEAD")
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_held_lock_stops_the_purge_before_the_format_and_the_journal() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        // Another process changes the references.
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
+        let before = ids(&repository);
+        let error = repository
+            .apply_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ApplyPurgeError::Start(PurgeFailure::Refs(RefError::Locked { .. }))
+            ),
+            "{error:?}"
+        );
+        assert!(!error.pending());
+        assert!(!error.made());
+        assert!(!journal_exists(&dir));
+        assert_eq!(format(&dir), "stemma-repository 2\n");
+        assert_eq!(ids(&repository), before, "no new object");
+    }
+
+    #[test]
+    fn a_failure_after_the_snapshot_names_its_entry() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        write(&dir, "a.txt", "changed");
+        // A damaged object that only the plan under the lock looks at.
+        let damaged = Blob::new("never stored").id().object_id();
+        let path = repository.objects().object_path(&damaged);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "junk").unwrap();
+        let error = repository
+            .apply_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        let ApplyPurgeError::AfterSnapshot { snapshot, source } = &error else {
+            panic!("expected a failure after the snapshot, got {error:?}");
+        };
+        assert!(matches!(**source, ApplyPurgeError::Plan(_)), "{source:?}");
+        assert!(!error.pending());
+        assert!(error.to_string().ends_with(&format!(
+            "(the working copy was saved first as entry {})",
+            snapshot.number()
+        )));
+        assert!(!journal_exists(&dir));
+    }
+
+    #[test]
+    fn a_new_commit_that_is_missing_after_the_entry_stops_the_resume() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Entry);
+        let journal = journal::read(&repository.metadata_dir()).unwrap().unwrap();
+        let (_, new) = journal.plan.rewrites()[0];
+        repository.objects().remove(&new.object_id()).unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        match &error {
+            ApplyPurgeError::Stopped {
+                step: PurgeStep::Objects,
+                entries,
+                source,
+            } => {
+                assert!(
+                    matches!(**source, PurgeFailure::Missing(missing) if missing == new),
+                    "{source:?}"
+                );
+                assert_eq!(entries.len(), 1, "the entry is named");
+            }
+            other => panic!("expected a missing commit, got {other:?}"),
+        }
+        assert!(error.to_string().contains("only `stemma purge --resume`"));
+        assert!(!error.to_string().contains("--abort"));
+    }
+
+    #[test]
+    fn an_abort_names_only_the_objects_that_it_removed() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        // Before the new objects: the journal names them, but none is written yet.
+        stop_at(&repository, Stop::Journal);
+        let aborted = repository.abort_purge(&actor(), &AllowAll).unwrap();
+        assert!(aborted.removed().is_empty(), "{:?}", aborted.removed());
     }
 }

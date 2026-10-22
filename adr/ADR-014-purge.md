@@ -194,6 +194,12 @@ object, an unreadable log) is left for a person to repair.
 - The tip file (ADR-011) is not affected: a stub keeps the number.
 - The layout (ADR-009) gets the file `.stemma/purge-pending`, and `Repository::open` has to
   accept it and the writers have to check for it.
+- The journal keeps out a writer that starts while it exists, not one that started before it.
+  A command that checked before the journal was written and takes the lock after the purge
+  removed it finds no journal, and can name an object that the purge deleted (a blob that its
+  snapshot saved again, or a tree that an abort removed). The window needs two processes in one
+  repository at once, which ADR-010 does not support; a check of every object under the lock,
+  or a counter of purges that a writer reads first and compares under the lock, would close it.
 - `--resume` and `--abort` take any lock for the one that the purge left behind. A purge that is
   still running in another terminal loses its lock that way; this is advisory, as the lock is,
   and the documentation says not to resume a purge that runs.

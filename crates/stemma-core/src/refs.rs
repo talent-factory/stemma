@@ -716,9 +716,10 @@ impl PurgeLock {
 pub(crate) const PURGE_JOURNAL: &str = "purge-pending";
 
 /// The pointers that a purge moves, each from the value before the purge to the one after it.
+/// A purge moves HEAD only when it names a commit, and it neither creates nor deletes a branch.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct PurgeMoves {
-    pub(crate) head: Option<(Head, Head)>,
+    pub(crate) head: Option<(CommitId, CommitId)>,
     pub(crate) working_copy: Option<(CommitId, CommitId)>,
     pub(crate) branches: Vec<(BranchName, CommitId, CommitId)>,
 }
@@ -1585,14 +1586,13 @@ impl FsRefStore {
             pointer: pointer.to_owned(),
         };
         let mut moves = RestoreMoves::default();
-        if let Some((old, new)) = &planned.head {
-            if let Head::Detached(commit) = new {
-                Self::require_commit(commit, objects)?;
-            }
+        if let Some((old, new)) = planned.head {
+            Self::require_commit(&new, objects)?;
+            let (old, new) = (Head::Detached(old), Head::Detached(new));
             let current = self.head()?;
-            if current == *old {
-                moves.head = Some((old.clone(), new.clone()));
-            } else if current != *new {
+            if current == old {
+                moves.head = Some((old, new));
+            } else if current != new {
                 return Err(stale("HEAD"));
             }
         }

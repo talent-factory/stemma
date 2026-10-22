@@ -62,8 +62,10 @@ const FORMAT_VERSION: u32 = 2;
 /// know.
 const READ_VERSIONS: [u32; 2] = [2, 3];
 
-/// The version of the repository format that a purge moves a repository to (ADR-014).
+/// The version of the repository format that a purge moves a repository to (ADR-014). It is the
+/// highest that this code reads, so a purge never lowers a version.
 const PURGE_FORMAT_VERSION: u32 = 3;
+const _: () = assert!(PURGE_FORMAT_VERSION == READ_VERSIONS[READ_VERSIONS.len() - 1]);
 
 /// The name that the file `format` starts with, followed by the version.
 const FORMAT_PREFIX: &str = "stemma-repository ";
@@ -87,7 +89,9 @@ fn format_of(version: u32) -> String {
 /// Moves the repository whose metadata directory is `dir` to `version` of the format, unless the
 /// file `format` names it already. The new content goes to a temporary file in `tmp/`, is flushed,
 /// and is renamed over the file, and the directory is flushed, so a reader sees the old or the new
-/// version and never a mix. A purge calls it (ADR-014); a version is never lowered.
+/// version and never a mix. A purge calls it (ADR-014). The version is never lowered: the
+/// repository was opened, so its version is one of [`READ_VERSIONS`], and a purge raises it to
+/// the highest of them.
 fn raise_format(dir: &Path, version: u32) -> Result<(), StoreError> {
     let path = dir.join("format");
     let current = fs::read(&path).map_err(|source| StoreError::Io {

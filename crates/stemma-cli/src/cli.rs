@@ -10,11 +10,13 @@
 //! and the same `op restore` run again moves the rest. Running `status` again is safe, but it
 //! finds nothing to save and so does not make an unflushed snapshot durable.
 //!
-//! A `purge` that stopped after its journal was written is code 3 as well, and so is every
-//! `purge` that finds a journal it does not finish: until `purge --resume` (or `--abort`) has run,
-//! no other command writes. A `purge --apply`, `--resume`, or `--abort` whose result cannot be
-//! written after the work was made is code 3 too; a closed pipe is no failure there, as the log
-//! names the entry and nothing can undo it.
+//! A `purge` that stopped after its journal was written is code 3 as well, and so is a
+//! `purge --apply` that finds the journal of another purge and an `--abort` that is refused after
+//! the entry of the purge: until `purge --resume` (or `--abort`) has run, no other command
+//! writes. A `purge --apply`, `--resume`, or `--abort` that has done its work but could not flush
+//! the removal of the journal, or whose result cannot be written, is code 3 too; a closed pipe is
+//! no failure there, as the log names the entry of a purge, an abort leaves the repository as it
+//! was before the purge, and nothing can undo either.
 //!
 //! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge` without
 //! `--apply`, `--resume`, or `--abort`) has made nothing by its output, so a failed write of its
@@ -31,12 +33,14 @@
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
 //! is refused for nothing to commit or for a branch that moved, `status` when it cannot read the
-//! repository or write its output, and `op restore` when a later step fails. The message of such
-//! a failure names the entry, and repeating the command is safe.
+//! repository or write its output, `op restore` when a later step fails, and `purge --apply`
+//! when the purge cannot be planned or started after it. The message of such a failure names the
+//! entry, and repeating the command is safe.
 //!
 //! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
 //! status is written, for `commit` without a commit (it can be repeated), for `op restore` after
-//! the restore is made, and for `track` as the other flush errors.
+//! the restore is made, for `purge --apply` before the purge, and for `track` as the other flush
+//! errors.
 //!
 //! A failing command prints `stemma: <message>`, a complete message (see the crate documentation
 //! of `stemma-core`). The argument parser prints its own errors.
@@ -407,7 +411,7 @@ impl CliError {
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
-            Self::ApplyPurge(error) if error.pending() => ExitCode::from(3),
+            Self::ApplyPurge(error) if error.made() => ExitCode::from(3),
             Self::ApplyPurge(ApplyPurgeError::Snapshot(SnapshotError::Update(error)))
                 if error.pointer_moved() =>
             {
@@ -1307,7 +1311,8 @@ mod tests {
         assert_eq!(
             code(ApplyPurgeError::Stopped {
                 step: PurgeStep::Entry,
-                source: PurgeFailure::Refs(RefError::Locked { path: path.clone() }),
+                entries: Vec::new(),
+                source: Box::new(PurgeFailure::Refs(RefError::Locked { path: path.clone() })),
             }),
             ExitCode::from(3)
         );
@@ -1318,6 +1323,24 @@ mod tests {
         );
         assert_eq!(
             code(ApplyPurgeError::PastNoReturn { entries: vec![7] }),
+            ExitCode::from(3)
+        );
+        assert_eq!(
+            code(ApplyPurgeError::NotDurable {
+                entries: vec![7],
+                source: Box::new(stemma_core::repository::JournalError::Malformed {
+                    path: path.clone(),
+                }),
+            }),
+            ExitCode::from(3),
+            "the purge is made, although the journal that is gone may come back"
+        );
+        assert_eq!(
+            CliError::PurgedOutput {
+                made: "Purged blob".to_owned(),
+                source: io::Error::other("disk full"),
+            }
+            .exit_code(),
             ExitCode::from(3)
         );
         assert_eq!(

@@ -77,9 +77,11 @@ nur ein weiterer \type{commit} beendet einen halben (siehe dort), und ein halbes
 \type{op restore} beendet derselbe Aufruf, noch einmal ausgeführt (siehe dort).
 Ein \type{op restore}, das gemacht ist, nennt in der Ausgabe den Eintrag, der es zurücksetzt.
 Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht.
-Bei \type{purge} heisst Code 3, dass das Journal eines Purge besteht: Er brach ab, oder
-der Aufruf fand ein Journal, das er nicht beendet. Dann muss \type{purge --resume} oder
-\type{purge --abort} kommen (siehe dort).
+Bei \type{purge} heisst Code 3 meist, dass das Journal eines Purge besteht: Er brach ab,
+\type{--apply} fand das Journal eines anderen, oder \type{--abort} kam nach dem Eintrag.
+Dann muss \type{purge --resume} oder \type{purge --abort} kommen (siehe dort).
+Code 3 gilt auch für einen Purge, der gemacht ist, dessen Ausgabe oder Sicherung aber
+scheiterte; dann besteht kein Journal mehr.
 \stopitemize
 
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
@@ -828,13 +830,15 @@ der ID hat (auch wenn die ID einen Commit oder einen Baum nennt) oder die Datei 
 beschädigt ist, wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
 und wenn ein Objekt im Speicher beschädigt ist: Dann ist nicht bekannt, ob es den Blob nennt.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.
-Ist das Repository geöffnet, beginnt jede dieser Meldungen außer der Ablehnung eines Agenten
+Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung eines Agenten
 mit \type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
 erst ein Merge (Phase 3).
 Mit \type{--apply} endet er mit Exit-Code 1 auch, wenn der Snapshot scheitert oder der Purge
 unter der Sperre nicht beginnen kann, etwa weil die Sperre gehalten wird; dann besteht kein
-Journal, das Format kann aber schon 3 sein. \type{--resume} und \type{--abort} ohne Journal
+Journal, das Format kann aber schon 3 sein. Hat der Snapshot das Verzeichnis gespeichert,
+nennt die Meldung am Ende seinen Eintrag. Hat der Snapshot den Zeiger bewegt, aber nicht
+gesichert, ist es Exit-Code 3 wie bei \type{commit}. \type{--resume} und \type{--abort} ohne Journal
 enden mit Exit-Code 1 und der Meldung \type{no purge is pending}.
 Ein Fehler beim Schreiben der Ausgabe des Plans ist Exit-Code 1, denn es wurde nichts gemacht;
 eine geschlossene Pipe ist kein Fehler.
@@ -845,13 +849,18 @@ Exit-Code 3 gilt in diesen Fällen:
 \item Ein Schritt nach dem Journal scheitert. Die Meldung beginnt mit
 \type{the purge stopped at} und nennt den Schritt; das Journal bleibt.
 \type{--resume} beendet den Purge, \type{--abort} nimmt ihn zurück, solange sein Eintrag fehlt.
+Ist der Eintrag schon geschrieben, nennt die Meldung ihn und nur noch \type{--resume}.
 Steht ein Zeiger auf keinem seiner beiden Werte, nennt die Meldung ihn.
+\item Der Purge oder das Zurücknehmen ist gemacht und das Journal entfernt, aber das
+Verzeichnis liess sich nicht sichern. Nach einem Absturz kann das Journal wiederkommen;
+dann beendet es derselbe Befehl.
 \item \type{--apply} findet das Journal eines anderen Purge, oder \type{--abort} findet den
 Eintrag \type{purge} schon geschrieben (\type{the purge cannot be undone}); dann bleibt nur
 \type{--resume}.
 \item Das Journal lässt sich nicht lesen. Es bleibt, bis jemand es von Hand prüft.
 \item Der Purge, das Fortsetzen oder das Zurücknehmen ist gemacht, aber die Ausgabe liess sich
-nicht schreiben; eine geschlossene Pipe ist hier kein Fehler, denn das Log nennt den Eintrag.
+nicht schreiben. Eine geschlossene Pipe ist hier kein Fehler: Das Log nennt den Eintrag eines
+Purge, und ein Zurücknehmen lässt das Repository wie vor dem Purge.
 \stopitemize
 
 {\bf Grenzen.} Der Plan ohne \type{--apply} geht vom heutigen Stand aus; der Purge sichert
@@ -859,6 +868,9 @@ das Verzeichnis zuerst und plant unter der Sperre neu.
 Eine Datei, deren Blob entfernt wird, verlässt den Baum und ist danach nicht mehr verfolgt;
 das Verzeichnis bleibt, wie es ist, und ein späteres \type{track} nähme das Geheimnis wieder
 auf, wenn \type{.stemmaignore} es nicht nennt.
+Ein Befehl, der vor dem Journal begann und den Purge überdauert, findet unter der Sperre kein
+Journal mehr und kann ein Objekt nennen, das der Purge gelöscht hat. Deshalb läuft ein Purge
+allein, wie jeder Akteur in seiner eigenen Arbeitskopie arbeitet (ADR-010).
 Was ein Purge nicht garantiert (Kopien im Dateisystem, Dateien in \type{tmp/},
 Nachrichten und Pfadnamen), steht in ADR-014.
 

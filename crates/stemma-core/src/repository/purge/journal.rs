@@ -171,7 +171,10 @@ impl Journal {
             head: plan
                 .head
                 .as_ref()
-                .and_then(|moved| Some((moved.before()?.clone(), moved.after()?.clone()))),
+                .and_then(|moved| match (moved.before()?, moved.after()?) {
+                    (Head::Detached(old), Head::Detached(new)) => Some((*old, *new)),
+                    _ => None,
+                }),
             working_copy: plan.working_copy.as_ref().and_then(values),
             branches: plan
                 .branches
@@ -227,8 +230,14 @@ pub(super) fn path(dir: &Path) -> PathBuf {
 /// Returns [`JournalError::Io`] if the journal could not be put in place, and
 /// [`JournalError::NotFlushed`] if it is in place but the directory could not be flushed.
 pub(super) fn write(dir: &Path, journal: &Journal) -> Result<(), JournalError> {
+    debug_assert_eq!(
+        Journal::parse(&journal.encode()).as_ref(),
+        Some(journal),
+        "a journal reads back as it is written"
+    );
     let temp_dir = dir.join("tmp");
-    let (mut file, mut temp) = create_temp(&temp_dir, &mut unique_temp_name).map_err(from_store)?;
+    let (mut file, mut temp) =
+        create_temp(&temp_dir, &mut unique_temp_name).map_err(from_store(&temp_dir))?;
     file.write_all(&journal.encode())
         .map_err(io_error("write the temporary file", &temp.path))?;
     file.sync_all()
@@ -291,8 +300,10 @@ fn flush(dir: &Path) -> Result<(), JournalError> {
     })
 }
 
-fn from_store(error: StoreError) -> JournalError {
-    match error {
+/// Turns an error of the helpers that the object store shares into an error of the journal.
+/// They fail only in the file system; another error keeps the directory that was used.
+fn from_store(dir: &Path) -> impl FnOnce(StoreError) -> JournalError + '_ {
+    move |error| match error {
         StoreError::Io {
             operation,
             path,
@@ -303,8 +314,8 @@ fn from_store(error: StoreError) -> JournalError {
             source,
         },
         other => JournalError::Io {
-            operation: "create the temporary file",
-            path: PathBuf::new(),
+            operation: "create the temporary file in",
+            path: dir.to_path_buf(),
             source: io::Error::other(other.to_string()),
         },
     }
