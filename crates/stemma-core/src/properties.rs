@@ -1,6 +1,7 @@
 //! Property tests of the readers and encoders of trees, commits, indexes, actor lines, the entries
 //! of the operation log in both encodings (a change; a stub and a purge), and the files of HEAD and
-//! the branches.
+//! the branches. The journal of a purge keeps its type to its module, so its properties are tested
+//! there, with the generator of this module.
 //!
 //! The unit tests change a golden encoding at one place at a time. These tests complement them
 //! with generated input and check the two rules of ADR-005 on all of it:
@@ -1150,15 +1151,17 @@ fn the_actor_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
 #[test]
 fn every_seed_and_every_property_starts_from_another_state() {
     let mut firsts = std::collections::HashSet::new();
+    // Every stream that a property of this crate uses, here and in `repository/purge/journal.rs`.
+    let streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23];
     for seed in 0..64 {
-        for stream in 1..=8 {
+        for stream in streams {
             let mut rng = Rng::new(seed, stream);
             assert_ne!(rng.0, 0, "seed {seed}, stream {stream}");
             firsts.insert(rng.next());
         }
     }
     // Consecutive seeds do not repeat each other, and the properties do not share a sequence.
-    assert_eq!(firsts.len(), 64 * 8);
+    assert_eq!(firsts.len(), 64 * streams.len());
 }
 
 /// The round trip cannot see a rule that the encoder and the reader share: if a name rule were
