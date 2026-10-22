@@ -20,7 +20,7 @@ use crate::refs::{Logged, PurgeLock, RefError};
 use crate::repository::{
     now, raise_format, Repository, SnapshotError, UpdateError, CHAIN_FORMAT_VERSION,
 };
-use crate::store::{ObjectStore, StoreError};
+use crate::store::{scratch_left, ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
 
 /// What a purge did, or what `--resume` finished.
@@ -29,6 +29,7 @@ pub struct Purged {
     snapshot: Option<Entry>,
     plan: PurgePlan,
     entries: Vec<Entry>,
+    scratch_left: Vec<PathBuf>,
 }
 
 impl Purged {
@@ -47,6 +48,13 @@ impl Purged {
     /// or if `--resume` wrote the rest of a list that stopped.
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// The scratch files in `tmp/` that could not be removed when the purge took the lock
+    /// (ADR-011), sorted; empty if none stayed. Such a file may hold the secret after a failed
+    /// write, so the purge names it instead of leaving it unseen (ADR-014).
+    pub fn scratch_left(&self) -> &[PathBuf] {
+        &self.scratch_left
     }
 }
 
@@ -539,6 +547,7 @@ impl Repository {
         pending: impl Fn(RefError) -> ApplyPurgeError,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
         let lock = self.refs_store().lock_purge().map_err(pending)?;
+        let left = scratch_left(&self.metadata_dir());
         let (plan, planner) = self.plan_blob(blob).map_err(ApplyPurgeError::Plan)?;
         let start = |source| ApplyPurgeError::Start(source);
         let last = self
@@ -585,6 +594,7 @@ impl Repository {
                 snapshot: None,
                 plan: journal.plan,
                 entries,
+                scratch_left: left,
             }))
     }
 
@@ -596,12 +606,14 @@ impl Repository {
         stop: Option<Stop>,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
         let (journal, lock) = self.take_over(actor, authorizer)?;
+        let left = scratch_left(&self.metadata_dir());
         Ok(self
             .carry_out(&journal, actor, lock, stop)?
             .map(|entries| Purged {
                 snapshot: None,
                 plan: journal.plan,
                 entries,
+                scratch_left: left,
             }))
     }
 
@@ -1077,6 +1089,37 @@ mod tests {
         assert_eq!(tip.message(), "third");
         // The directory is not touched: the file stays, untracked.
         assert!(dir.path().join("config").join("key").exists());
+    }
+
+    #[test]
+    fn a_purge_removes_the_scratch_that_a_failed_write_left_in_tmp() {
+        // A write that failed can leave the secret in `tmp/` (ADR-014). The purge holds the lock,
+        // so the file is nobody's, and it is removed with the rest of the scratch (ADR-011).
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let scratch = dir.path().join(".stemma").join("tmp").join("1-0-stale");
+        fs::write(&scratch, b"the secret").unwrap();
+        let purged = apply(&repository);
+        assert!(!scratch.exists());
+        assert_eq!(purged.scratch_left(), &[] as &[std::path::PathBuf]);
+    }
+
+    #[test]
+    fn a_resume_removes_the_scratch_and_names_none_when_all_is_gone() {
+        // The resume takes the lock over and removes the scratch, as the start of a purge does. A
+        // directory in `tmp/` is no scratch of a writer: it stays and is not named.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Entry);
+        let tmp = dir.path().join(".stemma").join("tmp");
+        fs::write(tmp.join("1-0-stale"), b"the secret").unwrap();
+        fs::create_dir(tmp.join("kept")).unwrap();
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_eq!(purged.scratch_left(), &[] as &[std::path::PathBuf]);
+        assert!(!tmp.join("1-0-stale").exists());
+        assert!(tmp.join("kept").is_dir());
     }
 
     #[test]

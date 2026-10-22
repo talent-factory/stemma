@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::object::{
     hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
-    TreeParseError, PREFIX,
+    TreeParseError, METADATA_DIR, PREFIX,
 };
 
 /// Why a stored object is rejected.
@@ -864,7 +864,7 @@ impl Drop for TempFile {
     fn drop(&mut self) {
         if self.armed {
             // Best effort: a file that stays behind is harmless, because temporary names are
-            // never reused.
+            // never reused, and the next writer that takes the lock removes it (ADR-011).
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -906,6 +906,107 @@ pub(crate) fn create_temp(
             "every temporary name was taken",
         ),
     })
+}
+
+/// Removes the scratch that writers left behind (ADR-011): every name in `<root>/tmp/` that is not
+/// a directory, and, if `root` is named [`METADATA_DIR`], every directory next to it whose name is
+/// exactly one that `init` gives its temporary directory (ADR-009, [`is_init_staging_name`]). The
+/// caller holds the lock of the references, and every writer of `tmp/` in this crate holds that
+/// lock while it writes, so no name there belongs to a write in progress. A caller of the library
+/// that stores objects through `Repository::objects()` without the lock is not protected. An
+/// `init` that still builds its directory next to an existing `.stemma` fails, at the latest at
+/// its rename.
+///
+/// It is best effort: a name that cannot be removed stays, and the next writer tries again, as a
+/// cleanup must not stop a change; [`scratch_left`] lists what stayed. An entry is never followed:
+/// a symbolic link in `tmp/` is removed as a name, one next to `.stemma` stays, and a directory in
+/// `tmp/`, which no writer makes, stays. A directory of the working copy whose name only starts
+/// like the one of `init` is content and stays.
+pub(crate) fn remove_scratch(root: &Path) {
+    if let Ok(entries) = fs::read_dir(root.join("tmp")) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| !kind.is_dir()) {
+                remove_scratch_file(&entry.path());
+            }
+        }
+    }
+    if root.file_name() != Some(METADATA_DIR.as_ref()) {
+        return;
+    }
+    let Some(Ok(entries)) = root.parent().map(fs::read_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let named = entry.file_name().to_str().is_some_and(is_init_staging_name);
+        if named && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Removes one scratch file, best effort. An object is made read-only before its rename, and
+/// Windows may refuse to remove a read-only file, so the flag is cleared there first, as the purge
+/// does for an object. On Unix the permission of the directory decides.
+fn remove_scratch_file(path: &Path) {
+    if cfg!(windows) {
+        if let Ok(metadata) = fs::symlink_metadata(path) {
+            if metadata.is_file() && metadata.permissions().readonly() {
+                let mut permissions = metadata.permissions();
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "Windows has no other bits, and the file is removed next"
+                )]
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(path, permissions);
+            }
+        }
+    }
+    let _ = fs::remove_file(path);
+}
+
+/// The names in `<root>/tmp/` that are not directories, sorted: what [`remove_scratch`] could not
+/// remove when it is called right after it under the same lock. A missing `tmp/` holds none, and
+/// one that cannot be read is reported as itself, so the caller does not take it for empty.
+pub(crate) fn scratch_left(root: &Path) -> Vec<PathBuf> {
+    let tmp = root.join("tmp");
+    let entries = match fs::read_dir(&tmp) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => return vec![tmp],
+    };
+    let mut left: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| !kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    left.sort();
+    left
+}
+
+/// The prefix of the temporary directory that `init` builds next to its final place (ADR-009).
+pub(crate) const INIT_STAGING_PREFIX: &str = ".stemma-init-";
+
+/// Whether `name` is exactly a name that `init` gives its temporary directory: the prefix
+/// [`INIT_STAGING_PREFIX`] and a name of [`unique_temp_name`], which is a decimal process ID, a
+/// decimal counter, and 16 lowercase hexadecimal digits, separated by `-`. A name of the working
+/// copy such as `.stemma-init-notes` is not one.
+pub(crate) fn is_init_staging_name(name: &str) -> bool {
+    let decimal = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let Some(rest) = name.strip_prefix(INIT_STAGING_PREFIX) else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(pid), Some(counter), Some(random), None) => {
+            decimal(pid)
+                && decimal(counter)
+                && random.len() == 16
+                && random
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        }
+        _ => false,
+    }
 }
 
 /// Creates `dir` and every missing directory above it, and flushes the new directory entries.
@@ -1003,6 +1104,64 @@ mod tests {
     }
 
     // Contract
+
+    #[test]
+    fn the_scratch_that_stays_is_listed_sorted_without_directories() {
+        let dir = TempDir::new();
+        assert!(scratch_left(dir.path()).is_empty(), "no `tmp/` holds none");
+        let tmp = dir.path().join("tmp");
+        fs::create_dir(&tmp).unwrap();
+        fs::write(tmp.join("b"), b"").unwrap();
+        fs::write(tmp.join("a"), b"").unwrap();
+        fs::create_dir(tmp.join("directory")).unwrap();
+        assert_eq!(scratch_left(dir.path()), [tmp.join("a"), tmp.join("b")]);
+        remove_scratch(dir.path());
+        assert!(scratch_left(dir.path()).is_empty());
+        assert!(tmp.join("directory").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_directory_that_cannot_be_read_is_named_and_not_taken_for_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let tmp = dir.path().join("tmp");
+        fs::create_dir(&tmp).unwrap();
+        fs::write(tmp.join("a"), b"").unwrap();
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read_dir(&tmp).is_ok();
+        let left = scratch_left(dir.path());
+        remove_scratch(dir.path());
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
+            return;
+        }
+        assert_eq!(left, std::slice::from_ref(&tmp));
+        assert!(tmp.join("a").exists(), "what cannot be reached stays");
+    }
+
+    #[test]
+    fn only_the_names_that_init_gives_its_directory_are_its_names() {
+        let made = format!("{INIT_STAGING_PREFIX}{}", unique_temp_name());
+        assert!(is_init_staging_name(&made), "{made}");
+        assert!(is_init_staging_name(".stemma-init-1-0-0123456789abcdef"));
+        for name in [
+            ".stemma-init-",
+            ".stemma-init-notes",
+            ".stemma-init-1-0",
+            ".stemma-init-1-0-stale",
+            ".stemma-init-1-0-0123456789ABCDEF",
+            ".stemma-init-1-0-0123456789abcde",
+            ".stemma-init-1-0-0123456789abcdef0",
+            ".stemma-init-1-0-0123456789abcdef-x",
+            ".stemma-init--0-0123456789abcdef",
+            ".stemma-init-a-0-0123456789abcdef",
+            "stemma-init-1-0-0123456789abcdef",
+        ] {
+            assert!(!is_init_staging_name(name), "{name}");
+        }
+    }
 
     #[test]
     fn the_trait_is_object_safe_and_the_store_can_be_shared() {

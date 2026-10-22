@@ -240,6 +240,24 @@ vergeben ist, und ein Eintrag ist vom ersten Moment an vollständig. Die Schreib
 gilt für jeden anderen Schreiber. Die temporäre Datei wird danach auf Verdacht entfernt.
 Gelingt das nicht, ist der Eintrag trotzdem vollständig, und der Zug geht weiter:
 \type{tmp/} enthält Wegwerfdaten, und ein Aufräumen darf keinen Zug verhindern.
+Aufgeräumt wird beim Nehmen der Sperre (STEMMA-31).
+Jeder, der in \type{tmp/} schreibt, hält dabei die Sperre der Referenzen:
+die Befehle, die schreiben, die Züge des \type{Repository} und der Purge.
+Wer die Sperre nimmt, ist also der einzige Schreiber, und jede Datei in \type{tmp/}
+stammt aus einem Schreiben, das scheiterte oder abgebrochen wurde.
+Gleich nach dem Nehmen entfernt er darum jede Datei in \type{tmp/},
+ohne einem Verweis zu folgen,
+und jedes Verzeichnis neben \type{.stemma}, das ein abgebrochenes \type{init} zurückliess.
+Ein solches Verzeichnis erkennt er an seinem ganzen Namen: \type{.stemma-init-},
+die Prozessnummer, ein Zähler und 16 kleine Hexadezimalziffern.
+Ein Verzeichnis des Projekts wie \type{.stemma-init-notes} gehört zum Inhalt und bleibt.
+Besteht das Journal eines Purge, räumt ein abgewiesener Befehl nichts auf;
+das übernehmen \type{purge --resume} und \type{--abort}.
+Auch das geschieht auf Verdacht: Was sich nicht entfernen lässt, bleibt,
+und der nächste Schreiber versucht es wieder.
+Entscheidend ist die Sperre und nicht das Alter einer Datei,
+so dass ein langsamer Schreiber wie das erste \type{track} vieler Dateien
+nie unterbrochen wird, und es gibt keinen Befehl, an den man denken müsste.
 Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag, nachdem er das
 Verzeichnis ein zweites Mal gelesen hat, denn ein Verzeichnis ist während eines Schreibens
 kein Schnappschuss. Namen mit einem Punkt am Anfang überspringt er, jeden anderen

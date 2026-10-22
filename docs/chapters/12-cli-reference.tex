@@ -99,6 +99,16 @@ sind ohnehin nicht vorgesehen. Eine Sperre bleibt nur nach \type{kill -9} oder e
 liegen (oder wenn das Programm Ctrl-C nicht abfangen konnte); dann nennt die Meldung die Datei,
 die zu entfernen ist.
 
+{\bf Aufräumen.} Wer die Sperre nimmt, entfernt gleich danach, was ein gescheitertes oder
+abgebrochenes Schreiben zurückliess: jede Datei in \type{.stemma/tmp/} und das Verzeichnis
+eines abgebrochenen \type{init} neben \type{.stemma}. Dieses wird nur entfernt, wenn sein Name
+genau so gebaut ist, wie \type{init} ihn vergibt (\type{.stemma-init-}, Prozessnummer, Zähler,
+16 kleine Hexadezimalziffern); ein Verzeichnis wie \type{.stemma-init-notes} bleibt.
+Ein Befehl, den das Journal eines Purge abweist, räumt nicht auf.
+Da jeder Schreiber die Sperre hält, gehört keine dieser Dateien einem laufenden Befehl.
+Was sich nicht entfernen lässt, bleibt, ohne dass der Befehl scheitert;
+der nächste versucht es wieder.
+
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
 lehnen \type{track}, \type{commit}, \type{status} und \type{op restore} ab, wenn sie die
 Sperre nehmen, also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
@@ -973,8 +983,12 @@ Ein Befehl, der vor dem Purge begann, hält die Sperre schon, bevor er sein erst
 schreibt; der Purge bricht dann mit Exit-Code 1 ab, bevor er das Format hebt oder das Journal
 schreibt, und lässt sich danach wiederholen. So kann kein Befehl ein Objekt nennen, das der
 Purge gelöscht hat (STEMMA-49).
-Was ein Purge nicht garantiert (Kopien im Dateisystem, Dateien in \type{tmp/},
-Nachrichten und Pfadnamen), steht in ADR-014.
+Liegengebliebene Dateien in \type{.stemma/tmp/} entfernt der Purge, sobald er die Sperre hält.
+Lässt sich eine nicht entfernen, nennt \type{purge --apply} oder \type{--resume} sie in einer
+Warnung auf der Standardfehlerausgabe, denn sie kann das Geheimnis enthalten;
+der Purge selbst gelingt trotzdem (Exit-Code 0), und die Datei ist von Hand zu entfernen.
+Was ein Purge nicht garantiert (Kopien im Dateisystem, Nachrichten und Pfadnamen),
+steht in ADR-014.
 
 {\bf Beispiele.}
 
