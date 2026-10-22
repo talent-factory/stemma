@@ -851,13 +851,17 @@ Exit-Code 3 gilt in diesen Fällen:
 \type{--resume} beendet den Purge, \type{--abort} nimmt ihn zurück, solange sein Eintrag fehlt.
 Ist der Eintrag schon geschrieben, nennt die Meldung ihn und nur noch \type{--resume}.
 Steht ein Zeiger auf keinem seiner beiden Werte, nennt die Meldung ihn.
+Fehlt nach dem Eintrag ein neuer Commit, kann \type{--resume} ihn nicht neu machen;
+er muss zuerst wiederhergestellt werden.
 \item Der Purge oder das Zurücknehmen ist gemacht und das Journal entfernt, aber das
 Verzeichnis liess sich nicht sichern. Nach einem Absturz kann das Journal wiederkommen;
 dann beendet es derselbe Befehl.
 \item \type{--apply} findet das Journal eines anderen Purge, oder \type{--abort} findet den
 Eintrag \type{purge} schon geschrieben (\type{the purge cannot be undone}); dann bleibt nur
 \type{--resume}.
-\item Das Journal lässt sich nicht lesen. Es bleibt, bis jemand es von Hand prüft.
+\item Das Journal lässt sich nicht lesen; die Meldung beginnt mit
+\type{the journal of a purge cannot be read}. Es bleibt, und weder \type{--resume} noch
+\type{--abort} kommt weiter, bis jemand es von Hand repariert.
 \item Der Purge, das Fortsetzen oder das Zurücknehmen ist gemacht, aber die Ausgabe liess sich
 nicht schreiben. Eine geschlossene Pipe ist hier kein Fehler: Das Log nennt den Eintrag eines
 Purge, und ein Zurücknehmen lässt das Repository wie vor dem Purge.

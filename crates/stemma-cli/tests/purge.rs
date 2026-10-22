@@ -338,6 +338,11 @@ fn a_purge_that_stopped_is_finished_by_resume() {
         "{}",
         stopped.stderr
     );
+    assert!(
+        stopped.stderr.contains("stemma purge --abort"),
+        "no entry is written, so it can be undone: {}",
+        stopped.stderr
+    );
     assert!(dir.path().join(".stemma/purge-pending").exists());
     assert!(
         object_path(dir.path(), &secret()).exists(),

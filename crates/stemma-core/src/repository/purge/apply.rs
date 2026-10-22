@@ -165,7 +165,8 @@ impl fmt::Display for PurgeFailure {
             ),
             Self::Missing(commit) => write!(
                 f,
-                "the new commit {commit} is missing, although the entry of the purge is written"
+                "the new commit {commit} is missing, although the entry of the purge is written; \
+                 a resume cannot make it again, so it has to be restored first"
             ),
         }
     }
@@ -214,6 +215,9 @@ pub enum ApplyPurgeError {
         /// The journal.
         path: PathBuf,
     },
+    /// `--resume` or `--abort` found a journal that cannot be read. It stays, and keeps every
+    /// writer out; neither mode can go on before it is repaired by hand.
+    Unreadable(Box<JournalError>),
     /// `--resume` or `--abort` found no journal: no purge is pending.
     NotPending {
         /// The path of the journal.
@@ -252,7 +256,10 @@ impl ApplyPurgeError {
     /// has to come before any other command that writes.
     pub fn pending(&self) -> bool {
         match self {
-            Self::Pending { .. } | Self::Stopped { .. } | Self::PastNoReturn { .. } => true,
+            Self::Pending { .. }
+            | Self::Unreadable(_)
+            | Self::Stopped { .. }
+            | Self::PastNoReturn { .. } => true,
             Self::AfterSnapshot { source, .. } => source.pending(),
             Self::Plan(_)
             | Self::Snapshot(_)
@@ -265,7 +272,11 @@ impl ApplyPurgeError {
     /// Whether the call made something that stays although it failed: a journal, or a purge or
     /// an abort that is not known to be flushed. A command ends with code 3 then.
     pub fn made(&self) -> bool {
-        self.pending() || matches!(self, Self::NotDurable { .. })
+        match self {
+            Self::AfterSnapshot { source, .. } => source.made(),
+            Self::NotDurable { .. } => true,
+            other => other.pending(),
+        }
     }
 }
 
@@ -282,6 +293,12 @@ impl fmt::Display for ApplyPurgeError {
                 write!(f, "could not start the purge, nothing was purged: {source}")
             }
             Self::Pending { path } => RefError::PurgePending { path: path.clone() }.fmt(f),
+            Self::Unreadable(source) => write!(
+                f,
+                "the journal of a purge cannot be read: {source}; neither `stemma purge --resume` \
+                 nor `stemma purge --abort` can go on before it is repaired, and no other command \
+                 writes while it exists"
+            ),
             Self::NotPending { path } => write!(
                 f,
                 "no purge is pending: there is no journal `{}`",
@@ -333,6 +350,24 @@ impl fmt::Display for ApplyPurgeError {
     }
 }
 
+/// The error of a journal that could not be removed at the end of a purge (`entries` are its
+/// `purge` entries) or of an abort (none): [`ApplyPurgeError::NotDurable`] if it is gone but not
+/// known to be flushed, as the work is done, and a stop at [`PurgeStep::Finish`] if it stays.
+fn not_removed(entries: &[u64], error: JournalError) -> ApplyPurgeError {
+    if error.made() {
+        ApplyPurgeError::NotDurable {
+            entries: entries.to_vec(),
+            source: Box::new(error),
+        }
+    } else {
+        ApplyPurgeError::Stopped {
+            step: PurgeStep::Finish,
+            entries: entries.to_vec(),
+            source: Box::new(PurgeFailure::Journal(error)),
+        }
+    }
+}
+
 /// The numbers of entries, for a message: `7` or `7, 8`.
 fn numbers(entries: &[u64]) -> String {
     entries
@@ -351,6 +386,7 @@ impl Error for ApplyPurgeError {
             Self::Stopped { source, .. } => source.source(),
             Self::AfterSnapshot { source, .. } => source.source(),
             Self::NotDurable { source, .. } => source.source(),
+            Self::Unreadable(source) => source.source(),
             Self::Pending { .. } | Self::NotPending { .. } | Self::PastNoReturn { .. } => None,
         }
     }
@@ -582,11 +618,7 @@ impl Repository {
             Ok(None) => Err(ApplyPurgeError::NotPending {
                 path: journal::path(&dir),
             }),
-            Err(error) => Err(ApplyPurgeError::Stopped {
-                step: PurgeStep::Journal,
-                entries: Vec::new(),
-                source: Box::new(PurgeFailure::Journal(error)),
-            }),
+            Err(error) => Err(ApplyPurgeError::Unreadable(Box::new(error))),
         };
         let journal = read()?;
         self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
@@ -694,7 +726,22 @@ impl Repository {
                         OpLogError::NotFlushed { entry, .. } => vec![entry.number()],
                         OpLogError::PurgeIncomplete { written, .. }
                         | OpLogError::PurgeNotFlushed { written, .. } => numbers(written),
-                        _ => Vec::new(),
+                        // Every other error leaves no entry behind (see `FsOpLog::append`).
+                        OpLogError::Io { .. }
+                        | OpLogError::Corrupt { .. }
+                        | OpLogError::WrongNumber { .. }
+                        | OpLogError::Gap { .. }
+                        | OpLogError::TipAhead { .. }
+                        | OpLogError::BadTip { .. }
+                        | OpLogError::UnexpectedFile { .. }
+                        | OpLogError::Missing { .. }
+                        | OpLogError::Full
+                        | OpLogError::Contended { .. }
+                        | OpLogError::EntryTooLarge { .. }
+                        | OpLogError::Entry(_)
+                        | OpLogError::UnlistedStub { .. }
+                        | OpLogError::NotListed { .. }
+                        | OpLogError::NotAChange { .. } => Vec::new(),
                     };
                     EntryStep::Failed(made, Box::new(PurgeFailure::Log(error)))
                 })?;
@@ -781,23 +828,9 @@ impl Repository {
     }
 
     /// Removes the journal: the last step of a purge (`entries` are its `purge` entries) and of
-    /// an abort (no entries). A journal that is gone but not known to be flushed is
-    /// [`ApplyPurgeError::NotDurable`], as the work is done.
+    /// an abort (no entries). The error is that of [`not_removed`].
     fn remove_journal(&self, entries: &[u64]) -> Result<(), ApplyPurgeError> {
-        journal::remove(&self.metadata_dir()).map_err(|error| {
-            if error.made() {
-                ApplyPurgeError::NotDurable {
-                    entries: entries.to_vec(),
-                    source: Box::new(error),
-                }
-            } else {
-                ApplyPurgeError::Stopped {
-                    step: PurgeStep::Finish,
-                    entries: entries.to_vec(),
-                    source: Box::new(PurgeFailure::Journal(error)),
-                }
-            }
-        })
+        journal::remove(&self.metadata_dir()).map_err(|error| not_removed(entries, error))
     }
 
     /// Makes the new trees and commits again from the old ones, checks that they are the ones
@@ -848,6 +881,7 @@ fn stopped<E>(
 mod tests {
     use std::collections::BTreeSet;
     use std::fs;
+    use std::io;
 
     use super::*;
     use crate::object::{Blob, Kind, Tree};
@@ -1363,17 +1397,17 @@ mod tests {
         fs::write(journal::path(&repository.metadata_dir()), "junk").unwrap();
         let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
         assert!(
-            matches!(
-                &error,
-                ApplyPurgeError::Stopped {
-                    step: PurgeStep::Journal,
-                    source,
-                    ..
-                } if matches!(**source, PurgeFailure::Journal(JournalError::Malformed { .. }))
-            ),
+            matches!(&error, ApplyPurgeError::Unreadable(source)
+                if matches!(**source, JournalError::Malformed { .. })),
             "{error:?}"
         );
-        assert!(error.pending());
+        assert!(error.pending() && error.made());
+        assert!(
+            !error.to_string().contains("finishes it"),
+            "neither mode can go on: {error}"
+        );
+        let error = repository.abort_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(matches!(error, ApplyPurgeError::Unreadable(_)), "{error:?}");
     }
 
     #[test]
@@ -1551,6 +1585,70 @@ mod tests {
             snapshot.number()
         )));
         assert!(!journal_exists(&dir));
+
+        // What stays after the snapshot decides the code: a journal, or a purge not flushed.
+        let after = |source: ApplyPurgeError| ApplyPurgeError::AfterSnapshot {
+            snapshot: snapshot.clone(),
+            source: Box::new(source),
+        };
+        let stopped = after(ApplyPurgeError::Stopped {
+            step: PurgeStep::Objects,
+            entries: Vec::new(),
+            source: Box::new(PurgeFailure::Refs(RefError::Locked {
+                path: dir.path().join(".stemma/refs.lock"),
+            })),
+        });
+        assert!(stopped.pending() && stopped.made());
+        let not_durable = after(not_removed(&[7], not_flushed(&dir)));
+        assert!(!not_durable.pending() && not_durable.made());
+    }
+
+    fn not_flushed(dir: &TempDir) -> JournalError {
+        JournalError::NotFlushed {
+            path: dir.path().join(".stemma"),
+            source: io::Error::other("no flush"),
+        }
+    }
+
+    #[test]
+    fn a_journal_that_is_gone_but_not_flushed_names_the_mode_that_finishes_it() {
+        let dir = TempDir::new();
+        let purged = not_removed(&[7], not_flushed(&dir));
+        assert!(
+            matches!(purged, ApplyPurgeError::NotDurable { .. }),
+            "{purged:?}"
+        );
+        let message = purged.to_string();
+        assert!(message.contains("entry 7"), "{message}");
+        assert!(
+            message.contains("--resume") && !message.contains("--abort"),
+            "{message}"
+        );
+        let aborted = not_removed(&[], not_flushed(&dir));
+        let message = aborted.to_string();
+        assert!(
+            message.contains("--abort") && !message.contains("--resume"),
+            "{message}"
+        );
+
+        // A journal that could not be removed stays: the purge stopped at its end.
+        let stays = not_removed(
+            &[7],
+            JournalError::Io {
+                operation: "remove the journal",
+                path: dir.path().join(".stemma/purge-pending"),
+                source: io::Error::other("denied"),
+            },
+        );
+        assert!(
+            matches!(
+                &stays,
+                ApplyPurgeError::Stopped { step: PurgeStep::Finish, entries, .. }
+                    if entries == &[7]
+            ),
+            "{stays:?}"
+        );
+        assert!(stays.pending());
     }
 
     #[test]
