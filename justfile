@@ -119,6 +119,21 @@ doc-lines:
 [group('Quality')]
 ci: format-check lint doc-check doc-lines test
 
+# Fuzz one strict reader for SECONDS seconds: tree, commit, actor, index, entry, or journal.
+# Needs nightly and cargo-fuzz (rustup toolchain install nightly; cargo install cargo-fuzz
+# --locked), so it is not part of `ci`. New inputs go to fuzz/corpus/TARGET, a finding to
+# fuzz/artifacts/TARGET; fuzz/seeds/TARGET holds the valid encodings that the fuzzer starts from.
+[group('Quality')]
+fuzz target seconds="300":
+    mkdir -p fuzz/corpus/{{target}}
+    cargo +nightly fuzz run {{target}} fuzz/corpus/{{target}} fuzz/seeds/{{target}} -- \
+        -max_total_time={{seconds}}
+
+# Fuzz every strict reader in turn, SECONDS seconds each (see `fuzz`).
+[group('Quality')]
+fuzz-all seconds="60":
+    for target in tree commit actor index entry journal; do just fuzz "$target" {{seconds}}; done
+
 # Test coverage summary (needs `cargo install cargo-llvm-cov --locked`).
 [group('Quality')]
 coverage:

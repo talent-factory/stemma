@@ -7,3 +7,8 @@ edition.workspace = true
 blake3 = "1"
 getrandom = { version = "0.4.3", features = ["std"] }
 unicode-general-category = "=1.1.0"
+
+# `cargo fuzz` builds with `--cfg fuzzing`, which turns on the checks of the fuzz targets
+# (`src/fuzz.rs`, `fuzz/`).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

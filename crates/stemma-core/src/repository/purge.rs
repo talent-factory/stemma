@@ -12,6 +12,8 @@
 
 mod apply;
 mod journal;
+#[cfg(fuzzing)]
+pub(crate) use journal::fuzz as fuzz_journal;
 
 pub use apply::{Aborted, ApplyPurgeError, PurgeFailure, PurgeStep, Purged};
 pub use journal::JournalError;

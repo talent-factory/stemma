@@ -1,0 +1,9 @@
+stemma-oplog 1
+number 999999999998
+time 9223372036854775807
+actor agent !Z model=V>,f session=< sponsor=<[o<@
+operation checkout
+head commit:b3:2fc19f2e83582ab55c7ee3b1a1616f3fb2fbc100485b34f7a2249c503aadedba commit:b3:5cbf73094ecf8fe783f6bfd1b97202a61b9f5324a24b6d0d9d6b1841bff73020
+branch a.b b3:e66a443d93a92f9de020e179d88fc091ac79cb99cd43a60d774273b24d8fabfd b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65
+branch dev b3:6955f4de30c337962645ae9e920fc9b8a86bb5b19a90dfb08429751ecc1cc8d2 -
+branch m/n/o b3:aacef942ed71ffa78dc22b3c6db3d3fccc06461caaa21e77162999f7758d3ce0 -

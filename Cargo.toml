@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/stemma-core", "crates/stemma-cli"]
+# The fuzz targets need nightly and are built by `cargo fuzz` alone (`just fuzz`).
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"

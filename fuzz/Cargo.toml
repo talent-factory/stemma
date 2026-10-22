@@ -1,0 +1,60 @@
+# The fuzz targets of the strict readers (STEMMA-20). Built and run by `cargo fuzz` on nightly,
+# through `just fuzz TARGET` and `just fuzz-all`; not part of the workspace or of `just ci`.
+[package]
+name = "stemma-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+stemma-core = { path = "../crates/stemma-core" }
+
+# A workspace of its own, so that the workspace of the repository does not build it.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "tree"
+path = "fuzz_targets/tree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commit"
+path = "fuzz_targets/commit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "actor"
+path = "fuzz_targets/actor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "index"
+path = "fuzz_targets/index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "entry"
+path = "fuzz_targets/entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal"
+path = "fuzz_targets/journal.rs"
+test = false
+doc = false
+bench = false

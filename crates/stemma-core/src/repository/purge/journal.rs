@@ -232,6 +232,15 @@ fn ranges(numbers: &[u64]) -> Vec<(u64, u64)> {
     ranges
 }
 
+/// The check of the fuzz target `journal` (see `crate::fuzz`): an input that the reader accepts is
+/// the encoding of what it read.
+#[cfg(fuzzing)]
+pub(crate) fn fuzz(input: &[u8]) {
+    if let Some(journal) = Journal::parse(input) {
+        assert_eq!(journal.encode(), input, "a second spelling was accepted");
+    }
+}
+
 /// The path of the journal in the metadata directory.
 pub(super) fn path(dir: &Path) -> PathBuf {
     dir.join(PURGE_JOURNAL)

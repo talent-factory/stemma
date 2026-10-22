@@ -27,6 +27,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod checkout;
 mod commit;
 mod purge;
+#[cfg(fuzzing)]
+pub(crate) use purge::fuzz_journal;
 mod restore;
 mod snapshot;
 mod status;
