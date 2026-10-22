@@ -92,8 +92,8 @@
 //! (STEMMA-41, ADR-011).
 //!
 //! `tmp/` holds scratch files. A temporary name is removed after the entry is published, on a best
-//! effort basis: a name that stays is harmless and costs only space, and no operation of this slice
-//! empties `tmp/` (ADR-011).
+//! effort basis: a name that stays is harmless and costs only space until the next writer that
+//! takes the lock of the references removes it (ADR-011, STEMMA-31).
 //!
 //! An entry is at most 64 KiB. The writer refuses a larger one before it writes anything, so the
 //! reader never meets a file that the writer made and cannot read; the actor and the names in it

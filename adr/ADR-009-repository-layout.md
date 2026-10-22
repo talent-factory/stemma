@@ -64,7 +64,13 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
   migration of existing repositories. An older program refuses a newer repository.
 - A process that is killed during `init` can leave a `.stemma-init-…` directory. A later `add`
   must not treat it as content of the working copy (ADR-005 reserves `.stemma` and its aliases;
-  this name is not one of them).
+  this name is not one of them). The next writer that takes the lock of the references removes
+  it (ADR-011, STEMMA-31): once `.stemma` exists, an `init` that still builds such a directory
+  fails, at the latest at its rename (earlier, with the error of the step that found its
+  directory gone, if a writer removes it under it; `init` then reports no `Leftover`, as nothing
+  is left). Only a directory whose name is exactly `.stemma-init-<pid>-<n>-<16 lowercase
+  hexadecimal digits>` is removed; a link, a file, and a directory of the working copy whose name
+  only starts with the prefix, such as `.stemma-init-notes`, stay.
 - `Repository` hands out the object store, but the references only as a view for reading
   (`Repository::refs()`, ADR-011). A pointer moves through `Repository::update_branch` and
   `set_head`, which use the object store of their own repository, so the gap that the context
@@ -78,7 +84,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
       repository, and `update_branch` and `set_head` use it themselves.
 - [ ] Finding the repository from a subdirectory (searching upwards for `.stemma`), which `add`,
       `commit`, and `status` need.
-- [ ] Removing a stale `.stemma-init-*` directory, by `init` or by a repair command.
+- [x] Removing a stale `.stemma-init-*` directory: the next writer that takes the lock removes
+      it, if its name is exactly one that `init` makes (STEMMA-31).
 - [ ] A configuration file, and the user-level default branch it would allow.
 - [ ] On Unix, an empty `.stemma` that another process creates between the check in `init` and
       the rename is replaced, because `rename` replaces an empty directory. Closing it needs
