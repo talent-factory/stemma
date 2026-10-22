@@ -544,12 +544,17 @@ ist ein Eintrag nicht in kanonischer Form, passt die Nummer
 im Eintrag nicht zum Dateinamen, steht in \type{oplog/} eine fremde Datei,
 ist die Datei \type{oplog-tip} nicht kanonisch oder nennt sie einen Eintrag, den das
 Verzeichnis nicht hat, oder ist das Log ganz leer, bricht er ab, gibt nichts aus und
-endet mit Exit-Code 1. Ein leeres Log deutet auf verlorene Einträge oder eine Veränderung
-von aussen, denn \type{init} schreibt immer den Eintrag 1; diese Meldung kommt nur,
+endet mit Exit-Code 1.
+Dasselbe gilt, wenn die Hash-Kette in den gezeigten Einträgen oder an ihrem Anschluss an den
+Eintrag davor bricht (\type{entry 3 does not name the hash of the entry before it}), wenn ein
+Eintrag aus der Zeit vor der Kette hinter ihr steht, und wenn die Datei \type{oplog-tip}
+für ihren Eintrag einen anderen Hash nennt, als er hat.
+Ein leeres Log deutet auf verlorene Einträge oder eine Veränderung von aussen,
+denn \type{init} schreibt immer den Eintrag 1; diese Meldung kommt nur,
 wenn auch die Datei \type{oplog-tip} fehlt, sonst meldet der Befehl den Verlust mit
 der Nummer des fehlenden Eintrags. Mit Exit-Code 1 endet auch ein Verzeichnis,
 das kein Repository ist, und eine Datei \type{format}, die fehlt, nicht kanonisch ist
-oder eine andere Version als 2 oder 3 nennt. Lassen sich HEAD oder die Branches der gezeigten
+oder eine andere Version als 2 bis 4 nennt. Lassen sich HEAD oder die Branches der gezeigten
 Einträge nicht lesen, bricht der Befehl nicht ab: Er warnt auf der Fehlerausgabe
 (\type{stemma: warning:}), zeigt das Log und lässt unbekannt, was nur die Referenzen
 entscheiden würden (Exit-Code 0). Exit-Code 1 gilt auch, wenn die Ausgabe nicht
@@ -561,9 +566,12 @@ Ein Name mit Steuerzeichen, auch ein Branch-Name in der Textform, erscheint
 in Meldungen und in der Textform maskiert (wie bei \type{escape_debug} von Rust);
 die JSON-Form maskiert nach den Regeln von JSON.
 
-{\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge. Eine Lücke findet er auch dann,
-wenn der fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten
-älteren Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug. Hat das Log nur
+{\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge und den Eintrag davor, wenn er
+sich lesen lässt; lässt er sich nicht lesen, warnt der Befehl auf der Fehlerausgabe, dass der
+Anschluss des ältesten gezeigten Eintrags nicht geprüft ist. Eine Lücke findet er auch dann,
+wenn der fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten oder
+geänderten älteren Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug, das ist
+\type{op verify}. Hat das Log nur
 seine neuesten Einträge verloren, bleibt es lückenlos; die Datei \type{oplog-tip}
 mit der Nummer des letzten Eintrags verrät den Verlust (ADR-011), und der Befehl
 bricht mit Exit-Code 1 ab. Ein Eintrag wird geschrieben, bevor sich der Zeiger
@@ -593,6 +601,78 @@ dann nicht, dass die Liste vollständig ausgegeben wurde.
 stemma op log
 stemma op log -n 5 -C projekt
 stemma op log --json | head -1
+\stoptyping
+
+\section{op verify}
+
+Prüft die Hash-Kette des ganzen Operation Logs (ADR-011) und gibt einen Anker aus: die Nummer
+und den Hash des letzten Eintrags, sofern dieser in der Kette steht.
+
+\starttyping
+stemma op verify [-C VERZEICHNIS] [--anchor NUMMER:HASH]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
+also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{--anchor} NUMMER:HASH:} Ein Anker, den ein früheres \type{op verify}
+ausgab und den jemand ausserhalb des Repositories aufbewahrt hat. Der Eintrag mit der Nummer
+muss noch denselben Hash haben. Ein Anker in anderer Form, etwa mit einer führenden Null, mit
+der Nummer 0 oder mit Grossbuchstaben im Hash, ist ein Aufruffehler (Exit-Code 2).
+\stopitemize
+
+Der Befehl liest nur und braucht keinen Akteur. Er liest jeden Eintrag, prüft die Lücken,
+die Stubs und die Datei \type{oplog-tip} wie \type{op log} und dazu die ganze Kette: Jeder
+Eintrag muss den Hash seines Vorgängers nennen. Ein Stub hat den Hash des Eintrags, den er
+ersetzt, deshalb hält die Kette über einen Purge hinweg. Die Datei \type{oplog-tip} prüft
+er strenger als die anderen Befehle: Steht der letzte Eintrag in der Kette, muss sie ihn oder
+den Eintrag davor nennen.
+
+{\bf Ausgabe.} Die erste Zeile nennt die Zahl der Einträge und ob die Kette hält. Beginnt
+die Kette erst nach Einträgen aus der Zeit vor ihr, nennt die Zeile diese Einträge, denn die
+Kette deckt sie nicht ab. Mit \type{--anchor} folgt eine Zeile, die den Anker bestätigt.
+Die letzte Zeile ist der Anker des letzten Eintrags, \type{anchor <nummer>:<hash>}; was nach
+\type{anchor} steht, nimmt \type{--anchor} später wieder an. Steht noch kein Eintrag in der
+Kette, ein Log aus der Zeit vor ihr, sagt das die erste Zeile, und eine Zeile
+\type{anchor} fehlt; der nächste Eintrag beginnt die Kette.
+
+\starttyping
+Checked 12 entries of the operation log: the hash chain holds.
+Entry 9 still has the hash of the anchor.
+anchor 12:b3:5c0e...7a41
+\stoptyping
+
+(Im Beispiel ist der Hash gekürzt; der Befehl gibt ihn vollständig aus.)
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn die Kette bricht: Die Meldung nennt den
+ersten Eintrag, der nicht den Hash seines Vorgängers nennt
+(\type{entry 3 does not name the hash of the entry before it}). Ein geänderter, gelöschter,
+eingefügter oder vertauschter Eintrag bricht die Kette an dieser Stelle. Ebenso endet er bei
+einem Eintrag aus der Zeit vor der Kette, der hinter ihr steht, bei einer Datei
+\type{oplog-tip}, die für ihren Eintrag einen anderen Hash nennt, und bei jedem Fehler, den
+auch \type{op log} meldet. Ebenso endet er, wenn der letzte Eintrag in der Kette steht und
+die Datei \type{oplog-tip} fehlt oder einen Eintrag nennt, der mehr als einen vor dem
+letzten liegt: Dann haben die Schreiber nichts mit ihr verglichen. Die übrigen Befehle nehmen
+das hin, denn ein Abbruch direkt nach einem Eintrag oder ein fehlgeschlagenes Schreiben der
+Datei hinterlässt es; der nächste Eintrag schreibt sie neu. Eine Datei \type{oplog-tip} der
+Version 1, die einen Eintrag der Kette nennt, ist nicht kanonisch. Mit \type{--anchor} endet
+der Befehl mit Exit-Code 1, wenn der Eintrag des Ankers fehlt, aus der Zeit vor der Kette
+stammt oder einen anderen Hash hat. Die Ausgabe erscheint nur, wenn alles hält. Lässt sie
+sich nicht schreiben, ist das Exit-Code 1; eine Pipe, die der Leser früh schliesst, ist kein
+Fehler.
+
+{\bf Grenzen.} Die Kette zeigt, dass die Einträge zueinander passen, nicht wer sie schrieb.
+Wer \type{.stemma} schreiben kann, kann alle späteren Hashes und die Datei \type{oplog-tip}
+neu berechnen, und \type{op verify} ohne Anker meldet dann nichts. Nur ein Anker, der
+ausserhalb des Repositories liegt, zeigt eine solche Änderung. Die Einträge vor der Kette
+deckt sie nicht ab.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma op verify
+stemma op verify -C projekt --anchor 12:b3:5c0e...7a41
+stemma op verify | sed -n 's/^anchor //p' >> ~/stemma-anker.txt
 \stoptyping
 
 \section{op restore}
@@ -680,7 +760,8 @@ beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-01
 einem Eintrag, den ein Purge nennt, der noch nicht fertig ist; diese Fälle hebt auch
 \type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren Züge niemand mehr kennt;
 der Ausgang jedes Eintrags vor dem jüngsten Stub ist deshalb unbekannt, und er braucht
-\type{--force}. Nennt kein Purge einen Stub im Log, endet der Befehl ebenfalls mit Exit-Code 1.
+\type{--force}. Nennt kein Purge einen Stub im Log, endet der Befehl ebenfalls mit Exit-Code 1,
+und ebenso, wenn die Hash-Kette des Logs bricht (siehe \type{op verify}).
 Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt,
 eine Sperre der Referenzen (ein anderer Vorgang schreibt: später noch einmal) und eine Datei
 oder ein Verzeichnis, das nicht verfolgt wird und dort liegt, wo der Baum eine Datei braucht.
@@ -787,9 +868,10 @@ löscht; schlägt das fehl, ist es ein Fehler von Stemma, und der Befehl bricht 
 {\bf Ablauf mit \type{--apply}.} Der Purge speichert zuerst das Verzeichnis in einem
 Snapshot, damit eine Änderung mit dem Geheimnis im Plan steht. Dann nimmt er die Sperre der
 Referenzen, hält sie bis zum Ende und plant unter ihr neu; sein Plan kann also von einem
-zuvor gezeigten abweichen. Er hebt das Repository auf das Format 3, das ältere Programme
-ablehnen, und schreibt das Journal \type{.stemma/purge-pending}. Ab hier lehnt jeder andere
-Befehl ab, der schreibt (siehe die gemeinsamen Regeln). Dann schreibt der Purge die neuen
+zuvor gezeigten abweichen. Er hebt das Repository auf das Format 4, falls es tiefer steht;
+ältere Programme lehnen dieses Format ab. Dann schreibt er das Journal
+\type{.stemma/purge-pending}. Ab hier lehnt jeder andere Befehl ab, der schreibt (siehe die
+gemeinsamen Regeln). Dann schreibt der Purge die neuen
 Bäume und Commits, prüft jeden Zeiger, schreibt den Eintrag \type{purge} und bewegt die
 Zeiger. Zuletzt ersetzt er die Einträge durch Stubs, löscht die alten Commits, die alten
 Bäume und den Blob und entfernt das Journal. Der Eintrag \type{purge} ist der Punkt ohne

@@ -62,6 +62,12 @@ impl ObjectId {
     pub(crate) fn hex(&self) -> String {
         blake3::Hash::from_bytes(self.0).to_hex().to_string()
     }
+
+    /// Wraps a BLAKE3 digest. The operation log uses the form of an ID for the hashes of its chain
+    /// (ADR-011); they name entries, not objects.
+    pub(crate) fn from_digest(digest: blake3::Hash) -> Self {
+        Self(*digest.as_bytes())
+    }
 }
 
 impl fmt::Display for ObjectId {

@@ -187,8 +187,17 @@ fn object_path(dir: &Path, id: &str) -> PathBuf {
 }
 
 #[test]
-fn apply_purges_the_blob_and_moves_the_repository_to_format_3() {
+fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
     let dir = with_secret();
+    // An anchor kept before the purge: the stubs keep the hashes, so it still holds after it.
+    let before = ok(dir.path(), &["op", "verify"]);
+    let kept = before
+        .stdout
+        .lines()
+        .last()
+        .and_then(|line| line.strip_prefix("anchor "))
+        .unwrap()
+        .to_owned();
     let result = ok(
         dir.path(),
         &["purge", &secret(), "--apply", "--actor", ACTOR],
@@ -210,9 +219,18 @@ fn apply_purges_the_blob_and_moves_the_repository_to_format_3() {
     );
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 3\n"
+        "stemma-repository 4\n"
     );
     assert!(!dir.path().join(".stemma/purge-pending").exists());
+
+    // The stubs keep the hashes of their entries, so the chain of the log holds.
+    let verified = ok(dir.path(), &["op", "verify"]);
+    assert!(
+        verified.stdout.contains("the hash chain holds."),
+        "{}",
+        verified.stdout
+    );
+    ok(dir.path(), &["op", "verify", "--anchor", &kept]);
 
     // The log shows the stubs and the purge, and a restore of them is refused.
     let log = ok(dir.path(), &["op", "log"]);

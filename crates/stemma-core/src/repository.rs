@@ -5,13 +5,13 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 2" and a newline, 3 after the first purge (ADR-014)
+//! ├── format          "stemma-repository 4" and a newline; 2 or 3 before the chain (ADR-011)
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
-//! ├── oplog-tip       the number of the last entry of the log (ADR-011)
+//! ├── oplog-tip       the number and the hash of the last entry of the log (ADR-011)
 //! ├── purge-pending   the journal of a purge, only while it runs or after it stopped (ADR-014)
 //! └── tmp/            temporary files of the object store, the references, and the log
 //! ```
@@ -56,20 +56,25 @@ use crate::store::{
 };
 use crate::{Actor, Authorizer, Decision};
 
-/// The version of the repository format that `init` writes.
-const FORMAT_VERSION: u32 = 2;
+/// The version of the repository format that `init` writes: the operation log with the hash
+/// chain (ADR-011, STEMMA-41).
+const FORMAT_VERSION: u32 = 4;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
 /// moves to it with its first purge, before the journal is written, so that a program that knows
 /// only version 2 refuses a log that it cannot read and does not write past a journal it does not
-/// know.
-const READ_VERSIONS: [u32; 2] = [2, 3];
+/// know. Version 4 adds the hash chain: entries of version 3 and the tip file of version 2. A
+/// repository moves to it before its first entry in the chain, for the same reason: a program
+/// that knows only version 3 would write entries outside the chain after it.
+const READ_VERSIONS: [u32; 3] = [2, 3, 4];
 
-/// The version of the repository format that a purge moves a repository to (ADR-014). It is the
-/// highest that this code reads, so a purge never lowers a version.
-const PURGE_FORMAT_VERSION: u32 = 3;
-const _: () = assert!(PURGE_FORMAT_VERSION == READ_VERSIONS[READ_VERSIONS.len() - 1]);
+/// The version of the repository format that a purge and every new entry of the log move a
+/// repository to (ADR-011, ADR-014). It is the highest that this code reads, so neither lowers a
+/// version.
+const CHAIN_FORMAT_VERSION: u32 = 4;
+const _: () = assert!(CHAIN_FORMAT_VERSION == READ_VERSIONS[READ_VERSIONS.len() - 1]);
+const _: () = assert!(CHAIN_FORMAT_VERSION == FORMAT_VERSION);
 
 /// The name that the file `format` starts with, followed by the version.
 const FORMAT_PREFIX: &str = "stemma-repository ";
@@ -93,9 +98,8 @@ fn format_of(version: u32) -> String {
 /// Moves the repository whose metadata directory is `dir` to `version` of the format, unless the
 /// file `format` names it already. The new content goes to a temporary file in `tmp/`, is flushed,
 /// and is renamed over the file, and the directory is flushed, so a reader sees the old or the new
-/// version and never a mix. A purge calls it (ADR-014). The version is never lowered: the
-/// repository was opened, so its version is one of [`READ_VERSIONS`], and a purge raises it to
-/// the highest of them.
+/// version and never a mix. A purge and the writer of an entry call it (ADR-011, ADR-014). The
+/// version is never lowered: a file that names `version` or a higher one is left alone.
 fn raise_format(dir: &Path, version: u32) -> Result<(), StoreError> {
     let path = dir.join("format");
     let current = fs::read(&path).map_err(|source| StoreError::Io {
@@ -103,7 +107,8 @@ fn raise_format(dir: &Path, version: u32) -> Result<(), StoreError> {
         path: path.clone(),
         source,
     })?;
-    if current == format_of(version).as_bytes() {
+    let found = parse_format(&current).and_then(|digits| digits.parse::<u32>().ok());
+    if found.is_some_and(|found| found >= version) {
         return Ok(());
     }
     let temp_dir = dir.join("tmp");
@@ -349,6 +354,19 @@ impl Repository {
         &self.oplog
     }
 
+    /// Writes the entry of a change, as [`FsOpLog::append`] does, after it moved the repository
+    /// to the format of the hash chain. A repository of version 2 or 3 moves to version 4 with
+    /// its first new entry, which starts the chain; the caller holds the lock of the references.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpLogError::Io`] if the format file cannot be replaced (nothing is written), and
+    /// what [`FsOpLog::append`] returns.
+    pub(crate) fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
+        raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(OpLogError::from_store)?;
+        self.oplog.append(change)
+    }
+
     /// Moves a branch to `new`, or creates it, if it is still at `expected` (`None` for a branch
     /// that does not exist), and records the move in the log.
     ///
@@ -398,7 +416,7 @@ impl Repository {
                         vec![(name.clone(), Moved::from_to(expected, Some(new)))],
                     )
                     .map_err(OpLogError::Entry)?;
-                    self.oplog.append(&change)
+                    self.append(&change)
                 })?;
         outcome.into_result()
     }
@@ -438,7 +456,7 @@ impl Repository {
                     vec![],
                 )
                 .map_err(OpLogError::Entry)?;
-                self.oplog.append(&change)
+                self.append(&change)
             })?;
         outcome.into_result()
     }
@@ -492,7 +510,7 @@ impl Repository {
                         vec![],
                     )
                     .map_err(OpLogError::Entry)?;
-                    self.oplog.append(&change)
+                    self.append(&change)
                 })?;
         outcome.into_result()
     }
@@ -1222,13 +1240,10 @@ impl fmt::Display for OpenError {
             Self::UnsupportedFormat { path, found } => write!(
                 f,
                 "the format file `{}` names version {found}, but this code supports versions \
-                 {}",
+                 {} to {}",
                 path.display(),
-                READ_VERSIONS
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" and ")
+                READ_VERSIONS[0],
+                READ_VERSIONS[READ_VERSIONS.len() - 1]
             ),
             Self::Io {
                 operation,
@@ -1327,12 +1342,16 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 2\n"
+            b"stemma-repository 4\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
+        let first = FsOpLog::new(&meta).read(1).unwrap();
         assert_eq!(
-            fs::read(meta.join("oplog-tip")).unwrap(),
-            b"stemma-oplog-tip 1\nnumber 1\n"
+            fs::read_to_string(meta.join("oplog-tip")).unwrap(),
+            format!(
+                "stemma-oplog-tip 2\nnumber 1\nhash {}\n",
+                first.hash().unwrap()
+            )
         );
         for directory in ["objects", "tmp", "oplog", "refs", "refs/heads"] {
             assert!(meta.join(directory).is_dir(), "{directory}");
@@ -2001,7 +2020,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "4",
+            "5",
             "99",
             "4294967295",
             "4294967296",
@@ -2020,13 +2039,66 @@ mod tests {
     }
 
     #[test]
-    fn open_reads_version_3_and_init_writes_version_2() {
+    fn a_repository_of_an_older_format_moves_to_the_chain_with_its_next_entry() {
+        use crate::oplog::{Chain, Record};
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        // A repository of format 2: its first entry is written before the chain, and its tip
+        // names no hash.
+        let meta = dir.path().join(METADATA_DIR);
+        let first = repository.oplog().read(1).unwrap();
+        let Record::Change(change) = first.record().clone() else {
+            panic!("a change");
+        };
+        let old = Entry::of(1, Record::Change(change)).unwrap();
+        fs::write(meta.join("oplog/000000000001"), old.encode()).unwrap();
+        fs::write(meta.join("oplog-tip"), "stemma-oplog-tip 1\nnumber 1\n").unwrap();
+        set_format(dir.path(), "stemma-repository 2\n");
+        let repository = Repository::open(dir.path()).unwrap();
+        assert_eq!(repository.oplog().entries().unwrap(), [old]);
+
+        let entry = repository
+            .set_head(
+                &OperationName::new("checkout").unwrap(),
+                &Head::Branch(BranchName::new("other").unwrap()),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.chain(), Chain::Start);
+        assert_eq!(
+            fs::read_to_string(meta.join("format")).unwrap(),
+            "stemma-repository 4\n"
+        );
+        assert_eq!(repository.oplog().entries().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_format_is_raised_and_never_lowered() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let meta = dir.path().join(METADATA_DIR);
+        let read = || fs::read_to_string(meta.join("format")).unwrap();
+        raise_format(&meta, 3).unwrap();
+        assert_eq!(read(), "stemma-repository 4\n");
+        set_format(dir.path(), "stemma-repository 2\n");
+        raise_format(&meta, 3).unwrap();
+        assert_eq!(read(), "stemma-repository 3\n");
+        raise_format(&meta, 4).unwrap();
+        assert_eq!(read(), "stemma-repository 4\n");
+    }
+
+    #[test]
+    fn open_reads_versions_2_and_3_and_init_writes_version_4() {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 2\n");
-        set_format(dir.path(), "stemma-repository 3\n");
-        Repository::open(dir.path()).unwrap();
+        assert_eq!(format, "stemma-repository 4\n");
+        for version in ["2", "3"] {
+            set_format(dir.path(), format!("stemma-repository {version}\n"));
+            Repository::open(dir.path()).unwrap();
+        }
     }
 
     #[test]
@@ -2194,14 +2266,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 2",
+                "stemma-repository 4",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
                     found: "7".to_string(),
                 },
-                "version 7, but this code supports versions 2 and 3",
+                "version 7, but this code supports versions 2 to 4",
             ),
         ];
         for (error, text) in cases {

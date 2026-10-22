@@ -26,21 +26,22 @@ damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
 
 \starttyping
 .stemma/
-    format        stemma-repository 2 (3 nach dem ersten Purge)
+    format        stemma-repository 4 (2 oder 3 vor der Hash-Kette)
     HEAD          branch main
     working-copy  ID des Working-Copy-Commits
     objects/      lose Objekte
     oplog/        Operation Log, eine nummerierte Datei je Eintrag
-    oplog-tip     Nummer des letzten Eintrags des Logs
+    oplog-tip     Nummer und Hash des letzten Eintrags des Logs
     refs/heads/   Branches
     purge-pending Journal eines Purge, nur solange er läuft oder nachdem er abbrach
     tmp/          temporäre Dateien des Objektspeichers, der Referenzen und des Logs
 \stoptyping
 
-Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 2,
-und der erste Purge hebt sie auf 3 (siehe unten). Beim Öffnen nimmt der Kern beide an und lehnt
-eine fehlende, eine nicht kanonische und jede andere Version ab, auch die Version 1 der
-Repositories ohne Log.
+Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 4,
+die das Log mit der Hash-Kette kennzeichnet (siehe unten). Ein Repository der Version 2 oder 3
+steigt mit seinem nächsten Eintrag im Log auf 4. Beim Öffnen nimmt der Kern die Versionen 2
+bis 4 an und lehnt eine fehlende, eine nicht kanonische und jede andere Version ab, auch die
+Version 1 der Repositories ohne Log. Eine Version sinkt nie.
 Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
 
 Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben
@@ -196,14 +197,17 @@ Er nennt den Akteur, die Zeit, den Namen der Operation und für jeden geänderte
 (HEAD, Working-Copy-Commit, Branches) den alten und den neuen Wert:
 
 \starttyping
-stemma-oplog 1
+stemma-oplog 3
 number 1
 time 1792435308
 actor human daniel
+previous -
 operation init
 head - branch:main
 working-copy - b3:4feb…b32c
 \stoptyping
+
+Die Zeile \type{previous} gehört zur Hash-Kette, die weiter unten beschrieben ist.
 
 Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger,
 bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit
@@ -275,7 +279,44 @@ jeden weiteren Schreiber. Fehlt die Datei (ein Repository vor ihrer Einführung)
 nächste Eintrag sie an. Eine Lücke in der Mitte
 hält den Schreiber dagegen nicht auf, denn eine Weigerung verhinderte den Zug, der das Log
 reparieren soll. Die Datei schützt vor Unfällen, nicht vor einem Angriff: Wer sie löscht,
-oder sie und den Eintrag, bleibt unbemerkt (STEMMA-41).
+fällt erst \type{stemma op verify} auf, sofern der letzte Eintrag in der Kette steht, und wer
+den Eintrag und die Datei neu schreibt, bleibt unbemerkt.
+
+\subsection{Die Hash-Kette}
+
+Jeder Eintrag nennt in der Zeile \type{previous} den Hash des Eintrags davor (STEMMA-41).
+Der erste Eintrag der Kette hat \type{previous -}. Der Hash ist ein BLAKE3 über einen
+Umschlag: die Nummer, die Zeit, den Akteur, den Hash des Vorgängers und den Hash des Rumpfs.
+Der Rumpf sind die Zeilen nach \type{previous}, also die Operation und die Zeiger.
+Der Leser prüft die Kette. Wird ein Eintrag in der Mitte geändert, gelöscht, eingefügt
+oder mit einem anderen vertauscht, bricht sie an dieser Stelle, und der Leser nennt die
+Nummer. Die Datei \type{oplog-tip} nennt neben der Nummer auch den Hash des letzten Eintrags,
+denn auf den letzten Eintrag verweist noch keiner. So fällt auch ein ersetzter letzter Eintrag
+auf, und der Schreiber hängt keinen neuen Eintrag an einen ersetzten an.
+
+Der Schreiber liest den Eintrag vor der Nummer, die er versucht, und nennt dessen Hash.
+Verliert er das Rennen um eine Nummer, baut er seinen Eintrag für die nächste Nummer neu,
+mit dem Hash ihres Vorgängers. Kann er den Vorgänger nicht lesen, schreibt er nichts, denn ein
+Neubeginn der Kette würde den Schaden verdecken. Aus demselben Grund schreibt er nichts hinter
+einen alten Eintrag, der auf einen Eintrag der Kette folgt.
+Ein Log aus der Zeit vor der Kette behält seine alten Einträge vorne,
+und der erste neue Eintrag beginnt die Kette. Diese alten Einträge deckt die Kette nicht ab,
+und einen alten Eintrag hinter der Kette lehnt der Leser ab.
+
+\type{op log} prüft mit einer Grenze nur das gezeigte Fenster und dessen Anschluss an den
+Eintrag davor; lässt sich dieser nicht lesen, warnt der Befehl. \type{stemma op verify} prüft
+das ganze Log und gibt einen Anker aus, die Nummer und den Hash des letzten Eintrags,
+sofern dieser in der Kette steht. Die Datei
+\type{oplog-tip} prüft er strenger als die übrigen Befehle: Fehlt sie oder liegt sie mehr als
+einen Eintrag zurück, obwohl der letzte Eintrag in der Kette steht, meldet er das, denn dann
+haben die Schreiber nichts mit ihr verglichen.
+
+Die Kette zeigt, dass die Einträge zueinander passen, nicht wer sie schrieb. Wer
+\type{.stemma} schreiben kann, kann jeden späteren Hash und die Datei \type{oplog-tip} neu
+berechnen. Das fällt nur mit einem Anker auf, der ausserhalb des Repositories liegt: Wer
+einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}. Signaturen der
+Akteure (ADR-004) und ein Hub, der den letzten Eintrag bestätigt (Phase 5), wären Anker,
+die der Akteur selbst nicht ändern kann; beide sind offen.
 
 Die Zeiger bewegt nur das \type{Repository}. Es gibt die Referenzen und das Log zum
 Lesen heraus; der Schreiber des Logs und der Konstruktor eines Eintrags sind nur im
@@ -332,8 +373,9 @@ durchsucht auch den Objektspeicher nach solchen Resten, die nichts erreicht. Zum
 prüft er, dass nichts Behaltenes den Blob noch enthält oder etwas erreicht, das er löscht;
 sonst bricht er ab.
 
-Das Log kennt die Stubs und den Eintrag \type{purge} (STEMMA-47). Beide haben die Version 2
-der Kodierung, und sonst hat sie kein Eintrag, damit jeder Eintrag genau eine Form behält.
+Das Log kennt die Stubs und den Eintrag \type{purge} (STEMMA-47). In der Hash-Kette haben
+beide die Version 3 der Kodierung wie jeder andere Eintrag; ein Stub eines Eintrags aus der Zeit
+vor der Kette behält die Version 2.
 Ein Stub behält Nummer, Zeit und Akteur und verliert die Operation und jede ID. Der Eintrag
 des Purge nennt keinen Zeiger und keine ID, nur die Zahl der umgeschriebenen Commits und die
 Nummern der Stubs als Bereiche; eine lange Liste verteilt sich auf mehrere Einträge. Ein Stub,
@@ -341,13 +383,15 @@ den kein Purge nennt, ist ein Fehler des Logs wie eine Lücke. \type{op restore}
 Stub und einen Purge ab, ebenso einen Eintrag, den ein Purge nennt, der noch nicht fertig ist.
 Ein Stub ersetzt eine Änderung, deren Züge niemand mehr kennt. Deshalb ist der Ausgang jedes
 Eintrags vor dem jüngsten Stub unbekannt, und ein Restore eines solchen Eintrags braucht
-\type{--force}. Ein Hash, den der Stub behalten müsste, kommt erst mit einer Hash-Kette
-(STEMMA-41).
+\type{--force}. Ein Stub behält den Hash des Rumpfs, den er ersetzt
+(\type{stub b3:…}). Damit hat er den Hash des ersetzten Eintrags, und die Kette hält über
+einen Purge hinweg, während Zeit und Akteur weiter geschützt sind (ADR-014).
 
 Mit \type{--apply} wird der Purge gemacht. Er speichert zuerst das Verzeichnis in einem
 Snapshot, damit eine Änderung mit dem Geheimnis in einem Commit und im Plan steht. Dann
 nimmt er die Sperre der Referenzen und hält sie bis zum Ende, plant unter ihr neu, und sein
-Plan kann daher vom gezeigten abweichen. Er hebt das Repository auf das Format 3 und schreibt
+Plan kann daher vom gezeigten abweichen. Er hebt das Repository auf das Format 4, falls es
+noch tiefer steht, und schreibt
 das Journal \type{.stemma/purge-pending}. Es nennt den Blob, die Nummer des letzten Eintrags,
 jeden umgeschriebenen Commit, die Züge der Zeiger, die Stubs, die neuen Objekte und die
 Objekte, die gelöscht werden. Das Format kommt vor dem Journal, denn ein Programm, das nur die

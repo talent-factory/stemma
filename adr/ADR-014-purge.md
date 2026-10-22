@@ -3,7 +3,8 @@
 **Status:** Accepted and implemented: the plan (STEMMA-46), the stub with the `purge` entry in
 the log (STEMMA-47), the purge itself with the journal, resume, abort, and format 3
 (STEMMA-48), and the lock that a writer takes before its first object (STEMMA-49, agreed with
-the author on 2026-10-22). The decisions marked *(confirmed)* were
+the author on 2026-10-22). The hash that a stub keeps came with the hash chain of the log
+(STEMMA-41, ADR-011, agreed on 2026-10-22). The decisions marked *(confirmed)* were
 agreed with the author on 2026-10-21 (STEMMA-26), and the author confirmed the whole ADR on the
 same day, including the steps, the journal, the lock, resume, and abort. The slices are listed at
 the end. The open items at the end are questions for the slices and for later; none of them
@@ -130,11 +131,12 @@ lock may be held.
      a few bytes cannot make it hold a trillion numbers (found by the property test of
      STEMMA-20). The plan refuses a purge that would replace more entries
      (`PurgeError::TooManyEntries`), so no purge writes a journal that its reader refuses.
-   - **Format 3 comes first.** The repository moves to format 3 just before the journal is
+   - **The format rises first.** The repository moves to format 4 just before the journal is
      written, as a temporary file and a rename of `format`. A program that knows only version 2
-     does not know the journal either and would write past it; with format 3 it refuses the
-     repository. An abort leaves format 3, as a format is never lowered, and `init` still writes
-     version 2.
+     does not know the journal either and would write past it; with the higher format it refuses
+     the repository. An abort leaves the format, as a format is never lowered. The purge came
+     with format 3; since the hash chain `init` writes version 4 and every new entry raises a
+     repository to it (ADR-011, STEMMA-41), so the purge raises to 4 as well.
    - **Writers refuse.** Every command that writes (`track`, `commit`, `status`, `op restore`)
      takes the lock of the references before it writes its first object and keeps it to its
      last move (STEMMA-49). The journal is checked under the lock, in the lock itself, so a
@@ -189,7 +191,7 @@ set, a crash after step 7 does not leave the blob behind as an object that "was 
 unreachable".
 
 **Abort.** `stemma purge --abort` removes the journal and the objects that step 5 wrote, as long
-as the `purge` entry is not written; the format stays at 3. Once the entry is written, the purge
+as the `purge` entry is not written; the format stays where the purge raised it. Once the entry is written, the purge
 can only go forward: that is the point of no return, and a purge that cannot finish (a missing
 object, an unreadable log) is left for a person to repair.
 
@@ -222,13 +224,17 @@ object, an unreadable log) is left for a person to repair.
   finds a later old value that is neither its old nor its new one and is unknown, and a restore of
   it needs `--force`. That is acceptable. `op log` needs a line for a stub and for a `purge`
   entry, which has no pointer.
-- The hash chain of the log (STEMMA-41) collides with a stub: replacing an entry changes the hash
-  that the next entry links to. Once the chain exists, a stub keeps the hash of the entry it
-  replaced, and a verifier accepts it only if a `purge` entry lists its number. That detects a
-  replacement without a `purge` entry. It does not stop someone who can write the log from adding
-  both, because actors are not proved (ADR-002). The chain has to be decided before the stub gets
-  its final format; until then the stub holds no hash.
-- The tip file (ADR-011) is not affected: a stub keeps the number.
+- The hash chain of the log (STEMMA-41, ADR-011) would collide with a stub, as replacing an
+  entry changes the hash that the next entry links to. The hash of an entry is therefore taken
+  over an envelope (number, time, actor, the hash of the entry before, and the hash of the body),
+  and a stub of an entry in the chain keeps the hash of the body (`stub <hash>`, entry encoding
+  `stemma-oplog 3`): its hash is the hash of the entry it replaced, and the chain holds across a
+  purge. The reader accepts the stub only if a `purge` entry lists its number (`check_stubs`),
+  which detects a replacement without a `purge` entry. It does not stop someone who can write the
+  log from adding both, because actors are not proved (ADR-002). A stub of an entry from before
+  the chain stays `stub` alone, in version 2.
+- The tip file (ADR-011) is not affected: a stub keeps the number, and the hash that the tip
+  names, as the stub has the hash of its entry.
 - The layout (ADR-009) gets the file `.stemma/purge-pending`, and `Repository::open` has to
   accept it and the writers have to check for it.
 - A writer that started before a purge cannot overtake it (STEMMA-49): it holds the lock from
@@ -251,8 +257,8 @@ object, an unreadable log) is left for a person to repair.
       encoding `stemma-oplog 2`, written only for these two (STEMMA-47; see ADR-011). A
       `purge` entry has `commits <n>` and `stubs <ranges>`, and a list that does not fit is
       split, the count in the first part.
-- [ ] The hash that a stub keeps when the chain exists (STEMMA-41, which then takes entry
-      encoding `stemma-oplog 3`).
+- [x] The hash that a stub keeps when the chain exists: the hash of the body of the entry, so
+      that the stub has the hash of the entry (STEMMA-41, entry encoding `stemma-oplog 3`).
 - [x] The outcome of an entry before a stub: a stub replaced a change whose moves are no longer
       known, so it is a barrier, and every entry before the newest stub is unknown; `op restore`
       needs `--force` for it (STEMMA-47). This is stricter than the consequences above foresaw,
@@ -289,7 +295,7 @@ Slices, all built: the plan (`Repository::plan_purge` and `stemma purge BLOB`, w
 nothing, STEMMA-46), the stubs and the `purge` entry in the log with its reader and `op restore`
 refusing a stub (STEMMA-47), and `--apply` with the snapshot, the new objects, the journal, the
 removal of the objects, resume, and abort, and the move of the repository to format 3 with its
-first purge (STEMMA-48: `Repository::apply_purge`, `resume_purge`, and `abort_purge`). The apply
+first purge, which is format 4 since the hash chain (STEMMA-48: `Repository::apply_purge`, `resume_purge`, and `abort_purge`). The apply
 waited for the other two, as a pointer moves only with an entry and a purge without stubs and
 removal would leave the secret in place. The lock of a writer from its first object, with the
 removal of the lock on Ctrl-C, closed the window of an early writer (STEMMA-49).

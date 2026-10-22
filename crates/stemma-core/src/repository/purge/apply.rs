@@ -1,7 +1,7 @@
 //! The purge itself: `stemma purge BLOB --apply`, `--resume`, and `--abort` (ADR-014).
 //!
 //! A purge takes a snapshot, takes the lock of the references, plans again under it, moves the
-//! repository to format 3, and writes the journal. Then it writes the new trees and commits,
+//! repository to format 4, and writes the journal. Then it writes the new trees and commits,
 //! checks the pointers, writes the `purge` entry, moves the pointers, replaces the entries by
 //! stubs, deletes the delete set, and removes the journal. Each step after the journal can be
 //! repeated, so `--resume` runs them again from the journal. Until the `purge` entry is written,
@@ -18,7 +18,7 @@ use crate::object::{BlobId, CommitId, ObjectId};
 use crate::oplog::{Entry, EntryError, OpLogError, Purge, Record};
 use crate::refs::{Logged, PurgeLock, RefError};
 use crate::repository::{
-    now, raise_format, Repository, SnapshotError, UpdateError, PURGE_FORMAT_VERSION,
+    now, raise_format, Repository, SnapshotError, UpdateError, CHAIN_FORMAT_VERSION,
 };
 use crate::store::{scratch_left, ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
@@ -415,7 +415,7 @@ impl Repository {
     /// The actor must be a human, and the authorizer is asked for `purge` with the blob, as for
     /// [`plan_purge`](Self::plan_purge). Then the purge takes a snapshot of the working directory,
     /// takes the lock of the references and keeps it to the end, and plans again under it, so its
-    /// plan can differ from one printed before. It moves the repository to format 3 and writes
+    /// plan can differ from one printed before. It moves the repository to format 4 and writes
     /// the journal `.stemma/purge-pending`, and from then on every other command that writes
     /// refuses. It writes the new trees and commits, checks that every pointer is at its value
     /// before the purge, writes the `purge` entry, and moves the pointers. Last, it replaces the
@@ -440,9 +440,10 @@ impl Repository {
     }
 
     /// Finishes a purge that stopped, from its journal (ADR-014). The lock that the purge left
-    /// behind is taken for its own and removed. Each step is repeated: a new object that exists is
-    /// left alone, a pointer at its new value is skipped, a `purge` entry that is written is found
-    /// and not written again, a stub is replaced by itself, and a deleted object is gone.
+    /// behind is taken for its own and removed, and the repository moves to format 4, as a purge
+    /// that an older program started left an older one. Each step is repeated: a new object that
+    /// exists is left alone, a pointer at its new value is skipped, a `purge` entry that is written
+    /// is found and not written again, a stub is replaced by itself, and a deleted object is gone.
     ///
     /// # Errors
     ///
@@ -461,7 +462,8 @@ impl Repository {
 
     /// Undoes a purge that stopped before its `purge` entry (ADR-014): removes the objects that
     /// the journal names as new, then the journal. The lock that the purge left behind is taken
-    /// for its own and removed. The format stays at 3, as a format is never lowered.
+    /// for its own and removed. The format stays where the purge raised it, as a format is never
+    /// lowered.
     ///
     /// # Errors
     ///
@@ -571,7 +573,7 @@ impl Repository {
         new.sort();
         new.dedup();
         let dir = self.metadata_dir();
-        raise_format(&dir, PURGE_FORMAT_VERSION).map_err(|error| start(store(error)))?;
+        raise_format(&dir, CHAIN_FORMAT_VERSION).map_err(|error| start(store(error)))?;
         let journal = Journal { plan, last, new };
         journal::write(&dir, &journal).map_err(|error| {
             if error.made() {
@@ -606,6 +608,13 @@ impl Repository {
         stop: Option<Stop>,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
         let (journal, lock) = self.take_over(actor, authorizer)?;
+        // A purge that an older program started left an older format; the entries that the
+        // resume writes are in the hash chain, so the format rises first, as for a new purge.
+        raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(stopped(
+            PurgeStep::Journal,
+            &[],
+            store,
+        ))?;
         let left = scratch_left(&self.metadata_dir());
         Ok(self
             .carry_out(&journal, actor, lock, stop)?
@@ -746,6 +755,12 @@ impl Repository {
                         | OpLogError::Gap { .. }
                         | OpLogError::TipAhead { .. }
                         | OpLogError::BadTip { .. }
+                        | OpLogError::TipMismatch { .. }
+                        | OpLogError::ChainBroken { .. }
+                        | OpLogError::UnchainedAfterChain { .. }
+                        | OpLogError::TipMissing { .. }
+                        | OpLogError::TipBehind { .. }
+                        | OpLogError::Predecessor { .. }
                         | OpLogError::UnexpectedFile { .. }
                         | OpLogError::Missing { .. }
                         | OpLogError::Full
@@ -984,6 +999,12 @@ mod tests {
         fs::read_to_string(dir.path().join(".stemma").join("format")).unwrap()
     }
 
+    /// Sets the format back to version 2, as a repository from before the purge and the chain
+    /// has it, so that a test sees whether something moves it.
+    fn old_format(dir: &TempDir) {
+        fs::write(dir.path().join(".stemma/format"), "stemma-repository 2\n").unwrap();
+    }
+
     fn journal_exists(dir: &TempDir) -> bool {
         dir.path().join(".stemma").join("purge-pending").exists()
     }
@@ -1046,7 +1067,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 3\n");
+        assert_eq!(format(dir), "stemma-repository 4\n");
     }
 
     #[test]
@@ -1147,6 +1168,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         history(&dir, &repository);
+        old_format(&dir);
         let before = (ids(&repository), repository.oplog().numbers().unwrap());
         let error = repository
             .apply_purge(secret(), &agent(), &AllowAll)
@@ -1231,6 +1253,20 @@ mod tests {
                 "{error:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_resume_of_a_purge_from_before_the_chain_moves_the_repository_to_format_4() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        // An older program wrote the journal at format 3.
+        fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_purged(&dir, &repository, &purged);
+        assert_eq!(format(&dir), "stemma-repository 4\n");
+        assert!(repository.oplog().verify().is_ok());
     }
 
     #[test]
@@ -1320,7 +1356,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 3\n",
+            "stemma-repository 4\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -1586,6 +1622,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         history(&dir, &repository);
+        old_format(&dir);
         // Another process changes the references. The snapshot of the purge takes the lock
         // first, before its first object, and is refused.
         fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
@@ -1826,7 +1863,8 @@ mod tests {
             refused.borrow().is_some(),
             "the purge ran at the stop point"
         );
-        assert_eq!(format(&dir), "stemma-repository 2\n");
+        // The writer moved the repository to the format of the chain; the purge left it alone.
+        assert_eq!(format(&dir), "stemma-repository 4\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);
