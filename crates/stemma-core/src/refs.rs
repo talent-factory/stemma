@@ -8,7 +8,7 @@
 //! ```text
 //! <root>/HEAD                    branch main\n   or   commit b3:<64 hex digits>\n
 //! <root>/refs/heads/<name>       b3:<64 hex digits>\n
-//! <root>/refs.lock               exists while a reference is changed
+//! <root>/refs.lock               exists while a command writes (ADR-014)
 //! ```
 //!
 //! A [`BranchName`] is valid by construction, as an [`Actor`](crate::Actor) is. A branch that has
@@ -26,6 +26,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
 use crate::store::{
@@ -683,6 +684,9 @@ pub struct FsRefStore {
 /// The lock file while it exists. The file holds a token that only this lock knows, and the file
 /// is removed when the value is dropped, but only if it still holds the token: a person may have
 /// removed a lock that looked stale, and another process may hold a new one by now.
+///
+/// Every lock of the process is listed in [`HELD`] while it exists, so that
+/// [`release_locks_for_exit`] can remove it when the process is interrupted.
 struct Lock {
     path: PathBuf,
     token: String,
@@ -690,11 +694,65 @@ struct Lock {
 
 impl Drop for Lock {
     fn drop(&mut self) {
+        let mut held = held_locks();
         // Best effort: a lock that stays behind is reported by the next change.
-        if fs::read(&self.path).is_ok_and(|content| content == self.token.as_bytes()) {
-            let _ = fs::remove_file(&self.path);
-        }
+        remove_if_own(&self.path, &self.token);
+        held.retain(|(path, token)| path != &self.path || token != &self.token);
     }
+}
+
+/// The locks that this process holds now, each with its path and its token. The list is locked
+/// while a lock file is made or removed, so an interruption does not miss a lock that is being
+/// made.
+static HELD: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+
+/// The list of held locks. A thread that panicked while it held the list left it consistent, as
+/// every change to it is one call.
+fn held_locks() -> MutexGuard<'static, Vec<(PathBuf, String)>> {
+    HELD.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Removes the lock file if it still holds the token.
+fn remove_if_own(path: &Path, token: &str) {
+    if fs::read(path).is_ok_and(|content| content == token.as_bytes()) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Removes every lock file that this process holds, for a process that is about to end because
+/// it was interrupted (Ctrl-C), so that the next command does not find a lock left behind.
+///
+/// A command that writes holds the lock from before its first object to after its last move
+/// (ADR-014), which is as long as its snapshot takes. The caller ends the process right after the
+/// call: the list stays locked, so no lock can be made or released any more, and a thread that
+/// tries waits until the end. A lock file that holds another token (a person removed the lock,
+/// and another process holds a new one) stays.
+///
+/// An interrupted writer is left as a crash leaves it: objects that no commit names are harmless,
+/// and an entry without its move is one that did not take effect (ADR-011). A process that ends
+/// without a chance to call this (`kill -9`, a crash of the system) leaves its lock behind.
+pub fn release_locks_for_exit() {
+    let mut held = held_locks();
+    release(&mut held);
+    // The process ends now; the list stays locked so that no lock is taken in between.
+    std::mem::forget(held);
+}
+
+/// Removes the lock files of the list that still hold their tokens, and empties the list.
+fn release(held: &mut Vec<(PathBuf, String)>) {
+    for (path, token) in held.drain(..) {
+        remove_if_own(&path, &token);
+    }
+}
+
+/// The lock of the references while a command that writes holds it, from before its first object
+/// to after its last move (ADR-014). A purge cannot start while it is held, and a writer that
+/// finds the journal of a purge does not get it, so a purge cannot delete an object that a writer
+/// has saved and is about to name. The lock is not re-entrant, so the steps of the writer take
+/// this value as the proof that the lock is held.
+#[must_use]
+pub(crate) struct WriteLock {
+    _lock: Lock,
 }
 
 /// The lock of the references while a purge holds it, from its plan to its end (ADR-014). The
@@ -802,9 +860,10 @@ impl FsRefStore {
         self.root.join(PURGE_JOURNAL)
     }
 
-    /// Fails with [`RefError::PurgePending`] if the journal of a purge exists (ADR-014). Every
-    /// command that writes calls it before it writes its first object, and [`lock`](Self::lock)
-    /// checks again under the lock.
+    /// Fails with [`RefError::PurgePending`] if the journal of a purge exists (ADR-014), without
+    /// the lock. [`lock`](Self::lock) checks it under the lock, which every command that writes
+    /// takes before its first object; this check names a pending purge before a command reads
+    /// anything else (a purge before its snapshot, `op restore` before it judges the entry).
     ///
     /// # Errors
     ///
@@ -848,6 +907,19 @@ impl FsRefStore {
         Ok(lock)
     }
 
+    /// Takes the lock for a command that writes, before its first object (ADR-014): as
+    /// [`lock`](Self::lock), so a journal of a purge refuses it. The steps of the command take the
+    /// value as the proof that the lock is held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Locked`] or [`RefError::PurgePending`], and [`RefError::Io`] if the
+    /// lock file cannot be made.
+    pub(crate) fn lock_writer(&self) -> Result<WriteLock, RefError> {
+        self.require_root()?;
+        self.lock().map(|lock| WriteLock { _lock: lock })
+    }
+
     /// Takes the lock for a purge that starts: as [`lock`](Self::lock), and a journal that exists
     /// is [`RefError::PurgePending`].
     ///
@@ -883,6 +955,8 @@ impl FsRefStore {
     fn acquire(&self) -> Result<Lock, RefError> {
         let path = self.lock_path();
         let token = unique_temp_name();
+        // The list is held from the file to its entry, so an interruption sees either both or none.
+        let mut held = held_locks();
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -892,15 +966,12 @@ impl FsRefStore {
         };
         // The lock exists now. If the token cannot be written, the lock is removed again, and the
         // error is reported.
-        let lock = Lock {
-            path: path.clone(),
-            token,
-        };
-        file.write_all(lock.token.as_bytes()).map_err(|error| {
+        if let Err(error) = file.write_all(token.as_bytes()) {
             let _ = fs::remove_file(&path);
-            io_error("write the lock file", &path)(error)
-        })?;
-        Ok(lock)
+            return Err(io_error("write the lock file", &path)(error));
+        }
+        held.push((path.clone(), token.clone()));
+        Ok(Lock { path, token })
     }
 
     /// Replaces the file with the content, atomically: the content goes to a temporary file, is
@@ -1227,7 +1298,8 @@ pub(crate) enum Logged<T, E> {
 
 impl FsRefStore {
     /// Moves a branch to `new`, or creates it, if it is still at `expected`, and runs `step` after
-    /// the checks and before the move, all under the lock of the references.
+    /// the checks and before the move, all under the lock of the references that the caller holds
+    /// (`_lock`, taken before the caller wrote its first object, ADR-014).
     ///
     /// The checks are the ones of [`RefStore::update_branch`]: a name that is in the way is a
     /// [`RefError::Conflict`], a branch that is not at `expected` is [`RefError::Stale`], and the
@@ -1238,13 +1310,13 @@ impl FsRefStore {
     ///
     /// # Errors
     ///
-    /// Returns the errors of the checks, among them [`RefError::Locked`] if another change holds the
-    /// lock. Once `step` has run, nothing is an error of this call: the outcome says what happened,
-    /// so the caller can tell a step that ran from one that did not. An empty directory that a
-    /// stopped change left is removed before the step; if that fails the error is returned and no
-    /// step has run.
+    /// Returns the errors of the checks. Once `step` has run, nothing is an error of this call: the
+    /// outcome says what happened, so the caller can tell a step that ran from one that did not.
+    /// An empty directory that a stopped change left is removed before the step; if that fails the
+    /// error is returned and no step has run.
     pub(crate) fn update_branch_after<T, E>(
         &self,
+        _lock: &WriteLock,
         name: &BranchName,
         expected: Option<CommitId>,
         new: CommitId,
@@ -1252,7 +1324,6 @@ impl FsRefStore {
         step: impl FnOnce() -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        let _lock = self.lock()?;
         Self::require_commit(&new, objects)?;
         let current = self.current(name)?;
         if let Some((with, kind)) = current.in_the_way {
@@ -1299,17 +1370,17 @@ impl FsRefStore {
     /// # Errors
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
-    /// does not have, the errors of [`RefStore::head`] for an unreadable HEAD, and
-    /// [`RefError::Locked`]. Once `step` has run, nothing is an error of this call; see
+    /// does not have, and the errors of [`RefStore::head`] for an unreadable HEAD. Once `step` has
+    /// run, nothing is an error of this call; see
     /// [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn set_head_after<T, E>(
         &self,
+        _lock: &WriteLock,
         head: &Head,
         objects: &dyn ObjectStore,
         step: impl FnOnce(&Head) -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        let _lock = self.lock()?;
         if let Head::Detached(commit) = head {
             Self::require_commit(commit, objects)?;
         }
@@ -1352,18 +1423,18 @@ impl FsRefStore {
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
     /// does not have, [`RefError::NoWorkingCopy`] and [`RefError::Corrupt`] for a file that cannot
-    /// be read, [`RefError::StaleWorkingCopy`] if the working-copy commit is not `expected`, and
-    /// [`RefError::Locked`]. Once `step` has run, nothing is an error of this call; see
+    /// be read, and [`RefError::StaleWorkingCopy`] if the working-copy commit is not `expected`.
+    /// Once `step` has run, nothing is an error of this call; see
     /// [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn update_working_copy_after<T, E>(
         &self,
+        _lock: &WriteLock,
         expected: CommitId,
         new: CommitId,
         objects: &dyn ObjectStore,
         step: impl FnOnce() -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        let _lock = self.lock()?;
         Self::require_commit(&new, objects)?;
         let found = self.working_copy()?;
         if found != expected {
@@ -1398,6 +1469,7 @@ impl FsRefStore {
     /// this call; see [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn update_branch_and_working_copy_after<T, E>(
         &self,
+        _lock: &WriteLock,
         branch: &BranchMove<'_>,
         working_copy: &WorkingCopyMove,
         objects: &dyn ObjectStore,
@@ -1408,7 +1480,6 @@ impl FsRefStore {
             "both pointers must change"
         );
         self.require_root()?;
-        let _lock = self.lock()?;
         Self::require_commit(&branch.new, objects)?;
         Self::require_commit(&working_copy.new, objects)?;
         let current = self.current(branch.name)?;
@@ -1531,17 +1602,17 @@ impl FsRefStore {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`plan_restore`](Self::plan_restore) and [`RefError::Locked`]. Once
-    /// `step` has run, nothing is an error of this call; see
+    /// Returns the errors of [`plan_restore`](Self::plan_restore). Once `step` has run, nothing is
+    /// an error of this call; see
     /// [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn restore_after<T, E>(
         &self,
+        _lock: &WriteLock,
         targets: &RestoreTargets<'_>,
         objects: &dyn ObjectStore,
         step: impl FnOnce(&RestoreMoves) -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        let _lock = self.lock()?;
         let (moves, empty_directories) = self.plan_restore(targets, objects)?;
         if moves.is_empty() {
             return Ok(Logged::Unchanged);
@@ -2988,6 +3059,37 @@ mod tests {
 
     // ---- update_branch_after and set_head_after (the lock over a step, ADR-011)
 
+    #[test]
+    fn a_lock_is_listed_while_it_exists_and_released_only_with_its_own_token() {
+        let (dir, _objects, refs) = setup();
+        let path = dir.path().join("refs.lock");
+        let listed = |path: &Path| held_locks().iter().any(|(held, _)| held == path);
+        let lock = refs.lock_writer().unwrap();
+        assert!(listed(&path));
+        drop(lock);
+        assert!(!listed(&path));
+        assert!(!path.exists());
+        // An interruption removes the file of a lock that the process holds.
+        let lock = refs.lock_writer().unwrap();
+        let mut own: Vec<_> = held_locks()
+            .iter()
+            .filter(|(held, _)| held == &path)
+            .cloned()
+            .collect();
+        release(&mut own);
+        assert!(!path.exists());
+        drop(lock);
+        // A file that holds another token (another process took the lock since) stays.
+        fs::write(&path, b"other").unwrap();
+        release(&mut vec![(path.clone(), "mine".to_owned())]);
+        assert_eq!(fs::read(&path).unwrap(), b"other");
+    }
+
+    /// The lock of a writer, for a step that needs it.
+    fn writer(refs: &FsRefStore) -> WriteLock {
+        refs.lock_writer().unwrap()
+    }
+
     /// A step that records that it ran and returns its number.
     fn counted(ran: &std::cell::Cell<u32>) -> impl FnOnce() -> Result<u32, &'static str> + '_ {
         move || {
@@ -3002,7 +3104,7 @@ mod tests {
         let (a, b) = (commit(&objects, "a"), commit(&objects, "b"));
         let ran = std::cell::Cell::new(0);
         let outcome = refs
-            .update_branch_after(&name("main"), None, a, &objects, || {
+            .update_branch_after(&writer(&refs), &name("main"), None, a, &objects, || {
                 // The step runs before the pointer moves.
                 assert_eq!(refs.branch(&name("main")).unwrap(), None);
                 counted(&ran)()
@@ -3012,7 +3114,14 @@ mod tests {
         assert_eq!(refs.branch(&name("main")).unwrap(), Some(a));
         // At the value already: the step does not run.
         let outcome = refs
-            .update_branch_after(&name("main"), Some(a), a, &objects, counted(&ran))
+            .update_branch_after(
+                &writer(&refs),
+                &name("main"),
+                Some(a),
+                a,
+                &objects,
+                counted(&ran),
+            )
             .unwrap();
         assert!(matches!(outcome, Logged::Unchanged));
         assert_eq!(ran.get(), 1);
@@ -3020,7 +3129,14 @@ mod tests {
         // check for "already there" comes after the check for "where the caller saw it".
         for expected in [None, Some(b)] {
             let error = refs
-                .update_branch_after(&name("main"), expected, a, &objects, counted(&ran))
+                .update_branch_after(
+                    &writer(&refs),
+                    &name("main"),
+                    expected,
+                    a,
+                    &objects,
+                    counted(&ran),
+                )
                 .map(|_| ())
                 .unwrap_err();
             assert!(
@@ -3040,7 +3156,7 @@ mod tests {
         let lock_file = dir.path().join("refs.lock");
         // While the step runs, the lock file exists, and a second change meets the lock.
         let outcome = refs
-            .update_branch_after(&name("main"), None, a, &objects, || {
+            .update_branch_after(&writer(&refs), &name("main"), None, a, &objects, || {
                 assert!(lock_file.exists());
                 let inner = refs.update_branch(&name("other"), None, b, &objects);
                 assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
@@ -3053,37 +3169,47 @@ mod tests {
         assert!(!lock_file.exists());
         // The same for the step of HEAD.
         let outcome = refs
-            .set_head_after(&Head::Branch(name("dev")), &objects, |old| {
-                assert_eq!(old, &Head::Branch(name("main")));
-                assert!(lock_file.exists());
-                let inner = refs.update_branch(&name("other"), None, b, &objects);
-                assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
-                Ok::<(), ()>(())
-            })
+            .set_head_after(
+                &writer(&refs),
+                &Head::Branch(name("dev")),
+                &objects,
+                |old| {
+                    assert_eq!(old, &Head::Branch(name("main")));
+                    assert!(lock_file.exists());
+                    let inner = refs.update_branch(&name("other"), None, b, &objects);
+                    assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
+                    Ok::<(), ()>(())
+                },
+            )
             .unwrap();
         assert!(matches!(outcome, Logged::Moved(())));
         assert!(!lock_file.exists());
         // Released after a step that failed, after "at the value already", and after a refusal.
         let failed = refs
-            .update_branch_after(&name("main"), Some(a), b, &objects, || Err::<(), _>("no"))
+            .update_branch_after(&writer(&refs), &name("main"), Some(a), b, &objects, || {
+                Err::<(), _>("no")
+            })
             .unwrap();
         assert!(matches!(failed, Logged::StepFailed("no")));
         assert!(!lock_file.exists());
         assert_eq!(refs.branch(&name("main")).unwrap(), Some(a));
         let same = refs
-            .update_branch_after(&name("main"), Some(a), a, &objects, || Ok::<(), ()>(()))
+            .update_branch_after(&writer(&refs), &name("main"), Some(a), a, &objects, || {
+                Ok::<(), ()>(())
+            })
             .unwrap();
         assert!(matches!(same, Logged::Unchanged));
         assert!(!lock_file.exists());
-        let stale = refs.update_branch_after(&name("main"), None, b, &objects, || Ok::<(), ()>(()));
+        let stale =
+            refs.update_branch_after(&writer(&refs), &name("main"), None, b, &objects, || {
+                Ok::<(), ()>(())
+            });
         assert!(matches!(stale, Err(RefError::Stale { .. })));
         assert!(!lock_file.exists());
         // A lock that another writer holds is not taken, and its file is not removed.
         fs::write(&lock_file, b"other").unwrap();
-        let ran = std::cell::Cell::new(0);
-        let held = refs.update_branch_after(&name("main"), Some(a), b, &objects, counted(&ran));
+        let held = refs.lock_writer().map(|_| ());
         assert!(matches!(held, Err(RefError::Locked { .. })));
-        assert_eq!(ran.get(), 0);
         assert_eq!(fs::read(&lock_file).unwrap(), b"other");
     }
 
@@ -3094,19 +3220,35 @@ mod tests {
         let ran = std::cell::Cell::new(0);
         let absent = CommitId::new(ID_A.parse().unwrap());
         let error = refs
-            .update_branch_after(&name("main"), None, absent, &objects, counted(&ran))
+            .update_branch_after(
+                &writer(&refs),
+                &name("main"),
+                None,
+                absent,
+                &objects,
+                counted(&ran),
+            )
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
         refs.update_branch(&name("main"), None, a, &objects)
             .unwrap();
         let error = refs
-            .update_branch_after(&name("main/x"), None, a, &objects, counted(&ran))
+            .update_branch_after(
+                &writer(&refs),
+                &name("main/x"),
+                None,
+                a,
+                &objects,
+                counted(&ran),
+            )
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::Conflict { .. }), "{error}");
         let error = refs
-            .set_head_after(&Head::Detached(absent), &objects, |_| counted(&ran)())
+            .set_head_after(&writer(&refs), &Head::Detached(absent), &objects, |_| {
+                counted(&ran)()
+            })
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
@@ -3120,7 +3262,7 @@ mod tests {
         let leftover = dir.path().join("refs/heads/feat/deeper");
         fs::create_dir_all(&leftover).unwrap();
         let outcome = refs
-            .update_branch_after(&name("feat"), None, a, &objects, || {
+            .update_branch_after(&writer(&refs), &name("feat"), None, a, &objects, || {
                 // The directory is gone when the step runs, so a failure to remove it could never
                 // leave a step that names a move that cannot be made.
                 assert!(!leftover.exists());
@@ -3138,14 +3280,18 @@ mod tests {
         let ran = std::cell::Cell::new(0);
         let head = dir.path().join("HEAD");
         let error = refs
-            .set_head_after(&Head::Branch(name("x")), &objects, |_| counted(&ran)())
+            .set_head_after(&writer(&refs), &Head::Branch(name("x")), &objects, |_| {
+                counted(&ran)()
+            })
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::NoHead { .. }), "{error}");
         assert!(!head.exists());
         fs::write(&head, b"damaged\n").unwrap();
         let error = refs
-            .set_head_after(&Head::Branch(name("x")), &objects, |_| counted(&ran)())
+            .set_head_after(&writer(&refs), &Head::Branch(name("x")), &objects, |_| {
+                counted(&ran)()
+            })
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::Corrupt { .. }), "{error}");
@@ -3254,7 +3400,14 @@ mod tests {
         fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
         let writable = fs::File::create(heads.join("probe")).is_ok();
         let ran = std::cell::Cell::new(0);
-        let outcome = refs.update_branch_after(&name("main"), None, a, &objects, counted(&ran));
+        let outcome = refs.update_branch_after(
+            &writer(&refs),
+            &name("main"),
+            None,
+            a,
+            &objects,
+            counted(&ran),
+        );
         fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
         let _ = fs::remove_file(heads.join("probe"));
         if writable {

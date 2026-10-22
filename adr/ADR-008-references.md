@@ -54,8 +54,12 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   process may hold a new one. A change that finds the lock fails at once with `Locked` and does
   not wait. The lock is
   outside `refs/`, so no branch name can collide with it. One lock for all references is coarse,
-  but a change is a few file operations, and it keeps the rule simple. A process that ends
-  without removing the lock blocks all changes until the file is removed; the message says so.
+  but a change is a few file operations, and it keeps the rule simple. A command that writes
+  holds it longer, from its first object to its last move, as long as its snapshot takes
+  (ADR-014, STEMMA-49). A process that ends without removing the lock blocks all changes until
+  the file is removed; the message says so. The command line removes the lock of an interrupted
+  command (Ctrl-C, a termination signal) before the process ends, so only `kill -9` or a crash
+  leaves it behind.
 - **Safe writes**. A file is written to a new temporary file in `<metadata directory>/tmp/`,
   flushed, and renamed over the old one; the directory is flushed on Unix. The file is **not**
   read-only, because Windows refuses to replace such a file. A reader sees the old content or the

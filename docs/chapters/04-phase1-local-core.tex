@@ -340,8 +340,18 @@ Danach schreibt der Purge die neuen Bäume und Commits. Er prüft, dass jeder Ze
 seinem alten Wert steht, schreibt den Eintrag \type{purge} und bewegt die Zeiger. Dann
 ersetzt er die Einträge durch Stubs, löscht die alten Commits, die alten Bäume und den Blob
 und entfernt zuletzt das Journal. Solange das Journal besteht, lehnt jeder andere Befehl, der
-schreibt, ab, bevor er ein Objekt schreibt, und noch einmal unter der Sperre. Die Meldung
-nennt \type{stemma purge --resume} und \type{--abort}.
+schreibt, ab, wenn er die Sperre nimmt. Die Meldung nennt \type{stemma purge --resume} und
+\type{--abort}.
+
+Jeder Befehl, der schreibt, nimmt die Sperre der Referenzen, bevor er sein erstes Objekt
+schreibt, und hält sie bis zu seinem letzten Zug. Ohne diese Regel bliebe eine Lücke: Ein
+Befehl, der vor dem Journal geprüft hat und seinen Zeiger erst nach dem Purge bewegt, fände
+kein Journal mehr. Er könnte einen Commit nennen, dessen Blob er noch einmal gespeichert hat,
+den der Purge aber inzwischen gelöscht hat. Hält er die Sperre schon beim Speichern, kann
+kein Purge beginnen, und umgekehrt. Ein Zähler der Purges oder eine Prüfung aller Objekte unter
+der Sperre hätten die Lücke ebenfalls geschlossen; die Sperre ist die einfachste Regel
+(ADR-014). Sie wird dafür so lange gehalten, wie der Snapshot dauert, bei 10'000 Dateien
+etwa 0,7 Sekunden. Ctrl-C entfernt die Sperre, bevor der Prozess endet.
 
 Bricht der Purge ab, beendet ihn \type{stemma purge --resume} aus dem Journal. Eine Sperre,
 die der Abbruch zurückliess, nimmt es als die des Purge und entfernt sie. Jeder Schritt lässt

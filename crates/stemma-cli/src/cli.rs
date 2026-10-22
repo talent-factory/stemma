@@ -1233,6 +1233,14 @@ fn actor(text: Option<String>) -> Result<Actor, CliError> {
 }
 
 pub fn main() -> ExitCode {
+    // A command that writes holds the lock of the references for as long as its snapshot takes
+    // (ADR-014). Ctrl-C (or a termination signal) removes it before the process ends, so that the
+    // next command does not find it; the process ends with 130, as a shell reports an interrupt.
+    // Without the handler (it could not be installed) an interrupt leaves the lock, as before.
+    let _ = ctrlc::set_handler(|| {
+        stemma_core::refs::release_locks_for_exit();
+        std::process::exit(INTERRUPTED);
+    });
     // Help and version go to the output with code 0, a usage error to stderr with code 2.
     let cli = Cli::parse();
     match run(cli, &mut io::stdout().lock()) {
@@ -1245,6 +1253,9 @@ pub fn main() -> ExitCode {
         }
     }
 }
+
+/// The exit code of a command that was interrupted: 128 and the number of `SIGINT`.
+const INTERRUPTED: i32 = 130;
 
 #[cfg(test)]
 mod tests {

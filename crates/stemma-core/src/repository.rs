@@ -45,7 +45,9 @@ pub use track::{normalize_path, TrackError, Tracking};
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName};
-use crate::refs::{encode_branch, BranchName, FsRefStore, Head, Logged, RefError, RefStore};
+use crate::refs::{
+    encode_branch, BranchName, FsRefStore, Head, Logged, RefError, RefStore, WriteLock,
+};
 use crate::store::{
     create_dirs_synced as create_store_dirs, create_temp, sync_directory as flush_store_directory,
     unique_temp_name, FsObjectStore, ObjectStore, StoreError,
@@ -379,20 +381,21 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
         self.authorize(actor, authorizer, operation, name.as_str())?;
-        let outcome = self
-            .refs
-            .update_branch_after(name, expected, new, &self.objects, || {
-                let change = Change::new(
-                    now(),
-                    actor.clone(),
-                    operation.clone(),
-                    None,
-                    None,
-                    vec![(name.clone(), Moved::from_to(expected, Some(new)))],
-                )
-                .map_err(OpLogError::Entry)?;
-                self.oplog.append(&change)
-            })?;
+        let lock = self.refs.lock_writer()?;
+        let outcome =
+            self.refs
+                .update_branch_after(&lock, name, expected, new, &self.objects, || {
+                    let change = Change::new(
+                        now(),
+                        actor.clone(),
+                        operation.clone(),
+                        None,
+                        None,
+                        vec![(name.clone(), Moved::from_to(expected, Some(new)))],
+                    )
+                    .map_err(OpLogError::Entry)?;
+                    self.oplog.append(&change)
+                })?;
         outcome.into_result()
     }
 
@@ -418,18 +421,21 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
         self.authorize(actor, authorizer, operation, "HEAD")?;
-        let outcome = self.refs.set_head_after(head, &self.objects, |old| {
-            let change = Change::new(
-                now(),
-                actor.clone(),
-                operation.clone(),
-                Some(Moved::from_to(Some(old.clone()), Some(head.clone()))),
-                None,
-                vec![],
-            )
-            .map_err(OpLogError::Entry)?;
-            self.oplog.append(&change)
-        })?;
+        let lock = self.refs.lock_writer()?;
+        let outcome = self
+            .refs
+            .set_head_after(&lock, head, &self.objects, |old| {
+                let change = Change::new(
+                    now(),
+                    actor.clone(),
+                    operation.clone(),
+                    Some(Moved::from_to(Some(old.clone()), Some(head.clone()))),
+                    None,
+                    vec![],
+                )
+                .map_err(OpLogError::Entry)?;
+                self.oplog.append(&change)
+            })?;
         outcome.into_result()
     }
 
@@ -456,32 +462,34 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
         self.authorize(actor, authorizer, operation, "working-copy")?;
-        self.move_working_copy(operation, expected, new, actor)
+        let lock = self.refs.lock_writer()?;
+        self.move_working_copy(&lock, operation, expected, new, actor)
     }
 
     /// The move of [`update_working_copy`](Self::update_working_copy) without the question to the
-    /// authorizer, for a caller that has asked already.
+    /// authorizer, for a caller that has asked already and holds the lock.
     fn move_working_copy(
         &self,
+        lock: &WriteLock,
         operation: &OperationName,
         expected: CommitId,
         new: CommitId,
         actor: &Actor,
     ) -> Result<Option<Entry>, UpdateError> {
-        let outcome = self
-            .refs
-            .update_working_copy_after(expected, new, &self.objects, || {
-                let change = Change::new(
-                    now(),
-                    actor.clone(),
-                    operation.clone(),
-                    None,
-                    Some(Moved::from_to(Some(expected), Some(new))),
-                    vec![],
-                )
-                .map_err(OpLogError::Entry)?;
-                self.oplog.append(&change)
-            })?;
+        let outcome =
+            self.refs
+                .update_working_copy_after(lock, expected, new, &self.objects, || {
+                    let change = Change::new(
+                        now(),
+                        actor.clone(),
+                        operation.clone(),
+                        None,
+                        Some(Moved::from_to(Some(expected), Some(new))),
+                        vec![],
+                    )
+                    .map_err(OpLogError::Entry)?;
+                    self.oplog.append(&change)
+                })?;
         outcome.into_result()
     }
 

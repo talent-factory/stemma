@@ -14,7 +14,7 @@ use crate::change::{ChangeId, GenerateError};
 use crate::index::Index;
 use crate::object::{Commit, CommitId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName};
-use crate::refs::{BranchMove, BranchName, Head, Logged, RefError, WorkingCopyMove};
+use crate::refs::{BranchMove, BranchName, Head, Logged, RefError, WorkingCopyMove, WriteLock};
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
 
@@ -58,7 +58,9 @@ impl Repository {
     /// same tree, an empty message, and a change ID of its own. The same tree is what makes it
     /// empty, since the tracked set is the tree (ADR-010).
     ///
-    /// The branch moves first and the working-copy commit second, under one lock and with one
+    /// The lock of the references is taken after the authorizer agreed and before the snapshot,
+    /// and held to the last move, so that no purge comes in between and deletes an object that the
+    /// commit names (ADR-014). The branch moves first and the working-copy commit second, with one
     /// entry. If a stop or a failure comes between the two, the branch has the named commit and
     /// the working-copy commit is still the old one. The next call finds that state (the tip of
     /// the branch has the parents and the change ID of the working-copy commit, and a message,
@@ -92,15 +94,18 @@ impl Repository {
             return Err(CommitError::EmptyMessage);
         }
         let operation = OperationName::new(OPERATION).expect("`commit` is a valid operation name");
-        self.refs_store()
-            .refuse_pending_purge()
-            .map_err(|error| CommitError::Update(UpdateError::Refs(error)))?;
         let name = match self.refs().head().map_err(CommitError::Refs)? {
             Head::Branch(name) => name,
             Head::Detached(commit) => return Err(CommitError::DetachedHead(commit)),
         };
         self.authorize(actor, authorizer, &operation, name.as_str())?;
-        self.snapshot(actor, authorizer)?;
+        // One lock from the first object of the snapshot to the last move, so that no purge
+        // comes in between and deletes an object that the commit names (ADR-014).
+        let lock = self
+            .refs_store()
+            .lock_writer()
+            .map_err(|error| CommitError::Update(UpdateError::Refs(error)))?;
+        self.snapshot_locked(&lock, actor, authorizer)?;
 
         let current = self.refs().working_copy().map_err(CommitError::Refs)?;
         let working = read_commit(self.objects(), current)?;
@@ -118,7 +123,7 @@ impl Repository {
                 && named.change() == working.change()
                 && !named.message().is_empty();
             if stopped_here {
-                return self.finish(&operation, name, stopped, &named, current, actor);
+                return self.finish(&lock, &operation, name, &named, current, actor);
             }
             return Err(CommitError::BranchMoved {
                 branch: name,
@@ -146,6 +151,7 @@ impl Repository {
         let outcome = self
             .refs
             .update_branch_and_working_copy_after(
+                &lock,
                 &BranchMove {
                     name: &name,
                     expected: tip,
@@ -189,15 +195,16 @@ impl Repository {
     /// branch, and the working-copy commit is still the one it was made from.
     fn finish(
         &self,
+        lock: &WriteLock,
         operation: &OperationName,
         branch: BranchName,
-        named_id: CommitId,
         named: &Commit,
         current: CommitId,
         actor: &Actor,
     ) -> Result<Committed, CommitError> {
+        let named_id = named.id();
         let (_, next_id) = self.start_after(named, named_id, actor)?;
-        let (entry, late) = match self.move_working_copy(operation, current, next_id, actor) {
+        let (entry, late) = match self.move_working_copy(lock, operation, current, next_id, actor) {
             Ok(Some(entry)) => (entry, None),
             Ok(None) => unreachable!("the working-copy commit changes: its parents differ"),
             Err(UpdateError::NotDurable { entry, source }) => (*entry, Some(source)),
@@ -742,6 +749,7 @@ mod tests {
         let entries = repository.oplog().entries().unwrap().len();
         // The moves use the working-copy commit that the caller saw before the first commit.
         let stale = repository.refs.update_branch_and_working_copy_after(
+            &repository.refs.lock_writer().unwrap(),
             &BranchMove {
                 name: &main(),
                 expected: Some(first.commit),
@@ -820,6 +828,7 @@ mod tests {
     ) -> Result<Logged<Entry, OpLogError>, RefError> {
         let operation = OperationName::new("commit").unwrap();
         repository.refs.update_branch_and_working_copy_after(
+            &repository.refs.lock_writer().unwrap(),
             &BranchMove {
                 name: &main(),
                 expected: None,
