@@ -1,0 +1,7 @@
+stemma-oplog 2
+number 999999999999
+time 1700000000
+actor human r3
+operation purge
+commits 0
+stubs 1 999999999997

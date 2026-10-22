@@ -126,7 +126,11 @@ lock may be held.
      did not have, and one `delete commit` or `delete tree` per object of the delete set (the
      blob is implied). The moves let `--resume` compare a pointer with its two values without a
      new plan; the lines `new` let `--abort` remove only what the purge wrote, as a new tree can
-     be one that an unaffected commit already has.
+     be one that an unaffected commit already has. The reader checks the ranges of `stubs`
+     before it expands them: a stub after `last` or more than 2^24 stubs in all are damage, and
+     a few bytes cannot make it hold a trillion numbers (found by the property test of
+     STEMMA-20). The plan refuses a purge that would replace more entries
+     (`PurgeError::TooManyEntries`), so no purge writes a journal that its reader refuses.
    - **The format rises first.** The repository moves to format 4 just before the journal is
      written, as a temporary file and a rename of `format`. A program that knows only version 2
      does not know the journal either and would write past it; with the higher format it refuses

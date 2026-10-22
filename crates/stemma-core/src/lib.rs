@@ -29,6 +29,9 @@
 
 mod actor;
 pub mod change;
+#[cfg(any(fuzzing, test))]
+#[doc(hidden)]
+pub mod fuzz;
 pub mod ignore;
 pub mod index;
 pub mod object;
