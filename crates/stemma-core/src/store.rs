@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::object::{
     hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
-    TreeParseError, PREFIX,
+    TreeParseError, METADATA_DIR, PREFIX,
 };
 
 /// Why a stored object is rejected.
@@ -906,6 +906,41 @@ pub(crate) fn create_temp(
             "every temporary name was taken",
         ),
     })
+}
+
+/// Removes the scratch that writers left behind (ADR-011): every file in `<root>/tmp/`, and, if
+/// `root` is named [`METADATA_DIR`], every directory `.stemma-init-…` next to it that an
+/// interrupted `init` left (ADR-009). The caller holds the lock of the references, and every
+/// writer of `tmp/` holds that lock while it writes, so no name there belongs to a write in
+/// progress. An `init` that still runs next to an existing `.stemma` fails at its rename anyway.
+///
+/// It is best effort: a name that cannot be removed stays, and the next writer tries again, as a
+/// cleanup must not stop a change. An entry is never followed: a symbolic link is removed as a
+/// name, and a directory in `tmp/`, which no writer makes, stays.
+pub(crate) fn remove_scratch(root: &Path) {
+    if let Ok(entries) = fs::read_dir(root.join("tmp")) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| !kind.is_dir()) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    if root.file_name() != Some(METADATA_DIR.as_ref()) {
+        return;
+    }
+    let Some(Ok(entries)) = root.parent().map(fs::read_dir) else {
+        return;
+    };
+    let prefix = format!("{METADATA_DIR}-init-");
+    for entry in entries.flatten() {
+        let named = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix));
+        if named && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// Creates `dir` and every missing directory above it, and flushes the new directory entries.

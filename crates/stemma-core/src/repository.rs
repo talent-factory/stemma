@@ -1835,6 +1835,50 @@ mod tests {
     }
 
     #[test]
+    fn a_change_removes_the_directory_of_an_interrupted_init() {
+        // A killed `init` leaves `.stemma-init-…` next to `.stemma` (ADR-009). A change of a
+        // repository there holds the lock, so no `init` can still build it, and it is removed.
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let stale = dir.path().join(".stemma-init-1-0-0123456789abcdef");
+        fs::create_dir_all(stale.join("objects")).unwrap();
+        fs::write(stale.join("format"), b"stemma-repository 2\n").unwrap();
+        // A file with the prefix is not what `init` makes, and it stays.
+        let file = dir.path().join(".stemma-init-file");
+        fs::write(&file, b"x").unwrap();
+        let old = repository.refs().working_copy().unwrap();
+        let new = next_commit(&repository, "x");
+        repository
+            .update_working_copy(&operation("snapshot"), old, new, &actor(), &AllowAll)
+            .unwrap();
+        assert!(!stale.exists());
+        assert!(file.exists());
+        assert_eq!(
+            names(&dir.path().join(".stemma").join("tmp")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cleanup_does_not_follow_a_link_named_like_the_directory_of_init() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let target = dir.path().join("kept");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("file"), b"x").unwrap();
+        let link = dir.path().join(".stemma-init-link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let old = repository.refs().working_copy().unwrap();
+        let new = next_commit(&repository, "x");
+        repository
+            .update_working_copy(&operation("snapshot"), old, new, &actor(), &AllowAll)
+            .unwrap();
+        assert!(fs::symlink_metadata(&link).is_ok(), "the link stays");
+        assert!(target.join("file").exists());
+    }
+
+    #[test]
     fn open_without_a_metadata_directory_fails() {
         let dir = TempDir::new();
         let error = Repository::open(dir.path()).unwrap_err();

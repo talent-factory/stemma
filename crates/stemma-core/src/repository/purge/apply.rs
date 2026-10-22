@@ -1068,6 +1068,19 @@ mod tests {
     }
 
     #[test]
+    fn a_purge_removes_the_scratch_that_a_failed_write_left_in_tmp() {
+        // A write that failed can leave the secret in `tmp/` (ADR-014). The purge holds the lock,
+        // so the file is nobody's, and it is removed with the rest of the scratch (ADR-011).
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let scratch = dir.path().join(".stemma").join("tmp").join("1-0-stale");
+        fs::write(&scratch, b"the secret").unwrap();
+        apply(&repository);
+        assert!(!scratch.exists());
+    }
+
+    #[test]
     fn a_stub_and_the_purge_entry_refuse_a_restore() {
         let dir = TempDir::new();
         let repository = repository(&dir);

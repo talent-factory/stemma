@@ -30,7 +30,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
 use crate::store::{
-    create_dirs_synced, create_temp, sync_directory, unique_temp_name, ObjectStore, StoreError,
+    create_dirs_synced, create_temp, remove_scratch, sync_directory, unique_temp_name, ObjectStore,
+    StoreError,
 };
 
 /// The longest branch name in bytes. A file name is limited by the file system, which is 255 bytes
@@ -891,6 +892,8 @@ impl FsRefStore {
     /// Takes the lock for a change of the references. The journal of a purge is checked under
     /// the lock, so a change that was waiting for it does not slip in while a purge runs, and a
     /// lock that a purge holds or left behind is reported as the purge (ADR-014).
+    /// With the lock held, the scratch in `tmp/` that no writer owns any more is removed
+    /// ([`remove_scratch`], ADR-011).
     fn lock(&self) -> Result<Lock, RefError> {
         let lock = match self.acquire() {
             Err(RefError::Locked { path }) => {
@@ -905,6 +908,7 @@ impl FsRefStore {
             other => other?,
         };
         self.refuse_pending_purge()?;
+        remove_scratch(&self.root);
         Ok(lock)
     }
 
@@ -935,7 +939,8 @@ impl FsRefStore {
 
     /// Takes the lock for `--resume` or `--abort` of a purge whose journal exists. A lock that is
     /// there is taken for the one that the purge left behind when it stopped, and is removed
-    /// (ADR-014). The caller checks the journal before and after.
+    /// (ADR-014). The caller checks the journal before and after. With the lock held, the scratch
+    /// in `tmp/` is removed, as by [`lock`](Self::lock).
     ///
     /// # Errors
     ///
@@ -949,7 +954,9 @@ impl FsRefStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(io_error("remove the lock file", &path)(error)),
         }
-        self.acquire().map(|lock| PurgeLock { _lock: lock })
+        let lock = self.acquire()?;
+        remove_scratch(&self.root);
+        Ok(PurgeLock { _lock: lock })
     }
 
     /// Makes the lock file, without looking at the journal of a purge.
@@ -2443,6 +2450,67 @@ mod tests {
         let next = commit(&objects, "next");
         refs.update_branch(&name("Main"), Some(id), next, &objects)
             .unwrap();
+    }
+
+    #[test]
+    fn a_change_removes_the_scratch_that_no_writer_owns() {
+        // A killed writer leaves its temporary file in `tmp/`, read-only if it was an object. The
+        // next change holds the lock, so the file is nobody's, and it is removed (ADR-011).
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let tmp = dir.path().join("tmp");
+        fs::write(tmp.join("1-0-stale"), b"secret").unwrap();
+        let read_only = tmp.join("1-1-stale");
+        fs::write(&read_only, b"object").unwrap();
+        let mut permissions = fs::metadata(&read_only).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&read_only, permissions).unwrap();
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert_eq!(files_in(&tmp), 0);
+    }
+
+    #[test]
+    fn the_scratch_of_a_writer_that_holds_the_lock_stays() {
+        // A writer holds the lock while it writes to `tmp/`. A second change fails with `Locked`
+        // and leaves the file of the first alone.
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let writer = refs.lock_writer().unwrap();
+        let live = dir.path().join("tmp").join("1-0-live");
+        fs::write(&live, b"in progress").unwrap();
+        let other = FsRefStore::new(dir.path());
+        let error = other
+            .update_branch(&name("main"), None, id, &objects)
+            .unwrap_err();
+        assert!(matches!(error, RefError::Locked { .. }), "{error}");
+        assert_eq!(fs::read(&live).unwrap(), b"in progress");
+        drop(writer);
+        // Once the writer is gone, the next change removes what it left.
+        other
+            .update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert!(!live.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cleanup_of_scratch_follows_no_link_and_keeps_a_directory() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let tmp = dir.path().join("tmp");
+        let target = dir.path().join("kept");
+        fs::write(&target, b"not scratch").unwrap();
+        std::os::unix::fs::symlink(&target, tmp.join("link")).unwrap();
+        fs::create_dir(tmp.join("directory")).unwrap();
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert!(
+            fs::symlink_metadata(tmp.join("link")).is_err(),
+            "the link is removed"
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"not scratch");
+        assert!(tmp.join("directory").is_dir());
     }
 
     #[test]
