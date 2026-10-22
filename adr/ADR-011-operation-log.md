@@ -1,9 +1,10 @@
 # ADR-011: The operation log
 
 **Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
-2026-10-19, and the rest on 2026-10-21; all are implemented. The open items at the end are
-questions for later (retention, who may read the log, the width of the number, Windows) and
-none of them changes a decision.
+2026-10-19, and the rest on 2026-10-21; the hash chain (STEMMA-41) on 2026-10-22. All are
+implemented. The open items at the end are questions for later (retention, who may read the log,
+the width of the number, an anchor that the actor cannot change, Windows) and none of them
+changes a decision.
 
 ## Context
 
@@ -94,7 +95,54 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **The repository format version rises to 2 with the log** *(confirmed)*. `oplog/` is part of
   the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
-  migration is to run `init` again.
+  migration is to run `init` again. Version 3 came with the purge (ADR-014), and version 4 with
+  the hash chain (below).
+- **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
+  `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
+  that starts the chain. The writer writes only this version, for a change, a stub, and a `purge`
+  entry, and the reader checks the chain: a change, a removal, an insertion, or a swap of entries
+  breaks it at that place (`OpLogError::ChainBroken`).
+  - **What the hash covers: an envelope.** The hash of an entry is BLAKE3 over the text
+    `stemma-oplog-hash 1`, `number`, `time`, `actor`, `previous`, and `body <hash of the body>`.
+    The hash of the body is BLAKE3 over `stemma-oplog-body 1` and the lines after `previous`:
+    the operation and the pointers of a change, or the operation, the count, and the stubs of a
+    purge. A stub keeps the hash of the body that it replaced (`stub <hash>`), so its hash is the
+    hash of the entry, the next entry still links to it, and the tip stays valid after a purge;
+    time and actor stay covered. Two other ways were weighed: a stub that keeps the hash of the
+    whole entry leaves its time and actor free to change, and a chain that skips over listed
+    stubs checks nothing there. That a `purge` entry lists the stub is checked as before
+    (`check_stubs`). The hash of a body is a hash over commit IDs that depend on the secret; to
+    guess the secret from it, one has to build the trees, the commits, and the entry again, which
+    is harder than to guess it from the blob ID that the purge names on the command line.
+  - **The tip names the hash too.** The tip file of version 2,
+    `stemma-oplog-tip 2\nnumber <n>\nhash <hash>\n`, names the hash of the last entry, so a
+    replaced last entry, which no later entry links to, is found (`OpLogError::TipMismatch`).
+    A tip one behind is compared with the entry it names. The writer checks the tip before it
+    links a new entry, and refuses to take a replaced entry into the chain. The tip of version 1
+    is still read and names no hash.
+  - **The writer links under the lock and after a lost race.** The writer reads the entry
+    before the number it tries and names its hash; after a lost race (the hard link of the
+    publication fails) it builds the entry again for the next number, with the hash of the new
+    entry before it. If the entry before cannot be read, the writer refuses and writes nothing
+    (`OpLogError::Predecessor`): starting the chain again would hide the damage.
+  - **A log from before the chain.** The repository format rises to 4 with the first new
+    entry: `Repository` raises it under the lock before it writes the entry, as the purge raises
+    it to 3 (ADR-014), so a program that knows only version 3 refuses the repository instead of
+    writing entries outside the chain. A format is never lowered; `init` writes version 4. The
+    old entries (versions 1 and 2) stay in front, and the first new entry starts the chain; an
+    entry of version 1 or 2 after the chain is refused (`OpLogError::Unchained`). The old entries
+    are not covered.
+  - **Where it is checked.** Reading the whole log (`FsOpLog::entries`, which `op restore` and
+    the purge use) checks the whole chain and the tip. Reading a window (`FsOpLog::tail`, for
+    `stemma op log -n`) checks the window, the link of its first entry to the entry before it
+    if that can be read, and the tip if it is in the window. The command `stemma op verify`
+    checks the whole log and prints the anchor of the last entry, `<number>:<hash>`; with
+    `--anchor` it checks that the entry of an anchor kept from earlier still has that hash.
+  - **What it does not prove.** The chain shows that the entries agree with one another, not
+    who wrote them: whoever can write `.stemma` can compute every later hash and the tip again,
+    and is noticed only by an anchor kept outside the repository. Signatures of the actors
+    (ADR-004) and a hub that confirms the tip (phase 5) are anchors that the actor cannot change;
+    they are open items.
 - **A tip file names the last entry** *(confirmed; STEMMA-30)*. `.stemma/oplog-tip`
   holds the number of the last entry in the strict form `stemma-oplog-tip 1\nnumber <n>\n`. The
   writer replaces it after the entry is in place and before the pointer moves, with a temporary
@@ -103,8 +151,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   - The writer reads the tip before it takes a number. A tip *beyond* the largest number in the
     directory means that the last entries are lost, and the writer refuses
     (`OpLogError::TipAhead`) because it would give a number a second time to another move. The
-    reader reports the same. The message names the file and says what to do, because no command
-    repairs the log yet.
+    reader reports the same. The message names the file and says what to do (restore the lost
+    entries, or remove the tip once the loss is understood), because no command repairs the log
+    yet.
   - A tip one behind, or a missing file (a log from before the tip file), is no fault: the next
     entry writes the tip.
   - Both the reader and the writer read the tip *before* they list the directory. A writer links
@@ -118,8 +167,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   - A gap in the middle does **not** stop the writer. A refusal would block the move that repairs
     the log (`stemma op restore`, STEMMA-28). The reader reports the gap, as before.
   - The tip guards against accidents and crashes, not against an attack: who removes the tip, or
-    the tip and the entry, stays unnoticed (a missing tip is accepted by design). A hash chain
-    with an anchor would be needed (STEMMA-41).
+    the tip and the entry, stays unnoticed (a missing tip is accepted by design). The hash chain
+    (above) finds a change in the middle, and only an anchor outside the repository finds a log
+    whose chain was computed again (STEMMA-41).
 - **The first slice** *(confirmed)*. The core writes and strictly reads entries, and `init` and every
   operation that changes a pointer write one. The commands that show and use the log are slices of
   their own: `stemma op log` (STEMMA-27), and restoring and undoing (STEMMA-28).
@@ -188,6 +238,19 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   `stubs <ranges>` (`4-5 7`, or `-`), and no pointer. A change cannot have the operation `purge`,
   so every entry still has one encoding. A stub that no `purge` entry lists is an error of the
   log, like a gap.
+- Version 3 is the encoding of the hash chain (STEMMA-41), and the only one that the writer
+  writes since. It has the line `previous <hash>` or `previous -` after `actor`, and then the
+  lines of a change, `stub <hash of the body>`, or the lines of a `purge` entry:
+
+  ```text
+  stemma-oplog 3
+  number 42
+  time 1700000000
+  actor human daniel
+  previous b3:7f0c…91aa
+  operation snapshot
+  working-copy b3:1d71…eed9 b3:4feb…b32c
+  ```
 
 ## Consequences
 
@@ -239,8 +302,16 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       (STEMMA-46), the stub with the `purge` entry in the log (STEMMA-47), and the purge itself
       (STEMMA-48).
 - [x] A recovery when the highest number is missing: the tip file (STEMMA-30). What remains is
-      a command that repairs a log with a lost last entry (the tip has to be set back by hand
-      today), and the hash chain (STEMMA-41).
+      a command that repairs a log with a lost last entry (the tip has to be removed by hand
+      today).
+- [x] The hash chain (STEMMA-41): entry encoding 3, the hash over an envelope that a stub keeps,
+      the tip with the hash, format 4, and `stemma op verify` with `--anchor`.
+- [ ] An anchor that the actor cannot change: signatures of the actors (ADR-004) or a hub that
+      confirms the tip (phase 5). Until then the anchor is a copy that a person keeps.
+- [ ] Retention (STEMMA-39) needs a checkpoint where the chain starts again, if entries before
+      it are ever removed.
+- [ ] A command that repairs a broken chain, or a log with a lost last entry; today it is
+      restored from a backup of `.stemma`.
 - [ ] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of
       the references.
 - [ ] Restoring: what `stemma op restore` does when the working directory has changed since, and
