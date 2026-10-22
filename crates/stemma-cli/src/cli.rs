@@ -1034,8 +1034,8 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let _ = writeln!(
             io::stderr(),
             "stemma: warning: the link of the oldest shown entry to entry {number} was not \
-             checked, as that entry cannot be read: {error}; `stemma op verify` checks the whole \
-             log"
+             checked, nor the tip file if it names that entry, as the entry cannot be read: \
+             {error}; `stemma op verify` checks the whole log"
         );
     }
     let entries = window.into_entries();

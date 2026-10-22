@@ -306,6 +306,33 @@ fn a_log_from_before_the_chain_has_no_anchor_until_op_restore_starts_the_chain()
 }
 
 #[test]
+fn a_tip_file_more_than_one_entry_behind_is_reported() {
+    let dir = repository();
+    let last = last(dir.path());
+    let text = fs::read_to_string(entry_file(dir.path(), last - 2)).unwrap();
+    let hash = stemma_core::oplog::Entry::parse(text.as_bytes())
+        .unwrap()
+        .hash()
+        .unwrap();
+    fs::write(
+        dir.path().join(".stemma/oplog-tip"),
+        format!("stemma-oplog-tip 2\nnumber {}\nhash {hash}\n", last - 2),
+    )
+    .unwrap();
+    let result = run(dir.path(), &["op", "verify"]);
+    assert_eq!(result.code, 1);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.contains(&format!(
+            "names entry {}, but the log ends at entry {last}",
+            last - 2
+        )),
+        "{}",
+        result.stderr
+    );
+}
+
+#[test]
 fn a_missing_tip_file_is_reported() {
     let dir = repository();
     fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();

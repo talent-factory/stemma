@@ -63,7 +63,8 @@
 //!
 //! # The hash chain (version 3)
 //!
-//! Every entry that the writer makes names the hash of the entry before it (ADR-011, STEMMA-41).
+//! Every new entry that the writer makes names the hash of the entry before it (ADR-011,
+//! STEMMA-41); only the stub of an entry from before the chain keeps version 2 and names none.
 //! A change, a stub, and a `purge` entry of version 3 have the line `previous` after the actor,
 //! with the hash, or `-` for the entry that starts the chain:
 //!
@@ -88,7 +89,8 @@
 //! The reader checks the chain ([`check_chain`]): a change, a removal, an insertion, or a swap of
 //! entries breaks it at that place, and an entry of version 1 or 2 after the chain is refused. A
 //! log from before the chain keeps its old entries in front, and the first new entry starts the
-//! chain. The tip file names the hash of the last entry as well, so a replaced last entry is found.
+//! chain. The tip file names the hash of the last entry as well if that is in the chain, so a
+//! replaced last entry is found.
 //! The chain shows that the entries agree with one another, not who wrote them: whoever can write
 //! `.stemma` can compute every later hash and the tip again. Only an anchor kept outside the
 //! repository, a hash that `stemma op verify` printed, shows that (ADR-011).
@@ -120,7 +122,8 @@
 //! beyond the largest number in the directory means that the last entries are lost: the writer
 //! refuses ([`OpLogError::TipAhead`]) and the reader reports it, as the number would go to another
 //! move otherwise. A tip that is behind or a missing file is no fault for the readers and the
-//! writers; [`FsOpLog::verify`] reports both if the last entry is in the chain. The tip file of
+//! writers; [`FsOpLog::verify`] reports a missing tip, or one more than one behind, if the last
+//! entry is in the chain. The tip file of
 //! version 2 names the hash of the last entry too (`stemma-oplog-tip 2`, `number <n>`,
 //! `hash <hash>`), and the writer compares the entry that the tip names with it before the first
 //! attempt to publish, and refuses to link a new entry behind a replaced one
@@ -1664,7 +1667,8 @@ pub enum OpLogError {
         number: u64,
         /// The hash that the tip file names.
         expected: EntryHash,
-        /// The hash that the entry has, or `None` for an entry written before the chain.
+        /// The hash that the entry has, or `None` if the entry was written before the chain and
+        /// has none.
         found: Option<EntryHash>,
     },
     /// The last entry is in the hash chain, but there is no tip file to compare it with. Only
@@ -1687,7 +1691,8 @@ pub enum OpLogError {
         last: u64,
     },
     /// An entry does not name the hash of the entry before it, or starts the chain again: an entry
-    /// at this place or before it was changed, removed, or inserted (ADR-011, STEMMA-41).
+    /// at this place or before it was changed, removed, or inserted (ADR-011, STEMMA-41). Only
+    /// [`check_chain`] builds it, so `expected` and `found` always describe a link that fails.
     ChainBroken {
         /// The number of the entry whose link does not hold.
         number: u64,
@@ -2360,13 +2365,25 @@ impl FsOpLog {
         self.tail(usize::MAX)
     }
 
+    /// The entries of [`window`](Self::window), for the callers in this crate that need not warn
+    /// about the link before it.
+    ///
+    /// # Errors
+    ///
+    /// See [`entries`](Self::entries).
+    pub(crate) fn tail(&self, count: usize) -> Result<Vec<Entry>, OpLogError> {
+        self.window(count).map(Window::into_entries)
+    }
+
     /// Reads the last `count` entries, in the order of the numbers, and checks their stubs (see
     /// [`check_stubs`]). The entry of a purge comes after the stubs that it lists, so a window at
     /// the end of the log holds it.
     ///
     /// It checks the hash chain of the window and the link of its first entry to the one before
-    /// (see [`check_chain`]), which it reads too, unless that one cannot be read, and the hash that
-    /// the tip file names if the tip is in the window or just before it. A change before the
+    /// (see [`check_chain`]), which it reads too, and the hash that the tip file names if the tip
+    /// is in the window or just before it. If the entry before cannot be read, the window is
+    /// returned all the same, with the error ([`Window::unchecked`]), so that a caller can warn:
+    /// then neither that link nor a tip that names that entry is checked. A change before the
     /// window is found only by reading the whole log ([`entries`](Self::entries)).
     ///
     /// A reader takes no lock, and a purge writes its entry first and the stubs after it. A reader
@@ -2377,17 +2394,6 @@ impl FsOpLog {
     /// another purge writes its entry and a stub while it runs, it too can see a stub that nothing
     /// lists, and then the error is reported falsely. Running the command again reads the log
     /// whole.
-    ///
-    /// # Errors
-    ///
-    /// See [`entries`](Self::entries).
-    pub fn tail(&self, count: usize) -> Result<Vec<Entry>, OpLogError> {
-        self.window(count).map(Window::into_entries)
-    }
-
-    /// Reads the last `count` entries as [`tail`](Self::tail) does, and says whether the link of
-    /// the first one to the entry before it was checked: if that entry cannot be read, the window
-    /// is returned all the same, with the error, so that a caller can warn.
     ///
     /// # Errors
     ///
@@ -2491,13 +2497,15 @@ impl FsOpLog {
     /// # Errors
     ///
     /// Returns [`OpLogError::TipAhead`], [`OpLogError::BadTip`], and [`OpLogError::TipMismatch`]
-    /// (nothing is written), [`OpLogError::Predecessor`] if the entry before the new one cannot
-    /// be read or is out of place (nothing is written), [`OpLogError::EntryTooLarge`] if the entry would be larger than an entry can be
-    /// (nothing is written), [`OpLogError::Full`] if the log is full, [`OpLogError::Contended`] if
-    /// every number that was tried was taken, [`OpLogError::NotFlushed`] if the entry is in place
-    /// but not known to be flushed, [`OpLogError::UnexpectedFile`] for a name in the directory that
-    /// is not an entry, and [`OpLogError::Io`] if the storage fails, among others if the file
-    /// system has no hard links, or if the directory of the log does not exist.
+    /// (nothing is written), [`OpLogError::Predecessor`] if the entry before the new one or the
+    /// entry that the tip names next to the end cannot be read, or if the entry before is out of
+    /// place (nothing is written), [`OpLogError::EntryTooLarge`] if the entry would be larger than
+    /// an entry can be (nothing is written), [`OpLogError::Full`] if the log is full,
+    /// [`OpLogError::Contended`] if every number that was tried was taken,
+    /// [`OpLogError::NotFlushed`] if the entry is in place but not known to be flushed,
+    /// [`OpLogError::UnexpectedFile`] for a name in the directory that is not an entry, and
+    /// [`OpLogError::Io`] if the storage fails, among others if the file system has no hard links,
+    /// or if the directory of the log does not exist.
     pub(crate) fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
         self.append_record(&Record::Change(change.clone()))
     }
@@ -2636,9 +2644,10 @@ impl FsOpLog {
         if let Some(tip) = tip {
             match self.read(tip.number) {
                 Ok(entry) => self.check_tip_hash(tip, &entry)?,
-                // An entry in the middle that cannot be read does not stop a writer, as a gap
-                // does not; the reader reports it.
-                Err(_) if tip.number + 1 < last => {}
+                // A damaged or missing entry in the middle does not stop a writer, as a gap does
+                // not; the reader reports it. A failure of the storage does.
+                Err(ref error)
+                    if tip.number + 1 < last && !matches!(error, OpLogError::Io { .. }) => {}
                 Err(source) => {
                     return Err(OpLogError::Predecessor {
                         number: tip.number,
@@ -2671,10 +2680,9 @@ impl FsOpLog {
     ///
     /// # Errors
     ///
-    /// Returns [`OpLogError::Predecessor`] if the entry before cannot be read, or if it was
-    /// written before the chain and the entry before it, if it can be read, is in the chain, so
-    /// that the new entry
-    /// would start the chain again behind an entry that does not belong there
+    /// Returns [`OpLogError::Predecessor`] if the entry before cannot be read, or if it was written
+    /// before the chain and the entry before it, if it can be read, is in the chain, so that the
+    /// new entry would start the chain again behind an entry that does not belong there
     /// ([`OpLogError::UnchainedAfterChain`]).
     fn link_to(&self, number: u64) -> Result<Chain, OpLogError> {
         if number <= 1 {
@@ -2812,13 +2820,12 @@ pub fn check_stubs(entries: &[Entry]) -> Result<(), OpLogError> {
 
 /// Checks the hash chain of `entries`, which must ascend without a gap (ADR-011, STEMMA-41).
 ///
-/// Each entry is linked to the one before it in `entries`: an entry in the chain names its hash,
-/// or starts the chain if the one before was written before the chain. Entry 1 starts the chain
-/// or was written before it, which [`Entry::parse`] checks. The first entry of `entries` is not
-/// linked to anything else, so a
-/// caller that reads a window passes the entry before it as well. A stub has the hash of the
-/// entry it replaced, so a purge does not break the chain; that a `purge` entry lists the stub
-/// is checked by [`check_stubs`].
+/// Each entry is linked to the one before it in `entries`: an entry in the chain names its hash, or
+/// starts the chain if the one before was written before the chain. Entry 1 starts the chain or was
+/// written before it, which [`Entry::parse`] checks. The first entry of `entries` is not linked to
+/// anything else, so a caller that reads a window passes the entry before it as well. A stub has
+/// the hash of the entry it replaced, so a purge does not break the chain; that a `purge` entry
+/// lists the stub is checked by [`check_stubs`].
 ///
 /// The chain shows that the entries agree with one another, not who wrote them: whoever can
 /// write `.stemma` can compute every later hash and the tip again. The entries before the
@@ -2861,8 +2868,14 @@ pub fn check_chain(entries: &[Entry]) -> Result<(), OpLogError> {
 }
 
 /// The number of the first entry in the hash chain, or `None` if no entry is in it yet. The
-/// entries before it were written before the chain and are not covered by it.
+/// entries before it were written before the chain and are not covered by it. `entries` is the
+/// whole log, from entry 1, as [`FsOpLog::entries`] reads it: in a window, the first entry in the
+/// chain is not where it starts.
 pub fn chain_start(entries: &[Entry]) -> Option<u64> {
+    debug_assert!(
+        entries.first().is_none_or(|entry| entry.number == 1),
+        "the entries must begin at entry 1"
+    );
     entries
         .iter()
         .find(|entry| entry.chain != Chain::Unchained)
@@ -6066,6 +6079,51 @@ mod tests {
         assert_eq!(log.tail(2).unwrap(), &entries[2..]);
         // The whole log does not pass.
         assert!(log.entries().is_err());
+    }
+
+    #[test]
+    fn a_broken_link_at_the_edge_of_a_window_fails_the_window() {
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        // Entry 2 replaced, readable, and no longer the entry that entry 3 names.
+        let other = Entry::linked(
+            2,
+            Chain::After(entries[0].hash().unwrap()),
+            Record::Change(change("main", Some(A), C)),
+        )
+        .unwrap();
+        fs::write(entry_file(&dir, 2), other.encode()).unwrap();
+        assert!(matches!(
+            log.window(2),
+            Err(OpLogError::ChainBroken { number: 3, .. })
+        ));
+        // A window that does not reach the link is not checked against it.
+        assert!(log.window(1).is_ok());
+    }
+
+    #[test]
+    fn a_writer_that_cannot_read_the_entry_two_before_starts_no_hidden_chain() {
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        // Entry 4 in the form from before the chain, entry 3 damaged, and the tip removed: the
+        // writer cannot tell that entry 4 follows the chain, so it starts the chain again.
+        let old = Entry::of(4, entries[3].record().clone()).unwrap();
+        fs::write(entry_file(&dir, 4), old.encode()).unwrap();
+        fs::write(entry_file(&dir, 3), "damaged").unwrap();
+        fs::remove_file(dir.path().join("oplog-tip")).unwrap();
+        let appended = log.append(&change("main", Some(A), B)).unwrap();
+        assert_eq!(appended.chain(), Chain::Start);
+        // The damage is not hidden: the whole log still fails at entry 3.
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::Corrupt { path, .. }) if path == entry_file(&dir, 3)
+        ));
+        // And once entry 3 is restored, the old entry after the chain is found.
+        fs::write(entry_file(&dir, 3), entries[2].encode()).unwrap();
+        assert!(matches!(
+            log.entries(),
+            Err(OpLogError::UnchainedAfterChain { number: 4 })
+        ));
     }
 
     #[test]

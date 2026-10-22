@@ -440,9 +440,10 @@ impl Repository {
     }
 
     /// Finishes a purge that stopped, from its journal (ADR-014). The lock that the purge left
-    /// behind is taken for its own and removed. Each step is repeated: a new object that exists is
-    /// left alone, a pointer at its new value is skipped, a `purge` entry that is written is found
-    /// and not written again, a stub is replaced by itself, and a deleted object is gone.
+    /// behind is taken for its own and removed, and the repository moves to format 4, as a purge
+    /// that an older program started left an older one. Each step is repeated: a new object that
+    /// exists is left alone, a pointer at its new value is skipped, a `purge` entry that is written
+    /// is found and not written again, a stub is replaced by itself, and a deleted object is gone.
     ///
     /// # Errors
     ///
@@ -461,7 +462,8 @@ impl Repository {
 
     /// Undoes a purge that stopped before its `purge` entry (ADR-014): removes the objects that
     /// the journal names as new, then the journal. The lock that the purge left behind is taken
-    /// for its own and removed. The format stays at 3, as a format is never lowered.
+    /// for its own and removed. The format stays where the purge raised it, as a format is never
+    /// lowered.
     ///
     /// # Errors
     ///
@@ -606,6 +608,13 @@ impl Repository {
         stop: Option<Stop>,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
         let (journal, lock) = self.take_over(actor, authorizer)?;
+        // A purge that an older program started left an older format; the entries that the
+        // resume writes are in the hash chain, so the format rises first, as for a new purge.
+        raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(stopped(
+            PurgeStep::Journal,
+            &[],
+            store,
+        ))?;
         let left = scratch_left(&self.metadata_dir());
         Ok(self
             .carry_out(&journal, actor, lock, stop)?
@@ -1244,6 +1253,20 @@ mod tests {
                 "{error:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_resume_of_a_purge_from_before_the_chain_moves_the_repository_to_format_4() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        // An older program wrote the journal at format 3.
+        fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_purged(&dir, &repository, &purged);
+        assert_eq!(format(&dir), "stemma-repository 4\n");
+        assert!(repository.oplog().verify().is_ok());
     }
 
     #[test]
