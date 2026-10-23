@@ -35,16 +35,19 @@ Group related work with parent and child items (`parent`) or with modules.
 ## Phases
 
 Each phase of the roadmap is a Plane cycle, such as `Phase 1: Lokaler Kern`.
-Phases are not labels: the former `phase-1` label was replaced by its cycle.
+Phases are not labels: every phase from 1 to 6 has its cycle, and the former labels
+`phase-1` to `phase-6` were removed.
 
 - **Find the cycle**: `cycle list` and match the name; pass its `id` as `cycle_id`.
 - **Issues of a phase**: `cycle list_workitems` with `project_id` and `cycle_id`.
 - **Assign an issue to a phase**: `cycle manage_workitems` with `add_ids` (work item UUIDs).
   An issue belongs to at most one cycle, so one issue cannot sit in two phases.
+  An issue that concerns two phases sits in the cycle where it is needed first,
+  and its description names the other phase.
 - **Close a phase**: `cycle complete`, then `cycle transfer_workitems` moves the unfinished
   issues into the cycle of the next phase. Completing needs the start and end date of the cycle.
-- The labels `phase-2` to `phase-6` still mark later phases until their cycles exist;
-  replace each label by its cycle when that phase starts.
+- **Dates of a cycle**: the web UI sets the start and the end date only together;
+  `cycle update` with `start_date` alone sets the start of a cycle that has no end yet.
 
 ## Pull requests as a triage surface
 
