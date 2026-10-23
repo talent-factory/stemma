@@ -29,10 +29,12 @@ use std::str::FromStr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
+use crate::oplog::Pointer;
 use crate::store::{
     create_dirs_synced, create_temp, remove_scratch, sync_directory, unique_temp_name, ObjectStore,
     StoreError,
 };
+use crate::verify::{RefVerifyError, VerifyError};
 
 /// The longest branch name in bytes. A file name is limited by the file system, which is 255 bytes
 /// for the usual ones, and this stays below that. The path of a branch has the directory of the
@@ -1426,6 +1428,42 @@ impl FsRefStore {
             .read_reference(&path)?
             .ok_or_else(|| RefError::NoWorkingCopy { path: path.clone() })?;
         parse_branch(&bytes).map_err(|source| RefError::Corrupt { path, source })
+    }
+
+    /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
+    /// working-copy commit, and every branch. A write checks the commit already (ADR-008), so a
+    /// problem here comes from outside the module: an object that was removed, or a file that was
+    /// edited by hand. HEAD that names a branch is not checked itself; the branch is, if it
+    /// exists, and a branch that does not exist yet is no problem, as in a new repository.
+    ///
+    /// The result has one error for each reference that fails, in the order HEAD, the
+    /// working-copy commit, and the branches by name; it is empty if all hold. The references are
+    /// read without the lock, so the result holds at the time of each read. Each commit is read
+    /// and hashed completely, but its tree and parents are not followed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of reading the references, as [`head`](RefStore::head),
+    /// [`working_copy`](Self::working_copy), and [`branches`](RefStore::branches) do: a file that
+    /// is missing or not in canonical form is a problem of the references themselves, and the
+    /// check stops there.
+    pub fn verify(&self, objects: &dyn ObjectStore) -> Result<Vec<RefVerifyError>, RefError> {
+        let mut pointers = Vec::new();
+        if let Head::Detached(commit) = self.head()? {
+            pointers.push((Pointer::Head, commit));
+        }
+        pointers.push((Pointer::WorkingCopy, self.working_copy()?));
+        for (name, commit) in self.branches()? {
+            pointers.push((Pointer::Branch(name), commit));
+        }
+        Ok(pointers
+            .into_iter()
+            .filter_map(|(pointer, commit)| {
+                let id = commit.object_id();
+                let found = objects.resolve_commit(&id).map(|found| found.is_some());
+                VerifyError::check(|| pointer, id, found).err()
+            })
+            .collect())
     }
 
     /// Moves the working-copy commit from `expected` to `new`, and runs `step` after the checks and
@@ -3560,5 +3598,92 @@ mod tests {
         assert_eq!(ran.get(), 1);
         assert_eq!(refs.branch(&name("main")).unwrap(), None);
         assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    // ---- verify
+
+    /// Writes a reference past the checks of the module, as a person or a damaged disk would.
+    fn write_reference(dir: &TempDir, relative: &str, content: &str) {
+        let path = dir.path().join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn references_that_name_commits_in_the_store_verify() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "first");
+        let second = commit(&objects, "second");
+        write_reference(&dir, "HEAD", "branch main\n");
+        write_reference(&dir, "working-copy", &format!("{second}\n"));
+        refs.update_branch(&name("main"), None, first, &objects)
+            .unwrap();
+        refs.update_branch(&name("feat/x"), None, second, &objects)
+            .unwrap();
+        assert!(refs.verify(&objects).unwrap().is_empty());
+        // HEAD may name a branch that does not exist yet, as it does in a new repository.
+        write_reference(&dir, "HEAD", "branch next\n");
+        assert!(refs.verify(&objects).unwrap().is_empty());
+        write_reference(&dir, "HEAD", &format!("commit {first}\n"));
+        assert!(refs.verify(&objects).unwrap().is_empty());
+    }
+
+    #[test]
+    fn every_reference_that_fails_is_reported_in_order() {
+        let (dir, objects, refs) = setup();
+        let kept = commit(&objects, "kept");
+        let removed = commit(&objects, "removed");
+        let tree = objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        fs::remove_file(objects.object_path(&removed.object_id())).unwrap();
+        write_reference(&dir, "HEAD", &format!("commit {removed}\n"));
+        write_reference(&dir, "working-copy", &format!("{tree}\n"));
+        write_reference(&dir, "refs/heads/a", &format!("{kept}\n"));
+        write_reference(&dir, "refs/heads/b/c", &format!("{removed}\n"));
+
+        let errors = refs.verify(&objects).unwrap();
+        let places: Vec<&Pointer> = errors.iter().map(VerifyError::at).collect();
+        assert_eq!(
+            places,
+            [
+                &Pointer::Head,
+                &Pointer::WorkingCopy,
+                &Pointer::Branch(name("b/c"))
+            ]
+        );
+        assert!(
+            matches!(&errors[0], VerifyError::Missing { id, .. } if *id == removed.object_id())
+        );
+        assert!(matches!(
+            errors[1].store_error(),
+            Some(StoreError::KindMismatch {
+                found: Kind::Tree,
+                ..
+            })
+        ));
+        assert_eq!(
+            errors[2].to_string(),
+            format!("the branch `b/c`: the store has no object {removed}")
+        );
+    }
+
+    #[test]
+    fn a_reference_that_cannot_be_read_stops_the_check() {
+        let (dir, objects, refs) = setup();
+        let kept = commit(&objects, "kept");
+        assert!(matches!(
+            refs.verify(&objects),
+            Err(RefError::NoHead { .. })
+        ));
+        write_reference(&dir, "HEAD", "branch main\n");
+        assert!(matches!(
+            refs.verify(&objects),
+            Err(RefError::NoWorkingCopy { .. })
+        ));
+        write_reference(&dir, "working-copy", &format!("{kept}\n"));
+        write_reference(&dir, "refs/heads/main", &kept.to_string());
+        assert!(matches!(
+            refs.verify(&objects),
+            Err(RefError::Corrupt { .. })
+        ));
     }
 }

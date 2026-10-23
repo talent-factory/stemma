@@ -1,14 +1,15 @@
-//! Checking the claims of an index, a tree, or a commit against a store.
+//! Checking the claims of an index, a tree, a commit, or the references against a store.
 //!
 //! The readers [`Tree::parse`] and [`Commit::parse`] claim the kind of each ID they find: the mode
 //! of an entry says whether it names a tree or a blob, and the headers of a commit name a tree and
 //! parents. A reader has no store, so it cannot know. [`Tree::verify`] and [`Commit::verify`]
 //! check the claims of one object against a store, as [`Index::verify`](crate::index::Index::verify)
-//! does for an index.
+//! does for an index. [`FsRefStore::verify`](crate::refs::FsRefStore::verify) checks the commits
+//! that the references name (ADR-008).
 //!
 //! A check that fails gives a [`VerifyError`] for the place of the claim: [`IndexVerifyError`],
-//! [`TreeVerifyError`], and [`CommitVerifyError`] are that one type, so that a caller handles the
-//! error of a check in one way, with `match` and with `store_error()`.
+//! [`TreeVerifyError`], [`CommitVerifyError`], and [`RefVerifyError`] are that one type, so that a
+//! caller handles the error of a check in one way, with `match` and with `store_error()`.
 //!
 //! The check is shallow: it looks at the objects that the tree or commit names directly, and does
 //! not follow them. Each object is read and verified completely (see
@@ -19,6 +20,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::object::{Commit, EntryMode, ObjectId, Tree};
+use crate::oplog::Pointer;
 use crate::store::{ObjectStore, StoreError};
 
 /// The path of an entry of an index. It is a different thing from the name of an entry of a tree
@@ -95,6 +97,10 @@ pub type TreeVerifyError = VerifyError<EntryName>;
 
 /// Why a commit fails [`Commit::verify`]. The place is the tree or the parent.
 pub type CommitVerifyError = VerifyError<CommitReference>;
+
+/// Why a reference fails [`FsRefStore::verify`](crate::refs::FsRefStore::verify). The place is
+/// the pointer: HEAD, the working-copy commit, or a branch.
+pub type RefVerifyError = VerifyError<Pointer>;
 
 impl<L: fmt::Debug + fmt::Display> VerifyError<L> {
     /// Turns the answer of a store to "is there an object of the claimed kind" into the result of

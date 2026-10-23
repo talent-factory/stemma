@@ -54,6 +54,7 @@ use crate::store::{
     create_dirs_synced as create_store_dirs, create_temp, sync_directory as flush_store_directory,
     unique_temp_name, FsObjectStore, ObjectStore, StoreError, INIT_STAGING_PREFIX,
 };
+use crate::verify::RefVerifyError;
 use crate::{Actor, Authorizer, Decision};
 
 /// The version of the repository format that `init` writes: the operation log with the hash
@@ -341,6 +342,16 @@ impl Repository {
     /// directory is not stopped.
     pub fn refs(&self) -> RefsView<'_> {
         RefsView { refs: &self.refs }
+    }
+
+    /// Checks that HEAD, the working-copy commit, and every branch name a commit that the object
+    /// store of this repository has. See [`FsRefStore::verify`].
+    ///
+    /// # Errors
+    ///
+    /// See [`FsRefStore::verify`].
+    pub fn verify_refs(&self) -> Result<Vec<RefVerifyError>, RefError> {
+        self.refs.verify(&self.objects)
     }
 
     /// The store of the references, for the code of this crate that moves several pointers at once.
@@ -1359,6 +1370,18 @@ mod tests {
         assert_eq!(names(&meta.join("refs")), ["heads"]);
         assert_eq!(repository.path(), dir.path());
         assert_eq!(repository.metadata_dir(), meta);
+    }
+
+    #[test]
+    fn the_references_of_a_new_repository_verify_and_a_removed_commit_is_found() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        assert!(repository.verify_refs().unwrap().is_empty());
+        let id = repository.refs().working_copy().unwrap();
+        fs::remove_file(repository.objects().object_path(&id.object_id())).unwrap();
+        let errors = repository.verify_refs().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].at(), &crate::oplog::Pointer::WorkingCopy);
     }
 
     #[test]
