@@ -772,3 +772,32 @@ fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_
         result.stdout
     );
 }
+
+#[test]
+fn an_entry_before_a_stub_is_unknown_in_a_chained_log() {
+    // Entry 3 became a stub: entry 2 is unknown although the value of `main` would confirm it
+    // (ADR-014). Entry 5, after the purge, keeps its own outcome.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, C);
+    write_entry_2(dir.path(), 3, "stub\n");
+    write_entry_2(dir.path(), 4, "operation purge\ncommits 1\nstubs 3\n");
+    branch_move(dir.path(), 5, A, B);
+    set_branch(dir.path(), B);
+
+    let result = run(dir.path(), &["op", "log", "--json"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert!(lines[0].starts_with("{\"number\":5,"), "{}", result.stdout);
+    assert!(
+        lines[0].ends_with("\"took_effect\":true}"),
+        "{}",
+        result.stdout
+    );
+    assert!(lines[3].starts_with("{\"number\":2,"), "{}", result.stdout);
+    assert!(
+        lines[3].ends_with("\"took_effect\":null}"),
+        "{}",
+        result.stdout
+    );
+}
