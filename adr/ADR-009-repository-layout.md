@@ -9,16 +9,19 @@ The object store (ADR-007) and the references (ADR-008) each take a root directo
 check it. Nothing ties the two to one repository: `update_branch` accepts the object store of any
 repository, and nothing says which directory is a repository at all. `stemma init` needs a place
 where the layout, the format version, and the creation of a repository are defined once.
-Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `crates/stemma-cli/src/cli.rs`.
+Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
+`crates/stemma-cli/src/cli.rs`.
 
 ## Decision
 
 - **One type bundles the stores** *(confirmed)*. `Repository` in `stemma-core` holds the
-  directory, an `FsObjectStore`, an `FsRefStore`, and an `FsOpLog` (ADR-011). The command line only calls it. Later
+  directory, an `FsObjectStore`, an `FsRefStore`, and an `FsOpLog` (ADR-011).
+  The command line only calls it. Later
   operations (`add`, `commit`) are methods of `Repository`, so they use the stores of one
   repository.
 - **Layout** *(confirmed)*. A repository is a directory that contains `.stemma/`. Inside:
-  `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007), `oplog/` and `oplog-tip` (ADR-011),
+  `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007),
+  `oplog/` and `oplog-tip` (ADR-011),
   `refs/heads/` (ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
   it stopped, ADR-014), and `tmp/` (the temporary files of the object store, the references, the
   log, and the purge).
@@ -53,7 +56,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
 - **`init` has an actor and an authorizer** *(confirmed)*. `Repository::init(path, options, actor,
   authorizer)` calls `authorize(actor, "init", <directory>)` first (ADR-002). No policy can live
   in a repository that does not exist yet, so the caller supplies the authorizer; in phase 1 it
-  is `AllowAll`. `init` records the actor in the first entry of the operation log (ADR-011); the actor is not stored in the format file or in HEAD.
+  is `AllowAll`. `init` records the actor in the first entry of the operation log (ADR-011);
+  the actor is not stored in the format file or in HEAD.
 - **The directory is created if it does not exist**, as `git init` does.
 
 ## Consequences
@@ -74,7 +78,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command, `cr
 - `Repository` hands out the object store, but the references only as a view for reading
   (`Repository::refs()`, ADR-011). A pointer moves through `Repository::update_branch` and
   `set_head`, which use the object store of their own repository, so the gap that the context
-  names is closed for those two operations. The operations that need both (`commit`) will be methods of `Repository`, and the stores
+  names is closed for those two operations. The operations that need both (`commit`) will be methods
+  of `Repository`, and the stores
   can become crate-private then; see the open items.
 
 ## Open items

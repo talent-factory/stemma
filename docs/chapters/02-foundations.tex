@@ -1,20 +1,35 @@
 \chapter{Grundlagen}
 
-Dieses Kapitel fasst die Konzepte zusammen, auf denen das System aufbaut. Es ist ein Entwurf und wird mit den Phasen präzisiert.
+Dieses Kapitel fasst die Konzepte zusammen, auf denen das System aufbaut.
+Es ist ein Entwurf und wird mit den Phasen präzisiert.
 
 \section{Datenmodell}
 
-Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden. Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse und Commits für Snapshots mit Verweis auf Vorgänger. Die Historie bildet damit einen azyklischen Graphen aus unveränderlichen Knoten. Dieser Aufbau ist die Stärke des Modells, weil identische Inhalte nur einmal gespeichert werden und Änderungen nachträglich nicht unbemerkt verändert werden können (\in{Abbildung}[fig:objects]).
+Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden. Es gibt drei Grundtypen:
+Blobs für Dateiinhalte, Trees für Verzeichnisse und Commits für Snapshots mit Verweis auf
+Vorgänger. Die Historie bildet damit einen azyklischen Graphen aus unveränderlichen Knoten.
+Dieser Aufbau ist die Stärke des Modells, weil identische Inhalte nur einmal gespeichert werden und
+Änderungen nachträglich nicht unbemerkt verändert werden können (\in{Abbildung}[fig:objects]).
 
 \startplacefigure[title={Objektmodell: Commit, Tree und Blob},reference=fig:objects,location=here]
 \externalfigure[images/objects.pdf][width=\textwidth]
 \stopplacefigure
 
-Stemma übernimmt dieses Modell und ändert vier Dinge. Die ID eines Objekts trägt den Algorithmus als Präfix (\type{b3:} für BLAKE3), damit später ein anderer Hash möglich bleibt. Jeder Commit trägt eine Change-ID (\type{ch:} und 32 Hexziffern), die bei jedem Umschreiben derselben Änderung gleich bleibt, damit ein Review oder ein Rebase \quotation{dieselbe Änderung} wiederfindet. Sie ist zufällig und wird nicht aus dem Inhalt abgeleitet. Jeder Commit nennt einen Akteur, einen Menschen oder einen Agenten mit Modell, Session und Sponsor. Einen Committer gibt es nicht. Die Leser sind streng: Was die Kodierung nicht geschrieben hätte, wird abgelehnt, damit jedes Objekt genau eine Kodierung und eine ID hat.
+Stemma übernimmt dieses Modell und ändert vier Dinge. Die ID eines Objekts trägt den Algorithmus
+als Präfix (\type{b3:} für BLAKE3), damit später ein anderer Hash möglich bleibt.
+Jeder Commit trägt eine Change-ID (\type{ch:} und 32 Hexziffern),
+die bei jedem Umschreiben derselben Änderung gleich bleibt,
+damit ein Review oder ein Rebase \quotation{dieselbe Änderung} wiederfindet.
+Sie ist zufällig und wird nicht aus dem Inhalt abgeleitet.
+Jeder Commit nennt einen Akteur, einen Menschen oder einen Agenten mit Modell, Session und Sponsor.
+Einen Committer gibt es nicht. Die Leser sind streng: Was die Kodierung nicht geschrieben hätte,
+wird abgelehnt, damit jedes Objekt genau eine Kodierung und eine ID hat.
 
 \section{Referenzen}
 
-Branches und Tags sind Zeiger auf Commits. HEAD zeigt auf den aktuellen Branch. Diese Trennung zwischen unveränderlichen Objekten und veränderlichen Zeigern ist für das Projekt wichtig: Schreibhoheit betrifft die Zeiger, nicht die Objekte.
+Branches und Tags sind Zeiger auf Commits. HEAD zeigt auf den aktuellen Branch.
+Diese Trennung zwischen unveränderlichen Objekten und veränderlichen Zeigern ist für das Projekt
+wichtig: Schreibhoheit betrifft die Zeiger, nicht die Objekte.
 
 \section{Arbeitskopie und Index}
 
@@ -35,17 +50,32 @@ Zwischen zwei Aufrufen kann Stemma nichts sichern, einen Dateiwächter gibt es i
 
 \section{Konflikte und Operation Log}
 
-Git bricht einen Vorgang ab, wenn ein Konflikt entsteht. Jujutsu speichert Konflikte dagegen im Commit selbst \cite[jujutsu]. Ein Agent kann so weiterarbeiten und den Konflikt später lösen. Ein Operation Log protokolliert jeden Schritt und ermöglicht das Zurücksetzen beliebiger Operationen. Beide Ideen passen gut zu Agenten, die viele Schritte ausführen.
+Git bricht einen Vorgang ab, wenn ein Konflikt entsteht.
+Jujutsu speichert Konflikte dagegen im Commit selbst \cite[jujutsu].
+Ein Agent kann so weiterarbeiten und den Konflikt später lösen.
+Ein Operation Log protokolliert jeden Schritt und ermöglicht das Zurücksetzen beliebiger
+Operationen. Beide Ideen passen gut zu Agenten, die viele Schritte ausführen.
 
-In Stemma ist das Log lokal und gehört nicht zur Historie (ADR-005, ADR-011). Es hält fest, welche Zeiger eine Operation von welchem auf welchen Wert gesetzt hat, wer sie ausgeführt hat und wann. Damit bleibt jeder ersetzte Commit erreichbar, auch der Arbeitskopie-Commit, den ein Snapshot ablöst. Der Eintrag wird geschrieben, bevor der Zeiger sich bewegt: Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log. Jeder Eintrag ist eine eigene Datei mit fortlaufender Nummer, sodass mehrere Agenten gleichzeitig schreiben können, ohne sich zu sperren, und ein einzelner Eintrag sich ersetzen lässt, wenn ein Geheimnis entfernt werden muss.
+In Stemma ist das Log lokal und gehört nicht zur Historie (ADR-005, ADR-011).
+Es hält fest, welche Zeiger eine Operation von welchem auf welchen Wert gesetzt hat,
+wer sie ausgeführt hat und wann. Damit bleibt jeder ersetzte Commit erreichbar,
+auch der Arbeitskopie-Commit, den ein Snapshot ablöst. Der Eintrag wird geschrieben,
+bevor der Zeiger sich bewegt: Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log.
+Jeder Eintrag ist eine eigene Datei mit fortlaufender Nummer,
+sodass mehrere Agenten gleichzeitig schreiben können, ohne sich zu sperren,
+und ein einzelner Eintrag sich ersetzen lässt, wenn ein Geheimnis entfernt werden muss.
 
 \section{Ideen aus anderen Systemen}
 
 \startitemize
-\item {\bf Jujutsu (jj):} Stabile Change-IDs, Konflikte als Daten, Operation Log und Git als Speicher \cite[jujutsu].
-\item {\bf Pijul:} Ein Modell auf Basis von Patches statt Snapshots. Es zeigt eine andere Grundannahme \cite[pijul].
+\item {\bf Jujutsu (jj):} Stabile Change-IDs, Konflikte als Daten,
+Operation Log und Git als Speicher \cite[jujutsu].
+\item {\bf Pijul:} Ein Modell auf Basis von Patches statt Snapshots.
+Es zeigt eine andere Grundannahme \cite[pijul].
 \item {\bf Sapling:} Ein System für grosse Monorepos mit Fokus auf Skalierung \cite[sapling].
-\item {\bf Scion (Anthropic):} Laut dem Engineering-Blog von Anthropic \cite[anthropic2026redesigning] ein zentrales System mit API-basierten Abfragen ohne lokalen Klon. Der Beitrag nennt keine öffentliche Verfügbarkeit, und das Projekt übernimmt keinen Code.
+\item {\bf Scion (Anthropic):} Laut dem Engineering-Blog von Anthropic
+\cite[anthropic2026redesigning] ein zentrales System mit API-basierten Abfragen ohne lokalen Klon.
+Der Beitrag nennt keine öffentliche Verfügbarkeit, und das Projekt übernimmt keinen Code.
 \stopitemize
 
 Das Projekt nutzt diese Systeme als Ideengeber. Text und Code entstehen neu.

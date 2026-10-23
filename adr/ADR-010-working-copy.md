@@ -96,7 +96,8 @@ are prior art, not a template.
     top of that parent would drop what the branch has. A rebase (phase 3) brings the two
     together.
 - **`status` takes the snapshot and compares the commit with its parent** *(confirmed,
-  implemented in `Repository::status` and `stemma status`)*. Like every command that does not only read the log,
+  implemented in `Repository::status` and `stemma status`)*.
+  Like every command that does not only read the log,
   `status` saves the tracked files (so it has an actor, and the entry appears only if a tracked
   file changed). The snapshot makes every tracked file equal to the working-copy commit, so
   "changed" cannot mean "differs from the working-copy commit": it means what the working-copy
@@ -129,7 +130,8 @@ are prior art, not a template.
 - **Where the working-copy commit is recorded** *(confirmed)*. A file `.stemma/working-copy`
   holds the ID of the working-copy commit, in the form of a branch file (ADR-008), replaced with
   the same compare-and-swap under the lock of the references. One working copy per repository
-  directory in phase 1. A missing file is an error and not "no commit yet" (`RefError::NoWorkingCopy`).
+  directory in phase 1. A missing file is an error and not "no commit yet"
+  (`RefError::NoWorkingCopy`).
 - **`init` makes the first working-copy commit** *(confirmed)*. It has the empty tree, no parents,
   a change ID of its own, and the actor of `init` as its author. It goes into the first entry of
   the log together with HEAD, so a snapshot always replaces a commit that exists, and the log

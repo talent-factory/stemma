@@ -1,6 +1,7 @@
 # Issue tracker: Plane
 
-Issues and specs for this repo live in the Plane project **Stemma** (identifier `STEMMA`, work items such as `STEMMA-12`). Use the `plane-tf` MCP server for all operations; there is no CLI.
+Issues and specs for this repo live in the Plane project **Stemma** (identifier `STEMMA`,
+work items such as `STEMMA-12`). Use the `plane-tf` MCP server for all operations; there is no CLI.
 
 - Web UI: https://plane.talent-factory.ch/tf/projects/d988f244-ae6e-492d-a61e-c335c6c87de9/issues
 - Project id: `d988f244-ae6e-492d-a61e-c335c6c87de9` (pass it as `project_id` to every call)
@@ -9,16 +10,24 @@ Issues and specs for this repo live in the Plane project **Stemma** (identifier 
 
 ## Conventions
 
-- **Create an issue**: `workitem create` with `project_id`, `name`, and `description_html` (or `description_stripped` for plain text). Set `priority` (`urgent`, `high`, `medium`, `low`, `none`) when it is known.
-- **Read an issue**: `workitem retrieve_by_identifier` with `workitem_identifier="STEMMA-12"`. Comments are not part of that result; read them through the web UI if a skill needs them.
+- **Create an issue**: `workitem create` with `project_id`, `name`,
+  and `description_html` (or `description_stripped` for plain text).
+  Set `priority` (`urgent`, `high`, `medium`, `low`, `none`) when it is known.
+- **Read an issue**: `workitem retrieve_by_identifier` with `workitem_identifier="STEMMA-12"`.
+  Comments are not part of that result; read them through the web UI if a skill needs them.
 - **List issues**: `workitem list` with `project_id`.
   This Plane edition rejects `pql` filters, so filter the result on the client side
   (for example by `state` with `expand=state`).
   The issues of a phase come from `cycle list_workitems` (see below).
-- **Update an issue**: `workitem update` with `project_id`, `workitem_id` (the UUID, not `STEMMA-12`) and only the fields that change.
-- **Apply / remove labels**: `workitem manage_label` with `add_label_id` / `remove_label_id`. Labels are referenced by UUID: resolve a name with `label list` first. Create a missing label with `label create`.
-- **Change state**: `workitem update` with `state` set to a state UUID from `state list`. States are Backlog (default), Todo, In Progress, Done, Cancelled.
-- **Close**: set the state to Done (finished) or Cancelled (will not be actioned). There is no separate close action.
+- **Update an issue**: `workitem update` with `project_id`, `workitem_id` (the UUID,
+  not `STEMMA-12`) and only the fields that change.
+- **Apply / remove labels**: `workitem manage_label` with `add_label_id` / `remove_label_id`.
+  Labels are referenced by UUID: resolve a name with `label list` first.
+  Create a missing label with `label create`.
+- **Change state**: `workitem update` with `state` set to a state UUID from `state list`.
+  States are Backlog (default), Todo, In Progress, Done, Cancelled.
+- **Close**: set the state to Done (finished) or Cancelled (will not be actioned).
+  There is no separate close action.
 
 Work item types are disabled in this project, so there are no epics.
 Group related work with parent and child items (`parent`) or with modules.
@@ -39,7 +48,8 @@ Phases are not labels: the former `phase-1` label was replaced by its cycle.
 
 ## Pull requests as a triage surface
 
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
+**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature
+requests; `/triage` reads this flag.)_
 
 ## When a skill says "publish to the issue tracker"
 
@@ -54,8 +64,16 @@ Run `workitem retrieve_by_identifier` with the identifier, for example `STEMMA-1
 Used by `/wayfinder`. The **map** is a single work item with **child** work items as tickets.
 
 - **Map**: a work item labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body.
-- **Child ticket**: a work item whose `parent` is the map. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: `workitem_relation create` with `relation_type="blocked_by"`. A ticket is unblocked when every blocker is in the Done or Cancelled state.
-- **Frontier query**: list the map's open children (`workitem list` with a `pql` filter on the parent and the open state groups), drop any with an open blocker or an assignee; first in map order wins.
-- **Claim**: `workitem manage_assignee` with `add_user_id` set to the driving dev, the session's first write.
-- **Resolve**: add the answer to the ticket (comment through the web UI, or append it to the description with `workitem update`), set the state to Done, then append a context pointer (gist + link) to the map's Decisions-so-far.
+- **Child ticket**: a work item whose `parent` is the map. Labels:
+  `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`).
+  Once claimed, the ticket is assigned to the driving dev.
+- **Blocking**: `workitem_relation create` with `relation_type="blocked_by"`.
+  A ticket is unblocked when every blocker is in the Done or Cancelled state.
+- **Frontier query**: list the map's open children (`workitem list` with a `pql` filter on the
+  parent and the open state groups), drop any with an open blocker or an assignee;
+  first in map order wins.
+- **Claim**: `workitem manage_assignee` with `add_user_id` set to the driving dev,
+  the session's first write.
+- **Resolve**: add the answer to the ticket (comment through the web UI,
+  or append it to the description with `workitem update`), set the state to Done,
+  then append a context pointer (gist + link) to the map's Decisions-so-far.
