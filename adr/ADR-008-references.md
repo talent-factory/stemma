@@ -88,11 +88,15 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   The listing reads without the lock, so another change may delete a branch, or the last branch
   below a directory together with that directory, while it runs. An entry that is gone between
   the listing and the read is no branch and no error, and so is a branch file that a lookup
-  found and that is gone when it is read (STEMMA-57). Any other entry stays strict: a file whose
-  name is not a branch name, such as the backup `main~` of an editor, stops the listing with
-  `Corrupt`, because a reader accepts only what the writer writes (ADR-005), and skipping it
-  would hide damage. The error names the path, so the file can be removed. A name such as
-  `main.orig` is a valid branch name; such a file is listed as a branch if its content is one.
+  found and that is gone when it is read (STEMMA-57). Any other entry stays strict: a file or a
+  directory whose name is not a branch name, such as the backup `main~` of an editor, stops the
+  listing with `Corrupt`, because a reader accepts only what the writer writes (ADR-005), and
+  skipping it would hide damage. The error names the path, so the entry can be removed. A name
+  such as `main.orig` is a valid branch name; such a file is listed as a branch if its content
+  is a valid reference, and is `Corrupt` otherwise. The check whether a directory holds files,
+  after which a change may remove it as empty, counts every doubt as a file: a directory below
+  it that was listed and cannot be opened may still hold one. A race in which a directory is
+  replaced by a file while it is listed still ends the listing with `Io`; the next one succeeds.
 - `update_branch` and `set_head` refuse a commit that is not in the object store
   (`MissingCommit`) or is another object (`NotACommit`). A failure of the file system in that
   check is an `Io`, as everywhere in the module.
