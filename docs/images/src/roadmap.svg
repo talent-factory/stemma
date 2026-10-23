@@ -1,26 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 400" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 356" font-family="Helvetica, Arial, sans-serif">
   <title>Phasen des Projekts</title>
 
-  <!-- Spine: solid up to the current phase, dashed for the planned ones -->
-  <line x1="40" y1="40" x2="40" y2="96" stroke="#7C3AED" stroke-width="2"/>
-  <line x1="40" y1="96" x2="40" y2="320" stroke="#818CF8" stroke-width="2" stroke-dasharray="6 4"/>
+  <!-- Spine: one uniform line; the figure shows no status, which lives in the README -->
+  <line x1="40" y1="40" x2="40" y2="320" stroke="#7C3AED" stroke-width="2"/>
 
-  <!-- Phase markers: phase 1 is in progress, phases 2 to 6 are planned -->
-  <circle cx="40" cy="40" r="16" fill="#7C3AED"/>
-  <g fill="#FFFFFF" stroke="#818CF8" stroke-width="2" stroke-dasharray="5 3">
+  <!-- Phase markers, all drawn alike -->
+  <g fill="#FFFFFF" stroke="#7C3AED" stroke-width="2">
+    <circle cx="40" cy="40" r="16"/>
     <circle cx="40" cy="96" r="16"/>
     <circle cx="40" cy="152" r="16"/>
     <circle cx="40" cy="208" r="16"/>
     <circle cx="40" cy="264" r="16"/>
     <circle cx="40" cy="320" r="16"/>
   </g>
-  <g text-anchor="middle" font-size="15" font-weight="bold">
-    <text x="40" y="45" fill="#FFFFFF">1</text>
-    <text x="40" y="101" fill="#7C3AED">2</text>
-    <text x="40" y="157" fill="#7C3AED">3</text>
-    <text x="40" y="213" fill="#7C3AED">4</text>
-    <text x="40" y="269" fill="#7C3AED">5</text>
-    <text x="40" y="325" fill="#7C3AED">6</text>
+  <g text-anchor="middle" font-size="15" font-weight="bold" fill="#7C3AED">
+    <text x="40" y="45">1</text>
+    <text x="40" y="101">2</text>
+    <text x="40" y="157">3</text>
+    <text x="40" y="213">4</text>
+    <text x="40" y="269">5</text>
+    <text x="40" y="325">6</text>
   </g>
 
   <!-- Phase names -->
@@ -35,8 +34,8 @@
 
   <!-- Goal of each phase, taken from the section "Ziel" of its chapter -->
   <g font-size="12" fill="#64748B">
-    <text x="72" y="55">Ein Repository, ein Nutzer: anlegen, Commits erzeugen, Operation Log</text>
-    <text x="72" y="111">Änderungen zwischen Arbeitskopie und Commits lesbar anzeigen</text>
+    <text x="72" y="55">Ein Repository, ein Nutzer: anlegen, Commits erzeugen, Status anzeigen</text>
+    <text x="72" y="111">Änderungen zwischen Arbeitskopie, Index und Commits lesbar anzeigen</text>
     <text x="72" y="167">Parallele Arbeit lokal: Branches anlegen, wechseln, zusammenführen</text>
     <text x="72" y="223">Schreibhoheit, Pull Requests und Freigaben im System erzwingen</text>
     <text x="72" y="279">Klone und Server synchronisieren, der Server setzt Berechtigungen durch</text>
@@ -51,13 +50,5 @@
     <text x="680" y="204">Kapitel 7</text>
     <text x="680" y="260">Kapitel 8</text>
     <text x="680" y="316">Kapitel 9</text>
-  </g>
-
-  <!-- Legend -->
-  <g font-size="12" fill="#64748B">
-    <circle cx="36" cy="378" r="7" fill="#7C3AED"/>
-    <text x="52" y="382">in Arbeit</text>
-    <circle cx="136" cy="378" r="7" fill="#FFFFFF" stroke="#818CF8" stroke-width="1.5" stroke-dasharray="4 3"/>
-    <text x="152" y="382">geplant</text>
   </g>
 </svg>
