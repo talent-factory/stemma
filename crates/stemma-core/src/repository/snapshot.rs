@@ -970,6 +970,33 @@ mod tests {
     }
 
     #[test]
+    fn every_commit_that_a_snapshot_replaced_stays_a_root_of_the_log() {
+        // Phase 1 keeps every entry (ADR-011, retention, STEMMA-39): after many snapshots each
+        // replaced working-copy commit is still named by the log and still in the store.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a.txt", "zero")]);
+        let mut replaced = Vec::new();
+        for round in 1..=5 {
+            replaced.push(repository.refs().working_copy().unwrap());
+            write(&dir, "a.txt", &format!("round {round}"));
+            snapshot(&repository).unwrap();
+        }
+        let entries = repository.oplog().entries().unwrap();
+        let roots: Vec<_> = entries.iter().flat_map(Entry::commits).collect();
+        for commit in &replaced {
+            assert!(roots.contains(commit), "{commit}");
+            assert!(repository.objects().contains(&commit.object_id()).unwrap());
+        }
+        let snapshots = entries
+            .iter()
+            .filter_map(Entry::change)
+            .filter(|change| change.operation().as_str() == "snapshot")
+            .count();
+        assert_eq!(snapshots, 5);
+    }
+
+    #[test]
     fn a_change_id_is_not_made_again_by_a_snapshot() {
         let dir = TempDir::new();
         let repository = repository(&dir);
