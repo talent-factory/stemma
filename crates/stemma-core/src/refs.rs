@@ -898,6 +898,24 @@ fn usable_host(name: &str) -> bool {
             .any(|placeholder| name.eq_ignore_ascii_case(placeholder))
 }
 
+/// Runs `open` on a file or directory that another change may be deleting or replacing. On
+/// Windows, an entry whose deletion or replacement has begun but not ended cannot be opened, and
+/// the open fails with "access is denied" for a short moment; it is then repeated until the entry
+/// is gone or can be opened, and only a denial that lasts is an error. Elsewhere a denial is final.
+fn settled<T>(mut open: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    const ATTEMPTS: u32 = if cfg!(windows) { 50 } else { 1 };
+    let mut attempt = 1;
+    loop {
+        match open() {
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied && attempt < ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Whether anything is at the path of the lock file, without following a link.
 fn exists(path: &Path) -> Result<bool, RefError> {
     match fs::symlink_metadata(path) {
@@ -1073,7 +1091,7 @@ impl FsRefStore {
         match fs::symlink_metadata(path) {
             // A reader without the lock may see another change delete the file between the two
             // calls; it is then gone, as if the first call had found nothing.
-            Ok(metadata) if metadata.is_file() => match fs::read(path) {
+            Ok(metadata) if metadata.is_file() => match settled(|| fs::read(path)) {
                 Ok(bytes) => Ok(Some(bytes)),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(io_error("read the reference", path)(error)),
@@ -1478,7 +1496,7 @@ impl FsRefStore {
         for (index, component) in components.iter().enumerate() {
             // Every directory but the first was seen to be a directory, and the first has to be
             // one if it exists: `refs` or `heads` as a file is damage and not "no branches".
-            let entries = match fs::read_dir(&dir) {
+            let entries = match settled(|| fs::read_dir(&dir)) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
                 Err(error) => return Err(io_error("list the branches in", &dir)(error)),
@@ -1637,7 +1655,7 @@ fn remove_empty_directories(dir: &Path, top: &Path) {
 /// directory (see [`FsRefStore::delete_branch_file`]), so a directory that was listed a moment ago
 /// may be gone.
 fn list_directory(dir: &Path) -> Result<Option<fs::ReadDir>, RefError> {
-    match fs::read_dir(dir) {
+    match settled(|| fs::read_dir(dir)) {
         Ok(entries) => Ok(Some(entries)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(io_error("list the branches in", dir)(error)),
