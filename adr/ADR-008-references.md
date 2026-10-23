@@ -93,6 +93,12 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   call and is the price of exact names on file systems that ignore case.
 - The names of `con` and its kind are refused on every platform, also for people who never use
   Windows.
+- `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
+  HEAD, the working-copy commit, and every branch name a commit that the store has. A write
+  checks this already, so a failure means that an object was removed or a file was edited by
+  hand. The result lists every reference that fails, as a `VerifyError` with the pointer as its
+  place; a reference that cannot be read at all (missing, not canonical) stops the check with
+  its `RefError`. HEAD that names a branch which does not exist yet is no failure.
 
 ## Open items
 
@@ -100,8 +106,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       rule that the branch of HEAD is not deleted (that one belongs to the layer above).
 - [ ] Packed references, when there are many branches.
 - [ ] Tags.
-- [ ] Checking that the branches and HEAD of a repository point to commits that the store has
-      (as `Tree::verify` does for a tree); the module checks only when it writes.
+- [x] Checking that the branches and HEAD of a repository point to commits that the store has
+      (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.
 - [ ] `set_head` replaces HEAD whatever it was; a compare-and-swap for HEAD when `checkout` needs
       it. `Expected { Absent, At(commit) }` in place of `Option` for `update_branch`, if the
       meaning of `None` (the branch has to be new) proves easy to misread.

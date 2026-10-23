@@ -57,6 +57,14 @@ mit dem leeren Baum, ohne Eltern und mit einer eigenen Change-ID an und hält se
 in der Datei \type{working-copy} fest. Wie jede Operation ruft \type{init} zuerst
 \type{authorize} mit dem Akteur auf.
 
+Ein Zeiger kann nur auf einen Commit gesetzt werden, der im Objektspeicher liegt (ADR-008).
+Fehlt das Objekt später doch, etwa weil jemand eine Datei von Hand entfernt oder einen Zeiger
+von Hand geändert hat, findet das \type{Repository::verify_refs}. Die Funktion prüft einen
+abgekoppelten HEAD, den Working-Copy-Commit und jeden Branch und meldet jeden Zeiger, dessen
+Commit fehlt oder der auf ein anderes Objekt zeigt. Ein HEAD, der einen noch nicht angelegten
+Branch nennt, ist kein Fehler. Eine Referenzdatei, die sich nicht lesen lässt, beendet die
+Prüfung mit ihrem Fehler.
+
 Ein Snapshot (\type{Repository::snapshot}, ADR-010) hält den Stand der Arbeitskopie fest.
 Er liest den Baum des Working-Copy-Commits und aus dem Arbeitsverzeichnis genau die Dateien,
 die in diesem Baum stehen; eine Datei, die nicht im Baum steht, ist nicht verfolgt und wird
