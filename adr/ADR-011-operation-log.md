@@ -2,10 +2,11 @@
 
 **Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
 2026-10-19, and the rest on 2026-10-21; the hash chain (STEMMA-41) and the cleanup of `tmp/`
-(STEMMA-31) on 2026-10-22; the limit of the outcome (STEMMA-32) on 2026-10-23. All are
-implemented. The open items at the end are questions for later (retention, who may read the log,
-the width of the number, an anchor that the actor cannot change, Windows) and none of them
-changes a decision.
+(STEMMA-31) on 2026-10-22; the limit of the outcome (STEMMA-32) and the retention of snapshot
+entries (STEMMA-39) on 2026-10-23. All are implemented. The open items at the end are questions
+for later (retention together with the garbage collection, who may read the log, the width of
+the number, an anchor that the actor cannot change, Windows) and none of them changes a
+decision.
 
 ## Context
 
@@ -99,7 +100,48 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **Nothing is deleted** *(confirmed)*. No operation removes an entry, except the purge that
   replaces entries by stubs (ADR-014), and no garbage collection
   runs in phase 1 (ADR-007). Removing a secret replaces the entries that name it by a stub that
-  keeps the number (ADR-014, STEMMA-26), so the numbering has no gap.
+  keeps the number (ADR-014, STEMMA-26), so the numbering has no gap. How long entries are kept
+  is decided below (retention).
+- **Retention: phase 1 keeps every snapshot entry and every object** *(STEMMA-39)*. A snapshot
+  at every command makes many entries, and each keeps the working-copy commit that it replaced.
+  The decision rests on a measurement and fixes the rules that a later retention and the garbage
+  collection of ADR-007 have to follow.
+  - **The measurement.** No real session of an agent exists yet, so one was replayed: the 110
+    commits of the first-parent history of this repository (2026-10-19 to 2026-10-23, release
+    build, macOS 27 with APFS on an SSD, one run each). In the fine replay each changed file was
+    written alone and followed by one command (`track` for a new file, `status` otherwise), as an
+    agent that runs a command after every edit; the coarse replay ran `track .` once per commit.
+    The fine replay wrote 600 entries (468 `snapshot`, 131 `track`, one `init`) with 205 KB in
+    `oplog/`, about 340 bytes per entry, and 17.2 MB of objects in 3,004 files. A repository
+    with only the final state holds 2.1 MB in 146 objects, so the log keeps about 15 MB, some
+    25 KB per entry. Of the objects of the fine replay, 16.0 MB are blobs, 1.2 MB trees, and
+    0.1 MB commits. The coarse replay wrote 111 entries (38 KB) and 16.3 MB of objects. The
+    entries are about 1.4 % of what the log keeps alive, and the size comes from the versions of
+    a few large files, not from the number of snapshots: one snapshot per command costs 6 %
+    more than one per commit.
+  - **Nothing is removed in phase 1.** About 3 MB per day of work is no reason to give up the
+    guarantee that no state is lost (ADR-010). Removing an entry frees no byte while no garbage
+    collection exists, as its objects stay in the store, so a retention alone would only lose
+    information. Pack files with deltas (ADR-007) shrink the versions of one file without
+    dropping a state, and are the first answer if the size matters.
+  - **The roots of the garbage collection.** A later collection keeps every object that a
+    reference reaches or that the old or the new value of an entry reaches
+    (`Entry::commits`), except a stub, which names no commit. It decides nothing about an entry.
+  - **A retention replaces an entry by a stub, it neither deletes nor merges.** A stub keeps the
+    number and the hash of the entry (ADR-014, STEMMA-41), so the numbering has no gap and the
+    chain holds; no checkpoint where the chain starts again is needed. Removing the oldest
+    entries would need one, and merging the snapshot entries of one change would write entries
+    again and break the chain. The price is the one of a purge: every entry before the newest
+    stub has an unknown outcome, and its restore needs `--force` (ADR-014).
+  - **Only snapshot entries are candidates, and never the newest.** An entry of the operation
+    `snapshot` is a backup that the program made; `init`, `track`, `commit`, `restore`, and
+    `purge` are acts of an actor and stay. How many and how old the snapshot entries that stay
+    are is not decided here, for want of a session of an agent to measure.
+  - **Retention and the garbage collection come as one slice.** Neither is of use without the
+    other. The retention writes an entry of its own, as the purge does: an operation `prune`
+    without a pointer that lists the numbers of its stubs as ranges, so that a stub is still
+    valid only if an entry lists it (`check_stubs`). It needs a new entry encoding and the crash
+    safety of the purge (a journal, resume, abort). This is a sketch, not a decision of its form.
 - **The format is strict text** *(confirmed)*. A reader accepts what the writer writes and nothing
   else, as in ADR-005, so one entry has exactly one encoding. The sketch below is the format.
   The time is the one the writer claims, in seconds since the Unix epoch, written as in a commit
@@ -307,7 +349,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   moves a branch and the working-copy commit under one lock and writes one entry
   (`Repository::commit`, STEMMA-3). The stores alone must not move pointers in production code.
 - The log grows with every change, and a snapshot at every command makes many entries. Nothing
-  removes them in phase 1; the open items name the measure that decides about retention.
+  removes them in phase 1 (retention, STEMMA-39): a replayed session of five days kept about
+  15 MB of objects through 600 entries of 205 KB.
 - The log keeps commits that a rewrite or a purge would otherwise drop. A secret in a tracked file
   is therefore in the log until it is purged (ADR-014, STEMMA-26), which is why the log is local.
 - A hub never sees the log. What a hub keeps is its own record of ref updates (ADR-003).
@@ -343,9 +386,13 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       flush error of the first. The caller may not repeat the change in either case.
 - [ ] The type of the number of an entry (a newtype with its file name and its limit in one
       place) and a read-only trait for the references that `RefsView` and the store share.
-- [ ] Retention: whether many snapshot entries of one working-copy change are merged after some
-      time, and what a garbage collection may remove (nothing before ADR-007's collection
-      exists). Decide with a measurement of a real session.
+- [x] Retention: whether many snapshot entries of one working-copy change are merged after some
+      time, and what a garbage collection may remove. Decided with a replayed session
+      (STEMMA-39, see "Retention" above): nothing in phase 1, no merging, and a later retention
+      replaces snapshot entries by stubs.
+- [ ] Retention together with the garbage collection of ADR-007, as one slice: how many and how
+      old the snapshot entries are that stay, measured with a real session of an agent; the
+      `prune` entry and its encoding; and the journal of its crash safety.
 - [x] The stub that replaces an entry when a secret is purged, who may purge, and how the purge is
       audited without keeping the secret. Decided in ADR-014 (STEMMA-26) and built: the plan
       (STEMMA-46), the stub with the `purge` entry in the log (STEMMA-47), and the purge itself
@@ -357,8 +404,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       the tip with the hash, format 4, and `stemma op verify` with `--anchor`.
 - [ ] An anchor that the actor cannot change: signatures of the actors (ADR-004) or a hub that
       confirms the tip (phase 5). Until then the anchor is a copy that a person keeps.
-- [ ] Retention (STEMMA-39) needs a checkpoint where the chain starts again, if entries before
-      it are ever removed.
+- [x] Retention (STEMMA-39) needs a checkpoint where the chain starts again, if entries before
+      it are ever removed. Not needed: a retention replaces entries by stubs, which keep the
+      hash, and removes none.
 - [ ] A command that repairs a broken chain, or a log with a lost last entry; today it is
       restored from a backup of `.stemma`.
 - [x] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of

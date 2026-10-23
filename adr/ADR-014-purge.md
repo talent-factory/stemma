@@ -249,7 +249,8 @@ object, an unreadable log) is left for a person to repair.
   still running in another terminal loses its lock that way; this is advisory, as the lock is,
   and the documentation says not to resume a purge that runs.
 - Retention of snapshot entries (STEMMA-39) is a separate question, but the two share the stub:
-  an entry that retention drops could be replaced by the same stub.
+  ADR-011 decides that a later retention replaces a snapshot entry by the same stub, listed by
+  an entry of its own, and that phase 1 drops none.
 
 ## Open items
 

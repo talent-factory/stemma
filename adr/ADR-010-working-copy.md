@@ -203,8 +203,10 @@ are prior art, not a template.
       of `track` are relative to it.
 - [x] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
       which level of ADR-004 it belongs to. Decided in ADR-012 and built (STEMMA-24).
-- [ ] How long the operation log keeps the replaced commits of many snapshots (retention). The
-      format and what an entry holds are decided in ADR-011. Tracked in STEMMA-39.
+- [x] How long the operation log keeps the replaced commits of many snapshots (retention). The
+      format and what an entry holds are decided in ADR-011. Decided there (STEMMA-39): phase 1
+      keeps every snapshot entry; a later retention replaces them by stubs, together with the
+      garbage collection of ADR-007.
 - [x] Removing a secret from the history and from the log: a purge that rewrites the commits,
       replaces log entries by stubs, and deletes what the rewrite replaced. Decided in ADR-014
       (STEMMA-26) and built in STEMMA-46 to STEMMA-48.
