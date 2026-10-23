@@ -2,33 +2,14 @@
 //! (ADR-014), so that the next command runs.
 #![cfg(unix)]
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// A directory below the system temp directory, removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("stemma-cli-interrupt-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use common::Dir;
 
 fn stemma(dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));

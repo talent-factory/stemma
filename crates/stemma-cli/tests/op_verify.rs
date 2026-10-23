@@ -1,65 +1,11 @@
 //! The command `stemma op verify`, run as a process, as a person or an agent would run it.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`; `extra` can adjust the command before it runs.
-fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
-    command
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args);
-    extra(&mut command);
-    let output = command.output().unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-fn run(dir: &Path, args: &[&str]) -> Run {
-    stemma(dir, args, |_| {})
-}
-
-const ACTOR: &str = "human daniel";
+use common::{entry_file, run, Dir, ACTOR};
 
 /// A repository made by `init`, with two files tracked and committed, so that its log holds
 /// several entries.
@@ -81,10 +27,6 @@ fn repository() -> Dir {
         assert_eq!(result.code, 0, "{}", result.stderr);
     }
     dir
-}
-
-fn entry_file(dir: &Path, number: u64) -> PathBuf {
-    dir.join(".stemma/oplog").join(format!("{number:012}"))
 }
 
 fn last(dir: &Path) -> u64 {

@@ -1,10 +1,10 @@
 //! The command `stemma commit`, run as a process, as a person or an agent would run it.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod common;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs;
+use std::path::Path;
+
 use stemma_core::object::{Commit, CommitId, Kind};
 use stemma_core::oplog::OperationName;
 use stemma_core::refs::BranchName;
@@ -12,73 +12,7 @@ use stemma_core::repository::Repository;
 use stemma_core::store::ObjectStore;
 use stemma_core::{Actor, AllowAll};
 
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-commit-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`; `extra` can adjust the command before it runs.
-fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
-    command
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args);
-    extra(&mut command);
-    let output = command.output().unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-fn run(dir: &Path, args: &[&str]) -> Run {
-    stemma(dir, args, |_| {})
-}
-
-/// A repository made by `init`, with the actor `human daniel`.
-fn repository() -> Dir {
-    let dir = Dir::new();
-    let result = run(dir.path(), &["init", "--actor", "human daniel"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    dir
-}
-
-fn write(dir: &Path, path: &str, content: &str) {
-    let full = dir.join(path);
-    fs::create_dir_all(full.parent().unwrap()).unwrap();
-    fs::write(full, content).unwrap();
-}
+use common::{operations, repository, run, stemma, write, Dir, Run};
 
 fn track(dir: &Path, path: &str) {
     let result = run(dir, &["track", "--actor", "human daniel", path]);
@@ -87,13 +21,6 @@ fn track(dir: &Path, path: &str) {
 
 fn commit(dir: &Path, message: &str) -> Run {
     run(dir, &["commit", "-m", message, "--actor", "human alice"])
-}
-
-/// The entries of `op log`, newest first, one JSON object each.
-fn operations(dir: &Path) -> Vec<String> {
-    let result = run(dir, &["op", "log", "--json"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    result.stdout.lines().map(str::to_owned).collect()
 }
 
 fn main_branch() -> BranchName {

@@ -1,78 +1,11 @@
 //! The command `stemma status`, run as a process, as a person or an agent would run it.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-status-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`; `extra` can adjust the command before it runs.
-fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
-    command
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args);
-    extra(&mut command);
-    let output = command.output().unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-fn run(dir: &Path, args: &[&str]) -> Run {
-    stemma(dir, args, |_| {})
-}
-
-/// A repository made by `init`, with the actor `human daniel`.
-fn repository() -> Dir {
-    let dir = Dir::new();
-    let result = run(dir.path(), &["init", "--actor", "human daniel"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    dir
-}
-
-fn write(dir: &Path, path: &str, content: &str) {
-    let full = dir.join(path);
-    fs::create_dir_all(full.parent().unwrap()).unwrap();
-    fs::write(full, content).unwrap();
-}
+use common::{operations, repository, run, stemma, write, Dir, Run};
 
 fn track(dir: &Path, path: &str) {
     let result = run(dir, &["track", "--actor", "human daniel", path]);
@@ -86,13 +19,6 @@ fn commit(dir: &Path, message: &str) {
 
 fn status(dir: &Path) -> Run {
     run(dir, &["status", "--actor", "human alice"])
-}
-
-/// The entries of `op log`, newest first, one JSON object each.
-fn operations(dir: &Path) -> Vec<String> {
-    let result = run(dir, &["op", "log", "--json"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    result.stdout.lines().map(str::to_owned).collect()
 }
 
 /// Whether a user is bound by permissions: root is not, and a test that needs a failure of the

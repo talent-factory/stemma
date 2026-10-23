@@ -1,64 +1,11 @@
 //! The command `stemma init`, run as a process, as a person or an agent would run it.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without an actor in the environment, and `extra` can change that. A
-/// command that reads a configuration or the home directory has to point those at `dir` here.
-fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
-    command
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args);
-    extra(&mut command);
-    let output = command.output().unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-fn run(dir: &Path, args: &[&str]) -> Run {
-    stemma(dir, args, |_| {})
-}
+use common::{run, stemma, Dir, Run};
 
 /// The path that a successful `init` reports.
 fn reported_path(result: &Run) -> String {

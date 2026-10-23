@@ -2,71 +2,17 @@
 //! the plan, which writes nothing, the purge with `--apply`, and `--resume` and `--abort` of a
 //! purge that stopped.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use stemma_core::object::Blob;
 
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
+use common::{ok, run, Dir, Run, ACTOR};
 
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-purge-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`.
-fn run(dir: &Path, args: &[&str]) -> Run {
-    let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args)
-        .output()
-        .unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-const ACTOR: &str = "human daniel";
 const AGENT: &str = "agent bot model=m session=s sponsor=daniel";
 const SECRET: &str = "key=hunter2";
-
-fn ok(dir: &Path, args: &[&str]) -> Run {
-    let result = run(dir, args);
-    assert_eq!(result.code, 0, "{args:?}: {}", result.stderr);
-    result
-}
 
 fn secret() -> String {
     Blob::new(SECRET).id().to_string()

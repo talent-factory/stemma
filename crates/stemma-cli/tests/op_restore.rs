@@ -1,73 +1,14 @@
 //! The command `stemma op restore`, run as a process, as a person or an agent would run it.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+mod common;
 
-use stemma_core::oplog::Entry;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
 use stemma_core::repository::Repository;
 
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-restore-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`.
-fn run(dir: &Path, args: &[&str]) -> Run {
-    let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args)
-        .output()
-        .unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-const ACTOR: &str = "human daniel";
-
-fn ok(dir: &Path, args: &[&str]) -> Run {
-    let result = run(dir, args);
-    assert_eq!(result.code, 0, "{args:?}: {}", result.stderr);
-    result
-}
-
-fn write(dir: &Path, path: &str, content: &str) {
-    fs::write(dir.join(path), content).unwrap();
-}
+use common::{ok, previous, run, stub_text, write, Dir, ACTOR};
 
 fn read(dir: &Path, path: &str) -> String {
     fs::read_to_string(dir.join(path)).unwrap()
@@ -640,33 +581,6 @@ fn a_restore_whose_pointers_cannot_move_names_the_way_on_and_the_same_call_finis
         tip,
         "the branch is back at its old commit"
     );
-}
-
-/// The `previous` line that entry `number` of the log names: the hash of the entry before it, or
-/// `-` at the start of the chain (ADR-011).
-fn previous(dir: &Path, number: u64) -> String {
-    if number == 1 {
-        return "-".to_owned();
-    }
-    // An entry that is missing (a test of a gap) starts the chain again.
-    let path = dir
-        .join(".stemma/oplog")
-        .join(format!("{:012}", number - 1));
-    fs::read(path)
-        .ok()
-        .and_then(|bytes| Entry::parse(&bytes).ok())
-        .and_then(|entry| entry.hash())
-        .map_or_else(|| "-".to_owned(), |hash| hash.to_string())
-}
-
-/// The stub of entry `number`, as a purge writes it: the header lines of the entry, up to its line
-/// `previous`, and the hash of its body.
-fn stub_text(dir: &Path, number: u64) -> String {
-    let path = dir.join(".stemma/oplog").join(format!("{number:012}"));
-    let text = fs::read_to_string(path).unwrap();
-    let entry = Entry::parse(text.as_bytes()).unwrap();
-    let head: String = text.split_inclusive('\n').take(5).collect();
-    format!("{head}stub {}\n", entry.body_hash().unwrap())
 }
 
 /// Writes a stub or a `purge` entry file as a purge would, in the hash chain (ADR-014). A body of
