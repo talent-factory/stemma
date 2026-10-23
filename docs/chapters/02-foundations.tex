@@ -74,8 +74,15 @@ Operation Log und Git als Speicher \cite[jujutsu].
 Es zeigt eine andere Grundannahme \cite[pijul].
 \item {\bf Sapling:} Ein System für grosse Monorepos mit Fokus auf Skalierung \cite[sapling].
 \item {\bf Scion (Anthropic):} Laut dem Engineering-Blog von Anthropic
-\cite[anthropic2026redesigning] ein zentrales System mit API-basierten Abfragen ohne lokalen Klon.
+\cite[anthropic2026redesigning] ein zentrales System, in dem der Server jeden Commit und jeden
+Merge ausführt.
+Einen vollständigen lokalen Klon gibt es nicht;
+viele Jobs kommen ganz ohne Arbeitskopie aus und arbeiten über die API.
 Der Beitrag nennt keine öffentliche Verfügbarkeit, und das Projekt übernimmt keinen Code.
+Stemma teilt mit Scion die inhaltsadressierten Daten und übernimmt die API-Parität und die Idee
+der abgeleiteten Daten.
+Es bleibt aber ein lokales System mit vollständigem Klon und zielt auf kleine Teams,
+nicht auf ein Monorepo (ADR-015).
 \stopitemize
 
 Das Projekt nutzt diese Systeme als Ideengeber. Text und Code entstehen neu.
