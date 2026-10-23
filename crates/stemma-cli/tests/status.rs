@@ -1,98 +1,21 @@
 //! The command `stemma status`, run as a process, as a person or an agent would run it.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-status-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`; `extra` can adjust the command before it runs.
-fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
-    command
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args);
-    extra(&mut command);
-    let output = command.output().unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-fn run(dir: &Path, args: &[&str]) -> Run {
-    stemma(dir, args, |_| {})
-}
-
-/// A repository made by `init`, with the actor `human daniel`.
-fn repository() -> Dir {
-    let dir = Dir::new();
-    let result = run(dir.path(), &["init", "--actor", "human daniel"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    dir
-}
-
-fn write(dir: &Path, path: &str, content: &str) {
-    let full = dir.join(path);
-    fs::create_dir_all(full.parent().unwrap()).unwrap();
-    fs::write(full, content).unwrap();
-}
-
-fn track(dir: &Path, path: &str) {
-    let result = run(dir, &["track", "--actor", "human daniel", path]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-}
+use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
 
 fn commit(dir: &Path, message: &str) {
-    let result = run(dir, &["commit", "-m", message, "--actor", "human daniel"]);
+    let result = run(dir, &["commit", "-m", message, "--actor", ACTOR]);
     assert_eq!(result.code, 0, "{}", result.stderr);
 }
 
 fn status(dir: &Path) -> Run {
     run(dir, &["status", "--actor", "human alice"])
-}
-
-/// The entries of `op log`, newest first, one JSON object each.
-fn operations(dir: &Path) -> Vec<String> {
-    let result = run(dir, &["op", "log", "--json"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    result.stdout.lines().map(str::to_owned).collect()
 }
 
 /// Whether a user is bound by permissions: root is not, and a test that needs a failure of the
@@ -144,7 +67,7 @@ fn status_removes_the_scratch_that_an_interrupted_command_left() {
 fn status_keeps_a_directory_of_the_working_copy_named_like_the_one_of_init() {
     let dir = repository();
     write(dir.path(), ".stemma-init-notes/plan.md", "mine");
-    track(dir.path(), ".stemma-init-notes/plan.md");
+    track_ok(dir.path(), ".stemma-init-notes/plan.md");
 
     let result = status(dir.path());
 
@@ -158,8 +81,8 @@ fn tracked_files_before_the_first_commit_are_added() {
     let dir = repository();
     write(dir.path(), "b.txt", "b");
     write(dir.path(), "d/a.txt", "a");
-    track(dir.path(), "b.txt");
-    track(dir.path(), "d");
+    track_ok(dir.path(), "b.txt");
+    track_ok(dir.path(), "d");
 
     let result = status(dir.path());
 
@@ -173,12 +96,12 @@ fn changes_and_untracked_files_are_listed_in_two_sorted_sections() {
     write(dir.path(), "keep.txt", "one");
     write(dir.path(), "gone.txt", "gone");
     write(dir.path(), "d/inner.txt", "i");
-    track(dir.path(), ".");
+    track_ok(dir.path(), ".");
     commit(dir.path(), "base");
     write(dir.path(), "keep.txt", "two");
     fs::remove_file(dir.path().join("gone.txt")).unwrap();
     write(dir.path(), "new.txt", "new");
-    track(dir.path(), "new.txt");
+    track_ok(dir.path(), "new.txt");
     write(dir.path(), "z.txt", "z");
     write(dir.path(), "notes/one.md", "1");
 
@@ -211,7 +134,7 @@ fn paths_are_sorted_by_bytes_and_not_by_directory() {
 fn after_a_commit_the_working_copy_is_clean_and_only_untracked_files_remain() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     commit(dir.path(), "base");
     assert_eq!(status(dir.path()).stdout, "Working copy is clean\n");
     write(dir.path(), "other.txt", "o");
@@ -225,7 +148,7 @@ fn after_a_commit_the_working_copy_is_clean_and_only_untracked_files_remain() {
 fn a_head_that_names_a_commit_does_not_change_the_output() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     commit(dir.path(), "base");
     let head = fs::read_to_string(dir.path().join(".stemma/refs/heads/main")).unwrap();
     fs::write(
@@ -305,7 +228,7 @@ fn a_backslash_is_written_escaped() {
 fn a_change_is_saved_by_the_actor_of_the_call_and_only_once() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     let entries = operations(dir.path()).len();
 
@@ -327,7 +250,7 @@ fn a_change_is_saved_by_the_actor_of_the_call_and_only_once() {
 fn the_directory_flag_and_the_actor_variable_are_used() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     let elsewhere = Dir::new();
 
@@ -352,7 +275,7 @@ fn the_directory_flag_and_the_actor_variable_are_used() {
 fn the_actor_flag_goes_before_the_variable() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
 
     let result = stemma(
@@ -371,7 +294,7 @@ fn the_actor_flag_goes_before_the_variable() {
 fn without_an_actor_the_command_fails_and_saves_nothing() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     let entries = operations(dir.path()).len();
 
@@ -406,7 +329,7 @@ fn in_a_directory_without_a_repository_the_command_fails_and_names_the_flag() {
 fn an_argument_that_status_does_not_take_is_a_usage_error_and_saves_nothing() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     let entries = operations(dir.path()).len();
 
@@ -449,7 +372,7 @@ fn the_help_names_the_command_and_its_flags() {
 fn an_invalid_exclusion_file_stops_the_command_before_anything_is_saved() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     write(dir.path(), ".stemmaignore", "*.log\n!keep.log\n");
     let entries = operations(dir.path()).len();
@@ -471,7 +394,7 @@ fn an_invalid_exclusion_file_stops_the_command_before_anything_is_saved() {
 fn a_name_that_a_tree_refuses_stops_the_command_before_anything_is_saved() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     write(dir.path(), "d/a\u{200B}b.txt", "x");
     let entries = operations(dir.path()).len();
@@ -519,7 +442,7 @@ fn a_file_that_is_corrupt_in_the_repository_fails_without_a_trace() {
 fn a_failure_of_reading_after_the_snapshot_is_code_1_with_the_entry_named_and_no_second_snapshot() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     commit(dir.path(), "base");
     write(dir.path(), "a.txt", "two");
     // The parent of the working-copy commit is gone: the snapshot is made, and reading fails.
@@ -562,7 +485,7 @@ fn a_special_file_is_listed_as_untracked_and_track_refuses_it() {
     let socket = std::os::unix::net::UnixListener::bind(dir.path().join("sock")).unwrap();
 
     let listed = status(dir.path());
-    let refused = run(dir.path(), &["track", "--actor", "human daniel", "sock"]);
+    let refused = run(dir.path(), &["track", "--actor", ACTOR, "sock"]);
 
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(listed.stdout, "Untracked files:\n? sock\n");
@@ -577,7 +500,7 @@ fn a_directory_that_cannot_be_listed_stops_the_command_before_anything_is_saved(
     let dir = repository();
     assert_permissions_bind(dir.path());
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     write(dir.path(), "closed/x.txt", "x");
     let closed = dir.path().join("closed");
@@ -605,7 +528,7 @@ fn a_tracked_file_that_cannot_be_read_fails_and_saves_nothing() {
     let dir = repository();
     assert_permissions_bind(dir.path());
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     let entries = operations(dir.path()).len();
     fs::set_permissions(dir.path().join("a.txt"), fs::Permissions::from_mode(0o000)).unwrap();
 
@@ -653,7 +576,7 @@ fn a_snapshot_that_cannot_be_flushed_gives_the_status_and_code_3() {
     use std::os::unix::fs::PermissionsExt;
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     commit(dir.path(), "base");
     write(dir.path(), "a.txt", "two");
     let metadata = dir.path().join(".stemma");

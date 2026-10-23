@@ -2,34 +2,18 @@
 //! (ADR-014), so that the next command runs.
 #![cfg(unix)]
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// A directory below the system temp directory, removed on drop.
-struct Dir(PathBuf);
+use common::{Dir, ACTOR};
 
-impl Dir {
-    fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("stemma-cli-interrupt-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
+/// An unstarted `stemma` in `dir` without `STEMMA_ACTOR` and with its output discarded. Unlike
+/// `common::stemma`, which runs the process to its end, it returns the `Command`, so that the test
+/// can spawn the process and interrupt it.
 fn stemma(dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
@@ -44,7 +28,7 @@ fn stemma(dir: &Path, args: &[&str]) -> Command {
 #[test]
 fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
     let dir = Dir::new();
-    let status = stemma(dir.path(), &["init", "--actor", "human daniel"])
+    let status = stemma(dir.path(), &["init", "--actor", ACTOR])
         .status()
         .unwrap();
     assert!(status.success());
@@ -57,7 +41,7 @@ fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
         .unwrap();
     }
     let lock = dir.path().join(".stemma").join("refs.lock");
-    let mut child = stemma(dir.path(), &["track", "--actor", "human daniel", "."])
+    let mut child = stemma(dir.path(), &["track", "--actor", ACTOR, "."])
         .spawn()
         .unwrap();
     let start = Instant::now();
@@ -86,7 +70,7 @@ fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
     }
     assert_eq!(status.code(), Some(130), "{status:?}");
     assert!(!lock.exists(), "the interrupted command removed its lock");
-    let status = stemma(dir.path(), &["status", "--actor", "human daniel"])
+    let status = stemma(dir.path(), &["status", "--actor", ACTOR])
         .status()
         .unwrap();
     assert!(status.success(), "the next command runs");

@@ -1,104 +1,15 @@
 //! The command `stemma op log`, run as a process, as a person or an agent would run it.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-use stemma_core::oplog::Entry;
-
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`; `extra` can adjust the command before it runs.
-fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
-    command
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args);
-    extra(&mut command);
-    let output = command.output().unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-fn run(dir: &Path, args: &[&str]) -> Run {
-    stemma(dir, args, |_| {})
-}
+use common::{entry_file, previous, repository, run, write_stub_entry, Dir};
 
 const A: &str = "b3:1111111111111111111111111111111111111111111111111111111111111111";
 const C: &str = "b3:3333333333333333333333333333333333333333333333333333333333333333";
 const B: &str = "b3:2222222222222222222222222222222222222222222222222222222222222222";
-
-/// A repository made by `init`, with the actor `human daniel`.
-fn repository() -> Dir {
-    let dir = Dir::new();
-    let result = run(dir.path(), &["init", "--actor", "human daniel"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    dir
-}
-
-/// The `previous` line that entry `number` of the log names: the hash of the entry before it, or
-/// `-` at the start of the chain (ADR-011).
-fn previous(dir: &Path, number: u64) -> String {
-    if number == 1 {
-        return "-".to_owned();
-    }
-    // An entry that is missing (a test of a gap) starts the chain again.
-    let path = dir
-        .join(".stemma/oplog")
-        .join(format!("{:012}", number - 1));
-    fs::read(path)
-        .ok()
-        .and_then(|bytes| Entry::parse(&bytes).ok())
-        .and_then(|entry| entry.hash())
-        .map_or_else(|| "-".to_owned(), |hash| hash.to_string())
-}
-
-/// The stub of entry `number`, as a purge writes it: the header lines of the entry, up to its line
-/// `previous`, and the hash of its body.
-fn stub_text(dir: &Path, number: u64) -> String {
-    let path = dir.join(".stemma/oplog").join(format!("{number:012}"));
-    let text = fs::read_to_string(path).unwrap();
-    let entry = Entry::parse(text.as_bytes()).unwrap();
-    let head: String = text.split_inclusive('\n').take(5).collect();
-    format!("{head}stub {}\n", entry.body_hash().unwrap())
-}
 
 /// Writes an entry file as the log would, in the hash chain, so that a test needs no command that
 /// makes one. `body` starts with the lines `time` and `actor`.
@@ -113,11 +24,7 @@ fn write_entry(dir: &Path, number: u64, body: &str) {
         "stemma-oplog 3\nnumber {number}\n{time}\n{actor}\nprevious {}\n{rest}",
         previous(dir, number)
     );
-    fs::write(
-        dir.join(".stemma/oplog").join(format!("{number:012}")),
-        text,
-    )
-    .unwrap();
+    fs::write(entry_file(dir, number), text).unwrap();
 }
 
 fn snapshot(dir: &Path, number: u64, old: &str, new: &str) {
@@ -629,25 +536,6 @@ fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_leaves_it_unkn
     );
 }
 
-/// Writes a stub or a `purge` entry file as a purge would, in the hash chain (ADR-014). A body of
-/// `stub` alone becomes the stub of the entry with the number.
-fn write_entry_2(dir: &Path, number: u64, body: &str) {
-    let text = if body == "stub\n" {
-        stub_text(dir, number)
-    } else {
-        format!(
-            "stemma-oplog 3\nnumber {number}\ntime 1700000000\nactor human daniel\n\
-             previous {}\n{body}",
-            previous(dir, number)
-        )
-    };
-    fs::write(
-        dir.join(".stemma/oplog").join(format!("{number:012}")),
-        text,
-    )
-    .unwrap();
-}
-
 #[test]
 fn a_stub_and_a_purge_are_shown_without_ids() {
     let dir = repository();
@@ -657,9 +545,9 @@ fn a_stub_and_a_purge_are_shown_without_ids() {
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     snapshot(dir.path(), 3, A, B);
-    write_entry_2(dir.path(), 2, "stub\n");
-    write_entry_2(dir.path(), 3, "stub\n");
-    write_entry_2(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
+    write_stub_entry(dir.path(), 2, "stub\n");
+    write_stub_entry(dir.path(), 3, "stub\n");
+    write_stub_entry(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
 
     let result = run(dir.path(), &["op", "log", "-n", "3"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -695,9 +583,9 @@ fn a_purge_with_several_ranges_lists_each() {
     snapshot(dir.path(), 4, B, A);
     snapshot(dir.path(), 5, A, B);
     for number in [2, 3, 5] {
-        write_entry_2(dir.path(), number, "stub\n");
+        write_stub_entry(dir.path(), number, "stub\n");
     }
-    write_entry_2(dir.path(), 6, "operation purge\ncommits 3\nstubs 2-3 5\n");
+    write_stub_entry(dir.path(), 6, "operation purge\ncommits 3\nstubs 2-3 5\n");
 
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -722,7 +610,7 @@ fn a_stub_that_no_purge_lists_is_reported() {
         .trim()
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
-    write_entry_2(dir.path(), 2, "stub\n");
+    write_stub_entry(dir.path(), 2, "stub\n");
     let result = run(dir.path(), &["op", "log"]);
     assert_eq!(result.code, 1);
     assert!(
@@ -743,8 +631,8 @@ fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     snapshot(dir.path(), 3, A, B);
-    write_entry_2(dir.path(), 2, "stub\n");
-    write_entry_2(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
+    write_stub_entry(dir.path(), 2, "stub\n");
+    write_stub_entry(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
 
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -783,8 +671,8 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
     let dir = repository();
     branch_move(dir.path(), 2, "-", A);
     branch_move(dir.path(), 3, A, C);
-    write_entry_2(dir.path(), 3, "stub\n");
-    write_entry_2(dir.path(), 4, "operation purge\ncommits 1\nstubs 3\n");
+    write_stub_entry(dir.path(), 3, "stub\n");
+    write_stub_entry(dir.path(), 4, "operation purge\ncommits 1\nstubs 3\n");
     branch_move(dir.path(), 5, A, B);
     set_branch(dir.path(), B);
 

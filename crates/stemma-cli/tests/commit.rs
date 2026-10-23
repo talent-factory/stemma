@@ -1,10 +1,12 @@
 //! The command `stemma commit`, run as a process, as a person or an agent would run it.
 
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use stemma_core::object::{Commit, CommitId, Kind};
 use stemma_core::oplog::OperationName;
 use stemma_core::refs::BranchName;
@@ -12,88 +14,10 @@ use stemma_core::repository::Repository;
 use stemma_core::store::ObjectStore;
 use stemma_core::{Actor, AllowAll};
 
-/// A directory below the system temp directory that is removed on drop.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "stemma-cli-commit-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What a process did.
-struct Run {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`; `extra` can adjust the command before it runs.
-fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
-    command
-        .current_dir(dir)
-        .env_remove("STEMMA_ACTOR")
-        .args(args);
-    extra(&mut command);
-    let output = command.output().unwrap();
-    Run {
-        code: output.status.code().expect("the process ended by a signal"),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
-fn run(dir: &Path, args: &[&str]) -> Run {
-    stemma(dir, args, |_| {})
-}
-
-/// A repository made by `init`, with the actor `human daniel`.
-fn repository() -> Dir {
-    let dir = Dir::new();
-    let result = run(dir.path(), &["init", "--actor", "human daniel"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    dir
-}
-
-fn write(dir: &Path, path: &str, content: &str) {
-    let full = dir.join(path);
-    fs::create_dir_all(full.parent().unwrap()).unwrap();
-    fs::write(full, content).unwrap();
-}
-
-fn track(dir: &Path, path: &str) {
-    let result = run(dir, &["track", "--actor", "human daniel", path]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-}
+use common::{operations, repository, run, stemma, track_ok, write, Dir, Run};
 
 fn commit(dir: &Path, message: &str) -> Run {
     run(dir, &["commit", "-m", message, "--actor", "human alice"])
-}
-
-/// The entries of `op log`, newest first, one JSON object each.
-fn operations(dir: &Path) -> Vec<String> {
-    let result = run(dir, &["op", "log", "--json"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
-    result.stdout.lines().map(str::to_owned).collect()
 }
 
 fn main_branch() -> BranchName {
@@ -126,7 +50,7 @@ fn assert_nothing_committed(dir: &Path, entries: usize) {
 fn a_commit_names_the_working_copy_and_starts_a_new_one() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
 
     let result = commit(dir.path(), "Add a");
 
@@ -158,7 +82,7 @@ fn a_commit_names_the_working_copy_and_starts_a_new_one() {
 fn the_long_form_of_the_message_flag_works() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
 
     let result = run(
         dir.path(),
@@ -172,7 +96,7 @@ fn the_long_form_of_the_message_flag_works() {
 fn a_change_since_the_last_command_is_committed_after_its_own_snapshot_entry() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     let first = commit(dir.path(), "one");
     write(dir.path(), "a.txt", "two");
 
@@ -197,7 +121,7 @@ fn a_change_since_the_last_command_is_committed_after_its_own_snapshot_entry() {
 fn deleting_the_tracked_file_is_a_change_to_commit() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     assert_eq!(commit(dir.path(), "one").code, 0);
     fs::remove_file(dir.path().join("a.txt")).unwrap();
 
@@ -209,7 +133,7 @@ fn deleting_the_tracked_file_is_a_change_to_commit() {
 fn assert_refused_for_an_empty_message(message: &str) {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     let entries = operations(dir.path()).len();
 
     let result = commit(dir.path(), message);
@@ -255,7 +179,7 @@ fn nothing_to_commit_in_a_new_repository_is_refused() {
 fn nothing_to_commit_after_a_commit_is_refused_without_an_entry() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     assert_eq!(commit(dir.path(), "one").code, 0);
     let entries = operations(dir.path()).len();
 
@@ -291,7 +215,7 @@ fn a_file_that_is_not_tracked_is_not_committed() {
 fn a_commit_that_is_refused_after_the_snapshot_leaves_the_snapshot_entry() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     assert_eq!(commit(dir.path(), "one").code, 0);
     // Someone points main at the working-copy commit, past the parent that it is based on.
     let metadata = dir.path().join(".stemma");
@@ -321,7 +245,7 @@ fn a_commit_that_is_refused_after_the_snapshot_leaves_the_snapshot_entry() {
 fn a_head_that_names_a_commit_is_refused() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     let first = commit(dir.path(), "one");
     let id = printed_id(&first);
     fs::write(dir.path().join(".stemma/HEAD"), format!("commit {id}\n")).unwrap();
@@ -350,7 +274,7 @@ fn without_a_message_the_command_is_a_usage_error() {
 fn without_an_actor_the_command_fails_and_commits_nothing() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     let entries = operations(dir.path()).len();
 
     let result = run(dir.path(), &["commit", "-m", "x"]);
@@ -378,7 +302,7 @@ fn in_a_directory_without_a_repository_the_command_fails_and_names_the_flag() {
 fn the_directory_flag_and_the_environment_variable_are_used() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     let elsewhere = Dir::new();
 
     let result = stemma(
@@ -397,7 +321,7 @@ fn the_directory_flag_and_the_environment_variable_are_used() {
 fn the_flag_goes_before_the_variable() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
 
     let result = stemma(
         dir.path(),
@@ -415,7 +339,7 @@ fn the_flag_goes_before_the_variable() {
 fn a_commit_that_stopped_between_its_moves_is_finished_by_the_next_one() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     // The state of a stop after the move of the branch: it has the named commit, and the
     // working-copy commit is still the one the commit was made from.
     let repository = Repository::open(dir.path()).unwrap();
@@ -470,7 +394,7 @@ fn a_commit_that_stopped_between_its_moves_is_finished_by_the_next_one() {
 fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
-    track(dir.path(), "a.txt");
+    track_ok(dir.path(), "a.txt");
     let full = fs::OpenOptions::new()
         .write(true)
         .open("/dev/full")
