@@ -1,6 +1,8 @@
 # Triage Labels
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker (Plane project `STEMMA`).
+The skills speak in terms of five canonical triage roles.
+This file maps those roles to the actual label strings used in this repo's issue tracker (Plane
+project `STEMMA`).
 
 | Label in mattpocock/skills | Label in our tracker | Meaning                                  |
 | -------------------------- | -------------------- | ---------------------------------------- |
@@ -10,8 +12,10 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 | `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
 | `wontfix`                  | `wontfix`            | Will not be actioned                     |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
+When a skill mentions a role (e.g. "apply the AFK-ready triage label"),
+use the corresponding label string from this table.
 
-The project has no labels yet. Create a missing label with `label create` the first time a skill needs it, then apply it with `workitem manage_label`.
+The project has no labels yet. Create a missing label with `label create` the first time a skill
+needs it, then apply it with `workitem manage_label`.
 
 Edit the right-hand column to match whatever vocabulary you actually use.

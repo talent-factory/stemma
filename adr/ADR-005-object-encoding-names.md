@@ -8,7 +8,8 @@ are proposals.
 Object IDs are hashes of canonical encodings (ADR-001). Any change to an encoding changes the ID of
 every affected object, so the rules for what may appear in an encoding have to be settled before the
 first object is stored. This ADR covers the rules for tree entry names, actor fields, commit
-timestamps, change IDs, and format versions. The implementation is `crates/stemma-core/src/object.rs`; together
+timestamps, change IDs, and format versions. The implementation is
+`crates/stemma-core/src/object.rs`; together
 with its golden-vector tests it is the normative definition of the byte-level encodings. The check
 of the actor fields is in `crates/stemma-core/src/actor.rs`. This ADR records the decisions behind
 them.
@@ -124,7 +125,8 @@ them.
   choice can be reversed in one direction only: an exchange can be added later as a new object kind
   without invalidating stored objects, but a log that was once exchanged cannot be withdrawn. For
   readers who do not have the local log, the answer to who rewrote a branch is the record of ref
-  updates of a hub (ADR-003), not the commit. The format and the place of the log are decided in ADR-011.
+  updates of a hub (ADR-003), not the commit. The format and the place of the log are decided in
+  ADR-011.
 - **Format version** *(confirmed)*. The encodings in this ADR are version 1. An incompatible
   change does not reuse an object kind name: it introduces a new one, for example `commit2`,
   together with an ADR, so that old and new objects can exist side by side. The header `change`
@@ -134,7 +136,8 @@ them.
 - **Strict reading.** A reader rejects what it does not recognize: an unknown or repeated header, a
   header out of order, a number with a plus sign, `-0`, or leading zeros, or any other non-canonical
   form. Otherwise one logical object could have several encodings and several IDs. The commit
-  headers are, in this order, `tree`, `parent` (zero or more), `change`, `author`, `time`. The index reader
+  headers are, in this order, `tree`, `parent` (zero or more), `change`, `author`, `time`.
+  The index reader
   (see below), `Tree::parse`, and `Commit::parse` apply the rule, and the actor line of a commit is
   read by `Actor::from_str`. A test feeds changed copies of a canonical encoding to each of these
   three readers (every byte deleted, replaced, or inserted from a set of troublesome bytes, and
@@ -171,7 +174,8 @@ them.
 ## Consequences
 
 - Two commits with the same tree, parents, change ID, author, message, and time have the same ID,
-  and a different time or a different change ID gives a different ID. A rebase changes the parents and so every ID; only
+  and a different time or a different change ID gives a different ID.
+  A rebase changes the parents and so every ID; only
   re-creating a commit from identical inputs reproduces its ID.
 - A timestamp gives a reader a date for foreign history without the operation log, but it can be
   set to any value. Nothing in the core may depend on its accuracy or its order.
@@ -182,7 +186,8 @@ them.
 - Rejecting invisible characters also rejects the zero-width joiners U+200C and U+200D and the
   directional marks U+200E and U+200F; both are confirmed decisions, see above. Some
   scripts (for example Persian and several Indic
-  scripts) and composite emoji such as 👨‍👩‍👧 need them, so file names in those scripts are
+  scripts) and composite emoji such as 👨‍👩‍👧 need them,
+  so file names in those scripts are
   rejected. See Open.
 - The variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF, and the Mongolian free variation
   selectors U+180B to U+180D and U+180F) are default-ignorable, but a name may contain one directly
@@ -191,7 +196,8 @@ them.
   name, after an ASCII character, or after another selector is rejected, so `READ\uFE0FME` stays
   rejected and no selector can occur in an ASCII name or an alias of `.stemma`. The rule checks the
   neighbour only and does not check that Unicode defines the sequence, so `é\uFE0F` is accepted and
-  looks like `é`, like the other look-alikes below. The keycap emoji, such as `1️⃣`, start with an
+  looks like `é`, like the other look-alikes below. The keycap emoji, such as `1️⃣`,
+  start with an
   ASCII digit and stay rejected. The Mongolian vowel separator U+180E is not a variation selector
   and stays rejected.
 - The rule does not cover look-alikes made of visible characters: letters from other scripts
@@ -262,7 +268,8 @@ them.
       `get_commit` take a typed ID, confirm the kind, and read the body with the strict reader.
       `ReadError` combines the errors: `Store` (transparent, boxed), `Tree` or `Commit` with the ID
       and the reason from the reader, and `IdMismatch` if a reader returned a value with another ID
-      than the one requested (checked in every build). `Tree::verify` and `Commit::verify` (module `verify`)
+      than the one requested (checked in every build). `Tree::verify` and `Commit::verify` (module
+      `verify`)
       check the claims of a decoded object against a store, one level deep: a directory entry and
       the tree of a commit must be trees, the other entries blobs, and the parents commits. Every
       referenced object is read and hashed, so the cost grows with its size.

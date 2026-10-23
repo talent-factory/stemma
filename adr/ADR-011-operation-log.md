@@ -82,9 +82,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   log and leaves the outcome unknown, as does the working-copy commit and a pointer whose value
   cannot be read. The working-copy commit has its place in the references since STEMMA-22
   (`.stemma/working-copy`); a caller that does not give its value to `oplog::Current` leaves the
-  last entry that moves it unknown. A lock that a crashed writer left makes the newest entries unknown until
-  someone removes it. A separate marker can come with a later version of the entry encoding if a
-  use appears; version 2 went to the stub and the `purge` entry (ADR-014).
+  last entry that moves it unknown. A lock that a crashed writer left makes the newest entries
+  unknown until someone removes it. A separate marker can come with a later version of the entry
+  encoding if a use appears; version 2 went to the stub and the `purge` entry (ADR-014).
   The reading has two limits, and both are accepted (STEMMA-32). A pointer that returns to an
   earlier value inside the log is decided correctly as long as nothing outside the log moves it,
   because each entry reads its old value under the lock. A change outside the log to one of the
@@ -265,19 +265,20 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
     the tip and the entry, stays unnoticed (a missing tip is accepted by design). The hash chain
     (above) finds a change in the middle, and only an anchor outside the repository finds a log
     whose chain was computed again (STEMMA-41).
-- **The first slice** *(confirmed)*. The core writes and strictly reads entries, and `init` and every
-  operation that changes a pointer write one. The commands that show and use the log are slices of
-  their own: `stemma op log` (STEMMA-27), and restoring and undoing (STEMMA-28).
-- **Only `Repository` writes the log and moves a pointer** *(confirmed)*. `Repository::update_branch`
-  and `set_head` order "check, write the entry, flush, move" under the lock, `Repository::refs()`
-  returns a view for reading, and `Repository::oplog()` can read the log. `FsOpLog::append` and
-  `Entry::new` are visible inside the crate only, so through `Repository` no caller can move a
-  pointer past the log, add an entry past the authorizer, invent an entry that was never in the
-  log, or pair the references of one repository with the objects of another. This is a convention
-  of the API and not a boundary: the files are plain files, and code that builds its own store on
-  the same directory is not stopped. A refusal by the authorizer, a name that is in the way, a
-  branch that is not where the caller saw it (seen under the lock), and a commit that is not in the
-  store write no entry. A move to the value that a pointer has writes none either.
+- **The first slice** *(confirmed)*. The core writes and strictly reads entries, and `init` and
+  every operation that changes a pointer write one. The commands that show and use the log are
+  slices of their own: `stemma op log` (STEMMA-27), and restoring and undoing (STEMMA-28).
+- **Only `Repository` writes the log and moves a pointer** *(confirmed)*.
+  `Repository::update_branch` and `set_head` order "check, write the entry, flush, move" under the
+  lock, `Repository::refs()` returns a view for reading, and `Repository::oplog()` can read the
+  log. `FsOpLog::append` and `Entry::new` are visible inside the crate only, so through
+  `Repository` no caller can move a pointer past the log, add an entry past the authorizer, invent
+  an entry that was never in the log, or pair the references of one repository with the objects of
+  another. This is a convention of the API and not a boundary: the files are plain files, and code
+  that builds its own store on the same directory is not stopped. A refusal by the authorizer, a
+  name that is in the way, a branch that is not where the caller saw it (seen under the lock), and
+  a commit that is not in the store write no entry. A move to the value that a pointer has writes
+  none either.
 - **The caller is told whether an entry exists, and whether the pointer moved** *(confirmed)*. An
   error that leaves an entry carries it (`UpdateError::entry()`): `MoveFailed` (the move failed
   after the entry; the pointer did not move), `PartlyMoved` (an operation that moves two pointers
@@ -342,8 +343,8 @@ working-copy b3:1d71…eed9 b3:4feb…b32c
 branch main b3:8cb4…b3e8 b3:b5f2…e662
 ```
 
-- The first five lines, with the header, come in this order, each once. `operation` is a lowercase name of letters,
-  digits, and `-`, starting with a letter.
+- The first five lines, with the header, come in this order, each once. `operation` is a
+  lowercase name of letters, digits, and `-`, starting with a letter.
 - Then come the lines of the pointers that changed, at least one: `head`, then `working-copy`,
   then `branch <name>` for each branch, sorted by name in UTF-8 byte order. Each has the old and
   the new value; `-` means that the pointer did not exist or does not exist any more.
@@ -390,12 +391,12 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 ## Open items
 
 - [x] A function that reads the outcome of an entry from the chain of its pointer
-      (`oplog::outcomes`, STEMMA-34); `stemma op log` marks an entry that did not take effect
-      (`!`, `took_effect: false`) or whose outcome is not known (`?`, `null`). The working-copy commit has its
-      place in the references since STEMMA-22, and `oplog::Current::with_working_copy` hands its
-      value to `outcomes`. STEMMA-32 added the tests of a failed entry in the middle and its
-      retry, of the first entry, of a pointer that returns to an earlier value inside the log, of
-      the two limits above, and of the barrier of a stub in a hash-chained log (encoding 3).
+      (`oplog::outcomes`, STEMMA-34); `stemma op log` marks an entry that did not take effect (`!`,
+      `took_effect: false`) or whose outcome is not known (`?`, `null`). The working-copy commit
+      has its place in the references since STEMMA-22, and `oplog::Current::with_working_copy`
+      hands its value to `outcomes`. STEMMA-32 added the tests of a failed entry in the middle and
+      its retry, of the first entry, of a pointer that returns to an earlier value inside the log,
+      of the two limits above, and of the barrier of a stub in a hash-chained log (encoding 3).
 - [x] Every `append` lists the directory to find the end of the log. Measured in STEMMA-37: about
       2 microseconds for each entry, 17 ms more at 10,000 entries than at 1,000, so it does not
       matter. The tip file does not replace the listing; the writer still takes the largest number

@@ -1,10 +1,12 @@
 \chapter{Architektur}
 
-Dieses Kapitel beschreibt die Schichten des Systems und die Verteilung der Verantwortung. Es setzt die Entscheidungen aus ADR-002 und ADR-003 um.
+Dieses Kapitel beschreibt die Schichten des Systems und die Verteilung der Verantwortung.
+Es setzt die Entscheidungen aus ADR-002 und ADR-003 um.
 
 \section{Schichtenmodell}
 
-Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff, Merge und Autorisierung. Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
+Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff,
+Merge und Autorisierung. Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
 
 \startitemize
 \item {\bf stemma-core:} Bibliothek mit Objekten, Referenzen, Autorisierung.
@@ -17,19 +19,26 @@ Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff, Me
 \externalfigure[images/layers.pdf][width=\textwidth]
 \stopplacefigure
 
-Prüfungen gehören in den Kern, nicht in die Adapter. Ein Aufruf über die CLI, die API oder den MCP-Server muss dieselbe Entscheidung erhalten.
+Prüfungen gehören in den Kern, nicht in die Adapter. Ein Aufruf über die CLI,
+die API oder den MCP-Server muss dieselbe Entscheidung erhalten.
 
 \section{Akteure}
 
-Jede Operation hat einen Akteur. Ein Mensch wird durch seine Identität beschrieben. Ein Agent führt zusätzlich Modellversion, Session und einen auftraggebenden Menschen mit, den Sponsor. Der Sponsor verantwortet die Handlungen des Agenten.
+Jede Operation hat einen Akteur. Ein Mensch wird durch seine Identität beschrieben.
+Ein Agent führt zusätzlich Modellversion, Session und einen auftraggebenden Menschen mit,
+den Sponsor. Der Sponsor verantwortet die Handlungen des Agenten.
 
 \section{Autorisierung}
 
-Der Kern ruft bei jeder Operation die Funktion \type{authorize(actor, operation, target)} auf. In Phase 1 erlaubt sie alles. Der Aufruf ist trotzdem Pflicht, damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
+Der Kern ruft bei jeder Operation die Funktion \type{authorize(actor, operation, target)} auf.
+In Phase 1 erlaubt sie alles. Der Aufruf ist trotzdem Pflicht,
+damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
 
 \section{Ort der Berechtigungen}
 
-Rollen und Policies liegen auf dem Server und werden dort durchgesetzt. Signaturen von Commits und Freigaben liegen im Repository und lassen sich unabhängig vom Server prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
+Rollen und Policies liegen auf dem Server und werden dort durchgesetzt.
+Signaturen von Commits und Freigaben liegen im Repository und lassen sich unabhängig vom Server
+prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
 
 \section{Phasenübersicht}
 

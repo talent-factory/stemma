@@ -2,42 +2,73 @@
 
 \section{Ausgangslage}
 
-Versionskontrollsysteme gehören zu den ältesten Werkzeugen der Softwareentwicklung. Sie speichern Änderungen, machen frühere Zustände wiederherstellbar und erlauben mehreren Personen, am selben Code zu arbeiten. Ihre heutige Form entstand für menschliche Arbeitsrhythmen: wenige Änderungen pro Tag, ein Branch pro Aufgabe, eine Person pro Branch und eine Prüfung durch einen Menschen vor dem Zusammenführen.
+Versionskontrollsysteme gehören zu den ältesten Werkzeugen der Softwareentwicklung.
+Sie speichern Änderungen, machen frühere Zustände wiederherstellbar und erlauben mehreren
+Personen, am selben Code zu arbeiten. Ihre heutige Form entstand für menschliche Arbeitsrhythmen:
+wenige Änderungen pro Tag, ein Branch pro Aufgabe, eine Person pro Branch und eine Prüfung durch
+einen Menschen vor dem Zusammenführen.
 
-Diese Annahmen verschieben sich. Agenten erzeugen Änderungen in kurzer Folge, parallel und in grosser Zahl. Sie arbeiten ohne Pausen, verwenden mehrere Branches gleichzeitig und hinterlassen Spuren, die sich nicht einfach einer Person zuordnen lassen. Die Werkzeuge müssen darauf reagieren, und die Frage ist, wo die Anpassung ansetzen soll.
+Diese Annahmen verschieben sich. Agenten erzeugen Änderungen in kurzer Folge,
+parallel und in grosser Zahl. Sie arbeiten ohne Pausen,
+verwenden mehrere Branches gleichzeitig und hinterlassen Spuren,
+die sich nicht einfach einer Person zuordnen lassen. Die Werkzeuge müssen darauf reagieren,
+und die Frage ist, wo die Anpassung ansetzen soll.
 
-Laut dem Beitrag im Engineering-Blog von Anthropic vom Oktober 2026 \cite[anthropic2026redesigning] hat Anthropic für den eigenen Monorepo-Betrieb ein internes Versionskontrollsystem namens Scion eingeführt. Der Beitrag nennt einen Anstieg der täglichen Merges von rund 2500 im Mai auf über 30000 im September 2026. Scion ist nach dem Beitrag kein Ersatz für Git im allgemeinen Gebrauch. Dem Beitrag ist nicht zu entnehmen, dass Code oder Repository öffentlich zugänglich sind.
+Laut dem Beitrag im Engineering-Blog von Anthropic vom Oktober 2026 \cite[anthropic2026redesigning]
+hat Anthropic für den eigenen Monorepo-Betrieb ein internes Versionskontrollsystem namens Scion
+eingeführt. Der Beitrag nennt einen Anstieg der täglichen Merges von rund 2500 im Mai auf über
+30000 im September 2026. Scion ist nach dem Beitrag kein Ersatz für Git im allgemeinen Gebrauch.
+Dem Beitrag ist nicht zu entnehmen, dass Code oder Repository öffentlich zugänglich sind.
 
 \section{Problemstellung}
 
 Drei Verschiebungen sind für das Projekt zentral:
 
 \startitemize
-\item {\bf Volumen:} Die Zahl der Änderungen wächst schneller als die Zahl der Prüfenden. Die Prüfung wird zum Engpass.
-\item {\bf Parallelität:} Mehrere Akteure arbeiten gleichzeitig an überlappendem Code. Die Frage ist nicht nur, wie Konflikte gelöst werden, sondern vorher, wer überhaupt schreiben darf.
-\item {\bf Herkunft:} Eine Änderung entsteht oft aus einem Auftrag, einem Modell, einer Session und einem Menschen, der dafür einsteht. Git speichert davon nur Autor und Zeitstempel.
+\item {\bf Volumen:} Die Zahl der Änderungen wächst schneller als die Zahl der Prüfenden.
+Die Prüfung wird zum Engpass.
+\item {\bf Parallelität:} Mehrere Akteure arbeiten gleichzeitig an überlappendem Code.
+Die Frage ist nicht nur, wie Konflikte gelöst werden, sondern vorher,
+wer überhaupt schreiben darf.
+\item {\bf Herkunft:} Eine Änderung entsteht oft aus einem Auftrag, einem Modell,
+einer Session und einem Menschen, der dafür einsteht. Git speichert davon nur Autor und
+Zeitstempel.
 \stopitemize
 
-Die Frage lautet deshalb nicht, ob Git für Agenten funktioniert. Sie lautet, welche Teile des Modells bestehen bleiben können und welche Schichten neu gebaut werden müssen.
+Die Frage lautet deshalb nicht, ob Git für Agenten funktioniert.
+Sie lautet, welche Teile des Modells bestehen bleiben können und welche Schichten neu gebaut werden
+müssen.
 
 \section{GitHub und verwandte Plattformen}
 
-Git wurde 2005 von Linus Torvalds entwickelt. Es ist ein verteiltes System: Jeder Klon enthält die vollständige Historie, und Änderungen sind über ihren Inhalt adressiert. GitHub, GitLab, Bitbucket sowie Gitea und Forgejo ergänzen Git um Hosting, Pull Requests, Code-Reviews, Issue-Tracking, Continuous Integration, Berechtigungen und Suche. Microsoft hat GitHub 2018 übernommen.
+Git wurde 2005 von Linus Torvalds entwickelt. Es ist ein verteiltes System:
+Jeder Klon enthält die vollständige Historie, und Änderungen sind über ihren Inhalt adressiert.
+GitHub, GitLab, Bitbucket sowie Gitea und Forgejo ergänzen Git um Hosting, Pull Requests,
+Code-Reviews, Issue-Tracking, Continuous Integration, Berechtigungen und Suche.
+Microsoft hat GitHub 2018 übernommen.
 
-Diese Plattformen beruhen auf einer einfachen Übereinkunft. Das Repository ist der Ort der Wahrheit, der Pull Request ist die Einheit der Zusammenarbeit, und die Plattform ist der Ort der Prüfung. Die Übereinkunft funktioniert, solange Menschen die Prüfung leisten und Änderungen in überschaubarer Zahl eintreffen.
+Diese Plattformen beruhen auf einer einfachen Übereinkunft.
+Das Repository ist der Ort der Wahrheit, der Pull Request ist die Einheit der Zusammenarbeit,
+und die Plattform ist der Ort der Prüfung. Die Übereinkunft funktioniert,
+solange Menschen die Prüfung leisten und Änderungen in überschaubarer Zahl eintreffen.
 
 \section{Vorteile im agentischen Kontext}
 
 \startitemize
-\item {\bf Verbreitung:} Entwicklerinnen, Entwickler, Werkzeuge und Integrationen sind vorhanden. Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
-\item {\bf Pull Request als Einheit:} Er bündelt Diff, Diskussion, Prüfungen und Freigaben in einem Objekt, das Menschen und Agenten gleichermassen lesen können.
-\item {\bf Schutzregeln:} Plattformen erzwingen Freigaben auf geschützten Branches, ohne dass jeder Client dies selbst umsetzen muss.
-\item {\bf Ökosystem:} CI-Pipelines, Berechtigungsmodelle, Audit-Funktionen und Integrationen sind erprobt und dokumentiert.
+\item {\bf Verbreitung:} Entwicklerinnen, Entwickler, Werkzeuge und Integrationen sind vorhanden.
+Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
+\item {\bf Pull Request als Einheit:} Er bündelt Diff, Diskussion,
+Prüfungen und Freigaben in einem Objekt, das Menschen und Agenten gleichermassen lesen können.
+\item {\bf Schutzregeln:} Plattformen erzwingen Freigaben auf geschützten Branches,
+ohne dass jeder Client dies selbst umsetzen muss.
+\item {\bf Ökosystem:} CI-Pipelines, Berechtigungsmodelle,
+Audit-Funktionen und Integrationen sind erprobt und dokumentiert.
 \stopitemize
 
 \section{Grenzen im agentischen Kontext}
 
-Die folgende Tabelle beschreibt Beobachtungen aus der Analyse der Arbeitsabläufe. Sie beruhen nicht auf Messungen.
+Die folgende Tabelle beschreibt Beobachtungen aus der Analyse der Arbeitsabläufe.
+Sie beruhen nicht auf Messungen.
 
 \startplacetable[title={Grenzen im agentischen Kontext},reference=tab:limits,location=split]
 \startxtable[frame=off,split=yes,option=stretch]
@@ -55,56 +86,77 @@ Die folgende Tabelle beschreibt Beobachtungen aus der Analyse der Arbeitsabläuf
 \stopxtablenext
 \startxrow
 \startxcell Review \stopxcell
-\startxcell Pull Requests werden zum Engpass, wenn Agenten schneller produzieren, als Menschen prüfen können. \stopxcell
+\startxcell Pull Requests werden zum Engpass, wenn Agenten schneller produzieren,
+als Menschen prüfen können. \stopxcell
 \stopxrow
 \startxrow
 \startxcell Branches \stopxcell
-\startxcell Ein Branch pro Aufgabe führt zu vielen kurzlebigen Branches, die verwaltet werden müssen. \stopxcell
+\startxcell Ein Branch pro Aufgabe führt zu vielen kurzlebigen Branches,
+die verwaltet werden müssen. \stopxcell
 \stopxrow
 \startxrow
 \startxcell Worktrees \stopxcell
-\startxcell Git erlaubt einen Branch zu einem Zeitpunkt nur in einem Worktree. Parallele Agenten brauchen deshalb eigene Regeln. \stopxcell
+\startxcell Git erlaubt einen Branch zu einem Zeitpunkt nur in einem Worktree.
+Parallele Agenten brauchen deshalb eigene Regeln. \stopxcell
 \stopxrow
 \startxrow
 \startxcell Durchsetzung \stopxcell
-\startxcell Schreibrechte auf Branches werden durch Konvention und Plattformregeln gesteuert, nicht durch das Datenmodell. \stopxcell
+\startxcell Schreibrechte auf Branches werden durch Konvention und Plattformregeln gesteuert,
+nicht durch das Datenmodell. \stopxcell
 \stopxrow
 \startxrow
 \startxcell Herkunft \stopxcell
-\startxcell Commits tragen Autor und Zeitstempel, aber keine strukturierte Angabe zu Modell, Session und auftraggebendem Menschen. \stopxcell
+\startxcell Commits tragen Autor und Zeitstempel, aber keine strukturierte Angabe zu Modell,
+Session und auftraggebendem Menschen. \stopxcell
 \stopxrow
 \startxrow
 \startxcell Konflikte \stopxcell
-\startxcell Textbasierte Konflikte stoppen den Vorgang und müssen sofort gelöst werden, auch wenn die Lösung eine Entscheidung wäre, die später getroffen werden könnte. \stopxcell
+\startxcell Textbasierte Konflikte stoppen den Vorgang und müssen sofort gelöst werden,
+auch wenn die Lösung eine Entscheidung wäre, die später getroffen werden könnte. \stopxcell
 \stopxrow
 \startxrow[topframe=on,bottomframe=on]
 \startxcell Abhängigkeit \stopxcell
-\startxcell Repositories, Berechtigungen und Prüfungen liegen bei einem Anbieter. Ein Wechsel ist aufwendig. \stopxcell
+\startxcell Repositories, Berechtigungen und Prüfungen liegen bei einem Anbieter.
+Ein Wechsel ist aufwendig. \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
-Die Grenzen sind teils Folgen des Datenmodells, etwa bei der Herkunft und den Konflikten. Teils sind sie Folgen der Plattform, etwa bei der Durchsetzung und der Abhängigkeit. Die beiden Ursachen verlangen unterschiedliche Antworten.
+Die Grenzen sind teils Folgen des Datenmodells, etwa bei der Herkunft und den Konflikten.
+Teils sind sie Folgen der Plattform, etwa bei der Durchsetzung und der Abhängigkeit.
+Die beiden Ursachen verlangen unterschiedliche Antworten.
 
 \section{Kernaussagen}
 
 Das Grundlagendokument stützt sich auf fünf Aussagen:
 
 \startitemize[n]
-\item Das Datenmodell von Git ist für Agenten geeignet. Inhalte sind über Hashes adressiert, und Historien bilden einen unveränderlichen Graphen. Die Schwächen liegen in Arbeitsabläufen und Durchsetzung.
-\item Schreibhoheit gehört pro Branch zu genau einem Akteur und wird vom Server erzwungen. Stille Überschreibungen sind damit ausgeschlossen.
-\item Herkunft gehört in die Daten. Akteur, Modellversion, Session und Sponsor tragen jede Änderung und jeden Eintrag im Operation Log.
-\item Freigaben prüfen Absicht und Wirkung, nicht nur einzelne Zeilen. Risikostufen bestimmen, wie viele unabhängige Prüfungen nötig sind.
-\item Das Vorhaben beginnt mit einem lokalen, Git-artigen Kommandozeilenwerkzeug. Kompatibilität mit bestehenden Repositories ist kein Ziel.
+\item Das Datenmodell von Git ist für Agenten geeignet.
+Inhalte sind über Hashes adressiert, und Historien bilden einen unveränderlichen Graphen.
+Die Schwächen liegen in Arbeitsabläufen und Durchsetzung.
+\item Schreibhoheit gehört pro Branch zu genau einem Akteur und wird vom Server erzwungen.
+Stille Überschreibungen sind damit ausgeschlossen.
+\item Herkunft gehört in die Daten. Akteur, Modellversion,
+Session und Sponsor tragen jede Änderung und jeden Eintrag im Operation Log.
+\item Freigaben prüfen Absicht und Wirkung, nicht nur einzelne Zeilen.
+Risikostufen bestimmen, wie viele unabhängige Prüfungen nötig sind.
+\item Das Vorhaben beginnt mit einem lokalen, Git-artigen Kommandozeilenwerkzeug.
+Kompatibilität mit bestehenden Repositories ist kein Ziel.
 \stopitemize
 
 \section{Warum dieses Projekt}
 
 \startitemize
-\item Die Talent Factory GmbH arbeitet an AI-assisted Software Engineering. Ein eigenes Versionskontrollsystem ist dafür ein konkreter Lerngegenstand, der Entscheidungen sichtbar macht.
-\item Dezentralität ist für die Talent Factory ein Grundprinzip. Die Praxis braucht aber durchsetzbare Regeln. Das Projekt verbindet beides über Risikostufen, Policies und den Ort der Berechtigungen.
-\item Die Lehre profitiert, weil Datenstrukturen, Algorithmen und Agenten-Workflows am selben Gegenstand gezeigt werden können.
-\item Der Umfang bleibt bewusst klein: zuerst ein Nutzer, dann Mitarbeitende, danach Studierende und weitere Nutzer.
+\item Die Talent Factory GmbH arbeitet an AI-assisted Software Engineering.
+Ein eigenes Versionskontrollsystem ist dafür ein konkreter Lerngegenstand,
+der Entscheidungen sichtbar macht.
+\item Dezentralität ist für die Talent Factory ein Grundprinzip.
+Die Praxis braucht aber durchsetzbare Regeln. Das Projekt verbindet beides über Risikostufen,
+Policies und den Ort der Berechtigungen.
+\item Die Lehre profitiert, weil Datenstrukturen, Algorithmen und Agenten-Workflows am selben
+Gegenstand gezeigt werden können.
+\item Der Umfang bleibt bewusst klein: zuerst ein Nutzer, dann Mitarbeitende,
+danach Studierende und weitere Nutzer.
 \stopitemize
 
 \section{Der Name}
@@ -203,10 +255,14 @@ und das Programm heisst wie das Verzeichnis, in dem ein Repository seine Daten a
 \startitemize
 \item Kompatibilität mit bestehenden Git-Repositories. Die CLI ist kompatibel, das Format nicht.
 \item Eine Weboberfläche für Code-Reviews. Administrative Oberflächen sind später denkbar.
-\item Ein Blockchain-Konsens für Versionskontrolle. Content-Adressierung und signierte Commits decken den Nutzen weitgehend ab.
+\item Ein Blockchain-Konsens für Versionskontrolle. Content-Adressierung und signierte Commits
+decken den Nutzen weitgehend ab.
 \item Ein Ersatz für GitHub im Alltag, bevor der Hub aus Phase 5 steht.
 \stopitemize
 
 \section{Aufbau des Dokuments}
 
-Kapitel 2 und 3 legen die Grundlagen und die Architektur fest. Die Kapitel 4 bis 9 folgen den Projektphasen. Kapitel 10 beschreibt den Lehrbezug, Kapitel 11 sammelt offene Fragen. Die Architekturentscheidungen liegen im Repository unter \type{adr/} und werden in den Kapiteln referenziert.
+Kapitel 2 und 3 legen die Grundlagen und die Architektur fest.
+Die Kapitel 4 bis 9 folgen den Projektphasen. Kapitel 10 beschreibt den Lehrbezug,
+Kapitel 11 sammelt offene Fragen. Die Architekturentscheidungen liegen im Repository unter
+\type{adr/} und werden in den Kapiteln referenziert.

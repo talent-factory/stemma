@@ -4,13 +4,17 @@
 
 ## Decision
 
-1. Every branch has exactly one write owner (human or agent). The server enforces this through a lease with heartbeat and expiry.
-2. Owner override is available only to the owner role, with a justification and an audit entry. The override never bypasses the merge gate.
+1. Every branch has exactly one write owner (human or agent).
+   The server enforces this through a lease with heartbeat and expiry.
+2. Owner override is available only to the owner role, with a justification and an audit entry.
+   The override never bypasses the merge gate.
 3. Protected branches such as `main` change only through pull requests.
 4. Agents may review and approve. No self-approval. Approvals are signed.
-5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths. The policy file is itself level 3.
+5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths.
+   The policy file is itself level 3.
 6. Diff display is level 1, diff computation in the merge path is level 2.
-7. New direct runtime dependencies are level 2. Automated patch updates are level 1 with `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
+7. New direct runtime dependencies are level 2. Automated patch updates are level 1 with
+   `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
 8. Every namespace has its own policy with a floor at level 3 that cannot be lowered.
 9. Owner override in courses only with an undeletable audit entry that is visible to students.
 10. Relaxing or deleting existing assertions automatically escalates to level 2.
@@ -29,6 +33,7 @@
 - [ ] Level of runtime operations that remove history (purge, ADR-014): proposed level 3, a human
       owner only. The table classifies changes by the paths they touch, not operations at run time.
       Decided for the purge in ADR-014: only a human may purge.
-- [ ] Corporate customers might demand stricter floors. Relevant only once there are concrete customers.
+- [ ] Corporate customers might demand stricter floors.
+      Relevant only once there are concrete customers.
 - [ ] Define concrete path lists per level. The categories exist, the directories do not yet.
 - [ ] Agent identities: a dedicated role, or a role with a human sponsor.
