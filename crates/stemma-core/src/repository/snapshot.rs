@@ -22,7 +22,7 @@ use crate::object::{
 };
 use crate::oplog::{Entry, OperationName};
 use crate::refs::{RefError, WriteLock};
-use crate::store::{ObjectStore, StoreError};
+use crate::store::{Batch, ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
 
 /// The operation that the log records for a snapshot.
@@ -172,10 +172,13 @@ impl Repository {
             .filter(|file| known.insert(file.path.clone()))
             .collect();
         let first_added = tracked.len();
+        // The new objects are flushed together, before the log entry and the move name them
+        // (ADR-007, STEMMA-40).
+        let objects = self.objects().batch();
         let mut index = Index::new();
         let mut saved = Vec::new();
         for (position, file) in tracked.into_iter().chain(added).enumerate() {
-            if let Some((mode, id)) = save(self.path(), self.objects(), &file)? {
+            if let Some((mode, id)) = save(self.path(), &objects, &file)? {
                 if position >= first_added {
                     saved.push(file.path.clone());
                 }
@@ -191,9 +194,12 @@ impl Repository {
         #[cfg(test)]
         pause::reached(pause::Stage::Saved);
         let tree = index
-            .write_tree(self.objects())
+            .write_tree(&objects)
             .map_err(SnapshotError::WriteTree)?;
         if tree == commit.tree() {
+            // An unchanged tree has all its objects already, unless one was damaged and saved
+            // again.
+            finish(objects)?;
             return Ok(Replaced {
                 entry: None,
                 added: saved,
@@ -201,10 +207,10 @@ impl Repository {
             });
         }
         let replacement = commit.rewrite(tree, actor.clone(), now(), commit.message());
-        let new = self
-            .objects()
+        let new = objects
             .put_commit(&replacement)
             .map_err(|error| SnapshotError::Store(Box::new(error)))?;
+        finish(objects)?;
         match self.move_working_copy(lock, operation, current, new, actor) {
             Ok(entry) => Ok(Replaced {
                 entry,
@@ -230,6 +236,13 @@ pub(super) struct Replaced {
     pub(super) added: Vec<String>,
     /// The move happened, but a directory could not be flushed: [`UpdateError::NotDurable`].
     pub(super) late: Option<UpdateError>,
+}
+
+/// Finishes the batch of a snapshot.
+fn finish(objects: Batch<'_>) -> Result<(), SnapshotError> {
+    objects
+        .finish()
+        .map_err(|error| SnapshotError::Store(Box::new(error)))
 }
 
 /// Reads and parses the commit.
@@ -704,6 +717,47 @@ mod tests {
 
     fn snapshot(repository: &Repository) -> Option<Entry> {
         repository.snapshot(&other_actor(), &AllowAll).unwrap()
+    }
+
+    #[test]
+    fn a_snapshot_puts_its_new_objects_in_place_together_before_its_move() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a.txt", "one")]);
+        write(&dir, "a.txt", "changed");
+        let changed = Blob::new("changed").id().object_id();
+        let path = dir.path().to_path_buf();
+        let objects = repository.objects().clone();
+        pause::at_next(pause::Stage::Saved, move || {
+            assert!(
+                !objects.contains(&changed).unwrap(),
+                "the saved blob waits for the others"
+            );
+            let waiting = fs::read_dir(path.join(".stemma").join("tmp"))
+                .unwrap()
+                .count();
+            assert_eq!(waiting, 1, "the blob is in `tmp/`");
+        });
+        let entry = snapshot(&repository).expect("the working-copy commit moved");
+        assert!(repository.objects().contains(&changed).unwrap());
+        let tmp = dir.path().join(".stemma").join("tmp");
+        assert_eq!(fs::read_dir(tmp).unwrap().count(), 0);
+        // Everything that the moved commit reaches is in place.
+        let commit = current(&repository);
+        assert_eq!(
+            Some(commit.id()),
+            entry
+                .change()
+                .unwrap()
+                .working_copy()
+                .unwrap()
+                .after()
+                .copied()
+        );
+        assert!(repository
+            .objects()
+            .contains(&commit.tree().object_id())
+            .unwrap());
     }
 
     /// The tracked paths of the working-copy commit with their modes, as a sorted list.
