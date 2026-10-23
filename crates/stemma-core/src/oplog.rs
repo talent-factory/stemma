@@ -3038,10 +3038,14 @@ fn judge<T: PartialEq>(
 /// old value; a caller that lists the log again after it read the references can detect that and
 /// pass a `current` that is not settled.
 ///
-/// A pointer that returns to an earlier value inside the log is decided, because each entry reads
-/// its old value under the lock. A pointer that is set back to the old value of an entry outside
-/// the log leaves what a failed move leaves, and the entry is said not to have taken effect
-/// although it did: the log cannot tell the two apart (ADR-011).
+/// A pointer that returns to an earlier value inside the log is decided correctly as long as
+/// nothing outside the log moves it, because each entry reads its old value under the lock. A
+/// change outside the log to one of the two values of an entry cannot be told from a move of the
+/// log, so the reading has two limits (ADR-011): a pointer set back to the old value of an entry
+/// that took effect looks like a failed move, and the entry is said not to have taken effect; a
+/// pointer set to the new value of an entry that failed looks like a move that happened, and the
+/// entry is said to have taken effect. For the newest entry of a pointer the first limit applies
+/// only while no writer is at work; otherwise its outcome is unknown.
 ///
 /// A stub and a purge entry are unknown. A stub is a barrier: the change that it replaced moved
 /// pointers that are no longer known, so every entry before the newest stub is unknown too.
@@ -3419,26 +3423,48 @@ mod tests {
 
     #[test]
     fn a_pointer_that_returns_to_its_old_value_outside_the_log_is_wrongly_refuted() {
-        // The documented limit (ADR-011): entry 2 moved `main` from A to B, and then something
-        // outside the log set it back to A. The log sees what a failed move leaves, so it says
-        // that the move did not take effect. This test holds the limit, it is not a wish.
-        let last = [
+        // The first documented limit (ADR-011): entry 2 moved `main` from A to B, and then
+        // something outside the log set it back to A. The log sees what a failed move leaves, so
+        // it says that the move did not take effect. The test pins the limit; it does not describe
+        // the wanted behaviour. The same through a next entry that starts from A is
+        // `a_later_entry_confirms_or_refutes_the_one_before`.
+        let entries = [
             entry(1, None, vec![moves("main", None, Some(A))]),
             entry(2, None, vec![moves("main", Some(A), Some(B))]),
         ];
         assert_eq!(
-            outcomes(&last, now(&[("main", A)]).as_ref()),
+            outcomes(&entries, now(&[("main", A)]).as_ref()),
             [Outcome::Took, Outcome::NotTaken]
         );
-        // The same through the next entry, which starts from A again.
+        // While a writer is at work, the old value is no evidence, and the error does not appear.
+        assert_eq!(
+            outcomes(&entries, Some(&current(&[("main", A)], false))),
+            [Outcome::Took, Outcome::Unknown]
+        );
+    }
+
+    #[test]
+    fn a_pointer_set_to_the_new_value_of_a_failed_entry_outside_the_log_is_wrongly_confirmed() {
+        // The second documented limit (ADR-011): entry 2 failed and left `main` at A, and then
+        // something outside the log set it to B. The log sees what a move leaves, so it says that
+        // the move took effect, through the value now and through a next entry that starts from B.
+        // The test pins the limit; it does not describe the wanted behaviour.
+        let entries = [
+            entry(1, None, vec![moves("main", None, Some(A))]),
+            entry(2, None, vec![moves("main", Some(A), Some(B))]),
+        ];
+        assert_eq!(
+            outcomes(&entries, Some(&current(&[("main", B)], false))),
+            [Outcome::Took, Outcome::Took]
+        );
         let next = [
-            last[0].clone(),
-            last[1].clone(),
-            entry(3, None, vec![moves("main", Some(A), Some(C))]),
+            entries[0].clone(),
+            entries[1].clone(),
+            entry(3, None, vec![moves("main", Some(B), Some(C))]),
         ];
         assert_eq!(
             outcomes(&next, now(&[("main", C)]).as_ref()),
-            [Outcome::Took, Outcome::NotTaken, Outcome::Took]
+            [Outcome::Took; 3]
         );
     }
 

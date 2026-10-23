@@ -774,9 +774,11 @@ fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_
 }
 
 #[test]
-fn an_entry_before_a_stub_is_unknown_in_a_chained_log() {
-    // Entry 3 became a stub: entry 2 is unknown although the value of `main` would confirm it
-    // (ADR-014). Entry 5, after the purge, keeps its own outcome.
+fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
+    // Entry 3 became a stub, so every entry before it is unknown (ADR-014): entry 2 although
+    // entry 5, which starts from A, would confirm it, and entry 1 of `init` although HEAD would.
+    // Entry 3 moved `main` to C and entry 5 starts from A; what happened between them does not
+    // matter here. Entry 5, after the purge, keeps its own outcome.
     let dir = repository();
     branch_move(dir.path(), 2, "-", A);
     branch_move(dir.path(), 3, A, C);
@@ -794,10 +796,16 @@ fn an_entry_before_a_stub_is_unknown_in_a_chained_log() {
         "{}",
         result.stdout
     );
-    assert!(lines[3].starts_with("{\"number\":2,"), "{}", result.stdout);
-    assert!(
-        lines[3].ends_with("\"took_effect\":null}"),
-        "{}",
-        result.stdout
-    );
+    for (line, number) in [(3, 2), (4, 1)] {
+        assert!(
+            lines[line].starts_with(&format!("{{\"number\":{number},")),
+            "{}",
+            result.stdout
+        );
+        assert!(
+            lines[line].ends_with("\"took_effect\":null}"),
+            "{}",
+            result.stdout
+        );
+    }
 }
