@@ -344,8 +344,8 @@ impl Repository {
         RefsView { refs: &self.refs }
     }
 
-    /// Checks that HEAD, the working-copy commit, and every branch name a commit that the object
-    /// store of this repository has. See [`FsRefStore::verify`].
+    /// Checks that a detached HEAD, the working-copy commit, and every branch name a commit that
+    /// the object store of this repository has. See [`FsRefStore::verify`].
     ///
     /// # Errors
     ///
@@ -1381,7 +1381,11 @@ mod tests {
         fs::remove_file(repository.objects().object_path(&id.object_id())).unwrap();
         let errors = repository.verify_refs().unwrap();
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].at(), &crate::oplog::Pointer::WorkingCopy);
+        assert!(matches!(
+            &errors[0],
+            crate::verify::VerifyError::Missing { at: crate::oplog::Pointer::WorkingCopy, id: missing }
+                if *missing == id.object_id()
+        ));
     }
 
     #[test]

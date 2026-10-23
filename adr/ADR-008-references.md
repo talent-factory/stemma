@@ -95,10 +95,14 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   Windows.
 - `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
   HEAD, the working-copy commit, and every branch name a commit that the store has. A write
-  checks this already, so a failure means that an object was removed or a file was edited by
-  hand. The result lists every reference that fails, as a `VerifyError` with the pointer as its
-  place; a reference that cannot be read at all (missing, not canonical) stops the check with
-  its `RefError`. HEAD that names a branch which does not exist yet is no failure.
+  checks this already, so a failure means that an object was removed or damaged, or that a file
+  was edited by hand. The result lists every reference that fails, as a `VerifyError` with the
+  pointer as its place: a missing commit, another kind of object, or a damaged one. A reference
+  that cannot be read at all (missing, not canonical) stops the check with its `RefError`, and so
+  does a failure of the storage of the objects (`Io`), which would be the same for every
+  reference. While the journal of a purge exists, the check refuses with `PurgePending`, as a
+  pointer may be between two commits then (ADR-014). HEAD that names a branch which does not
+  exist yet is no failure.
 
 ## Open items
 

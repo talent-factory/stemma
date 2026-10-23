@@ -11,10 +11,11 @@
 //! [`TreeVerifyError`], [`CommitVerifyError`], and [`RefVerifyError`] are that one type, so that a
 //! caller handles the error of a check in one way, with `match` and with `store_error()`.
 //!
-//! The check is shallow: it looks at the objects that the tree or commit names directly, and does
-//! not follow them. Each object is read and verified completely (see
-//! [`ObjectStore::resolve_blob`]), so the cost grows with the size of the objects named. The
-//! result holds at the time of the call.
+//! The check is shallow: it looks at the objects that the index, the tree, the commit, or the
+//! references name directly, and does not follow them. Each object is read and verified
+//! completely (see [`ObjectStore::resolve_blob`]), so the cost grows with the size of the objects
+//! named. The result holds at the time of the call; for the references, which are read without
+//! the lock, at the time of each read.
 
 use std::error::Error;
 use std::fmt;
@@ -61,11 +62,13 @@ impl fmt::Display for EntryName {
     }
 }
 
-/// Why a check of the claims of an object against a store fails. Carries the place of the first
-/// failing claim, in the order of the object. The `Display` form of the place starts the message:
-/// [`IndexVerifyError`] for an index ([`EntryPath`]), [`TreeVerifyError`] for a tree
-/// ([`EntryName`]), and [`CommitVerifyError`] for a commit ([`CommitReference`]) are this type for
-/// their place.
+/// Why a check of the claims of an object or a reference against a store fails. Carries the
+/// place of one failing claim: the check of an index, a tree, or a commit reports the first in
+/// the order of the object, and the check of the references reports each reference that fails.
+/// The `Display` form of the place starts the message: [`IndexVerifyError`] for an index
+/// ([`EntryPath`]), [`TreeVerifyError`] for a tree ([`EntryName`]), [`CommitVerifyError`] for a
+/// commit ([`CommitReference`]), and [`RefVerifyError`] for a reference ([`Pointer`]) are this
+/// type for their place.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum VerifyError<L> {
