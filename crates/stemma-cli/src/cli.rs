@@ -1467,7 +1467,10 @@ mod tests {
         let (dir, entry) = repository_with_entry("commit-codes");
         let partly = CommitError::Update(UpdateError::PartlyMoved {
             entry: Box::new(entry),
-            source: RefError::Locked { path: dir.clone() },
+            source: RefError::Locked {
+                path: dir.clone(),
+                holder: stemma_core::refs::LockHolder::Unknown,
+            },
         });
         assert_eq!(
             CliError::Commit(partly).exit_code(),
@@ -1481,7 +1484,10 @@ mod tests {
         assert_eq!(
             CliError::CommitNotDurable {
                 committed: "b3:x on main".to_owned(),
-                source: Box::new(RefError::Locked { path: dir.clone() }),
+                source: Box::new(RefError::Locked {
+                    path: dir.clone(),
+                    holder: stemma_core::refs::LockHolder::Unknown
+                }),
                 output: None,
             }
             .exit_code(),
@@ -1507,7 +1513,10 @@ mod tests {
             code(ApplyPurgeError::Stopped {
                 step: PurgeStep::Entry,
                 entries: Vec::new(),
-                source: Box::new(PurgeFailure::Refs(RefError::Locked { path: path.clone() })),
+                source: Box::new(PurgeFailure::Refs(RefError::Locked {
+                    path: path.clone(),
+                    holder: stemma_core::refs::LockHolder::Unknown
+                })),
             }),
             ExitCode::from(3)
         );
@@ -1548,7 +1557,10 @@ mod tests {
         );
         assert_eq!(
             code(ApplyPurgeError::Start(PurgeFailure::Refs(
-                RefError::Locked { path }
+                RefError::Locked {
+                    path,
+                    holder: stemma_core::refs::LockHolder::Unknown,
+                }
             ))),
             ExitCode::FAILURE
         );
@@ -1558,7 +1570,10 @@ mod tests {
     fn a_restore_that_moved_a_pointer_ends_with_code_3_and_any_other_failure_with_code_1() {
         let (dir, entry) = repository_with_entry("restore-codes");
         let entry = Box::new(entry);
-        let locked = || RefError::Locked { path: dir.clone() };
+        let locked = || RefError::Locked {
+            path: dir.clone(),
+            holder: stemma_core::refs::LockHolder::Unknown,
+        };
         let code = |error: RestoreError| CliError::Restore(error).exit_code();
         assert_eq!(
             code(RestoreError::PartlyMoved {
@@ -1740,7 +1755,10 @@ mod tests {
             late: None,
             source: Box::new(RestoreError::PartlyMoved {
                 entry: entry.clone(),
-                source: RefError::Locked { path: dir.clone() },
+                source: RefError::Locked {
+                    path: dir.clone(),
+                    holder: stemma_core::refs::LockHolder::Unknown,
+                },
             }),
         };
         assert!(half.half_made());
@@ -1752,7 +1770,10 @@ mod tests {
         );
         let not_durable = RestoreError::NotDurable {
             entry: entry.clone(),
-            source: RefError::Locked { path: dir.clone() },
+            source: RefError::Locked {
+                path: dir.clone(),
+                holder: stemma_core::refs::LockHolder::Unknown,
+            },
         };
         assert!(!not_durable.half_made());
         assert_eq!(
@@ -2173,7 +2194,10 @@ mod tests {
             StatusError::Ignore(stemma_core::ignore::IgnoreError::Changed { path: dir.clone() }),
             StatusError::Walk(TrackError::InvalidName { path: "x".into() }),
             StatusError::Refs {
-                source: RefError::Locked { path: dir.clone() },
+                source: RefError::Locked {
+                    path: dir.clone(),
+                    holder: stemma_core::refs::LockHolder::Unknown,
+                },
                 saved: None,
             },
         ] {
@@ -2236,7 +2260,10 @@ mod tests {
             },
             CommitError::Update(UpdateError::MoveFailed {
                 entry: Box::new(entry.clone()),
-                source: RefError::Locked { path: dir.clone() },
+                source: RefError::Locked {
+                    path: dir.clone(),
+                    holder: stemma_core::refs::LockHolder::Unknown,
+                },
             }),
         ] {
             assert_eq!(CliError::Commit(error).exit_code(), ExitCode::FAILURE);
@@ -2244,7 +2271,10 @@ mod tests {
         // A pointer moved: code 3, and the text says what to do.
         let partly = CliError::Commit(CommitError::Update(UpdateError::PartlyMoved {
             entry: Box::new(entry.clone()),
-            source: RefError::Locked { path: dir.clone() },
+            source: RefError::Locked {
+                path: dir.clone(),
+                holder: stemma_core::refs::LockHolder::Unknown,
+            },
         }));
         assert_eq!(partly.exit_code(), ExitCode::from(3));
         assert!(

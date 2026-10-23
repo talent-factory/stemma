@@ -1238,7 +1238,10 @@ mod tests {
             "{refs}"
         );
         let bare = StatusError::Refs {
-            source: RefError::Locked { path: "x".into() },
+            source: RefError::Locked {
+                path: "x".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            },
             saved: None,
         };
         assert!(!bare.pointer_moved() && bare.entry().is_none() && bare.io_error().is_none());

@@ -1247,7 +1247,10 @@ mod tests {
         };
         let partly = CommitError::Update(into_error(Logged::PartlyMoved(
             entry.clone(),
-            RefError::Locked { path: "x".into() },
+            RefError::Locked {
+                path: "x".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            },
         )));
         assert!(partly.pointer_moved());
         assert_eq!(partly.entry(), Some(&entry));
