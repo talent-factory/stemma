@@ -14,9 +14,10 @@ lost *(confirmed)*. The index of `crates/stemma-core/src/index.rs` is built as a
 (`stemma-index 1`), but nothing depended on it yet when this ADR was written: there was no `add`,
 `commit`, or `status`.
 
-Jujutsu treats the working copy as a commit that every command updates, and the Anthropic
-article on Scion (`anthropic2026redesigning`) works without a local staging area as well. Both
-are prior art, not a template.
+Jujutsu treats the working copy as a commit that every command updates, and in Scion, as the
+Anthropic article (`anthropic2026redesigning`) describes it, the server creates every commit
+while the client only lays out the working copy and watches it for changes. Both are prior
+art, not a template (ADR-015).
 
 ## Decision
 
