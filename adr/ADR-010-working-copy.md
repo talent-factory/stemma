@@ -15,8 +15,9 @@ lost *(confirmed)*. The index of `crates/stemma-core/src/index.rs` is built as a
 `commit`, or `status`.
 
 Jujutsu treats the working copy as a commit that every command updates, and in Scion, as the
-Anthropic article (`anthropic2026redesigning`) describes it, the server creates every commit,
-not the client. Both are prior art, not a template (ADR-015).
+Anthropic article (`anthropic2026redesigning`) describes it, the server creates every commit
+while the client only lays out the working copy and watches it for changes. Both are prior
+art, not a template (ADR-015).
 
 ## Decision
 
