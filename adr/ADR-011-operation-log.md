@@ -89,9 +89,10 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   value of an entry that took effect looks like a failed move, so the entry is said not to have
   taken effect (for the newest entry of a pointer only while no writer is at work; otherwise it is
   unknown). A pointer set to the new value of an entry that failed looks like a move that
-  happened, so the entry is said to have taken effect. A marker written after the move would tell
-  the cases apart when it survives; this decision leaves it out (see above), and a later encoding
-  may add it.
+  happened, so the entry is said to have taken effect. A marker written after the move would not
+  remove both: when it survives, it settles the first limit, but an entry without one may have
+  failed or have lost its marker, so the second would turn into an unknown outcome rather than a
+  decided one. This decision leaves the marker out (see above), and a later encoding may add it.
 - **Only a change writes an entry** *(confirmed)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).

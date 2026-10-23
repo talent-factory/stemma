@@ -776,7 +776,8 @@ fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_
 #[test]
 fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
     // Entry 3 became a stub, so every entry before it is unknown (ADR-014): entry 2 although
-    // entry 5, which starts from A, would confirm it, and entry 1 of `init` although HEAD would.
+    // entry 5, which starts from A, would confirm it, and entry 1 of `init` although HEAD and the
+    // working-copy commit would.
     // Entry 3 moved `main` to C and entry 5 starts from A; what happened between them does not
     // matter here. Entry 5, after the purge, keeps its own outcome.
     let dir = repository();
