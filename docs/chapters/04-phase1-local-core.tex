@@ -442,53 +442,73 @@ geht der Purge nur noch vorwärts, und \type{--abort} lehnt ab.
 
 \subsection{Wie lange das Log Einträge behält}
 
-Ein Snapshot bei jedem Befehl schreibt viele Einträge, und jeder hält den Working-Copy-Commit
-am Leben, den er ersetzt hat. In Phase~1 behält das Log trotzdem jeden Eintrag und der
-Speicher jedes Objekt (ADR-011, STEMMA-39). Eine echte Session eines Agenten gibt es noch
-nicht, deshalb wurde eine nachgespielt: die 110 Commits der Geschichte dieses Repositories
-aus fünf Arbeitstagen, jede geänderte Datei einzeln geschrieben und danach ein Befehl, wie
-ein Agent, der nach jeder Änderung einen Befehl aufruft.
+Ein Snapshot bei jedem Befehl schreibt viele Einträge, und jeder nennt den Working-Copy-Commit,
+den er ersetzt hat. In Phase~1 behält das Log trotzdem jeden Eintrag und der Speicher jedes
+Objekt (ADR-011, STEMMA-39). Eine echte Session eines Agenten gibt es noch nicht, deshalb hat
+\type{scripts/measure-retention.sh} eine nachgespielt: die 110 Commits der Geschichte dieses
+Repositories bis \type{11f06a4}, vom 18. bis zum 23.~Oktober 2026, also sechs Tage. In der
+feinen Variante wird jede geänderte Datei einzeln geschrieben, und danach folgt ein Befehl, wie
+bei einem Agenten, der nach jeder Änderung einen Befehl aufruft. Die grobe Variante ruft
+\type{track .} einmal je Commit auf. Keine der beiden ruft \type{commit} auf. Gemessen wurde
+einmal je Variante, mit dem Release-Build unter macOS~27 mit APFS auf einer SSD; die Grössen
+sind die Summe der Dateilängen.
 
 \startplacetable[title={Eine nachgespielte Session},reference=tab:retention]
 \startxtable[frame=off]
 \startxrow[topframe=on,bottomframe=on]
 \startxcell {\bf Grösse} \stopxcell
-\startxcell {\bf Wert} \stopxcell
+\startxcell {\bf fein} \stopxcell
+\startxcell {\bf grob} \stopxcell
 \stopxrow
 \startxrow
 \startxcell Einträge im Log \stopxcell
-\startxcell 600 (468 \type{snapshot}, 131 \type{track}, 1 \type{init}) \stopxcell
+\startxcell 600 \stopxcell
+\startxcell 111 \stopxcell
+\stopxrow
+\startxrow
+\startxcell davon \type{snapshot} \stopxcell
+\startxcell 468 \stopxcell
+\startxcell 0 \stopxcell
 \stopxrow
 \startxrow
 \startxcell Grösse von \type{oplog/} \stopxcell
-\startxcell 205 KB, etwa 340 Byte je Eintrag \stopxcell
+\startxcell 208 KB \stopxcell
+\startxcell 38 KB \stopxcell
 \stopxrow
 \startxrow
 \startxcell Objekte \stopxcell
-\startxcell 17,2 MB in 3004 Dateien \stopxcell
+\startxcell 17,24 MB in 3004 Dateien \stopxcell
+\startxcell 16,33 MB in 1254 Dateien \stopxcell
 \stopxrow
 \startxrow
-\startxcell Objekte nur des Endstands \stopxcell
-\startxcell 2,1 MB in 146 Dateien \stopxcell
+\startxcell davon nur durch das Log erreichbar \stopxcell
+\startxcell 15,1 MB \stopxcell
+\startxcell 14,2 MB \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
-Das Log hält also rund 15 MB am Leben, etwa 3 MB je Arbeitstag. Die Einträge selbst machen
-davon nur gut ein Prozent aus. Den Platz brauchen die Fassungen weniger grosser Dateien,
-nicht die Zahl der Snapshots: Ein Snapshot je Befehl kostet nur 6 Prozent mehr als einer je
-Commit. Solange es keine Garbage Collection gibt (ADR-007), gäbe das Entfernen eines Eintrags
-ohnehin kein Byte frei, denn seine Objekte blieben im Speicher. Werden die Daten zu gross,
-helfen zuerst Pack-Dateien mit Deltas, die keinen Zustand verlieren.
+Der Endstand allein braucht 2,13 MB in 146 Objekten. In der feinen Variante hält das Log also
+rund 15 MB am Leben, etwa 2,5 MB je Tag. Die Einträge selbst machen davon nur gut ein Prozent
+aus. Den Platz brauchen die Fassungen weniger grosser Dateien, nicht die Zahl der Snapshots:
+Ein Snapshot je Befehl hält nur etwa 6 Prozent mehr am Leben als einer je Commit. Solange es
+keine Garbage Collection gibt (ADR-007), gäbe das Entfernen eines Eintrags ohnehin kein Byte
+frei, denn seine Objekte blieben im Speicher. Werden die Daten zu gross, helfen zuerst
+Pack-Dateien mit Deltas, die keinen Zustand verlieren.
 
 Für später steht fest, wie Aufbewahrung und Garbage Collection zusammenspielen. Die Garbage
 Collection behält jedes Objekt, das eine Referenz oder der alte oder neue Wert eines Eintrags
-erreicht, der kein Stub ist. Eine Aufbewahrungsregel löscht keinen Eintrag und legt keine
-Einträge zusammen, sondern ersetzt einen Eintrag \type{snapshot} durch denselben Stub wie
-der Purge. So bleiben die Nummern lückenlos und die Hash-Kette ganz, und es braucht keinen
-Punkt, an dem die Kette neu beginnt. Einträge anderer Operationen und die jüngsten Snapshots
-bleiben. Aufbewahrung und Garbage Collection kommen in einem Schritt, denn das eine nützt
-ohne das andere nichts.
+erreicht, der kein Stub ist; die Regel steht vollständig in ADR-011. Eine Aufbewahrungsregel
+löscht keinen Eintrag und legt keine Einträge zusammen, sondern ersetzt Einträge
+\type{snapshot} durch denselben Stub wie der Purge. So bleiben die Nummern lückenlos und die
+Hash-Kette ganz, und es braucht keinen Punkt, an dem die Kette neu beginnt. Einträge anderer
+Operationen bleiben, und mindestens der jüngste Snapshot bleibt.
+
+Der Preis ist höher als beim Purge. Ein Stub ist eine Grenze für den Ausgang: Jeder ältere
+Eintrag gilt danach als unbekannt, auch ein \type{commit}, ein \type{track} oder ein
+\type{restore}, und sein Restore braucht \type{--force}. Ein Purge ist selten, eine
+Aufbewahrungsregel läuft immer wieder. Aufbewahrung und Garbage Collection kommen in einem
+Schritt, denn das eine nützt ohne das andere nichts.
 
 \section{Wie die strengen Leser geprüft werden}
 

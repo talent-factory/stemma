@@ -112,9 +112,9 @@ server will later keep objects elsewhere (API-first). The implementation is
 ## Open
 
 - [ ] Pack files and compression: format, and when objects are packed.
-- [ ] Garbage collection of unreachable objects. Its roots are the references and the old and
-      the new values of every entry of the operation log that is not a stub; it comes in one
-      slice with the retention of snapshot entries (ADR-011, STEMMA-39).
+- [ ] Garbage collection of unreachable objects. Its roots, the lock it runs under, and the
+      pending purge that stops it are decided in ADR-011 ("Retention", STEMMA-39); it comes in
+      one slice with the retention of snapshot entries.
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31).
 - [ ] A cheaper flush of each file of a batch: an ordinary `fsync` per file and one full flush

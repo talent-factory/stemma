@@ -32,7 +32,8 @@ are prior art, not a template.
   makes the previous working-copy commit unreachable from every reference, so only the log keeps
   it. Without the log the guarantee is empty, so no snapshot is made before the operation log
   (ADR-005, STEMMA-5) exists. Garbage collection (ADR-007) treats the commits that the log names
-  as roots.
+  as roots. This holds for every replaced commit in phase 1; a later retention gives up the
+  oldest snapshot states (ADR-011, STEMMA-39).
 - **Every commit has a change ID** *(confirmed)*. A snapshot gives a new commit a new ID, because
   the content differs. The change ID stays the same through every snapshot and rewrite, so that
   a review, a pull request (phase 4), and a rebase (phase 3) can name "the same change". The
