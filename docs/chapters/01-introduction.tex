@@ -42,7 +42,7 @@ müssen.
 \section{GitHub und verwandte Plattformen}
 
 Git wurde 2005 von Linus Torvalds entwickelt. Es ist ein verteiltes System:
-Jeder Klon enthält die vollständige Historie, und Änderungen sind über ihren Inhalt adressiert.
+Jeder Klon enthält den vollständigen Verlauf, und Änderungen sind über ihren Inhalt adressiert.
 GitHub, GitLab, Bitbucket sowie Gitea und Forgejo ergänzen Git um Hosting, Pull Requests,
 Code-Reviews, Issue-Tracking, Continuous Integration, Berechtigungen und Suche.
 Microsoft hat GitHub 2018 übernommen.
@@ -132,7 +132,7 @@ Das Grundlagendokument stützt sich auf fünf Aussagen:
 
 \startitemize[n]
 \item Das Datenmodell von Git ist für Agenten geeignet.
-Inhalte sind über Hashes adressiert, und Historien bilden einen unveränderlichen Graphen.
+Inhalte sind über Hashes adressiert, und Verläufe bilden einen unveränderlichen Graphen.
 Die Schwächen liegen in Arbeitsabläufen und Durchsetzung.
 \item Schreibhoheit gehört pro Branch zu genau einem Akteur und wird vom Server erzwungen.
 Stille Überschreibungen sind damit ausgeschlossen.
@@ -264,11 +264,10 @@ decken den Nutzen weitgehend ab.
 
 Kapitel 2 und 3 legen die Grundlagen und die Architektur fest.
 Die Kapitel 4 bis 9 folgen den Projektphasen (\in{Abbildung}[fig:roadmap]).
-Jede Phase baut auf der vorigen auf, und jedes Kapitel nennt ihr Ziel, ihren Umfang
-und ihre offenen Fragen.
-Kapitel 10 beschreibt den Lehrbezug, Kapitel 11 sammelt offene Fragen.
-Die Architekturentscheidungen liegen im Repository unter \type{adr/}
-und werden in den Kapiteln referenziert.
+Jede Phase baut auf der vorigen auf, und jedes Kapitel nennt ihr Ziel, ihren Umfang und ihre offenen
+Fragen. Kapitel 10 beschreibt den Lehrbezug, Kapitel 11 sammelt offene Fragen.
+Der Anhang beschreibt die Befehle der Kommandozeile. Die Architekturentscheidungen liegen im
+Repository unter \type{adr/} und werden in den Kapiteln referenziert.
 
 \startplacefigure[title={Phasen des Projekts},reference=fig:roadmap,location=here]
 \externalfigure[images/roadmap.pdf][width=\textwidth]

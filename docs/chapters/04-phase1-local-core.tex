@@ -79,51 +79,47 @@ wie \type{.DS_Store}, werden übersprungen.
 Besteht das Journal eines Purge vor oder nach der Prüfung, lehnt sie ab.
 
 Ein Snapshot (\type{Repository::snapshot}, ADR-010) hält den Stand der Arbeitskopie fest.
-Er liest den Baum des Working-Copy-Commits und aus dem Arbeitsverzeichnis genau die Dateien,
-die in diesem Baum stehen; eine Datei, die nicht im Baum steht, ist nicht verfolgt und wird
-weder gespeichert noch gemeldet. Eine geänderte Datei wird gespeichert, eine gelöschte
-verlässt den Baum, ebenso eine, die ein Verzeichnis ersetzt hat oder die unter einem
-Verzeichnis liegt, das nun ein Link ist. Ein Pfad wird nie über einen Link verfolgt;
-ein verfolgter Pfad, der selbst ein Link ist, wird als sein Ziel gespeichert,
-und das Ausführbit gehört zum Dateimodus. Eine verfolgte Spezialdatei (Gerät, Socket, Pipe)
-bricht den Snapshot mit einem Fehler ab, statt still aus der History zu fallen.
-Der neue Commit behält Eltern, Change-ID und Nachricht des alten, sein Autor ist der
-Akteur des Snapshots. Ist der Baum unverändert, entstehen weder Commit noch Eintrag.
-Die neuen Objekte eines Snapshots schreibt der Kern zuerst ungesichert nach \type{tmp/}
-und sichert sie gemeinsam, bevor ein Eintrag oder ein Zeiger sie nennt (ADR-007).
-Jedes Verzeichnis unter \type{objects/} wird so einmal gesichert statt einmal je Objekt,
-was das erste \type{track} vieler Dateien etwa halbiert.
-Ein Absturz davor verliert nur diese Objekte, und ihre Dateien räumt der nächste Schreiber weg.
-Ein Snapshot (\type{track}, \type{commit}, \type{status}, \type{restore} und
-\type{purge --apply}) speichert,
-was im Verzeichnis liegt, und trägt den Akteur des Befehls ein. Arbeiten zwei Akteure im
-selben Verzeichnis, kann der Befehl des einen die Änderung des anderen speichern, und das
-Log nennt dann nicht den Akteur, der die Änderung gemacht hat. Deshalb gilt die Regel:
-Jeder Akteur arbeitet in einer eigenen Arbeitskopie (ADR-010). Zwei Akteure in einem
-Verzeichnis sind kein unterstützter Betrieb. Der Kern erzwingt das noch nicht, bis dahin
-gilt die Regel als Konvention; die Durchsetzung kommt mit der zweiten Arbeitskopie
-(Worktree, Phase 3).
-Ein neuer Pfad kommt mit \type{Repository::track} in den Baum. Die Funktion nimmt relative
-Pfade; ein Verzeichnis steht für die Dateien darunter, ohne einen Ordner \type{.stemma}.
-Sie baut den neuen Baum aus den verfolgten Dateien und den Dateien an den Pfaden und
-ersetzt den Working-Copy-Commit wie ein Snapshot. Die verfolgten Dateien speichert sie mit,
-denn sonst ginge eine Änderung an ihnen verloren. Ein Pfad, der schon verfolgt wird, ist
-kein Fehler, solange kein Muster der Ausschlussdatei ihn ausschliesst.
-Ein Pfad, den es nicht gibt oder der eine Pfadregel verletzt, wird abgelehnt,
-bevor sich der Working-Copy-Commit bewegt. Jeder Name im Pfad muss so geschrieben sein,
-wie ihn das Verzeichnis hat, denn ein Dateisystem ohne Unterscheidung von Gross- und
-Kleinschreibung nähme \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal;
-der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die beim
-Speichern verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt
-\type{track} Namen, die auf \type{.stemma} hinauslaufen, ohne Meldung, ebenso jede Datei und
-jedes Verzeichnis namens \type{.git} in jeder Tiefe (ADR-012); jeder andere Name,
-den ein Baum ablehnt, bricht den Aufruf ab. Die Datei \type{.stemmaignore} liest \type{track}
-(ADR-012); sie steht im nächsten Absatz.
-Das Verzeichnis \type{.} allein steht für das ganze Arbeitsverzeichnis.
-Die Funktion \type{normalize_path} macht aus dem, was eine Person tippt
-(\type{./a.txt}, \type{dir/}), diese Form, und ein leeres Argument lässt sie unverändert,
-damit der Kern es ablehnt.
-Der Befehl \type{stemma track} ruft beide auf; er steht in der Befehlsreferenz.
+Er liest den Baum des Working-Copy-Commits und aus dem Arbeitsverzeichnis genau die Dateien, die in
+diesem Baum stehen; eine Datei, die nicht im Baum steht, ist nicht verfolgt und wird weder
+gespeichert noch gemeldet. Eine geänderte Datei wird gespeichert, eine gelöschte verlässt den
+Baum, ebenso eine, die ein Verzeichnis ersetzt hat oder die unter einem Verzeichnis liegt, das nun
+ein Link ist. Ein Pfad wird nie über einen Link verfolgt; ein verfolgter Pfad, der selbst ein Link
+ist, wird als sein Ziel gespeichert, und das Ausführbit gehört zum Dateimodus.
+Eine verfolgte Spezialdatei (Gerät, Socket, Pipe) bricht den Snapshot mit einem Fehler ab, statt
+still aus dem Verlauf zu fallen. Der neue Commit behält Eltern, Change-ID und Nachricht des alten,
+sein Autor ist der Akteur des Snapshots. Ist der Baum unverändert, entstehen weder Commit noch
+Eintrag. Die neuen Objekte eines Snapshots schreibt der Kern zuerst ungesichert nach \type{tmp/} und
+sichert sie gemeinsam, bevor ein Eintrag oder ein Zeiger sie nennt (ADR-007).
+Jedes Verzeichnis unter \type{objects/} wird so einmal gesichert statt einmal je Objekt, was das
+erste \type{track} vieler Dateien etwa halbiert. Ein Absturz davor verliert nur diese Objekte, und
+ihre Dateien räumt der nächste Schreiber weg. Ein Snapshot (\type{track}, \type{commit},
+\type{status}, \type{restore} und \type{purge --apply}) speichert, was im Verzeichnis liegt, und
+trägt den Akteur des Befehls ein. Arbeiten zwei Akteure im selben Verzeichnis, kann der Befehl des
+einen die Änderung des anderen speichern, und das Log nennt dann nicht den Akteur, der die
+Änderung gemacht hat. Deshalb gilt die Regel: Jeder Akteur arbeitet in einer eigenen Arbeitskopie
+(ADR-010). Zwei Akteure in einem Verzeichnis sind kein unterstützter Betrieb.
+Der Kern erzwingt das noch nicht, bis dahin gilt die Regel als Konvention;
+die Durchsetzung kommt mit der zweiten Arbeitskopie (Worktree, Phase 3).
+Ein neuer Pfad kommt mit \type{Repository::track} in den Baum.
+Die Funktion nimmt relative Pfade; ein Verzeichnis steht für die Dateien darunter, ohne einen
+Ordner \type{.stemma}. Sie baut den neuen Baum aus den verfolgten Dateien und den Dateien an den
+Pfaden und ersetzt den Working-Copy-Commit wie ein Snapshot.
+Die verfolgten Dateien speichert sie mit, denn sonst ginge eine Änderung an ihnen verloren.
+Ein Pfad, der schon verfolgt wird, ist kein Fehler, solange kein Muster der Ausschlussdatei ihn
+ausschliesst. Ein Pfad, den es nicht gibt oder der eine Pfadregel verletzt, wird abgelehnt, bevor
+sich der Working-Copy-Commit bewegt. Jeder Name im Pfad muss so geschrieben sein, wie ihn das
+Verzeichnis hat, denn ein Dateisystem ohne Unterscheidung von Gross- und Kleinschreibung nähme
+\type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal;
+der Fehler nennt die Schreibweise auf dem Datenträger. Eine genannte Datei, die beim Speichern
+verschwunden ist, ist ein Fehler. Unter einem Verzeichnis überspringt \type{track} Namen, die auf
+\type{.stemma} hinauslaufen, ohne Meldung, ebenso jede Datei und jedes Verzeichnis namens
+\type{.git} in jeder Tiefe (ADR-012); jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
+Die Datei \type{.stemmaignore} liest \type{track} (ADR-012);
+sie steht im nächsten Absatz. Das Verzeichnis \type{.} allein steht für das ganze
+Arbeitsverzeichnis. Die Funktion \type{normalize_path} macht aus dem, was eine Person tippt
+(\type{./a.txt}, \type{dir/}), diese Form, und ein leeres Argument lässt sie unverändert, damit
+der Kern es ablehnt. Der Befehl \type{stemma track} ruft beide auf;
+er steht in der Befehlsreferenz.
 
 Die Ausschlussdatei \type{.stemmaignore} (ADR-012, \type{ignore.rs}) liegt im Wurzelverzeichnis.
 Eine Zeile ist ein Kommentar mit \type{#} oder ein Muster aus Teilen, die ein \type{/} trennt.
@@ -151,30 +147,25 @@ bricht der Aufruf ab, bevor etwas verfolgt wird.
 Ein Snapshot, \type{commit} und ein Aufruf ohne Pfade lesen sie nie.
 Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Muster aus.
 
-Der Zug des Working-Copy-Commits folgt der Reihenfolge des Operation Logs: Eintrag zuerst,
-dann Zeiger, beides unter der Sperre der Referenzen. Jede verfolgte Datei wird zweimal gelesen,
-einmal zum Speichern und einmal, wenn der Baum geschrieben wird; einen Cache gibt es noch nicht.
+Die Zeigerbewegung des Working-Copy-Commits folgt der Reihenfolge des Operation Logs:
+Eintrag zuerst, dann Zeiger, beides unter der Sperre der Referenzen.
+Jede verfolgte Datei wird zweimal gelesen, einmal zum Speichern und einmal, wenn der Baum
+geschrieben wird; einen Cache gibt es noch nicht.
 
-Die Funktion \type{Repository::commit} (ADR-010) benennt den Working-Copy-Commit und
-beginnt einen neuen.
-Zuerst speichert sie die verfolgten Dateien wie ein Snapshot,
-damit eine Änderung seit dem letzten Befehl im Commit landet;
-das ist eine eigene Operation mit eigenem Eintrag.
-Dann bekommt der Working-Copy-Commit die Nachricht,
-behält Eltern und Change-ID und erhält den Akteur und die Zeit des Aufrufs.
-Der Branch, auf den HEAD zeigt, rückt auf diesen Commit,
-und ein neuer Working-Copy-Commit tritt an die Stelle des alten:
-Kind des benannten Commits, mit demselben Baum, leerer Nachricht und eigener Change-ID.
-«Leer» heisst gleicher Baum, weil die verfolgten Dateien der Baum sind.
-Beide Zeiger bewegen sich in einem Schritt unter der Sperre der Referenzen
-und stehen in einem Eintrag des Operation Logs.
-Der Branch bewegt sich zuerst.
-Bricht der zweite Zug ab, meldet der Aufruf \type{PartlyMoved}
-und \type{op log} zeigt den Eintrag als nicht übernommen, obwohl der Branch sich bewegt hat;
+Die Funktion \type{Repository::commit} (ADR-010) benennt den Working-Copy-Commit und beginnt einen
+neuen. Zuerst speichert sie die verfolgten Dateien wie ein Snapshot, damit eine Änderung seit dem
+letzten Befehl im Commit landet; das ist eine eigene Operation mit eigenem Eintrag.
+Dann bekommt der Working-Copy-Commit die Nachricht, behält Eltern und Change-ID und erhält den
+Akteur und die Zeit des Aufrufs. Der Branch, auf den HEAD zeigt, rückt auf diesen Commit, und ein
+neuer Working-Copy-Commit tritt an die Stelle des alten: Kind des benannten Commits, mit demselben
+Baum, leerer Nachricht und eigener Change-ID. «Leer» heisst gleicher Baum, weil die verfolgten
+Dateien der Baum sind. Beide Zeiger bewegen sich in einem Schritt unter der Sperre der Referenzen
+und stehen in einem Eintrag des Operation Logs. Der Branch bewegt sich zuerst.
+Bricht die zweite Zeigerbewegung ab, meldet der Aufruf \type{PartlyMoved} und \type{op log} zeigt
+den Eintrag als nicht übernommen, obwohl der Branch sich bewegt hat;
 der nächste \type{commit} erkennt den Zustand und beendet den ersten, ohne seine eigene Nachricht
-zu verwenden.
-Der Aufruf lehnt eine leere Nachricht ab, ein HEAD ohne Branch, einen unveränderten Baum
-und einen Branch, der nicht beim Elternteil des Working-Copy-Commits steht;
+zu verwenden. Der Aufruf lehnt eine leere Nachricht ab, ein HEAD ohne Branch, einen unveränderten
+Baum und einen Branch, der nicht beim Elternteil des Working-Copy-Commits steht;
 Letzteres wäre ein Fall für einen Rebase (Phase 3).
 
 Die Funktion \type{Repository::status} (ADR-010) macht den Snapshot der verfolgten Dateien,
@@ -235,87 +226,80 @@ working-copy - b3:4feb…b32c
 
 Die Zeile \type{previous} gehört zur Hash-Kette, die weiter unten beschrieben ist.
 
-Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger,
-bevor sich der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit
-schon im Log. Das \type{Repository} hält dafür die Sperre der Referenzen vom Prüfen bis
-zum Zug: Es liest den Zeiger, prüft die Änderung (ein Name, der nicht im Weg steht,
-ein Branch, der dort steht, wo der Aufrufer ihn sah, ein Commit, der im Objektspeicher liegt),
-schreibt den Eintrag und bewegt dann den Zeiger. Weil nichts zwischen Prüfung und Zug
-dazwischenkommt, beschreibt ein Eintrag einen Zug, der gemacht werden sollte, und bei
-\type{set_head} steht der Wert im Eintrag, den HEAD wirklich hatte. Der Preis ist,
-dass das Schreiben der kleinen Datei zum geschützten Abschnitt gehört.
+Der Eintrag entsteht vor der Änderung, und der Kern sichert ihn auf den Datenträger, bevor sich
+der Zeiger bewegt. Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log.
+Das \type{Repository} hält dafür die Sperre der Referenzen vom Prüfen bis zur Zeigerbewegung:
+Es liest den Zeiger, prüft die Änderung (ein Name, der nicht im Weg steht, ein Branch, der dort
+steht, wo der Aufrufer ihn sah, ein Commit, der im Objektspeicher liegt), schreibt den Eintrag und
+bewegt dann den Zeiger. Weil nichts zwischen Prüfung und Zeigerbewegung dazwischenkommt, beschreibt
+ein Eintrag eine Zeigerbewegung, die gemacht werden sollte, und bei \type{set_head} steht der Wert
+im Eintrag, den HEAD wirklich hatte. Der Preis ist, dass das Schreiben der kleinen Datei zum
+geschützten Abschnitt gehört.
 
-Ein Eintrag bleibt trotzdem eine Absicht, denn das Dateisystem kann zwischen Eintrag
-und Zug ausfallen, und ein Eintrag, der nicht als gesichert bekannt ist, verhindert den Zug.
-Der Fehler sagt in beiden Fällen, dass ein Eintrag existiert und dass sich der Zeiger
-nicht bewegt hat, und er trägt den Eintrag mit. Ein Aufrufer kann so ein Scheitern
-ohne Eintrag von einem mit Eintrag unterscheiden und weiss, ob er die Änderung
-wiederholen darf. Ob ein Zug stattgefunden hat, lässt sich an der Kette der Einträge
-eines Zeigers ablesen. Nach dem Zug wird nichts mehr geschrieben, damit nichts halb
-geschrieben bleiben kann.
-Das hat zwei Grenzen. Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück,
-entscheidet die Kette richtig, solange niemand den Zeiger ausserhalb des Logs bewegt,
-denn jeder Eintrag liest seinen alten Wert unter der Sperre.
-Setzt aber jemand ausserhalb des Logs einen Zeiger auf den alten Wert eines Eintrags zurück,
-sieht das Log dasselbe wie nach einem gescheiterten Zug. Es meldet dann, der Zug habe nicht
-stattgefunden, obwohl er stattfand; beim neuesten Eintrag eines Zeigers nur, solange niemand
-schreibt, sonst ist der Ausgang unbekannt.
-Umgekehrt sieht ein gescheiterter Zug, nach dem jemand den Zeiger ausserhalb des Logs auf den
-neuen Wert setzt, wie ein Zug aus, der stattfand.
+Ein Eintrag bleibt trotzdem eine Absicht, denn das Dateisystem kann zwischen Eintrag und
+Zeigerbewegung ausfallen, und ein Eintrag, der nicht als gesichert bekannt ist, verhindert die
+Zeigerbewegung. Der Fehler sagt in beiden Fällen, dass ein Eintrag existiert und dass sich der
+Zeiger nicht bewegt hat, und er trägt den Eintrag mit. Ein Aufrufer kann so ein Scheitern ohne
+Eintrag von einem mit Eintrag unterscheiden und weiss, ob er die Änderung wiederholen darf.
+Ob eine Zeigerbewegung stattgefunden hat, lässt sich an der Kette der Einträge eines Zeigers
+ablesen. Nach der Zeigerbewegung wird nichts mehr geschrieben, damit nichts halb geschrieben bleiben
+kann. Das hat zwei Grenzen. Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück,
+entscheidet die Kette richtig, solange niemand den Zeiger ausserhalb des Logs bewegt, denn jeder
+Eintrag liest seinen alten Wert unter der Sperre. Setzt aber jemand ausserhalb des Logs einen Zeiger
+auf den alten Wert eines Eintrags zurück, sieht das Log dasselbe wie nach einer gescheiterten
+Zeigerbewegung. Es meldet dann, die Zeigerbewegung habe nicht stattgefunden, obwohl sie stattfand;
+beim neuesten Eintrag eines Zeigers nur, solange niemand schreibt, sonst ist der Ausgang unbekannt.
+Umgekehrt sieht eine gescheiterte Zeigerbewegung, nach der jemand den Zeiger ausserhalb des Logs auf
+den neuen Wert setzt, wie eine Zeigerbewegung aus, die stattfand.
 
 Ein Eintrag hat eine Obergrenze von 64 KiB, und der Schreiber hält sie ein: Er lehnt
 einen grösseren Eintrag ab, bevor er etwas schreibt. Der Leser lehnt eine grössere
 Datei ohnehin ab, und ohne die Grenze auf der Schreiberseite würde ein sehr langer
 Akteur ein Log erzeugen, das sich schon ab dem ersten Eintrag nicht mehr lesen lässt.
 
-Jeder Eintrag entsteht in einer temporären Datei und wird dann mit einem harten Verweis
-unter der nächsten freien Nummer veröffentlicht. Der Verweis scheitert, wenn die Nummer
-vergeben ist, und ein Eintrag ist vom ersten Moment an vollständig. Die Schreiber des
-\type{Repository} treffen sich hier nicht, weil sie die Sperre halten; die Wiederholung
-gilt für jeden anderen Schreiber. Die temporäre Datei wird danach auf Verdacht entfernt.
-Gelingt das nicht, ist der Eintrag trotzdem vollständig, und der Zug geht weiter:
-\type{tmp/} enthält Wegwerfdaten, und ein Aufräumen darf keinen Zug verhindern.
-Aufgeräumt wird beim Nehmen der Sperre (STEMMA-31).
-Jeder, der in \type{tmp/} schreibt, hält dabei die Sperre der Referenzen:
-die Befehle, die schreiben, die Züge des \type{Repository} und der Purge.
-Wer die Sperre nimmt, ist also der einzige Schreiber, und jede Datei in \type{tmp/}
+Jeder Eintrag entsteht in einer temporären Datei und wird dann mit einem harten Verweis unter der
+nächsten freien Nummer veröffentlicht. Der Verweis scheitert, wenn die Nummer vergeben ist, und
+ein Eintrag ist vom ersten Moment an vollständig. Die Schreiber des \type{Repository} treffen sich
+hier nicht, weil sie die Sperre halten; die Wiederholung gilt für jeden anderen Schreiber.
+Die temporäre Datei wird danach nach bestem Bemühen entfernt.
+Gelingt das nicht, ist der Eintrag trotzdem vollständig, und die Zeigerbewegung geht weiter:
+\type{tmp/} enthält Wegwerfdaten, und ein Aufräumen darf keine Zeigerbewegung verhindern.
+Aufgeräumt wird beim Nehmen der Sperre (STEMMA-31). Jeder, der in \type{tmp/} schreibt, hält dabei
+die Sperre der Referenzen: die Befehle, die schreiben, die Zeigerbewegungen des \type{Repository}
+und der Purge. Wer die Sperre nimmt, ist also der einzige Schreiber, und jede Datei in \type{tmp/}
 stammt aus einem Schreiben, das scheiterte oder abgebrochen wurde.
-Gleich nach dem Nehmen entfernt er darum jede Datei in \type{tmp/},
-ohne einem Verweis zu folgen,
+Gleich nach dem Nehmen entfernt er darum jede Datei in \type{tmp/}, ohne einem Verweis zu folgen,
 und jedes Verzeichnis neben \type{.stemma}, das ein abgebrochenes \type{init} zurückliess.
-Ein solches Verzeichnis erkennt er an seinem ganzen Namen: \type{.stemma-init-},
-die Prozessnummer, ein Zähler und 16 kleine Hexadezimalziffern.
-Ein Verzeichnis des Projekts wie \type{.stemma-init-notes} gehört zum Inhalt und bleibt.
-Besteht das Journal eines Purge, räumt ein abgewiesener Befehl nichts auf;
-das übernehmen \type{purge --resume} und \type{--abort}.
-Auch das geschieht auf Verdacht: Was sich nicht entfernen lässt, bleibt,
-und der nächste Schreiber versucht es wieder.
-Entscheidend ist die Sperre und nicht das Alter einer Datei,
-so dass ein langsamer Schreiber wie das erste \type{track} vieler Dateien
-nie unterbrochen wird, und es gibt keinen Befehl, an den man denken müsste.
-Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag, nachdem er das
-Verzeichnis ein zweites Mal gelesen hat, denn ein Verzeichnis ist während eines Schreibens
-kein Schnappschuss. Namen mit einem Punkt am Anfang überspringt er, jeden anderen
+Ein solches Verzeichnis erkennt er an seinem ganzen Namen: \type{.stemma-init-}, die Prozessnummer,
+ein Zähler und 16 kleine Hexadezimalziffern. Ein Verzeichnis des Projekts wie
+\type{.stemma-init-notes} gehört zum Inhalt und bleibt. Besteht das Journal eines Purge, räumt ein
+abgewiesener Befehl nichts auf; das übernehmen \type{purge --resume} und \type{--abort}.
+Auch das geschieht nach bestem Bemühen: Was sich nicht entfernen lässt, bleibt, und der nächste
+Schreiber versucht es wieder. Entscheidend ist die Sperre und nicht das Alter einer Datei, so dass
+ein langsamer Schreiber wie das erste \type{track} vieler Dateien nie unterbrochen wird, und es gibt
+keinen Befehl, an den man denken müsste. Eine Lücke in den Nummern meldet der Leser als verlorenen
+Eintrag, nachdem er das Verzeichnis ein zweites Mal gelesen hat, denn ein Verzeichnis ist während
+eines Schreibens kein Snapshot. Namen mit einem Punkt am Anfang überspringt er, jeden anderen
 fremden Namen meldet er.
 
-Die Datei \type{oplog-tip} hält die Nummer des letzten Eintrags. Der Schreiber führt sie
-nach dem Eintrag nach, noch bevor sich ein Zeiger bewegt; die Datei selbst wird gesichert,
-ihr Verzeichnis nur nach bestem Bemühen. Fehlt dem Verzeichnis der letzte Eintrag,
-nennt die Datei eine grössere Nummer, als es hat. Dann meldet der Leser den Verlust,
-und der Schreiber schreibt nichts, denn er vergäbe die Nummer sonst ein zweites Mal an einen
-anderen Zug. Beide lesen die Datei, bevor sie das Verzeichnis auflisten: Ein Schreiber legt
-den Eintrag an, bevor er die Datei nachführt, und in der anderen Reihenfolge meldete ein
-Leser, der gerade mit einem Schreiber zusammentrifft, einen Verlust, den es nicht gibt.
-Eine Datei, die um eins zurückliegt, ist kein Fehler: Der Vorgang brach zwischen
-dem Eintrag und der Datei ab, und der nächste Schreiber führt sie nach. Das gilt auch,
-wenn die Datei nicht geschrieben werden konnte. Nach einem Eintrag, dessen Verzeichnis sich
-nicht sichern liess, rückt die Datei nicht vor, sonst verweigerte sie nach einem Absturz
-jeden weiteren Schreiber. Fehlt die Datei (ein Repository vor ihrer Einführung), legt der
-nächste Eintrag sie an. Eine Lücke in der Mitte
-hält den Schreiber dagegen nicht auf, denn eine Weigerung verhinderte den Zug, der das Log
-reparieren soll. Die Datei schützt vor Unfällen, nicht vor einem Angriff: Wer sie löscht,
-fällt erst \type{stemma op verify} auf, sofern der letzte Eintrag in der Kette steht, und wer
-den Eintrag und die Datei neu schreibt, bleibt unbemerkt.
+Die Datei \type{oplog-tip} hält die Nummer des letzten Eintrags.
+Der Schreiber führt sie nach dem Eintrag nach, noch bevor sich ein Zeiger bewegt;
+die Datei selbst wird gesichert, ihr Verzeichnis nur nach bestem Bemühen.
+Fehlt dem Verzeichnis der letzte Eintrag, nennt die Datei eine grössere Nummer, als es hat.
+Dann meldet der Leser den Verlust, und der Schreiber schreibt nichts, denn er vergäbe die Nummer
+sonst ein zweites Mal an eine andere Zeigerbewegung. Beide lesen die Datei, bevor sie das
+Verzeichnis auflisten: Ein Schreiber legt den Eintrag an, bevor er die Datei nachführt, und in der
+anderen Reihenfolge meldete ein Leser, der gerade mit einem Schreiber zusammentrifft, einen Verlust,
+den es nicht gibt. Eine Datei, die um eins zurückliegt, ist kein Fehler:
+Der Vorgang brach zwischen dem Eintrag und der Datei ab, und der nächste Schreiber führt sie nach.
+Das gilt auch, wenn die Datei nicht geschrieben werden konnte.
+Nach einem Eintrag, dessen Verzeichnis sich nicht sichern liess, rückt die Datei nicht vor, sonst
+verweigerte sie nach einem Absturz jeden weiteren Schreiber.
+Fehlt die Datei (ein Repository vor ihrer Einführung), legt der nächste Eintrag sie an.
+Eine Lücke in der Mitte hält den Schreiber dagegen nicht auf, denn eine Weigerung verhinderte die
+Zeigerbewegung, die das Log reparieren soll. Die Datei schützt vor Unfällen, nicht vor einem
+Angriff: Wer sie löscht, fällt erst \type{stemma op verify} auf, sofern der letzte Eintrag in der
+Kette steht, und wer den Eintrag und die Datei neu schreibt, bleibt unbemerkt.
 
 \subsection{Die Hash-Kette}
 
@@ -408,30 +392,29 @@ durchsucht auch den Objektspeicher nach solchen Resten, die nichts erreicht. Zum
 prüft er, dass nichts Behaltenes den Blob noch enthält oder etwas erreicht, das er löscht;
 sonst bricht er ab.
 
-Das Log kennt die Stubs und den Eintrag \type{purge} (STEMMA-47). In der Hash-Kette haben
-beide die Version 3 der Kodierung wie jeder andere Eintrag; ein Stub eines Eintrags aus der Zeit
-vor der Kette behält die Version 2.
-Ein Stub behält Nummer, Zeit und Akteur und verliert die Operation und jede ID. Der Eintrag
-des Purge nennt keinen Zeiger und keine ID, nur die Zahl der umgeschriebenen Commits und die
-Nummern der Stubs als Bereiche; eine lange Liste verteilt sich auf mehrere Einträge. Ein Stub,
-den kein Purge nennt, ist ein Fehler des Logs wie eine Lücke. \type{op restore} lehnt einen
-Stub und einen Purge ab, ebenso einen Eintrag, den ein Purge nennt, der noch nicht fertig ist.
-Ein Stub ersetzt eine Änderung, deren Züge niemand mehr kennt. Deshalb ist der Ausgang jedes
-Eintrags vor dem jüngsten Stub unbekannt, und ein Restore eines solchen Eintrags braucht
-\type{--force}. Ein Stub behält den Hash des Rumpfs, den er ersetzt
-(\type{stub b3:…}). Damit hat er den Hash des ersetzten Eintrags, und die Kette hält über
-einen Purge hinweg, während Zeit und Akteur weiter geschützt sind (ADR-014).
+Das Log kennt die Stubs und den Eintrag \type{purge} (STEMMA-47).
+In der Hash-Kette haben beide die Version 3 der Kodierung wie jeder andere Eintrag;
+ein Stub eines Eintrags aus der Zeit vor der Kette behält die Version 2.
+Ein Stub behält Nummer, Zeit und Akteur und verliert die Operation und jede ID.
+Der Eintrag des Purge nennt keinen Zeiger und keine ID, nur die Zahl der umgeschriebenen Commits und
+die Nummern der Stubs als Bereiche; eine lange Liste verteilt sich auf mehrere Einträge.
+Ein Stub, den kein Purge nennt, ist ein Fehler des Logs wie eine Lücke.
+\type{op restore} lehnt einen Stub und einen Purge ab, ebenso einen Eintrag, den ein Purge nennt,
+der noch nicht fertig ist. Ein Stub ersetzt eine Änderung, deren Zeigerbewegungen niemand mehr
+kennt. Deshalb ist der Ausgang jedes Eintrags vor dem jüngsten Stub unbekannt, und ein Restore
+eines solchen Eintrags braucht \type{--force}. Ein Stub behält den Hash des Rumpfs, den er ersetzt
+(\type{stub b3:…}). Damit hat er den Hash des ersetzten Eintrags, und die Kette hält über einen
+Purge hinweg, während Zeit und Akteur weiter geschützt sind (ADR-014).
 
-Mit \type{--apply} wird der Purge gemacht. Er speichert zuerst das Verzeichnis in einem
-Snapshot, damit eine Änderung mit dem Geheimnis in einem Commit und im Plan steht. Dann
-nimmt er die Sperre der Referenzen und hält sie bis zum Ende, plant unter ihr neu, und sein
-Plan kann daher vom gezeigten abweichen. Er hebt das Repository auf das Format 4, falls es
-noch tiefer steht, und schreibt
-das Journal \type{.stemma/purge-pending}. Es nennt den Blob, die Nummer des letzten Eintrags,
-jeden umgeschriebenen Commit, die Züge der Zeiger, die Stubs, die neuen Objekte und die
-Objekte, die gelöscht werden. Das Format kommt vor dem Journal, denn ein Programm, das nur die
-Version 2 kennt, kennt auch das Journal nicht und würde an ihm vorbei schreiben; so lehnt es
-das Repository ab.
+Mit \type{--apply} wird der Purge gemacht. Er speichert zuerst das Verzeichnis in einem Snapshot,
+damit eine Änderung mit dem Geheimnis in einem Commit und im Plan steht.
+Dann nimmt er die Sperre der Referenzen und hält sie bis zum Ende, plant unter ihr neu, und sein
+Plan kann daher vom gezeigten abweichen. Er hebt das Repository auf das Format 4, falls es noch
+tiefer steht, und schreibt das Journal \type{.stemma/purge-pending}.
+Es nennt den Blob, die Nummer des letzten Eintrags, jeden umgeschriebenen Commit, die Bewegungen der
+Zeiger, die Stubs, die neuen Objekte und die Objekte, die gelöscht werden.
+Das Format kommt vor dem Journal, denn ein Programm, das nur die Version 2 kennt, kennt auch das
+Journal nicht und würde an ihm vorbei schreiben; so lehnt es das Repository ab.
 
 Danach schreibt der Purge die neuen Bäume und Commits. Er prüft, dass jeder Zeiger noch auf
 seinem alten Wert steht, schreibt den Eintrag \type{purge} und bewegt die Zeiger. Dann
@@ -440,15 +423,15 @@ und entfernt zuletzt das Journal. Solange das Journal besteht, lehnt jeder ander
 schreibt, ab, wenn er die Sperre nimmt. Die Meldung nennt \type{stemma purge --resume} und
 \type{--abort}.
 
-Jeder Befehl, der schreibt, nimmt die Sperre der Referenzen, bevor er sein erstes Objekt
-schreibt, und hält sie bis zu seinem letzten Zug. Ohne diese Regel bliebe eine Lücke: Ein
-Befehl, der vor dem Journal geprüft hat und seinen Zeiger erst nach dem Purge bewegt, fände
-kein Journal mehr. Er könnte einen Commit nennen, dessen Blob er noch einmal gespeichert hat,
-den der Purge aber inzwischen gelöscht hat. Hält er die Sperre schon beim Speichern, kann
-kein Purge beginnen, und umgekehrt. Ein Zähler der Purges oder eine Prüfung aller Objekte unter
-der Sperre hätten die Lücke ebenfalls geschlossen; die Sperre ist die einfachste Regel
-(ADR-014). Sie wird dafür so lange gehalten, wie der Snapshot dauert, bei 10'000 Dateien
-etwa 0,7 Sekunden. Ctrl-C entfernt die Sperre, bevor der Prozess endet.
+Jeder Befehl, der schreibt, nimmt die Sperre der Referenzen, bevor er sein erstes Objekt schreibt,
+und hält sie bis zu seiner letzten Zeigerbewegung. Ohne diese Regel bliebe eine Lücke:
+Ein Befehl, der vor dem Journal geprüft hat und seinen Zeiger erst nach dem Purge bewegt, fände
+kein Journal mehr. Er könnte einen Commit nennen, dessen Blob er noch einmal gespeichert hat, den
+der Purge aber inzwischen gelöscht hat. Hält er die Sperre schon beim Speichern, kann kein Purge
+beginnen, und umgekehrt. Ein Zähler der Purges oder eine Prüfung aller Objekte unter der Sperre
+hätten die Lücke ebenfalls geschlossen; die Sperre ist die einfachste Regel (ADR-014).
+Sie wird dafür so lange gehalten, wie der Snapshot dauert, bei 10'000 Dateien etwa 0,7 Sekunden.
+Ctrl-C entfernt die Sperre, bevor der Prozess endet.
 
 Bricht der Purge ab, beendet ihn \type{stemma purge --resume} aus dem Journal. Eine Sperre,
 die der Abbruch zurückliess, nimmt es als die des Purge und entfernt sie. Jeder Schritt lässt
@@ -583,8 +566,10 @@ Plan einen Purge ab, der mehr als $2^{24}$ Einträge ersetzen würde.
 
 \startitemize
 \item Format des Index: eigenes Binärformat oder lesbares Textformat für Debugging?
-\item Ausführbare Dateien und Dateirechte: Welche Metadaten werden gespeichert?
-\item Symbolische Links: Speichern oder ablehnen?
+\item Dateirechte: Ob ausser dem Ausführbit weitere Metadaten gespeichert werden.
+Das Ausführbit gehört zum Dateimodus (ADR-010).
+\item Symbolische Links: Ein Link wird als sein Ziel gespeichert (ADR-010).
+Offen ist, ob ein Ziel gespeichert werden darf, das kein UTF-8 ist.
 \item Wie viele und wie alte Snapshot-Einträge eine Aufbewahrungsregel behält, gemessen an
 einer echten Session eines Agenten, zusammen mit der Garbage Collection (ADR-007, ADR-011).
 \stopitemize

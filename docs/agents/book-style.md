@@ -70,7 +70,7 @@ skill in review mode on new or rewritten prose.
 ## Terminology
 
 Use the term in the first column. Define a new term at its first use in a chapter and add it to
-this table in the same pull request.
+this table and to `GLOSSARY.md` (the English domain glossary) in the same pull request.
 
 | Use | Avoid | Meaning |
 |---|---|---|
@@ -83,6 +83,7 @@ this table in the same pull request.
 | Zeigerbewegung | Zug | Setting a pointer from an old to a new value |
 | Operation Log, Eintrag | Operationslog, Logeintrag | ADR-011 |
 | nach bestem Bemühen | auf Verdacht | Best effort: a failure does not fail the command |
+| Mindeststufe | Boden | Policy floor: a risk level that a namespace cannot lower (ADR-004) |
 | Akteur, Sponsor | Benutzer (for an actor) | ADR-002 |
 | Exit-Code | Rückgabewert | |
 

@@ -60,7 +60,8 @@ Verzeichnis sind kein unterstützter Betrieb (ADR-010). Das Programm prüft es n
 \item {\bf 0:} Der Befehl ist gelungen.
 \item {\bf 1:} Der Befehl ist gescheitert. Die Meldung auf der Fehlerausgabe hat das Präfix
 \type{stemma:}. Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
-einen Eintrag für einen Zug, der nicht stattfand (\type{op log} markiert ihn mit \type{!}),
+einen Eintrag für eine Zeigerbewegung,
+die nicht stattfand (\type{op log} markiert ihn mit \type{!}),
 und bei den Befehlen \type{commit}, \type{status} und \type{op restore} den Eintrag des
 Snapshots, den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein erneuter
 Aufruf ist unbedenklich.
@@ -84,20 +85,20 @@ Code 3 gilt auch für einen Purge, der gemacht ist, dessen Ausgabe oder Sicherun
 scheiterte; dann besteht kein Journal mehr.
 \item {\bf 130:} Der Befehl wurde mit Ctrl-C (oder einem Signal zum Beenden) unterbrochen.
 Er hat die Sperre der Referenzen entfernt, bevor er endete. Was er bis dahin schrieb, bleibt
-wie nach einem Absturz: Objekte, die kein Commit nennt, und höchstens ein Eintrag ohne seinen
-Zug. Ein erneuter Aufruf ist unbedenklich; nur nach einem unterbrochenen \type{purge --apply},
+wie nach einem Absturz: Objekte, die kein Commit nennt, und höchstens ein Eintrag ohne seine
+Zeigerbewegung. Ein erneuter Aufruf ist unbedenklich;
+nur nach einem unterbrochenen \type{purge --apply},
 dessen Journal schon besteht, muss zuerst \type{purge --resume} oder \type{purge --abort} kommen.
 \stopitemize
 
 {\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{status},
-\type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt
-schreibt, und hält sie bis zu seinem letzten Zug, also mindestens so lange, wie sein Snapshot
+\type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
+und hält sie bis zu seiner letzten Zeigerbewegung, also mindestens so lange, wie sein Snapshot
 dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
-Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit
-Exit-Code 1 ab und meldet die Sperre; er wartet nicht. Zwei Prozesse in einem Repository
-sind ohnehin nicht vorgesehen. Eine Sperre bleibt nur nach \type{kill -9} oder einem Absturz
-liegen (oder wenn das Programm Ctrl-C nicht abfangen konnte); dann nennt die Meldung die Datei,
-die zu entfernen ist.
+Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit Exit-Code 1 ab und meldet
+die Sperre; er wartet nicht. Zwei Prozesse in einem Repository sind ohnehin nicht vorgesehen.
+Eine Sperre bleibt nur nach \type{kill -9} oder einem Absturz liegen (oder wenn das Programm Ctrl-C
+nicht abfangen konnte); dann nennt die Meldung die Datei, die zu entfernen ist.
 
 {\bf Aufräumen.} Wer die Sperre nimmt, entfernt gleich danach, was ein gescheitertes oder
 abgebrochenes Schreiben zurückliess: jede Datei in \type{.stemma/tmp/} und das Verzeichnis
@@ -208,28 +209,25 @@ Ein Pfad, der schon verfolgt wird,
 ist kein Fehler und ändert nichts; ändert sich weder der Baum noch eine verfolgte Datei,
 entsteht weder ein Commit noch ein Eintrag.
 
-{\bf Fehler.} Ein Pfad, den es nicht gibt, ein Pfad, der absolut ist, \type{..} enthält
-oder auf \type{.stemma} zeigt, und ein Pfad, dessen Schreibweise nicht der auf
-dem Datenträger entspricht (ein Dateisystem ohne Unterscheidung von Gross- und Kleinschreibung
-nähme sonst \type{a.txt} für \type{A.txt}, und der Baum hielte die Datei zweimal),
-beenden den Befehl mit Exit-Code 1, bevor sich etwas ändert, ebenso ein offener Purge.
-Dasselbe gilt für eine Spezialdatei (Gerät, Socket, Pipe) oder einen Namen ohne UTF-8 unter einem
-genannten Verzeichnis und für einen Namen, den ein Baum ablehnt: Der Befehl nennt
-den Pfad und ändert nichts. Namen, die auf \type{.stemma} hinauslaufen,
-überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so
-einem Namen ist dagegen ein Fehler. Dasselbe gilt für \type{.git}, die Metadaten von Git:
-Sie fehlen immer, auch ohne Muster, und ein genannter Pfad mit einem Teil \type{.git}
-ist ein Fehler. Liegt das Repository nicht im angegebenen
-Verzeichnis, sucht der Befehl nicht in den übergeordneten; die Meldung sagt
-das und nennt \type{-C}. Mit Exit-Code 3 endet der Befehl, wenn die Dateien verfolgt sind,
-aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht gesichert ist;
-ein Skript wiederholt ihn dann nicht. Ist nur der Zeiger nicht gesichert, schreibt
-der Befehl die Liste der neuen Dateien zuerst und meldet den Fehler danach, damit
-ein Skript findet, was verfolgt ist. Schliesst der Leser der Ausgabe die Pipe
-früh (zum Beispiel \type{head}), endet der Befehl mit Exit-Code 0, denn
-die Dateien sind verfolgt. Scheitert der Zug des Zeigers, nachdem der Eintrag
-im Log steht, endet der Befehl mit Exit-Code 1 und hat nichts verfolgt,
-hinterlässt aber einen Eintrag für einen Zug, der nicht stattfand;
+{\bf Fehler.} Ein Pfad, den es nicht gibt, ein Pfad, der absolut ist, \type{..} enthält oder auf
+\type{.stemma} zeigt, und ein Pfad, dessen Schreibweise nicht der auf dem Datenträger entspricht
+(ein Dateisystem ohne Unterscheidung von Gross- und Kleinschreibung nähme sonst \type{a.txt} für
+\type{A.txt}, und der Baum hielte die Datei zweimal), beenden den Befehl mit Exit-Code 1, bevor sich
+etwas ändert, ebenso ein offener Purge. Dasselbe gilt für eine Spezialdatei (Gerät, Socket, Pipe)
+oder einen Namen ohne UTF-8 unter einem genannten Verzeichnis und für einen Namen, den ein Baum
+ablehnt: Der Befehl nennt den Pfad und ändert nichts. Namen, die auf \type{.stemma} hinauslaufen,
+überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so einem Namen ist
+dagegen ein Fehler. Dasselbe gilt für \type{.git}, die Metadaten von Git:
+Sie fehlen immer, auch ohne Muster, und ein genannter Pfad mit einem Teil \type{.git} ist ein
+Fehler. Liegt das Repository nicht im angegebenen Verzeichnis, sucht der Befehl nicht in den
+übergeordneten; die Meldung sagt das und nennt \type{-C}. Mit Exit-Code 3 endet der Befehl, wenn
+die Dateien verfolgt sind, aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht
+gesichert ist; ein Skript wiederholt ihn dann nicht. Ist nur der Zeiger nicht gesichert, schreibt
+der Befehl die Liste der neuen Dateien zuerst und meldet den Fehler danach, damit ein Skript findet,
+was verfolgt ist. Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}), endet
+der Befehl mit Exit-Code 0, denn die Dateien sind verfolgt. Scheitert die Bewegung des Zeigers,
+nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 1 und hat nichts verfolgt,
+hinterlässt aber einen Eintrag für eine Zeigerbewegung, die nicht stattfand;
 \type{op log} markiert ihn mit \type{!}.
 
 {\bf Ausschlussdatei.} Die Datei \type{.stemmaignore} im Wurzelverzeichnis (ADR-012)
@@ -265,13 +263,12 @@ Die Meldung nennt die Zeile und sagt, dass nichts verfolgt wurde.
 Dasselbe gilt, wenn die Datei sich während des Lesens ändert; dann hilft ein neuer Aufruf.
 Ein Snapshot und \type{commit} lesen die Datei nie, eine ungültige Datei blockiert sie also nicht.
 
-{\bf Grenzen.} Ohne \type{.stemmaignore} nimmt, wer \type{.} nennt, jede Datei
-des Verzeichnisses auf, auch eine mit Geheimnissen: Das Log und die History behalten sie.
-Ein Name, den das Dateisystem anders schreibt als das Muster
-(Gross- und Kleinschreibung, oder Unicode in anderer Normalform), wird nicht ausgeschlossen
-und bleibt ohne Meldung verfolgt (offener Punkt in ADR-012).
-Eine Datei, die sich während des Befehls ändert, wird so gespeichert,
-wie sie beim Lesen war; die Dateien zusammen sind kein einzelner Augenblick.
+{\bf Grenzen.} Ohne \type{.stemmaignore} nimmt, wer \type{.} nennt, jede Datei des Verzeichnisses
+auf, auch eine mit Geheimnissen: Das Log und der Verlauf behalten sie.
+Ein Name, den das Dateisystem anders schreibt als das Muster (Gross- und Kleinschreibung, oder
+Unicode in anderer Normalform), wird nicht ausgeschlossen und bleibt ohne Meldung verfolgt (offener
+Punkt in ADR-012). Eine Datei, die sich während des Befehls ändert, wird so gespeichert, wie sie
+beim Lesen war; die Dateien zusammen sind kein einzelner Augenblick.
 
 {\bf Beispiele.}
 
@@ -317,21 +314,17 @@ Der Befehl gibt eine Zeile mit der ID des Commits und dem Branch aus:
 Committed b3:4a0b66... on main
 \stoptyping
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einer leeren Nachricht,
-bei einem offenen Purge und bei einem HEAD, der einen Commit und keinen Branch nennt.
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einer leeren Nachricht, bei einem offenen Purge
+und bei einem HEAD, der einen Commit und keinen Branch nennt.
 Diese Fälle brechen ab, bevor der Snapshot läuft, und ändern nichts.
-Mit Exit-Code 1 endet er auch, wenn nichts zu committen ist,
-weil der Baum der des Elternteils ist (beim ersten Commit: leer),
-und wenn der Branch nicht beim Elternteil des Working-Copy-Commits steht,
-weil ihn jemand bewegt hat.
-Der Befehl lehnt dann ab, statt zu verwerfen, was der Branch hat;
-ein Rebase kommt in Phase 3.
-Diese beiden Fälle lassen den Snapshot zurück, und ein erneuter Aufruf ist unbedenklich.
-Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das,
-und der Aufruf lässt sich wiederholen.
-Scheitert der Zug, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 1,
-hat nichts verschoben und hinterlässt einen Eintrag für einen Zug, der nicht stattfand.
-Liegt das Repository nicht im angegebenen Verzeichnis,
+Mit Exit-Code 1 endet er auch, wenn nichts zu committen ist, weil der Baum der des Elternteils ist
+(beim ersten Commit: leer), und wenn der Branch nicht beim Elternteil des Working-Copy-Commits
+steht, weil ihn jemand bewegt hat. Der Befehl lehnt dann ab, statt zu verwerfen, was der Branch hat;
+ein Rebase kommt in Phase 3. Diese beiden Fälle lassen den Snapshot zurück, und ein erneuter
+Aufruf ist unbedenklich. Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das,
+und der Aufruf lässt sich wiederholen. Scheitert die Zeigerbewegung, nachdem der Eintrag im Log
+steht, endet der Befehl mit Exit-Code 1, hat nichts verschoben und hinterlässt einen Eintrag für
+eine Zeigerbewegung, die nicht stattfand. Liegt das Repository nicht im angegebenen Verzeichnis,
 sucht der Befehl nicht in den übergeordneten; die Meldung nennt \type{-C}.
 
 Mit Exit-Code 3 endet der Befehl, wenn der Commit gemacht ist,
@@ -487,17 +480,17 @@ gelesen; von den übrigen liest der Befehl nur die Dateinamen.
 
 Der Befehl liest nur und braucht keinen Akteur.
 
-{\bf Textform.} Pro Eintrag steht eine Zeile mit Nummer, Zeit (UTC), Akteur und Operation,
-danach je Zeiger, der sich bewegt hat, eine eingerückte Zeile mit altem und neuem Wert.
-Ein \type{-} steht für einen Zeiger, den es vorher nicht gab oder der danach nicht mehr
-existiert. Fand der Zug nicht statt, folgt eine Zeile \type{! the move did not take effect};
+{\bf Textform.} Pro Eintrag steht eine Zeile mit Nummer, Zeit (UTC), Akteur und Operation, danach je
+Zeiger, der sich bewegt hat, eine eingerückte Zeile mit altem und neuem Wert.
+Ein \type{-} steht für einen Zeiger, den es vorher nicht gab oder der danach nicht mehr existiert.
+Fand die Zeigerbewegung nicht statt, folgt eine Zeile \type{! the move did not take effect};
 ist es unbekannt, eine Zeile \type{? it is not known whether the move took effect}.
-Bei einem Zug, der stattfand, fehlt die Zeile.
-Setzte jemand einen Zeiger ausserhalb des Logs auf den alten Wert des Eintrags zurück,
-steht die Zeile mit \type{!} auch bei einem Zug, der stattfand; beim neuesten Eintrag
-dieses Zeigers nur, solange niemand schreibt, sonst steht \type{?}.
-Setzte jemand ihn nach einem gescheiterten Zug auf den neuen Wert des Eintrags,
-fehlt die Zeile. Das Log kann diese Fälle nicht von einem Zug des Logs trennen.
+Bei einer Zeigerbewegung, die stattfand, fehlt die Zeile. Setzte jemand einen Zeiger ausserhalb des
+Logs auf den alten Wert des Eintrags zurück, steht die Zeile mit \type{!} auch bei einer
+Zeigerbewegung, die stattfand; beim neuesten Eintrag dieses Zeigers nur, solange niemand schreibt,
+sonst steht \type{?}. Setzte jemand ihn nach einer gescheiterten Zeigerbewegung auf den neuen Wert
+des Eintrags, fehlt die Zeile. Das Log kann diese Fälle nicht von einer Zeigerbewegung des Logs
+trennen.
 
 \starttyping
 2  2023-11-14T22:13:20Z  human daniel  snapshot
@@ -509,18 +502,18 @@ fehlt die Zeile. Das Log kann diese Fälle nicht von einem Zug des Logs trennen.
 
 (Im Beispiel sind die Commit-IDs gekürzt; der Befehl gibt sie vollständig aus.)
 
-{\bf Stubs und Purge.} Ein Eintrag, den ein Purge ersetzt hat (ADR-014), erscheint als Stub
-mit Nummer, Zeit und Akteur und \type{(purged)} an der Stelle der Operation, ohne weitere
-Zeile. Der Eintrag eines Purge zeigt in einer zweiten Zeile die Zahl der umgeschriebenen
-Commits und die Nummern der Stubs als Bereiche, oder \type{-}, wenn er keine nennt. Passt die
-Liste der Stubs nicht in einen Eintrag, schreibt der Purge mehrere; nur der erste trägt die
-Zahl der Commits, die folgenden zeigen \type{commits 0}.
-Stub und Purge nennen keine ID und haben keine Zeile über den Zug.
-Der Ausgang jedes Eintrags vor dem jüngsten Stub ist unbekannt (\type{?}), denn der Stub
-ersetzt Züge, die niemand mehr kennt. Nennt ein Purge einen Eintrag, der noch kein
-Stub ist, weil der Purge vorher anhielt, folgt die Zeile
-\type{! a purge lists this entry and has not finished}; \type{stemma purge --resume} beendet
-den Purge.
+{\bf Stubs und Purge.} Ein Eintrag, den ein Purge ersetzt hat (ADR-014), erscheint als Stub mit
+Nummer, Zeit und Akteur und \type{(purged)} an der Stelle der Operation, ohne weitere Zeile.
+Der Eintrag eines Purge zeigt in einer zweiten Zeile die Zahl der umgeschriebenen Commits und die
+Nummern der Stubs als Bereiche, oder \type{-}, wenn er keine nennt.
+Passt die Liste der Stubs nicht in einen Eintrag, schreibt der Purge mehrere;
+nur der erste trägt die Zahl der Commits, die folgenden zeigen \type{commits 0}.
+Stub und Purge nennen keine ID und haben keine Zeile über die Zeigerbewegung.
+Der Ausgang jedes Eintrags vor dem jüngsten Stub ist unbekannt (\type{?}), denn der Stub ersetzt
+Zeigerbewegungen, die niemand mehr kennt. Nennt ein Purge einen Eintrag, der noch kein Stub ist,
+weil der Purge vorher anhielt, folgt die Zeile
+\type{! a purge lists this entry and has not finished}; \type{stemma purge --resume} beendet den
+Purge.
 
 \starttyping
 4  2023-11-14T22:13:20Z  human daniel  purge
@@ -528,20 +521,19 @@ den Purge.
 3  2023-11-14T22:13:20Z  human daniel  (purged)
 \stoptyping
 
-{\bf JSON-Form.} Jede Zeile beginnt mit \type{number} und \type{kind}: \type{change},
-\type{stub} oder \type{purge}. Ein Stub hat dazu nur \type{time} und \type{actor}; ein
-Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits} und \type{stubs},
-eine Liste von Bereichen \type{[start, end]}.
-Für eine Änderung sind die weiteren Felder \type{time} (Sekunden seit dem 1.1.1970,
-wie im Eintrag), \type{actor}, \type{operation}, \type{head}, \type{working_copy},
-\type{branches}, \type{purge_pending} (\type{true}, wenn ein unfertiger Purge den Eintrag
-nennt) und \type{took_effect}. \type{took_effect} ist \type{true},
-wenn der Zug stattfand, \type{false}, wenn er nicht stattfand, und \type{null},
-wenn das Log und die Referenzen es nicht entscheiden. \type{head} und \type{working_copy}
-sind \type{null}, wenn die Operation den Zeiger nicht berührt hat, sonst ein Objekt
-mit \type{old} und \type{new}. \type{branches} ist eine Liste von Objekten mit \type{name},
-\type{old} und \type{new}, leer wenn kein Branch sich bewegt hat. Ein Wert,
-den es nicht gibt, ist \type{null}. HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
+{\bf JSON-Form.} Jede Zeile beginnt mit \type{number} und \type{kind}:
+\type{change}, \type{stub} oder \type{purge}. Ein Stub hat dazu nur \type{time} und \type{actor};
+ein Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits} und \type{stubs}, eine
+Liste von Bereichen \type{[start, end]}. Für eine Änderung sind die weiteren Felder \type{time}
+(Sekunden seit dem 1.1.1970, wie im Eintrag), \type{actor}, \type{operation}, \type{head},
+\type{working_copy}, \type{branches}, \type{purge_pending} (\type{true}, wenn ein unfertiger Purge
+den Eintrag nennt) und \type{took_effect}. \type{took_effect} ist \type{true}, wenn die
+Zeigerbewegung stattfand, \type{false}, wenn sie nicht stattfand, und \type{null}, wenn das Log und
+die Referenzen es nicht entscheiden. \type{head} und \type{working_copy} sind \type{null}, wenn die
+Operation den Zeiger nicht berührt hat, sonst ein Objekt mit \type{old} und \type{new}.
+\type{branches} ist eine Liste von Objekten mit \type{name}, \type{old} und \type{new}, leer wenn
+kein Branch sich bewegt hat. Ein Wert, den es nicht gibt, ist \type{null}.
+HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
 Fehlt eine Nummer im Log, ist ein Eintrag ein Stub, den kein Purge nennt,
@@ -571,34 +563,31 @@ Ein Name mit Steuerzeichen, auch ein Branch-Name in der Textform, erscheint
 in Meldungen und in der Textform maskiert (wie bei \type{escape_debug} von Rust);
 die JSON-Form maskiert nach den Regeln von JSON.
 
-{\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge und den Eintrag davor, wenn er
-sich lesen lässt; lässt er sich nicht lesen, warnt der Befehl auf der Fehlerausgabe, dass der
-Anschluss des ältesten gezeigten Eintrags nicht geprüft ist. Eine Lücke findet er auch dann,
-wenn der fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten oder
-geänderten älteren Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug, das ist
-\type{op verify}. Hat das Log nur
-seine neuesten Einträge verloren, bleibt es lückenlos; die Datei \type{oplog-tip}
-mit der Nummer des letzten Eintrags verrät den Verlust (ADR-011), und der Befehl
-bricht mit Exit-Code 1 ab. Ein Eintrag wird geschrieben, bevor sich der Zeiger
-bewegt (ADR-011). Brach der Vorgang dazwischen ab, steht der Eintrag im Log,
-obwohl der Zug nie stattfand. Der Befehl liest das Ergebnis aus der Kette der
-Einträge desselben Zeigers: Ein späterer Eintrag, dessen alter Wert der neue Wert
-dieses Eintrags ist, bestätigt den Zug, und einer, dessen alter Wert der alte Wert
-dieses Eintrags ist, widerlegt ihn. Beim letzten Eintrag eines Zeigers entscheidet
-der heutige Wert des Zeigers. «Der Zug fand nicht statt» sagt der Befehl nur bei
-klarer Lage. Ein anderer Wert zeigt eine Änderung ausserhalb des Logs, und
-das Ergebnis bleibt unbekannt. Dasselbe gilt, solange ein anderer Vorgang schreibt
-(die Sperre \type{refs.lock} besteht, oder das Log ist beim Lesen gewachsen),
-denn ein Vorgang zwischen Eintrag und Zug sieht aus wie ein Abbruch an dieser Stelle.
-Eine Sperre, die ein abgestürzter Vorgang zurückliess, hält die neuesten Einträge
-unbekannt, bis jemand sie entfernt. Der Working-Copy-Commit steht in der Datei
-\type{working-copy}; fehlt sie (jemand hat sie entfernt, oder das Repository
-entstand vor dem Working-Copy-Commit), lässt der Befehl die Ergebnisse seiner
-Einträge unbekannt und warnt auf der Fehlerausgabe, denn «der Zeiger fehlt» ist
-kein Zustand, den \type{init} je hinterlässt. Das Ergebnis steht in der Ausgabe
-(siehe oben). Schliesst der Leser der Ausgabe die Pipe früh, zum Beispiel
-\type{head}, endet der Befehl ohne Meldung mit Exit-Code 0; der Exit-Code sagt
-dann nicht, dass die Liste vollständig ausgegeben wurde.
+{\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge und den Eintrag davor, wenn er sich
+lesen lässt; lässt er sich nicht lesen, warnt der Befehl auf der Fehlerausgabe, dass der Anschluss
+des ältesten gezeigten Eintrags nicht geprüft ist. Eine Lücke findet er auch dann, wenn der
+fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten oder geänderten älteren
+Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug, das ist \type{op verify}.
+Hat das Log nur seine neuesten Einträge verloren, bleibt es lückenlos;
+die Datei \type{oplog-tip} mit der Nummer des letzten Eintrags verrät den Verlust (ADR-011), und
+der Befehl bricht mit Exit-Code 1 ab. Ein Eintrag wird geschrieben, bevor sich der Zeiger bewegt
+(ADR-011). Brach der Vorgang dazwischen ab, steht der Eintrag im Log, obwohl die Zeigerbewegung nie
+stattfand. Der Befehl liest das Ergebnis aus der Kette der Einträge desselben Zeigers:
+Ein späterer Eintrag, dessen alter Wert der neue Wert dieses Eintrags ist, bestätigt die
+Zeigerbewegung, und einer, dessen alter Wert der alte Wert dieses Eintrags ist, widerlegt sie.
+Beim letzten Eintrag eines Zeigers entscheidet der heutige Wert des Zeigers.
+«Die Zeigerbewegung fand nicht statt» sagt der Befehl nur bei klarer Lage.
+Ein anderer Wert zeigt eine Änderung ausserhalb des Logs, und das Ergebnis bleibt unbekannt.
+Dasselbe gilt, solange ein anderer Vorgang schreibt (die Sperre \type{refs.lock} besteht, oder das
+Log ist beim Lesen gewachsen), denn ein Vorgang zwischen Eintrag und Zeigerbewegung sieht aus wie
+ein Abbruch an dieser Stelle. Eine Sperre, die ein abgestürzter Vorgang zurückliess, hält die
+neuesten Einträge unbekannt, bis jemand sie entfernt. Der Working-Copy-Commit steht in der Datei
+\type{working-copy}; fehlt sie (jemand hat sie entfernt, oder das Repository entstand vor dem
+Working-Copy-Commit), lässt der Befehl die Ergebnisse seiner Einträge unbekannt und warnt auf der
+Fehlerausgabe, denn «der Zeiger fehlt» ist kein Zustand, den \type{init} je hinterlässt.
+Das Ergebnis steht in der Ausgabe (siehe oben). Schliesst der Leser der Ausgabe die Pipe früh, zum
+Beispiel \type{head}, endet der Befehl ohne Meldung mit Exit-Code 0;
+der Exit-Code sagt dann nicht, dass die Liste vollständig ausgegeben wurde.
 
 {\bf Beispiele.}
 
@@ -756,20 +745,19 @@ stattfand (er ist in \type{op log} mit \type{?} markiert), bricht der Befehl ab,
 Zustand davor muss dann nicht stimmen. \type{--force} setzt trotzdem zurück.
 Das gilt auch für \type{--dry-run}.
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, ein Purge offen ist,
-der Eintrag nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
-HEAD oder den Working-Copy-Commit angelegt hat (das tut nur der erste Eintrag, und
-beide können nicht fehlen).
-Ebenso endet er bei einem Stub, denn was der Eintrag bewegt hat, ist mit dem Purge weg,
-beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-014), und bei
-einem Eintrag, den ein Purge nennt, der noch nicht fertig ist; diese Fälle hebt auch
-\type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren Züge niemand mehr kennt;
-der Ausgang jedes Eintrags vor dem jüngsten Stub ist deshalb unbekannt, und er braucht
-\type{--force}. Nennt kein Purge einen Stub im Log, endet der Befehl ebenfalls mit Exit-Code 1,
-und ebenso, wenn die Hash-Kette des Logs bricht (siehe \type{op verify}).
-Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt,
-eine Sperre der Referenzen (ein anderer Vorgang schreibt: später noch einmal) und eine Datei
-oder ein Verzeichnis, das nicht verfolgt wird und dort liegt, wo der Baum eine Datei braucht.
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, ein Purge offen ist, der
+Eintrag nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
+HEAD oder den Working-Copy-Commit angelegt hat (das tut nur der erste Eintrag, und beide können
+nicht fehlen). Ebenso endet er bei einem Stub, denn was der Eintrag bewegt hat, ist mit dem Purge
+weg, beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-014), und bei
+einem Eintrag, den ein Purge nennt, der noch nicht fertig ist;
+diese Fälle hebt auch \type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren
+Zeigerbewegungen niemand mehr kennt; der Ausgang jedes Eintrags vor dem jüngsten Stub ist deshalb
+unbekannt, und er braucht \type{--force}. Nennt kein Purge einen Stub im Log, endet der Befehl
+ebenfalls mit Exit-Code 1, und ebenso, wenn die Hash-Kette des Logs bricht (siehe \type{op verify}).
+Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt, eine Sperre
+der Referenzen (ein anderer Vorgang schreibt: später noch einmal) und eine Datei oder ein
+Verzeichnis, das nicht verfolgt wird und dort liegt, wo der Baum eine Datei braucht.
 In diesen Fällen hat das Restore nichts geschrieben; hatte der Befehl vorher einen Snapshot
 gemacht, nennt die Meldung ihn.
 
