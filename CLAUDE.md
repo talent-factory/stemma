@@ -32,6 +32,8 @@ The book (`docs/`) is developed in step with the implementation, not after it.
 - The command line reference (`docs/chapters/12-cli-reference.tex`) is updated with every command or option that is added, renamed, or removed: its synopsis, its arguments, its exit codes, and an example. The help text of the program is the machine-readable source, the appendix explains purpose, behaviour, and failures.
 - Figures are kept as SVG sources and converted for the book; see the figure issue in Plane.
 - Run `just book` whenever a chapter changes. Tick the book item in the PR template, or state why it does not apply.
+- Write and change chapters and figures according to `docs/agents/book-style.md` (structure of a section, language, terminology, figure style).
+- A phase counts as done only after the review in `docs/agents/book-review.md` has run for it.
 
 ## ConTeXt
 
