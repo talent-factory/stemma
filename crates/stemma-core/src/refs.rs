@@ -3741,11 +3741,21 @@ mod tests {
     #[test]
     fn the_check_does_not_follow_the_tree_or_the_parents() {
         let (dir, objects, refs) = setup();
-        let id = commit(&objects, "c");
+        let parent = commit(&objects, "parent");
         let tree = objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let child = Commit::new(
+            tree,
+            vec![parent],
+            sample_change(),
+            Actor::human("daniel").unwrap(),
+            0,
+            "child",
+        );
+        let child = objects.put_commit(&child.unwrap()).unwrap();
+        fs::remove_file(objects.object_path(&parent.object_id())).unwrap();
         fs::remove_file(objects.object_path(&tree.object_id())).unwrap();
         write_reference(&dir, "HEAD", "branch main\n");
-        write_reference(&dir, "working-copy", &format!("{id}\n"));
+        write_reference(&dir, "working-copy", &format!("{child}\n"));
         assert!(refs.verify(&objects).unwrap().is_empty());
     }
 
