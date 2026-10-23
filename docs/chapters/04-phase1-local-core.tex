@@ -211,9 +211,11 @@ stillschweigend als Mensch auftritt.
 \section{Das Operation Log}
 
 Jede Operation, die einen Zeiger ändert, schreibt einen Eintrag in das Verzeichnis
-\type{.stemma/oplog/} (ADR-011). Ein Eintrag ist eine Textdatei mit fortlaufender Nummer.
-Er nennt den Akteur, die Zeit, den Namen der Operation und für jeden geänderten Zeiger
-(HEAD, Working-Copy-Commit, Branches) den alten und den neuen Wert:
+\type{.stemma/oplog/} (ADR-011).
+Ein Eintrag ist eine Textdatei mit fortlaufender Nummer.
+Er nennt den Akteur, die Zeit, den Namen der Operation
+und für jeden geänderten Zeiger (HEAD, Working-Copy-Commit, Branches)
+den alten und den neuen Wert:
 
 \starttyping
 stemma-oplog 3
@@ -227,169 +229,209 @@ working-copy - b3:4feb…b32c
 \stoptyping
 
 Die Zeile \type{previous} gehört zur Hash-Kette, die weiter unten beschrieben ist.
-Der Befehl \type{stemma op log} zeigt die Einträge, und \type{stemma op restore} setzt die
-Zeiger auf die Werte vor einem Eintrag zurück (siehe unten und die Befehlsreferenz).
+Der Befehl \type{stemma op log} zeigt die Einträge,
+und \type{stemma op restore} setzt die Zeiger auf die Werte vor einem Eintrag zurück
+(siehe unten und die Befehlsreferenz).
 \type{init} schreibt den ersten Eintrag.
 
 \subsection{Ablauf einer Zeigerbewegung}
 
-Der Eintrag entsteht vor der Zeigerbewegung. Bricht ein Prozess dazwischen ab, steht der alte
-Wert schon im Log, und der Commit, den der Zeiger vorher nannte, bleibt auffindbar.
-\in{Abbildung}[fig:oplog-write] zeigt den Ablauf. Ein Befehl, der schreibt, nimmt die Sperre der
-Referenzen, bevor er sein erstes Objekt speichert, und hält sie bis zu seiner letzten
-Zeigerbewegung. Unter der Sperre liest er den Zeiger und prüft die Änderung: einen Namen, der
-nicht im Weg steht, einen Branch, der dort steht, wo der Aufrufer ihn sah, und einen Commit, der
-im Objektspeicher liegt. Dann schreibt er den Eintrag, sichert ihn auf den Datenträger und führt
-die Datei \type{oplog-tip} nach. Erst danach bewegt er den Zeiger.
+Der Eintrag entsteht vor der Zeigerbewegung.
+Bricht ein Prozess dazwischen ab, steht der alte Wert schon im Log,
+und der Commit, den der Zeiger vorher nannte, bleibt auffindbar.
+\in{Abbildung}[fig:oplog-write] zeigt den Ablauf.
+Ein Befehl, der schreibt, nimmt die Sperre der Referenzen, bevor er sein erstes Objekt speichert,
+und hält sie bis zu seiner letzten Zeigerbewegung.
+Unter der Sperre liest er den Zeiger und prüft die Änderung:
+einen Namen, der nicht im Weg steht,
+einen Branch, der dort steht, wo der Aufrufer ihn sah,
+und einen Commit, der im Objektspeicher liegt.
+Dann schreibt er den Eintrag, sichert ihn auf den Datenträger
+und führt die Datei \type{oplog-tip} nach.
+Erst danach bewegt er den Zeiger.
 
 \startplacefigure[title={Ablauf einer Zeigerbewegung mit Absturzpunkten},
     reference=fig:oplog-write,location=here]
 \externalfigure[images/oplog-write.pdf][width=0.9\textwidth]
 \stopplacefigure
 
-Weil nichts zwischen Prüfung und Zeigerbewegung kommt, beschreibt jeder Eintrag eine
-Zeigerbewegung, die gemacht werden sollte, und sein alter Wert ist der Wert, den der Zeiger
-wirklich hatte. Eine Ablehnung, ein Konflikt oder ein fehlender Commit schreiben keinen Eintrag.
+Weil nichts zwischen Prüfung und Zeigerbewegung kommt,
+beschreibt jeder Eintrag eine Zeigerbewegung, die gemacht werden sollte,
+und sein alter Wert ist der Wert, den der Zeiger wirklich hatte.
+Eine Ablehnung, ein Konflikt oder ein fehlender Commit schreiben keinen Eintrag.
 Der Preis ist, dass das Schreiben der kleinen Datei zum geschützten Abschnitt gehört.
-Die Zeiger bewegt nur der Kern (\type{Repository}). Er gibt die Referenzen und das Log zum
-Lesen heraus; einen Eintrag bauen und schreiben kann nur er selbst. Das ist eine Vereinbarung
-der Schnittstelle und keine Grenze, denn die Dateien sind gewöhnliche Dateien.
+Die Zeiger bewegt nur der Kern (\type{Repository}).
+Er gibt die Referenzen und das Log zum Lesen heraus;
+einen Eintrag bauen und schreiben kann nur Code des Kerns selbst.
+Das ist eine Vereinbarung der Schnittstelle und keine Grenze,
+denn die Dateien sind gewöhnliche Dateien.
 
-Ein Eintrag bleibt trotzdem eine Absicht. Das Dateisystem kann zwischen Eintrag und
-Zeigerbewegung ausfallen, und ein Eintrag, der nicht als gesichert bekannt ist, verhindert die
-Zeigerbewegung. Der Fehler sagt in beiden Fällen, dass ein Eintrag existiert und dass sich der
-Zeiger nicht bewegt hat, und er trägt den Eintrag mit. Ein Aufrufer kann so ein Scheitern ohne
-Eintrag von einem mit Eintrag unterscheiden und weiss, ob er die Änderung wiederholen darf.
+Ein Eintrag bleibt trotzdem eine Absicht.
+Das Dateisystem kann zwischen Eintrag und Zeigerbewegung ausfallen,
+und ein Eintrag, der nicht als gesichert bekannt ist, verhindert die Zeigerbewegung.
+Der Fehler sagt in beiden Fällen, dass ein Eintrag existiert
+und dass sich der Zeiger nicht bewegt hat, und er trägt den Eintrag mit.
+Ein Aufrufer kann so ein Scheitern ohne Eintrag von einem mit Eintrag unterscheiden
+und weiss, ob er die Änderung wiederholen darf.
 Ob eine Zeigerbewegung stattgefunden hat, lässt sich an der Kette der Einträge eines Zeigers
-ablesen. Nach der Zeigerbewegung wird nichts mehr geschrieben, damit nichts halb geschrieben
-bleiben kann. Was nach einem Absturz an jeder Stelle zurückbleibt, steht in
+ablesen.
+Nach der Zeigerbewegung wird nichts mehr geschrieben, damit nichts halb geschrieben bleiben kann.
+
+Was nach einem Absturz an jeder Stelle zurückbleibt, steht in
 \in{Abbildung}[fig:oplog-write] rechts.
+Bis zum letzten Schritt bleibt dabei auch die Sperre liegen.
+Der nächste Befehl auf demselben Rechner übernimmt sie;
+bis dahin nennt das Log den Ausgang des neuesten Eintrags unbekannt.
 
 \startinfobox
 {\bf Wann das Log den Ausgang falsch einschätzt.}
-Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück, entscheidet die Kette
-richtig, solange niemand den Zeiger ausserhalb des Logs bewegt, denn jeder Eintrag liest seinen
-alten Wert unter der Sperre. Setzt aber jemand ausserhalb des Logs einen Zeiger auf den alten
-Wert eines Eintrags zurück, sieht das Log dasselbe wie nach einer gescheiterten Zeigerbewegung.
+Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück,
+entscheidet die Kette richtig, solange niemand den Zeiger ausserhalb des Logs bewegt,
+denn jeder Eintrag liest seinen alten Wert unter der Sperre.
+Setzt aber jemand ausserhalb des Logs einen Zeiger auf den alten Wert eines Eintrags zurück,
+sieht das Log dasselbe wie nach einer gescheiterten Zeigerbewegung.
 Es meldet dann, die Zeigerbewegung habe nicht stattgefunden, obwohl sie stattfand;
-beim neuesten Eintrag eines Zeigers nur, solange niemand schreibt, sonst ist der Ausgang
-unbekannt. Umgekehrt sieht eine gescheiterte Zeigerbewegung, nach der jemand den Zeiger
-ausserhalb des Logs auf den neuen Wert setzt, wie eine Zeigerbewegung aus, die stattfand.
+beim neuesten Eintrag eines Zeigers nur, solange niemand schreibt,
+sonst ist der Ausgang unbekannt.
+Umgekehrt sieht eine gescheiterte Zeigerbewegung,
+nach der jemand den Zeiger ausserhalb des Logs auf den neuen Wert setzt,
+wie eine Zeigerbewegung aus, die stattfand.
 \stopinfobox
 
 \subsection{Nummern und die Datei \type{oplog-tip}}
 
-Jeder Eintrag entsteht in einer temporären Datei in \type{tmp/} und wird dann mit einem harten
-Verweis unter der nächsten freien Nummer veröffentlicht. Der Verweis scheitert, wenn die Nummer
-vergeben ist, und ein Eintrag ist vom ersten Moment an vollständig. Wer die Sperre hält, trifft
-dabei auf keinen anderen Schreiber; die Wiederholung mit der nächsten Nummer gilt für jeden
-anderen. Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag.
+Jeder Eintrag entsteht in einer temporären Datei in \type{tmp/}
+und wird dann mit einem harten Verweis unter der nächsten freien Nummer veröffentlicht.
+Der Verweis scheitert, wenn die Nummer vergeben ist,
+und ein Eintrag ist vom ersten Moment an vollständig.
+Schreiber, die die Sperre halten, treffen hier nicht aufeinander;
+die Wiederholung mit der nächsten Nummer gilt für Schreiber ohne Sperre.
+Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag.
 
 Was in \type{tmp/} liegen bleibt, räumt der nächste Schreiber auf, sobald er die Sperre nimmt.
-Jeder, der in \type{tmp/} schreibt, hält die Sperre der Referenzen: die Befehle, die schreiben,
-die Zeigerbewegungen und der Purge. Wer die Sperre nimmt, ist also der einzige Schreiber, und
-jede Datei in \type{tmp/} stammt aus einem Schreiben, das scheiterte oder abgebrochen wurde.
-Gleich nach dem Nehmen entfernt er darum jede Datei in \type{tmp/}, ohne einem Verweis zu
-folgen, und jedes Verzeichnis neben \type{.stemma}, das ein abgebrochenes \type{init}
-zurückliess. Ein solches Verzeichnis erkennt er an seinem ganzen Namen: \type{.stemma-init-},
-die Prozessnummer, ein Zähler und 16 kleine Hexadezimalziffern. Ein Verzeichnis des Projekts wie
-\type{.stemma-init-notes} gehört zum Inhalt und bleibt. Besteht das Journal eines Purge, räumt
-ein abgewiesener Befehl nichts auf; das übernehmen \type{purge --resume} und \type{--abort}.
-Auch das Aufräumen geschieht nach bestem Bemühen: Was sich nicht entfernen lässt, bleibt, und
-der nächste Schreiber versucht es wieder. Entscheidend ist die Sperre und nicht das Alter einer
-Datei, so dass ein langsamer Schreiber wie das erste \type{track} vieler Dateien nie
-unterbrochen wird, und es gibt keinen Befehl, an den man denken müsste.
+Jeder, der in \type{tmp/} schreibt, hält die Sperre der Referenzen:
+die Befehle, die schreiben, die Zeigerbewegungen und der Purge.
+Wer die Sperre nimmt, ist also der einzige Schreiber,
+und jede Datei in \type{tmp/} stammt aus einem Schreiben, das scheiterte oder abgebrochen wurde.
+Gleich nach dem Nehmen entfernt er darum jede Datei in \type{tmp/}, ohne einem Verweis zu folgen,
+und jedes Verzeichnis neben \type{.stemma}, das ein abgebrochenes \type{init} zurückliess.
+Ein solches Verzeichnis erkennt er an seinem ganzen Namen:
+\type{.stemma-init-}, die Prozessnummer, ein Zähler und 16 kleine Hexadezimalziffern.
+Ein Verzeichnis des Projekts wie \type{.stemma-init-notes} gehört zum Inhalt und bleibt.
+Besteht das Journal eines Purge, räumt ein abgewiesener Befehl nichts auf;
+das übernehmen \type{purge --resume} und \type{--abort}.
+Auch das Aufräumen geschieht nach bestem Bemühen:
+Was sich nicht entfernen lässt, bleibt, und der nächste Schreiber versucht es wieder.
+Es zählt allein die Sperre; das Alter einer Datei spielt keine Rolle.
+So wird ein langsamer Schreiber wie das erste \type{track} vieler Dateien nie unterbrochen,
+und es gibt keinen Befehl, an den man denken müsste.
 
 \startinfobox
 {\bf Grenzfälle beim Schreiben eines Eintrags.}
 \startitemize
-\item Ein Eintrag hat eine Obergrenze von 64 KiB. Der Schreiber lehnt einen grösseren Eintrag ab,
-bevor er etwas schreibt. Der Leser lehnt eine grössere Datei ohnehin ab, und ohne die Grenze
-beim Schreiber würde ein sehr langer Akteur ein Log erzeugen, das sich schon ab dem ersten
-Eintrag nicht mehr lesen lässt.
-\item Die temporäre Datei entfernt der Schreiber nach bestem Bemühen. Bleibt sie liegen,
-ist der Eintrag trotzdem vollständig, und die Zeigerbewegung geht weiter, denn \type{tmp/}
-enthält Wegwerfdaten.
+\item Ein Eintrag hat eine Obergrenze von 64 KiB.
+Der Schreiber lehnt einen grösseren Eintrag ab, bevor er etwas schreibt.
+Der Leser lehnt eine grössere Datei ohnehin ab,
+und ohne die Grenze beim Schreiber würde ein sehr langer Akteur ein Log erzeugen,
+das sich schon ab dem ersten Eintrag nicht mehr lesen lässt.
+\item Die temporäre Datei entfernt der Schreiber nach bestem Bemühen.
+Bleibt sie liegen, ist der Eintrag trotzdem vollständig, und die Zeigerbewegung geht weiter,
+denn ein Aufräumen darf keine Zeigerbewegung verhindern.
 \item Der Leser meldet eine Lücke erst, nachdem er das Verzeichnis ein zweites Mal gelesen hat,
-denn ein Verzeichnis ist während eines Schreibens kein Snapshot. Namen mit einem Punkt am Anfang
-überspringt er, jeden anderen fremden Namen meldet er.
+denn ein Verzeichnis ist während eines Schreibens kein Snapshot.
+Namen mit einem Punkt am Anfang überspringt er, jeden anderen fremden Namen meldet er.
 \stopitemize
 \stopinfobox
 
-Die Datei \type{oplog-tip} hält die Nummer des letzten Eintrags. Der Schreiber führt sie nach
-dem Eintrag nach, noch bevor sich ein Zeiger bewegt. Fehlt dem Verzeichnis der letzte Eintrag,
-nennt die Datei eine grössere Nummer, als es hat. Dann meldet der Leser den Verlust, und der
-Schreiber schreibt nichts, denn sonst würde er die Nummer ein zweites Mal an eine andere
-Zeigerbewegung vergeben. Eine Datei, die um eins zurückliegt, ist kein Fehler: Der Vorgang brach
-zwischen dem Eintrag und der Datei ab, und der nächste Schreiber führt sie nach. Die Datei
-schützt vor Unfällen, nicht vor einem Angriff: Wer sie löscht, fällt erst
-\type{stemma op verify} auf, sofern der letzte Eintrag in der Kette steht, und wer den Eintrag
-und die Datei neu schreibt, bleibt unbemerkt.
+Die Datei \type{oplog-tip} hält die Nummer des letzten Eintrags.
+Der Schreiber führt sie nach dem Eintrag nach, noch bevor sich ein Zeiger bewegt.
+Fehlt dem Verzeichnis der letzte Eintrag, nennt die Datei eine grössere Nummer, als es hat.
+Dann meldet der Leser den Verlust, und der Schreiber schreibt nichts,
+denn sonst würde er die Nummer ein zweites Mal an eine andere Zeigerbewegung vergeben.
+Eine Datei, die um eins zurückliegt, ist kein Fehler:
+Der Vorgang brach zwischen dem Eintrag und der Datei ab,
+und der nächste Schreiber führt sie nach.
+Gegen einen Angriff hilft die Datei nicht, nur gegen Unfälle.
+Wer sie löscht, fällt erst \type{stemma op verify} auf,
+sofern der letzte Eintrag in der Kette steht,
+und wer den Eintrag und die Datei neu schreibt, bleibt unbemerkt.
 
 \startinfobox
 {\bf Grenzfälle der Datei \type{oplog-tip}.}
 \startitemize
 \item Die Datei selbst wird gesichert, ihr Verzeichnis nur nach bestem Bemühen.
-\item Leser und Schreiber lesen die Datei, bevor sie das Verzeichnis auflisten. Ein Schreiber legt
-den Eintrag an, bevor er die Datei nachführt. In der anderen Reihenfolge würde ein Leser, der
-gerade mit einem Schreiber zusammentrifft, einen Verlust melden, den es nicht gibt.
-\item Liess sich die Datei nicht schreiben, liegt sie um eins zurück, und der nächste
-Schreiber führt sie nach.
+\item Leser und Schreiber lesen die Datei, bevor sie das Verzeichnis auflisten.
+Ein Schreiber legt den Eintrag an, bevor er die Datei nachführt.
+In der anderen Reihenfolge würde ein Leser, der gerade mit einem Schreiber zusammentrifft,
+einen Verlust melden, den es nicht gibt.
+\item Liess sich die Datei nicht schreiben, liegt sie um eins zurück,
+und der nächste Schreiber führt sie nach.
 \item Nach einem Eintrag, dessen Verzeichnis sich nicht sichern liess, rückt die Datei nicht vor,
 sonst würde sie nach einem Absturz jeden weiteren Schreiber abweisen.
 \item Fehlt die Datei (ein Repository vor ihrer Einführung), legt der nächste Eintrag sie an.
-\item Eine Lücke in der Mitte hält den Schreiber nicht auf, denn eine Weigerung würde die
-Zeigerbewegung verhindern, die das Log reparieren soll.
+\item Eine Lücke in der Mitte hält den Schreiber nicht auf,
+denn eine Weigerung würde die Zeigerbewegung verhindern, die das Log reparieren soll.
 \stopitemize
 \stopinfobox
 
 \subsection{Die Hash-Kette}
 
-Ein Log aus Textdateien lässt sich leicht ändern. Die Hash-Kette macht eine Änderung sichtbar:
-Jeder Eintrag nennt in der Zeile \type{previous} den Hash des Eintrags davor, und der erste
-Eintrag der Kette hat \type{previous -}. Der Hash ist ein BLAKE3 über einen Umschlag: die
-Nummer, die Zeit, den Akteur, den Hash des Vorgängers und den Hash des Rumpfs. Der Rumpf sind
-die Zeilen nach \type{previous}, also die Operation und die Zeiger.
-\in{Abbildung}[fig:oplog-chain] zeigt vier Einträge, von denen ein Purge einen durch einen Stub
-ersetzt hat.
+Ein Log aus Textdateien lässt sich leicht ändern.
+Die Hash-Kette macht eine Änderung sichtbar:
+Jeder Eintrag nennt in der Zeile \type{previous} den Hash des Eintrags davor,
+und der erste Eintrag der Kette hat \type{previous -}.
+Der Hash ist ein BLAKE3 über einen Umschlag:
+die Nummer, die Zeit, den Akteur, den Hash des Vorgängers und den Hash des Rumpfs.
+Der Rumpf sind die Zeilen nach \type{previous}, also die Operation und die Zeiger.
+\in{Abbildung}[fig:oplog-chain] zeigt vier Einträge,
+von denen ein Purge einen durch einen Stub ersetzt hat.
 
 \startplacefigure[title={Hash-Kette mit Stub, \type{oplog-tip} und Anker},
     reference=fig:oplog-chain,location=here]
 \externalfigure[images/oplog-chain.pdf][width=\textwidth]
 \stopplacefigure
 
-Der Leser prüft die Kette. Wird ein Eintrag in der Mitte geändert, gelöscht, eingefügt oder mit
-einem anderen vertauscht, bricht sie an dieser Stelle, und der Leser nennt die Nummer. Auf den
-letzten Eintrag verweist noch keiner, deshalb nennt die Datei \type{oplog-tip} neben der Nummer
-auch seinen Hash. So fällt auch ein ersetzter letzter Eintrag auf, und der Schreiber hängt keinen
-neuen Eintrag an einen ersetzten an. Ein Stub behält den Hash des Rumpfs, den er ersetzt, und
-damit den Hash des Eintrags; die Kette hält über einen Purge hinweg (ADR-014).
+Der Leser prüft die Kette.
+Wird ein Eintrag in der Mitte geändert, gelöscht, eingefügt oder mit einem anderen vertauscht,
+bricht sie an dieser Stelle, und der Leser nennt die Nummer.
+Auf den letzten Eintrag verweist noch keiner,
+deshalb nennt die Datei \type{oplog-tip} neben der Nummer auch seinen Hash.
+So fällt auch ein ersetzter letzter Eintrag auf,
+und der Schreiber hängt keinen neuen Eintrag an einen ersetzten an.
+Ein Stub behält den Hash des Rumpfs, den er ersetzt, und damit den Hash des Eintrags;
+die Kette hält über einen Purge hinweg (ADR-014).
 
 Der Schreiber liest den Eintrag vor der Nummer, die er versucht, und nennt dessen Hash.
 Verliert er das Rennen um eine Nummer, baut er seinen Eintrag für die nächste Nummer neu,
-mit dem Hash ihres Vorgängers. Kann er den Vorgänger nicht lesen, schreibt er nichts, denn ein
-Neubeginn der Kette würde den Schaden verdecken. Aus demselben Grund schreibt er nichts hinter
-einen alten Eintrag, der auf einen Eintrag der Kette folgt.
+mit dem Hash ihres Vorgängers.
+Kann er den Vorgänger nicht lesen, schreibt er nichts,
+denn ein Neubeginn der Kette würde den Schaden verdecken.
+Aus demselben Grund schreibt er nichts hinter einen alten Eintrag,
+der auf einen Eintrag der Kette folgt.
 
-\type{op log} prüft mit einer Grenze nur das gezeigte Fenster und dessen Anschluss an den
-Eintrag davor; lässt sich dieser nicht lesen, warnt der Befehl. \type{stemma op verify} prüft
-das ganze Log und gibt einen Anker aus, die Nummer und den Hash des letzten Eintrags,
-sofern dieser in der Kette steht. Die Datei \type{oplog-tip} prüft er strenger als die übrigen
-Befehle: Fehlt sie oder liegt sie mehr als einen Eintrag zurück, obwohl der letzte Eintrag in
-der Kette steht, meldet er das, denn dann haben die Schreiber nichts mit ihr verglichen.
+\type{op log} prüft mit einer Grenze nur das gezeigte Fenster
+und dessen Anschluss an den Eintrag davor;
+lässt sich dieser nicht lesen, warnt der Befehl.
+\type{stemma op verify} prüft das ganze Log und gibt einen Anker aus,
+die Nummer und den Hash des letzten Eintrags, sofern dieser in der Kette steht.
+Die Datei \type{oplog-tip} prüft er strenger als die übrigen Befehle:
+Fehlt sie oder liegt sie mehr als einen Eintrag zurück,
+obwohl der letzte Eintrag in der Kette steht, meldet er das,
+denn dann haben die Schreiber nichts mit ihr verglichen.
 
-Die Kette zeigt, dass die Einträge zueinander passen, nicht wer sie schrieb. Wer
-\type{.stemma} schreiben kann, kann jeden späteren Hash und die Datei \type{oplog-tip} neu
-berechnen. Das fällt nur mit einem Anker auf, der ausserhalb des Repositories liegt: Wer
-einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}. Signaturen der
-Akteure (ADR-004) und ein Hub, der den letzten Eintrag bestätigt (Phase 5), wären Anker,
-die der Akteur selbst nicht ändern kann; beide sind offen.
+Die Kette zeigt, dass die Einträge zueinander passen, nicht wer sie schrieb.
+Wer \type{.stemma} schreiben kann, kann jeden späteren Hash und die Datei \type{oplog-tip}
+neu berechnen.
+Das fällt nur mit einem Anker auf, der ausserhalb des Repositories liegt:
+Wer einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}.
+Signaturen der Akteure (ADR-004) und ein Hub, der den letzten Eintrag bestätigt (Phase 5),
+wären Anker, die der Akteur selbst nicht ändern kann; beide sind offen.
 
 \startinfobox
 {\bf Logs aus der Zeit vor der Kette.}
 Ein solches Log behält seine alten Einträge vorne, und der erste neue Eintrag beginnt die Kette.
-Diese alten Einträge deckt die Kette nicht ab, und einen alten Eintrag hinter der Kette lehnt der
-Leser ab.
+Diese alten Einträge deckt die Kette nicht ab,
+und einen alten Eintrag hinter der Kette lehnt der Leser ab.
 \stopinfobox
 
 \subsection{Den Zustand vor einem Eintrag wiederherstellen}
