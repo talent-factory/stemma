@@ -578,7 +578,8 @@ impl RefsView<'_> {
     }
 
     /// Whether a writer holds the lock of the references, so that an operation may be between its
-    /// entry in the log and the move of a pointer. A lock that a crashed writer left counts as held.
+    /// entry in the log and the move of a pointer. A lock that a crashed writer left counts as held
+    /// until the next writer takes it over (ADR-008).
     ///
     /// # Errors
     ///

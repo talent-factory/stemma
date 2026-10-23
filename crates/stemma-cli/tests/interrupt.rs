@@ -1,5 +1,6 @@
 //! An interrupted command: Ctrl-C removes the lock of the references that the command holds
-//! (ADR-014), so that the next command runs.
+//! (ADR-014), and a command that is killed leaves a lock that the next command takes over
+//! (ADR-008), so that the next command runs in both cases.
 #![cfg(unix)]
 
 mod common;
@@ -74,4 +75,56 @@ fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
         .status()
         .unwrap();
     assert!(status.success(), "the next command runs");
+}
+
+#[test]
+fn a_command_that_is_killed_leaves_a_lock_that_the_next_command_takes_over() {
+    let dir = Dir::new();
+    let status = stemma(dir.path(), &["init", "--actor", ACTOR])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    for number in 0..500 {
+        fs::write(
+            dir.path().join(format!("f{number}.txt")),
+            number.to_string(),
+        )
+        .unwrap();
+    }
+    let lock = dir.path().join(".stemma").join("refs.lock");
+    // The lock is made empty and its token written after it, so the test waits for the token.
+    let written =
+        || fs::read_to_string(&lock).is_ok_and(|text| text.starts_with("stemma-lock 1\n"));
+    let mut child = stemma(dir.path(), &["track", "--actor", ACTOR, "."])
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while !written() && start.elapsed() < Duration::from_secs(30) {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if !written() {
+        let _ = child.kill();
+        let _ = child.wait();
+        eprintln!("skipped: the command ended before its lock was seen");
+        return;
+    }
+    // SIGKILL: no handler runs, so the lock file stays, and the operating system releases the
+    // guard.
+    child.kill().unwrap();
+    let status = child.wait().unwrap();
+    // The command may have ended, or removed its lock and not ended yet, before the signal.
+    if status.success() || !lock.exists() {
+        eprintln!("skipped: the command released its lock before the signal");
+        return;
+    }
+    let left = fs::read_to_string(&lock).unwrap();
+    assert!(left.starts_with("stemma-lock 1\nhost "), "{left:?}");
+    let status = stemma(dir.path(), &["status", "--actor", ACTOR])
+        .status()
+        .unwrap();
+    assert!(status.success(), "the next command takes the lock over");
+    assert!(!lock.exists());
 }

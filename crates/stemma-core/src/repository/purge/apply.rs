@@ -1681,6 +1681,7 @@ mod tests {
             entries: Vec::new(),
             source: Box::new(PurgeFailure::Refs(RefError::Locked {
                 path: dir.path().join(".stemma/refs.lock"),
+                holder: crate::refs::LockHolder::Unknown,
             })),
         });
         assert!(stopped.pending() && stopped.made());

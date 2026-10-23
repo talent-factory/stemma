@@ -9,6 +9,7 @@
 //! <root>/HEAD                    branch main\n   or   commit b3:<64 hex digits>\n
 //! <root>/refs/heads/<name>       b3:<64 hex digits>\n
 //! <root>/refs.lock               exists while a command writes (ADR-014)
+//! <root>/refs.lock.guard         stays; its holder holds a lock of the system on it (ADR-008)
 //! ```
 //!
 //! A [`BranchName`] is valid by construction, as an [`Actor`](crate::Actor) is. A branch that has
@@ -393,10 +394,12 @@ pub enum RefError {
         source: io::Error,
     },
     /// A lock file exists: another process changes references, or a process that did ended
-    /// without removing it.
+    /// without removing it, in a way that cannot be told from a running one (see [`LockHolder`]).
     Locked {
         /// The lock file.
         path: PathBuf,
+        /// What is known about the one that holds the lock.
+        holder: LockHolder,
     },
     /// There is no HEAD.
     NoHead {
@@ -429,6 +432,31 @@ pub enum RefError {
         /// The pointer: `HEAD`, `working-copy`, or the name of a branch.
         pointer: String,
     },
+}
+
+/// What is known about the holder of a lock that is in the way (ADR-008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LockHolder {
+    /// A process that is running holds the guard of the lock, or this process holds the lock
+    /// already: a command of this version, with its process ID if the lock file names one.
+    Running {
+        /// The process ID that the lock file names.
+        process: Option<u32>,
+    },
+    /// A command on another host made the lock. A lock of the operating system may not reach
+    /// from one host to another on a file system that two hosts share, so the guard tells
+    /// nothing, and the lock is not taken over: the command may run there, or have crashed.
+    Elsewhere {
+        /// The host that the lock file names.
+        host: String,
+        /// The process ID that the lock file names.
+        process: u32,
+    },
+    /// No running process is known to hold the lock: the lock file has another form than the one
+    /// that a holder of the guard writes. It was made by an older version of stemma, by a command
+    /// on a file system without locks of files, or by hand, and it may be left from a crash.
+    Unknown,
 }
 
 /// What stands in the way of a new branch name.
@@ -495,11 +523,37 @@ impl fmt::Display for RefError {
                 path.display()
             ),
             Self::Store(source) => write!(f, "{source}"),
-            Self::Locked { path } => write!(
+            Self::Locked {
+                path,
+                holder: LockHolder::Running { process },
+            } => {
+                write!(f, "the references are locked by `{}`: ", path.display())?;
+                match process {
+                    Some(process) => write!(f, "another stemma command (process {process})")?,
+                    None => f.write_str("another stemma command")?,
+                }
+                f.write_str(" is running and holds the lock; try again when it has ended")
+            }
+            Self::Locked {
+                path,
+                holder: LockHolder::Elsewhere { host, process },
+            } => write!(
+                f,
+                "the references are locked by `{}`: a stemma command (process {process}) on the \
+                 host `{}` holds the lock, or left it from a crash; if none runs there, the file \
+                 can be removed",
+                path.display(),
+                host.escape_debug()
+            ),
+            Self::Locked {
+                path,
+                holder: LockHolder::Unknown,
+            } => write!(
                 f,
                 "the references are locked by `{}`: another stemma command is running, and holds \
                  the lock while it saves the working directory; if none runs, the file is left \
-                 from a crash and can be removed",
+                 from a crash of an older version or of a command on a file system without locks \
+                 of files, and can be removed",
                 path.display()
             ),
             Self::NoHead { path } => write!(f, "there is no HEAD at `{}`", path.display()),
@@ -695,9 +749,106 @@ pub struct FsRefStore {
 ///
 /// Every lock of the process is listed in [`HELD`] while it exists, so that
 /// [`release_locks_for_exit`] can remove it when the process is interrupted.
+///
+/// The guard of the lock (see [`FsRefStore::acquire`]) is held as long as the value exists, and
+/// it is released after the file is removed: the operating system releases it with the handle.
 struct Lock {
     path: PathBuf,
     token: String,
+    guard: Option<fs::File>,
+}
+
+/// Which lock file that is in the way [`FsRefStore::acquire`] replaces once it holds the guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Takeover {
+    /// Only one that a holder of the guard wrote, which is left by a process that ended, and not
+    /// while the journal of a purge exists.
+    Stale,
+    /// Any, for `--resume` and `--abort` of a purge, which take the lock that the purge left.
+    Any,
+}
+
+/// The first line of a lock file that a holder of the guard writes (ADR-008).
+const LOCK_HEADER: &str = "stemma-lock 1";
+
+/// A lock file in the form that a holder of the guard writes: the header, the host, the process
+/// ID, and the token, one line each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockFile {
+    host: String,
+    process: u32,
+}
+
+impl LockFile {
+    /// Parses the form that a holder of the guard writes, and nothing else.
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(bytes).ok()?;
+        let rest = text.strip_prefix(LOCK_HEADER)?.strip_prefix("\nhost ")?;
+        let (host, rest) = rest.split_once('\n')?;
+        let (process, rest) = rest.strip_prefix("pid ")?.split_once('\n')?;
+        let token = rest.strip_prefix("token ")?.strip_suffix('\n')?;
+        let canonical = valid_host(host)
+            && !process.is_empty()
+            && process.bytes().all(|byte| byte.is_ascii_digit())
+            && (process == "0" || !process.starts_with('0'))
+            && !token.is_empty()
+            && !token.contains('\n');
+        canonical.then_some(Self {
+            host: host.to_owned(),
+            process: process.parse().ok()?,
+        })
+    }
+
+    /// Reads the lock file at `path`: `None` if it is gone or has another form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Io`] if the file cannot be read.
+    fn read(path: &Path) -> Result<Option<Self>, RefError> {
+        match fs::read(path) {
+            Ok(bytes) => Ok(Self::parse(&bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io_error("read the lock file", path)(error)),
+        }
+    }
+}
+
+/// Whether a host name can stand on a line of a lock file: printable ASCII without spaces.
+fn valid_host(host: &str) -> bool {
+    !host.is_empty() && host.len() <= 255 && host.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+/// The name of this host, once per process, or `None` if it cannot be found or cannot stand in a
+/// lock file. Without it a lock is made without a guard (see [`FsRefStore::acquire`]).
+fn host_name() -> Option<&'static str> {
+    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        let name = if cfg!(windows) {
+            std::env::var("COMPUTERNAME").ok()
+        } else {
+            fs::read_to_string("/proc/sys/kernel/hostname")
+                .ok()
+                .or_else(|| {
+                    std::process::Command::new("hostname")
+                        .output()
+                        .ok()
+                        .filter(|output| output.status.success())
+                        .and_then(|output| String::from_utf8(output.stdout).ok())
+                })
+        }?;
+        let name = name.trim().to_owned();
+        valid_host(&name).then_some(name)
+    })
+    .as_deref()
+}
+
+/// Makes the lock file with "create new": `None` if something is at the path already.
+fn create_lock_file(path: &Path) -> Result<Option<fs::File>, RefError> {
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(io_error("create the lock file", path)(error)),
+    }
 }
 
 impl Drop for Lock {
@@ -772,8 +923,18 @@ pub(crate) struct PurgeLock {
 }
 
 impl PurgeLock {
-    /// Leaves the lock file in place, as a crash does. A test stops a purge with it.
-    pub(crate) fn leak(self) {
+    /// Leaves the lock file in place and releases its guard, as a crash does. A test stops a
+    /// purge with it. The file then names process 0, which is no process of a user, because a
+    /// lock that names this process is never taken over (see [`FsRefStore::acquire`]), and a
+    /// process that crashed runs no more.
+    pub(crate) fn leak(mut self) {
+        if let (Some(host), Some(_)) = (host_name(), self._lock.guard.take()) {
+            let left = format!(
+                "{LOCK_HEADER}\nhost {host}\npid 0\ntoken {}\n",
+                unique_temp_name()
+            );
+            let _ = fs::write(&self._lock.path, left);
+        }
         std::mem::forget(self);
     }
 }
@@ -817,6 +978,10 @@ impl FsRefStore {
 
     fn lock_path(&self) -> PathBuf {
         self.root.join("refs.lock")
+    }
+
+    fn guard_path(&self) -> PathBuf {
+        self.root.join("refs.lock.guard")
     }
 
     /// Fails unless `root` is an existing directory.
@@ -869,8 +1034,10 @@ impl FsRefStore {
     }
 
     /// Whether a writer holds the lock of the references now, so it may be between its entry in the
-    /// log and the move of a pointer (ADR-011). A lock that a crashed writer left stays until
-    /// someone removes it, and counts as held.
+    /// log and the move of a pointer (ADR-011). A lock that a crashed writer left counts as held
+    /// until the next writer takes it over (see [`acquire`](Self::acquire)): the check does not
+    /// take the guard, since a reader that held it, if only for a moment, would make a writer fail
+    /// with [`RefError::Locked`].
     pub(crate) fn is_locked(&self) -> Result<bool, RefError> {
         let path = self.lock_path();
         match fs::symlink_metadata(&path) {
@@ -918,14 +1085,14 @@ impl FsRefStore {
     /// ([`remove_scratch`], ADR-011); a change that a journal refuses leaves it to the resume or
     /// the abort.
     fn lock(&self) -> Result<Lock, RefError> {
-        let lock = match self.acquire() {
-            Err(RefError::Locked { path }) => {
+        let lock = match self.acquire(Takeover::Stale) {
+            Err(locked @ RefError::Locked { .. }) => {
                 return Err(if self.purge_pending()? {
                     RefError::PurgePending {
                         path: self.journal_path(),
                     }
                 } else {
-                    RefError::Locked { path }
+                    locked
                 })
             }
             other => other?,
@@ -961,39 +1128,94 @@ impl FsRefStore {
     }
 
     /// Takes the lock for `--resume` or `--abort` of a purge whose journal exists. A lock that is
-    /// there is taken for the one that the purge left behind when it stopped, and is removed
-    /// (ADR-014). The caller checks the journal before and after. With the lock held, the scratch
-    /// in `tmp/` is removed, as by [`lock`](Self::lock).
+    /// there is taken for the one that the purge left behind when it stopped, and is replaced
+    /// (ADR-014), unless a running process holds its guard, so that a purge that still runs keeps
+    /// it, or the file names another host. The caller checks the journal before and after. With
+    /// the lock held, the scratch in `tmp/` is removed, as by [`lock`](Self::lock).
     ///
     /// # Errors
     ///
     /// Returns [`RefError::Io`] if the lock file cannot be removed or made, and
-    /// [`RefError::Locked`] if another process took the lock in between.
+    /// [`RefError::Locked`] if a running process holds the guard, if the file names another host,
+    /// or if another process took the lock in between.
     pub(crate) fn take_over_lock(&self) -> Result<PurgeLock, RefError> {
         self.require_root()?;
-        let path = self.lock_path();
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_error("remove the lock file", &path)(error)),
-        }
-        let lock = self.acquire()?;
+        let lock = self.acquire(Takeover::Any)?;
         remove_scratch(&self.root);
         Ok(PurgeLock { _lock: lock })
     }
 
-    /// Makes the lock file, without looking at the journal of a purge.
-    fn acquire(&self) -> Result<Lock, RefError> {
+    /// Makes the lock file, without looking at the journal of a purge, and holds its guard
+    /// (ADR-008).
+    ///
+    /// The guard is the file `refs.lock.guard`, which stays, and the process holds a lock of the
+    /// operating system on it while the lock file is its own. The operating system releases that
+    /// lock when the process ends in any way, also by `kill -9` or a crash. A lock file whose
+    /// guard is free was therefore left by a process that ended, if a holder of the guard on this
+    /// host wrote it: only such a file is replaced, and with [`Takeover::Stale`] only while no
+    /// journal of a purge exists. A file that names another host stays, since a lock of the
+    /// operating system may not reach across a file system that two hosts share, and so does one
+    /// that names this process, which another handle of the process may hold where the system
+    /// keeps its locks per process. A file of another form may be held by an older version of
+    /// stemma, and it stays as well, unless [`Takeover::Any`] takes it for the purge. If the guard
+    /// cannot be locked, or the name of the host is not known, the lock is made without a guard,
+    /// in the form of an older version, so that no other command takes it over.
+    fn acquire(&self, takeover: Takeover) -> Result<Lock, RefError> {
         let path = self.lock_path();
-        let token = unique_temp_name();
         // The list is held from the file to its entry, so an interruption sees either both or none.
         let mut held = held_locks();
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                return Err(RefError::Locked { path })
+        let host = host_name();
+        let guard = match host {
+            Some(_) => self.guard()?,
+            None => None,
+        };
+        let token = match (&guard, host) {
+            (Some(_), Some(host)) => format!(
+                "{LOCK_HEADER}\nhost {host}\npid {}\ntoken {}\n",
+                std::process::id(),
+                unique_temp_name()
+            ),
+            _ => unique_temp_name(),
+        };
+        let mut file = match create_lock_file(&path)? {
+            Some(file) => file,
+            None => {
+                let locked = |holder| RefError::Locked {
+                    path: path.clone(),
+                    holder,
+                };
+                if guard.is_none() {
+                    return Err(locked(LockHolder::Unknown));
+                }
+                match LockFile::read(&path)? {
+                    Some(found) if Some(found.host.as_str()) != host => {
+                        return Err(locked(LockHolder::Elsewhere {
+                            host: found.host,
+                            process: found.process,
+                        }))
+                    }
+                    Some(found) if found.process == std::process::id() => {
+                        return Err(locked(LockHolder::Running {
+                            process: Some(found.process),
+                        }))
+                    }
+                    // Left by a process of this host that ended. A purge that stopped keeps its
+                    // lock for `--resume` or `--abort`, which report it as the purge.
+                    Some(_) if takeover == Takeover::Stale && self.purge_pending()? => {
+                        return Err(locked(LockHolder::Unknown))
+                    }
+                    Some(_) => {}
+                    None if takeover == Takeover::Any => {}
+                    None => return Err(locked(LockHolder::Unknown)),
+                }
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(io_error("remove the lock file", &path)(error)),
+                }
+                // A command of an older version may make the file in between; it holds it then.
+                create_lock_file(&path)?.ok_or_else(|| locked(LockHolder::Unknown))?
             }
-            Err(error) => return Err(io_error("create the lock file", &path)(error)),
         };
         // The lock exists now. If the token cannot be written, the lock is removed again, and the
         // error is reported.
@@ -1002,7 +1224,45 @@ impl FsRefStore {
             return Err(io_error("write the lock file", &path)(error));
         }
         held.push((path.clone(), token.clone()));
-        Ok(Lock { path, token })
+        Ok(Lock { path, token, guard })
+    }
+
+    /// Opens the guard of the lock and takes the lock of the operating system on it: `None` if it
+    /// cannot be opened, or cannot be locked for another reason than a holder, as on a file system
+    /// without locks of files. The lock is then made in the form of an older version, which no command takes over,
+    /// so that a guard that fails costs the takeover and never the exclusion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Locked`] with [`LockHolder::Running`] if a running process holds the
+    /// guard. A guard that cannot be opened, such as one that another user made and this one may
+    /// only read, is no error either: the lock is made without it.
+    fn guard(&self) -> Result<Option<fs::File>, RefError> {
+        let path = self.guard_path();
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            // A lock of the operating system needs no right to write.
+            .or_else(|_| fs::File::open(&path));
+        let Ok(file) = opened else {
+            return Ok(None);
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(fs::TryLockError::WouldBlock) => Err(RefError::Locked {
+                path: self.lock_path(),
+                holder: LockHolder::Running {
+                    process: LockFile::read(&self.lock_path())
+                        .ok()
+                        .flatten()
+                        .map(|lock| lock.process),
+                },
+            }),
+            Err(fs::TryLockError::Error(_)) => Ok(None),
+        }
     }
 
     /// Replaces the file with the content, atomically: the content goes to a temporary file, is
@@ -2685,7 +2945,7 @@ mod tests {
             .update_branch(&name("main"), None, id, &objects)
             .unwrap_err();
         assert!(
-            matches!(&error, RefError::Locked { path } if *path == lock),
+            matches!(&error, RefError::Locked { path, .. } if *path == lock),
             "{error}"
         );
         assert!(
@@ -3149,6 +3409,249 @@ mod tests {
         assert!(!dir.path().join("refs.lock").exists());
     }
 
+    // ---- the guard of the lock (STEMMA-51)
+
+    /// A lock file in the form that a holder of the guard on `host` writes.
+    fn lock_of(host: &str, process: u32) -> String {
+        format!("{LOCK_HEADER}\nhost {host}\npid {process}\ntoken 1-0-left\n")
+    }
+
+    /// A lock file that a process of this host left when it ended.
+    fn stale_lock(process: u32) -> String {
+        lock_of(host_name().expect("the host has a name"), process)
+    }
+
+    #[test]
+    fn a_lock_whose_guard_is_free_is_taken_over() {
+        // A process that ended by `kill -9` or a crash leaves its lock file, and the operating
+        // system releases its guard: the next change replaces the file.
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let lock = dir.path().join("refs.lock");
+        fs::write(&lock, stale_lock(4_000_000)).unwrap();
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert_eq!(refs.branch(&name("main")).unwrap(), Some(id));
+        assert!(!lock.exists());
+        // The guard stays, as a file without content that nothing reads.
+        assert!(dir.path().join("refs.lock.guard").is_file());
+    }
+
+    #[test]
+    fn a_lock_whose_guard_is_held_stops_the_change_and_names_the_process() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let held = refs.lock().unwrap();
+        let lock = dir.path().join("refs.lock");
+        assert_eq!(
+            LockFile::read(&lock).unwrap(),
+            Some(LockFile {
+                host: host_name().unwrap().to_owned(),
+                process: std::process::id()
+            })
+        );
+        let error = refs
+            .update_branch(&name("main"), None, id, &objects)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RefError::Locked {
+                    holder: LockHolder::Running { process: Some(process) },
+                    ..
+                } if process == std::process::id()
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the references are locked by `{}`: another stemma command (process {}) is \
+                 running and holds the lock; try again when it has ended",
+                lock.display(),
+                std::process::id()
+            )
+        );
+        // `--resume` and `--abort` of a purge do not take a lock whose guard is held either.
+        assert!(matches!(
+            refs.take_over_lock(),
+            Err(RefError::Locked {
+                holder: LockHolder::Running { .. },
+                ..
+            })
+        ));
+        drop(held);
+        assert!(!lock.exists());
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_lock_of_another_form_is_not_taken_over() {
+        // An older version, a file system without locks of files, or a person made it: the file
+        // stays, and the message says that it may be left from a crash.
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let lock = dir.path().join("refs.lock");
+        let pid = std::process::id();
+        let host = host_name().unwrap();
+        for content in [
+            String::from("4711-0-0123456789abcdef"),
+            String::new(),
+            format!("{LOCK_HEADER}\npid 7\ntoken x\n"),
+            format!("{LOCK_HEADER}\nhost {host}\npid 7\ntoken x"),
+            format!("{LOCK_HEADER}\nhost {host}\npid 07\ntoken x\n"),
+            format!("{LOCK_HEADER}\nhost {host}\npid \ntoken x\n"),
+            format!("{LOCK_HEADER}\nhost {host}\npid 7\ntoken \n"),
+            format!("{LOCK_HEADER}\nhost {host}\npid 7\ntoken x\n\n"),
+            format!("{LOCK_HEADER}\nhost \npid 7\ntoken x\n"),
+            format!("{LOCK_HEADER}\nhost a b\npid 7\ntoken x\n"),
+            format!("stemma-lock 2\nhost {host}\npid 7\ntoken x\n"),
+        ] {
+            fs::write(&lock, &content).unwrap();
+            let error = refs
+                .update_branch(&name("main"), None, id, &objects)
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    RefError::Locked {
+                        holder: LockHolder::Unknown,
+                        ..
+                    }
+                ),
+                "{content:?}: {error}"
+            );
+            assert!(error.to_string().ends_with("and can be removed"), "{error}");
+            assert_eq!(fs::read_to_string(&lock).unwrap(), content);
+        }
+        // `--resume` and `--abort` take any lock whose guard is free: the one the purge left.
+        let taken = refs.take_over_lock().unwrap();
+        assert_eq!(
+            LockFile::read(&lock).unwrap().map(|lock| lock.process),
+            Some(pid)
+        );
+        drop(taken);
+        assert!(!lock.exists());
+    }
+
+    #[test]
+    fn a_lock_of_another_host_or_of_this_process_is_not_taken_over() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let lock = dir.path().join("refs.lock");
+        // Another host: a lock of the operating system may not reach across a shared file system,
+        // so a free guard tells nothing about a command that runs there.
+        let elsewhere = lock_of("other-host", 4711);
+        fs::write(&lock, &elsewhere).unwrap();
+        let error = refs
+            .update_branch(&name("main"), None, id, &objects)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Locked {
+                    holder: LockHolder::Elsewhere { host, process: 4711 },
+                    ..
+                } if host == "other-host"
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the references are locked by `{}`: a stemma command (process 4711) on the host \
+                 `other-host` holds the lock, or left it from a crash; if none runs there, the \
+                 file can be removed",
+                lock.display()
+            )
+        );
+        assert!(matches!(
+            refs.take_over_lock(),
+            Err(RefError::Locked {
+                holder: LockHolder::Elsewhere { .. },
+                ..
+            })
+        ));
+        assert_eq!(fs::read_to_string(&lock).unwrap(), elsewhere);
+        // This process: another handle of the process may hold it, where the system keeps its
+        // locks per process and not per handle.
+        let own = stale_lock(std::process::id());
+        fs::write(&lock, &own).unwrap();
+        assert!(matches!(
+            refs.update_branch(&name("main"), None, id, &objects),
+            Err(RefError::Locked {
+                holder: LockHolder::Running { process: Some(process) },
+                ..
+            }) if process == std::process::id()
+        ));
+        assert_eq!(fs::read_to_string(&lock).unwrap(), own);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_guard_that_cannot_be_opened_costs_the_takeover_and_not_the_exclusion() {
+        // Another user made the guard, and this one may not open it: the lock is made in the
+        // form of an older version, which still excludes, and which no command takes over.
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, objects, refs) = setup();
+        assert_permissions_bind(dir.path());
+        let id = commit(&objects, "c");
+        let guard = dir.path().join("refs.lock.guard");
+        fs::write(&guard, b"").unwrap();
+        fs::set_permissions(&guard, fs::Permissions::from_mode(0o000)).unwrap();
+        let held = refs.lock();
+        let second = refs.update_branch(&name("main"), None, id, &objects);
+        let content = fs::read_to_string(dir.path().join("refs.lock"));
+        fs::set_permissions(&guard, fs::Permissions::from_mode(0o644)).unwrap();
+        drop(held.unwrap());
+        let content = content.unwrap();
+        assert!(!content.starts_with(LOCK_HEADER), "{content:?}");
+        assert!(matches!(
+            second,
+            Err(RefError::Locked {
+                holder: LockHolder::Unknown,
+                ..
+            })
+        ));
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_stale_lock_stays_while_the_journal_of_a_purge_exists() {
+        // The lock that a purge left belongs to `--resume` and `--abort`, which report it as the
+        // purge; another change reports the purge and does not touch the lock (ADR-014).
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let lock = dir.path().join("refs.lock");
+        let left = stale_lock(4_000_000);
+        fs::write(&lock, &left).unwrap();
+        fs::write(dir.path().join(PURGE_JOURNAL), b"").unwrap();
+        assert!(matches!(
+            refs.update_branch(&name("main"), None, id, &objects),
+            Err(RefError::PurgePending { .. })
+        ));
+        assert_eq!(fs::read_to_string(&lock).unwrap(), left);
+    }
+
+    #[test]
+    fn a_purge_that_stopped_leaves_a_lock_that_the_next_change_takes_over() {
+        // `leak` is a crash: the file stays, and the guard is released. Without a journal, as
+        // after a crash before the purge wrote it, the next change takes the lock over.
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.lock_purge().unwrap().leak();
+        let lock = dir.path().join("refs.lock");
+        assert_eq!(
+            LockFile::read(&lock).unwrap().map(|lock| lock.process),
+            Some(0)
+        );
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert!(!lock.exists());
+    }
+
     #[test]
     fn a_lock_is_removed_only_by_the_one_that_made_it() {
         let dir = TempDir::new();
@@ -3158,6 +3661,7 @@ mod tests {
         drop(Lock {
             path: path.clone(),
             token: "mine".to_owned(),
+            guard: None,
         });
         assert_eq!(fs::read(&path).unwrap(), b"other");
         // Our own lock goes.
@@ -3165,12 +3669,14 @@ mod tests {
         drop(Lock {
             path: path.clone(),
             token: "mine".to_owned(),
+            guard: None,
         });
         assert!(!path.exists());
         // A lock that is already gone is no error.
         drop(Lock {
             path: path.clone(),
             token: "mine".to_owned(),
+            guard: None,
         });
         // A real lock holds a token of its own, which differs between locks.
         let (_dir, _objects, refs) = setup();
@@ -3799,7 +4305,8 @@ mod tests {
             FsRefStore::after_move::<u8, ()>(
                 5,
                 Err(RefError::Locked {
-                    path: PathBuf::from("l")
+                    path: PathBuf::from("l"),
+                    holder: LockHolder::Unknown
                 })
             ),
             Outcome::MoveFailed(5, RefError::Locked { .. })

@@ -1409,6 +1409,7 @@ mod tests {
             late: None,
             source: Box::new(RestoreError::Refs(RefError::Locked {
                 path: "refs.lock".into(),
+                holder: crate::refs::LockHolder::Unknown,
             })),
         };
         assert_eq!(error.snapshot().map(Entry::number), Some(snapshot.number()));
@@ -1426,7 +1427,10 @@ mod tests {
         let repository = repository(&dir);
         let (snapshot, _) = two_commits(&dir, &repository);
         let entry = Box::new(repository.oplog().read(snapshot).unwrap());
-        let source = RefError::Locked { path: "x".into() };
+        let source = RefError::Locked {
+            path: "x".into(),
+            holder: crate::refs::LockHolder::Unknown,
+        };
         let moved = RestoreError::PartlyMoved {
             entry: entry.clone(),
             source,
@@ -1438,7 +1442,10 @@ mod tests {
         );
         let failed = RestoreError::MoveFailed {
             entry,
-            source: RefError::Locked { path: "x".into() },
+            source: RefError::Locked {
+                path: "x".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            },
         };
         assert!(!failed.pointer_moved());
         assert!(failed.entry().is_some());
@@ -1452,8 +1459,14 @@ mod tests {
         let entry = Box::new(repository.oplog().read(snapshot).unwrap());
         let late = RestoreError::AfterSnapshot {
             snapshot: entry.clone(),
-            late: Some(RefError::Locked { path: "x".into() }),
-            source: Box::new(RestoreError::Refs(RefError::Locked { path: "y".into() })),
+            late: Some(RefError::Locked {
+                path: "x".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            }),
+            source: Box::new(RestoreError::Refs(RefError::Locked {
+                path: "y".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            })),
         };
         assert!(
             late.pointer_moved(),
@@ -1466,7 +1479,10 @@ mod tests {
         let plain = RestoreError::AfterSnapshot {
             snapshot: entry,
             late: None,
-            source: Box::new(RestoreError::Refs(RefError::Locked { path: "y".into() })),
+            source: Box::new(RestoreError::Refs(RefError::Locked {
+                path: "y".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            })),
         };
         assert!(!plain.pointer_moved());
         assert!(!plain.to_string().contains("flushed"), "{plain}");
@@ -1481,7 +1497,10 @@ mod tests {
         let made = RestoreError::SnapshotNotDurable {
             snapshot: entry.clone(),
             restored: Some(entry.clone()),
-            source: RefError::Locked { path: "x".into() },
+            source: RefError::Locked {
+                path: "x".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            },
         };
         assert!(made.pointer_moved());
         assert_eq!(made.snapshot().map(Entry::number), Some(snapshot));
@@ -1494,7 +1513,10 @@ mod tests {
         let nothing = RestoreError::SnapshotNotDurable {
             snapshot: entry,
             restored: None,
-            source: RefError::Locked { path: "x".into() },
+            source: RefError::Locked {
+                path: "x".into(),
+                holder: crate::refs::LockHolder::Unknown,
+            },
         };
         assert!(nothing.entry().is_none());
         assert!(
