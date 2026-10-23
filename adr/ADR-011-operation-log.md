@@ -328,8 +328,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   while the purge still runs in another terminal, which ADR-014 already warns against: the
   take-over removes the scratch of the running purge, and that purge fails and can be resumed. A
   caller of the library that stores objects through `Repository::objects()` without the lock is
-  not protected either. A lock that stays after `kill -9` is taken over by the next writer, whose
-  guard is free then (ADR-008, STEMMA-51), and that writer removes the scratch as well.
+  not protected either. A lock that stays after `kill -9` is taken over by the next writer of
+  this host, whose guard is free then (ADR-008, STEMMA-51), and that writer removes the scratch
+  as well.
 
 ### Sketch of an entry
 

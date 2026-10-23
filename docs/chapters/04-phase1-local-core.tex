@@ -455,16 +455,26 @@ Nach \type{kill -9} oder einem Absturz bleibt die Datei \type{refs.lock} liegen,
 nächste Befehl übernimmt sie. Wer die Sperre hält, hält dazu eine Sperre des Betriebssystems auf
 der Datei \type{refs.lock.guard} (ADR-008), und die gibt das Betriebssystem frei, wenn der
 Prozess endet, wie auch immer er endet. Ist diese Sperre frei und nennt \type{refs.lock} in der
-Form, die ihr Halter schreibt, diesen Rechner und einen anderen Prozess, war der Halter ein
-beendeter Prozess. Die Regel braucht keine Frist und fragt das Betriebssystem nicht nach einer
-Prozessnummer. Eine Datei eines anderen Rechners übernimmt kein Befehl, denn auf einem
+Form, die ihr Halter schreibt, diesen Rechner, war der Halter ein beendeter Prozess.
+Das gilt auch, wenn die Datei die Nummer des eigenen Prozesses nennt:
+Ein früherer Prozess hatte sie, etwa in einem Container, in dem der Befehl stets als derselbe
+Prozess läuft.
+Die Regel braucht keine Frist und fragt das Betriebssystem nicht nach einer Prozessnummer.
+Eine Datei eines anderen Rechners übernimmt kein Befehl, denn auf einem
 Dateisystem, das zwei Rechner teilen, reicht eine Sperre des Betriebssystems nicht immer von
 einem zum anderen; die Meldung nennt dann den Rechner und den Prozess.
+Die Regel setzt voraus, dass keine zwei Rechner, die ein Repository teilen, gleich heissen.
+Namen wie \type{localhost} gelten deshalb als unbekannt.
+Kann ein Befehl die Sperre des Betriebssystems nicht nehmen, etwa auf einem Dateisystem ohne
+Dateisperren, schreibt er die Datei in der alten Form und übernimmt keine Sperre;
+die Meldung nennt den Grund.
 
 Bricht der Purge ab, beendet ihn \type{stemma purge --resume} aus dem Journal. Eine Sperre,
 die der Abbruch zurückliess, nimmt es als die des Purge und ersetzt sie, ausser ein laufender
-Prozess hält sie noch; ohne Sperre des Betriebssystems, etwa auf einem Dateisystem ohne
-Dateisperren, erkennt es einen laufenden Purge nicht. Jeder Schritt lässt
+Prozess hält sie noch oder sie nennt einen anderen Rechner.
+Einen Purge ohne Sperre des Betriebssystems, etwa einer älteren Version, erkennt es nicht.
+Kann \type{--resume} selbst keine Sperre des Betriebssystems nehmen, ersetzt es nur eine Datei
+in der alten Form, wie sie ein solcher Purge zurücklässt. Jeder Schritt lässt
 sich wiederholen: Ein Objekt, das schon da ist, bleibt, ein Zeiger auf seinem neuen Wert wird
 übersprungen, ein geschriebener Eintrag \type{purge} wird gefunden und nicht noch einmal
 geschrieben, ein Stub ersetzt sich selbst, und ein gelöschtes Objekt ist weg. Ein Zeiger, der

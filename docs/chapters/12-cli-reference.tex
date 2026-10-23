@@ -100,10 +100,16 @@ ihn kennt.
 Nach \type{kill -9} oder einem Absturz bleibt die Datei liegen (oder wenn das Programm Ctrl-C
 nicht abfangen konnte), und der nächste Befehl übernimmt sie: Solange ein Befehl die Sperre hält,
 hält er auch eine Sperre des Betriebssystems auf \type{.stemma/refs.lock.guard}, und die gibt das
-Betriebssystem frei, sobald der Prozess endet. Übernommen wird nur eine Sperre dieses Rechners.
-Eine Sperre eines anderen Rechners oder in einer anderen Form, etwa von einer älteren Version
-oder auf einem Dateisystem ohne Dateisperren, übernimmt kein Befehl; dann nennt die Meldung die
+Betriebssystem frei, sobald der Prozess endet. Übernommen wird nur eine Sperre dieses Rechners,
+und nur, solange kein Purge unterbrochen ist; dann meldet der Befehl den Purge.
+Eine Sperre eines anderen Rechners übernimmt kein Befehl; die Meldung nennt den Rechner und die
 Datei, die zu entfernen ist, falls dort kein Befehl mehr läuft.
+Eine Sperre in einer anderen Form, etwa von einer älteren Version, übernimmt kein anderer Befehl
+als \type{purge --resume} und \type{--abort}.
+Kann ein Befehl die Sperre des Betriebssystems selbst nicht nehmen, etwa auf einem Dateisystem
+ohne Dateisperren, schreibt er die Datei in der alten Form; die Meldung einer Sperre nennt dann
+den Grund.
+Hält derselbe Prozess die Sperre schon, meldet sie das, denn die Sperre ist nicht wiedereintretend.
 
 {\bf Aufräumen.} Wer die Sperre nimmt, entfernt gleich danach, was ein gescheitertes oder
 abgebrochenes Schreiben zurückliess: jede Datei in \type{.stemma/tmp/} und das Verzeichnis
@@ -597,7 +603,7 @@ das Ergebnis bleibt unbekannt. Dasselbe gilt, solange ein anderer Vorgang schrei
 (die Sperre \type{refs.lock} besteht, oder das Log ist beim Lesen gewachsen),
 denn ein Vorgang zwischen Eintrag und Zug sieht aus wie ein Abbruch an dieser Stelle.
 Eine Sperre, die ein abgestürzter Vorgang zurückliess, hält die neuesten Einträge
-unbekannt, bis der nächste Befehl, der schreibt, sie übernimmt.
+unbekannt, bis der nächste schreibende Befehl sie übernimmt oder jemand sie entfernt.
 Der Working-Copy-Commit steht in der Datei
 \type{working-copy}; fehlt sie (jemand hat sie entfernt, oder das Repository
 entstand vor dem Working-Copy-Commit), lässt der Befehl die Ergebnisse seiner
@@ -892,9 +898,12 @@ Rückkehr: Vor ihm ist nichts verloren, nach ihm geht der Purge nur noch vorwär
 {\bf Fortsetzen und Zurücknehmen.} \type{--resume} liest das Journal und wiederholt die
 Schritte ab den neuen Objekten. Eine Sperre, die der Abbruch zurückliess, nimmt es als die
 des Purge und ersetzt sie. Läuft der Purge in einem anderen Terminal noch, hält er die Sperre
-des Betriebssystems, und \type{--resume} bricht mit der Meldung der Sperre ab. Ohne diese
-Sperre, etwa auf einem Dateisystem ohne Dateisperren oder bei einem Purge einer älteren
-Version, erkennt \type{--resume} den laufenden Purge nicht; dann darf es nicht laufen.
+des Betriebssystems, und \type{--resume} bricht mit der Meldung der Sperre ab.
+Nennt die Sperre einen anderen Rechner, ersetzt \type{--resume} sie ebenfalls nicht.
+Einen Purge ohne diese Sperre, etwa einer älteren Version, erkennt \type{--resume} nicht;
+dann darf es nicht laufen.
+Kann \type{--resume} selbst keine Sperre des Betriebssystems nehmen, ersetzt es nur eine Datei
+in der alten Form und meldet sonst die Sperre; dann ist die Datei von Hand zu entfernen.
 Jeder Schritt lässt sich wiederholen, und ein geschriebener Eintrag
 \type{purge} wird gefunden und nicht noch einmal geschrieben. \type{--abort} entfernt die
 Objekte, die der Purge neu geschrieben hat, und das Journal; ein Objekt, das der Speicher

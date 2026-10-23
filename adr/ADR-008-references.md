@@ -65,19 +65,31 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   the process ends in any way, also by `kill -9` or a crash, so a lock file whose guard is free was
   left by a process that ended. The holder writes `stemma-lock 1`, `host <name>`,
   `pid <process ID>`, and `token <token>`, one line each, and a change that holds the guard
-  replaces a file of exactly this form only if it names this host and another process. A lock of
-  the operating system may not reach from one host to another on a file system that two hosts
-  share (NFS without a lock manager, a mount into a virtual machine), so a file of another host
-  stays and is `Locked` with that host; the message says that the file can be removed if no
-  command runs there. A file that names this process stays as well, since another handle of the
-  process may hold it where the system keeps its locks per process (`fcntl` on NFS). A file of
-  another form stays and is `Locked`: an older version of stemma or a person made it. A guard that
-  a running process holds is `Locked` with that process, whose message says to try again and not
-  to remove the file. If the guard cannot be locked for another reason than a holder, or the name
-  of the host is not known, the lock is made without a guard, in the form of an older version, so
-  that no command takes it over; a guard that fails costs the takeover and never the exclusion,
-  which `create new` keeps. The guard and the lock file are taken in this order and released in
-  the other, and only a holder of the guard may replace the file, so two commands cannot take over
+  replaces a file of exactly this form only if it names this host. A lock of the operating system
+  may not reach from one host to another on a file system that two hosts share (NFS without a
+  lock manager, a mount into a virtual machine), so a file of another host stays and is `Locked`
+  with that host; the message says that the file can be removed if no command runs there. The
+  rule assumes that no two hosts that share a repository carry the same name, so the defaults
+  `localhost`, `localhost.localdomain`, and `(none)` count as no name, and on macOS the name is
+  the local host name, which stays when the network changes. A file that names this process is
+  taken over as well: it was left by an earlier process with the same ID, as in a container whose
+  command always runs as the same process. A lock that this process holds is found in its own
+  list first, and is `Locked` as held by this process, since the lock is not re-entrant; the
+  guard is then not opened a second time, because closing a second handle releases the lock of
+  the first where the system keeps its locks per process (`fcntl` on NFS). While the journal of a
+  purge exists, a change does not take the lock over and fails with `PurgePending`; only
+  `--resume` and `--abort` replace it (ADR-014). A file of another form stays and is `Locked`: an
+  older version of stemma, a command without the guard, or a person made it, and so does the
+  empty file that a crash between making and writing the lock leaves; it must be removed by
+  hand. A guard that a running process holds is `Locked` with that process, whose message says
+  to try again and not to remove the file. If the guard cannot be locked for another reason than
+  a holder, or the name of the host is not known, the lock is made without a guard, in the form
+  of an older version, so that no command takes it over; a guard that fails costs the takeover
+  and never the exclusion, which `create_new` keeps. Such a command takes no lock over either,
+  and its message names why the guard could not be taken; only `--resume` and `--abort` replace
+  a file of another form then, which a purge without a guard leaves, as they did before the
+  guard. The guard and the lock file are taken in this order and released in the other, and only
+  a holder of the guard may replace a file of the guarded form, so two commands cannot take over
   one lock at once. A person who removes the guard while a process holds it breaks the rule, as
   one who removes the lock file does.
 - **Safe writes**. A file is written to a new temporary file in `<metadata directory>/tmp/`,
