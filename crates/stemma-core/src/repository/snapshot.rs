@@ -1024,6 +1024,37 @@ mod tests {
     }
 
     #[test]
+    fn every_snapshot_entry_and_the_commit_it_replaced_stay() {
+        // Phase 1 keeps every entry (ADR-011, retention, STEMMA-39): after many snapshots the log
+        // still runs without a gap and without a stub, each snapshot entry names the commit that
+        // it replaced as its old value, and that commit is still in the store.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a.txt", "zero")]);
+        let before = repository.oplog().numbers().unwrap().len();
+        let mut replaced = Vec::new();
+        for round in 1..=5 {
+            replaced.push(repository.refs().working_copy().unwrap());
+            write(&dir, "a.txt", &format!("round {round}"));
+            snapshot(&repository).unwrap();
+        }
+        let entries = repository.oplog().entries().unwrap();
+        let numbers: Vec<_> = entries.iter().map(Entry::number).collect();
+        assert_eq!(numbers, (1..=(before + 5) as u64).collect::<Vec<_>>());
+        assert!(entries.iter().all(|entry| entry.change().is_some()));
+        let snapshots = &entries[before..];
+        for (entry, commit) in snapshots.iter().zip(&replaced) {
+            let change = entry.change().unwrap();
+            assert_eq!(change.operation().as_str(), "snapshot");
+            assert_eq!(change.working_copy().unwrap().before(), Some(commit));
+            // The old value alone makes it a root: the new value is another commit.
+            assert_ne!(change.working_copy().unwrap().after(), Some(commit));
+            assert!(entry.commits().contains(commit), "{commit}");
+            assert!(repository.objects().contains(&commit.object_id()).unwrap());
+        }
+    }
+
+    #[test]
     fn a_change_id_is_not_made_again_by_a_snapshot() {
         let dir = TempDir::new();
         let repository = repository(&dir);

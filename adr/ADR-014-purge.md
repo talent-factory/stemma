@@ -59,8 +59,9 @@ Facts that bound the design:
   ran it, the time, the number of rewritten commits, and the **numbers of the replaced entries**
   (as ranges). The entry carries **no pointer line and no ID**: the audit must not keep what it
   removes, and the new values of the pointers are in the references anyway. The reader accepts
-  an entry of this operation without a pointer (the one exception to ADR-011's "at least one"),
-  and `stemma op restore` refuses it. A purge cannot be restored, which is its purpose. A stub is
+  an entry of this operation without a pointer (the one exception to ADR-011's "at least one";
+  a later `prune` entry of a retention would be the second, ADR-011), and `stemma op restore`
+  refuses it. A purge cannot be restored, which is its purpose. A stub is
   valid only if a `purge` entry lists its number. If the list does not fit into the limit of an
   entry (64 KiB, ADR-011), the purge writes as many `purge` entries as it needs. The stub and the
   pointer-less entry change the format, so they come with the entry encoding `stemma-oplog 2` and
@@ -249,7 +250,8 @@ object, an unreadable log) is left for a person to repair.
   still running in another terminal loses its lock that way; this is advisory, as the lock is,
   and the documentation says not to resume a purge that runs.
 - Retention of snapshot entries (STEMMA-39) is a separate question, but the two share the stub:
-  an entry that retention drops could be replaced by the same stub.
+  ADR-011 decides that a later retention replaces a snapshot entry by the same stub, listed by
+  an entry of its own, and that phase 1 drops none.
 
 ## Open items
 
