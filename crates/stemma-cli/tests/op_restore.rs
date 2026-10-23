@@ -8,7 +8,7 @@ use std::process::Command;
 
 use stemma_core::repository::Repository;
 
-use common::{ok, previous, run, stub_text, write, Dir, ACTOR};
+use common::{ok, run, write, write_stub_entry, Dir, ACTOR};
 
 fn read(dir: &Path, path: &str) -> String {
     fs::read_to_string(dir.join(path)).unwrap()
@@ -583,32 +583,13 @@ fn a_restore_whose_pointers_cannot_move_names_the_way_on_and_the_same_call_finis
     );
 }
 
-/// Writes a stub or a `purge` entry file as a purge would, in the hash chain (ADR-014). A body of
-/// `stub` alone becomes the stub of the entry with the number.
-fn write_entry_2(dir: &Path, number: u64, body: &str) {
-    let text = if body == "stub\n" {
-        stub_text(dir, number)
-    } else {
-        format!(
-            "stemma-oplog 3\nnumber {number}\ntime 1700000000\nactor human daniel\n\
-             previous {}\n{body}",
-            previous(dir, number)
-        )
-    };
-    fs::write(
-        dir.join(".stemma/oplog").join(format!("{number:012}")),
-        text,
-    )
-    .unwrap();
-}
-
 #[test]
 fn a_stub_and_a_purge_cannot_be_restored() {
     let (dir, snapshot) = two_commits();
     let last = *numbers(dir.path()).last().unwrap();
     let purge = last + 1;
-    write_entry_2(dir.path(), snapshot, "stub\n");
-    write_entry_2(
+    write_stub_entry(dir.path(), snapshot, "stub\n");
+    write_stub_entry(
         dir.path(),
         purge,
         &format!("operation purge\ncommits 1\nstubs {snapshot}\n"),

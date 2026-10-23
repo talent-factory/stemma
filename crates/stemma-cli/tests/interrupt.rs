@@ -9,8 +9,11 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::Dir;
+use common::{Dir, ACTOR};
 
+/// An unstarted `stemma` in `dir` without `STEMMA_ACTOR` and with its output discarded. Unlike
+/// `common::stemma`, which runs the process to its end, it returns the `Command`, so that the test
+/// can spawn the process and interrupt it.
 fn stemma(dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
@@ -25,7 +28,7 @@ fn stemma(dir: &Path, args: &[&str]) -> Command {
 #[test]
 fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
     let dir = Dir::new();
-    let status = stemma(dir.path(), &["init", "--actor", "human daniel"])
+    let status = stemma(dir.path(), &["init", "--actor", ACTOR])
         .status()
         .unwrap();
     assert!(status.success());
@@ -38,7 +41,7 @@ fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
         .unwrap();
     }
     let lock = dir.path().join(".stemma").join("refs.lock");
-    let mut child = stemma(dir.path(), &["track", "--actor", "human daniel", "."])
+    let mut child = stemma(dir.path(), &["track", "--actor", ACTOR, "."])
         .spawn()
         .unwrap();
     let start = Instant::now();
@@ -67,7 +70,7 @@ fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
     }
     assert_eq!(status.code(), Some(130), "{status:?}");
     assert!(!lock.exists(), "the interrupted command removed its lock");
-    let status = stemma(dir.path(), &["status", "--actor", "human daniel"])
+    let status = stemma(dir.path(), &["status", "--actor", ACTOR])
         .status()
         .unwrap();
     assert!(status.success(), "the next command runs");

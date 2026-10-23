@@ -1,8 +1,10 @@
 //! Helpers that the process tests of the command line share: a temp directory, a run of the
-//! program, and a repository to run it in.
+//! program, a repository to run it in, and readers and writers of the operation log that it
+//! writes.
 //!
-//! Every test file compiles this module into its own test binary and uses only a part of it, so
-//! the helpers that one binary leaves unused are not dead code.
+//! Every test file compiles this module into its own test binary and uses only a part of it. The
+//! warning for the helpers that one binary leaves unused is therefore allowed; it also hides a
+//! helper that no test uses any more, so remove such a helper by hand.
 #![allow(dead_code)]
 
 use std::fs;
@@ -15,8 +17,11 @@ use stemma_core::oplog::Entry;
 /// The actor that the tests run the commands as, unless a test names another.
 pub const ACTOR: &str = "human daniel";
 
-/// A directory below the system temp directory that is removed on drop. Its name holds the name
-/// of the test binary, the process, and a counter, so that parallel runs do not clash.
+/// A directory below the system temp directory that is removed on drop. Its name holds three
+/// parts, so that no two directories clash: the name of the test binary, which tells the
+/// directories of the test files apart; the process, since several binaries and several runs of
+/// one binary run concurrently; and a counter, since the tests of one binary run in parallel
+/// threads.
 pub struct Dir(PathBuf);
 
 impl Dir {
@@ -51,8 +56,8 @@ pub struct Run {
     pub stderr: String,
 }
 
-/// Runs `stemma` in `dir` without an actor in the environment, and `extra` can change that. A
-/// command that reads a configuration or the home directory has to point those at `dir` here.
+/// Runs `stemma` in `dir` without `STEMMA_ACTOR` in the environment; `extra` can adjust the
+/// command before it runs, for example to set the actor through the environment.
 pub fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
@@ -80,7 +85,7 @@ pub fn ok(dir: &Path, args: &[&str]) -> Run {
     result
 }
 
-/// A repository made by `init`, with the actor `human daniel`.
+/// A repository made by `init`, with the actor [`ACTOR`].
 pub fn repository() -> Dir {
     let dir = Dir::new();
     let result = run(dir.path(), &["init", "--actor", ACTOR]);
@@ -93,6 +98,12 @@ pub fn write(dir: &Path, path: &str, content: &str) {
     let full = dir.join(path);
     fs::create_dir_all(full.parent().unwrap()).unwrap();
     fs::write(full, content).unwrap();
+}
+
+/// Tracks `path` with the actor [`ACTOR`] and asserts that it succeeds.
+pub fn track_ok(dir: &Path, path: &str) {
+    let result = run(dir, &["track", "--actor", ACTOR, path]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
 }
 
 /// The entries of `op log`, newest first, one JSON object each.
@@ -128,4 +139,19 @@ pub fn stub_text(dir: &Path, number: u64) -> String {
     let entry = Entry::parse(text.as_bytes()).unwrap();
     let head: String = text.split_inclusive('\n').take(5).collect();
     format!("{head}stub {}\n", entry.body_hash().unwrap())
+}
+
+/// Writes a stub or a `purge` entry file as a purge would, in the hash chain (ADR-014). A body of
+/// `stub` alone becomes the stub of the entry with the number.
+pub fn write_stub_entry(dir: &Path, number: u64, body: &str) {
+    let text = if body == "stub\n" {
+        stub_text(dir, number)
+    } else {
+        format!(
+            "stemma-oplog 3\nnumber {number}\ntime 1700000000\nactor {ACTOR}\n\
+             previous {}\n{body}",
+            previous(dir, number)
+        )
+    };
+    fs::write(entry_file(dir, number), text).unwrap();
 }

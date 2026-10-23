@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{previous, repository, run, stub_text, Dir};
+use common::{entry_file, previous, repository, run, write_stub_entry, Dir};
 
 const A: &str = "b3:1111111111111111111111111111111111111111111111111111111111111111";
 const C: &str = "b3:3333333333333333333333333333333333333333333333333333333333333333";
@@ -24,11 +24,7 @@ fn write_entry(dir: &Path, number: u64, body: &str) {
         "stemma-oplog 3\nnumber {number}\n{time}\n{actor}\nprevious {}\n{rest}",
         previous(dir, number)
     );
-    fs::write(
-        dir.join(".stemma/oplog").join(format!("{number:012}")),
-        text,
-    )
-    .unwrap();
+    fs::write(entry_file(dir, number), text).unwrap();
 }
 
 fn snapshot(dir: &Path, number: u64, old: &str, new: &str) {
@@ -540,25 +536,6 @@ fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_leaves_it_unkn
     );
 }
 
-/// Writes a stub or a `purge` entry file as a purge would, in the hash chain (ADR-014). A body of
-/// `stub` alone becomes the stub of the entry with the number.
-fn write_entry_2(dir: &Path, number: u64, body: &str) {
-    let text = if body == "stub\n" {
-        stub_text(dir, number)
-    } else {
-        format!(
-            "stemma-oplog 3\nnumber {number}\ntime 1700000000\nactor human daniel\n\
-             previous {}\n{body}",
-            previous(dir, number)
-        )
-    };
-    fs::write(
-        dir.join(".stemma/oplog").join(format!("{number:012}")),
-        text,
-    )
-    .unwrap();
-}
-
 #[test]
 fn a_stub_and_a_purge_are_shown_without_ids() {
     let dir = repository();
@@ -568,9 +545,9 @@ fn a_stub_and_a_purge_are_shown_without_ids() {
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     snapshot(dir.path(), 3, A, B);
-    write_entry_2(dir.path(), 2, "stub\n");
-    write_entry_2(dir.path(), 3, "stub\n");
-    write_entry_2(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
+    write_stub_entry(dir.path(), 2, "stub\n");
+    write_stub_entry(dir.path(), 3, "stub\n");
+    write_stub_entry(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
 
     let result = run(dir.path(), &["op", "log", "-n", "3"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -606,9 +583,9 @@ fn a_purge_with_several_ranges_lists_each() {
     snapshot(dir.path(), 4, B, A);
     snapshot(dir.path(), 5, A, B);
     for number in [2, 3, 5] {
-        write_entry_2(dir.path(), number, "stub\n");
+        write_stub_entry(dir.path(), number, "stub\n");
     }
-    write_entry_2(dir.path(), 6, "operation purge\ncommits 3\nstubs 2-3 5\n");
+    write_stub_entry(dir.path(), 6, "operation purge\ncommits 3\nstubs 2-3 5\n");
 
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -633,7 +610,7 @@ fn a_stub_that_no_purge_lists_is_reported() {
         .trim()
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
-    write_entry_2(dir.path(), 2, "stub\n");
+    write_stub_entry(dir.path(), 2, "stub\n");
     let result = run(dir.path(), &["op", "log"]);
     assert_eq!(result.code, 1);
     assert!(
@@ -654,8 +631,8 @@ fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     snapshot(dir.path(), 3, A, B);
-    write_entry_2(dir.path(), 2, "stub\n");
-    write_entry_2(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
+    write_stub_entry(dir.path(), 2, "stub\n");
+    write_stub_entry(dir.path(), 4, "operation purge\ncommits 2\nstubs 2-3\n");
 
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -694,8 +671,8 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
     let dir = repository();
     branch_move(dir.path(), 2, "-", A);
     branch_move(dir.path(), 3, A, C);
-    write_entry_2(dir.path(), 3, "stub\n");
-    write_entry_2(dir.path(), 4, "operation purge\ncommits 1\nstubs 3\n");
+    write_stub_entry(dir.path(), 3, "stub\n");
+    write_stub_entry(dir.path(), 4, "operation purge\ncommits 1\nstubs 3\n");
     branch_move(dir.path(), 5, A, B);
     set_branch(dir.path(), B);
 
