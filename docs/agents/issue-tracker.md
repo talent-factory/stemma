@@ -4,19 +4,38 @@ Issues and specs for this repo live in the Plane project **Stemma** (identifier 
 
 - Web UI: https://plane.talent-factory.ch/tf/projects/d988f244-ae6e-492d-a61e-c335c6c87de9/issues
 - Project id: `d988f244-ae6e-492d-a61e-c335c6c87de9` (pass it as `project_id` to every call)
-- Tools: `mcp__plane-tf__workitem`, `label`, `state`, `module`, `workitem_relation`. Load them through `ToolSearch` first if they are deferred.
+- Tools: `mcp__plane-tf__workitem`, `label`, `state`, `cycle`, `module`, `workitem_relation`.
+  Load them through `ToolSearch` first if they are deferred.
 
 ## Conventions
 
 - **Create an issue**: `workitem create` with `project_id`, `name`, and `description_html` (or `description_stripped` for plain text). Set `priority` (`urgent`, `high`, `medium`, `low`, `none`) when it is known.
 - **Read an issue**: `workitem retrieve_by_identifier` with `workitem_identifier="STEMMA-12"`. Comments are not part of that result; read them through the web UI if a skill needs them.
-- **List issues**: `workitem list` with `project_id` and an optional `pql` filter (call `get_pql_reference` before composing a complex query).
+- **List issues**: `workitem list` with `project_id`.
+  This Plane edition rejects `pql` filters, so filter the result on the client side
+  (for example by `state` with `expand=state`).
+  The issues of a phase come from `cycle list_workitems` (see below).
 - **Update an issue**: `workitem update` with `project_id`, `workitem_id` (the UUID, not `STEMMA-12`) and only the fields that change.
 - **Apply / remove labels**: `workitem manage_label` with `add_label_id` / `remove_label_id`. Labels are referenced by UUID: resolve a name with `label list` first. Create a missing label with `label create`.
 - **Change state**: `workitem update` with `state` set to a state UUID from `state list`. States are Backlog (default), Todo, In Progress, Done, Cancelled.
 - **Close**: set the state to Done (finished) or Cancelled (will not be actioned). There is no separate close action.
 
-Work item types are disabled in this project, so there are no epics. Group related work with parent and child items (`parent`) or with modules.
+Work item types are disabled in this project, so there are no epics.
+Group related work with parent and child items (`parent`) or with modules.
+
+## Phases
+
+Each phase of the roadmap is a Plane cycle, such as `Phase 1: Lokaler Kern`.
+Phases are not labels: the former `phase-1` label was replaced by its cycle.
+
+- **Find the cycle**: `cycle list` and match the name; pass its `id` as `cycle_id`.
+- **Issues of a phase**: `cycle list_workitems` with `project_id` and `cycle_id`.
+- **Assign an issue to a phase**: `cycle manage_workitems` with `add_ids` (work item UUIDs).
+  An issue belongs to at most one cycle, so one issue cannot sit in two phases.
+- **Close a phase**: `cycle complete`, then `cycle transfer_workitems` moves the unfinished
+  issues into the cycle of the next phase. Completing needs the start and end date of the cycle.
+- The labels `phase-2` to `phase-6` still mark later phases until their cycles exist;
+  replace each label by its cycle when that phase starts.
 
 ## Pull requests as a triage surface
 
