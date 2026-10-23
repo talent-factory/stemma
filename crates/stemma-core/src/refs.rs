@@ -633,13 +633,17 @@ pub trait RefStore: crate::store::sealed::Sealed {
     fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError>;
 
     /// Returns all branches with their commits, sorted by name (by the bytes of the name, see
-    /// [`BranchName`]). Entries whose name starts with `.` are skipped: no branch name can, and
-    /// file managers and editors leave such files, for example `.DS_Store`.
+    /// [`BranchName`]). Entries whose name starts with `.` are skipped, and for a directory all
+    /// that is below it as well: no component of a branch name can start with a dot, and file
+    /// managers and editors leave such files, for example `.DS_Store`. The listing reads without the lock, so
+    /// a branch that another change deletes while it runs may be missing from it; an entry that
+    /// is gone when it is read is no error.
     ///
     /// # Errors
     ///
     /// Returns [`RefError::Corrupt`] for a file that is not a valid reference, also one whose name
-    /// is not a valid branch name, and [`RefError::Io`] if the storage fails.
+    /// is not a valid branch name such as `main~`, and for a directory with such a name; and
+    /// [`RefError::Io`] if the storage fails.
     fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError>;
 
     /// Moves a branch to `new`, or creates it, if it is still at `expected` (`None` for a branch
@@ -835,9 +839,13 @@ impl FsRefStore {
     /// through a file.
     fn read_reference(&self, path: &Path) -> Result<Option<Vec<u8>>, RefError> {
         match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.is_file() => fs::read(path)
-                .map(Some)
-                .map_err(io_error("read the reference", path)),
+            // A reader without the lock may see another change delete the file between the two
+            // calls; it is then gone, as if the first call had found nothing.
+            Ok(metadata) if metadata.is_file() => match fs::read(path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(io_error("read the reference", path)(error)),
+            },
             Ok(_) => Err(RefError::Io {
                 operation: "read the reference",
                 path: path.to_path_buf(),
@@ -846,6 +854,18 @@ impl FsRefStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(io_error("inspect the reference", path)(error)),
         }
+    }
+
+    /// The commit of a branch file that a lookup or a listing found, or `None` if the file is gone
+    /// since: a reader without the lock may see another change delete the branch in between, and
+    /// the branch then does not exist.
+    fn listed_branch(&self, path: PathBuf) -> Result<Option<CommitId>, RefError> {
+        let Some(bytes) = self.read_reference(&path)? else {
+            return Ok(None);
+        };
+        parse_branch(&bytes)
+            .map(Some)
+            .map_err(|source| RefError::Corrupt { path, source })
     }
 
     /// Whether a writer holds the lock of the references now, so it may be between its entry in the
@@ -1144,19 +1164,12 @@ impl FsRefStore {
                 in_the_way: Some((with, kind)),
                 ..Current::default()
             }),
-            Lookup::Branch(path) => {
-                let bytes = self.read_reference(&path)?.ok_or_else(|| RefError::Io {
-                    operation: "read the reference",
-                    path: path.clone(),
-                    source: io::Error::new(io::ErrorKind::NotFound, "it is gone"),
-                })?;
-                parse_branch(&bytes)
-                    .map(|commit| Current {
-                        commit: Some(commit),
-                        ..Current::default()
-                    })
-                    .map_err(|source| RefError::Corrupt { path, source })
-            }
+            // A reader without the lock may find the file gone, deleted by a change since the
+            // lookup: the branch does not exist then.
+            Lookup::Branch(path) => Ok(Current {
+                commit: self.listed_branch(path)?,
+                ..Current::default()
+            }),
         }
     }
 
@@ -1199,19 +1212,32 @@ struct Current {
     empty_directory: Option<PathBuf>,
 }
 
-/// Whether a file, or anything but a directory, is below the directory at any depth.
+/// Whether a file, or anything but a directory, is below the directory at any depth. A caller
+/// that finds `false` may remove the directory with all that is in it, so every doubt is `true`.
+/// The directory itself may be gone: a lookup without the lock may race with a change that deletes
+/// the last branch below it, and nothing is below it then. A directory below it that was listed
+/// and cannot be opened, or an entry whose kind cannot be inspected because it is gone, counts as
+/// a file, since it was there a moment ago and may still hold one.
 fn has_files_below(dir: &Path) -> Result<bool, RefError> {
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in fs::read_dir(&dir).map_err(io_error("list the branches in", &dir))? {
+    let Some(entries) = list_directory(dir)? else {
+        return Ok(false);
+    };
+    let mut pending = vec![(dir.to_path_buf(), entries)];
+    while let Some((dir, entries)) = pending.pop() {
+        for entry in entries {
             let entry = entry.map_err(io_error("list the branches in", &dir))?;
-            let kind = entry
-                .file_type()
-                .map_err(io_error("inspect the branch", &entry.path()))?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else {
+            let path = entry.path();
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+                Err(error) => return Err(io_error("inspect the branch", &path)(error)),
+            };
+            if !kind.is_dir() {
                 return Ok(true);
+            }
+            match list_directory(&path)? {
+                Some(below) => pending.push((path, below)),
+                None => return Ok(true),
             }
         }
     }
@@ -1230,6 +1256,18 @@ fn remove_empty_directories(dir: &Path, top: &Path) {
             Some(parent) => dir = parent,
             None => return,
         }
+    }
+}
+
+/// The entries of a directory of branches, or `None` if the directory is gone: a listing runs
+/// without the lock, and a change that deletes the last branch below a directory removes the
+/// directory (see [`FsRefStore::delete_branch_file`]), so a directory that was listed a moment ago
+/// may be gone.
+fn list_directory(dir: &Path) -> Result<Option<fs::ReadDir>, RefError> {
+    match fs::read_dir(dir) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error("list the branches in", dir)(error)),
     }
 }
 
@@ -1945,16 +1983,11 @@ impl RefStore for FsRefStore {
         if !self.heads_exist()? {
             return Ok(Vec::new());
         }
-        let heads = self.heads_dir();
         let mut found = Vec::new();
-        let mut pending = vec![(heads.clone(), String::new())];
+        let mut pending = vec![(self.heads_dir(), String::new())];
         while let Some((dir, prefix)) = pending.pop() {
-            let entries = match fs::read_dir(&dir) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == io::ErrorKind::NotFound && dir == heads => {
-                    return Ok(found)
-                }
-                Err(error) => return Err(io_error("list the branches in", &dir)(error)),
+            let Some(entries) = list_directory(&dir)? else {
+                continue;
             };
             for entry in entries {
                 let entry = entry.map_err(io_error("list the branches in", &dir))?;
@@ -1965,26 +1998,26 @@ impl RefStore for FsRefStore {
                 if file_name.starts_with('.') {
                     continue;
                 }
-                let name = join_name(&prefix, &file_name);
-                let kind = entry
-                    .file_type()
-                    .map_err(io_error("inspect the branch", &path))?;
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(io_error("inspect the branch", &path)(error)),
+                };
+                // A directory holds the start of branch names, so its name follows the same rule:
+                // one that does not is damage, and it is not skipped with all that is below it.
+                let name = BranchName::new(join_name(&prefix, &file_name)).map_err(|error| {
+                    RefError::Corrupt {
+                        path: path.clone(),
+                        source: RefParseError::InvalidBranchName(error),
+                    }
+                })?;
                 if kind.is_dir() {
-                    pending.push((path, name));
+                    pending.push((path, name.as_str().to_owned()));
                     continue;
                 }
-                let branch = BranchName::new(name).map_err(|error| RefError::Corrupt {
-                    path: path.clone(),
-                    source: RefParseError::InvalidBranchName(error),
-                })?;
-                let bytes = self.read_reference(&path)?.ok_or_else(|| RefError::Io {
-                    operation: "read the reference",
-                    path: path.clone(),
-                    source: io::Error::new(io::ErrorKind::NotFound, "it is gone"),
-                })?;
-                let commit =
-                    parse_branch(&bytes).map_err(|source| RefError::Corrupt { path, source })?;
-                found.push((branch, commit));
+                if let Some(commit) = self.listed_branch(path)? {
+                    found.push((name, commit));
+                }
             }
         }
         found.sort();
@@ -3167,9 +3200,173 @@ mod tests {
         assert!(matches!(
             refs.branches(),
             Err(RefError::Corrupt {
+                path,
                 source: RefParseError::InvalidBranchName(_),
-                ..
-            })
+            }) if path == heads.join("not~valid")
+        ));
+    }
+
+    #[test]
+    fn the_rules_for_names_hold_below_a_directory_and_for_a_directory() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("feat/x"), None, id, &objects)
+            .unwrap();
+        let heads = dir.path().join("refs/heads");
+        fs::write(heads.join("feat/.DS_Store"), [0u8]).unwrap();
+        assert_eq!(refs.branches().unwrap(), vec![(name("feat/x"), id)]);
+        // A directory whose name is not the start of a branch name is damage, empty or not: it is
+        // not skipped with what is below it.
+        for stray in ["foo~", "feat/x-~"] {
+            fs::create_dir(heads.join(stray)).unwrap();
+            assert!(
+                matches!(
+                    refs.branches(),
+                    Err(RefError::Corrupt {
+                        path,
+                        source: RefParseError::InvalidBranchName(_),
+                    }) if path == heads.join(stray)
+                ),
+                "{stray}"
+            );
+            fs::remove_dir(heads.join(stray)).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_below_the_branches_is_an_error_and_not_a_branch() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        let heads = dir.path().join("refs/heads");
+        std::os::unix::fs::symlink(heads.join("main"), heads.join("alias")).unwrap();
+        let error = refs.branches().unwrap_err();
+        assert!(
+            matches!(&error, RefError::Io { path, .. } if *path == heads.join("alias")),
+            "{error}"
+        );
+    }
+
+    /// Fails unless a file without permissions cannot be read, as for a user who is not root.
+    #[cfg(unix)]
+    fn assert_permissions_bind(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = dir.join("probe");
+        fs::create_dir(&probe).unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).unwrap();
+        let binds = fs::read_dir(&probe).is_err();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir(&probe).unwrap();
+        assert!(
+            binds,
+            "permissions do not bind this user; do not run the tests as root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_branch_or_a_directory_that_cannot_be_read_is_an_error_and_not_an_absence() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, objects, refs) = setup();
+        assert_permissions_bind(dir.path());
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("a/b"), None, id, &objects)
+            .unwrap();
+        let mode = |path: &Path, mode| {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let file = dir.path().join("refs/heads/a/b");
+        mode(&file, 0o000);
+        let listed = refs.branches();
+        let looked_up = refs.branch(&name("a/b"));
+        mode(&file, 0o644);
+        assert!(
+            matches!(&listed, Err(RefError::Io { path, .. }) if *path == file),
+            "{listed:?}"
+        );
+        assert!(
+            matches!(looked_up, Err(RefError::Io { .. })),
+            "{looked_up:?}"
+        );
+        // A directory: the listing, and the lookup of a name that the directory holds.
+        let sub = dir.path().join("refs/heads/a");
+        mode(&sub, 0o000);
+        let listed = refs.branches();
+        let looked_up = refs.branch(&name("a"));
+        mode(&sub, 0o755);
+        assert!(matches!(listed, Err(RefError::Io { .. })), "{listed:?}");
+        assert!(
+            matches!(looked_up, Err(RefError::Io { .. })),
+            "{looked_up:?}"
+        );
+    }
+
+    #[test]
+    fn a_listing_while_branches_come_and_go_does_not_fail() {
+        // A writer creates `a/b` and deletes it with its directory, again and again; a reader
+        // without the lock lists the branches meanwhile and sees each one or not, but no error.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..300 {
+                    refs.update_branch(&name("a/b"), None, id, &objects)
+                        .unwrap();
+                    refs.delete_branch_file(&name("a/b")).unwrap();
+                }
+                done.store(true, Ordering::SeqCst);
+            });
+            while !done.load(Ordering::SeqCst) {
+                let listed = refs.branches().unwrap();
+                assert!(listed.contains(&(name("main"), id)), "{listed:?}");
+                assert!(
+                    listed
+                        .iter()
+                        .all(|(branch, _)| ["main", "a/b"].contains(&branch.as_str())),
+                    "{listed:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn an_entry_that_is_gone_after_it_was_listed_is_no_branch() {
+        // A listing runs without the lock, so a change may delete a branch, or the last branch
+        // below a directory and with it the directory, between the listing and the read.
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let heads = dir.path().join("refs/heads");
+        assert!(list_directory(&heads.join("gone")).unwrap().is_none());
+        assert_eq!(refs.listed_branch(heads.join("gone")).unwrap(), None);
+        assert!(!has_files_below(&heads.join("gone")).unwrap());
+        // What is there is read as before, and damage is still damage.
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert!(list_directory(&heads).unwrap().is_some());
+        assert_eq!(refs.listed_branch(heads.join("main")).unwrap(), Some(id));
+        fs::write(heads.join("main"), id.to_string()).unwrap();
+        assert!(matches!(
+            refs.listed_branch(heads.join("main")),
+            Err(RefError::Corrupt { .. })
+        ));
+        // A file where a directory of branches should be is no absence. Windows may report such a
+        // path as not found, but a listing reaches it only through a race, as it inspects the
+        // kind of each entry first.
+        #[cfg(unix)]
+        assert!(matches!(
+            list_directory(&heads.join("main")),
+            Err(RefError::Io { .. })
+        ));
+        fs::create_dir(heads.join("x")).unwrap();
+        assert!(matches!(
+            refs.listed_branch(heads.join("x")),
+            Err(RefError::Io { .. })
         ));
     }
 
