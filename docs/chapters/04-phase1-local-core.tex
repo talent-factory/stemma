@@ -71,6 +71,10 @@ ihrem Fehler.
 Die Prüfung liest ohne Sperre. Einen Zeiger, der durchfällt, liest sie deshalb ein zweites
 Mal und prüft ihn an seinem neuen Commit, falls er sich bewegt hat. Ein Purge, der während
 der Prüfung einen Zeiger versetzt und den alten Commit löscht, erzeugt so keinen Befund.
+Ein Branch, den eine andere Änderung während der Prüfung löscht, ist ebenfalls kein Befund
+und kein Fehler. Eine fremde Datei unter \type{refs/heads} bleibt dagegen ein Schaden
+und beendet die Prüfung, etwa die Sicherung \type{main~} eines Editors,
+deren Name kein Branch-Name ist; die Meldung nennt ihren Pfad.
 Besteht das Journal eines Purge vor oder nach der Prüfung, lehnt sie ab.
 
 Ein Snapshot (\type{Repository::snapshot}, ADR-010) hält den Stand der Arbeitskopie fest.
