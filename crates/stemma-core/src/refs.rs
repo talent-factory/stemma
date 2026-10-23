@@ -1433,28 +1433,32 @@ impl FsRefStore {
     /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
     /// working-copy commit, and every branch. A write checks the commit already (ADR-008), so a
     /// problem here comes from outside the module: an object that was removed or damaged, or a
-    /// file that was edited by hand. HEAD that names a branch is not checked itself; the branch
-    /// is, if it exists, and a branch that does not exist yet is no problem, as in a new
+    /// reference file that was edited by hand. HEAD that names a branch is not checked itself; the
+    /// branch is, if it exists, and a branch that does not exist yet is no problem, as in a new
     /// repository.
     ///
     /// The result has one error for each reference that fails, in the order HEAD, the
-    /// working-copy commit, and the branches by name; it is empty if all hold. A commit that is
-    /// missing is [`VerifyError::Missing`]; one that is another kind of object
-    /// ([`StoreError::KindMismatch`]) or is damaged ([`StoreError::Corrupt`]) is
-    /// [`VerifyError::Store`]. Each commit is read and hashed completely, but it is not parsed,
-    /// and its tree and parents are not followed. The references are read without the lock, so
-    /// the result holds at the time of each read.
+    /// working-copy commit, and the branches in the byte order of their names; it is empty if all
+    /// hold. A commit that is missing is [`VerifyError::Missing`]; one that is another kind of
+    /// object ([`StoreError::KindMismatch`]), is damaged ([`StoreError::Corrupt`]), or cannot be
+    /// read ([`StoreError::Io`]) is [`VerifyError::Store`]. Each commit is read and hashed
+    /// completely, but it is not parsed, and its tree and parents are not followed.
+    ///
+    /// The references are read without the lock, so a change can move a pointer while the check
+    /// runs. A pointer that fails is therefore read again after its commit was looked up: one that
+    /// has moved is checked at its new commit, and one that is gone is no failure. A change that
+    /// moves a pointer and removes its old commit meanwhile, as a purge does (ADR-014), thus
+    /// reports nothing, and each failure holds at the time of the second read.
     ///
     /// # Errors
     ///
-    /// Returns [`RefError::PurgePending`] if the journal of a purge exists, since a pointer may be
-    /// between its old and its new commit then (ADR-014). Returns the errors of reading the
-    /// references, as [`head`](RefStore::head), [`working_copy`](Self::working_copy), and
-    /// [`branches`](RefStore::branches) do: a missing HEAD or working-copy file, or a file that is
-    /// not in canonical form, is a problem of the references themselves. All references are read
-    /// before the first commit is checked, so such an error comes without any failure of a
-    /// commit. A failure of the storage of `objects` is [`RefError::Io`] and stops the check as
-    /// well: it is no problem of one reference, and it would be the same for each.
+    /// Returns [`RefError::PurgePending`] if the journal of a purge exists, before the check and
+    /// after it, since a pointer may be between its old and its new commit then (ADR-014).
+    /// Returns the errors of reading the references, as [`head`](RefStore::head),
+    /// [`working_copy`](Self::working_copy), and [`branches`](RefStore::branches) do: a missing
+    /// HEAD or working-copy file, or a reference file that is not in canonical form, is a problem
+    /// of the references themselves. All references are read before the first commit is looked
+    /// up, so such an error comes without any failure of a commit.
     pub fn verify(&self, objects: &dyn ObjectStore) -> Result<Vec<RefVerifyError>, RefError> {
         self.require_root()?;
         self.refuse_pending_purge()?;
@@ -1468,16 +1472,42 @@ impl FsRefStore {
         }
         let mut errors = Vec::new();
         for (pointer, commit) in pointers {
-            let id = commit.object_id();
-            let found = match objects.resolve_commit(&id) {
-                Err(error @ StoreError::Io { .. }) => return Err(from_store(error)),
-                other => other.map(|found| found.is_some()),
+            if Self::check_commit(&pointer, commit, objects).is_ok() {
+                continue;
+            }
+            let Some(now) = self.commit_of(&pointer)? else {
+                continue;
             };
-            if let Err(error) = VerifyError::check(|| pointer, id, found) {
+            if let Err(error) = Self::check_commit(&pointer, now, objects) {
                 errors.push(error);
             }
         }
+        self.refuse_pending_purge()?;
         Ok(errors)
+    }
+
+    /// Checks that `objects` has `commit`, the commit of `pointer`.
+    fn check_commit(
+        pointer: &Pointer,
+        commit: CommitId,
+        objects: &dyn ObjectStore,
+    ) -> Result<(), RefVerifyError> {
+        let id = commit.object_id();
+        let found = objects.resolve_commit(&id).map(|found| found.is_some());
+        VerifyError::check(|| pointer.clone(), id, found)
+    }
+
+    /// The commit that a pointer names now: `None` for HEAD that names a branch and for a branch
+    /// that does not exist.
+    fn commit_of(&self, pointer: &Pointer) -> Result<Option<CommitId>, RefError> {
+        match pointer {
+            Pointer::Head => Ok(match self.head()? {
+                Head::Detached(commit) => Some(commit),
+                Head::Branch(_) => None,
+            }),
+            Pointer::WorkingCopy => self.working_copy().map(Some),
+            Pointer::Branch(name) => self.branch(name),
+        }
     }
 
     /// Moves the working-copy commit from `expected` to `new`, and runs `step` after the checks and
@@ -3760,7 +3790,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_of_the_storage_stops_the_check_with_an_io_error() {
+    fn a_failure_of_the_storage_is_a_store_error_of_each_reference() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
         write_reference(&dir, "HEAD", "branch main\n");
@@ -3768,17 +3798,165 @@ mod tests {
         refs.update_branch(&name("main"), None, id, &objects)
             .unwrap();
         let faulty = FaultyStore::new(dir.store(), true, false);
-        let error = refs.verify(&faulty).unwrap_err();
-        assert!(matches!(&error, RefError::Io { .. }), "{error}");
-        assert_eq!(error.to_string().matches(DISK_MESSAGE).count(), 1);
+        let errors = refs.verify(&faulty).unwrap();
+        let places: Vec<&Pointer> = errors.iter().map(VerifyError::at).collect();
+        assert_eq!(
+            places,
+            [&Pointer::WorkingCopy, &Pointer::Branch(name("main"))]
+        );
+        for error in &errors {
+            assert!(
+                matches!(error.store_error(), Some(StoreError::Io { .. })),
+                "{error}"
+            );
+            assert_eq!(error.to_string().matches(DISK_MESSAGE).count(), 1);
+        }
     }
 
     #[test]
-    fn a_pending_purge_refuses_the_check() {
+    fn the_references_are_read_before_the_store_is_asked() {
+        let (dir, objects, refs) = setup();
+        let kept = commit(&objects, "kept");
+        write_reference(&dir, "HEAD", &format!("commit {kept}\n"));
+        write_reference(&dir, "working-copy", &format!("{kept}\n"));
+        write_reference(&dir, "refs/heads/main", &kept.to_string());
+        let faulty = FaultyStore::new(dir.store(), true, false);
+        assert!(matches!(
+            refs.verify(&faulty),
+            Err(RefError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn the_check_does_not_take_the_lock() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
         write_reference(&dir, "HEAD", "branch main\n");
         write_reference(&dir, "working-copy", &format!("{id}\n"));
+        fs::write(dir.path().join("refs.lock"), b"held by a writer").unwrap();
+        assert!(refs.verify(&objects).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_commit_is_hashed_and_not_parsed() {
+        let (dir, objects, refs) = setup();
+        let raw = CommitId::new(objects.put_raw(Kind::Commit, b"tree x\n").unwrap());
+        write_reference(&dir, "HEAD", "branch main\n");
+        write_reference(&dir, "working-copy", &format!("{raw}\n"));
+        assert!(refs.verify(&objects).unwrap().is_empty());
+    }
+
+    /// A store that runs a hook before its first read, so that a test can change the references
+    /// while a check runs.
+    struct OnFirstRead {
+        inner: FsObjectStore,
+        hook: std::cell::RefCell<Option<Box<dyn FnOnce()>>>,
+    }
+
+    impl OnFirstRead {
+        fn new(inner: FsObjectStore, hook: impl FnOnce() + 'static) -> Self {
+            Self {
+                inner,
+                hook: std::cell::RefCell::new(Some(Box::new(hook))),
+            }
+        }
+    }
+
+    impl crate::store::sealed::Sealed for OnFirstRead {}
+
+    impl ObjectStore for OnFirstRead {
+        fn put_blob(&self, blob: &Blob) -> Result<crate::object::BlobId, StoreError> {
+            self.inner.put_blob(blob)
+        }
+
+        fn put_tree(&self, tree: &Tree) -> Result<crate::object::TreeId, StoreError> {
+            self.inner.put_tree(tree)
+        }
+
+        fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError> {
+            self.inner.put_commit(commit)
+        }
+
+        fn get(&self, id: &ObjectId) -> Result<Option<crate::store::RawObject>, StoreError> {
+            let hook = self.hook.borrow_mut().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+            self.inner.get(id)
+        }
+
+        fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
+            self.inner.contains(id)
+        }
+    }
+
+    /// A repository in which the branch `main` names a commit that is gone, and the working copy
+    /// one that is kept. Returns the kept commit and a second commit that is gone.
+    fn with_a_failing_branch(dir: &TempDir, objects: &FsObjectStore) -> (CommitId, CommitId) {
+        let kept = commit(objects, "kept");
+        let removed = commit(objects, "removed");
+        let gone = commit(objects, "gone");
+        for id in [removed, gone] {
+            fs::remove_file(objects.object_path(&id.object_id())).unwrap();
+        }
+        write_reference(dir, "HEAD", "branch main\n");
+        write_reference(dir, "working-copy", &format!("{kept}\n"));
+        write_reference(dir, "refs/heads/main", &format!("{removed}\n"));
+        (kept, gone)
+    }
+
+    #[test]
+    fn a_pointer_that_moves_during_the_check_is_checked_at_its_new_commit() {
+        // As a purge does: the branch moves to a new commit, and its old commit is removed.
+        let (dir, objects, refs) = setup();
+        let (kept, _) = with_a_failing_branch(&dir, &objects);
+        let moved = dir.path().join("refs/heads/main");
+        let store = OnFirstRead::new(dir.store(), move || {
+            fs::write(moved, format!("{kept}\n")).unwrap();
+        });
+        assert!(refs.verify(&store).unwrap().is_empty());
+
+        // A move to a commit that is gone as well is a failure at the new commit.
+        let (dir, objects, refs) = setup();
+        let (_, gone) = with_a_failing_branch(&dir, &objects);
+        let moved = dir.path().join("refs/heads/main");
+        let store = OnFirstRead::new(dir.store(), move || {
+            fs::write(moved, format!("{gone}\n")).unwrap();
+        });
+        let errors = refs.verify(&store).unwrap();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            &errors[0],
+            VerifyError::Missing { at: Pointer::Branch(branch), id }
+                if *branch == name("main") && *id == gone.object_id()
+        ));
+    }
+
+    #[test]
+    fn a_pointer_that_is_gone_after_the_check_is_no_failure() {
+        let (dir, objects, refs) = setup();
+        with_a_failing_branch(&dir, &objects);
+        let path = dir.path().join("refs/heads/main");
+        let store = OnFirstRead::new(dir.store(), move || fs::remove_file(path).unwrap());
+        assert!(refs.verify(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_purge_that_starts_during_the_check_refuses_it() {
+        let (dir, objects, refs) = setup();
+        with_a_failing_branch(&dir, &objects);
+        let journal = dir.path().join(PURGE_JOURNAL);
+        let store = OnFirstRead::new(dir.store(), move || fs::write(journal, b"").unwrap());
+        assert!(matches!(
+            refs.verify(&store),
+            Err(RefError::PurgePending { .. })
+        ));
+    }
+
+    #[test]
+    fn a_pending_purge_refuses_the_check() {
+        // Before any reference is read: there is no HEAD, and the journal is what is reported.
+        let (dir, objects, refs) = setup();
         fs::write(dir.path().join(PURGE_JOURNAL), b"").unwrap();
         assert!(matches!(
             refs.verify(&objects),

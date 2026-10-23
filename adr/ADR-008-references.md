@@ -95,14 +95,18 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   Windows.
 - `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
   HEAD, the working-copy commit, and every branch name a commit that the store has. A write
-  checks this already, so a failure means that an object was removed or damaged, or that a file
-  was edited by hand. The result lists every reference that fails, as a `VerifyError` with the
-  pointer as its place: a missing commit, another kind of object, or a damaged one. A reference
-  that cannot be read at all (missing, not canonical) stops the check with its `RefError`, and so
-  does a failure of the storage of the objects (`Io`), which would be the same for every
-  reference. While the journal of a purge exists, the check refuses with `PurgePending`, as a
-  pointer may be between two commits then (ADR-014). HEAD that names a branch which does not
-  exist yet is no failure.
+  checks this already, so a failure means that an object was removed or damaged, or that a
+  reference file was edited by hand. The check is shallow: the commit is read and its hash
+  checked, but it is not parsed, and its tree and parents are not followed. The result lists
+  every reference that fails, as a `VerifyError` with the pointer as its place: a missing
+  commit, another kind of object, a damaged one, or one that cannot be read. A failure of the
+  storage is listed for each reference as well, as for a tree, because it may concern one
+  object only. A pointer that fails is read again after the lookup and checked at its new
+  commit if it moved, so a purge that moves a pointer and removes its old commit meanwhile
+  reports nothing. A reference that cannot be read itself (a missing HEAD or working-copy
+  file, a file not in canonical form) stops the check with its `RefError`. While the journal
+  of a purge exists, before or after the check, it refuses with `PurgePending` (ADR-014). HEAD
+  that names a branch which does not exist yet is no failure.
 
 ## Open items
 

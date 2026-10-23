@@ -15,7 +15,7 @@
 //! references name directly, and does not follow them. Each object is read and verified
 //! completely (see [`ObjectStore::resolve_blob`]), so the cost grows with the size of the objects
 //! named. The result holds at the time of the call; for the references, which are read without
-//! the lock, at the time of each read.
+//! the lock, see [`FsRefStore::verify`](crate::refs::FsRefStore::verify).
 
 use std::error::Error;
 use std::fmt;
