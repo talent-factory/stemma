@@ -493,6 +493,8 @@ Ein \type{-} steht für einen Zeiger, den es vorher nicht gab oder der danach ni
 existiert. Fand der Zug nicht statt, folgt eine Zeile \type{! the move did not take effect};
 ist es unbekannt, eine Zeile \type{? it is not known whether the move took effect}.
 Bei einem Zug, der stattfand, fehlt die Zeile.
+Setzte jemand einen Zeiger ausserhalb des Logs auf seinen alten Wert zurück, steht die Zeile
+mit \type{!} auch bei einem Zug, der stattfand; das Log kann die beiden Fälle nicht trennen.
 
 \starttyping
 2  2023-11-14T22:13:20Z  human daniel  snapshot

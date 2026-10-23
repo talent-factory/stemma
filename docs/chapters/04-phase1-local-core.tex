@@ -227,6 +227,11 @@ ohne Eintrag von einem mit Eintrag unterscheiden und weiss, ob er die Änderung
 wiederholen darf. Ob ein Zug stattgefunden hat, lässt sich an der Kette der Einträge
 eines Zeigers ablesen. Nach dem Zug wird nichts mehr geschrieben, damit nichts halb
 geschrieben bleiben kann.
+Das hat eine Grenze. Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück,
+entscheidet die Kette richtig, denn jeder Eintrag liest seinen alten Wert unter der Sperre.
+Setzt aber jemand ausserhalb des Logs einen Zeiger auf den alten Wert eines Eintrags zurück,
+sieht das Log dasselbe wie nach einem gescheiterten Zug. Es meldet dann, der Zug habe nicht
+stattgefunden, obwohl er stattfand.
 
 Ein Eintrag hat eine Obergrenze von 64 KiB, und der Schreiber hält sie ein: Er lehnt
 einen grösseren Eintrag ab, bevor er etwas schreibt. Der Leser lehnt eine grössere
