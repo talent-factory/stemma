@@ -56,10 +56,30 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   outside `refs/`, so no branch name can collide with it. One lock for all references is coarse,
   but a change is a few file operations, and it keeps the rule simple. A command that writes holds
   it longer, from its first object to its last move, at least as long as its snapshot takes, and a
-  purge from its plan to its end (ADR-014, STEMMA-49). A process that ends without removing the lock
-  blocks all changes until the file is removed; the message says so. The command line removes the
-  lock of an interrupted command (Ctrl-C, a termination signal) before the process ends, so only
-  `kill -9`, a crash, or a handler that could not be installed leaves it behind.
+  purge from its plan to its end (ADR-014, STEMMA-49). The command line removes the lock of an
+  interrupted command (Ctrl-C, a termination signal) before the process ends, so only `kill -9`,
+  a crash, or a handler that could not be installed leaves it behind.
+- **A lock that a process left is taken over** (STEMMA-51). While a process holds `refs.lock`,
+  it holds a lock of the operating system on the file `<metadata directory>/refs.lock.guard`,
+  which stays and has no content (`File::try_lock`). The operating system releases that lock when
+  the process ends in any way, also by `kill -9` or a crash, so a lock file whose guard is free was
+  left by a process that ended. The holder writes `stemma-lock 1`, `host <name>`,
+  `pid <process ID>`, and `token <token>`, one line each, and a change that holds the guard
+  replaces a file of exactly this form only if it names this host and another process. A lock of
+  the operating system may not reach from one host to another on a file system that two hosts
+  share (NFS without a lock manager, a mount into a virtual machine), so a file of another host
+  stays and is `Locked` with that host; the message says that the file can be removed if no
+  command runs there. A file that names this process stays as well, since another handle of the
+  process may hold it where the system keeps its locks per process (`fcntl` on NFS). A file of
+  another form stays and is `Locked`: an older version of stemma or a person made it. A guard that
+  a running process holds is `Locked` with that process, whose message says to try again and not
+  to remove the file. If the guard cannot be locked for another reason than a holder, or the name
+  of the host is not known, the lock is made without a guard, in the form of an older version, so
+  that no command takes it over; a guard that fails costs the takeover and never the exclusion,
+  which `create new` keeps. The guard and the lock file are taken in this order and released in
+  the other, and only a holder of the guard may replace the file, so two commands cannot take over
+  one lock at once. A person who removes the guard while a process holds it breaks the rule, as
+  one who removes the lock file does.
 - **Safe writes**. A file is written to a new temporary file in `<metadata directory>/tmp/`,
   flushed, and renamed over the old one; the directory is flushed on Unix. The file is **not**
   read-only, because Windows refuses to replace such a file. A reader sees the old content or the
@@ -133,8 +153,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - [ ] `set_head` replaces HEAD whatever it was; a compare-and-swap for HEAD when `checkout` needs
       it. `Expected { Absent, At(commit) }` in place of `Option` for `update_branch`, if the
       meaning of `None` (the branch has to be new) proves easy to misread.
-- [ ] A lock that a crashed process left behind: a lock with the process ID and a rule for when
-      it counts as stale, instead of a message that tells a person to remove the file.
+- [x] A lock that a crashed process left behind: the guard of the lock (STEMMA-51), see the
+      decision above.
 - [ ] The behavior of the replacing rename on Windows is tested only by the CI workflow run by
       hand (see ADR-007 for the same question about objects).
 - [x] The log of changes of a reference (a reflog) is part of the operation log (ADR-005), which

@@ -169,7 +169,9 @@ lock may be held.
      termination signal remove the lock before the process ends (exit code 130), so an
      interrupted command does not leave it behind; an interrupted writer is left as a crash
      leaves it, with objects that no commit names and at most an entry without its move.
-     `kill -9` and a crash of the system still leave the lock, as before (ADR-008).
+     `kill -9` and a crash of the system still leave the lock file, and the next writer takes it
+     over, since its guard is free (ADR-008, STEMMA-51); while the journal of a purge exists,
+     it stays for `--resume` and `--abort`.
 5. Write the new trees and commits. They are new objects, so nothing is lost yet.
 6. Check all pointers against the values of the plan, then write the `purge` entry and move the
    pointers. If a pointer differs before the first move, nothing has moved: the call fails and
@@ -181,8 +183,10 @@ lock may be held.
 
 **Resume.** `stemma purge --resume` reads the journal and repeats the steps from step 5. A crash
 leaves `refs.lock` behind (ADR-011), and the lock would stop the resume. While the journal exists,
-`--resume` and `--abort` treat the lock as the purge's own and remove it, and any other command that
-writes fails with `PurgePending`, whose message names the journal. Each step can be repeated: a new
+`--resume` and `--abort` treat the lock as the purge's own and replace it, unless a running
+process holds its guard (a purge that still runs, STEMMA-51); a purge without a guard (a file
+system without locks of files, an older version) is not seen, so they must not run beside it.
+Any other command that writes fails with `PurgePending`, whose message names the journal. Each step can be repeated: a new
 object that exists is a no-op (ADR-007), a pointer that already has its new value is skipped, a stub
 is replaced by itself, and a deleted object is gone. The `purge` entry is found, not written again:
 it is the entry with an operation `purge` and a number above the one that the journal recorded.

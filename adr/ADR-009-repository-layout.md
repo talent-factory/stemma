@@ -22,7 +22,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - **Layout** *(confirmed)*. A repository is a directory that contains `.stemma/`. Inside:
   `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007),
   `oplog/` and `oplog-tip` (ADR-011),
-  `refs/heads/` (ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
+  `refs/heads/`, `refs.lock` (while a command writes), and `refs.lock.guard` (the guard of the
+  lock, which stays; ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
   it stopped, ADR-014), and `tmp/` (the temporary files of the object store, the references, the
   log, and the purge).
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a
