@@ -2,9 +2,10 @@
 
 **Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
 2026-10-19, and the rest on 2026-10-21; the hash chain (STEMMA-41) and the cleanup of `tmp/`
-(STEMMA-31) on 2026-10-22. All are implemented. The open items at the end are questions for later
-(retention, who may read the log, the width of the number, an anchor that the actor cannot change,
-Windows) and none of them changes a decision.
+(STEMMA-31) on 2026-10-22; the limit of the outcome (STEMMA-32) on 2026-10-23. All are
+implemented. The open items at the end are questions for later (retention, who may read the log,
+the width of the number, an anchor that the actor cannot change, Windows) and none of them
+changes a decision.
 
 ## Context
 
@@ -81,6 +82,17 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   last entry that moves it unknown. A lock that a crashed writer left makes the newest entries unknown until
   someone removes it. A separate marker can come with a later version of the entry encoding if a
   use appears; version 2 went to the stub and the `purge` entry (ADR-014).
+  The reading has two limits, and both are accepted (STEMMA-32). A pointer that returns to an
+  earlier value inside the log is decided correctly as long as nothing outside the log moves it,
+  because each entry reads its old value under the lock. A change outside the log to one of the
+  two values of an entry cannot be told from a move of the log. A pointer set back to the old
+  value of an entry that took effect looks like a failed move, so the entry is said not to have
+  taken effect (for the newest entry of a pointer only while no writer is at work; otherwise it is
+  unknown). A pointer set to the new value of an entry that failed looks like a move that
+  happened, so the entry is said to have taken effect. A marker written after the move would not
+  remove both: when it survives, it settles the first limit, but an entry without one may have
+  failed or have lost its marker, so the second would turn into an unknown outcome rather than a
+  decided one. This decision leaves the marker out (see above), and a later encoding may add it.
 - **Only a change writes an entry** *(confirmed)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
@@ -308,7 +320,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       (`oplog::outcomes`, STEMMA-34); `stemma op log` marks an entry that did not take effect
       (`!`, `took_effect: false`) or whose outcome is not known (`?`, `null`). The working-copy commit has its
       place in the references since STEMMA-22, and `oplog::Current::with_working_copy` hands its
-      value to `outcomes`.
+      value to `outcomes`. STEMMA-32 added the tests of a failed entry in the middle and its
+      retry, of the first entry, of a pointer that returns to an earlier value inside the log, of
+      the two limits above, and of the barrier of a stub in a hash-chained log (encoding 3).
 - [x] Every `append` lists the directory to find the end of the log. Measured in STEMMA-37: about
       2 microseconds for each entry, 17 ms more at 10,000 entries than at 1,000, so it does not
       matter. The tip file does not replace the listing; the writer still takes the largest number

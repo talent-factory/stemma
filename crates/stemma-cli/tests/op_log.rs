@@ -772,3 +772,41 @@ fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_
         result.stdout
     );
 }
+
+#[test]
+fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
+    // Entry 3 became a stub, so every entry before it is unknown (ADR-014): entry 2 although
+    // entry 5, which starts from A, would confirm it, and entry 1 of `init` although HEAD and the
+    // working-copy commit would.
+    // Entry 3 moved `main` to C and entry 5 starts from A; what happened between them does not
+    // matter here. Entry 5, after the purge, keeps its own outcome.
+    let dir = repository();
+    branch_move(dir.path(), 2, "-", A);
+    branch_move(dir.path(), 3, A, C);
+    write_entry_2(dir.path(), 3, "stub\n");
+    write_entry_2(dir.path(), 4, "operation purge\ncommits 1\nstubs 3\n");
+    branch_move(dir.path(), 5, A, B);
+    set_branch(dir.path(), B);
+
+    let result = run(dir.path(), &["op", "log", "--json"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert!(lines[0].starts_with("{\"number\":5,"), "{}", result.stdout);
+    assert!(
+        lines[0].ends_with("\"took_effect\":true}"),
+        "{}",
+        result.stdout
+    );
+    for (line, number) in [(3, 2), (4, 1)] {
+        assert!(
+            lines[line].starts_with(&format!("{{\"number\":{number},")),
+            "{}",
+            result.stdout
+        );
+        assert!(
+            lines[line].ends_with("\"took_effect\":null}"),
+            "{}",
+            result.stdout
+        );
+    }
+}
