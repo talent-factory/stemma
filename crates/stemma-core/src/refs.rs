@@ -1088,7 +1088,9 @@ impl FsRefStore {
     /// the path is an error: a directory, a link (which is not followed), or a path that goes
     /// through a file.
     fn read_reference(&self, path: &Path) -> Result<Option<Vec<u8>>, RefError> {
-        match fs::symlink_metadata(path) {
+        // The file may be in the middle of its deletion by another change, which on Windows
+        // denies even the inspection for a moment.
+        match settled(|| fs::symlink_metadata(path)) {
             // A reader without the lock may see another change delete the file between the two
             // calls; it is then gone, as if the first call had found nothing.
             Ok(metadata) if metadata.is_file() => match settled(|| fs::read(path)) {
