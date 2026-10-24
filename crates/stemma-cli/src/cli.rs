@@ -994,8 +994,15 @@ fn restored_text(
     }
 }
 
-/// What a restore that was made or half made has done, for the output before its error.
+/// What a restore that was made or half made has done, for the output before its error. If only
+/// the snapshot before it moved a pointer and the restore itself failed, the text names only the
+/// snapshot: the restore moved nothing that its entry could undo.
 fn made_text(number: u64, error: &RestoreError) -> String {
+    if let RestoreError::AfterSnapshot { source, .. } = error {
+        if !source.pointer_moved() {
+            return saved_text(error.snapshot());
+        }
+    }
     match (error.half_made(), error.entry()) {
         (true, Some(entry)) => format!(
             "{}Half made: entry {} of the restore moved some of the pointers of entry {number}\n\
@@ -1810,6 +1817,43 @@ mod tests {
             made_text(5, &not_durable),
             "Restored the state before entry 5 as entry 1\nTo undo it: stemma op restore 1\n"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_restore_that_failed_after_an_unsaved_snapshot_names_only_the_snapshot() {
+        let (dir, entry) = repository_with_entry("restore-late");
+        let entry = Box::new(entry);
+        let locked = || RefError::Locked {
+            path: dir.clone(),
+            holder: stemma_core::refs::LockHolder::Unknown,
+        };
+        let late = |source| RestoreError::AfterSnapshot {
+            snapshot: entry.clone(),
+            late: Some(locked()),
+            source: Box::new(source),
+        };
+        for error in [
+            late(RestoreError::MoveFailed {
+                entry: entry.clone(),
+                source: locked(),
+            }),
+            late(RestoreError::CheckoutFailed {
+                entry: entry.clone(),
+                source: stemma_core::repository::CheckoutError::InTheWay {
+                    path: "a".to_owned(),
+                },
+            }),
+            late(RestoreError::Refs(locked())),
+        ] {
+            assert!(error.pointer_moved(), "the snapshot moved the working copy");
+            assert_eq!(
+                made_text(5, &error),
+                "Saved the working copy first as entry 1\n",
+                "no pointer of the restore moved: {error}"
+            );
+            assert_eq!(CliError::Restore(error).exit_code(), ExitCode::from(3));
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
