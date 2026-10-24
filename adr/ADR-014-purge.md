@@ -219,7 +219,9 @@ object, an unreadable log) is left for a person to repair.
   be removed stays: `purge --apply` and `--resume` name each one in a warning and still succeed,
   as the purge itself is done. On Windows the read-only flag of an object file is cleared before
   the removal. A temporary file `.stemma-checkout-…` of a failed checkout lies in the working
-  directory (ADR-013), not in `tmp/`, and is not looked at. Other objects that were
+  directory (ADR-013), not in `tmp/`, and is not looked at; `track` never takes it, so it cannot
+  bring the secret back, and `status` lists it for a person to remove (STEMMA-75),
+  outside a directory that `.stemmaignore` excludes. Other objects that were
   unreachable before and name no blob stay. The commit messages and path names are kept as they
   are and can hold the secret too; the unit of the purge is the blob. A file below `objects/`
   whose path is not that of an ID is not looked at, as no read reaches it, and the scan reads

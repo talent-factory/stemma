@@ -256,7 +256,9 @@ ablehnt: Der Befehl nennt den Pfad und ändert nichts. Namen, die auf \type{.ste
 überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so einem Namen ist
 dagegen ein Fehler. Dasselbe gilt für \type{.git}, die Metadaten von Git:
 Sie fehlen immer, auch ohne Muster, und ein genannter Pfad mit einem Teil \type{.git} ist ein
-Fehler. Liegt das Verzeichnis in keinem Repository, nennt die Meldung \type{-C}.
+Fehler. Ebenso fehlt eine temporäre Datei \type{.stemma-checkout-…}, die ein unterbrochenes
+\type{op restore} zurückliess, denn sie enthält einen alten Inhalt (siehe \type{status}).
+Liegt das Verzeichnis in keinem Repository, nennt die Meldung \type{-C}.
 Mit Exit-Code 3 endet der Befehl, wenn
 die Dateien verfolgt sind, aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht
 gesichert ist; ein Skript wiederholt ihn dann nicht. Ist nur der Zeiger nicht gesichert, schreibt
@@ -437,7 +439,19 @@ Verzeichnisses stehen einzeln da.
 Unverfolgt sind die Dateien im Verzeichnis, die nicht im Baum des Working-Copy-Commits stehen
 und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln und sortiert da,
 und das Verzeichnis \type{.stemma} kommt nie vor.
-Ein Abschnitt ohne Dateien fehlt. Gibt es weder Änderungen noch unverfolgte Dateien,
+Eine temporäre Datei \type{.stemma-checkout-…}, die ein unterbrochenes \type{op restore}
+zurückliess, gilt nicht als unverfolgt, und \type{track} nimmt sie nie auf: Sie enthält den Inhalt
+eines alten Blobs, unter Umständen ein gepurgtes Geheimnis. Der Befehl nennt sie in einem eigenen
+Abschnitt, damit man sie entfernt; in einem Verzeichnis, das \type{.stemmaignore} ausschliesst,
+sucht er nicht. Was schon im Baum steht, weil eine ältere Version es aufnahm, bleibt verfolgt und
+erscheint ebenfalls dort:
+
+\starttyping
+Left by an interrupted restore, may hold an old file or a purged secret; remove:
+! docs/.stemma-checkout-4711-3-0123456789abcdef
+\stoptyping
+
+Ein Abschnitt ohne Dateien fehlt. Gibt es weder Änderungen noch unverfolgte Dateien noch Reste,
 schreibt der Befehl eine Zeile:
 
 \starttyping

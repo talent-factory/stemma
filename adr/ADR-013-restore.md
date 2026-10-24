@@ -146,7 +146,12 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] The plan decides by platform whether names ignore case. A case-sensitive volume on macOS,
       or a rename that changes only the normalization form of a name, can pass or fail the plan
       for the wrong reason; the apply stops with a clear error, but halfway.
-- [ ] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
-      and the rename; `track .` would pick it up as a new file.
+- [x] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
+      and the rename. It holds the content of an old blob, perhaps a secret that was purged since,
+      so `track` and `status` leave a name of exactly that form out, as they leave `.git` out
+      (ADR-012), and `status` lists it apart for a person to remove (STEMMA-75). A path that names
+      it is an error of `track`. A directory that `.stemmaignore` excludes is not entered, so a
+      leftover in it is not listed, but it is not tracked either; one that a repository tracked
+      before the fix stays tracked and is listed.
 - [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the
       file of the old tree.

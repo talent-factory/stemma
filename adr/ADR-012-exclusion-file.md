@@ -94,6 +94,9 @@ other).
   systems of macOS and Windows do. A path that the caller names and that has a part `.git` is an
   error, not a silent skip; no line is involved. What is in the tree already stays tracked, as
   for a pattern. The price is that a repository cannot version a `.git` on purpose.
+  The temporary file that an interrupted checkout leaves, `.stemma-checkout-` and a name of the
+  form of the scratch files (ADR-013), is left out in the same way, as it holds the content of an
+  old blob; `status` lists it apart (STEMMA-75).
 - **Effect on commands** *(confirmed)*.
   - `track` skips an excluded file below a directory without a word, as it skips `.stemma`. A
     path that the caller names and that is excluded is an error that names the line of the
