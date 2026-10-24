@@ -386,14 +386,14 @@ impl Repository {
         start: &Path,
         trusted: &dyn Fn(&Path) -> Result<(), OpenError>,
     ) -> Result<Discovered, OpenError> {
-        let at_start = start.join(METADATA_DIR);
-        // Anything else that is wrong with `.stemma` at the start is the error of `open`.
-        if CHECK_AT_START && fs::symlink_metadata(&at_start).is_ok() {
-            trusted(&at_start)?;
-        }
         match Self::open(start) {
             Err(OpenError::NotARepository { .. }) => {}
             opened => {
+                // The check follows an open that succeeded, so a `.stemma` that appears after a
+                // first look is not opened unchecked, and a check that fails refuses it.
+                if CHECK_AT_START && opened.is_ok() {
+                    trusted(&start.join(METADATA_DIR))?;
+                }
                 return opened.map(|repository| Discovered {
                     repository,
                     subdirectory: String::new(),

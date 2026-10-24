@@ -127,6 +127,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       Consequences.
 - [x] The owner of a `.stemma` at the start: checked on Unix as well, so `cd /tmp` does not
       open a `/tmp/.stemma` of another user (STEMMA-77), see Consequences.
+- [ ] The owner is checked on the path after `open` and not on a handle that `open` holds, so
+      a `.stemma` that is swapped between the open and the check (at the start or above it) is
+      not seen. Closing it needs `O_NOFOLLOW` and the owner of that handle (`fstat`).
 - [ ] A list of trusted directories, as Git's `safe.directory`, for a repository that several
       users share on one machine; it needs the configuration file below.
 - [ ] On Windows only the root of a volume is refused; other places that all users may write,
