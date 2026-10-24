@@ -356,15 +356,16 @@ impl Repository {
     /// resolved, so a repository above it is found under its real path, and
     /// [`Discovered::through_link`] says whether that path left the path as it was given.
     ///
-    /// A `.stemma` that the search finds above `start` must be one that the user who runs the
-    /// command can trust. Otherwise a user could put a `.stemma` into a directory that others
-    /// share, such as `/tmp`, and a command that runs below it would work in that repository: a
+    /// A `.stemma` that the search finds must be one that the user who runs the command can
+    /// trust. Otherwise a user could put a `.stemma` into a directory that others share, such as
+    /// `/tmp`, and a command that runs in it or below it would work in that repository: a
     /// snapshot would save the files that its tree names into the store of the other user. On
-    /// Unix the effective user of the process must own it ([`OpenError::OtherOwner`]); on Windows,
-    /// where `std` gives no owner, it must not be at the root of a volume, where every user may
-    /// create directories ([`OpenError::AtVolumeRoot`]). Such a repository is still opened when
-    /// `start` is its own directory: the check is for the search, and a `.stemma` at `start` is
-    /// opened as before (an open item of ADR-009).
+    /// Unix the effective user of the process must own it ([`OpenError::OtherOwner`]), at `start`
+    /// as well as above it, since `-C` defaults to the current directory and `cd /tmp` is as
+    /// common as a directory below it. On Windows, where `std` gives no owner, a `.stemma` above
+    /// `start` must not be at the root of a volume, where every user may create directories
+    /// ([`OpenError::AtVolumeRoot`]); a `.stemma` at `start` is opened there without a check, as
+    /// the root of a volume is only reached by naming it (ADR-009).
     ///
     /// # Errors
     ///
@@ -379,12 +380,17 @@ impl Repository {
         Self::discover_with(start.as_ref(), &trusted)
     }
 
-    /// [`discover`](Self::discover) with the check that a `.stemma` found above `start` may be
-    /// used, so that a test can stand in for another owner.
+    /// [`discover`](Self::discover) with the check that a `.stemma` that it finds may be used,
+    /// so that a test can stand in for another owner.
     fn discover_with(
         start: &Path,
         trusted: &dyn Fn(&Path) -> Result<(), OpenError>,
     ) -> Result<Discovered, OpenError> {
+        let at_start = start.join(METADATA_DIR);
+        // Anything else that is wrong with `.stemma` at the start is the error of `open`.
+        if CHECK_AT_START && fs::symlink_metadata(&at_start).is_ok() {
+            trusted(&at_start)?;
+        }
         match Self::open(start) {
             Err(OpenError::NotARepository { .. }) => {}
             opened => {
@@ -1341,9 +1347,14 @@ fn lies_below(start: &Path, root: &Path) -> bool {
         .any(|ancestor| fs::canonicalize(ancestor).is_ok_and(|real| real == root))
 }
 
-/// Whether the `.stemma` that the search found above the start may be used: on Unix the
-/// effective user of the process owns it, as Git checks for `safe.directory`. The owner of the
-/// entry itself counts, so a link that another user made is not followed.
+/// Whether [`trusted`] is asked for a `.stemma` at the start of [`Repository::discover`] as well
+/// as for one above it: on Unix, where it checks the owner, but not on Windows, where it only
+/// refuses the root of a volume.
+const CHECK_AT_START: bool = cfg!(unix);
+
+/// Whether the `.stemma` that the search found may be used: on Unix the effective user of the
+/// process owns it, as Git checks for `safe.directory`. The owner of the entry itself counts, so
+/// a link that another user made is not followed.
 #[cfg(unix)]
 fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
     use std::os::unix::fs::MetadataExt;
@@ -1407,8 +1418,9 @@ pub enum OpenError {
         /// The directory where the search started, with its links resolved.
         path: PathBuf,
     },
-    /// The search found a `.stemma` above the directory where it started, but the user who runs
-    /// the command does not own it, so it is not opened (Unix, [`Repository::discover`]).
+    /// The search found a `.stemma` in the directory where it started or above it, but the user
+    /// who runs the command does not own it, so it is not opened (Unix,
+    /// [`Repository::discover`]).
     OtherOwner {
         /// The `.stemma` that was found.
         found: PathBuf,
@@ -1513,9 +1525,8 @@ impl fmt::Display for OpenError {
             Self::OtherOwner { found } => write!(
                 f,
                 "`{}` belongs to another user than the one who runs the command, so it is not \
-                 used; name its directory with `-C {}` to open it anyway",
-                found.display(),
-                found.parent().unwrap_or(found).display()
+                 used; run the command as the user who owns it",
+                found.display()
             ),
             Self::AtVolumeRoot { found } => write!(
                 f,
@@ -2391,7 +2402,7 @@ mod tests {
     }
 
     #[test]
-    fn discover_checks_a_repository_that_it_finds_above_and_not_one_at_the_start() {
+    fn discover_checks_a_repository_above_and_on_unix_one_at_the_start() {
         // The check stands for another owner: it refuses every `.stemma` it is shown.
         let refuse = |found: &Path| {
             Err(OpenError::OtherOwner {
@@ -2411,13 +2422,37 @@ mod tests {
             error.to_string(),
             format!(
                 "`{}` belongs to another user than the one who runs the command, so it is not \
-                 used; name its directory with `-C {}` to open it anyway",
-                found.display(),
-                found.parent().unwrap().display()
+                 used; run the command as the user who owns it",
+                found.display()
             )
         );
-        // Named directly, the repository is opened as before.
-        Repository::discover_with(dir.path(), &refuse).unwrap();
+        // At the start, as after `cd /tmp`, the check names the `.stemma` as it was given.
+        let at_start = Repository::discover_with(dir.path(), &refuse);
+        if cfg!(unix) {
+            let found = dir.path().join(METADATA_DIR);
+            assert!(
+                matches!(&at_start, Err(OpenError::OtherOwner { found: at }) if *at == found),
+                "{:?}",
+                at_start.err()
+            );
+        } else {
+            at_start.unwrap();
+        }
+    }
+
+    #[test]
+    fn discover_does_not_check_a_start_without_a_repository() {
+        // Without `.stemma` at the start, the search goes on upwards and checks only what it
+        // finds, so a refusing check that is never asked changes nothing.
+        let dir = TempDir::new();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let refuse =
+            |found: &Path| -> Result<(), OpenError> { panic!("asked for `{}`", found.display()) };
+        let error = Repository::discover_with(&dir.path().join("sub"), &refuse).unwrap_err();
+        assert!(
+            matches!(error, OpenError::NoRepositoryAbove { .. }),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]
@@ -2461,8 +2496,9 @@ mod tests {
         lchown(&sub, Some(0), Some(0)).unwrap();
         let error = Repository::discover(&sub).unwrap_err();
         assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
-        // Named directly, it is opened as before.
-        Repository::discover(dir.path()).unwrap();
+        // At the start, as after `cd /tmp`, it is refused as well.
+        let error = Repository::discover(dir.path()).unwrap_err();
+        assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
     }
 
     #[cfg(unix)]
