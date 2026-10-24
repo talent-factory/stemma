@@ -85,22 +85,11 @@ Snapshots, den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein ern
 Aufruf ist unbedenklich.
 \item {\bf 2:} Die Argumente sind falsch, zum Beispiel ein unbekannter Schalter oder
 ein ungültiger Branch-Name. Das Programm gibt die Meldung selbst aus.
-\item {\bf 3:} Der Befehl hat sein Ergebnis angelegt, konnte aber nicht abschliessen:
-Das Verzeichnis ist nicht gesichert, die Ausgabe liess sich nicht schreiben
-(nicht bei einem Befehl, der nur liest), \type{commit} hat nur einen seiner
-beiden Zeiger bewegt, \type{op restore} hat nur einen Teil seiner Zeiger bewegt
-oder ein gemachtes \type{op restore} liess sich nicht ausgeben.
-Bei \type{status} heisst es: Der Snapshot hat den Zeiger bewegt, aber nicht gesichert.
-Ein Skript darf das Ergebnis weder löschen noch den Befehl wiederholen;
-nur ein weiterer \type{commit} beendet einen halben (siehe dort), und ein halbes
-\type{op restore} beendet derselbe Aufruf, noch einmal ausgeführt (siehe dort).
-Ein \type{op restore}, das gemacht ist, nennt in der Ausgabe den Eintrag, der es zurücksetzt.
-Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht.
-Bei \type{purge} heisst Code 3 meist, dass das Journal eines Purge besteht: Er brach ab,
-\type{--apply} fand das Journal eines anderen, oder \type{--abort} kam nach dem Eintrag.
-Dann muss \type{purge --resume} oder \type{purge --abort} kommen (siehe dort).
-Code 3 gilt auch für einen Purge, der gemacht ist, dessen Ausgabe oder Sicherung aber
-scheiterte; dann besteht kein Journal mehr.
+\item {\bf 3:} Der Befehl hat sein Ergebnis ganz oder zum Teil angelegt,
+konnte aber nicht abschliessen.
+Ein Skript löscht das Ergebnis dann nicht und wiederholt den Befehl nicht blind;
+was stattdessen zu tun ist, hängt vom Befehl ab (\in{Tabelle}[tab:exit3]).
+Eine Ausgabe, die sich nicht schreiben liess, führt nur bei einem Befehl, der schreibt, zu Code 3.
 \item {\bf 130:} Der Befehl wurde mit Ctrl-C (oder einem Signal zum Beenden) unterbrochen.
 Er hat die Sperre der Referenzen entfernt, bevor er endete. Was er bis dahin schrieb, bleibt
 wie nach einem Absturz: Objekte, die kein Commit nennt, und höchstens ein Eintrag ohne seine
@@ -108,6 +97,92 @@ Zeigerbewegung. Ein erneuter Aufruf ist unbedenklich;
 nur nach einem unterbrochenen \type{purge --apply},
 dessen Journal schon besteht, muss zuerst \type{purge --resume} oder \type{purge --abort} kommen.
 \stopitemize
+
+\startplacetable[title={Exit-Code 3 und der nächste Schritt},reference=tab:exit3,location=split]
+\startxtable[frame=off,split=yes,option=stretch,align={flushleft,lohi},offset=0.4ex]
+\startxtablehead
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.17\textwidth] {\bf Befehl} \stopxcell
+\startxcell[width=0.44\textwidth] {\bf Was geschehen ist} \stopxcell
+\startxcell {\bf Was zu tun ist} \stopxcell
+\stopxrow
+\stopxtablehead
+\startxtablenext
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.17\textwidth] {\bf Befehl} \stopxcell
+\startxcell[width=0.44\textwidth] {\bf Was geschehen ist} \stopxcell
+\startxcell {\bf Was zu tun ist} \stopxcell
+\stopxrow
+\stopxtablenext
+\startxrow
+\startxcell[width=0.17\textwidth] \type{track} \stopxcell
+\startxcell[width=0.44\textwidth] Die Dateien sind verfolgt,
+aber die Ausgabe liess sich nicht schreiben oder der Zeiger ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen; die Liste der Ausgabe nennt, was verfolgt ist. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.44\textwidth] Der Commit ist gemacht,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen; die Meldung nennt die ID des Commits. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.44\textwidth] Nur der Branch hat sich bewegt,
+der Working-Copy-Commit ist noch der alte. \stopxcell
+\startxcell Ein weiterer \type{commit} beendet den ersten;
+seine eigene Nachricht verwendet er nicht. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.44\textwidth] Der Snapshot vor dem Commit hat den Zeiger bewegt,
+aber nicht gesichert; der Commit ist nicht gemacht. \stopxcell
+\startxcell Den Aufruf wiederholen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{status} \stopxcell
+\startxcell[width=0.44\textwidth] Der Snapshot hat den Zeiger bewegt,
+aber nicht gesichert. \stopxcell
+\startxcell Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{op restore} \stopxcell
+\startxcell[width=0.44\textwidth] Nur ein Teil der Zeiger hat sich bewegt
+(\type{Half made}). \stopxcell
+\startxcell Denselben Aufruf noch einmal ausführen;
+er bewegt nur die übrigen Zeiger. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{op restore} \stopxcell
+\startxcell[width=0.44\textwidth] Das Restore ist gemacht,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert,
+auch eines des Snapshots davor. \stopxcell
+\startxcell Nicht wiederholen;
+die Ausgabe oder die Meldung nennt den Eintrag, der das Restore zurücksetzt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.44\textwidth] Das Journal eines Purge besteht:
+Er brach nach dem Journal ab, \type{--apply} fand das Journal eines anderen,
+oder \type{--abort} kam nach dem Eintrag \type{purge}. \stopxcell
+\startxcell \type{purge --resume},
+oder \type{purge --abort}, solange der Eintrag fehlt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.17\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.44\textwidth] Das Journal lässt sich nicht lesen. \stopxcell
+\startxcell Das Journal von Hand reparieren;
+bis dahin kommt kein Befehl weiter. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell[width=0.17\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.44\textwidth] Der Purge oder das Zurücknehmen ist gemacht,
+aber die Ausgabe oder die Sicherung scheiterte; das Journal ist entfernt. \stopxcell
+\startxcell Nicht wiederholen.
+Kommt das Journal nach einem Absturz wieder, beendet es derselbe Befehl. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
 
 {\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{status},
 \type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
