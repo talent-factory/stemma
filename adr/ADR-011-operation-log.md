@@ -83,7 +83,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   cannot be read. The working-copy commit has its place in the references since STEMMA-22
   (`.stemma/working-copy`); a caller that does not give its value to `oplog::Current` leaves the
   last entry that moves it unknown. A lock that a crashed writer left makes the newest entries
-  unknown until someone removes it. A separate marker can come with a later version of the entry
+  unknown until the next writer of the same host takes it over (ADR-008, STEMMA-51)
+  or someone removes it. A separate marker can come with a later version of the entry
   encoding if a use appears; version 2 went to the stub and the `purge` entry (ADR-014).
   The reading has two limits, and both are accepted (STEMMA-32). A pointer that returns to an
   earlier value inside the log is decided correctly as long as nothing outside the log moves it,
