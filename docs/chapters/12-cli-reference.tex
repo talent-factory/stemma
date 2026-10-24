@@ -870,6 +870,10 @@ Nicht verfolgte Dateien, \type{.stemma} und \type{.git} bleiben unberührt.
 Jede Datei schreibt das Restore zuerst unter einem Namen \type{.stemma-checkout-…} neben ihr Ziel
 und benennt sie dann um. Wird der Prozess dazwischen beendet, bleibt diese Datei liegen;
 \type{track} nimmt sie nie auf, und \type{status} nennt sie.
+Scheitert das Schreiben, entfernt das Restore die temporäre Datei.
+Gelingt auch das nicht (fehlende Rechte, eine Sperre unter Windows), nennt die Fehlermeldung
+die Datei mit dem Rat, sie zu entfernen.
+Steht so ein Rest einem späteren Restore im Weg, sagt die Meldung, woher er stammt.
 Ein verfolgter Pfad wird auch dann zurückgesetzt, wenn die Ausschlussdatei ihn heute
 ausschliesst (ADR-012); ein Pfad, den der alte Baum neu anlegt und den die Ausschlussdatei
 ausschliesst, ist ein Fehler.
