@@ -85,22 +85,15 @@ Snapshots, den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein ern
 Aufruf ist unbedenklich.
 \item {\bf 2:} Die Argumente sind falsch, zum Beispiel ein unbekannter Schalter oder
 ein ungültiger Branch-Name. Das Programm gibt die Meldung selbst aus.
-\item {\bf 3:} Der Befehl hat sein Ergebnis angelegt, konnte aber nicht abschliessen:
-Das Verzeichnis ist nicht gesichert, die Ausgabe liess sich nicht schreiben
-(nicht bei einem Befehl, der nur liest), \type{commit} hat nur einen seiner
-beiden Zeiger bewegt, \type{op restore} hat nur einen Teil seiner Zeiger bewegt
-oder ein gemachtes \type{op restore} liess sich nicht ausgeben.
-Bei \type{status} heisst es: Der Snapshot hat den Zeiger bewegt, aber nicht gesichert.
-Ein Skript darf das Ergebnis weder löschen noch den Befehl wiederholen;
-nur ein weiterer \type{commit} beendet einen halben (siehe dort), und ein halbes
-\type{op restore} beendet derselbe Aufruf, noch einmal ausgeführt (siehe dort).
-Ein \type{op restore}, das gemacht ist, nennt in der Ausgabe den Eintrag, der es zurücksetzt.
-Ein weiterer \type{status} ist unbedenklich, sichert den Eintrag aber nicht.
-Bei \type{purge} heisst Code 3 meist, dass das Journal eines Purge besteht: Er brach ab,
-\type{--apply} fand das Journal eines anderen, oder \type{--abort} kam nach dem Eintrag.
-Dann muss \type{purge --resume} oder \type{purge --abort} kommen (siehe dort).
-Code 3 gilt auch für einen Purge, der gemacht ist, dessen Ausgabe oder Sicherung aber
-scheiterte; dann besteht kein Journal mehr.
+\item {\bf 3:} Der Befehl hat sein Ergebnis ganz oder zum Teil angelegt,
+konnte aber nicht abschliessen.
+Ein Skript löscht das Ergebnis dann nicht und wiederholt den Befehl nicht blind;
+was stattdessen zu tun ist, hängt vom Befehl ab (\in{Tabelle}[tab:exit3]),
+und Einzelheiten nennt der Abschnitt des Befehls.
+Eine Ausgabe, die sich nicht schreiben liess, führt nur dann zu Code 3,
+wenn der Befehl etwas angelegt hat, das sonst nur die Ausgabe nennt.
+Bei \type{status}, \type{op log}, \type{op verify}, \type{--dry-run}
+und dem Plan von \type{purge} ist sie Code 1.
 \item {\bf 130:} Der Befehl wurde mit Ctrl-C (oder einem Signal zum Beenden) unterbrochen.
 Er hat die Sperre der Referenzen entfernt, bevor er endete. Was er bis dahin schrieb, bleibt
 wie nach einem Absturz: Objekte, die kein Commit nennt, und höchstens ein Eintrag ohne seine
@@ -108,6 +101,114 @@ Zeigerbewegung. Ein erneuter Aufruf ist unbedenklich;
 nur nach einem unterbrochenen \type{purge --apply},
 dessen Journal schon besteht, muss zuerst \type{purge --resume} oder \type{purge --abort} kommen.
 \stopitemize
+
+\startplacetable[title={Exit-Code 3 und der nächste Schritt},reference=tab:exit3,location=split]
+\startxtable[frame=off,split=yes,option=stretch,align={flushleft,high}]
+\startxtablehead
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.19\textwidth] {\bf Befehl} \stopxcell
+\startxcell[width=0.41\textwidth] {\bf Was geschehen ist} \stopxcell
+\startxcell {\bf Was zu tun ist} \stopxcell
+\stopxrow
+\stopxtablehead
+\startxtablenext
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.19\textwidth] {\bf Befehl} \stopxcell
+\startxcell[width=0.41\textwidth] {\bf Was geschehen ist} \stopxcell
+\startxcell {\bf Was zu tun ist} \stopxcell
+\stopxrow
+\stopxtablenext
+\startxrow
+\startxcell[width=0.19\textwidth] \type{init} \stopxcell
+\startxcell[width=0.41\textwidth] Das Repository ist angelegt,
+aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen;
+ein zweites \type{init} bricht ab, weil \type{.stemma} besteht. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{track} \stopxcell
+\startxcell[width=0.41\textwidth] Die Dateien sind verfolgt,
+aber die Ausgabe liess sich nicht schreiben oder der Zeiger ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen; \type{status} zeigt, was verfolgt ist. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.41\textwidth] Der Commit ist gemacht,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen; die Meldung nennt die ID des Commits. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.41\textwidth] Nur der Branch hat sich bewegt,
+der Working-Copy-Commit ist noch der alte. \stopxcell
+\startxcell Einen weiteren \type{commit} aufrufen;
+er beendet den ersten und verwendet seine eigene Nachricht nicht. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.41\textwidth] Der Snapshot vor dem Commit hat den Zeiger bewegt,
+aber nicht gesichert; der Commit ist nicht gemacht. \stopxcell
+\startxcell Den Aufruf wiederholen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{status} \stopxcell
+\startxcell[width=0.41\textwidth] Der Snapshot hat den Zeiger bewegt,
+aber nicht gesichert. \stopxcell
+\startxcell Nichts tun; ein weiterer \type{status} ist unbedenklich,
+sichert den Eintrag aber nicht. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
+\startxcell[width=0.41\textwidth] Nur ein Teil der Zeiger hat sich bewegt
+(\type{Half made}). \stopxcell
+\startxcell Den Aufruf wiederholen; er bewegt nur die übrigen Zeiger. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
+\startxcell[width=0.41\textwidth] Das Restore ist gemacht,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen;
+die Ausgabe oder die Meldung nennt den Eintrag, der das Restore zurücksetzt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
+\startxcell[width=0.41\textwidth] Ein Verzeichnis des Snapshots davor ist nicht gesichert;
+das Restore ist gemacht, war nicht nötig oder scheiterte danach. \stopxcell
+\startxcell Die Meldung nennt den Eintrag des Snapshots;
+nur ein gemachtes Restore nennt den Eintrag, der es zurücksetzt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.41\textwidth] Der Snapshot vor dem Purge hat den Zeiger bewegt,
+aber nicht gesichert; der Purge ist nicht gemacht. \stopxcell
+\startxcell Den Aufruf wiederholen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.41\textwidth] Das Journal eines Purge besteht:
+Er brach nach dem Journal ab, \type{--apply} fand das Journal eines anderen,
+oder \type{--abort} kam nach dem Eintrag \type{purge}. \stopxcell
+\startxcell Den Purge mit \hbox{\type{purge --resume}} beenden;
+solange der Eintrag fehlt, geht auch \hbox{\type{purge --abort}}
+(Ausnahmen siehe \type{purge}). \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.41\textwidth] Das Journal lässt sich nicht lesen. \stopxcell
+\startxcell Das Journal von Hand reparieren; bis dahin schreibt kein Befehl. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.41\textwidth] Der Purge, das Fortsetzen oder das Zurücknehmen ist gemacht,
+aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert;
+das Journal ist entfernt. \stopxcell
+\startxcell Nicht wiederholen.
+Kommt das Journal nach einem Absturz wieder,
+beendet \hbox{\type{purge --resume}} den Purge
+und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
 
 {\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{status},
 \type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
@@ -182,6 +283,9 @@ Der Working-Copy-Commit ist leer, hat keine Eltern und eine eigene Change-ID.
 Existiert \type{.stemma} schon, auch leer oder als Verweis, bricht \type{init} ab
 und ändert nichts (Exit-Code 1). Dateien im Verzeichnis bleiben unberührt,
 ein Projekt lässt sich also nachträglich unter Versionskontrolle stellen.
+Mit Exit-Code 3 endet der Befehl, wenn das Repository angelegt ist,
+aber die Ausgabe sich nicht schreiben liess oder das Verzeichnis nicht gesichert ist;
+ein Skript wiederholt ihn dann nicht.
 
 {\bf Beispiele.}
 
@@ -1001,7 +1105,7 @@ Fehlt nach dem Eintrag ein neuer Commit, kann \type{--resume} ihn nicht neu mach
 er muss zuerst wiederhergestellt werden.
 \item Der Purge oder das Zurücknehmen ist gemacht und das Journal entfernt, aber das
 Verzeichnis liess sich nicht sichern. Nach einem Absturz kann das Journal wiederkommen;
-dann beendet es derselbe Befehl.
+dann beendet \type{--resume} den Purge und ein erneutes \type{--abort} das Zurücknehmen.
 \item \type{--apply} findet das Journal eines anderen Purge, oder \type{--abort} findet den
 Eintrag \type{purge} schon geschrieben (\type{the purge cannot be undone}); dann bleibt nur
 \type{--resume}.
