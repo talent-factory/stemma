@@ -94,10 +94,13 @@ art, not a template (ADR-015).
   - The commits alone do not prove such a stop: `op restore` of an entry from before a commit
     puts the working-copy commit back to an older version of itself and leaves the branch
     (ADR-013), which looks the same. So `commit` finishes only if the log says so: the newest
-    entry of a `commit` moved the branch to its tip and the working-copy commit away from the
-    current one, and `oplog::outcomes` reads it as not taken. After a restore that entry took
-    effect, and the call is refused as a branch that moved, with its message kept; an outcome
-    that the log does not decide (behind a stub) is refused the same way (STEMMA-76).
+    entry of a `commit` moved the branch to its tip, and `oplog::outcomes` reads it as not
+    taken. The next move of the working-copy commit decides it. After a stop it starts from the
+    old value of the entry: a snapshot of a change since the stop, which keeps the parents and
+    the change ID, so such a stop is still finished. After a restore it starts from the new
+    value, so the entry took effect, and the call is refused as a branch that moved, with its
+    message kept. An outcome that the log does not decide (behind a stub) is refused the same
+    way (STEMMA-76).
   - A commit is refused when the message is empty (there is no editor in phase 1), when HEAD
     names a commit and not a branch, when the tree is that of the parent (or empty, for a first
     commit), and when the branch is not at the parent of the working-copy commit: a commit on

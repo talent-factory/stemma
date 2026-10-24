@@ -414,8 +414,8 @@ Stellt \type{op restore} einen Eintrag vor einem Commit wieder her,
 erhält der Working-Copy-Commit eine ältere Fassung seiner selbst, und der Branch bleibt stehen.
 Die Commits sehen dann aus wie nach einem Abbruch.
 Das Log nennt den Eintrag des Commits aber übernommen,
-also lehnt der nächste \type{commit} ab wie bei einem verschobenen Branch
-und verwirft seine Nachricht nicht (ADR-010, ADR-013).
+also lehnt der nächste \type{commit} ab wie bei einem verschobenen Branch,
+statt seine Nachricht stillschweigend zu verwerfen (ADR-010, ADR-013).
 \stopitemize
 \stopinfobox
 

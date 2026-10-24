@@ -79,7 +79,9 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   the branch at the named commit. The commits then look like a `commit` that stopped between its
   moves; the next `commit` reads the log, finds that the entry of that commit took effect, and
   refuses as a branch that moved instead of finishing it (ADR-010, STEMMA-76). To commit on top
-  of the old state, restore the entry of the commit itself; that moves the branch back too.
+  of the old state, restore the entry of the commit itself, which moves the branch back to the
+  parent but brings the files of that commit, and then restore the earlier entry again, which
+  brings the old files and leaves the branch.
 - **A missing object is an error before anything is written** *(confirmed)*. The restore checks
   that every commit it needs is in the object store. After a garbage collection (ADR-007) a
   commit that no entry names may be gone; the log keeps the roots, so this is not expected for a
