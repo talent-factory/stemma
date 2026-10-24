@@ -91,8 +91,9 @@ pub struct Status {
     /// its files are. The temporary files of a checkout are listed apart, in
     /// [`leftovers`](Self::leftovers).
     pub untracked: Vec<String>,
-    /// The temporary files that a checkout left when its process was killed or when it could not
-    /// remove them after a failed write, sorted by path (ADR-013), also one that a pattern of
+    /// The temporary files that a checkout left when its process ended without removing them or
+    /// when it could not remove them after a failed write or an interruption, sorted by path
+    /// (ADR-013), also one that a pattern of
     /// `.stemmaignore` matches; a directory that a pattern excludes is not searched. They hold the
     /// content of an old blob, which may be a secret that was purged since. `track` never adds
     /// one; one that a tree holds already, from a version before this rule, stays tracked and is

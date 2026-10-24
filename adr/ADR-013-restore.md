@@ -154,7 +154,7 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] The plan decides by platform whether names ignore case. A case-sensitive volume on macOS,
       or a rename that changes only the normalization form of a name, can pass or fail the plan
       for the wrong reason; the apply stops with a clear error, but halfway.
-- [x] A temporary file `.stemma-checkout-*` stays if the process is killed between its creation
+- [x] A temporary file `.stemma-checkout-*` can stay if the process ends between its creation
       and the rename. It holds the content of an old blob, perhaps a secret that was purged since,
       so `track` and `status` leave a name of exactly that form out, as they leave `.git` out
       (ADR-012), and `status` lists it apart for a person to remove (STEMMA-75). A path that names
@@ -163,6 +163,10 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       before the fix stays tracked and is listed. A write that fails removes its temporary file;
       if that removal fails as well (a lock on Windows, permissions), the error of the checkout
       names the file. A later checkout that reports such a file as the path in its way names it
-      as a leftover (STEMMA-79).
+      as a leftover (STEMMA-79). Ctrl-C (or a termination signal) removes the temporary file of
+      the write under way before the process ends, and a file that cannot be removed is named on
+      stderr. The file stays without a word only when the process ends without running the
+      handler: `kill -9`, a signal that the handler does not catch, a handler that could not be
+      installed, or a crash (STEMMA-81).
 - [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the
       file of the old tree.

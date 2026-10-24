@@ -1475,9 +1475,19 @@ pub fn main() -> ExitCode {
     // A command that writes holds the lock of the references at least as long as its snapshot takes
     // (ADR-014). Ctrl-C (or a termination signal) removes it before the process ends, so that the
     // next command does not find it; the process ends with 130, as a shell reports an interrupt.
-    // Without the handler (it could not be installed) an interrupt leaves the lock behind.
+    // A restore that is writing a file removes its temporary file first, while it still holds the
+    // lock, and names one that stays (ADR-013). Stderr is taken only for such a file: the main
+    // thread may hold it in a write that blocks, and the handler would then never end the process.
+    // Without the handler (it could not be installed) an interrupt leaves both behind.
     let _ = ctrlc::set_handler(|| {
+        let left = stemma_core::repository::remove_temp_files_for_exit();
         stemma_core::refs::release_locks_for_exit();
+        if !left.is_empty() {
+            let mut stderr = io::stderr().lock();
+            for (path, error) in left {
+                let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
+            }
+        }
         std::process::exit(INTERRUPTED);
     });
     // Help and version go to the output with code 0, a usage error to stderr with code 2.
@@ -1495,6 +1505,15 @@ pub fn main() -> ExitCode {
 
 /// The exit code of a command that was interrupted: 128 and the number of `SIGINT`.
 const INTERRUPTED: i32 = 130;
+
+/// The report of a temporary file of a checkout that an interrupted command could not remove.
+fn temp_left_message(path: &Path, error: &io::Error) -> String {
+    format!(
+        "interrupted; the temporary file `{}` could not be removed ({error}) and may hold an old \
+         file or a purged secret, so remove it",
+        path.display()
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -2744,5 +2763,23 @@ mod tests {
         ] {
             assert!(Anchor::from_str(&other).is_err(), "{other}");
         }
+    }
+
+    #[test]
+    fn a_temporary_file_that_an_interruption_leaves_is_named_with_the_advice() {
+        let error = io::Error::from(io::ErrorKind::PermissionDenied);
+        let path = Path::new("/w/d/.stemma-checkout-1-0-0123456789abcdef");
+        let text = temp_left_message(path, &error);
+        assert!(
+            text.starts_with(
+                "interrupted; the temporary file `/w/d/.stemma-checkout-1-0-0123456789abcdef` \
+                 could not be removed ("
+            ),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("may hold an old file or a purged secret, so remove it"),
+            "{text}"
+        );
     }
 }

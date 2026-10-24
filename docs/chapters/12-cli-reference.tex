@@ -95,9 +95,11 @@ wenn der Befehl etwas angelegt hat, das sonst nur die Ausgabe nennt.
 Bei \type{status}, \type{op log}, \type{op verify}, \type{--dry-run}
 und dem Plan von \type{purge} ist sie Code 1.
 \item {\bf 130:} Der Befehl wurde mit Ctrl-C (oder einem Signal zum Beenden) unterbrochen.
-Er hat die Sperre der Referenzen entfernt, bevor er endete. Was er bis dahin schrieb, bleibt
-wie nach einem Absturz: Objekte, die kein Commit nennt, und höchstens ein Eintrag ohne seine
-Zeigerbewegung. Ein erneuter Aufruf ist unbedenklich;
+Er hat die Sperre der Referenzen entfernt, bevor er endete.
+Ein unterbrochenes \type{op restore} entfernt ausserdem die temporäre Datei, die es gerade
+schrieb; liess sie sich nicht entfernen, nennt die Fehlermeldung sie.
+Was der Befehl bis dahin schrieb, bleibt wie nach einem Absturz: Objekte, die kein Commit nennt,
+und höchstens ein Eintrag ohne seine Zeigerbewegung. Ein erneuter Aufruf ist unbedenklich;
 nur nach einem unterbrochenen \type{purge --apply},
 dessen Journal schon besteht, muss zuerst \type{purge --resume} oder \type{purge --abort} kommen.
 \stopitemize
@@ -888,7 +890,11 @@ Verfolgte Dateien, die der alte Baum nicht hat, werden gelöscht,
 und mit ihnen die Verzeichnisse, die dadurch leer werden.
 Nicht verfolgte Dateien, \type{.stemma} und \type{.git} bleiben unberührt.
 Jede Datei schreibt das Restore zuerst unter einem Namen \type{.stemma-checkout-…} neben ihr Ziel
-und benennt sie dann um. Wird der Prozess dazwischen beendet, bleibt diese Datei liegen;
+und benennt sie dann um.
+Bei Ctrl-C (oder einem Signal zum Beenden) entfernt das Restore diese Datei, bevor es endet;
+lässt sie sich nicht entfernen, nennt die Fehlermeldung sie.
+Wird der Prozess dazwischen auf andere Weise beendet (\type{kill -9}, ein Absturz,
+oder konnte das Programm Ctrl-C nicht abfangen), bleibt sie liegen;
 \type{track} nimmt sie nie auf, und \type{status} nennt sie.
 Scheitert das Schreiben, entfernt das Restore die temporäre Datei.
 Gelingt auch das nicht (eine Sperre unter Windows, fehlende Rechte), nennt die Fehlermeldung
