@@ -214,11 +214,13 @@ art, not a template (ADR-015).
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
       does when the working-copy commit has one (phase 3).
 
-- [ ] Which commands take a snapshot. `track`, `commit`, and `status` do. `op log` reads and
-      takes no actor, so it takes none: a snapshot adds an entry and would change the log it is
-      about to show. Decide for the other commands that read. The path `.` of `track` tracks
-      every file of the repository directory, secrets included, unless `.stemmaignore` excludes
-      them (ADR-012).
+- [x] Which commands take a snapshot. The commands that change something take one first:
+      `track`, `commit`, `op restore` (ADR-013), and `purge --apply` (ADR-014); `status` takes
+      one, as it reports the state of the files. The commands that only read take none, as a
+      snapshot adds an entry and would change what they are about to show: `op log`,
+      `op verify`, the plan of `purge`, and `op restore --dry-run` (STEMMA-77). The path `.` of
+      `track` tracks every file of the repository directory, secrets included, unless
+      `.stemmaignore` excludes them (ADR-012).
 - [ ] The path form is a `String` that the core validates and `normalize_path` writes. A
       `RepoPath` type that cannot be built from an invalid path would make the rule one
       definition; do it with the next command that takes paths (`status` takes none).
@@ -256,7 +258,8 @@ art, not a template (ADR-015).
       (ADR-014, STEMMA-49).
 - [ ] Files that change during a snapshot. Each file is read once and its blob is made from what
       was read, so a file is consistent in itself, but the files together are not one instant.
-      Special files are refused; whether a link that is not UTF-8 may be saved is open.
+      Special files are refused, and so is a link whose target is not UTF-8, for Phase 1
+      (STEMMA-77).
 - [ ] A repository without the file `working-copy` (made before STEMMA-22, or the file removed). A
       snapshot stops with `NoWorkingCopy`, and no command makes the file again. Raising the format
       version would refuse such a repository at once; decide with the first command that needs it.
@@ -264,5 +267,6 @@ art, not a template (ADR-015).
       tracked directory that is now a link drops its files from the tree without a warning. Both
       want a way to report or to untrack (`stemma track`, STEMMA-2).
 - [ ] A second working copy (a worktree) for a second agent in one repository (phase 3).
-- [ ] Whether `stemma commit` needs a flag that makes a snapshot and a commit in one step for a
-      script.
+- [x] Whether `stemma commit` needs a flag that makes a snapshot and a commit in one step for a
+      script. It does not: `commit` takes the snapshot itself before it commits, so
+      `stemma commit -m` is that step (STEMMA-77).

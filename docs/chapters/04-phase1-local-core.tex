@@ -12,7 +12,7 @@ Commits erzeugt und der Status angezeigt.
 \item Referenzen für den Branch \type{main} und HEAD.
 \item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
 \item Befehle \type{init}, \type{track} (statt \type{add}), \type{commit}, \type{status},
-\type{op log} und \type{op restore}.
+\type{op log}, \type{op restore}, \type{op verify} und \type{purge}.
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
 \item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines
 Zeigers geschrieben werden (ADR-011).
@@ -1137,15 +1137,12 @@ Plan einen Purge ab, der mehr als $2^{24}$ Einträge ersetzen würde.
 
 \section{Offene Fragen}
 
-\startitemize
-\item Dateirechte: Ob ausser dem Ausführbit weitere Metadaten gespeichert werden.
-Das Ausführbit gehört zum Dateimodus (ADR-010).
-\item Symbolische Links: Ein Link wird als sein Ziel gespeichert (ADR-010).
-Offen ist, ob ein Ziel gespeichert werden darf, das kein UTF-8 ist.
-\stopitemize
-
-Zwei Fragen der Phase sind entschieden (STEMMA-9). Einen Index als Datei gibt es nicht, denn die
-Arbeitskopie ist ein Commit; das Textformat \type{stemma-index 1} gilt nur, falls der Index
-später als Cache gespeichert wird (ADR-005). Aufbewahrung und Garbage Collection kommen in einer
+Die Fragen der Phase sind entschieden.
+Vom Dateimodus speichert Stemma nur das Ausführbit, weitere Rechte und Metadaten nicht
+(ADR-010). Ein symbolischer Link wird als sein Ziel gespeichert, und ein Ziel, das kein UTF-8
+ist, lehnt der Snapshot in Phase~1 ab (STEMMA-77).
+Einen Index als Datei gibt es nicht, denn die Arbeitskopie ist ein Commit (STEMMA-9);
+das Textformat \type{stemma-index 1} gilt nur, falls der Index später als Cache gespeichert
+wird (ADR-005). Aufbewahrung und Garbage Collection kommen in einer
 späteren Phase in einem Schritt, gemessen an einer echten Session eines Agenten (ADR-007,
 ADR-011); bis dahin wächst der Speicher nur.

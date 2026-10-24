@@ -448,7 +448,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       restored from a backup of `.stemma`.
 - [x] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of
       the references. The writer that takes the lock removes them (STEMMA-31).
-- [ ] Restoring: what `stemma op restore` does when the working directory has changed since, and
+- [x] Restoring: what `stemma op restore` does when the working directory has changed since, and
       the entry that the restore writes (STEMMA-28). Decided in ADR-013 and implemented (STEMMA-28).
 - [ ] Who may read the log (ADR-003): it holds IDs and the actor, no paths, but it makes
       commits reachable that a role may not be allowed to see.
