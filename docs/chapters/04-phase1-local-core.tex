@@ -23,6 +23,11 @@ Zeigers geschrieben werden (ADR-011).
 Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält.
 Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher, Referenzen und Log,
 damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
+Ein Befehl findet sein Repository auch aus einem Unterverzeichnis: \type{Repository::discover}
+nimmt das Repository im Startverzeichnis oder sonst das nächste darüber, wie Git.
+Ein \type{.stemma}, das die Suche oberhalb findet, muss dem Benutzer gehören, der den Befehl
+ausführt, damit niemand mit einem \type{.stemma} in einem geteilten Verzeichnis die Befehle
+anderer abfängt. Die Pfade von \type{track} sind dann relativ zum Unterverzeichnis.
 
 \starttyping
 .stemma/
