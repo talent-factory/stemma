@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{operations, repository, run, stemma, write, Dir, Run};
+use common::{operations, repository, run, stemma, write, Dir, Run, ACTOR};
 
 fn track(dir: &Path, paths: &[&str]) -> Run {
     let mut args = vec!["track", "--actor", "human alice"];
@@ -145,17 +145,26 @@ fn a_relative_repository_is_the_base_of_the_paths() {
 }
 
 #[test]
-fn a_directory_below_the_repository_is_not_one_and_the_message_says_where_stemma_looks() {
+fn below_the_root_the_repository_is_found_and_the_paths_are_relative_to_the_directory() {
     let dir = repository();
-    fs::create_dir(dir.path().join("sub")).unwrap();
-    write(&dir.path().join("sub"), "a.txt", "one");
-    let result = track(&dir.path().join("sub"), &["a.txt"]);
+    let sub = dir.path().join("sub");
+    fs::create_dir_all(sub.join("deep")).unwrap();
+    write(&sub, "a.txt", "one");
+    write(&sub, "deep/b.txt", "two");
+    write(dir.path(), "top.txt", "three");
+    // `a.txt` is `sub/a.txt`, `..` leads up to the root, and `.` is the directory itself.
+    let result = track(&sub, &["a.txt", "../top.txt"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked sub/a.txt\ntracked top.txt\n");
+    let result = track(&sub.join("deep"), &["."]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked sub/deep/b.txt\n");
+    // A path that leaves the repository is refused.
+    let result = track(&sub, &["../../outside.txt"]);
     assert_eq!(result.code, 1, "{}", result.stderr);
-    assert!(
-        result.stderr.contains("not in its parents"),
-        "{}",
-        result.stderr
-    );
+    // Another command runs below the root as well.
+    let result = run(&sub, &["status", "--actor", ACTOR]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
 }
 
 #[test]

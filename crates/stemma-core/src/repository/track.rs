@@ -129,6 +129,39 @@ pub fn normalize_path(path: &str) -> String {
     }
 }
 
+/// Turns a path that a person gives relative to `subdirectory`, a directory below the root of the
+/// repository as [`Discovered::subdirectory`](super::Discovered) has it, into the form of
+/// [`Repository::track`], relative to the root. A `..` at the start of the path leads up from
+/// `subdirectory`, to the root and not beyond. Any other `..` stays, and so does one that would
+/// leave the repository, and the core refuses such a path, as it does today: a `..` after a part
+/// that may be a link does not lead where the name says. An absolute path stays as it is, and so
+/// does an empty argument or one of slashes only, as in [`normalize_path`], so that a script with
+/// an empty variable does not track the whole subdirectory. With an empty `subdirectory`, this is
+/// [`normalize_path`].
+pub fn normalize_path_in(subdirectory: &str, path: &str) -> String {
+    if path.starts_with('/') || path.split('/').all(str::is_empty) {
+        return path.to_owned();
+    }
+    let mut base: Vec<&str> = subdirectory
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut rest: Vec<&str> = path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    let up = rest.iter().take_while(|part| **part == "..").count();
+    let taken = up.min(base.len());
+    base.truncate(base.len() - taken);
+    rest.drain(..taken);
+    base.extend(rest);
+    if base.is_empty() {
+        ".".to_owned()
+    } else {
+        base.join("/")
+    }
+}
+
 /// Lists the files that the paths stand for, in the order of their paths. A file at a path is
 /// named; a file below a directory is not. A named path that `rules` exclude is an error, and a
 /// file below a directory that they exclude is left out.
@@ -621,6 +654,46 @@ mod tests {
             ("//", "//"),
         ] {
             assert_eq!(normalize_path(given), normal, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_path_relative_to_a_subdirectory_is_written_relative_to_the_root() {
+        for (subdirectory, given, normal) in [
+            ("", "a.txt", "a.txt"),
+            ("", "./dir//sub/./", "dir/sub"),
+            ("", ".", "."),
+            ("", "../a", "../a"),
+            ("", "a/../b", "a/../b"),
+            ("d", "a.txt", "d/a.txt"),
+            ("d/e", "./a.txt", "d/e/a.txt"),
+            ("d", ".", "d"),
+            ("d", "./", "d"),
+            ("d", "..", "."),
+            ("d/e", "../a", "d/a"),
+            ("d/e", "../../a", "a"),
+            ("d", "../../a", "../a"),
+            ("d", "x/../y", "d/x/../y"),
+            ("d", "../x/../y", "x/../y"),
+            ("d", "/abs/a", "/abs/a"),
+            ("d", "", ""),
+            ("d", "//", "//"),
+        ] {
+            assert_eq!(
+                normalize_path_in(subdirectory, given),
+                normal,
+                "{subdirectory:?} {given:?}"
+            );
+        }
+        // At the root, it is the form of `normalize_path`.
+        for given in [
+            "a.txt", "./a", "dir/", ".", "../a", "a/../b", "/abs", "", "//",
+        ] {
+            assert_eq!(
+                normalize_path_in("", given),
+                normalize_path(given),
+                "{given:?}"
+            );
         }
     }
 

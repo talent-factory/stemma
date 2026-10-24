@@ -42,7 +42,7 @@ pub use purge::{
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
-pub use track::{normalize_path, TrackError, Tracking};
+pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};
@@ -304,6 +304,78 @@ impl Repository {
             }),
             None => Err(OpenError::MalformedFormat { path: format_path }),
         }
+    }
+
+    /// Opens the repository that `start` lies in: the one at `start`, as [`open`](Self::open)
+    /// does, or else the nearest directory above it that contains `.stemma` (ADR-009). The
+    /// result names the directory of `start` below the root, so that a path that a person gives
+    /// relative to `start` can be turned into one relative to the root
+    /// ([`normalize_path_in`]).
+    ///
+    /// Only a missing `.stemma` at `start` leads the search upwards. Anything else at `start`
+    /// that is in the way, such as a `.stemma` that is a file or has a bad format, is the error
+    /// of [`open`](Self::open), and so is anything wrong with the repository that the search
+    /// finds. The search goes along the directories of the path of `start` with its links
+    /// resolved, so a repository above it is found under its real path.
+    ///
+    /// On Unix, a `.stemma` that the search finds above `start` must have the owner of `start`.
+    /// Otherwise a user could put a `.stemma` into a directory that others share, such as
+    /// `/tmp`, and a command that runs below it would work in that repository: a snapshot would
+    /// save the files that its tree names into a store of the other user. Such a repository is
+    /// [`OpenError::OtherOwner`], and it can still be opened by naming its directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenError::NoRepositoryAbove`] if neither `start` nor a directory above it
+    /// contains `.stemma`, [`OpenError::OtherOwner`] as above, [`OpenError::Io`] if the path
+    /// cannot be resolved or a directory cannot be inspected, and the errors of
+    /// [`open`](Self::open).
+    pub fn discover(start: impl AsRef<Path>) -> Result<Discovered, OpenError> {
+        let start = start.as_ref();
+        match Self::open(start) {
+            Err(OpenError::NotARepository { .. }) => {}
+            opened => {
+                return opened.map(|repository| Discovered {
+                    repository,
+                    subdirectory: String::new(),
+                })
+            }
+        }
+        let not_found = || OpenError::NoRepositoryAbove {
+            path: start.to_path_buf(),
+        };
+        let real = match fs::canonicalize(start) {
+            Ok(real) => real,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(not_found()),
+            Err(error) => return Err(OpenError::io("resolve the path of", start)(error)),
+        };
+        // A file is not a directory to start in, and no repository is around it.
+        if !real.is_dir() {
+            return Err(OpenError::NotARepository {
+                path: start.to_path_buf(),
+            });
+        }
+        for root in real.ancestors().skip(1) {
+            let metadata_dir = root.join(METADATA_DIR);
+            match fs::symlink_metadata(&metadata_dir) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
+            }
+            same_owner(start, &metadata_dir)?;
+            let repository = Self::open(root)?;
+            let below = real.strip_prefix(root).unwrap_or(&real);
+            let subdirectory = below
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            return Ok(Discovered {
+                repository,
+                subdirectory,
+            });
+        }
+        Err(not_found())
     }
 
     fn at(path: &Path) -> Self {
@@ -1159,7 +1231,44 @@ impl Error for InitError {
     }
 }
 
-/// Reasons why [`Repository::open`] fails.
+/// A repository that [`Repository::discover`] found, and where the search started in it.
+#[derive(Debug)]
+pub struct Discovered {
+    /// The repository.
+    pub repository: Repository,
+    /// The directory where the search started, relative to the root and with `/` between its
+    /// parts, as a path of [`Repository::track`] has it: empty if the search started at the
+    /// root. A part that is not UTF-8 is replaced by U+FFFD, so that a path below it is not
+    /// found and not mistaken for another.
+    pub subdirectory: String,
+}
+
+/// Fails with [`OpenError::OtherOwner`] unless `metadata_dir` has the owner of `start` (Unix).
+/// Elsewhere the operating system gives no owner that `std` can read, and the check passes.
+#[cfg(unix)]
+fn same_owner(start: &Path, metadata_dir: &Path) -> Result<(), OpenError> {
+    use std::os::unix::fs::MetadataExt;
+    let owner = |path: &Path| {
+        fs::symlink_metadata(path)
+            .map(|metadata| metadata.uid())
+            .map_err(OpenError::io("inspect", path))
+    };
+    if owner(start)? == owner(metadata_dir)? {
+        Ok(())
+    } else {
+        Err(OpenError::OtherOwner {
+            start: start.to_path_buf(),
+            found: metadata_dir.to_path_buf(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+fn same_owner(_start: &Path, _metadata_dir: &Path) -> Result<(), OpenError> {
+    Ok(())
+}
+
+/// Reasons why [`Repository::open`] and [`Repository::discover`] fail.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OpenError {
@@ -1167,6 +1276,19 @@ pub enum OpenError {
     NotARepository {
         /// The directory that was to be opened.
         path: PathBuf,
+    },
+    /// Neither the directory nor one above it has `.stemma` ([`Repository::discover`]).
+    NoRepositoryAbove {
+        /// The directory where the search started.
+        path: PathBuf,
+    },
+    /// The search found a `.stemma` above the directory where it started, but with another owner
+    /// than that directory, so it is not opened ([`Repository::discover`]).
+    OtherOwner {
+        /// The directory where the search started.
+        start: PathBuf,
+        /// The `.stemma` that was found.
+        found: PathBuf,
     },
     /// `.stemma` exists, but it is not a directory: it is a file, or a link that leads nowhere.
     NotADirectory {
@@ -1219,6 +1341,8 @@ impl OpenError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::NotARepository { .. }
+            | Self::NoRepositoryAbove { .. }
+            | Self::OtherOwner { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
             | Self::MalformedFormat { .. }
@@ -1234,6 +1358,19 @@ impl fmt::Display for OpenError {
                 f,
                 "`{}` is not a repository: there is no `{METADATA_DIR}`",
                 path.display()
+            ),
+            Self::NoRepositoryAbove { path } => write!(
+                f,
+                "`{}` is not in a repository: there is no `{METADATA_DIR}` in it or in a directory \
+                 above it",
+                path.display()
+            ),
+            Self::OtherOwner { start, found } => write!(
+                f,
+                "`{}` belongs to another user than `{}`, so it is not used; name its directory \
+                 to open it anyway",
+                found.display(),
+                start.display()
             ),
             Self::NotADirectory { path } => write!(
                 f,
@@ -1272,6 +1409,8 @@ impl Error for OpenError {
             // The message includes that of the I/O error, so the source is its own cause.
             Self::Io { source, .. } => source.source(),
             Self::NotARepository { .. }
+            | Self::NoRepositoryAbove { .. }
+            | Self::OtherOwner { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
             | Self::MalformedFormat { .. }
@@ -1997,6 +2136,110 @@ mod tests {
         assert!(matches!(error, OpenError::NotARepository { .. }), "{error}");
         let error = Repository::open(dir.path().join("missing")).unwrap_err();
         assert!(matches!(error, OpenError::NotARepository { .. }), "{error}");
+    }
+
+    #[test]
+    fn discover_finds_the_repository_at_the_start_or_above_it() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let found = Repository::discover(dir.path()).unwrap();
+        assert_eq!(
+            found.repository.path(),
+            dir.path(),
+            "at the start, the path stays as given"
+        );
+        assert_eq!(found.subdirectory, "");
+        fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        let found = Repository::discover(dir.path().join("a/b")).unwrap();
+        assert_eq!(
+            found.repository.path(),
+            fs::canonicalize(dir.path()).unwrap()
+        );
+        assert_eq!(found.subdirectory, "a/b");
+        // The nearest one wins: a repository inside a repository.
+        init(&dir.path().join("a")).unwrap();
+        let found = Repository::discover(dir.path().join("a/b")).unwrap();
+        assert_eq!(
+            found.repository.path(),
+            fs::canonicalize(dir.path().join("a")).unwrap()
+        );
+        assert_eq!(found.subdirectory, "b");
+    }
+
+    #[test]
+    fn discover_does_not_search_past_a_metadata_directory_that_is_in_the_way() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/.stemma"), b"x").unwrap();
+        let error = Repository::discover(dir.path().join("sub")).unwrap_err();
+        assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
+        // What the search finds above is opened strictly, too.
+        let dir = TempDir::new();
+        fs::create_dir_all(dir.path().join(".stemma")).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let error = Repository::discover(dir.path().join("sub")).unwrap_err();
+        assert!(matches!(error, OpenError::MissingFormat { .. }), "{error}");
+    }
+
+    #[test]
+    fn discover_without_a_repository_says_that_it_searched_above() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let start = dir.path().join("sub");
+        let error = Repository::discover(&start).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::NoRepositoryAbove { path } if *path == start),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`{}` is not in a repository: there is no `.stemma` in it or in a directory above \
+                 it",
+                start.display()
+            )
+        );
+        let error = Repository::discover(dir.path().join("missing")).unwrap_err();
+        assert!(
+            matches!(error, OpenError::NoRepositoryAbove { .. }),
+            "{error}"
+        );
+        // A file is no directory to start in.
+        init(dir.path()).unwrap();
+        fs::write(dir.path().join("file"), b"x").unwrap();
+        let error = Repository::discover(dir.path().join("file")).unwrap_err();
+        assert!(matches!(error, OpenError::NotARepository { .. }), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_does_not_use_a_repository_of_another_owner_above_the_start() {
+        // A directory of another owner stands for a `.stemma` that another user put into a
+        // shared directory. Changing the owner needs root, so the test checks the rule through
+        // the check itself, with a directory whose owner differs: `/` belongs to root.
+        let dir = TempDir::new();
+        let own = dir.path();
+        let root_owned = Path::new("/");
+        use std::os::unix::fs::MetadataExt;
+        if fs::metadata(own).unwrap().uid() == fs::metadata(root_owned).unwrap().uid() {
+            eprintln!("skipped: the tests run as the owner of `/`");
+            return;
+        }
+        let error = same_owner(own, root_owned).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::OtherOwner { start, found } if start == own && found == root_owned),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`/` belongs to another user than `{}`, so it is not used; name its directory to \
+                 open it anyway",
+                own.display()
+            )
+        );
+        same_owner(own, own).unwrap();
     }
 
     #[test]

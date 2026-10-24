@@ -61,9 +61,9 @@ use stemma_core::object::{ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
-    normalize_path, ApplyPurgeError, CommitError, Committed, InitError, InitOptions, OpenError,
-    PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan, SnapshotError, Status,
-    StatusError, TrackError, Tracking, UpdateError,
+    normalize_path_in, ApplyPurgeError, CommitError, Committed, Discovered, InitError, InitOptions,
+    OpenError, PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan, SnapshotError,
+    Status, StatusError, TrackError, Tracking, UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -123,7 +123,7 @@ struct PurgeArgs {
     #[arg(long)]
     abort: bool,
 
-    /// The directory of the repository, the one that contains `.stemma`
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
         short = 'C',
         long = "repository",
@@ -151,7 +151,7 @@ enum OpCommand {
 
 #[derive(Debug, Args)]
 struct OpVerifyArgs {
-    /// The directory of the repository, the one that contains `.stemma`
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
         short = 'C',
         long = "repository",
@@ -205,7 +205,7 @@ struct OpRestoreArgs {
     #[arg(value_name = "NUMBER")]
     number: u64,
 
-    /// The directory of the repository, the one that contains `.stemma`
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
         short = 'C',
         long = "repository",
@@ -231,7 +231,7 @@ struct OpRestoreArgs {
 
 #[derive(Debug, Args)]
 struct OpLogArgs {
-    /// The directory of the repository, the one that contains `.stemma`
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
         short = 'C',
         long = "repository",
@@ -251,13 +251,14 @@ struct OpLogArgs {
 
 #[derive(Debug, Args)]
 struct TrackArgs {
-    /// The files and directories to track, relative to the repository; a directory stands for
-    /// the files below it, and `.` for the whole directory of the repository
+    /// The files and directories to track, relative to the directory of `-C`; a directory
+    /// stands for the files below it, `.` for the directory of `-C`, and `..` leads up to the root
+    /// of the repository
     #[arg(required = true, value_name = "PATH")]
     paths: Vec<String>,
 
-    /// The directory of the repository, the one that contains `.stemma`; the paths are relative
-    /// to it
+    /// A directory of the repository: the one that contains `.stemma`, or one below it; the
+    /// paths are relative to it
     #[arg(
         short = 'C',
         long = "repository",
@@ -279,7 +280,7 @@ struct CommitArgs {
     #[arg(short = 'm', long, value_name = "MESSAGE")]
     message: String,
 
-    /// The directory of the repository, the one that contains `.stemma`
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
         short = 'C',
         long = "repository",
@@ -297,7 +298,7 @@ struct CommitArgs {
 
 #[derive(Debug, Args)]
 struct StatusArgs {
-    /// The directory of the repository, the one that contains `.stemma`
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
         short = 'C',
         long = "repository",
@@ -530,11 +531,10 @@ impl fmt::Display for CliError {
             ),
             Self::Actor(error) => write!(f, "invalid actor: {error}"),
             Self::Init(error) => error.fmt(f),
-            Self::Open(error @ OpenError::NotARepository { .. }) => write!(
+            Self::Open(error @ OpenError::NoRepositoryAbove { .. }) => write!(
                 f,
-                "{error}; stemma looks only in the directory it is given, not in its parents \
-                 (see `-C` of `track`, `commit`, `status`, `op restore`, and `purge`, and the \
-                 argument of `op log`)"
+                "{error}; run the command in a repository or below it, name a directory of one \
+                 with `-C`, or make one with `stemma init`"
             ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
@@ -703,7 +703,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
 /// purge that stopped, and `--abort` undoes one that stopped before its entry was written.
 fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
-    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let repository = open(&args.repository)?;
     let (made, text) = if args.resume {
         let purged = repository
             .resume_purge(&actor, &AllowAll)
@@ -870,7 +870,7 @@ fn ranges(numbers: &[u64]) -> String {
 /// that names the entry.
 fn restore(args: OpRestoreArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
-    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let repository = open(&args.repository)?;
     if args.dry_run {
         let plan = repository
             .plan_restore(args.number, args.force, &actor, &AllowAll)
@@ -1019,7 +1019,7 @@ fn made_text(number: u64, error: &RestoreError) -> String {
 /// before and after, and the log is listed again, and if anything shows a writer, a pointer that
 /// still has its old value is not called a failed move.
 fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
-    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let repository = open(&args.repository)?;
     let log = repository.oplog();
     let numbers = log.numbers().map_err(CliError::OpLog)?;
     if numbers.is_empty() {
@@ -1121,7 +1121,7 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// an anchor kept outside the repository shows that the log was not rewritten. It only reads, and
 /// a closed pipe is not a failure.
 fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError> {
-    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let repository = open(&args.repository)?;
     let entries = repository.oplog().verify().map_err(CliError::OpLog)?;
     let last = entries.last().ok_or(CliError::EmptyLog)?;
     if let Some(anchor) = args.anchor {
@@ -1172,13 +1172,28 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
     }
 }
 
+/// Opens the repository that the directory of `-C` lies in (ADR-009): the directory itself, or
+/// the nearest one above it.
+fn open(dir: &Path) -> Result<Repository, CliError> {
+    Repository::discover(dir)
+        .map(|found| found.repository)
+        .map_err(CliError::Open)
+}
+
 /// Tracks the files and lists the ones that are new. `track` saves the tracked files as well, so
 /// it is the snapshot that ADR-010 asks for before a command that changes something; `op log`
 /// only reads and takes none.
 fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
-    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
-    let paths: Vec<String> = args.paths.iter().map(|path| normalize_path(path)).collect();
+    let Discovered {
+        repository,
+        subdirectory,
+    } = Repository::discover(&args.repository).map_err(CliError::Open)?;
+    let paths: Vec<String> = args
+        .paths
+        .iter()
+        .map(|path| normalize_path_in(&subdirectory, path))
+        .collect();
     finish_track(repository.track(&paths, &actor, &AllowAll), out)
 }
 
@@ -1233,7 +1248,7 @@ fn pointer_moved(error: &CommitError) -> bool {
 /// a change since the last command is part of the commit.
 fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
-    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let repository = open(&args.repository)?;
     let result = repository
         .commit(&args.message, &actor, &AllowAll)
         .map_err(CliError::Commit)?;
@@ -1283,7 +1298,7 @@ fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError>
 /// tracked files first, so the status is of the working copy as it is now.
 fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
-    let repository = Repository::open(&args.repository).map_err(CliError::Open)?;
+    let repository = open(&args.repository)?;
     let result = repository
         .status(&actor, &AllowAll)
         .map_err(CliError::Status)?;
@@ -2381,12 +2396,18 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_that_is_not_a_repository_says_where_stemma_looks() {
-        let error = CliError::Open(OpenError::NotARepository {
+    fn a_directory_that_is_not_in_a_repository_says_what_to_do() {
+        let error = CliError::Open(OpenError::NoRepositoryAbove {
             path: PathBuf::from("sub"),
         });
         let message = error.to_string();
-        assert!(message.contains("not in its parents"), "{message}");
+        assert!(
+            message.ends_with(
+                "; run the command in a repository or below it, name a directory of one with \
+                 `-C`, or make one with `stemma init`"
+            ),
+            "{message}"
+        );
     }
 
     #[test]
