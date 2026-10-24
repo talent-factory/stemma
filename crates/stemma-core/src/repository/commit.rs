@@ -78,7 +78,9 @@ impl Repository {
     /// commit and not a branch) before anything is written, and [`CommitError::NothingToCommit`]
     /// if the tree is that of the parent (or empty, for a first commit) and
     /// [`CommitError::BranchMoved`] if the branch is not at the parent of the working-copy commit,
-    /// so that the commit would drop what the branch has; these two leave only the snapshot.
+    /// so that the commit would drop what the branch has; these two leave only the snapshot. Every
+    /// failure after a snapshot that wrote an entry is [`CommitError::AfterSnapshot`], which names
+    /// that entry and wraps the failure; [`CommitError::failure`] returns the failure itself.
     /// [`CommitError::Update`] covers a refusal of the authorizer for `commit`, a pointer that
     /// another process moved first (`UpdateError::Refs` with [`RefError::Stale`] or
     /// [`RefError::StaleWorkingCopy`]: repeat the commit), and a failure of the log or the
@@ -109,10 +111,30 @@ impl Repository {
             .refs_store()
             .lock_writer()
             .map_err(|error| CommitError::Update(UpdateError::Refs(error)))?;
-        self.snapshot_locked(&lock, actor, authorizer)?;
+        let saved = self.snapshot_locked(&lock, actor, authorizer)?;
         #[cfg(test)]
         super::snapshot::pause::reached(super::snapshot::pause::Stage::Moves);
+        // A failure after the snapshot names its entry: the commit was not made, but the snapshot
+        // was, and the working-copy commit moved to it.
+        self.commit_locked(&lock, &operation, name, message, actor)
+            .map_err(|error| match saved {
+                Some(snapshot) => CommitError::AfterSnapshot {
+                    snapshot: Box::new(snapshot),
+                    source: Box::new(error),
+                },
+                None => error,
+            })
+    }
 
+    /// The part of [`commit`](Self::commit) after the snapshot, under `lock`.
+    fn commit_locked(
+        &self,
+        lock: &WriteLock,
+        operation: &OperationName,
+        name: BranchName,
+        message: &str,
+        actor: &Actor,
+    ) -> Result<Committed, CommitError> {
         let current = self.refs().working_copy().map_err(CommitError::Refs)?;
         let working = read_commit(self.objects(), current)?;
         let tip = self.refs().branch(&name).map_err(CommitError::Refs)?;
@@ -130,7 +152,7 @@ impl Repository {
                 && !named.message().is_empty()
                 && self.stopped_by_log(&name, stopped, current)?;
             if stopped_here {
-                return self.finish(&lock, &operation, name, &named, current, actor);
+                return self.finish(lock, operation, name, &named, current, actor);
             }
             return Err(CommitError::BranchMoved {
                 branch: name,
@@ -158,7 +180,7 @@ impl Repository {
         let outcome = self
             .refs
             .update_branch_and_working_copy_after(
-                &lock,
+                lock,
                 &BranchMove {
                     name: &name,
                     expected: tip,
@@ -356,6 +378,15 @@ pub enum CommitError {
     /// working-copy commit that was put back to an older version of itself. The commit was not
     /// made; at most the snapshot was written, and the call can be repeated.
     Log(OpLogError),
+    /// The snapshot that comes first wrote an entry and moved the working-copy commit to it, and a
+    /// later step failed with `source`. The commit was not made, unless `source` says that a
+    /// pointer of it moved.
+    AfterSnapshot {
+        /// The entry of the snapshot.
+        snapshot: Box<Entry>,
+        /// The failure.
+        source: Box<CommitError>,
+    },
 }
 
 impl CommitError {
@@ -363,14 +394,35 @@ impl CommitError {
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::Update(error) => error.entry(),
+            Self::AfterSnapshot { source, .. } => source.entry(),
             _ => None,
+        }
+    }
+
+    /// The entry of the snapshot that came first, if it wrote one and a later step failed.
+    pub fn snapshot(&self) -> Option<&Entry> {
+        match self {
+            Self::AfterSnapshot { snapshot, .. } => Some(snapshot),
+            _ => None,
+        }
+    }
+
+    /// The failure itself, without the snapshot that came before it.
+    pub fn failure(&self) -> &CommitError {
+        match self {
+            Self::AfterSnapshot { source, .. } => source.failure(),
+            other => other,
         }
     }
 
     /// Whether a pointer moved although the call failed: see [`UpdateError::pointer_moved`]. If so
     /// the commit must not be repeated; the next call finishes it where it stopped.
     pub fn pointer_moved(&self) -> bool {
-        matches!(self, Self::Update(error) if error.pointer_moved())
+        match self {
+            Self::Update(error) => error.pointer_moved(),
+            Self::AfterSnapshot { source, .. } => source.pointer_moved(),
+            _ => false,
+        }
     }
 
     /// Returns the error of the file system, if one inside. The chain [`Error::source`] does not
@@ -382,6 +434,7 @@ impl CommitError {
             Self::Refs(error) => error.io_error(),
             Self::Update(error) => error.io_error(),
             Self::Log(error) => error.io_error(),
+            Self::AfterSnapshot { source, .. } => source.io_error(),
             _ => None,
         }
     }
@@ -444,6 +497,11 @@ impl fmt::Display for CommitError {
                 f,
                 "could not read the operation log, so the commit was not made: {error}"
             ),
+            Self::AfterSnapshot { snapshot, source } => write!(
+                f,
+                "{source}; the working copy was saved first as entry {}",
+                snapshot.number()
+            ),
         }
     }
 }
@@ -459,6 +517,7 @@ impl Error for CommitError {
             Self::Update(error) => error.source(),
             Self::ChangeId(error) => error.source(),
             Self::Log(error) => error.source(),
+            Self::AfterSnapshot { source, .. } => source.source(),
             _ => None,
         }
     }
@@ -738,7 +797,7 @@ mod tests {
 
         let error = commit(&repository, "two").unwrap_err();
 
-        let CommitError::BranchMoved { tip, parents, .. } = &error else {
+        let CommitError::BranchMoved { tip, parents, .. } = error.failure() else {
             panic!("{error}");
         };
         assert_eq!(tip, &Some(first.working_copy));
@@ -1452,13 +1511,26 @@ mod tests {
 
         let error = commit(&repository, "two").unwrap_err();
 
-        assert!(matches!(error, CommitError::BranchMoved { .. }), "{error}");
+        assert!(
+            matches!(error.failure(), CommitError::BranchMoved { .. }),
+            "{error}"
+        );
         let log = repository.oplog().entries().unwrap();
         let names: Vec<&str> = log[after_move..]
             .iter()
             .map(|entry| entry.change().unwrap().operation().as_str())
             .collect();
         assert_eq!(names, ["snapshot"]);
+        // The error names the entry of that snapshot, and nothing of the commit moved.
+        assert_eq!(error.snapshot(), Some(&log[after_move]));
+        assert!(!error.pointer_moved() && error.entry().is_none());
+        assert!(
+            error.to_string().ends_with(&format!(
+                "; the working copy was saved first as entry {}",
+                log[after_move].number()
+            )),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1492,7 +1564,8 @@ mod tests {
 
         let error = commit(&repository, "two").unwrap_err();
 
-        assert!(matches!(error, CommitError::Tip(_)), "{error}");
+        assert!(matches!(error.failure(), CommitError::Tip(_)), "{error}");
+        assert!(error.snapshot().is_some(), "{error}");
         assert!(error.to_string().contains("tip of the branch"), "{error}");
     }
 

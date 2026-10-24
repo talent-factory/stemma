@@ -551,11 +551,18 @@ impl fmt::Display for CliError {
                  {source}; the commit was not made, and `stemma commit` can be run again",
                 entry.number()
             ),
-            Self::Commit(error @ CommitError::Update(UpdateError::PartlyMoved { .. })) => write!(
-                f,
-                "{error}; `stemma commit` run again finishes the commit, and the message of that \
-                 call is not used"
-            ),
+            Self::Commit(error)
+                if matches!(
+                    error.failure(),
+                    CommitError::Update(UpdateError::PartlyMoved { .. })
+                ) =>
+            {
+                write!(
+                    f,
+                    "{error}; `stemma commit` run again finishes the commit, and the message of \
+                     that call is not used"
+                )
+            }
             Self::Commit(error) => error.fmt(f),
             Self::CommitNotDurable {
                 committed,
@@ -2374,6 +2381,21 @@ mod tests {
         assert!(
             partly.to_string().contains("finishes the commit"),
             "{partly}"
+        );
+        // After a snapshot that wrote an entry: the same code and advice, and the entry is named.
+        let CliError::Commit(inner) = partly else {
+            unreachable!()
+        };
+        let saved = CliError::Commit(CommitError::AfterSnapshot {
+            snapshot: Box::new(entry.clone()),
+            source: Box::new(inner),
+        });
+        assert_eq!(saved.exit_code(), ExitCode::from(3));
+        let text = saved.to_string();
+        assert!(
+            text.contains(&format!("saved first as entry {}", entry.number()))
+                && text.ends_with("the message of that call is not used"),
+            "{text}"
         );
         let durable = CliError::Commit(CommitError::Update(UpdateError::NotDurable {
             entry: Box::new(entry.clone()),
