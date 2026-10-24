@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use common::{operations, repository, run, stemma, write, Dir, Run, ACTOR};
+use stemma_core::object::Blob;
 
 fn track(dir: &Path, paths: &[&str]) -> Run {
     let mut args = vec!["track", "--actor", "human alice"];
@@ -186,11 +187,14 @@ fn every_command_but_init_finds_the_repository_from_below_the_root() {
     let result = run(&sub, &["status", "--actor", ACTOR]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(result.stdout.contains("a.txt"), "{}", result.stdout);
+    let blob = Blob::new("one").id().to_string();
     for args in [
         &["commit", "--actor", ACTOR, "-m", "from below"][..],
         &["op", "log"],
         &["op", "verify"],
         &["op", "restore", "2", "--dry-run", "--actor", ACTOR],
+        // Without `--apply`, the plan only: it finds the blob in the history of the repository.
+        &["purge", &blob, "--actor", ACTOR],
     ] {
         let result = run(&sub, args);
         assert_eq!(result.code, 0, "{args:?}: {}", result.stderr);
@@ -224,6 +228,28 @@ fn a_command_in_a_link_into_a_repository_warns_where_it_works() {
         "{}",
         result.stderr
     );
+    // `-C ..` from the link: the shell reads it as the directory of the link, not the root.
+    let result = stemma(
+        &link,
+        &["status", "-C", "..", "--actor", ACTOR],
+        |command| {
+            command.env("PWD", &link);
+        },
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result
+            .stderr
+            .contains("stemma: warning: `..` leads through a link"),
+        "{}",
+        result.stderr
+    );
+    // A `PWD` that names another directory does not count: no link can be seen then.
+    let result = stemma(&link, &["status", "--actor", ACTOR], |command| {
+        command.env("PWD", elsewhere.path());
+    });
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(!result.stderr.contains("warning"), "{}", result.stderr);
     // Entered by `cd`: the process gets the directory with its links resolved, and the shell
     // gives its name in `PWD`.
     let result = stemma(&link, &["status", "--actor", ACTOR], |command| {
@@ -492,4 +518,29 @@ fn a_directory_as_the_exclusion_file_stops_the_command() {
         "{}",
         result.stderr
     );
+}
+
+#[test]
+fn a_relative_directory_below_the_root_is_found_without_a_warning() {
+    let dir = repository();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    write(dir.path(), "sub/a.txt", "one");
+    let parent = dir.path().parent().unwrap();
+    let name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let below = format!("{name}/sub");
+    let result = stemma(
+        parent,
+        &["track", "-C", &below, "--actor", ACTOR, "a.txt"],
+        |command| {
+            command.env("PWD", parent);
+        },
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked sub/a.txt\n");
+    assert!(!result.stderr.contains("warning"), "{}", result.stderr);
 }

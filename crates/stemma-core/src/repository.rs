@@ -354,8 +354,10 @@ impl Repository {
                 return opened.map(|repository| Discovered {
                     repository,
                     subdirectory: String::new(),
-                    through_link: false,
-                })
+                    // `-C ..` from a link opens the directory above its target.
+                    through_link: fs::canonicalize(start)
+                        .is_ok_and(|real| !lies_below(start, &real)),
+                });
             }
         }
         let real = match fs::canonicalize(start) {
@@ -1266,17 +1268,24 @@ pub struct Discovered {
     /// root.
     pub subdirectory: String,
     /// Whether the search reached the repository through a link: no directory of the path of
-    /// the start, as it was given, is the root. A command that runs in a link to a directory of
-    /// another repository then works in that one, which a person may not expect.
+    /// the start, as the shell reads it, is the root. A command that runs in a link to a
+    /// directory of another repository then works in that one, which a person may not expect.
+    /// Without the `PWD` of a shell, a link that led to the directory of the process is not seen,
+    /// and a link to the root itself does not count (see the search in
+    /// [`Repository::discover`]).
     pub through_link: bool,
 }
 
-/// Whether a directory of `start`, as it is given and before its links are resolved, is `root`
-/// once resolved. The parts are taken from the absolute path without resolving `..`, so that a
-/// link anywhere in the path counts, as for the shell. A relative `start` is taken from the
-/// directory of the process as the shell names it: the operating system gives that directory with
-/// its links resolved, and a shell keeps the name it was entered by in `PWD`, which counts if it is
-/// the same directory.
+/// Whether a directory of `start`, as the shell reads its path, is `root` once resolved: the
+/// path is made absolute, and `.` and `..` are applied to its names before any link is resolved,
+/// as `cd` does by default. Then a link anywhere on the way counts, also one that a `..` follows:
+/// from a link `~/link` to `/b/repo/sub`, `~/link/..` is `~` for the shell and not `/b/repo`.
+///
+/// A relative `start` is taken from the directory of the process as the shell names it, in `PWD`,
+/// if that names the same directory. Without such a `PWD`, as when a program starts the command in
+/// a directory of its own, only the directory with its links resolved is known, and a link that
+/// led there cannot be seen. A link to the root of a repository itself is no detour either: the
+/// root is a directory of the path then.
 fn lies_below(start: &Path, root: &Path) -> bool {
     let absolute = if start.is_absolute() {
         start.to_path_buf()
@@ -1290,7 +1299,17 @@ fn lies_below(start: &Path, root: &Path) -> bool {
             .filter(|pwd| fs::canonicalize(pwd).ok() == fs::canonicalize(&current).ok());
         logical.unwrap_or(current).join(start)
     };
-    absolute
+    let mut logical = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                logical.pop();
+            }
+            other => logical.push(other),
+        }
+    }
+    logical
         .ancestors()
         .any(|ancestor| fs::canonicalize(ancestor).is_ok_and(|real| real == root))
 }
@@ -2391,19 +2410,69 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn discover_refuses_a_repository_above_that_another_user_owns() {
+    #[ignore = "needs root: run with `sudo -E cargo test -- --ignored`"]
+    fn discover_trusts_by_the_user_who_runs_the_command_and_not_by_the_start() {
         // Changing the owner needs root, as on a machine where another user made the repository.
-        if rustix::process::geteuid().as_raw() != 0 {
-            eprintln!("skipped: changing the owner needs root");
-            return;
-        }
+        use std::os::unix::fs::lchown;
+        assert_eq!(
+            rustix::process::geteuid().as_raw(),
+            0,
+            "the test needs root"
+        );
+        let other = Some(65534);
         let dir = TempDir::new();
         init(dir.path()).unwrap();
-        fs::create_dir(dir.path().join("sub")).unwrap();
-        std::os::unix::fs::lchown(dir.path().join(METADATA_DIR), Some(65534), Some(65534)).unwrap();
-        let error = Repository::discover(dir.path().join("sub")).unwrap_err();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        // A directory of another user in one's own repository, such as `build` after `sudo make`.
+        lchown(&sub, other, other).unwrap();
+        Repository::discover(&sub).unwrap();
+        // A repository of another user, also when the start belongs to that user.
+        lchown(dir.path().join(METADATA_DIR), other, other).unwrap();
+        let error = Repository::discover(&sub).unwrap_err();
         assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+        lchown(&sub, Some(0), Some(0)).unwrap();
+        let error = Repository::discover(&sub).unwrap_err();
+        assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+        // Named directly, it is opened as before.
         Repository::discover(dir.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_owner_of_a_found_link_counts_and_not_that_of_its_target() {
+        // A link that this user made to `/`, which belongs to root: the link is trusted, as its
+        // owner is this user, and the open that follows decides what it leads to.
+        let dir = TempDir::new();
+        let link = dir.path().join(METADATA_DIR);
+        std::os::unix::fs::symlink("/", &link).unwrap();
+        trusted(&link).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_repository_at_the_root_of_a_volume_is_not_trusted() {
+        for root in [r"C:\.stemma", r"\\?\C:\.stemma", r"\\server\share\.stemma"] {
+            assert!(
+                matches!(
+                    trusted(Path::new(root)),
+                    Err(OpenError::AtVolumeRoot { .. })
+                ),
+                "{root}"
+            );
+        }
+        trusted(Path::new(r"C:\x\.stemma")).unwrap();
+        trusted(Path::new(r"\\?\C:\x\.stemma")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_at_the_metadata_directory_above_stops_the_search() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        std::os::unix::fs::symlink("nowhere", dir.path().join(METADATA_DIR)).unwrap();
+        let error = Repository::discover(dir.path().join("sub")).unwrap_err();
+        assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
     }
 
     #[cfg(unix)]
@@ -2431,6 +2500,43 @@ mod tests {
             matches!(error, OpenError::NoRepositoryAbove { .. }),
             "{error}"
         );
+        // A `..` after a link leads up from the link for the shell, but the system goes up from
+        // its target: `link/../other` is `repo/other` for the system and a directory beside the
+        // link for the shell, so the repository is reached through the link.
+        fs::create_dir(repo.join("other")).unwrap();
+        let found = Repository::discover(dir.path().join("link/../other")).unwrap();
+        assert_eq!(found.subdirectory, "other");
+        assert!(found.through_link);
+        let deep = dir.path().join("deep");
+        fs::create_dir(&deep).unwrap();
+        symlink(repo.join("sub"), deep.join("link")).unwrap();
+        let found = Repository::discover(deep.join("link/..")).unwrap();
+        assert_eq!(found.repository.path(), deep.join("link/.."));
+        assert!(
+            found.through_link,
+            "the shell reads `deep/link/..` as `deep`"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_above_the_repository_or_to_its_root_is_no_detour() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new();
+        let repo = dir.path().join("data/repo");
+        init(&repo).unwrap();
+        fs::create_dir(repo.join("sub")).unwrap();
+        // A link above the repository, as `~/proj` to `/data/proj`: the root is on the way.
+        symlink(dir.path().join("data"), dir.path().join("alias")).unwrap();
+        let found = Repository::discover(dir.path().join("alias/repo/sub")).unwrap();
+        assert!(!found.through_link);
+        assert_eq!(found.subdirectory, "sub");
+        // A link to the root itself: the root is on the way as well.
+        symlink(&repo, dir.path().join("root")).unwrap();
+        let found = Repository::discover(dir.path().join("root/sub")).unwrap();
+        assert!(!found.through_link);
+        let found = Repository::discover(dir.path().join("root")).unwrap();
+        assert!(!found.through_link);
     }
 
     #[cfg(target_os = "linux")]
