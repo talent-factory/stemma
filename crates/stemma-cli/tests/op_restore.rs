@@ -77,6 +77,8 @@ fn a_commit_after_a_restore_before_a_commit_is_refused_and_finishes_nothing() {
         &["op", "restore", &snapshot.to_string(), "--actor", ACTOR],
     );
     let entries = numbers(dir.path()).len();
+    let pointers = ["working-copy", "refs/heads/main"]
+        .map(|name| read(dir.path(), &format!(".stemma/{name}")));
 
     let result = run(dir.path(), &["commit", "-m", "third", "--actor", ACTOR]);
 
@@ -89,6 +91,11 @@ fn a_commit_after_a_restore_before_a_commit_is_refused_and_finishes_nothing() {
     );
     assert!(!result.stderr.contains("warning"), "{}", result.stderr);
     assert_eq!(numbers(dir.path()).len(), entries);
+    assert_eq!(
+        ["working-copy", "refs/heads/main"]
+            .map(|name| read(dir.path(), &format!(".stemma/{name}"))),
+        pointers
+    );
 }
 
 #[test]

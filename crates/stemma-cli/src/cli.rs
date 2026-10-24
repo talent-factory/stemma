@@ -32,7 +32,8 @@
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
-//! is refused for nothing to commit or for a branch that moved, `status` when it cannot read the
+//! is refused for nothing to commit or for a branch that moved, or cannot read the log to tell a
+//! stopped commit from a restored working copy, `status` when it cannot read the
 //! repository or write its output, `op restore` when a later step fails, and `purge --apply`
 //! when the purge cannot be planned or started after it. The message of such a failure names the
 //! entry, and repeating the command is safe.
