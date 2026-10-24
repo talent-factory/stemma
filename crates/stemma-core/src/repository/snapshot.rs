@@ -333,27 +333,49 @@ pub(super) fn lookup(
     Ok(None)
 }
 
-/// The mode of a regular file. Where the file system has no executable bit, the mode that the tree
-/// has stays, except that a tracked link is a plain file there, because the file is not a link.
+/// The mode of a regular file, from its executable bit on Unix.
 fn file_mode(metadata: &Metadata, tracked: FileMode) -> FileMode {
     #[cfg(unix)]
-    {
+    let executable = {
         use std::os::unix::fs::PermissionsExt;
-        let _ = tracked;
-        if metadata.permissions().mode() & 0o111 == 0 {
-            FileMode::File
-        } else {
-            FileMode::Executable
-        }
-    }
+        Some(metadata.permissions().mode() & 0o111 != 0)
+    };
     #[cfg(not(unix))]
-    {
+    let executable = {
         let _ = metadata;
-        match tracked {
-            FileMode::Symlink => FileMode::File,
-            other => other,
-        }
+        None
+    };
+    regular_file_mode(executable, tracked)
+}
+
+/// The mode of a regular file, given its executable bit where the platform has one. Outside Unix
+/// (Windows) the mode that the tree has stays. A tracked link stays a link there as well: the
+/// checkout writes a link as a plain file that holds its target, as Git does with
+/// `core.symlinks=false`, and the file is read back as the target, so a checkout followed by a
+/// snapshot changes nothing.
+fn regular_file_mode(executable: Option<bool>, tracked: FileMode) -> FileMode {
+    match executable {
+        Some(true) => FileMode::Executable,
+        Some(false) => FileMode::File,
+        None => tracked,
     }
+}
+
+/// The longest target that a file which stands for a link may hold, `PATH_MAX` on Linux.
+const MAX_LINK_TARGET: usize = 4096;
+
+/// Whether the content of a file that stands for a link is a target that a link on Unix can have:
+/// UTF-8 as a target that a snapshot reads from a real link, not empty, no longer than
+/// [`MAX_LINK_TARGET`], and without a NUL byte or a line break. A line break also catches an editor
+/// that adds one at the end, and most content that was written over the file as if it were the
+/// target itself.
+fn is_link_target(content: &[u8]) -> bool {
+    !content.is_empty()
+        && content.len() <= MAX_LINK_TARGET
+        && !content
+            .iter()
+            .any(|&byte| matches!(byte, 0 | b'\n' | b'\r'))
+        && std::str::from_utf8(content).is_ok()
 }
 
 /// Reads the file that `lookup` saw, or returns `None` if it is gone. `fs::read` follows links, so
@@ -412,7 +434,14 @@ fn save(
         let Some(content) = read_file(&full, &metadata)? else {
             return Ok(None);
         };
-        (file_mode(&metadata, file.mode), content)
+        let mode = file_mode(&metadata, file.mode);
+        if mode == FileMode::Symlink && !is_link_target(&content) {
+            return Err(SnapshotError::Unsupported {
+                path: file.path.clone(),
+                what: Unsupported::LinkFile,
+            });
+        }
+        (mode, content)
     } else if kind.is_dir() {
         // A directory has taken the place of the file; what is below it is not tracked.
         return Ok(None);
@@ -501,6 +530,9 @@ pub enum Unsupported {
     NonUtf8Link,
     /// A file whose name is not UTF-8.
     NonUtf8Name,
+    /// A plain file that stands for a tracked link where links are not written (Windows), and
+    /// whose content is not a target that a link can have.
+    LinkFile,
 }
 
 impl Unsupported {
@@ -510,6 +542,7 @@ impl Unsupported {
             Self::SpecialFile => "remove it or put a regular file in its place",
             Self::NonUtf8Link => "point the link at a target with a UTF-8 name",
             Self::NonUtf8Name => "rename it",
+            Self::LinkFile => "write the target of the link into it, without a line break",
         }
     }
 }
@@ -520,6 +553,7 @@ impl fmt::Display for Unsupported {
             Self::SpecialFile => "a special file",
             Self::NonUtf8Link => "a link whose target is not UTF-8",
             Self::NonUtf8Name => "a file whose name is not UTF-8",
+            Self::LinkFile => "a file that stands for a link and does not hold a valid target",
         })
     }
 }
@@ -682,14 +716,26 @@ mod tests {
     /// Makes the files and a working-copy commit that tracks them, with the message "work", by a
     /// move of the working-copy commit.
     fn track(repository: &Repository, dir: &TempDir, files: &[(&str, &str)]) {
-        let mut index = Index::new();
         for (path, content) in files {
             write(dir, path, content);
+        }
+        let files: Vec<_> = files
+            .iter()
+            .map(|&(path, content)| (path, FileMode::File, content))
+            .collect();
+        commit_files(repository, &files);
+    }
+
+    /// Makes a working-copy commit whose tree holds the files, given as path, mode, and content,
+    /// without writing them, and returns the tree.
+    fn commit_files(repository: &Repository, files: &[(&str, FileMode, &str)]) -> TreeId {
+        let mut index = Index::new();
+        for &(path, mode, content) in files {
             let id = repository
                 .objects()
                 .put_blob(&Blob::new(content.as_bytes()))
                 .unwrap();
-            index.insert(*path, FileMode::File, id).unwrap();
+            index.insert(path, mode, id).unwrap();
         }
         let tree = index.write_tree(repository.objects()).unwrap();
         let old = repository.refs().working_copy().unwrap();
@@ -713,6 +759,7 @@ mod tests {
                 &AllowAll,
             )
             .unwrap();
+        tree
     }
 
     fn snapshot(repository: &Repository) -> Option<Entry> {
@@ -1187,6 +1234,111 @@ mod tests {
             "{error}"
         );
         assert_eq!(repository.refs().working_copy().unwrap(), before);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_that_a_checkout_writes_as_a_file_stays_a_link() {
+        // A tree with a link, as a commit on Unix makes it; the checkout writes it as a plain file.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let files = [
+            ("target.txt", FileMode::File, "content"),
+            ("link", FileMode::Symlink, "target.txt"),
+        ];
+        let tree = commit_files(&repository, &files);
+        let plan = repository.plan_checkout(None, tree).unwrap();
+        repository.apply_checkout(&plan).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("link")).unwrap(),
+            "target.txt"
+        );
+        assert!(snapshot(&repository).is_none());
+        // A new target in the file is a new target of the link.
+        write(&dir, "link", "elsewhere");
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(
+            tracked(&repository),
+            [
+                ("link".to_owned(), FileMode::Symlink),
+                ("target.txt".to_owned(), FileMode::File),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_checkout_again_finds_the_file_for_a_link_in_place() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let tree = commit_files(&repository, &[("link", FileMode::Symlink, "target.txt")]);
+        let plan = repository.plan_checkout(None, tree).unwrap();
+        repository.apply_checkout(&plan).unwrap();
+        // A restore that stopped after the files plans from no tree and must not write it again.
+        let again = repository.plan_checkout(None, tree).unwrap();
+        assert!(again.writes().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_for_a_link_that_does_not_hold_a_target_is_refused() {
+        let long = "a".repeat(MAX_LINK_TARGET + 1);
+        let contents: [&[u8]; 6] = [
+            b"\xff\xfe",
+            b"",
+            b"tar\0get",
+            b"target.txt\n",
+            b"target.txt\r\n",
+            long.as_bytes(),
+        ];
+        for content in contents {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            commit_files(&repository, &[("link", FileMode::Symlink, "target")]);
+            fs::write(dir.path().join("link"), content).unwrap();
+            let before = repository.refs().working_copy().unwrap();
+            let numbers = repository.oplog().numbers().unwrap();
+            let error = repository.snapshot(&actor(), &AllowAll).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    SnapshotError::Unsupported {
+                        what: Unsupported::LinkFile,
+                        ..
+                    }
+                ),
+                "{content:?}: {error}"
+            );
+            assert_eq!(repository.refs().working_copy().unwrap(), before);
+            assert_eq!(repository.oplog().numbers().unwrap(), numbers);
+        }
+    }
+
+    #[test]
+    fn the_mode_of_a_regular_file_follows_the_executable_bit_or_the_tree() {
+        for tracked in [FileMode::File, FileMode::Executable, FileMode::Symlink] {
+            assert_eq!(regular_file_mode(Some(true), tracked), FileMode::Executable);
+            assert_eq!(regular_file_mode(Some(false), tracked), FileMode::File);
+            assert_eq!(regular_file_mode(None, tracked), tracked);
+        }
+    }
+
+    #[test]
+    fn a_file_for_a_link_holds_a_target_on_one_line() {
+        assert!(is_link_target(b"target.txt"));
+        assert!(is_link_target(b"../shared/config"));
+        assert!(is_link_target("a".repeat(MAX_LINK_TARGET).as_bytes()));
+        for content in [
+            &b"\xff\xfe"[..],
+            b"",
+            b"tar\0get",
+            b"target.txt\n",
+            b"target.txt\r\n",
+            b"key = value\nother = 1\n",
+            "a".repeat(MAX_LINK_TARGET + 1).as_bytes(),
+        ] {
+            assert!(!is_link_target(content), "{content:?}");
+        }
     }
 
     #[cfg(unix)]
