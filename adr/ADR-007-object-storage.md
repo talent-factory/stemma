@@ -1,6 +1,7 @@
 # ADR-007: Object Storage
 
-**Status:** Accepted. Confirmed by the author on 2026-10-24 (STEMMA-9) and implemented in Phase 1.
+**Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
+confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
 Pack files, streaming, and the cheaper flush move to a later phase; garbage collection comes with
 the retention of snapshot entries in a later phase (ADR-011); the guarantees on Windows stay
 open.
@@ -24,29 +25,25 @@ server will later keep objects elsewhere (API-first). The implementation is
   formats. Introducing one needs an ADR, and it changes no object ID, because the ID covers the
   uncompressed encoding.
 - **Verified reads** *(confirmed)*. A read accepts only a regular file at the path of the object: a
-  directory,
-  a symbolic link, or a special file is damage and is never followed. It then checks that the
-  header is exactly the canonical header of the kind and the length of the body, so a length
-  such as `05` or `+5` is rejected, hashes the content again, and compares the result with the
-  ID. Any other content is a `Corrupt` error that names the object, the file, and the reason,
-  and is never returned as an object. A missing object is `None`, which is different from a
-  failed read (`Io`, with the operation and the path). A missing store directory is an `Io`
-  error and not an empty store.
+  directory, a symbolic link, or a special file is damage and is never followed. It then checks that
+  the header is exactly the canonical header of the kind and the length of the body, so a length
+  such as `05` or `+5` is rejected, hashes the content again, and compares the result with the ID.
+  Any other content is a `Corrupt` error that names the object, the file, and the reason, and is
+  never returned as an object. A missing object is `None`, which is different from a failed read
+  (`Io`, with the operation and the path). A missing store directory is an `Io` error and not an
+  empty store.
 - **Safe writes** *(confirmed)*. The metadata directory has to exist; the store creates `tmp` and
-  `objects`
-  below it but never the directory itself, so a wrong path is an error. An object is written to
-  a newly created file in `<metadata directory>/tmp/`. Its name has the process ID, a counter,
-  and a random number, and a name that is taken is skipped, so one writer never touches the file
-  of another. The file is flushed to disk, made read-only, and renamed to its final path. A
-  reader sees no object or a complete one, provided that `tmp` and `objects` are on one file
-  system. On Unix the store also flushes the directories it created and the directory that
-  received the object. On other platforms only the atomicity holds, not the durability of the
-  directory entries.
-- **Existing objects** *(confirmed)*. Storing an object that exists and reads back correctly
-  changes nothing
-  and flushes nothing again. The call returns when the object is stored and readable; it is
-  durable once the writer that created it has returned. A damaged file, for example the rest of
-  a failed write, is replaced when the same object is stored again, where a rename replaces an
+  `objects` below it but never the directory itself, so a wrong path is an error. An object is
+  written to a newly created file in `<metadata directory>/tmp/`. Its name has the process ID, a
+  counter, and a random number, and a name that is taken is skipped, so one writer never touches the
+  file of another. The file is flushed to disk, made read-only, and renamed to its final path. A
+  reader sees no object or a complete one, provided that `tmp` and `objects` are on one file system.
+  On Unix the store also flushes the directories it created and the directory that received the
+  object. On other platforms only the atomicity holds, not the durability of the directory entries.
+- **Existing objects** *(confirmed)*. Storing an object that exists and reads back correctly changes
+  nothing and flushes nothing again. The call returns when the object is stored and readable; it is
+  durable once the writer that created it has returned. A damaged file, for example the rest of a
+  failed write, is replaced when the same object is stored again, where a rename replaces an
   existing file (Unix). An entry that is not a regular file blocks the path and is reported as
   `Corrupt`. When two writers race, the second rename replaces the file with one of identical
   content, which no reader can tell apart. After an error an object may or may not be stored;
@@ -66,31 +63,27 @@ server will later keep objects elsewhere (API-first). The implementation is
   run each, files of 1 KiB, 100 to a directory, other processes running): the first `track` of
   10,000 files took 97 s before and 49 s after, of 1,000 files 11.3 s and 6.7 s.
 - **Read-only files** *(confirmed)*. Objects are made read-only to protect them from accidental
-  edits. It is
-  not a security measure: whoever can write to the directory can replace the file, and the next
-  read detects it.
+  edits. It is not a security measure: whoever can write to the directory can replace the file, and
+  the next read detects it.
 - **Interface** *(confirmed)*. `ObjectStore` is a sealed trait: only this crate implements it. It
-  has `put_blob`,
-  `put_tree`, and `put_commit`, each of which returns the same ID as the object's own `id()`; `get`,
-  `get_expecting`, and `contains`; `resolve_blob`, `resolve_tree`, and `resolve_commit`; and
-  `get_tree` and `get_commit`. The store computes the ID from the kind and the body, so a caller
-  cannot store an object under another ID. Writing a raw body of any kind is internal to the crate,
-  because the body of a tree or a
-  commit has to come from a value that was checked. `get` returns the kind and the encoded body of
-  an object whose content hashes to the ID; `get_expecting` fails with a `KindMismatch` if the kind
-  differs. The `resolve_*` methods return a typed ID for an object that exists and has the kind,
-  `None` for a missing object, and a `KindMismatch` for another kind. They check the content like
-  `get` does, which means a full read, because the kind is known only from the stored object, and a
-  damaged object is reported as `Corrupt` whichever kind was asked for. A resolved ID says that the
-  object existed with that kind when it was resolved, not that it stays in the store.
-  `get_tree` and `get_commit` take a typed ID, confirm the kind, and return the value that
-  `Tree::parse` or `Commit::parse` reads from the body. A body that is not canonical is a
-  `ReadError::Tree` or `ReadError::Commit` with the ID, apart from `ReadError::Store`, which wraps
-  the errors of the store. The store never decodes a body for any other method. `FsObjectStore` is
-  the file system implementation.
+  has `put_blob`, `put_tree`, and `put_commit`, each of which returns the same ID as the object's
+  own `id()`; `get`, `get_expecting`, and `contains`; `resolve_blob`, `resolve_tree`, and
+  `resolve_commit`; and `get_tree` and `get_commit`. The store computes the ID from the kind and the
+  body, so a caller cannot store an object under another ID. Writing a raw body of any kind is
+  internal to the crate, because the body of a tree or a commit has to come from a value that was
+  checked. `get` returns the kind and the encoded body of an object whose content hashes to the ID;
+  `get_expecting` fails with a `KindMismatch` if the kind differs. The `resolve_*` methods return a
+  typed ID for an object that exists and has the kind, `None` for a missing object, and a
+  `KindMismatch` for another kind. They check the content like `get` does, which means a full read,
+  because the kind is known only from the stored object, and a damaged object is reported as
+  `Corrupt` whichever kind was asked for. A resolved ID says that the object existed with that kind
+  when it was resolved, not that it stays in the store. `get_tree` and `get_commit` take a typed ID,
+  confirm the kind, and return the value that `Tree::parse` or `Commit::parse` reads from the body.
+  A body that is not canonical is a `ReadError::Tree` or `ReadError::Commit` with the ID, apart from
+  `ReadError::Store`, which wraps the errors of the store. The store never decodes a body for any
+  other method. `FsObjectStore` is the file system implementation.
 - **Authorization** *(confirmed)* is not a store concern. The authorization hook of ADR-002 has to
-  be called
-  by the layer above the store, which knows the actor and the operation.
+  be called by the layer above the store, which knows the actor and the operation.
 
 ## Consequences
 
@@ -123,7 +116,8 @@ server will later keep objects elsewhere (API-first). The implementation is
 - [ ] Pack files and compression: format, and when objects are packed.
 - [ ] Garbage collection of unreachable objects. Its roots, the lock it runs under, and the
       pending purge that stops it are decided in ADR-011 ("Retention", STEMMA-39); it comes in
-      one slice with the retention of snapshot entries, in a later phase (STEMMA-9). Phase 1
+      one slice with the retention of snapshot entries, in a later phase (decided in
+      STEMMA-9). Phase 1
       removes nothing but what a purge removes, so the store only grows.
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31).

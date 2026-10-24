@@ -1,6 +1,7 @@
 # ADR-005: Object Encoding, Names, and Identity Characters
 
-**Status:** Accepted. Confirmed by the author on 2026-10-24 (STEMMA-9) and implemented in Phase 1.
+**Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
+confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
 The format of the index applies only if the index is persisted; in Phase 1 it is not (ADR-010).
 
 ## Context
@@ -134,18 +135,16 @@ them.
   is part of version 1 and not a second version. The hash algorithm
   is versioned separately by the ID prefix (ADR-001).
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
-  repeated header, a
-  header out of order, a number with a plus sign, `-0`, or leading zeros, or any other non-canonical
-  form. Otherwise one logical object could have several encodings and several IDs. The commit
-  headers are, in this order, `tree`, `parent` (zero or more), `change`, `author`, `time`.
-  The index reader
-  (see below), `Tree::parse`, and `Commit::parse` apply the rule, and the actor line of a commit is
-  read by `Actor::from_str`. A test feeds changed copies of a canonical encoding to each of these
-  three readers (every byte deleted, replaced, or inserted from a set of troublesome bytes, and
-  every line deleted, repeated, or swapped) and checks that whatever a reader accepts encodes back
-  to exactly the bytes it was given, so that no object has a second spelling and a second ID. It
-  cannot find a second spelling that needs a change of several places at once; those are covered by
-  tests of the rejected forms.
+  repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
+  other non-canonical form. Otherwise one logical object could have several encodings and several
+  IDs. The commit headers are, in this order, `tree`, `parent` (zero or more), `change`, `author`,
+  `time`. The index reader (see below), `Tree::parse`, and `Commit::parse` apply the rule, and the
+  actor line of a commit is read by `Actor::from_str`. A test feeds changed copies of a canonical
+  encoding to each of these three readers (every byte deleted, replaced, or inserted from a set of
+  troublesome bytes, and every line deleted, repeated, or swapped) and checks that whatever a reader
+  accepts encodes back to exactly the bytes it was given, so that no object has a second spelling
+  and a second ID. It cannot find a second spelling that needs a change of several places at once;
+  those are covered by tests of the rejected forms.
 - **Index file** *(confirmed as a cache format)*. The working copy is a commit (ADR-010), so
   Phase 1 keeps no index file, and `Index` is a model of the tree in memory. The format below
   applies when the index is persisted, for example as a cache of the working copy, and is then a
@@ -170,11 +169,9 @@ them.
   compared in one pass and a tree builder can read the entries in order. The sort of the whole path
   string would put `a-b` and `a.b` before `a/z` and is not used.
 - **Parent rule** *(confirmed)*. A commit lists each parent at most once, and the order of the
-  parents is part
-  of its ID.
+  parents is part of its ID.
 - **Golden vectors** *(confirmed)* in the test module pin the hash input and every encoding. A
-  change to
-  them is a format change and needs an ADR.
+  change to them is a format change and needs an ADR.
 
 ## Consequences
 

@@ -1,7 +1,8 @@
 # ADR-009: Repository layout and `init`
 
-**Status:** Accepted. Decisions marked *(confirmed)* were agreed with the author on 2026-10-19,
-the rest on 2026-10-24 (STEMMA-9); all are implemented in Phase 1. The reason for a denial moves
+**Status:** Accepted. The layout, the format file, the initial branch, the actor of `init`, and
+the bundle of the stores were confirmed by the author on 2026-10-19, the other decisions on
+2026-10-24 (STEMMA-9); all are implemented in Phase 1. The reason for a denial moves
 to Phase 4, bare repositories to Phase 5; the other open items stay open.
 
 ## Context
@@ -31,10 +32,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
   supports: `init` writes version 4, the version of the hash chain of the log (ADR-011), and
-  `open` reads versions 2 to 4, as a repository of version 2 (before the purge) or 3 (before the
-  chain) rises to 4 with its next entry (ADR-014, ADR-011). A version never sinks. The version
-  stays text, so a number larger than any integer is an unsupported version and not a damaged
-  file. The file is read up to 64 bytes. The hash function needs no
+  `open` reads versions 2 to 4: a repository made before the purge existed (2) or before the
+  chain (3) rises to 4 with its next entry or purge (ADR-014, ADR-011). A version never sinks.
+  The version stays text, so a number larger than any integer is an unsupported version and not
+  a damaged file. The file is read up to 64 bytes. The hash function needs no
   entry, because every ID carries its algorithm (ADR-001). `open` checks nothing but `format`
   (and that `.stemma` is a directory); the stores report what is wrong with the rest when they
   are used.
@@ -106,9 +107,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - `Repository` hands out the object store, but the references only as a view for reading
   (`Repository::refs()`, ADR-011). A pointer moves through `Repository::update_branch` and
   `set_head`, which use the object store of their own repository, so the gap that the context
-  names is closed for those two operations. The operations that need both (`commit`) will be methods
-  of `Repository`, and the stores
-  can become crate-private then; see the open items.
+  names is closed for those two operations. The operations that need both (`track`, `commit`,
+  `op restore`, `purge`) are methods of `Repository` as well. The object store stays public for
+  reading; hiding it is an open item.
 
 ## Open items
 
