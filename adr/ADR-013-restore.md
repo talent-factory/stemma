@@ -74,6 +74,12 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   This also holds for an entry that did not take effect and for a pointer that other entries
   moved afterwards. The outcome that `oplog::outcomes` reads is used for one thing: if it is
   unknown, the command refuses and names the reason, and `--force` restores anyway.
+- **A restore before a commit is no stopped commit** *(confirmed)*. A restore of an entry from
+  before a `commit` puts the working-copy commit back to an older version of itself and leaves
+  the branch at the named commit. The commits then look like a `commit` that stopped between its
+  moves; the next `commit` reads the log, finds that the entry of that commit took effect, and
+  refuses as a branch that moved instead of finishing it (ADR-010, STEMMA-76). To commit on top
+  of the old state, restore the entry of the commit itself; that moves the branch back too.
 - **A missing object is an error before anything is written** *(confirmed)*. The restore checks
   that every commit it needs is in the object store. After a garbage collection (ADR-007) a
   commit that no entry names may be gone; the log keeps the roots, so this is not expected for a

@@ -488,6 +488,12 @@ Der Branch hat den Commit, der Working-Copy-Commit ist noch der alte,
 und \type{op log} markiert den Eintrag mit \type{!}, obwohl der Branch sich bewegt hat.
 Hier ist ein weiterer \type{commit} der richtige Aufruf:
 Er erkennt den Zustand und beendet den ersten Commit, ohne die eigene Nachricht zu verwenden.
+Den Zustand liest er aus dem Log: Nur wenn der neueste Eintrag eines Commits
+den Branch bewegt hat, den Working-Copy-Commit aber nicht, gilt der Commit als abgebrochen.
+Hat ein \type{op restore} den Working-Copy-Commit auf einen Stand vor einem Commit
+zurückgesetzt, endet \type{commit} dagegen mit Exit-Code 1, weil der Branch nicht beim
+Elternteil steht; wer auf dem alten Stand committen will, stellt den Eintrag des Commits selbst
+wieder her, der auch den Branch zurücksetzt.
 Er sagt es in seiner Ausgabe und mit einer Warnung auf der Fehlerausgabe,
 dass Änderungen seit dem Abbruch nicht in diesem Commit sind:
 
