@@ -640,7 +640,7 @@ Das Restore schreibt deshalb auch die Dateien des alten Baums ins Verzeichnis.
 In der Sitzung nimmt \type{op restore 5} den zweiten Commit zurück.
 Mit \type{--dry-run} zeigt der Befehl vorher, welche Zeiger er setzt
 und welche Dateien er schreibt oder entfernt, und schreibt nichts.
-Hier sind die beiden Bäume gleich, also stehen nur Zeiger da:
+Hier sind die beiden Bäume gleich, also nennt der Plan nur Zeiger:
 
 \starttyping
 $ stemma op restore --dry-run 5
@@ -680,7 +680,9 @@ denn eine gehaltene Sperre lässt den neuesten Eintrag unfertig aussehen.
 und plant unter der Sperre neu, vom Baum des Snapshots aus.
 \item Er schreibt den Eintrag \type{restore}.
 \item Er schreibt die Dateien des alten Baums ins Verzeichnis.
-\item Er bewegt die Zeiger: zuerst die Branches, dann den Working-Copy-Commit, zuletzt HEAD.
+\item Er bewegt die Branches auf ihre Werte vor dem Eintrag.
+\item Er bewegt den Working-Copy-Commit und zuletzt HEAD.
+\item Er gibt die Sperre frei.
 \stopitemize
 
 \in{Abbildung}[fig:restore-flow] zeigt den Ablauf mit den Stellen,
@@ -691,7 +693,7 @@ an denen ein Absturz etwas zurücklässt.
 \externalfigure[images/restore-flow.pdf][width=0.9\textwidth]
 \stopplacefigure
 
-Das Restore beurteilt jeden Zeiger für sich.
+Das Restore setzt jeden Zeiger für sich zurück.
 Es setzt jeden Zeiger, den der Eintrag nennt, auf seinen alten Wert,
 und ein Zeiger, der schon dort steht, bleibt, wie er ist.
 So lässt sich auch ein Eintrag zurücksetzen, der nur zur Hälfte stattgefunden hat,
@@ -727,13 +729,16 @@ Ist seit der Planung eine Datei im Weg aufgetaucht, bricht sie ab.
 \item Einen Stub und den Eintrag eines Purge lehnt es immer ab, auch mit \type{--force},
 ebenso einen Eintrag, den ein unfertiger Purge nennt.
 \item Einen Eintrag, der HEAD oder den Working-Copy-Commit erst angelegt hat,
-wie den von \type{init}, lehnt es ab, denn es gibt keinen alten Wert.
+wie den von \type{init}, lehnt es auch mit \type{--force} ab, denn beide können nicht fehlen.
+Einen Branch, den ein Eintrag angelegt hat, entfernt es dagegen.
 \item Ist der Ausgang des Eintrags unbekannt, braucht es \type{--force}.
 Das gilt für jeden Eintrag vor dem jüngsten Stub,
-für einen Eintrag, dessen Zeiger jemand ausserhalb des Logs bewegt hat,
+für einen Eintrag, dessen Zeiger danach auf einem dritten Wert steht,
+weil ihn jemand ausserhalb des Logs bewegt hat,
 und für den Eintrag, der einen Zeiger zuletzt bewegt hat,
 solange \type{refs.lock} liegt und der Zeiger nicht auf dem neuen Wert steht.
-Im letzten Fall genügt auch ein anderer Befehl, der schreibt und die Sperre übernimmt.
+Im letzten Fall klärt auch ein anderer Befehl, der schreibt, den Ausgang,
+denn er übernimmt die Sperre.
 \item Muss kein Zeiger zurück, schreibt das Restore nichts, auch keinen Eintrag.
 \item \type{--dry-run} schreibt nichts, nicht einmal den Snapshot.
 Eine ungesicherte Änderung im Verzeichnis sieht der Plan deshalb nicht.
@@ -754,7 +759,8 @@ Die Einträge des Logs, die einen umgeschriebenen Commit nennen, werden zu Stubs
 Nur ein Mensch darf purgen, denn der Purge lässt sich nicht zurücksetzen.
 
 In der Sitzung gerät ein Zugangsschlüssel in den Verlauf.
-Die ID des Blobs ist der BLAKE3-Hash über einen Kopf und den Inhalt der Datei (ADR-001, ADR-007);
+Die ID des Blobs ist der BLAKE3-Hash über einen Kopf aus Art und Länge
+und den Inhalt der Datei (ADR-001, ADR-007);
 einen Befehl, der sie zu einem Pfad nennt, gibt es noch nicht.
 Ohne \type{--apply} zeigt \type{purge} nur den Plan und schreibt nichts:
 
@@ -782,8 +788,7 @@ Run it with --apply; a purge cannot be undone
 
 Umgeschrieben werden der Commit \quotation{Zugang}, der Working-Copy-Commit danach
 und die Fassung des Working-Copy-Commits, die \type{track} gespeichert hat.
-Jeder bekommt einen Baum ohne den Blob und, wenn nötig, neue Eltern.
-Change-ID, Autor, Zeit und Nachricht behält er,
+Change-ID, Autor, Zeit und Nachricht behält jeder,
 damit sich eine Änderung über den Purge hinweg verfolgen lässt.
 Ein Verzeichnis, das nur den Blob enthielt, fällt aus dem Baum,
 so wie ein Snapshot nie ein leeres Verzeichnis anlegt.
@@ -853,7 +858,7 @@ ein Stub eines Eintrags aus der Zeit vor der Kette behält die Version 2.
 
 Ein Purge läuft über ein Journal, damit ein Abbruch ihn nicht halb gemacht zurücklässt.
 \in{Abbildung}[fig:purge-states] zeigt die Schritte mit \type{--apply};
-sie sind nummeriert wie in ADR-014:
+die Abbildung teilt Schritt 6 am Punkt ohne Rückkehr in 6a und 6b.
 
 \startitemize[n]
 \item Der Purge lehnt einen Agenten ab, bevor er etwas schreibt.
@@ -874,8 +879,8 @@ und entfernt zuletzt das Journal.
 \stopitemize
 
 Das Format kommt vor dem Journal,
-denn ein Programm, das nur die Version 2 kennt, kennt auch das Journal nicht
-und würde an ihm vorbei schreiben; so lehnt es das Repository ab.
+denn ein Programm, das nur das Format 2 kennt, kennt auch das Journal nicht
+und würde an ihm vorbei schreiben; so lehnt ein solches Programm das Repository ab.
 Solange das Journal besteht, lehnt jeder andere Befehl, der schreibt, ab,
 wenn er die Sperre nimmt.
 Die Meldung nennt \type{stemma purge --resume} und \type{--abort}.
@@ -916,11 +921,11 @@ Jeder Befehl, der schreibt, nimmt die Sperre der Referenzen,
 bevor er sein erstes Objekt schreibt, und hält sie bis zu seiner letzten Zeigerbewegung.
 Sonst findet ein Befehl, der vor dem Journal geprüft hat
 und seinen Zeiger erst nach dem Purge bewegt, kein Journal mehr.
-Er kann dann einen Commit nennen, dessen Blob er noch einmal gespeichert hat,
-den der Purge aber inzwischen gelöscht hat.
+Er kann dann einen Commit nennen, dessen Blob der Purge inzwischen gelöscht hat,
+obwohl der Befehl ihn noch einmal gespeichert hat.
 Hält er die Sperre schon beim Speichern, kann kein Purge beginnen, und umgekehrt.
 Ein Zähler der Purges oder eine Prüfung aller Objekte unter der Sperre
-hätten die Lücke ebenfalls geschlossen; die Sperre ist die einfachste Regel (ADR-014).
+hätten das ebenfalls verhindert; die Sperre ist die einfachste Regel (ADR-014).
 Sie wird dafür so lange gehalten, wie der Snapshot dauert,
 bei 10'000 Dateien etwa 0,7 Sekunden.
 
