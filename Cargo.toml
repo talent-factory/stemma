@@ -9,3 +9,5 @@ version = "0.0.1"
 edition = "2021"
 # `File::try_lock`, which holds the guard of the lock of the references (ADR-008).
 rust-version = "1.89"
+# The crates are not published to a registry yet.
+publish = false
