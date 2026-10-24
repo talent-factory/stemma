@@ -40,7 +40,12 @@ Laufwerks liegen, wo jeder Benutzer Ordner anlegen darf. Sonst könnte ein ander
 Dateien in seinen Speicher. Ein solches Repository öffnet ein Befehl nur, wenn \type{-C} sein
 Verzeichnis selbst nennt; die Meldung nennt den Aufruf. Führt der Weg zum Repository über einen
 Link, warnt der Befehl und nennt das Repository, denn in einem Link auf ein Verzeichnis eines
-anderen Repositories arbeitet er in diesem. Liegt das Verzeichnis in keinem Repository,
+anderen Repositories arbeitet er in diesem. Den Weg liest er wie die Shell: \type{-C ..} aus einem
+Link ist das Verzeichnis, in dem der Link liegt. Ohne die Variable \type{PWD} der Shell, etwa
+wenn ein Programm den Befehl in einem Verzeichnis startet, sieht er einen Link nicht, der dorthin
+führte, und ein Link auf die Wurzel eines Repositories ist kein Umweg. Hat der Weg von der Wurzel
+zum Verzeichnis einen Namen, der kein UTF-8 ist, bricht jeder Befehl ab und nennt das Verzeichnis.
+Liegt das Verzeichnis in keinem Repository,
 nennt die Meldung \type{-C} und \type{stemma init}; gibt es das Verzeichnis nicht oder ist es
 eine Datei, sagt sie das.
 

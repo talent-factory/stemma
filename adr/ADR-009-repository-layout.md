@@ -71,9 +71,13 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   said so (`Missing`, `NotADirectoryToStartIn`), and a path from the root to `start` with a part
   that is not UTF-8 is `NotUtf8`, since such a part would become another name.
   The search goes along the path with its links resolved, and the result says whether it reached
-  the repository through a link (`through_link`, with the `PWD` of the shell for a relative
-  start); the command line warns then, as a command in a link to a directory of another
-  repository works in that one.
+  the repository through a link (`through_link`); the command line warns then, as a command in a
+  link to a directory of another repository works in that one. The path is read as the shell
+  reads it: `.` and `..` apply to the names before any link is resolved, so `-C ..` from a link
+  is the directory of the link, and a relative start is taken from the `PWD` of the shell. Two
+  links are not seen: one that led to the directory of a process that a program started without
+  such a `PWD`, as `subprocess.run(cwd=...)` does, and one to the root of a repository itself,
+  which is no detour.
   A `.stemma` found above `start` must be trusted: on Unix the effective user of the process
   owns it (`OtherOwner` otherwise), as Git checks for `safe.directory`; on Windows, where `std`
   gives no owner, it must not be at the root of a volume, where every user may create directories
