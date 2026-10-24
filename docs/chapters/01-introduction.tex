@@ -14,30 +14,32 @@ verwenden mehrere Branches gleichzeitig und hinterlassen Spuren,
 die sich nicht einfach einer Person zuordnen lassen. Die Werkzeuge müssen darauf reagieren,
 und die Frage ist, wo die Anpassung ansetzen soll.
 
-Laut dem Beitrag im Engineering-Blog von Anthropic vom Oktober 2026 \cite[anthropic2026redesigning]
-hat Anthropic für den eigenen Monorepo-Betrieb ein internes Versionskontrollsystem namens Scion
-eingeführt. Der Beitrag nennt einen Anstieg der täglichen Merges von rund 2500 im Mai auf über
-30000 im September 2026. Scion ist nach dem Beitrag kein Ersatz für Git im allgemeinen Gebrauch.
-Dem Beitrag ist nicht zu entnehmen, dass Code oder Repository öffentlich zugänglich sind.
+Ein Beitrag im Engineering-Blog von Anthropic vom Oktober 2026 zeigt ein Beispiel
+\cite[anthropic2026redesigning].
+Anthropic hat für den eigenen Monorepo-Betrieb ein internes Versionskontrollsystem namens Scion
+eingeführt.
+Im selben Zeitraum stiegen die täglichen Merges von rund 2500 im Mai
+auf über 30000 im September 2026.
+Scion ist kein Ersatz für Git im allgemeinen Gebrauch,
+und der Beitrag nennt keine öffentliche Verfügbarkeit.
 
 \section{Problemstellung}
 
-Drei Verschiebungen sind für das Projekt zentral:
+Das Volumen wächst:
+Die Zahl der Änderungen steigt schneller als die Zahl der Menschen, die sie prüfen,
+und die Prüfung wird zum Engpass.
 
-\startitemize
-\item {\bf Volumen:} Die Zahl der Änderungen wächst schneller als die Zahl der Prüfenden.
-Die Prüfung wird zum Engpass.
-\item {\bf Parallelität:} Mehrere Akteure arbeiten gleichzeitig an überlappendem Code.
-Die Frage ist nicht nur, wie Konflikte gelöst werden, sondern vorher,
-wer überhaupt schreiben darf.
-\item {\bf Herkunft:} Eine Änderung entsteht oft aus einem Auftrag, einem Modell,
-einer Session und einem Menschen, der dafür einsteht. Git speichert davon nur Autor und
-Zeitstempel.
-\stopitemize
+Mehrere Akteure arbeiten parallel an überlappendem Code.
+Bevor sich die Frage stellt, wie ein Konflikt gelöst wird,
+stellt sich eine frühere: wer an einer Stelle überhaupt schreiben darf.
 
-Die Frage lautet deshalb nicht, ob Git für Agenten funktioniert.
-Sie lautet, welche Teile des Modells bestehen bleiben können und welche Schichten neu gebaut werden
-müssen.
+Offen bleibt die Herkunft:
+Eine Änderung entsteht oft aus einem Auftrag, einem Modell, einer Session
+und einem Menschen, der dafür einsteht.
+Git speichert davon nur Autor und Zeitstempel.
+
+Daraus folgt die Frage, welche Teile des Modells von Git bestehen bleiben können
+und welche Schichten neu gebaut werden müssen.
 
 \section{GitHub und verwandte Plattformen}
 
@@ -54,16 +56,15 @@ solange Menschen die Prüfung leisten und Änderungen in überschaubarer Zahl ei
 
 \section{Vorteile im agentischen Kontext}
 
-\startitemize
-\item {\bf Verbreitung:} Entwicklerinnen, Entwickler, Werkzeuge und Integrationen sind vorhanden.
+Git und seine Plattformen sind weit verbreitet.
+Entwicklerinnen und Entwickler kennen Git, Werkzeuge und Integrationen sind vorhanden,
 Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
-\item {\bf Pull Request als Einheit:} Er bündelt Diff, Diskussion,
-Prüfungen und Freigaben in einem Objekt, das Menschen und Agenten gleichermassen lesen können.
-\item {\bf Schutzregeln:} Plattformen erzwingen Freigaben auf geschützten Branches,
-ohne dass jeder Client dies selbst umsetzen muss.
-\item {\bf Ökosystem:} CI-Pipelines, Berechtigungsmodelle,
-Audit-Funktionen und Integrationen sind erprobt und dokumentiert.
-\stopitemize
+Der Pull Request bündelt Diff, Diskussion, Prüfungen und Freigaben in einem Objekt,
+das Menschen und Agenten gleichermassen lesen können.
+Auf geschützten Branches erzwingt die Plattform die Freigaben,
+ohne dass jeder Client das selbst umsetzen muss.
+Dazu kommen CI-Pipelines, Berechtigungsmodelle und Audit-Funktionen,
+die erprobt und dokumentiert sind.
 
 \section{Grenzen im agentischen Kontext}
 
@@ -203,7 +204,14 @@ und aus dem Baum wird ein Geflecht.
 Das ist die Lage eines Versionskontrollsystems, nur mit einem Unterschied:
 Der Textkritiker muss die Abstammung aus den Fehlern erschliessen, eine Hypothese.
 Stemma zeichnet sie auf, als Tatsache.
+\in{Abbildung}[fig:stemma-codicum] zeigt beide Bilder nebeneinander:
+Die kontaminierte Handschrift hat zwei Vorlagen wie ein Merge-Commit zwei Eltern.
 \in{Tabelle}[tab:name] stellt die Begriffe einander gegenüber.
+
+\startplacefigure[title={Stemma codicum mit Kontamination und Verlauf mit Merge},
+    reference=fig:stemma-codicum,location=here]
+\externalfigure[images/stemma-codicum.pdf][width=\textwidth]
+\stopplacefigure
 
 \startplacetable[title={Was der Name für das Projekt bedeutet},reference=tab:name]
 \startxtable[frame=off,option=stretch]
@@ -253,7 +261,15 @@ und das Programm heisst wie das Verzeichnis, in dem ein Repository seine Daten a
 \subsection{Nicht-Ziele}
 
 \startitemize
-\item Kompatibilität mit bestehenden Git-Repositories. Die CLI ist kompatibel, das Format nicht.
+\item Kompatibilität mit bestehenden Git-Repositories.
+Die Befehle sind an Git angelehnt, das Format nicht:
+Eine Objekt-ID ist ein BLAKE3-Hash mit dem Algorithmus als Präfix,
+und jeder Commit hat eine Change-ID und einen Akteur.
+Ein Git-Repository liesse sich deshalb nur übernehmen,
+indem jedes Objekt neu kodiert, jede ID neu berechnet
+und jedem Commit eine Change-ID und ein Akteur gegeben wird.
+Das Projekt nimmt das in Kauf, damit es das Format frei nach den Bedürfnissen von Agenten
+wählen kann.
 \item Eine Weboberfläche für Code-Reviews. Administrative Oberflächen sind später denkbar.
 \item Ein Blockchain-Konsens für Versionskontrolle. Content-Adressierung und signierte Commits
 decken den Nutzen weitgehend ab.

@@ -5,15 +5,15 @@ Es setzt die Entscheidungen aus ADR-002 und ADR-003 um.
 
 \section{Schichtenmodell}
 
-Der Kern enthält die gesamte Logik: Objektspeicher, Referenzen, Index, Diff,
-Merge und Autorisierung. Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
-
-\startitemize
-\item {\bf stemma-core:} Bibliothek mit Objekten, Referenzen, Autorisierung.
-\item {\bf stemma-cli:} Kommandozeile mit Befehlen wie \type{init}, \type{commit} und \type{log}.
-\item {\bf API-Server:} Schnittstelle für Hub und Clients, folgt in Phase 5.
-\item {\bf MCP-Server:} Adapter für Agenten, folgt in Phase 6.
-\stopitemize
+Der Kern enthält die gesamte Logik:
+Objektspeicher, Referenzen, Operation Log, Arbeitskopie und Autorisierung,
+später auch Diff und Merge.
+Er liegt in einer eigenen Bibliothek (\type{stemma-core}).
+Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
+In Phase 1 gibt es eine Oberfläche, die Kommandozeile (\type{stemma-cli})
+mit Befehlen wie \type{init}, \type{commit} und \type{op log}.
+Ein API-Server für Hub und Clients folgt in Phase 5,
+ein MCP-Server als Adapter für Agenten in Phase 6.
 
 \startplacefigure[title={Schichtenmodell von Stemma},reference=fig:layers,location=here]
 \externalfigure[images/layers.pdf][width=\textwidth]
@@ -24,17 +24,38 @@ die API oder den MCP-Server muss dieselbe Entscheidung erhalten.
 
 \section{Akteure}
 
-Jede Operation, die ein Repository ändert oder eine Änderung plant, hat einen Akteur.
-Ein Mensch wird durch seine Identität beschrieben.
+Jede Operation, die ein Repository ändert oder eine Änderung plant, hat einen Akteur (ADR-002).
+Ein Mensch wird durch seine Kennung beschrieben.
 Ein Agent führt zusätzlich Modellversion, Session und einen auftraggebenden Menschen mit,
-den Sponsor. Der Sponsor verantwortet die Handlungen des Agenten.
+den Sponsor.
+Der Sponsor verantwortet die Handlungen des Agenten.
+Jeder Commit und jeder Eintrag des Operation Logs nennt seinen Akteur in derselben Form,
+einer Zeile wie \type{human daniel} (\in{Abbildung}[fig:actors]).
+
+\startplacefigure[title={Akteur: Mensch oder Agent mit Sponsor},
+    reference=fig:actors,location=here]
+\externalfigure[images/actors.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+Die Kommandozeile liest den Akteur aus der Option \type{--actor}
+oder der Umgebungsvariablen \type{STEMMA_ACTOR}
+und kennt keinen Standardwert,
+damit ein Agent nie stillschweigend als Mensch auftritt.
+Geprüft wird nur, ob die Zeile den Regeln für Akteure entspricht.
+Sie belegt nicht, wer einen Befehl wirklich ausführt;
+das sollen später Signaturen leisten (ADR-003, ADR-004).
 
 \section{Autorisierung}
 
-Der Kern ruft bei jeder solchen Operation die Funktion \type{authorize(actor, operation, target)}
-auf, auch für einen Plan wie \type{purge} ohne \type{--apply}. Die Befehle, die nur das Log
-lesen (\type{op log}, \type{op verify}), haben keinen Akteur und rufen sie nicht auf.
-In Phase 1 erlaubt sie alles. Der Aufruf ist trotzdem Pflicht,
+Bei jeder solchen Operation fragt der Kern,
+ob der Akteur sie am Ziel ausführen darf (\type{authorize(actor, operation, target)}).
+Das gilt auch für einen Plan wie \type{purge} ohne \type{--apply},
+denn er liest, was die Änderung berühren würde.
+Die Befehle, die nur das Log lesen (\type{op log}, \type{op verify}),
+haben keinen Akteur und fragen nicht.
+In Phase 1 erlaubt die Prüfung alles.
+Nur einen Purge verweigert der Kern einem Agenten schon vorher, fest im Code (ADR-014).
+Die Frage ist trotzdem Pflicht,
 damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
 
 \section{Ort der Berechtigungen}
@@ -66,7 +87,7 @@ prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
 \startxrow
 \startxcell 1 \stopxcell
 \startxcell Lokaler Kern: Objekte, \type{init}, \type{track}, \type{commit},
-\type{status} \stopxcell
+\type{status}, Operation Log, Purge \stopxcell
 \startxcell Ein Repository mit einem Nutzer \stopxcell
 \stopxrow
 \startxrow

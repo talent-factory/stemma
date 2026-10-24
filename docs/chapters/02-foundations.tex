@@ -6,10 +6,12 @@ Es ist ein Entwurf und wird mit den Phasen präzisiert.
 \section{Datenmodell}
 
 Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden.
-Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse und Commits für
-Snapshots mit Verweis auf Vorgänger. Der Verlauf bildet damit einen azyklischen Graphen aus
-unveränderlichen Knoten. Dieser Aufbau ist die Stärke des Modells, weil identische Inhalte nur
-einmal gespeichert werden und Änderungen nachträglich nicht unbemerkt verändert werden können
+Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse
+und Commits für gespeicherte Stände mit Verweis auf Vorgänger.
+Der Verlauf bildet damit einen azyklischen Graphen aus unveränderlichen Knoten.
+Dieser Aufbau ist die Stärke des Modells,
+weil identische Inhalte nur einmal gespeichert werden
+und Änderungen nachträglich nicht unbemerkt verändert werden können
 (\in{Abbildung}[fig:objects]).
 
 \startplacefigure[title={Objektmodell: Commit, Tree und Blob},reference=fig:objects,location=here]
@@ -34,17 +36,42 @@ wichtig: Schreibhoheit betrifft die Zeiger, nicht die Objekte.
 
 \section{Arbeitskopie und Index}
 
-Git trennt drei Zustände: die Arbeitskopie, den Index als Staging-Bereich und den letzten Commit.
+Git trennt drei Zustände: das Arbeitsverzeichnis,
+den Index als Staging-Bereich und den letzten Commit.
 Der Index ist eine Zwischenstufe, die Entwicklerinnen und Entwickler bewusst füllen.
-Für Agenten ist diese Stufe eine Fehlerquelle, wenn unvollständige Zustände committet werden.
-Ein anderer Ansatz betrachtet die Arbeitskopie selbst als Commit, wie es Jujutsu tut \cite[jujutsu].
-Stemma folgt ihm (ADR-010): Bei jedem Befehl wird das Arbeitsverzeichnis als Commit gesichert,
-sodass der Zustand eines Agenten nicht verloren geht, auch wenn er nichts bestätigt hat.
-Die Change-ID überdauert dabei jeden neuen Snapshot derselben Änderung.
-Ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue.
-Neue Dateien kommen erst in den Verlauf, wenn ein Befehl sie bestätigt, und eine Ausschlussdatei
-hält Pfade wie Build-Ausgaben und Geheimnisse heraus. Zwischen zwei Aufrufen kann Stemma nichts
-sichern, einen Dateiwächter gibt es in Phase 1 nicht.
+Für Agenten ist diese Stufe eine Fehlerquelle:
+Ein Agent, der eine geänderte Datei nicht vormerkt, committet einen unvollständigen Stand,
+und was weder vorgemerkt noch committet wurde, steht in keinem Verlauf
+und lässt sich nicht zurückholen, wenn es überschrieben wird.
+
+Jujutsu betrachtet die Arbeitskopie selbst als Commit \cite[jujutsu],
+und Stemma folgt ihm (ADR-010).
+Ein Repository hat einen Working-Copy-Commit,
+dessen Baum die verfolgten Dateien im Arbeitsverzeichnis sind.
+Vor jedem Befehl, der das Arbeitsverzeichnis liest oder ändert,
+etwa \type{track}, \type{commit} und \type{status},
+hält ein Snapshot das Verzeichnis in diesem Commit fest.
+So geht der Zustand eines Agenten nicht verloren, auch wenn er nichts bestätigt hat.
+Der Befehl \type{commit} gibt dem Working-Copy-Commit eine Nachricht,
+setzt den Branch darauf und beginnt einen neuen (\in{Abbildung}[fig:git-vs-stemma]).
+Die Change-ID überdauert dabei jeden neuen Snapshot derselben Änderung;
+ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue (Merge ab Phase 3).
+
+\startplacefigure[title={Arbeitsverzeichnis, Index und Commit in Git und in Stemma},
+    reference=fig:git-vs-stemma,location=here]
+\externalfigure[images/git-vs-stemma.pdf][width=\textwidth]
+\stopplacefigure
+
+Der Index fällt damit nicht ersatzlos weg.
+Welche Dateien zum Verlauf gehören, entscheidet weiterhin ein Befehl:
+Eine neue Datei kommt erst mit \type{track} in den Baum,
+und eine Ausschlussdatei hält Pfade wie Build-Ausgaben und Geheimnisse heraus.
+Der Preis ist der Teil-Commit:
+Der Index von Git erlaubt einem Menschen, nur einen Teil seiner Änderungen zu committen,
+und das gibt es in Phase 1 nicht.
+Dafür geht in Phase 1 kein Stand der verfolgten Dateien verloren,
+den ein Snapshot festgehalten hat; nur ein Purge entfernt ihn absichtlich.
+Zwischen zwei Aufrufen sichert Stemma nichts, denn einen Dateiwächter gibt es in Phase 1 nicht.
 
 \section{Konflikte und Operation Log}
 
@@ -59,28 +86,33 @@ Es hält fest, welche Zeiger eine Operation von welchem auf welchen Wert gesetzt
 ausgeführt hat und wann. Damit bleibt jeder ersetzte Commit erreichbar, auch der
 Working-Copy-Commit, den ein Snapshot ablöst. Der Eintrag wird geschrieben, bevor der Zeiger sich
 bewegt: Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log.
-Jeder Eintrag ist eine eigene Datei mit fortlaufender Nummer, sodass mehrere Agenten gleichzeitig
-schreiben können, ohne sich zu sperren, und ein einzelner Eintrag sich ersetzen lässt, wenn ein
-Geheimnis entfernt werden muss.
+Jeder Eintrag ist eine eigene Datei mit fortlaufender Nummer.
+Eine geschriebene Datei bleibt unverändert.
+Die einzige Ausnahme ist ein Purge, der ein Geheimnis entfernt:
+Er ersetzt den Eintrag durch einen Stub, der nur Nummer, Zeit, Akteur und Hash behält (ADR-014).
+Wer schreibt, hält dabei die Sperre der Referenzen.
+Schreibt ein zweiter Agent gleichzeitig, scheitert er an der Sperre
+und muss es erneut versuchen.
 
 \section{Ideen aus anderen Systemen}
 
-\startitemize
-\item {\bf Jujutsu (jj):} Stabile Change-IDs, Konflikte als Daten,
-Operation Log und Git als Speicher \cite[jujutsu].
-\item {\bf Pijul:} Ein Modell auf Basis von Patches statt Snapshots.
-Es zeigt eine andere Grundannahme \cite[pijul].
-\item {\bf Sapling:} Ein System für grosse Monorepos mit Fokus auf Skalierung \cite[sapling].
-\item {\bf Scion (Anthropic):} Laut dem Engineering-Blog von Anthropic
-\cite[anthropic2026redesigning] ein zentrales System, in dem der Server jeden Commit und jeden
-Merge ausführt.
-Einen vollständigen lokalen Klon gibt es nicht;
-viele Jobs kommen ganz ohne Arbeitskopie aus und arbeiten über die API.
-Der Beitrag nennt keine öffentliche Verfügbarkeit, und das Projekt übernimmt keinen Code.
-Stemma teilt mit Scion die inhaltsadressierten Daten und übernimmt die API-Parität und die Idee
-der abgeleiteten Daten.
-Es bleibt aber ein lokales System mit vollständigem Klon und zielt auf kleine Teams,
-nicht auf ein Monorepo (ADR-015).
-\stopitemize
+Das Projekt nutzt andere Systeme als Ideengeber; Text und Code entstehen neu.
+Von Jujutsu übernimmt Stemma die stabilen Change-IDs, das Operation Log
+und die Arbeitskopie als Commit \cite[jujutsu].
+Konflikte als Daten erlaubt das Modell; entschieden wird darüber in Phase 3.
+Jujutsu nutzt standardmässig ein Git-Repository als Speicher, Stemma hat ein eigenes Format.
+Pijul baut auf Patches statt auf gespeicherten Ständen auf
+und zeigt damit eine andere Grundannahme \cite[pijul].
+Sapling ist auf grosse Monorepos und deren Skalierung ausgerichtet \cite[sapling].
 
-Das Projekt nutzt diese Systeme als Ideengeber. Text und Code entstehen neu.
+Scion ist das interne System von Anthropic \cite[anthropic2026redesigning].
+Es ist zentral: Der Server führt jeden Commit und jeden Merge aus,
+einen vollständigen lokalen Klon gibt es nicht,
+und viele Jobs arbeiten ganz ohne Arbeitskopie über die API.
+Stemma teilt mit Scion die inhaltsadressierten Daten
+und übernimmt die API-Parität und die Idee der abgeleiteten Daten.
+Dass der Server jeden Commit und Merge ausführt, übernimmt es vorerst nicht;
+der Hub aus Phase 5 speichert Objekte und Referenzen und setzt Berechtigungen durch,
+Commits und Merges bleiben lokal.
+Stemma bleibt ein lokales System mit vollständigem Klon und zielt auf kleine Teams,
+nicht auf ein Monorepo; die Abwägung steht in ADR-015.
