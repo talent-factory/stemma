@@ -33,7 +33,7 @@ use crate::store::{unique_temp_name, ObjectStore};
 /// Two paths of the new tree that differ only in case then name one file.
 const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
 
-/// The prefix of the temporary files that the layer writes next to their targets.
+// The prefix of the temporary files that the layer writes next to their targets.
 use crate::store::CHECKOUT_TEMP_PREFIX as TEMP_PREFIX;
 
 /// The files of a tree, by path.

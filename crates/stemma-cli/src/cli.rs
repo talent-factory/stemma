@@ -1352,7 +1352,8 @@ fn finish_status(status: Status, out: &mut dyn Write) -> Result<(), CliError> {
 }
 
 /// The text of the status: the changes with their letters, the untracked files, and the files that
-/// an interrupted checkout left, each section only if it has files, or one line if there are none. A path is written with [`escape_path`].
+/// an interrupted checkout left, each section only if it has files, or one line if there are none.
+/// A path is written with [`escape_path`].
 fn status_text(status: &Status) -> String {
     if status.changes.is_empty() && status.untracked.is_empty() && status.leftovers.is_empty() {
         return "Working copy is clean\n".to_owned();
@@ -1376,7 +1377,8 @@ fn status_text(status: &Status) -> String {
     }
     if !status.leftovers.is_empty() {
         text.push_str(
-            "Left by an interrupted restore, may hold an old file or a purged secret; remove:\n",
+            "Left by an interrupted restore, may hold an old file or a purged secret; remove \
+             them unless a restore is running:\n",
         );
         for path in &status.leftovers {
             text.push_str(&format!("! {}\n", escape_path(path)));
@@ -1995,11 +1997,11 @@ mod tests {
         status.untracked.clear();
         status
             .leftovers
-            .push("d/.stemma-checkout-1-0-0123456789abcdef".to_owned());
+            .push("it's/.stemma-checkout-1-0-0123456789abcdef".to_owned());
         assert_eq!(
             status_text(&status),
-            "Left by an interrupted restore, may hold an old file or a purged secret; remove:\n\
-             ! d/.stemma-checkout-1-0-0123456789abcdef\n"
+            "Left by an interrupted restore, may hold an old file or a purged secret; remove them \
+             unless a restore is running:\n! it\\'s/.stemma-checkout-1-0-0123456789abcdef\n"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -88,11 +88,15 @@ pub struct Status {
     pub changes: Vec<FileChange>,
     /// The files in the working directory that are not in the tree of the working-copy commit and
     /// that no pattern of `.stemmaignore` excludes, sorted by path. A directory is not listed,
-    /// its files are.
+    /// its files are. The temporary files of a checkout are listed apart, in
+    /// [`leftovers`](Self::leftovers).
     pub untracked: Vec<String>,
     /// The temporary files that a checkout left when its process was killed, sorted by path
-    /// (ADR-013). They hold the content of an old blob, which may be a secret that was purged
-    /// since; nothing tracks them, and a person removes them.
+    /// (ADR-013), also one that a pattern of `.stemmaignore` matches; a directory that a pattern
+    /// excludes is not searched. They hold the content of an old blob, which may be a secret that
+    /// was purged since. `track` never adds one; one that a tree holds already, from a version
+    /// before this rule, stays tracked and is listed here as well. A person removes them, when no
+    /// restore is running: one that runs has its temporary file there until it renames it.
     pub leftovers: Vec<String>,
     /// The snapshot that this call made, or `None` if the tracked files were as the working-copy
     /// commit has them.
@@ -726,6 +730,40 @@ mod tests {
         assert!(status.changes.iter().any(|change| change.path == left));
         assert_eq!(status.leftovers, [left]);
         assert!(status.untracked.is_empty());
+    }
+
+    #[test]
+    fn a_pattern_that_matches_a_leftover_does_not_hide_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, ".stemmaignore", ".stemma-*\n");
+        write(&dir, ".stemma-checkout-1-0-0123456789abcdef", "key=hunter2");
+        write(&dir, "d/.stemma-checkout-2-0-fedcba9876543210", "old");
+
+        let status = status(&repository);
+
+        assert_eq!(
+            status.leftovers,
+            [
+                ".stemma-checkout-1-0-0123456789abcdef",
+                "d/.stemma-checkout-2-0-fedcba9876543210"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_leftover_in_a_directory_that_a_pattern_excludes_is_not_searched() {
+        // The documented limit: the directory is not entered, so the file is not listed, and it
+        // is not tracked either.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, ".stemmaignore", "target/\n");
+        write(&dir, "target/.stemma-checkout-1-0-0123456789abcdef", "old");
+
+        let status = status(&repository);
+
+        assert!(status.leftovers.is_empty());
+        assert_eq!(status.untracked, [".stemmaignore"]);
     }
 
     #[test]
