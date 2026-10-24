@@ -94,6 +94,11 @@ other).
   systems of macOS and Windows do. A path that the caller names and that has a part `.git` is an
   error, not a silent skip; no line is involved. What is in the tree already stays tracked, as
   for a pattern. The price is that a repository cannot version a `.git` on purpose.
+  The temporary file that an interrupted checkout leaves (ADR-013), a file or a link named
+  `.stemma-checkout-` and a process ID, a counter, and 16 lowercase hexadecimal digits, is left
+  out at every depth as well, as it holds the content of an old blob, and a named path to it is an
+  error. Unlike `.git` its name is compared exactly, a directory of that name is ordinary
+  content, and it is not silent: `status` lists it apart (STEMMA-75).
 - **Effect on commands** *(confirmed)*.
   - `track` skips an excluded file below a directory without a word, as it skips `.stemma`. A
     path that the caller names and that is excluded is an error that names the line of the
@@ -102,6 +107,8 @@ other).
     says. Otherwise a snapshot would drop a file from the history without a word. `status`
     (STEMMA-4) lists such a file with the changes; a report "tracked and excluded" is open.
   - `status` (STEMMA-4) does not list an excluded path as untracked.
+  - `status` lists a temporary file of a checkout apart, also one that a pattern matches; a
+    directory that a pattern excludes is not entered, so a leftover in it is not listed.
   - A snapshot of tracked files does not read the file, so a damaged `.stemmaignore` never blocks
     a snapshot or a `commit`.
 - **Where it is read** *(confirmed)*. From the working directory at every call that needs it, never

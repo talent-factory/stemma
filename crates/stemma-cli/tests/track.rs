@@ -544,3 +544,29 @@ fn a_relative_directory_below_the_root_is_found_without_a_warning() {
     assert_eq!(result.stdout, "tracked sub/a.txt\n");
     assert!(!result.stderr.contains("warning"), "{}", result.stderr);
 }
+
+#[test]
+fn a_leftover_of_an_interrupted_restore_is_refused_and_nothing_changes() {
+    let dir = repository();
+    let left = "d/.stemma-checkout-4711-3-0123456789abcdef";
+    write(dir.path(), "a.txt", "a");
+    write(dir.path(), left, "key=hunter2");
+    let entries = operations(dir.path()).len();
+
+    let result = track(dir.path(), &["a.txt", left]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert_eq!(
+        result.stderr,
+        format!(
+            "stemma: `{left}` is a temporary file that an interrupted `op restore` left, which \
+             `track` always leaves out; remove it, or rename it if it is a file of your own\n"
+        )
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+    // A dot leaves it out without a word.
+    let result = track(dir.path(), &["."]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked a.txt\n");
+}

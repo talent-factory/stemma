@@ -607,3 +607,31 @@ fn a_snapshot_that_cannot_be_flushed_gives_the_status_and_code_3() {
     assert_eq!(again.stdout, "Working copy changes:\nM a.txt\n");
     assert_eq!(operations(dir.path()).len(), entries);
 }
+
+#[test]
+fn a_leftover_of_an_interrupted_restore_is_listed_in_its_own_section() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "a");
+    track_ok(dir.path(), "a.txt");
+    commit(dir.path(), "first");
+    write(
+        dir.path(),
+        "docs/.stemma-checkout-4711-3-0123456789abcdef",
+        "key=hunter2",
+    );
+    let entries = operations(dir.path()).len();
+
+    let result = status(dir.path());
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "Left by an interrupted restore, may hold an old file or a purged secret; remove them \
+         unless a restore is running:\n! docs/.stemma-checkout-4711-3-0123456789abcdef\n"
+    );
+    assert_eq!(
+        operations(dir.path()).len(),
+        entries,
+        "no snapshot: nothing changed"
+    );
+}

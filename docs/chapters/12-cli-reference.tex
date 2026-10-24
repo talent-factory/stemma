@@ -360,7 +360,11 @@ ablehnt: Der Befehl nennt den Pfad und ändert nichts. Namen, die auf \type{.ste
 überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so einem Namen ist
 dagegen ein Fehler. Dasselbe gilt für \type{.git}, die Metadaten von Git:
 Sie fehlen immer, auch ohne Muster, und ein genannter Pfad mit einem Teil \type{.git} ist ein
-Fehler. Liegt das Verzeichnis in keinem Repository, nennt die Meldung \type{-C}.
+Fehler. Ebenso fehlt eine temporäre Datei \type{.stemma-checkout-…}, die ein unterbrochenes
+\type{op restore} zurückliess, denn sie enthält einen alten Inhalt (siehe \type{status}); ein
+genannter Pfad, der so eine Datei nennt, beendet den Befehl mit Exit-Code 1, und die Meldung rät,
+sie zu entfernen oder umzubenennen.
+Liegt das Verzeichnis in keinem Repository, nennt die Meldung \type{-C}.
 Mit Exit-Code 3 endet der Befehl, wenn
 die Dateien verfolgt sind, aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht
 gesichert ist; ein Skript wiederholt ihn dann nicht. Ist nur der Zeiger nicht gesichert, schreibt
@@ -541,7 +545,23 @@ Verzeichnisses stehen einzeln da.
 Unverfolgt sind die Dateien im Verzeichnis, die nicht im Baum des Working-Copy-Commits stehen
 und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln und sortiert da,
 und das Verzeichnis \type{.stemma} kommt nie vor.
-Ein Abschnitt ohne Dateien fehlt. Gibt es weder Änderungen noch unverfolgte Dateien,
+Eine temporäre Datei \type{.stemma-checkout-…}, die ein unterbrochenes \type{op restore}
+zurückliess, gilt nicht als unverfolgt, und \type{track} nimmt sie nie auf: Sie enthält den Inhalt
+eines alten Blobs, unter Umständen ein gepurgtes Geheimnis. Der Befehl nennt sie in einem eigenen
+Abschnitt, auch wenn ein Muster ihren Namen trifft; in einem Verzeichnis, das \type{.stemmaignore}
+ausschliesst, sucht er nicht. Was schon im Baum steht, weil eine ältere Version es aufnahm, bleibt
+verfolgt und erscheint ebenfalls dort. Ein Verzeichnis mit so einem Namen ist gewöhnlicher Inhalt,
+denn ein Restore schreibt dort nur Dateien und Links. Läuft gerade ein \type{op restore}, kann
+seine eigene temporäre Datei hier stehen; man entfernt sie daher erst, wenn kein Restore läuft.
+Der Exit-Code bleibt 0:
+
+\starttyping
+Left by an interrupted restore, may hold an old file or a purged secret; remove them unless a
+restore is running:
+! docs/.stemma-checkout-4711-3-0123456789abcdef
+\stoptyping
+
+Ein Abschnitt ohne Dateien fehlt. Gibt es weder Änderungen noch unverfolgte Dateien noch Reste,
 schreibt der Befehl eine Zeile:
 
 \starttyping
@@ -847,6 +867,9 @@ ins Arbeitsverzeichnis.
 Verfolgte Dateien, die der alte Baum nicht hat, werden gelöscht,
 und mit ihnen die Verzeichnisse, die dadurch leer werden.
 Nicht verfolgte Dateien, \type{.stemma} und \type{.git} bleiben unberührt.
+Jede Datei schreibt das Restore zuerst unter einem Namen \type{.stemma-checkout-…} neben ihr Ziel
+und benennt sie dann um. Wird der Prozess dazwischen beendet, bleibt diese Datei liegen;
+\type{track} nimmt sie nie auf, und \type{status} nennt sie.
 Ein verfolgter Pfad wird auch dann zurückgesetzt, wenn die Ausschlussdatei ihn heute
 ausschliesst (ADR-012); ein Pfad, den der alte Baum neu anlegt und den die Ausschlussdatei
 ausschliesst, ist ein Fehler.

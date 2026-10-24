@@ -27,14 +27,11 @@ use super::snapshot::{lookup, read_object, SnapshotError};
 use super::Repository;
 use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::object::{BlobId, FileMode, Kind, Tree, TreeId, GIT_DIR, METADATA_DIR};
-use crate::store::{unique_temp_name, ObjectStore};
+use crate::store::{unique_temp_name, ObjectStore, CHECKOUT_TEMP_PREFIX as TEMP_PREFIX};
 
 /// Whether the file systems of the platform usually ignore the case of names (macOS and Windows).
 /// Two paths of the new tree that differ only in case then name one file.
 const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
-
-/// The prefix of the temporary files that the layer writes next to their targets.
-const TEMP_PREFIX: &str = ".stemma-checkout-";
 
 /// The files of a tree, by path.
 type Files = BTreeMap<String, (FileMode, BlobId)>;

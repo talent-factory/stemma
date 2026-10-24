@@ -20,6 +20,7 @@ use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::index::path_problem;
 use crate::object::{name_problem, FileMode, NameProblem, GIT_DIR};
 use crate::oplog::{Entry, OperationName};
+use crate::store::is_checkout_temp_name;
 use crate::{Actor, Authorizer};
 
 /// The operation that the log records for tracking files.
@@ -69,7 +70,9 @@ impl Repository {
     /// [`TrackError::Ignore`] if `.stemmaignore` is not valid or cannot be read (nothing is
     /// tracked, whatever the paths are); [`TrackError::NotDurable`] if the files are tracked but a
     /// directory could not be flushed (the list of files is in the error); and
-    /// [`TrackError::Spelling`] for a path that is not spelled as on disk. The
+    /// [`TrackError::Spelling`] for a path that is not spelled as on disk;
+    /// [`TrackError::GitDirectory`] for a named path through `.git`, and
+    /// [`TrackError::CheckoutLeftover`] for one that names a temporary file of a checkout. The
     /// working-copy commit moves only after every file is saved, so none of these moves it. The
     /// paths are checked before any file is saved, except that a named file can be gone when its
     /// turn comes. [`TrackError::Snapshot`] carries every other failure, as
@@ -130,8 +133,8 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 /// Turns a path that a person gives relative to `subdirectory`, a directory below the root of the
-/// repository as [`Discovered::subdirectory`](super::Discovered::subdirectory) has it, into the form of
-/// [`Repository::track`], relative to the root. A `..` at the start of the path leads up from
+/// repository as [`Discovered::subdirectory`](super::Discovered::subdirectory) has it, into the
+/// form of [`Repository::track`], relative to the root. A `..` at the start of the path leads up from
 /// `subdirectory`, to the root and not beyond. Any other `..` stays, and so does one that would
 /// leave the repository, and the core refuses such a path: a `..` after a part that may be a link
 /// does not lead where the name says. An absolute path stays as it is, and so
@@ -167,7 +170,7 @@ pub fn normalize_path_in(subdirectory: &str, path: &str) -> String {
 /// file below a directory that they exclude is left out.
 fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Tracked>, TrackError> {
     let mut named = BTreeSet::new();
-    let mut below = BTreeSet::new();
+    let mut below = Found::default();
     for path in paths {
         if path == "." {
             // The working directory itself: every file below it. It may be a link to the
@@ -194,6 +197,11 @@ fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Trac
         if path.split('/').any(is_git_dir) {
             return Err(TrackError::GitDirectory { path: path.clone() });
         }
+        // A checkout writes only files and links under that name, so only a last part that is no
+        // directory is one; a directory of that name is ordinary content, as in the walk.
+        if !metadata.is_dir() && path.rsplit('/').next().is_some_and(is_checkout_temp_name) {
+            return Err(TrackError::CheckoutLeftover { path: path.clone() });
+        }
         if let Some(line) = rules.matching(path, metadata.is_dir()) {
             return Err(TrackError::Excluded {
                 path: path.clone(),
@@ -207,7 +215,7 @@ fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Trac
         }
     }
     let named_files = named.iter().map(|path| (path, true));
-    let found_files = below.iter().map(|path| (path, false));
+    let found_files = below.files.iter().map(|path| (path, false));
     let mut files: Vec<Tracked> = named_files
         .chain(found_files)
         .map(|(path, named)| Tracked {
@@ -288,14 +296,25 @@ fn check_spelling(root: &Path, path: &str) -> Result<(), TrackError> {
     Ok(())
 }
 
-/// Collects the paths of the files below a directory that the rules do not exclude. A directory is
-/// listed with the names sorted, and an explicit stack replaces the recursion, so that a deep tree
-/// cannot exhaust the stack.
+/// What [`walk`] finds below a directory.
+#[derive(Debug, Default)]
+pub(super) struct Found {
+    /// The paths of the files that the rules do not exclude, without `.git`, `.stemma`, and the
+    /// temporary files of a checkout.
+    pub(super) files: BTreeSet<String>,
+    /// The paths of the temporary files that a checkout left behind ([`is_checkout_temp_name`]).
+    pub(super) leftovers: BTreeSet<String>,
+}
+
+/// Collects the paths of the files below a directory that the rules do not exclude, and apart from
+/// them the temporary files that a checkout left ([`Found::leftovers`]), also one that a pattern
+/// matches. A directory is listed with the names sorted, and an explicit stack replaces the
+/// recursion, so that a deep tree cannot exhaust the stack.
 pub(super) fn walk(
     dir: PathBuf,
     prefix: &str,
     rules: &IgnoreRules,
-    found: &mut BTreeSet<String>,
+    found: &mut Found,
 ) -> Result<(), TrackError> {
     let mut pending = vec![(dir, prefix.to_owned())];
     while let Some((dir, prefix)) = pending.pop() {
@@ -332,6 +351,15 @@ pub(super) fn walk(
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(source) => return Err(io_error("inspect", &full, source)),
             };
+            // A temporary file of a checkout that a killed process left holds the content of an
+            // old blob, perhaps a secret that was purged since: it is never a file to track, and
+            // it is listed so that a person can remove it (ADR-013). This comes before the
+            // patterns, so that a pattern that matches its name does not hide it. A checkout
+            // writes only files and links there, so a directory of that name is ordinary content.
+            if !metadata.is_dir() && is_checkout_temp_name(name) {
+                found.leftovers.insert(path);
+                continue;
+            }
             // An excluded directory is not entered, and an excluded file is not listed, also one
             // whose name a tree refuses: a pattern is the way to leave such a file out.
             if rules.is_ignored(&path, metadata.is_dir()) {
@@ -343,7 +371,7 @@ pub(super) fn walk(
             if metadata.is_dir() {
                 pending.push((full, path));
             } else {
-                found.insert(path);
+                found.files.insert(path);
             }
         }
     }
@@ -414,6 +442,13 @@ pub enum TrackError {
         /// The path as it was given.
         path: String,
     },
+    /// The path names a temporary file that a checkout left when its process was killed (ADR-013):
+    /// a file or a link named `.stemma-checkout-`, a process ID, a counter, and 16 lowercase
+    /// hexadecimal digits, which `track` always leaves out, as it holds the content of an old blob.
+    CheckoutLeftover {
+        /// The path as it was given.
+        path: String,
+    },
     /// `.stemmaignore` cannot be read, is not a regular file, changed while it was read, or is not
     /// valid. Nothing is tracked, as a rule that cannot be read must not become "exclude
     /// nothing".
@@ -452,6 +487,7 @@ impl TrackError {
             | Self::InvalidName { .. }
             | Self::Excluded { .. }
             | Self::GitDirectory { .. }
+            | Self::CheckoutLeftover { .. }
             | Self::NotFound { .. }
             | Self::Spelling { .. } => None,
         }
@@ -506,6 +542,12 @@ impl fmt::Display for TrackError {
             Self::GitDirectory { path } => write!(
                 f,
                 "`{}` is part of the metadata of Git, which `track` always leaves out",
+                path.escape_debug()
+            ),
+            Self::CheckoutLeftover { path } => write!(
+                f,
+                "`{}` is a temporary file that an interrupted `op restore` left, which `track` \
+                 always leaves out; remove it, or rename it if it is a file of your own",
                 path.escape_debug()
             ),
             Self::Ignore(error) => write!(f, "{error}; nothing was tracked"),
@@ -1369,6 +1411,80 @@ mod tests {
         let tracking = track(&repository, &["."]).unwrap();
 
         assert_eq!(tracking.added, ["a.txt", "vendor/lib/x.txt"]);
+    }
+
+    #[test]
+    fn a_file_that_an_interrupted_checkout_left_is_never_tracked() {
+        // It holds the content of an old blob, which may be a secret that was purged since.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let left = ".stemma-checkout-4711-3-0123456789abcdef";
+        write(&dir, "a.txt", "a");
+        write(&dir, left, "key=hunter2");
+        write(&dir, &format!("d/{left}"), "old");
+        // A name of the working copy with the same start is an ordinary file.
+        write(&dir, ".stemma-checkout-notes", "n");
+        let tracking = track(&repository, &["."]).unwrap();
+        assert_eq!(tracking.added, [".stemma-checkout-notes", "a.txt"]);
+        // A name of it is an error, also when a pattern matches it: the error says what it is,
+        // and not that a line excludes it.
+        ignore(&dir, ".stemma-*\n");
+        for path in [left.to_owned(), format!("d/{left}")] {
+            let error = track(&repository, &[&path]).unwrap_err();
+            assert!(
+                matches!(&error, TrackError::CheckoutLeftover { path: at } if *at == path),
+                "{error}"
+            );
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "`{path}` is a temporary file that an interrupted `op restore` left, which \
+                     `track` always leaves out; remove it, or rename it if it is a file of your \
+                     own"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_directory_with_the_name_of_a_leftover_is_ordinary_content() {
+        // A checkout writes only files and links under that name, never a directory.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let name = ".stemma-checkout-4711-3-0123456789abcdef";
+        write(&dir, &format!("{name}/x.txt"), "x");
+        let tracking = track(&repository, &["."]).unwrap();
+        assert_eq!(tracking.added, [format!("{name}/x.txt")]);
+        // A path through it is no error either.
+        write(&dir, &format!("{name}/y.txt"), "y");
+        let tracking = track(&repository, &[&format!("{name}/y.txt")]).unwrap();
+        assert_eq!(tracking.added, [format!("{name}/y.txt")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_an_interrupted_checkout_left_is_a_leftover_also_to_a_directory() {
+        // A checkout writes a link under that name too, and the link is not followed.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let left = ".stemma-checkout-4711-3-0123456789abcdef";
+        write(&dir, "real/inside.txt", "x");
+        std::os::unix::fs::symlink("real", dir.path().join(left)).unwrap();
+        let mut found = Found::default();
+        walk(
+            dir.path().to_path_buf(),
+            "",
+            &IgnoreRules::default(),
+            &mut found,
+        )
+        .unwrap();
+        assert_eq!(found.leftovers.iter().collect::<Vec<_>>(), [left]);
+        assert!(!found.files.iter().any(|path| path.starts_with(left)));
+        let error = track(&repository, &[left]).unwrap_err();
+        assert!(
+            matches!(&error, TrackError::CheckoutLeftover { path } if path == left),
+            "{error}"
+        );
     }
 
     #[test]
