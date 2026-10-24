@@ -308,9 +308,8 @@ pub(super) struct Found {
 
 /// Collects the paths of the files below a directory that the rules do not exclude, and apart from
 /// them the temporary files that a checkout left ([`Found::leftovers`]), also one that a pattern
-/// matches. A directory is
-/// listed with the names sorted, and an explicit stack replaces the recursion, so that a deep tree
-/// cannot exhaust the stack.
+/// matches. A directory is listed with the names sorted, and an explicit stack replaces the
+/// recursion, so that a deep tree cannot exhaust the stack.
 pub(super) fn walk(
     dir: PathBuf,
     prefix: &str,
@@ -1460,6 +1459,32 @@ mod tests {
         write(&dir, &format!("{name}/y.txt"), "y");
         let tracking = track(&repository, &[&format!("{name}/y.txt")]).unwrap();
         assert_eq!(tracking.added, [format!("{name}/y.txt")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_an_interrupted_checkout_left_is_a_leftover_also_to_a_directory() {
+        // A checkout writes a link under that name too, and the link is not followed.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let left = ".stemma-checkout-4711-3-0123456789abcdef";
+        write(&dir, "real/inside.txt", "x");
+        std::os::unix::fs::symlink("real", dir.path().join(left)).unwrap();
+        let mut found = Found::default();
+        walk(
+            dir.path().to_path_buf(),
+            "",
+            &IgnoreRules::default(),
+            &mut found,
+        )
+        .unwrap();
+        assert_eq!(found.leftovers.iter().collect::<Vec<_>>(), [left]);
+        assert!(!found.files.iter().any(|path| path.starts_with(left)));
+        let error = track(&repository, &[left]).unwrap_err();
+        assert!(
+            matches!(&error, TrackError::CheckoutLeftover { path } if path == left),
+            "{error}"
+        );
     }
 
     #[test]
