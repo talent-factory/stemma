@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 380" font-family="Helvetica, Arial, sans-serif">
+<title>Arbeitsverzeichnis, Index und Commit in Git und in Stemma</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="600" height="380" fill="#FFFFFF"/>
+<g font-size="14" font-weight="bold" fill="#0F172A">
+  <text x="20" y="24">Git</text>
+  <text x="320" y="24">Stemma</text>
+</g>
+<line x1="300" y1="10" x2="300" y2="370" stroke="#E2E8F0" stroke-width="1"/>
+<!-- Git column -->
+<g stroke-width="1.5" fill="#FFFFFF">
+  <rect x="20" y="44" width="220" height="50" rx="4" stroke="#2B6CB0"/>
+  <rect x="20" y="144" width="220" height="50" rx="4" stroke="#64748B"/>
+  <rect x="20" y="244" width="220" height="50" rx="4" stroke="#64748B"/>
+</g>
+<g font-size="13" font-weight="bold">
+  <text x="32" y="66" fill="#2B6CB0">Arbeitsverzeichnis</text>
+  <text x="32" y="166" fill="#0F172A">Index</text>
+  <text x="32" y="266" fill="#0F172A">Commit</text>
+</g>
+<g font-size="11.5" fill="#64748B">
+  <text x="32" y="84">Dateien auf dem Datenträger</text>
+  <text x="32" y="184">Stand, den der Mensch vormerkt</text>
+  <text x="32" y="284">mit Nachricht, auf dem Branch</text>
+</g>
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="130" y1="94" x2="130" y2="142"/>
+  <line x1="130" y1="194" x2="130" y2="242"/>
+</g>
+<g font-family="Courier, monospace" font-size="12" fill="#0F172A">
+  <text x="140" y="123">git add</text>
+  <text x="140" y="223">git commit</text>
+</g>
+<g font-size="11.5" fill="#0F172A">
+  <text x="20" y="324">Was nicht vorgemerkt ist, fehlt im Commit</text>
+  <text x="20" y="340">und steht in keinem Verlauf.</text>
+</g>
+<!-- Stemma column -->
+<g stroke-width="1.5" fill="#FFFFFF">
+  <rect x="320" y="44" width="250" height="50" rx="4" stroke="#2B6CB0"/>
+  <rect x="320" y="144" width="250" height="50" rx="4" stroke="#B45309"/>
+  <rect x="320" y="244" width="120" height="50" rx="4" stroke="#64748B"/>
+  <rect x="460" y="244" width="110" height="50" rx="4" stroke="#B45309"/>
+</g>
+<g font-size="13" font-weight="bold">
+  <text x="332" y="66" fill="#2B6CB0">Arbeitsverzeichnis</text>
+  <text x="332" y="166" fill="#B45309">Working-Copy-Commit</text>
+  <text x="332" y="266" fill="#0F172A">Commit</text>
+  <text x="470" y="266" fill="#B45309">neuer WCC</text>
+</g>
+<g font-size="11.5" fill="#64748B">
+  <text x="332" y="84">Dateien auf dem Datenträger</text>
+  <text x="332" y="184">verfolgte Dateien, Stand beim Befehl</text>
+  <text x="332" y="284">mit Nachricht</text>
+  <text x="470" y="284">leer, sein Kind</text>
+</g>
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="445" y1="94" x2="445" y2="142"/>
+  <line x1="380" y1="194" x2="380" y2="242"/>
+  <line x1="460" y1="269" x2="442" y2="269"/>
+</g>
+<g font-size="11.5" fill="#0F172A">
+  <text x="455" y="116">Snapshot bei</text>
+  <text x="455" y="131">jedem Befehl</text>
+</g>
+<text x="388" y="223" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit</text>
+<text x="388" y="237" font-size="11" fill="#64748B">benennt ihn</text>
+<rect x="350" y="304" width="54" height="20" rx="3" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="377" y="318" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32" text-anchor="middle">main</text>
+<line x1="377" y1="304" x2="377" y2="296" stroke="#2F7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+<g font-size="11.5" fill="#0F172A">
+  <text x="320" y="346">Welche Dateien dazugehören, bestimmt</text>
+  <text x="320" y="362"><tspan font-family="Courier, monospace">track</tspan>; WCC = Working-Copy-Commit.</text>
+</g>
+</svg>

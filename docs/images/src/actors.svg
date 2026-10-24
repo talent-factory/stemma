@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 300" font-family="Helvetica, Arial, sans-serif">
+<title>Akteur: Mensch oder Agent mit Sponsor</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="580" height="300" fill="#FFFFFF"/>
+<!-- Human -->
+<rect x="20" y="20" width="200" height="74" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5"/>
+<text x="32" y="42" font-size="13" font-weight="bold" fill="#0F172A">Mensch</text>
+<text x="32" y="64" font-family="Courier, monospace" font-size="13" fill="#0F172A">human daniel</text>
+<text x="32" y="84" font-size="11.5" fill="#64748B">Art und Kennung</text>
+<!-- Agent -->
+<rect x="20" y="130" width="540" height="94" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5"/>
+<text x="32" y="152" font-size="13" font-weight="bold" fill="#0F172A">Agent</text>
+<text x="32" y="178" font-family="Courier, monospace" font-size="13" fill="#0F172A">agent claude model=opus-5-5 session=s1 sponsor=daniel</text>
+<!-- Field brackets under the agent line -->
+<g stroke="#64748B" stroke-width="1" fill="none">
+  <path d="M32,186 L32,190 L124,190 L124,186"/>
+  <path d="M133,186 L133,190 L249,190 L249,186"/>
+  <path d="M258,186 L258,190 L351,190 L351,186"/>
+  <path d="M360,186 L360,190 L493,190 L493,186"/>
+</g>
+<g font-size="11.5" fill="#64748B" text-anchor="middle">
+  <text x="78" y="206">Art und Kennung</text>
+  <text x="191" y="206">Modellversion</text>
+  <text x="304" y="206">Session</text>
+  <text x="426" y="206">Sponsor</text>
+</g>
+<!-- Sponsor answers for the agent -->
+<path d="M426,130 C426,70 300,57 222,57" fill="none" stroke="#64748B" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
+<text x="290" y="48" font-size="11.5" fill="#0F172A">ein Mensch, der für den Agenten einsteht</text>
+<!-- Where the line is recorded -->
+<g font-size="12" fill="#0F172A">
+  <text x="20" y="254">Dieselbe Zeile steht in jedem Commit (<tspan font-family="Courier, monospace">author</tspan>)</text>
+  <text x="20" y="270">und in jedem Eintrag des Operation Logs (<tspan font-family="Courier, monospace">actor</tspan>).</text>
+  <text x="20" y="290" fill="#64748B">Die Kommandozeile liest sie aus <tspan font-family="Courier, monospace">--actor</tspan> oder <tspan font-family="Courier, monospace">STEMMA_ACTOR</tspan>.</text>
+</g>
+</svg>
