@@ -146,7 +146,10 @@ art, not a template (ADR-015).
   commit and no entry. A path is never followed through a link: a tracked file below a directory
   that is now a link counts as gone. A tracked path that is a special file stops the snapshot
   with an error instead of dropping it from the history. A link is saved as its target, and the
-  executable bit is a part of the file mode where the file system has one. A file is opened
+  executable bit is a part of the file mode where the file system has one. Where links are not
+  written (Windows), the checkout writes a link as a plain file that holds its target, as Git
+  does with `core.symlinks=false`, and the snapshot reads that file back as the target of a link
+  that stays a link, so a checkout followed by a snapshot changes nothing. A file is opened
   and compared by device and inode with the one that was looked at, so a file or a directory
   swapped for a link between the two is an error and not a read outside the working directory.
   A file that vanishes between the two counts as gone.

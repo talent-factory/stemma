@@ -334,7 +334,9 @@ pub(super) fn lookup(
 }
 
 /// The mode of a regular file. Where the file system has no executable bit, the mode that the tree
-/// has stays, except that a tracked link is a plain file there, because the file is not a link.
+/// has stays. A tracked link stays a link there as well: the checkout writes a link as a plain file
+/// that holds its target, as Git does with `core.symlinks=false`, and the file is read back as the
+/// target, so a checkout followed by a snapshot changes nothing.
 fn file_mode(metadata: &Metadata, tracked: FileMode) -> FileMode {
     #[cfg(unix)]
     {
@@ -349,10 +351,7 @@ fn file_mode(metadata: &Metadata, tracked: FileMode) -> FileMode {
     #[cfg(not(unix))]
     {
         let _ = metadata;
-        match tracked {
-            FileMode::Symlink => FileMode::File,
-            other => other,
-        }
+        tracked
     }
 }
 
@@ -412,7 +411,15 @@ fn save(
         let Some(content) = read_file(&full, &metadata)? else {
             return Ok(None);
         };
-        (file_mode(&metadata, file.mode), content)
+        let mode = file_mode(&metadata, file.mode);
+        // A file that stands for a link holds its target, which has to be UTF-8 as a real one.
+        if mode == FileMode::Symlink && std::str::from_utf8(&content).is_err() {
+            return Err(SnapshotError::Unsupported {
+                path: file.path.clone(),
+                what: Unsupported::NonUtf8Link,
+            });
+        }
+        (mode, content)
     } else if kind.is_dir() {
         // A directory has taken the place of the file; what is below it is not tracked.
         return Ok(None);
@@ -682,14 +689,26 @@ mod tests {
     /// Makes the files and a working-copy commit that tracks them, with the message "work", by a
     /// move of the working-copy commit.
     fn track(repository: &Repository, dir: &TempDir, files: &[(&str, &str)]) {
-        let mut index = Index::new();
         for (path, content) in files {
             write(dir, path, content);
+        }
+        let files: Vec<_> = files
+            .iter()
+            .map(|&(path, content)| (path, FileMode::File, content))
+            .collect();
+        commit_files(repository, &files);
+    }
+
+    /// Makes a working-copy commit whose tree holds the files, given as path, mode, and content,
+    /// without writing them, and returns the tree.
+    fn commit_files(repository: &Repository, files: &[(&str, FileMode, &str)]) -> TreeId {
+        let mut index = Index::new();
+        for &(path, mode, content) in files {
             let id = repository
                 .objects()
                 .put_blob(&Blob::new(content.as_bytes()))
                 .unwrap();
-            index.insert(*path, FileMode::File, id).unwrap();
+            index.insert(path, mode, id).unwrap();
         }
         let tree = index.write_tree(repository.objects()).unwrap();
         let old = repository.refs().working_copy().unwrap();
@@ -713,6 +732,7 @@ mod tests {
                 &AllowAll,
             )
             .unwrap();
+        tree
     }
 
     fn snapshot(repository: &Repository) -> Option<Entry> {
@@ -1175,6 +1195,58 @@ mod tests {
         let before = repository.refs().working_copy().unwrap();
         fs::remove_file(dir.path().join("l")).unwrap();
         symlink(OsStr::from_bytes(b"\xff\xfe"), dir.path().join("l")).unwrap();
+        let error = repository.snapshot(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                SnapshotError::Unsupported {
+                    what: Unsupported::NonUtf8Link,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(repository.refs().working_copy().unwrap(), before);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_that_a_checkout_writes_as_a_file_stays_a_link() {
+        // A tree with a link, as a commit on Unix makes it; the checkout writes it as a plain file.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let files = [
+            ("target.txt", FileMode::File, "content"),
+            ("link", FileMode::Symlink, "target.txt"),
+        ];
+        let tree = commit_files(&repository, &files);
+        let plan = repository.plan_checkout(None, tree).unwrap();
+        repository.apply_checkout(&plan).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("link")).unwrap(),
+            "target.txt"
+        );
+        assert!(snapshot(&repository).is_none());
+        // A new target in the file is a new target of the link.
+        write(&dir, "link", "elsewhere");
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(
+            tracked(&repository),
+            [
+                ("link".to_owned(), FileMode::Symlink),
+                ("target.txt".to_owned(), FileMode::File),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_for_a_link_whose_content_is_not_utf8_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        commit_files(&repository, &[("link", FileMode::Symlink, "target")]);
+        fs::write(dir.path().join("link"), b"\xff\xfe").unwrap();
+        let before = repository.refs().working_copy().unwrap();
         let error = repository.snapshot(&actor(), &AllowAll).unwrap_err();
         assert!(
             matches!(
