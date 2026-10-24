@@ -32,8 +32,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
 use crate::oplog::Pointer;
 use crate::store::{
-    create_dirs_synced, create_temp, remove_scratch, sync_directory, unique_temp_name, ObjectStore,
-    StoreError,
+    create_dirs_synced, create_temp, flush_directory, remove_scratch, unique_temp_name,
+    ObjectStore, StoreError,
 };
 use crate::verify::{RefVerifyError, VerifyError};
 
@@ -1431,12 +1431,9 @@ impl FsRefStore {
             })?;
         }
         temp.disarm();
-        sync_directory(parent).map_err(|error| match error {
-            StoreError::Io { source, .. } => RefError::NotFlushed {
-                path: parent.to_path_buf(),
-                source,
-            },
-            other => RefError::Store(Box::new(other)),
+        flush_directory(parent).map_err(|source| RefError::NotFlushed {
+            path: parent.to_path_buf(),
+            source,
         })
     }
 
@@ -2299,14 +2296,11 @@ impl FsRefStore {
                 None => break,
             }
         }
-        sync_directory(&changed)
+        flush_directory(&changed)
             .map(|()| true)
-            .map_err(|error| match error {
-                StoreError::Io { source, .. } => RefError::NotFlushed {
-                    path: changed.clone(),
-                    source,
-                },
-                other => RefError::Store(Box::new(other)),
+            .map_err(|source| RefError::NotFlushed {
+                path: changed.clone(),
+                source,
             })
     }
 
