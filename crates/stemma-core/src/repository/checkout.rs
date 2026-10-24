@@ -511,6 +511,8 @@ impl TempFile {
                 .map_err(|source| io_error("create the link", &temp.full, source))?;
             return Ok(temp);
         }
+        // Outside Unix a link is written as a plain file that holds its target, as Git does with
+        // `core.symlinks=false`; the snapshot reads the file back as the target of the link.
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -780,8 +782,7 @@ fn case_collision(entries: &BTreeSet<String>) -> Option<(String, String)> {
 }
 
 /// Sets the permissions to 0o755 for an executable file and to 0o644 for any other, whatever the
-/// umask says. Where there is no executable bit, the mode stays as it is; a
-/// link is written as a plain file there, as the snapshot reads it.
+/// umask says. Where there is no executable bit, the mode stays as it is.
 fn set_mode(file: &fs::File, mode: FileMode) -> io::Result<()> {
     #[cfg(unix)]
     {
