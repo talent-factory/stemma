@@ -852,10 +852,12 @@ ein Stub eines Eintrags aus der Zeit vor der Kette behält die Version 2.
 \stopinfobox
 
 Ein Purge läuft über ein Journal, damit ein Abbruch ihn nicht halb gemacht zurücklässt.
-\in{Abbildung}[fig:purge-states] zeigt die Schritte mit \type{--apply}:
+\in{Abbildung}[fig:purge-states] zeigt die Schritte mit \type{--apply};
+sie sind nummeriert wie in ADR-014:
 
 \startitemize[n]
-\item Der Purge speichert das Verzeichnis in einem Snapshot,
+\item Der Purge lehnt einen Agenten ab, bevor er etwas schreibt.
+\item Er speichert das Verzeichnis in einem Snapshot,
 damit eine Änderung mit dem Geheimnis in einem Commit und im Plan steht.
 \item Er nimmt die Sperre der Referenzen, hält sie bis zum Ende und plant unter ihr neu.
 Sein Plan kann daher vom gezeigten abweichen.
@@ -866,9 +868,9 @@ die Bewegungen der Zeiger, die Stubs, die neuen Objekte und die Objekte, die gel
 \item Er schreibt die neuen Bäume und Commits.
 \item Er prüft, dass jeder Zeiger noch auf seinem alten Wert steht,
 schreibt den Eintrag \type{purge} und bewegt die Zeiger.
-\item Er ersetzt die Einträge durch Stubs und löscht die alten Commits,
-die alten Bäume und den Blob.
-\item Zuletzt entfernt er das Journal.
+\item Er ersetzt die Einträge durch Stubs.
+\item Er löscht die alten Commits, die alten Bäume und den Blob
+und entfernt zuletzt das Journal.
 \stopitemize
 
 Das Format kommt vor dem Journal,

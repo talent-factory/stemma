@@ -6,7 +6,7 @@
   </marker>
 </defs>
 <rect x="0" y="0" width="580" height="600" fill="#FFFFFF"/>
-<!-- Steps of a purge with the apply option -->
+<!-- Steps of a purge with the apply option, numbered as in ADR-014 -->
 <g stroke="#64748B" stroke-width="1" fill="#FFFFFF">
   <rect x="20" y="20" width="250" height="40" rx="4"/>
   <rect x="20" y="84" width="250" height="40" rx="4"/>
@@ -19,8 +19,8 @@
   <rect x="20" y="532" width="250" height="40" rx="4"/>
 </g>
 <g>
-  <rect x="20" y="20" width="8" height="40" fill="#B45309"/>
-  <rect x="20" y="84" width="8" height="40" fill="#64748B"/>
+  <rect x="20" y="20" width="8" height="40" fill="#64748B"/>
+  <rect x="20" y="84" width="8" height="40" fill="#B45309"/>
   <rect x="20" y="148" width="8" height="40" fill="#64748B"/>
   <rect x="20" y="212" width="8" height="40" fill="#64748B"/>
   <rect x="20" y="276" width="8" height="40" fill="#64748B"/>
@@ -30,26 +30,26 @@
   <rect x="20" y="532" width="8" height="40" fill="#64748B"/>
 </g>
 <g font-size="13" font-weight="bold" fill="#0F172A">
-  <text x="40" y="37" fill="#B45309">1  Snapshot</text>
-  <text x="40" y="101">2  Sperre nehmen, neu planen</text>
-  <text x="40" y="165">3  Format 4, Journal schreiben</text>
-  <text x="40" y="229">4  Neue Bäume und Commits</text>
-  <text x="40" y="293">5  Zeiger prüfen</text>
-  <text x="40" y="357" fill="#6B46C1">6  Eintrag <tspan font-family="Courier, monospace">purge</tspan> schreiben</text>
-  <text x="40" y="421" fill="#2F7D32">7  Zeiger bewegen</text>
-  <text x="40" y="485" fill="#6B46C1">8  Stubs, alte Objekte löschen</text>
-  <text x="40" y="549">9  Journal entfernen</text>
+  <text x="40" y="37">1  Agenten ablehnen</text>
+  <text x="40" y="101" fill="#B45309">2  Snapshot</text>
+  <text x="40" y="165">3  Sperre nehmen, neu planen</text>
+  <text x="40" y="229">4  Format 4, Journal schreiben</text>
+  <text x="40" y="293">5  Neue Bäume und Commits</text>
+  <text x="40" y="357" fill="#6B46C1">6a  Zeiger prüfen, Eintrag <tspan font-family="Courier, monospace">purge</tspan></text>
+  <text x="40" y="421" fill="#2F7D32">6b  Zeiger bewegen</text>
+  <text x="40" y="485" fill="#6B46C1">7  Einträge durch Stubs ersetzen</text>
+  <text x="40" y="549">8  Löschen, Journal entfernen</text>
 </g>
 <g font-size="11.5" fill="#64748B">
-  <text x="56" y="53">das Verzeichnis festhalten</text>
-  <text x="56" y="117"><tspan font-family="Courier, monospace">refs.lock</tspan>, bis zum Ende gehalten</text>
-  <text x="56" y="181"><tspan font-family="Courier, monospace">.stemma/purge-pending</tspan></text>
-  <text x="56" y="245">ohne den Blob</text>
-  <text x="56" y="309">jeder noch auf dem alten Wert</text>
+  <text x="56" y="53">bevor etwas geschrieben ist</text>
+  <text x="56" y="117">das Verzeichnis festhalten</text>
+  <text x="56" y="181"><tspan font-family="Courier, monospace">refs.lock</tspan>, bis zum Ende gehalten</text>
+  <text x="56" y="245"><tspan font-family="Courier, monospace">.stemma/purge-pending</tspan></text>
+  <text x="56" y="309">ohne den Blob</text>
   <text x="56" y="373">Zahl der Commits, Nummern der Stubs</text>
   <text x="56" y="437">Branches, Working-Copy-Commit, HEAD</text>
-  <text x="56" y="501">Commits, Bäume, zuletzt der Blob</text>
-  <text x="56" y="565">der Purge ist fertig</text>
+  <text x="56" y="501">Nummer, Zeit und Akteur bleiben</text>
+  <text x="56" y="565">Commits, Bäume, zuletzt der Blob</text>
 </g>
 <!-- Arrows between the steps -->
 <g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
@@ -68,24 +68,24 @@
 <text x="302" y="404" font-size="12" fill="#0F172A">Ab hier nur noch <tspan font-family="Courier, monospace">--resume</tspan>.</text>
 <!-- Before the journal -->
 <g font-size="12" fill="#0F172A">
-  <text x="302" y="44">Abbruch vor dem Journal: Es gibt</text>
-  <text x="302" y="59">nichts fortzusetzen, der Purge lässt</text>
-  <text x="302" y="74">sich wiederholen. Ein Snapshot und</text>
-  <text x="302" y="89">das Format 4 können schon bestehen.</text>
+  <text x="302" y="90">Abbruch vor dem Journal: Es gibt</text>
+  <text x="302" y="105">nichts fortzusetzen, der Purge lässt</text>
+  <text x="302" y="120">sich wiederholen. Ein Snapshot und</text>
+  <text x="302" y="135">das Format 4 können schon bestehen.</text>
 </g>
 <!-- Brackets: where abort and resume work -->
 <g stroke="#64748B" stroke-width="1.5" fill="none">
-  <path d="M296,148 L302,148 L302,380 L296,380"/>
+  <path d="M296,212 L302,212 L302,380 L296,380"/>
   <path d="M296,420 L302,420 L302,572 L296,572"/>
 </g>
 <g font-size="12" fill="#0F172A">
-  <text x="312" y="200">Das Journal besteht, jeder andere</text>
-  <text x="312" y="215">Befehl, der schreibt, lehnt ab.</text>
-  <text x="312" y="245"><tspan font-family="Courier, monospace" font-weight="bold">--abort</tspan> entfernt die neuen Objekte</text>
-  <text x="312" y="260">und das Journal, solange der Eintrag</text>
-  <text x="312" y="275">fehlt.</text>
-  <text x="312" y="305"><tspan font-family="Courier, monospace" font-weight="bold">--resume</tspan> wiederholt die Schritte</text>
-  <text x="312" y="320">ab den neuen Objekten.</text>
+  <text x="312" y="232">Das Journal besteht, jeder andere</text>
+  <text x="312" y="247">Befehl, der schreibt, lehnt ab.</text>
+  <text x="312" y="277"><tspan font-family="Courier, monospace" font-weight="bold">--abort</tspan> entfernt die neuen Objekte</text>
+  <text x="312" y="292">und das Journal, solange der Eintrag</text>
+  <text x="312" y="307">fehlt.</text>
+  <text x="312" y="337"><tspan font-family="Courier, monospace" font-weight="bold">--resume</tspan> wiederholt die Schritte</text>
+  <text x="312" y="352">ab Schritt 5.</text>
   <text x="312" y="480"><tspan font-family="Courier, monospace" font-weight="bold">--resume</tspan> findet den Eintrag und</text>
   <text x="312" y="495">beendet den Purge; <tspan font-family="Courier, monospace">--abort</tspan> lehnt ab.</text>
 </g>
