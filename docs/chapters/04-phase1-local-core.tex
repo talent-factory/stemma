@@ -266,11 +266,11 @@ UTF-8, jede Zeile endet mit einem Zeilenende,
 keine Leerzeile, kein Leerzeichen am Rand, keine doppelte Zeile,
 höchstens 1024 Byte je Zeile und 64 KiB je Datei.
 Ein Fehler nennt die Zeile.
-\item Ein Zeilenende ist \type{\n} oder \type{\r\n}, wie es ein Editor unter Windows
-oder Git mit \type{autocrlf} schreibt.
-Die Zeilen einer Datei enden alle gleich wie die erste;
-eine Datei, die beide mischt, lehnt der Leser bei der ersten abweichenden Zeile ab.
-Ein \type{\r} an einer anderen Stelle ist ein Fehler.
+\item Gemischte Zeilenenden und ein \type{\r} ausserhalb von \type{\r\n} lehnt der Leser ab.
+Ein Zeilenende ist \type{\n} oder \type{\r\n};
+das zweite schreibt ein Editor unter Windows oder Git mit \type{autocrlf}.
+Alle Zeilen einer Datei enden wie die erste,
+sonst nennt der Fehler die erste abweichende Zeile.
 \item Muster und Namen vergleicht der Leser Byte für Byte und mit Gross- und Kleinschreibung,
 auch auf einem Dateisystem, das beides gleichsetzt.
 Ein solcher Name bleibt dann unbemerkt verfolgt (offener Punkt in ADR-012).

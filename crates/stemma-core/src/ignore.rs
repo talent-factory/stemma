@@ -32,10 +32,11 @@ use crate::object::{name_problem, NameProblem};
 /// The name of the exclusion file, in the root of the working directory.
 pub const FILE_NAME: &str = ".stemmaignore";
 
-/// The most bytes that a file may have.
+/// The most bytes that a file may have, with its line ends: a file with `\r\n` has one byte more
+/// for each line than the same file with `\n`.
 pub const MAX_FILE_BYTES: usize = 64 * 1024;
 
-/// The most bytes that a line may have, without the newline.
+/// The most bytes that a line may have, without its line end (`\n` or `\r\n`).
 pub const MAX_LINE_BYTES: usize = 1024;
 
 /// The patterns of an exclusion file. Two values are equal if they have the same patterns on the
@@ -94,8 +95,9 @@ impl IgnoreRules {
     /// a last line without a newline is reported after the lines before it. A problem of the whole
     /// file (its size, a byte order mark, bytes that are not UTF-8) has no line and comes first.
     ///
-    /// A line ends with `\n` or with `\r\n`, as the first line does, so that a file written on
-    /// Windows or checked out by Git with `autocrlf` reads like the same file with `\n`.
+    /// Every line ends as the first line does, with `\n` or with `\r\n`, so that a file written
+    /// on Windows or checked out by Git with `autocrlf` has the same lines and patterns as the
+    /// same file with `\n`. Only the limit of the file counts the `\r` of each line end.
     ///
     /// # Errors
     ///
@@ -743,6 +745,9 @@ mod tests {
             (b"a\r\nb\r\nc\n", 3, "line end differs from line 1"),
             (b"a\r\n\r\n", 2, "empty line"),
             (b"a\r\na\r\n", 2, "repeats line 1"),
+            // A mix is reported before what else is wrong with the line.
+            (b"a\r\n\n", 2, "line end differs from line 1"),
+            (b"a\r\n!b\n", 2, "line end differs from line 1"),
             (b"a \r\n", 1, "space at the start or end"),
             (b"a\tb\n", 1, "control character"),
             (b"\ta\n", 1, "control character"),
@@ -769,6 +774,29 @@ mod tests {
         // The limit of a line counts the text without its line end.
         let line = "a".repeat(MAX_LINE_BYTES);
         assert!(IgnoreRules::parse(format!("{line}\r\n").as_bytes()).is_ok());
+        let long = "a".repeat(MAX_LINE_BYTES + 1);
+        assert_eq!(
+            line_problem(&refused(format!("{long}\r\n").as_bytes())),
+            &LineProblem::TooLong
+        );
+        // The limit of the file counts the `\r` of each line end.
+        let file: String = (0..64).map(|n| format!("{n:0>1022}\r\n")).collect();
+        assert_eq!(file.len(), MAX_FILE_BYTES);
+        assert!(IgnoreRules::parse(file.as_bytes()).is_ok());
+        let unix: String = (0..64).map(|n| format!("{n:0>1023}\n")).collect();
+        assert!(IgnoreRules::parse(unix.as_bytes()).is_ok());
+        assert_eq!(
+            refused(unix.replace('\n', "\r\n").as_bytes()),
+            IgnoreParseError::File(FileProblem::TooLarge)
+        );
+        assert_eq!(
+            IgnoreParseError::Line {
+                line: NonZeroUsize::MIN.saturating_add(1),
+                problem: LineProblem::MixedLineEnds,
+            }
+            .to_string(),
+            "line 2: line end differs from line 1; use `\\n` or `\\r\\n` in the whole file"
+        );
     }
 
     #[test]

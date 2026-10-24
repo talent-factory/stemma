@@ -499,7 +499,7 @@ fn an_invalid_exclusion_file_does_not_stop_a_commit() {
 }
 
 #[test]
-fn an_exclusion_file_from_another_system_stops_the_command_and_says_why() {
+fn an_exclusion_file_that_the_reader_refuses_stops_the_command_and_says_why() {
     let cases: &[(&[u8], &str)] = &[
         (b"*.log\r\nb\n", "line 2: line end differs from line 1"),
         (

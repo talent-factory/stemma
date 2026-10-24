@@ -4,7 +4,7 @@
 (`crates/stemma-core/src/ignore.rs`, used by `Repository::track`). `Repository::status`
 (STEMMA-4) uses it for the untracked files. The rule that `.git` is always excluded was
 confirmed by the author on 2026-10-20 and implemented in the same way (PR #68). The line end
-`\r\n` was confirmed by the author on 2026-10-24 and implemented in STEMMA-83.
+`\r\n` was confirmed by the author on 2026-10-24 and implemented in STEMMA-83 (PR #126).
 
 ## Context
 
@@ -59,13 +59,16 @@ other).
   order mark, bytes that are not UTF-8) has no line and comes first:
   - UTF-8 without a byte order mark, no NUL, no other control character, and no `\r` but the
     one of a line end `\r\n`.
-  - Every line ends with `\n`, also the last one. An empty file (no bytes) is valid.
+  - Every line ends with a line end, also the last one. An empty file (no bytes) is valid.
   - A line ends with `\n` or with `\r\n`, and every line as the first one does, so a file mixes
     no line ends. The file is tracked, and Git with `autocrlf` or an editor on Windows writes
-    `\r\n`; a reader that refused it would stop every command on such a clone. The `\r` of the
-    line end is no part of the line: the limit of a line, the repeated lines, and the pattern
-    are the same as for the file with `\n`. A file whose line ends differ is rejected at the
-    first line that differs, since a mix comes from an edit, not from a system.
+    `\r\n`; a reader that refused it would stop every `track`, `status`, and `checkout` on such
+    a clone. The `\r` of the line end is no part of the line: the limit of a line, the repeated
+    lines, and the pattern are the same as for the file with `\n`. The limit of the file counts
+    bytes as they are, the `\r` included, so a file close to 64 KiB can pass with `\n` and not
+    with `\r\n`; a real file is far smaller. A file whose line ends differ is rejected at the
+    first line that differs, before any other problem of that line, since a mix comes from an
+    edit, not from a system.
   - No empty line, no space or tab at the start or end of a line, no repeated line.
   - Every part is non-empty (`a//b` is rejected), not `.` or `..`, and not a name that a tree
     refuses (ADR-005); a part `**` stands alone, and a pattern whose parts are all `**` is
