@@ -1,7 +1,8 @@
 # ADR-008: References: Branches and HEAD
 
-**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed; the others
-are proposals.
+**Status:** Accepted. Confirmed by the author on 2026-10-24 (STEMMA-9) and implemented in Phase 1.
+The open items move to Phase 3 (deleting a branch, tags, a compare-and-swap for HEAD) and to
+Phase 5 (remote references); packed references come later.
 
 ## Context
 
@@ -32,7 +33,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   bytes. Upper case is allowed, because names such as `feat/TF-792-login` are in use. Because the
   name is a file path on every platform, a name that works on one cannot fail on another.
   Loosening the rule later changes no ID.
-- **A name is checked before the commit** (`update_branch`). When another entry holds the name
+- **A name is checked before the commit** *(confirmed)* (`update_branch`). When another entry holds
+  the name
   (a case variant, a branch that is a prefix, or a directory of branches), the answer is
   `Conflict` with the kind of the entry, also if the caller names an `expected` commit: there is
   no branch of this name that could be at it, and `Stale` would hide the reason. `branch(name)`
@@ -47,7 +49,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   is a commit that the object store has, so a branch cannot point to an object that is missing, or
   to a tree. As for `Index::write_tree` (ADR-005), no caller can forget a check. HEAD to a commit
   is checked the same way.
-- **One lock for all changes**. The check, the comparison, and the write happen while the file
+- **One lock for all changes** *(confirmed)*. The check, the comparison, and the write happen while
+  the file
   `<metadata directory>/refs.lock` exists. It is created with "create new" and holds a token that
   only the process that made it knows; it is removed when the change ends, but only if it still
   holds that token, because a person may have removed a lock that looked stale, and another
@@ -59,7 +62,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   purge from its plan to its end (ADR-014, STEMMA-49). The command line removes the lock of an
   interrupted command (Ctrl-C, a termination signal) before the process ends, so only `kill -9`,
   a crash, or a handler that could not be installed leaves it behind.
-- **A lock that a process left is taken over** (STEMMA-51). While a process holds `refs.lock`,
+- **A lock that a process left is taken over** *(confirmed, STEMMA-51)*. While a process holds
+  `refs.lock`,
   it holds a lock of the operating system on the file `<metadata directory>/refs.lock.guard`,
   which stays and has no content (`File::try_lock`). The operating system releases that lock when
   the process ends in any way, also by `kill -9` or a crash, so a lock file whose guard is free was
@@ -92,7 +96,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   a holder of the guard may replace a file of the guarded form, so two commands cannot take over
   one lock at once. A person who removes the guard while a process holds it breaks the rule, as
   one who removes the lock file does.
-- **Safe writes**. A file is written to a new temporary file in `<metadata directory>/tmp/`,
+- **Safe writes** *(confirmed)*. A file is written to a new temporary file in `<metadata
+  directory>/tmp/`,
   flushed, and renamed over the old one; the directory is flushed on Unix. The file is **not**
   read-only, because Windows refuses to replace such a file. A reader sees the old content or the
   new one. The temporary file is made before the directories of the branch, so that a failure of
@@ -103,7 +108,7 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   `NotFlushed`; the caller reads the reference again and does not repeat the change with the old
   state.
 - **The module stores, and nothing more** *(confirmed)*. The module does not call the
-  authorization hook (ADR-002) and does not write the operation log (ADR-005); the layer above
+  authorization hook (ADR-002) and does not write the operation log (ADR-011); the layer above
   does, because it knows the actor and the operation. The default branch of a new repository is
   its decision as well. The module has the trait `RefStore` (sealed, like `ObjectStore`) and the
   implementation `FsRefStore`.

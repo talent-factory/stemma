@@ -54,7 +54,8 @@ pub enum Decision {
     Deny,
 }
 
-/// Authorization hook. Every operation in the core calls it (ADR-002).
+/// Authorization hook. Every operation of the core that writes calls it (ADR-002); one that only
+/// reads has no actor and does not.
 pub trait Authorizer {
     fn authorize(&self, actor: &Actor, operation: &str, target: &str) -> Decision;
 }

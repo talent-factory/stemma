@@ -1,7 +1,7 @@
 # ADR-005: Object Encoding, Names, and Identity Characters
 
-**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed; the others
-are proposals.
+**Status:** Accepted. Confirmed by the author on 2026-10-24 (STEMMA-9) and implemented in Phase 1.
+The format of the index applies only if the index is persisted; in Phase 1 it is not (ADR-010).
 
 ## Context
 
@@ -14,7 +14,7 @@ with its golden-vector tests it is the normative definition of the byte-level en
 of the actor fields is in `crates/stemma-core/src/actor.rs`. This ADR records the decisions behind
 them.
 
-## Decision (proposal)
+## Decision
 
 - **Actor fields** *(confirmed)* (`id`, `model`, `session`, `sponsor`) are non-empty visible
   ASCII (U+0021 to U+007E, no space). They are identifiers, not display names. Whitespace,
@@ -133,7 +133,8 @@ them.
   of a commit (see "Change ID") is the one exception, made while no repository held a commit; it
   is part of version 1 and not a second version. The hash algorithm
   is versioned separately by the ID prefix (ADR-001).
-- **Strict reading.** A reader rejects what it does not recognize: an unknown or repeated header, a
+- **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
+  repeated header, a
   header out of order, a number with a plus sign, `-0`, or leading zeros, or any other non-canonical
   form. Otherwise one logical object could have several encodings and several IDs. The commit
   headers are, in this order, `tree`, `parent` (zero or more), `change`, `author`, `time`.
@@ -145,8 +146,10 @@ them.
   to exactly the bytes it was given, so that no object has a second spelling and a second ID. It
   cannot find a second spelling that needs a change of several places at once; those are covered by
   tests of the rejected forms.
-- **Index file** *(proposal)*, except the sort order. The index (staging area) is persisted as a
-  text file and is a second format next to the objects. It is a file, not an object, so it is
+- **Index file** *(confirmed as a cache format)*. The working copy is a commit (ADR-010), so
+  Phase 1 keeps no index file, and `Index` is a model of the tree in memory. The format below
+  applies when the index is persisted, for example as a cache of the working copy, and is then a
+  second format next to the objects. It is a file, not an object, so it is
   versioned by its first line, `stemma-index 1`, and not by an object kind name. An incompatible
   change raises the number, and a reader reports another number as an unsupported version and never
   reads it as version 1. Each following line is `<mode> <id> <path>` with one space between the
@@ -166,9 +169,11 @@ them.
   before `a-b`. This is the order of a depth-first walk through trees, so an index and a tree can be
   compared in one pass and a tree builder can read the entries in order. The sort of the whole path
   string would put `a-b` and `a.b` before `a/z` and is not used.
-- **Parent rule.** A commit lists each parent at most once, and the order of the parents is part
+- **Parent rule** *(confirmed)*. A commit lists each parent at most once, and the order of the
+  parents is part
   of its ID.
-- **Golden vectors** in the test module pin the hash input and every encoding. A change to
+- **Golden vectors** *(confirmed)* in the test module pin the hash input and every encoding. A
+  change to
   them is a format change and needs an ADR.
 
 ## Consequences
@@ -188,7 +193,7 @@ them.
   scripts (for example Persian and several Indic
   scripts) and composite emoji such as 👨‍👩‍👧 need them,
   so file names in those scripts are
-  rejected. See Open.
+  rejected.
 - The variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF, and the Mongolian free variation
   selectors U+180B to U+180D and U+180F) are default-ignorable, but a name may contain one directly
   after a non-ASCII character that is not itself a selector. So `⚠️ TODO.md`, `❤️`, and the
@@ -227,7 +232,7 @@ them.
 - [x] Decide whether the operation log is exchanged with the history. Decided: it is not (see the
       decision above).
 - [x] The store has to record the object kind, because the version is part of the kind name.
-      Done in ADR-007 (proposal): a stored object starts with its kind name.
+      Done in ADR-007: a stored object starts with its kind name.
 - [x] Type object IDs per kind (blob, tree, commit) once an object store exists, so that a
       directory entry cannot point at a blob and a commit cannot take a blob as its tree.
       Done: `BlobId`, `TreeId`, and `CommitId` wrap `ObjectId`. `TreeEntry::file` takes a `BlobId`,

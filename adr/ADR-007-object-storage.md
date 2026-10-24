@@ -1,7 +1,9 @@
 # ADR-007: Object Storage
 
-**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed; the others
-are proposals.
+**Status:** Accepted. Confirmed by the author on 2026-10-24 (STEMMA-9) and implemented in Phase 1.
+Pack files, streaming, and the cheaper flush move to a later phase; garbage collection comes with
+the retention of snapshot entries in a later phase (ADR-011); the guarantees on Windows stay
+open.
 
 ## Context
 
@@ -21,7 +23,8 @@ server will later keep objects elsewhere (API-first). The implementation is
   `<kind> <length>`, a NUL byte, and the body. Compression and pack files are different storage
   formats. Introducing one needs an ADR, and it changes no object ID, because the ID covers the
   uncompressed encoding.
-- **Verified reads.** A read accepts only a regular file at the path of the object: a directory,
+- **Verified reads** *(confirmed)*. A read accepts only a regular file at the path of the object: a
+  directory,
   a symbolic link, or a special file is damage and is never followed. It then checks that the
   header is exactly the canonical header of the kind and the length of the body, so a length
   such as `05` or `+5` is rejected, hashes the content again, and compares the result with the
@@ -29,7 +32,8 @@ server will later keep objects elsewhere (API-first). The implementation is
   and is never returned as an object. A missing object is `None`, which is different from a
   failed read (`Io`, with the operation and the path). A missing store directory is an `Io`
   error and not an empty store.
-- **Safe writes.** The metadata directory has to exist; the store creates `tmp` and `objects`
+- **Safe writes** *(confirmed)*. The metadata directory has to exist; the store creates `tmp` and
+  `objects`
   below it but never the directory itself, so a wrong path is an error. An object is written to
   a newly created file in `<metadata directory>/tmp/`. Its name has the process ID, a counter,
   and a random number, and a name that is taken is skipped, so one writer never touches the file
@@ -38,7 +42,8 @@ server will later keep objects elsewhere (API-first). The implementation is
   system. On Unix the store also flushes the directories it created and the directory that
   received the object. On other platforms only the atomicity holds, not the durability of the
   directory entries.
-- **Existing objects.** Storing an object that exists and reads back correctly changes nothing
+- **Existing objects** *(confirmed)*. Storing an object that exists and reads back correctly
+  changes nothing
   and flushes nothing again. The call returns when the object is stored and readable; it is
   durable once the writer that created it has returned. A damaged file, for example the rest of
   a failed write, is replaced when the same object is stored again, where a rename replaces an
@@ -60,10 +65,12 @@ server will later keep objects elsewhere (API-first). The implementation is
   cache. Measured with `scripts/measure-track.sh` (release build, macOS with APFS on an SSD, one
   run each, files of 1 KiB, 100 to a directory, other processes running): the first `track` of
   10,000 files took 97 s before and 49 s after, of 1,000 files 11.3 s and 6.7 s.
-- **Read-only files.** Objects are made read-only to protect them from accidental edits. It is
+- **Read-only files** *(confirmed)*. Objects are made read-only to protect them from accidental
+  edits. It is
   not a security measure: whoever can write to the directory can replace the file, and the next
   read detects it.
-- **Interface.** `ObjectStore` is a sealed trait: only this crate implements it. It has `put_blob`,
+- **Interface** *(confirmed)*. `ObjectStore` is a sealed trait: only this crate implements it. It
+  has `put_blob`,
   `put_tree`, and `put_commit`, each of which returns the same ID as the object's own `id()`; `get`,
   `get_expecting`, and `contains`; `resolve_blob`, `resolve_tree`, and `resolve_commit`; and
   `get_tree` and `get_commit`. The store computes the ID from the kind and the body, so a caller
@@ -81,7 +88,8 @@ server will later keep objects elsewhere (API-first). The implementation is
   `ReadError::Tree` or `ReadError::Commit` with the ID, apart from `ReadError::Store`, which wraps
   the errors of the store. The store never decodes a body for any other method. `FsObjectStore` is
   the file system implementation.
-- **Authorization** is not a store concern. The authorization hook of ADR-002 has to be called
+- **Authorization** *(confirmed)* is not a store concern. The authorization hook of ADR-002 has to
+  be called
   by the layer above the store, which knows the actor and the operation.
 
 ## Consequences
@@ -115,7 +123,8 @@ server will later keep objects elsewhere (API-first). The implementation is
 - [ ] Pack files and compression: format, and when objects are packed.
 - [ ] Garbage collection of unreachable objects. Its roots, the lock it runs under, and the
       pending purge that stops it are decided in ADR-011 ("Retention", STEMMA-39); it comes in
-      one slice with the retention of snapshot entries.
+      one slice with the retention of snapshot entries, in a later phase (STEMMA-9). Phase 1
+      removes nothing but what a purge removes, so the store only grows.
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31).
 - [ ] A cheaper flush of each file of a batch: an ordinary `fsync` per file and one full flush
