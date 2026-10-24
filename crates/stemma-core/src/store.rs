@@ -1134,7 +1134,8 @@ pub(crate) fn is_init_staging_name(name: &str) -> bool {
 
 /// Whether `name` is exactly a name that a checkout gives its temporary file: the prefix
 /// [`CHECKOUT_TEMP_PREFIX`] and a name of [`unique_temp_name`]. A process that is killed between
-/// writing and renaming the file leaves it behind, with the content of an old blob (ADR-013).
+/// writing and renaming the file leaves it behind, with the content of an old blob, and so does a
+/// failed write whose file cannot be removed (ADR-013).
 pub(crate) fn is_checkout_temp_name(name: &str) -> bool {
     is_scratch_name(name, CHECKOUT_TEMP_PREFIX)
 }
