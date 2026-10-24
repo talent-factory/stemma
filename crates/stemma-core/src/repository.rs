@@ -386,13 +386,19 @@ impl Repository {
         start: &Path,
         trusted: &dyn Fn(&Path) -> Result<(), OpenError>,
     ) -> Result<Discovered, OpenError> {
+        let at_start = start.join(METADATA_DIR);
+        // Before the open, so that nothing of another user's `.stemma` is read, such as a
+        // `format` that is a FIFO and would block. Anything else in the way is the error of `open`.
+        if CHECK_AT_START && fs::symlink_metadata(&at_start).is_ok() {
+            trusted(&at_start)?;
+        }
         match Self::open(start) {
             Err(OpenError::NotARepository { .. }) => {}
             opened => {
-                // The check follows an open that succeeded, so a `.stemma` that appears after a
-                // first look is not opened unchecked, and a check that fails refuses it.
+                // And after an open that succeeded, so that a `.stemma` that appeared after the
+                // first look, or one that the first look could not inspect, is not used unchecked.
                 if CHECK_AT_START && opened.is_ok() {
-                    trusted(&start.join(METADATA_DIR))?;
+                    trusted(&at_start)?;
                 }
                 return opened.map(|repository| Discovered {
                     repository,
