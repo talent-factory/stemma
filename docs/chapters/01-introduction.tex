@@ -14,34 +14,31 @@ verwenden mehrere Branches gleichzeitig und hinterlassen Spuren,
 die sich nicht einfach einer Person zuordnen lassen. Die Werkzeuge müssen darauf reagieren,
 und die Frage ist, wo die Anpassung ansetzen soll.
 
-Wie stark sich das auswirkt, zeigt ein Beitrag im Engineering-Blog von Anthropic
-vom Oktober 2026 \cite[anthropic2026redesigning].
+Ein Beitrag im Engineering-Blog von Anthropic vom Oktober 2026 zeigt ein Beispiel
+\cite[anthropic2026redesigning].
 Anthropic hat für den eigenen Monorepo-Betrieb ein internes Versionskontrollsystem namens Scion
-eingeführt, weil die täglichen Merges von rund 2500 im Mai auf über 30000 im September 2026
-gestiegen sind.
-Scion ist kein Ersatz für Git im allgemeinen Gebrauch, und Code oder Repository sind nicht
-öffentlich zugänglich.
+eingeführt.
+Im selben Zeitraum stiegen die täglichen Merges von rund 2500 im Mai
+auf über 30000 im September 2026.
+Scion ist kein Ersatz für Git im allgemeinen Gebrauch,
+und der Beitrag nennt keine öffentliche Verfügbarkeit.
 
 \section{Problemstellung}
 
-Für das Projekt zählen vor allem drei Verschiebungen.
-
-Die erste ist das Volumen.
-Die Zahl der Änderungen wächst schneller als die Zahl der Menschen, die sie prüfen,
+Das Volumen wächst:
+Die Zahl der Änderungen steigt schneller als die Zahl der Menschen, die sie prüfen,
 und die Prüfung wird zum Engpass.
 
-Die zweite ist die Parallelität.
-Mehrere Akteure arbeiten gleichzeitig an überlappendem Code.
+Mehrere Akteure arbeiten parallel an überlappendem Code.
 Bevor sich die Frage stellt, wie ein Konflikt gelöst wird,
 stellt sich eine frühere: wer an einer Stelle überhaupt schreiben darf.
 
-Die dritte ist die Herkunft.
+Offen bleibt die Herkunft:
 Eine Änderung entsteht oft aus einem Auftrag, einem Modell, einer Session
 und einem Menschen, der dafür einsteht.
 Git speichert davon nur Autor und Zeitstempel.
 
-Dass Git für Agenten funktioniert, zeigt der Alltag.
-Offen ist, welche Teile seines Modells bestehen bleiben können
+Daraus folgt die Frage, welche Teile des Modells von Git bestehen bleiben können
 und welche Schichten neu gebaut werden müssen.
 
 \section{GitHub und verwandte Plattformen}
@@ -60,8 +57,8 @@ solange Menschen die Prüfung leisten und Änderungen in überschaubarer Zahl ei
 \section{Vorteile im agentischen Kontext}
 
 Git und seine Plattformen sind weit verbreitet.
-Werkzeuge und Integrationen sind vorhanden, Agenten beherrschen die Git-Befehle gut,
-und Lernende kennen sie bereits.
+Entwicklerinnen und Entwickler kennen Git, Werkzeuge und Integrationen sind vorhanden,
+Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
 Der Pull Request bündelt Diff, Diskussion, Prüfungen und Freigaben in einem Objekt,
 das Menschen und Agenten gleichermassen lesen können.
 Auf geschützten Branches erzwingt die Plattform die Freigaben,
@@ -266,9 +263,11 @@ und das Programm heisst wie das Verzeichnis, in dem ein Repository seine Daten a
 \startitemize
 \item Kompatibilität mit bestehenden Git-Repositories.
 Die Befehle sind an Git angelehnt, das Format nicht:
-Eine ID ist ein BLAKE3-Hash mit dem Algorithmus als Präfix,
-jeder Commit hat eine Change-ID und einen Akteur, und die Leser sind streng.
-Ein Git-Repository liesse sich deshalb nur übernehmen, indem jede ID neu berechnet wird.
+Eine Objekt-ID ist ein BLAKE3-Hash mit dem Algorithmus als Präfix,
+und jeder Commit hat eine Change-ID und einen Akteur.
+Ein Git-Repository liesse sich deshalb nur übernehmen,
+indem jedes Objekt neu kodiert, jede ID neu berechnet
+und jedem Commit eine Change-ID und ein Akteur gegeben wird.
 Das Projekt nimmt das in Kauf, damit es das Format frei nach den Bedürfnissen von Agenten
 wählen kann.
 \item Eine Weboberfläche für Code-Reviews. Administrative Oberflächen sind später denkbar.

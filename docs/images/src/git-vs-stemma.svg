@@ -46,29 +46,30 @@
 <g stroke-width="1.5" fill="#FFFFFF">
   <rect x="320" y="44" width="250" height="50" rx="4" stroke="#2B6CB0"/>
   <rect x="320" y="144" width="250" height="50" rx="4" stroke="#B45309"/>
-  <rect x="320" y="244" width="120" height="50" rx="4" stroke="#64748B"/>
-  <rect x="460" y="244" width="110" height="50" rx="4" stroke="#B45309"/>
+  <rect x="320" y="244" width="100" height="50" rx="4" stroke="#64748B"/>
+  <rect x="436" y="244" width="144" height="50" rx="4" stroke="#B45309"/>
 </g>
 <g font-size="13" font-weight="bold">
   <text x="332" y="66" fill="#2B6CB0">Arbeitsverzeichnis</text>
   <text x="332" y="166" fill="#B45309">Working-Copy-Commit</text>
   <text x="332" y="266" fill="#0F172A">Commit</text>
-  <text x="470" y="266" fill="#B45309">neuer WCC</text>
+  <text x="444" y="262" fill="#B45309" font-size="12">neuer Working-</text>
+  <text x="444" y="276" fill="#B45309" font-size="12">Copy-Commit</text>
 </g>
 <g font-size="11.5" fill="#64748B">
   <text x="332" y="84">Dateien auf dem Datenträger</text>
   <text x="332" y="184">verfolgte Dateien, Stand beim Befehl</text>
   <text x="332" y="284">mit Nachricht</text>
-  <text x="470" y="284">leer, sein Kind</text>
+  <text x="444" y="289" font-size="11">ohne Änderung, Kind</text>
 </g>
 <g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
   <line x1="445" y1="94" x2="445" y2="142"/>
   <line x1="380" y1="194" x2="380" y2="242"/>
-  <line x1="460" y1="269" x2="442" y2="269"/>
+  <line x1="436" y1="269" x2="422" y2="269"/>
 </g>
 <g font-size="11.5" fill="#0F172A">
-  <text x="455" y="116">Snapshot bei</text>
-  <text x="455" y="131">jedem Befehl</text>
+  <text x="455" y="116">Snapshot vor <tspan font-family="Courier, monospace">track</tspan>,</text>
+  <text x="455" y="131"><tspan font-family="Courier, monospace">commit</tspan>, <tspan font-family="Courier, monospace">status</tspan> …</text>
 </g>
 <text x="388" y="223" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit</text>
 <text x="388" y="237" font-size="11" fill="#64748B">benennt ihn</text>
@@ -77,6 +78,6 @@
 <line x1="377" y1="304" x2="377" y2="296" stroke="#2F7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
 <g font-size="11.5" fill="#0F172A">
   <text x="320" y="346">Welche Dateien dazugehören, bestimmt</text>
-  <text x="320" y="362"><tspan font-family="Courier, monospace">track</tspan>; WCC = Working-Copy-Commit.</text>
+  <text x="320" y="362"><tspan font-family="Courier, monospace">track</tspan>.</text>
 </g>
 </svg>
