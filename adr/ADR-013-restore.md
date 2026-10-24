@@ -155,6 +155,8 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       before the fix stays tracked and is listed. A write that fails removes its temporary file;
       if that removal fails as well (a lock on Windows, permissions), the error of the checkout
       names the file. A later checkout that reports such a file as the path in its way names it
-      as a leftover (STEMMA-79).
+      as a leftover (STEMMA-79). Ctrl-C (or a termination signal) removes the temporary file of
+      the write under way before the process ends, and a file that cannot be removed is named on
+      stderr; only `kill -9` and a crash leave one without a word (STEMMA-81).
 - [ ] A file to remove that lies below a link is skipped without a word, as it is no longer the
       file of the old tree.
