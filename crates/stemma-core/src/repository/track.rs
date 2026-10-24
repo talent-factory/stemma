@@ -351,12 +351,12 @@ pub(super) fn walk(
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(source) => return Err(io_error("inspect", &full, source)),
             };
-            // A temporary file that a checkout left (a killed process, or a removal that failed
-            // after a failed write) holds the content of an old blob, perhaps a secret that was
-            // purged since: it is never a file to track, and it is listed so that a person can
-            // remove it (ADR-013). This comes before the patterns, so that a pattern that matches
-            // its name does not hide it. A checkout writes only files and links there, so a
-            // directory of that name is ordinary content.
+            // A temporary file that a checkout left (a process that ended without removing it, or
+            // a removal that failed after a failed write or an interruption) holds the content of
+            // an old blob, perhaps a secret that was purged since: it is never a file to track,
+            // and it is listed so that a person can remove it (ADR-013). This comes before the
+            // patterns, so that a pattern that matches its name does not hide it. A checkout
+            // writes only files and links there, so a directory of that name is ordinary content.
             if !metadata.is_dir() && is_checkout_temp_name(name) {
                 found.leftovers.insert(path);
                 continue;
@@ -443,9 +443,10 @@ pub enum TrackError {
         /// The path as it was given.
         path: String,
     },
-    /// The path names a temporary file that a checkout left when its process was killed (ADR-013):
-    /// a file or a link named `.stemma-checkout-`, a process ID, a counter, and 16 lowercase
-    /// hexadecimal digits, which `track` always leaves out, as it holds the content of an old blob.
+    /// The path names a temporary file that a checkout left (ADR-013), as its process ended
+    /// without removing it or the removal failed: a file or a link named `.stemma-checkout-`, a
+    /// process ID, a counter, and 16 lowercase hexadecimal digits, which `track` always leaves
+    /// out, as it holds the content of an old blob.
     CheckoutLeftover {
         /// The path as it was given.
         path: String,

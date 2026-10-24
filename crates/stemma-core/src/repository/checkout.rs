@@ -242,10 +242,11 @@ impl Repository {
     /// is there as an ordinary change of the actor (ADR-013). A stop after the first file was
     /// removed or written is reported as [`CheckoutError::Interrupted`], which says how many files
     /// were removed and written; a stop before that, after directories were created or removed,
-    /// is reported as it is. A killed process can leave a temporary file `.stemma-checkout-*` next
-    /// to its target; on Ctrl-C, [`remove_temp_files_for_exit`] removes it. A write that fails
-    /// removes its own temporary file, and if that fails too, the error is
-    /// [`CheckoutError::TempLeft`], which names the file. Directories are not flushed.
+    /// is reported as it is. A process that ends between the creation of a temporary file
+    /// `.stemma-checkout-*` and its rename leaves the file next to its target, unless its
+    /// interrupt handler calls [`remove_temp_files_for_exit`] first. A write that fails removes
+    /// its own temporary file, and if that fails too, the error is [`CheckoutError::TempLeft`],
+    /// which names the file. Directories are not flushed.
     ///
     /// # Errors
     ///
@@ -486,7 +487,7 @@ struct TempFile {
     full: PathBuf,
     /// The path relative to the working directory, written with `/`.
     path: String,
-    /// Whether the file is there and listed, so that the drop still has to remove it.
+    /// Whether the drop still has to remove the file.
     armed: bool,
 }
 
@@ -506,9 +507,15 @@ fn pending_temp_files() -> MutexGuard<'static, Vec<PathBuf>> {
 /// hold an old file or a purged secret (ADR-013).
 ///
 /// The caller ends the process right after the call: the list stays locked, so no temporary file
-/// can be created any more, and a thread that tries waits until the end. A write whose file is
-/// gone fails at its rename, which no longer matters. A process that ends without a chance to
-/// call this (`kill -9`, a crash of the system) leaves the file, and `status` lists it.
+/// can be created, renamed, or taken off the list any more, and a thread that tries waits until
+/// the end; a second call waits as well. A write whose file is gone fails at its rename and then
+/// waits, which no longer matters. A file that a write could not remove is listed still, so it is
+/// named here even if its error has not been reported yet.
+///
+/// The library calls this only from the handler of the caller. A process that ends without it
+/// (`kill -9`, a signal that the handler does not catch, a handler that could not be installed,
+/// a crash) leaves the file, and `status` lists it, unless it lies in a directory that
+/// `.stemmaignore` excludes.
 pub fn remove_temp_files_for_exit() -> Vec<(PathBuf, io::Error)> {
     let mut pending = pending_temp_files();
     let left = remove_temp_files(&mut pending);
@@ -518,7 +525,8 @@ pub fn remove_temp_files_for_exit() -> Vec<(PathBuf, io::Error)> {
 }
 
 /// Removes the files of the list and empties it, and returns those that stay with their errors.
-/// A file that is gone already (renamed in the meantime) is not one that stays.
+/// A file that is gone already (renamed in the meantime) is not one that stays. Neither is one
+/// whose directory was moved since, which `status` finds in its new place.
 fn remove_temp_files(pending: &mut Vec<PathBuf>) -> Vec<(PathBuf, io::Error)> {
     pending
         .drain(..)
@@ -601,15 +609,29 @@ impl TempFile {
     /// only from a later `status`. The removal is not tried again on the drop, so that the error
     /// does not name a file that is gone.
     fn discard(mut self, source: CheckoutError) -> CheckoutError {
-        let removed = fs::remove_file(&self.full);
-        self.disarm();
-        match removed {
-            Err(removal) if removal.kind() != io::ErrorKind::NotFound => CheckoutError::TempLeft {
+        match self.remove() {
+            Err(removal) => CheckoutError::TempLeft {
                 path: std::mem::take(&mut self.path),
                 removal,
                 source: Box::new(source),
             },
-            _ => source,
+            Ok(()) => source,
+        }
+    }
+
+    /// Removes the file, and takes it off the list of pending files once it is gone. A file that
+    /// cannot be removed stays listed: an interruption before the error that names it is
+    /// reported removes it or names it, and the drop does not try again.
+    fn remove(&mut self) -> io::Result<()> {
+        match fs::remove_file(&self.full) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                self.armed = false;
+                Err(error)
+            }
+            _ => {
+                self.disarm();
+                Ok(())
+            }
         }
     }
 
@@ -624,8 +646,7 @@ impl TempFile {
 impl Drop for TempFile {
     fn drop(&mut self) {
         if self.armed {
-            let _ = fs::remove_file(&self.full);
-            self.disarm();
+            let _ = self.remove();
         }
     }
 }
@@ -1986,6 +2007,48 @@ mod tests {
         drop(dropped);
         assert!(!listed(&full));
         assert!(!full.exists());
+        #[cfg(unix)]
+        {
+            let link = TempFile::create(dir.path(), "l", FileMode::Symlink, b"a").unwrap();
+            let full = link.full.clone();
+            assert!(listed(&full));
+            drop(link);
+            assert!(!listed(&full));
+            assert!(fs::symlink_metadata(&full).is_err(), "the link is removed");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_file_that_cannot_be_removed_stays_listed_for_an_interruption() {
+        let dir = TempDir::new();
+        if !permissions_hold(dir.path()) {
+            return;
+        }
+        let directory = dir.path().join("d");
+        fs::create_dir(&directory).unwrap();
+        let listed = |full: &Path| pending_temp_files().iter().any(|pending| pending == full);
+        let discarded = TempFile::create(&directory, "d/a", FileMode::File, b"a").unwrap();
+        let full = discarded.full.clone();
+        let error = {
+            let _mode = Mode::set(&directory, 0o555);
+            discarded.discard(CheckoutError::ChangedSincePlan {
+                path: "d/a".to_owned(),
+            })
+        };
+        assert!(matches!(&error, CheckoutError::TempLeft { .. }), "{error}");
+        assert!(
+            listed(&full),
+            "an interruption names it before the error is reported"
+        );
+        let dropped = TempFile::create(&directory, "d/b", FileMode::File, b"b").unwrap();
+        let other = dropped.full.clone();
+        {
+            let _mode = Mode::set(&directory, 0o555);
+            drop(dropped);
+        }
+        assert!(listed(&other));
+        pending_temp_files().retain(|pending| pending != &full && pending != &other);
     }
 
     #[cfg(unix)]

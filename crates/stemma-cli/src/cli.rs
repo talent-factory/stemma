@@ -1467,14 +1467,18 @@ pub fn main() -> ExitCode {
     // A command that writes holds the lock of the references at least as long as its snapshot takes
     // (ADR-014). Ctrl-C (or a termination signal) removes it before the process ends, so that the
     // next command does not find it; the process ends with 130, as a shell reports an interrupt.
-    // A restore that is writing a file removes its temporary file first, and names one that stays
-    // (ADR-013). Without the handler (it could not be installed) an interrupt leaves both behind.
+    // A restore that is writing a file removes its temporary file first, while it still holds the
+    // lock, and names one that stays (ADR-013). Stderr is taken only for such a file: the main
+    // thread may hold it in a write that blocks, and the handler would then never end the process.
+    // Without the handler (it could not be installed) an interrupt leaves both behind.
     let _ = ctrlc::set_handler(|| {
         let left = stemma_core::repository::remove_temp_files_for_exit();
         stemma_core::refs::release_locks_for_exit();
-        let mut stderr = io::stderr().lock();
-        for (path, error) in left {
-            let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
+        if !left.is_empty() {
+            let mut stderr = io::stderr().lock();
+            for (path, error) in left {
+                let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
+            }
         }
         std::process::exit(INTERRUPTED);
     });

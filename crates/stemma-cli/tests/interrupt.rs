@@ -154,7 +154,11 @@ fn temporary_files(dir: &Path) -> Vec<String> {
         for entry in fs::read_dir(&directory).unwrap() {
             let entry = entry.unwrap();
             let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.file_type().unwrap().is_dir() {
+            // An entry that the restore renamed in the meantime is gone.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
                 if name != ".stemma" {
                     pending.push(entry.path());
                 }
@@ -166,8 +170,9 @@ fn temporary_files(dir: &Path) -> Vec<String> {
     found
 }
 
-#[test]
-fn ctrl_c_during_a_restore_removes_the_temporary_file_and_the_lock() {
+/// Interrupts a restore of many files while it writes one, and checks what it leaves. Returns
+/// why it could not interrupt the restore while it was writing, which the caller tries again.
+fn interrupt_a_restore() -> Result<(), &'static str> {
     let dir = Dir::new();
     ok(dir.path(), &["init", "--actor", ACTOR]);
     // A restore that brings back many files writes long enough to be interrupted, and it spends
@@ -187,29 +192,54 @@ fn ctrl_c_during_a_restore_removes_the_temporary_file_and_the_lock() {
     let removal = numbers(dir.path())[before].to_string();
     let lock = dir.path().join(".stemma").join("refs.lock");
     let mut child = stemma(dir.path(), &["op", "restore", &removal, "--actor", ACTOR])
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     // The signal is sent once a temporary file was seen, so that it likely finds one.
     let writing = || !temporary_files(dir.path()).is_empty();
     let start = Instant::now();
-    while !writing() && start.elapsed() < Duration::from_secs(30) {
+    while !writing() {
         if child.try_wait().unwrap().is_some() {
-            break;
+            return Err("the restore ended before a temporary file was seen");
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("no temporary file was seen in 30 seconds");
         }
     }
-    if child.try_wait().unwrap().is_some() {
-        eprintln!("skipped: the restore ended before a temporary file was seen");
-        return;
-    }
-    // At once, without a process of `kill`, which would take longer than one write.
+    // Directly, not through a `kill` process, which would take longer than one write.
     let process = Pid::from_raw(i32::try_from(child.id()).unwrap());
     signal::kill(process, Signal::SIGINT).unwrap();
-    let status = child.wait().unwrap();
-    if status.success() {
-        eprintln!("skipped: the restore ended before the signal");
-        return;
+    let output = child.wait_with_output().unwrap();
+    let restored = files
+        .iter()
+        .filter(|name| dir.path().join(name).exists())
+        .count();
+    if output.status.success() || restored == files.len() {
+        return Err("the restore had written every file before the signal");
     }
-    assert_eq!(status.code(), Some(130), "{status:?}");
+    assert_eq!(output.status.code(), Some(130), "{:?}", output.status);
     assert_eq!(temporary_files(dir.path()), Vec::<String>::new());
     assert!(!lock.exists(), "the interrupted restore removed its lock");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "",
+        "nothing stayed, so nothing is named"
+    );
+    Ok(())
+}
+
+#[test]
+fn ctrl_c_during_a_restore_removes_the_temporary_file_and_the_lock() {
+    // An attempt that misses the writes is tried again, so that the test does not pass without
+    // having interrupted a write.
+    let mut missed = Vec::new();
+    for _ in 0..3 {
+        match interrupt_a_restore() {
+            Ok(()) => return,
+            Err(reason) => missed.push(reason),
+        }
+    }
+    panic!("no attempt interrupted the restore while it wrote: {missed:?}");
 }
