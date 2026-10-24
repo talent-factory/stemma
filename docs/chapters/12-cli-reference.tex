@@ -447,9 +447,9 @@ eines alten Blobs, unter Umständen ein gepurgtes Geheimnis. Der Befehl nennt si
 Abschnitt, auch wenn ein Muster ihren Namen trifft; in einem Verzeichnis, das \type{.stemmaignore}
 ausschliesst, sucht er nicht. Was schon im Baum steht, weil eine ältere Version es aufnahm, bleibt
 verfolgt und erscheint ebenfalls dort. Ein Verzeichnis mit so einem Namen ist gewöhnlicher Inhalt,
-denn ein Restore schreibt dort nur Dateien. Läuft gerade ein \type{op restore}, kann seine eigene
-temporäre Datei hier stehen; sie wird erst entfernt, wenn kein Restore läuft. Der Exit-Code
-bleibt 0:
+denn ein Restore schreibt dort nur Dateien und Links. Läuft gerade ein \type{op restore}, kann
+seine eigene temporäre Datei hier stehen; man entfernt sie daher erst, wenn kein Restore läuft.
+Der Exit-Code bleibt 0:
 
 \starttyping
 Left by an interrupted restore, may hold an old file or a purged secret; remove them unless a

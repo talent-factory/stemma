@@ -227,10 +227,11 @@ Der Fehler nennt die Schreibweise auf dem Datenträger.
 \item Unter einem Verzeichnis überspringt der Befehl ohne Meldung die Namen,
 die auf \type{.stemma} hinauslaufen,
 und jede Datei und jedes Verzeichnis namens \type{.git} in jeder Tiefe (ADR-012).
-Ebenso überspringt er eine temporäre Datei \type{.stemma-checkout-…}, die ein unterbrochenes
-\type{op restore} zurückliess: Sie enthält den Inhalt eines alten Blobs, vielleicht ein
-gepurgtes Geheimnis. Ein genannter Pfad mit so einer Datei ist ein Fehler, und \type{status}
-nennt sie, damit man sie entfernt (ADR-013).
+Ebenso überspringt er eine Datei oder einen Link namens \type{.stemma-checkout-…},
+den Rest eines unterbrochenen \type{op restore}:
+Er enthält den Inhalt eines alten Blobs, vielleicht ein gepurgtes Geheimnis.
+Ein genannter Pfad, der so einen Rest nennt, ist ein Fehler,
+und \type{status} listet ihn, damit man ihn entfernt (ADR-013).
 Jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
 \stopitemize
 \stopinfobox
