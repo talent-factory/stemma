@@ -33,7 +33,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   missing file, a file that is not in canonical form, and any version other than the ones it
   supports: `init` writes version 4, the version of the hash chain of the log (ADR-011), and
   `open` reads versions 2 to 4: a repository made before the purge existed (2) or before the
-  chain (3) rises to 4 with its next entry or purge (ADR-014, ADR-011). A version never sinks.
+  chain (3) rises to 4 with its next entry or purge (ADR-014, ADR-011). A version never sinks,
+  with one exception: if the directory cannot be flushed after the rise, the old content is put
+  back, so that the next entry or purge raises the version again and flushes it. Nothing has been
+  written in the new version at that point, because the entry or purge stops at the error.
   The version stays text, so a number larger than any integer is an unsupported version and not
   a damaged file. The file is read up to 64 bytes. The hash function needs no
   entry, because every ID carries its algorithm (ADR-001). `open` checks nothing but `format`

@@ -102,7 +102,23 @@ fn format_of(version: u32) -> String {
 /// and is renamed over the file, and the directory is flushed, so a reader sees the old or the new
 /// version and never a mix. A purge and the writer of an entry call it (ADR-011, ADR-014). The
 /// version is never lowered: a file that names `version` or a higher one is left alone.
+///
+/// If the directory cannot be flushed after the rename, the old content is put back the same way
+/// and the error of the flush is returned. A later call then finds the old version and raises it
+/// again, flush included; without that, it would find the new version, skip the flush, and let an
+/// entry of the chain rest on a format file that a crash may undo. The callers write nothing
+/// after an error, so the old version may stay on disk. If the old content cannot be put back
+/// either, that error is returned instead, as it names the file that holds the new version.
 fn raise_format(dir: &Path, version: u32) -> Result<(), StoreError> {
+    raise_format_with(dir, version, &flush_store_directory)
+}
+
+/// [`raise_format`] with the flush of the directory as a parameter, so that a test can fail it.
+fn raise_format_with(
+    dir: &Path,
+    version: u32,
+    flush: &dyn Fn(&Path) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
     let path = dir.join("format");
     let current = fs::read(&path).map_err(|source| StoreError::Io {
         operation: "read the format file",
@@ -115,7 +131,27 @@ fn raise_format(dir: &Path, version: u32) -> Result<(), StoreError> {
     }
     let temp_dir = dir.join("tmp");
     create_store_dirs(dir, &temp_dir)?;
-    let (mut file, mut temp) = create_temp(&temp_dir, &mut unique_temp_name)?;
+    replace_format(
+        &temp_dir,
+        &path,
+        format_of(version).as_bytes(),
+        "replace the format file",
+    )?;
+    flush(dir).or_else(|error| {
+        replace_format(&temp_dir, &path, &current, "restore the format file")?;
+        Err(error)
+    })
+}
+
+/// Writes `content` to a new temporary file in `temp_dir`, flushes it, and renames it over the
+/// format file at `path`. The directory is not flushed. `operation` names the rename in an error.
+fn replace_format(
+    temp_dir: &Path,
+    path: &Path,
+    content: &[u8],
+    operation: &'static str,
+) -> Result<(), StoreError> {
+    let (mut file, mut temp) = create_temp(temp_dir, &mut unique_temp_name)?;
     let io = |operation: &'static str, path: &Path| {
         let path = path.to_path_buf();
         move |source| StoreError::Io {
@@ -124,14 +160,14 @@ fn raise_format(dir: &Path, version: u32) -> Result<(), StoreError> {
             source,
         }
     };
-    file.write_all(format_of(version).as_bytes())
+    file.write_all(content)
         .map_err(io("write the temporary file", &temp.path))?;
     file.sync_all()
         .map_err(io("flush the temporary file", &temp.path))?;
     drop(file);
-    fs::rename(&temp.path, &path).map_err(io("replace the format file", &path))?;
+    fs::rename(&temp.path, path).map_err(io(operation, path))?;
     temp.disarm();
-    flush_store_directory(dir)
+    Ok(())
 }
 
 /// Reads the file `format` and returns the version as the decimal digits that it holds. It
@@ -471,8 +507,9 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`OpLogError::Io`] if the format file cannot be replaced (nothing is written), and
-    /// what [`FsOpLog::append`] returns.
+    /// Returns [`OpLogError::Io`] if the format file cannot be raised and flushed, and what
+    /// [`FsOpLog::append`] returns. No entry is written then, and the format file holds the old
+    /// version, unless that could not be put back either (see [`raise_format`]).
     pub(crate) fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
         raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(OpLogError::from_store)?;
         self.oplog.append(change)
@@ -2660,6 +2697,43 @@ mod tests {
         assert_eq!(read(), "stemma-repository 3\n");
         raise_format(&meta, 4).unwrap();
         assert_eq!(read(), "stemma-repository 4\n");
+    }
+
+    #[test]
+    fn a_format_whose_directory_cannot_be_flushed_is_put_back_and_raised_again() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let meta = dir.path().join(METADATA_DIR);
+        let read = || fs::read_to_string(meta.join("format")).unwrap();
+        set_format(dir.path(), "stemma-repository 2\n");
+        let failing = |dir: &Path| {
+            Err(StoreError::Io {
+                operation: "flush the directory",
+                path: dir.to_path_buf(),
+                source: io::Error::other("injected"),
+            })
+        };
+        match raise_format_with(&meta, 3, &failing) {
+            Err(StoreError::Io {
+                operation, path, ..
+            }) => {
+                assert_eq!(operation, "flush the directory");
+                assert_eq!(path, meta);
+            }
+            other => panic!("expected the error of the flush, got {other:?}"),
+        }
+        // The old version is back, and no temporary file stays.
+        assert_eq!(read(), "stemma-repository 2\n");
+        assert_eq!(fs::read_dir(meta.join("tmp")).unwrap().count(), 0);
+        // The next call does not take the format for raised: it raises it and flushes.
+        let flushed = std::cell::Cell::new(0);
+        let counting = |dir: &Path| {
+            flushed.set(flushed.get() + 1);
+            flush_store_directory(dir)
+        };
+        raise_format_with(&meta, 3, &counting).unwrap();
+        assert_eq!(read(), "stemma-repository 3\n");
+        assert_eq!(flushed.get(), 1);
     }
 
     #[test]
