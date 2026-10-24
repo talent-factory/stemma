@@ -416,6 +416,31 @@ fn a_dot_leaves_out_what_the_exclusion_file_names_and_tracks_the_file_itself() {
 }
 
 #[test]
+fn an_exclusion_file_with_windows_line_ends_excludes_the_same_paths() {
+    let dir = repository();
+    write(
+        dir.path(),
+        ".stemmaignore",
+        "# logs\r\n*.log\r\ntarget/\r\n",
+    );
+    write(dir.path(), "a.txt", "a");
+    write(dir.path(), "d/x.log", "log");
+    write(dir.path(), "target/debug/z", "z");
+
+    let result = track(dir.path(), &["."]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked .stemmaignore\ntracked a.txt\n");
+    let named = track(dir.path(), &["d/x.log"]);
+    assert_eq!(named.code, 1, "{}", named.stdout);
+    assert!(
+        named.stderr.contains("excluded by line 2 of .stemmaignore"),
+        "{}",
+        named.stderr
+    );
+}
+
+#[test]
 fn a_path_that_is_named_and_excluded_fails_with_the_line_and_changes_nothing() {
     let dir = repository();
     write(dir.path(), ".stemmaignore", "# logs\n*.log\n");
@@ -476,7 +501,7 @@ fn an_invalid_exclusion_file_does_not_stop_a_commit() {
 #[test]
 fn an_exclusion_file_from_another_system_stops_the_command_and_says_why() {
     let cases: &[(&[u8], &str)] = &[
-        (b"*.log\r\n", "line 1: carriage return"),
+        (b"*.log\r\nb\n", "line 2: line end differs from line 1"),
         (
             b"\xEF\xBB\xBF*.log\n",
             "the file starts with a byte order mark",

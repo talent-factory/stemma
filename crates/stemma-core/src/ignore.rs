@@ -94,6 +94,9 @@ impl IgnoreRules {
     /// a last line without a newline is reported after the lines before it. A problem of the whole
     /// file (its size, a byte order mark, bytes that are not UTF-8) has no line and comes first.
     ///
+    /// A line ends with `\n` or with `\r\n`, as the first line does, so that a file written on
+    /// Windows or checked out by Git with `autocrlf` reads like the same file with `\n`.
+    ///
     /// # Errors
     ///
     /// Returns an [`IgnoreParseError`] for the first problem.
@@ -110,12 +113,21 @@ impl IgnoreRules {
         let mut patterns = Vec::new();
         let mut rest = text;
         let mut number = 0usize;
+        // Whether the first line ends with `\r\n`; every other line has to end the same way.
+        let mut crlf = None;
         while let Some(end) = rest.find('\n') {
             number += 1;
             let at = NonZeroUsize::new(number).expect("a counted line is numbered from 1");
-            let line = &rest[..end];
+            let raw = &rest[..end];
             rest = &rest[end + 1..];
             let problem = |problem| IgnoreParseError::Line { line: at, problem };
+            let (line, ends_in_crlf) = match raw.strip_suffix('\r') {
+                Some(line) => (line, true),
+                None => (raw, false),
+            };
+            if *crlf.get_or_insert(ends_in_crlf) != ends_in_crlf {
+                return Err(problem(LineProblem::MixedLineEnds));
+            }
             if line.is_empty() {
                 return Err(problem(LineProblem::Empty));
             }
@@ -477,8 +489,10 @@ pub enum LineProblem {
     Empty,
     /// The line has more than [`MAX_LINE_BYTES`] bytes.
     TooLong,
-    /// The line has a carriage return: only `\n` ends a line.
+    /// The line has a carriage return that is not part of its line end `\r\n`.
     CarriageReturn,
+    /// The line ends with `\n` and the first line with `\r\n`, or the other way round.
+    MixedLineEnds,
     /// The line has a control character (NUL, a tab, and the like).
     ControlCharacter,
     /// The line starts or ends with a space.
@@ -523,7 +537,12 @@ impl fmt::Display for LineProblem {
             Self::MissingNewline => f.write_str("does not end with a newline"),
             Self::Empty => f.write_str("empty line"),
             Self::TooLong => write!(f, "more than {MAX_LINE_BYTES} bytes"),
-            Self::CarriageReturn => f.write_str("carriage return; only `\\n` ends a line"),
+            Self::CarriageReturn => {
+                f.write_str("carriage return; only `\\n` or `\\r\\n` ends a line")
+            }
+            Self::MixedLineEnds => {
+                f.write_str("line end differs from line 1; use `\\n` or `\\r\\n` in the whole file")
+            }
             Self::ControlCharacter => f.write_str("control character"),
             Self::Space => f.write_str("space at the start or end"),
             Self::Repeated { first } => write!(f, "repeats line {first}"),
@@ -714,7 +733,17 @@ mod tests {
             (b".stemmaignore\n", 1, "never excluded"),
             (b"/.stemmaignore\n", 1, "never excluded"),
             (b"a/.stemmaignore\n", 1, "never excluded"),
-            (b"a\r\n", 1, "carriage return"),
+            (b"a\rb\n", 1, "carriage return"),
+            (b"\ra\n", 1, "carriage return"),
+            (b"a\r\r\n", 1, "carriage return"),
+            (b"a\r", 1, "does not end with a newline"),
+            (b"a\r\nb\r", 2, "does not end with a newline"),
+            (b"a\nb\r\n", 2, "line end differs from line 1"),
+            (b"a\r\nb\n", 2, "line end differs from line 1"),
+            (b"a\r\nb\r\nc\n", 3, "line end differs from line 1"),
+            (b"a\r\n\r\n", 2, "empty line"),
+            (b"a\r\na\r\n", 2, "repeats line 1"),
+            (b"a \r\n", 1, "space at the start or end"),
             (b"a\tb\n", 1, "control character"),
             (b"\ta\n", 1, "control character"),
             (b"a\0b\n", 1, "control character"),
@@ -728,6 +757,18 @@ mod tests {
             assert_eq!(error.line(), at(*line), "{bytes:?}: {error}");
             assert!(error.to_string().contains(text), "{bytes:?}: {error}");
         }
+    }
+
+    #[test]
+    fn a_file_with_windows_line_ends_reads_like_the_same_file_with_newlines() {
+        let unix = "# secrets\n.env\ntarget/\ndocs/**/draft-?.md\n";
+        let windows = unix.replace('\n', "\r\n");
+        assert_eq!(rules(&windows), rules(unix));
+        assert!(rules(&windows).is_ignored(".env", false));
+        assert_eq!(rules(&windows).matching("target", true), at(3));
+        // The limit of a line counts the text without its line end.
+        let line = "a".repeat(MAX_LINE_BYTES);
+        assert!(IgnoreRules::parse(format!("{line}\r\n").as_bytes()).is_ok());
     }
 
     #[test]
