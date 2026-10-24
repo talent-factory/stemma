@@ -1214,21 +1214,35 @@ pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
 }
 
 /// Flushes a directory on Windows. `CreateFileW` opens a directory only with
-/// `FILE_FLAG_BACKUP_SEMANTICS`, and `FlushFileBuffers` needs a handle with write access; a file
-/// system that cannot flush a directory reports an error, as on Unix.
+/// `FILE_FLAG_BACKUP_SEMANTICS`, and `FlushFileBuffers` needs a handle with the right to add a
+/// subdirectory or the right to add a file. Write access as a whole (`GENERIC_WRITE`) is not asked
+/// for: a user may create a folder below a drive root without the other rights on the root. The
+/// right to add a subdirectory is tried first, the right to add a file second. A file system that
+/// cannot flush a directory reports an error, as on Unix.
 #[cfg(windows)]
 pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
     use std::os::windows::fs::OpenOptionsExt;
-    // The value from `winbase.h`; the standard library does not export it.
+    // The values from `winbase.h` and `winnt.h`; the standard library does not export them. For a
+    // directory, `FILE_APPEND_DATA` is the right to add a subdirectory and `FILE_WRITE_DATA` the
+    // right to add a file.
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    OpenOptions::new()
-        .write(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(dir)?
-        .sync_all()
+    const FILE_APPEND_DATA: u32 = 0x0004;
+    const FILE_WRITE_DATA: u32 = 0x0002;
+    let open = |access| {
+        OpenOptions::new()
+            .access_mode(access)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)
+    };
+    let directory = match open(FILE_APPEND_DATA) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => open(FILE_WRITE_DATA),
+        opened => opened,
+    }?;
+    directory.sync_all()
 }
 
-/// No-op on platforms that cannot flush a directory: the rename is atomic but not made durable.
+/// No-op on targets that are neither Unix nor Windows (WASI, for example), where the store has no
+/// way to flush a directory: the rename is atomic but not made durable.
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn flush_directory(_dir: &Path) -> io::Result<()> {
     Ok(())
@@ -1276,7 +1290,7 @@ mod tests {
     // Contract
 
     /// Runs on every platform: on Windows it shows that a directory opens for the flush and that
-    /// a failure reaches the caller instead of being skipped (STEMMA-84).
+    /// a directory that cannot be opened is an error instead of a skipped flush (STEMMA-84).
     #[test]
     fn a_directory_is_flushed_and_one_that_cannot_be_opened_is_an_error() {
         let dir = TempDir::new();
