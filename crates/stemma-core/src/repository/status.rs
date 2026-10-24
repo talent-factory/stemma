@@ -91,12 +91,13 @@ pub struct Status {
     /// its files are. The temporary files of a checkout are listed apart, in
     /// [`leftovers`](Self::leftovers).
     pub untracked: Vec<String>,
-    /// The temporary files that a checkout left when its process was killed, sorted by path
-    /// (ADR-013), also one that a pattern of `.stemmaignore` matches; a directory that a pattern
-    /// excludes is not searched. They hold the content of an old blob, which may be a secret that
-    /// was purged since. `track` never adds one; one that a tree holds already, from a version
-    /// before this rule, stays tracked and is listed here as well. A person removes them, when no
-    /// restore is running: one that runs has its temporary file there until it renames it.
+    /// The temporary files that a checkout left when its process was killed or when it could not
+    /// remove them after a failed write, sorted by path (ADR-013), also one that a pattern of
+    /// `.stemmaignore` matches; a directory that a pattern excludes is not searched. They hold the
+    /// content of an old blob, which may be a secret that was purged since. `track` never adds
+    /// one; one that a tree holds already, from a version before this rule, stays tracked and is
+    /// listed here as well. A person removes them, when no restore is running: one that runs has
+    /// its temporary file there until it renames it.
     pub leftovers: Vec<String>,
     /// The snapshot that this call made, or `None` if the tracked files were as the working-copy
     /// commit has them.
