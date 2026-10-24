@@ -1116,13 +1116,19 @@ gelöscht werden der Blob und allenfalls Reste im Objektspeicher, die ihn enthal
 Mit \type{--apply} nennt die erste Zeile den Eintrag des Purge, darunter stehen dieselben
 Zeilen wie im Plan, nun für das, was gemacht wurde. Hat der Snapshot das Verzeichnis
 gespeichert, nennt eine Zeile davor seinen Eintrag, wie bei \type{op restore}.
-\type{--resume} beginnt mit \type{Finished the purge of blob}, \type{--abort} gibt eine Zeile aus:
+Am Ende nennt \type{--apply} die Pfade, an denen ein umgeschriebener Commit den Blob hielt,
+sortiert, und rät, sie in \type{.stemmaignore} aufzunehmen oder die Dateien zu entfernen.
+\type{--resume} beginnt mit \type{Finished the purge of blob} und nennt keine Pfade, denn das
+Journal hält sie nicht fest; \type{--abort} gibt eine Zeile aus:
 
 \starttyping
 Purged blob b3:f60c… as entry 6 of the operation log
     rewrite b3:d8b6… -> b3:6269…
     …
     delete blob b3:f60c…
+The secret was at these paths; a file that is still there is untracked now,
+but `track .` saves it again, so name it in `.stemmaignore` or remove it:
+    path key
 Finished the purge of blob b3:f60c… as entry 6 of the operation log
 Undid the purge of blob b3:f60c…; removed 2 new objects
 \stoptyping
@@ -1177,8 +1183,9 @@ Purge, und ein Zurücknehmen lässt das Repository wie vor dem Purge.
 {\bf Grenzen.} Der Plan ohne \type{--apply} geht vom heutigen Stand aus; der Purge sichert
 das Verzeichnis zuerst und plant unter der Sperre neu.
 Eine Datei, deren Blob entfernt wird, verlässt den Baum und ist danach nicht mehr verfolgt;
-das Verzeichnis bleibt, wie es ist, und ein späteres \type{track} nähme das Geheimnis wieder
-auf, wenn \type{.stemmaignore} es nicht nennt.
+das Verzeichnis bleibt, wie es ist, und ein späteres \type{track .} nähme das Geheimnis wieder
+auf, wenn \type{.stemmaignore} es nicht nennt. Deshalb nennt \type{--apply} die Pfade; eine
+dauerhafte Liste der entfernten Blobs, die \type{track} prüft, gibt es noch nicht (ADR-014).
 Ein Befehl, der vor dem Purge begann, hält die Sperre schon, bevor er sein erstes Objekt
 schreibt; der Purge bricht dann mit Exit-Code 1 ab, bevor er das Format hebt oder das Journal
 schreibt, und lässt sich danach wiederholen. So kann kein Befehl ein Objekt nennen, das der

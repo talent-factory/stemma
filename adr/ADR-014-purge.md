@@ -228,7 +228,11 @@ object, an unreadable log) is left for a person to repair.
   whose path is not that of an ID is not looked at, as no read reaches it, and the scan reads
   only the header of a blob, so a tree whose header was damaged into that of a blob is not
   found. Nothing stops a later `track` from taking the secret in again unless `.stemmaignore`
-  names it.
+  names it. A file that held the secret stays in the working directory, untracked, so
+  `track .` would save it again. `purge --apply` therefore names the paths at which a rewritten
+  commit held the blob and advises to name them in `.stemmaignore` or to remove the files
+  (STEMMA-77). `--resume` names none, as the journal does not keep the paths and the old trees
+  may already be deleted.
 - Commit IDs change for the rewritten commits and their descendants. Anything that holds an old ID
   outside the repository (a note, a message) points at nothing afterwards. Change IDs stay. Two
   commits that differed only in the blob can become one. The rewrite takes new parents with
@@ -295,8 +299,9 @@ object, an unreadable log) is left for a person to repair.
 - [x] A tree that becomes empty when its only file leaves: it is dropped from its parent, as a
       snapshot never makes an empty directory; the tree of a commit can become empty. A test
       compares the new tree with the one that a snapshot makes of the same files (STEMMA-46).
-- [ ] A record of purged blob IDs that `track` and `status` check, so that the secret does not
-      come back by accident.
+- [ ] A lasting record of purged blob IDs that `track` and `status` check, so that the secret
+      does not come back by accident. Until then `purge --apply` names the paths and advises
+      `.stemmaignore` (STEMMA-77), see Consequences.
 - [ ] The rewrite of commits with several parents (phase 3), where two parents can become one
       (`CommitError::DuplicateParent`), and of commits that are signed (ADR-003): a signature does
       not survive a rewrite.

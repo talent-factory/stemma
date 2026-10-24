@@ -855,6 +855,8 @@ oder etwas erreicht, das er löscht; sonst bricht er ab.
 
 Mit \type{--apply} wird der Purge gemacht.
 Die erste Zeile nennt den Eintrag des Purge, darunter stehen dieselben Zeilen wie im Plan.
+Zuletzt nennt der Purge die Pfade, an denen der Verlauf den Blob hielt,
+und rät, sie in \type{.stemmaignore} aufzunehmen.
 Danach zeigt \type{op log} den Eintrag \type{purge} und die beiden Stubs,
 und die Datei mit dem Schlüssel ist nicht mehr verfolgt:
 
@@ -862,6 +864,10 @@ und die Datei mit dem Schlüssel ist nicht mehr verfolgt:
 $ stemma purge b3:4cbc…156b --apply
 Purged blob b3:4cbc…156b as entry 9 of the operation log
     ...
+    delete blob b3:4cbc…156b
+The secret was at these paths; a file that is still there is untracked now,
+but `track .` saves it again, so name it in `.stemmaignore` or remove it:
+    path .env
 $ stemma op log
 9  2026-10-24T05:54:35Z  human daniel  purge
     commits 3  stubs 7-8
@@ -889,7 +895,10 @@ ist der Ausgang jedes Eintrags vor dem jüngsten Stub unbekannt.
 Deshalb tragen die Einträge 1 bis 6 nun die Zeile mit dem Fragezeichen,
 und ein Restore eines solchen Eintrags braucht \type{--force}.
 Die Datei \type{.env} bleibt im Verzeichnis;
-ein späteres \type{track} nähme sie wieder auf, wenn \type{.stemmaignore} sie nicht ausschliesst.
+ein späteres \type{track .} nähme sie wieder auf,
+wenn \type{.stemmaignore} sie nicht ausschliesst. Deshalb nennt der Purge ihren Pfad.
+Eine dauerhafte Liste der entfernten Blobs, die \type{track} prüft, folgt später (ADR-014).
+Ein mit \type{--resume} beendeter Purge nennt keine Pfade, denn das Journal hält sie nicht fest.
 
 \startinfobox
 {\bf Stubs im Log.}
