@@ -42,7 +42,7 @@ pub use purge::{
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
-pub use track::{normalize_path, TrackError, Tracking};
+pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};
@@ -306,6 +306,103 @@ impl Repository {
         }
     }
 
+    /// Opens the repository that `start` lies in: the one at `start`, as [`open`](Self::open)
+    /// does, or else the nearest directory above it that contains `.stemma` (ADR-009). The
+    /// result names the directory of `start` below the root, so that a path that a person gives
+    /// relative to `start` can be turned into one relative to the root
+    /// ([`normalize_path_in`]).
+    ///
+    /// Only a missing `.stemma` at `start` leads the search upwards. Anything else at `start`
+    /// that is in the way, such as a `.stemma` that is a file or has a bad format, is the error
+    /// of [`open`](Self::open), and so is anything wrong with the repository that the search
+    /// finds. The search goes along the directories of the path of `start` with its links
+    /// resolved, so a repository above it is found under its real path, and
+    /// [`Discovered::through_link`] says whether that path left the path as it was given.
+    ///
+    /// A `.stemma` that the search finds above `start` must be one that the user who runs the
+    /// command can trust. Otherwise a user could put a `.stemma` into a directory that others
+    /// share, such as `/tmp`, and a command that runs below it would work in that repository: a
+    /// snapshot would save the files that its tree names into the store of the other user. On
+    /// Unix the effective user of the process must own it ([`OpenError::OtherOwner`]); on Windows,
+    /// where `std` gives no owner, it must not be at the root of a volume, where every user may
+    /// create directories ([`OpenError::AtVolumeRoot`]). Such a repository is still opened when
+    /// `start` is its own directory: the check is for the search, and a `.stemma` at `start` is
+    /// opened as before (an open item of ADR-009).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenError::Missing`] if `start` does not exist,
+    /// [`OpenError::NotADirectoryToStartIn`] if it is not a directory,
+    /// [`OpenError::NoRepositoryAbove`] if neither `start` nor a directory above it contains
+    /// `.stemma`, [`OpenError::OtherOwner`] or [`OpenError::AtVolumeRoot`] as above,
+    /// [`OpenError::NotUtf8`] if the path from the root to `start` has a part that is not UTF-8,
+    /// [`OpenError::Io`] if the path cannot be resolved or a directory cannot be inspected, and
+    /// the errors of [`open`](Self::open).
+    pub fn discover(start: impl AsRef<Path>) -> Result<Discovered, OpenError> {
+        Self::discover_with(start.as_ref(), &trusted)
+    }
+
+    /// [`discover`](Self::discover) with the check that a `.stemma` found above `start` may be
+    /// used, so that a test can stand in for another owner.
+    fn discover_with(
+        start: &Path,
+        trusted: &dyn Fn(&Path) -> Result<(), OpenError>,
+    ) -> Result<Discovered, OpenError> {
+        match Self::open(start) {
+            Err(OpenError::NotARepository { .. }) => {}
+            opened => {
+                return opened.map(|repository| Discovered {
+                    repository,
+                    subdirectory: String::new(),
+                    // `-C ..` from a link opens the directory above its target.
+                    through_link: fs::canonicalize(start)
+                        .is_ok_and(|real| !lies_below(start, &real)),
+                });
+            }
+        }
+        let real = match fs::canonicalize(start) {
+            Ok(real) => real,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(OpenError::Missing {
+                    path: start.to_path_buf(),
+                })
+            }
+            Err(error) => return Err(OpenError::io("resolve the path of", start)(error)),
+        };
+        let metadata = fs::metadata(&real).map_err(OpenError::io("inspect", &real))?;
+        if !metadata.is_dir() {
+            return Err(OpenError::NotADirectoryToStartIn {
+                path: start.to_path_buf(),
+            });
+        }
+        for root in real.ancestors().skip(1) {
+            let metadata_dir = root.join(METADATA_DIR);
+            match fs::symlink_metadata(&metadata_dir) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
+            }
+            trusted(&metadata_dir)?;
+            let below = real
+                .strip_prefix(root)
+                .expect("an ancestor of a path is a prefix of it");
+            let parts = below
+                .components()
+                .map(|component| component.as_os_str().to_str())
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| OpenError::NotUtf8 { path: real.clone() })?;
+            let repository = Self::open(root)?;
+            return Ok(Discovered {
+                repository,
+                subdirectory: parts.join("/"),
+                through_link: !lies_below(start, root),
+            });
+        }
+        Err(OpenError::NoRepositoryAbove {
+            path: start.to_path_buf(),
+        })
+    }
+
     fn at(path: &Path) -> Self {
         let metadata_dir = path.join(METADATA_DIR);
         Self {
@@ -317,8 +414,10 @@ impl Repository {
     }
 
     /// The directory that contains `.stemma/`, as it was given to [`init`](Self::init) or
-    /// [`open`](Self::open). A relative path stays relative, so it follows a change of the
-    /// working directory of the process.
+    /// [`open`](Self::open), or to [`discover`](Self::discover) when the repository is at the
+    /// start. A relative path stays relative, so it follows a change of the working directory of
+    /// the process. A repository that [`discover`](Self::discover) found above its start has
+    /// the absolute path with its links resolved.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -1159,7 +1258,98 @@ impl Error for InitError {
     }
 }
 
-/// Reasons why [`Repository::open`] fails.
+/// A repository that [`Repository::discover`] found, and where the search started in it.
+#[derive(Debug)]
+pub struct Discovered {
+    /// The repository.
+    pub repository: Repository,
+    /// The directory where the search started, relative to the root and with `/` between its
+    /// parts, as a path of [`Repository::track`] has it: empty if the search started at the
+    /// root.
+    pub subdirectory: String,
+    /// Whether the search reached the repository through a link: no directory of the path of
+    /// the start, as the shell reads it, is the root. A command that runs in a link to a
+    /// directory of another repository then works in that one, which a person may not expect.
+    /// Without the `PWD` of a shell, a link that led to the directory of the process is not seen,
+    /// and a link to the root itself does not count (see the search in
+    /// [`Repository::discover`]).
+    pub through_link: bool,
+}
+
+/// Whether a directory of `start`, as the shell reads its path, is `root` once resolved: the
+/// path is made absolute, and `.` and `..` are applied to its names before any link is resolved,
+/// as `cd` does by default. Then a link anywhere on the way counts, also one that a `..` follows:
+/// from a link `~/link` to `/b/repo/sub`, `~/link/..` is `~` for the shell and not `/b/repo`.
+///
+/// A relative `start` is taken from the directory of the process as the shell names it, in `PWD`,
+/// if that names the same directory. Without such a `PWD`, as when a program starts the command in
+/// a directory of its own, only the directory with its links resolved is known, and a link that
+/// led there cannot be seen. A link to the root of a repository itself is no detour either: the
+/// root is a directory of the path then.
+fn lies_below(start: &Path, root: &Path) -> bool {
+    let absolute = if start.is_absolute() {
+        start.to_path_buf()
+    } else {
+        let Ok(current) = std::env::current_dir() else {
+            return false;
+        };
+        let logical = std::env::var_os("PWD")
+            .map(PathBuf::from)
+            .filter(|pwd| pwd.is_absolute())
+            .filter(|pwd| fs::canonicalize(pwd).ok() == fs::canonicalize(&current).ok());
+        logical.unwrap_or(current).join(start)
+    };
+    let mut logical = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                logical.pop();
+            }
+            other => logical.push(other),
+        }
+    }
+    logical
+        .ancestors()
+        .any(|ancestor| fs::canonicalize(ancestor).is_ok_and(|real| real == root))
+}
+
+/// Whether the `.stemma` that the search found above the start may be used: on Unix the
+/// effective user of the process owns it, as Git checks for `safe.directory`. The owner of the
+/// entry itself counts, so a link that another user made is not followed.
+#[cfg(unix)]
+fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
+    use std::os::unix::fs::MetadataExt;
+    let owner = fs::symlink_metadata(metadata_dir)
+        .map_err(OpenError::io("inspect", metadata_dir))?
+        .uid();
+    if owner == rustix::process::geteuid().as_raw() {
+        Ok(())
+    } else {
+        Err(OpenError::OtherOwner {
+            found: metadata_dir.to_path_buf(),
+        })
+    }
+}
+
+/// Whether the `.stemma` that the search found above the start may be used. `std` gives no
+/// owner on Windows, so only the root of a volume is refused, where every user may create
+/// directories by default. Other places that all users may write stay open (STEMMA-73).
+#[cfg(not(unix))]
+fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
+    let at_volume_root = metadata_dir
+        .parent()
+        .is_some_and(|root| root.parent().is_none());
+    if at_volume_root {
+        Err(OpenError::AtVolumeRoot {
+            found: metadata_dir.to_path_buf(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Reasons why [`Repository::open`] and [`Repository::discover`] fail.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OpenError {
@@ -1167,6 +1357,40 @@ pub enum OpenError {
     NotARepository {
         /// The directory that was to be opened.
         path: PathBuf,
+    },
+    /// Neither the directory nor one above it has `.stemma` ([`Repository::discover`]).
+    NoRepositoryAbove {
+        /// The directory where the search started.
+        path: PathBuf,
+    },
+    /// The directory where the search was to start does not exist ([`Repository::discover`]).
+    Missing {
+        /// The directory.
+        path: PathBuf,
+    },
+    /// The search was to start at something that is not a directory, such as a file
+    /// ([`Repository::discover`]).
+    NotADirectoryToStartIn {
+        /// The path.
+        path: PathBuf,
+    },
+    /// The path from the root of the repository to the directory where the search started has a
+    /// part that is not UTF-8, so no path of the tree starts there ([`Repository::discover`]).
+    NotUtf8 {
+        /// The directory where the search started, with its links resolved.
+        path: PathBuf,
+    },
+    /// The search found a `.stemma` above the directory where it started, but the user who runs
+    /// the command does not own it, so it is not opened (Unix, [`Repository::discover`]).
+    OtherOwner {
+        /// The `.stemma` that was found.
+        found: PathBuf,
+    },
+    /// The search found a `.stemma` at the root of a volume, where every user may create
+    /// directories, so it is not opened (Windows, [`Repository::discover`]).
+    AtVolumeRoot {
+        /// The `.stemma` that was found.
+        found: PathBuf,
     },
     /// `.stemma` exists, but it is not a directory: it is a file, or a link that leads nowhere.
     NotADirectory {
@@ -1219,6 +1443,12 @@ impl OpenError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::NotARepository { .. }
+            | Self::NoRepositoryAbove { .. }
+            | Self::Missing { .. }
+            | Self::NotADirectoryToStartIn { .. }
+            | Self::NotUtf8 { .. }
+            | Self::OtherOwner { .. }
+            | Self::AtVolumeRoot { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
             | Self::MalformedFormat { .. }
@@ -1234,6 +1464,38 @@ impl fmt::Display for OpenError {
                 f,
                 "`{}` is not a repository: there is no `{METADATA_DIR}`",
                 path.display()
+            ),
+            Self::NoRepositoryAbove { path } => write!(
+                f,
+                "`{}` is not in a repository: there is no `{METADATA_DIR}` in it or in a directory \
+                 above it",
+                path.display()
+            ),
+            Self::Missing { path } => write!(f, "`{}` does not exist", path.display()),
+            Self::NotADirectoryToStartIn { path } => write!(
+                f,
+                "`{}` is not a directory; name a directory of a repository",
+                path.display()
+            ),
+            Self::NotUtf8 { path } => write!(
+                f,
+                "`{}` has a part that is not UTF-8 below the root of its repository, so no path of \
+                 the repository starts there; run the command from a directory above it",
+                path.display()
+            ),
+            Self::OtherOwner { found } => write!(
+                f,
+                "`{}` belongs to another user than the one who runs the command, so it is not \
+                 used; name its directory with `-C {}` to open it anyway",
+                found.display(),
+                found.parent().unwrap_or(found).display()
+            ),
+            Self::AtVolumeRoot { found } => write!(
+                f,
+                "`{}` is at the root of a volume, where every user may create directories, so it \
+                 is not used; name its directory with `-C {}` to open it anyway",
+                found.display(),
+                found.parent().unwrap_or(found).display()
             ),
             Self::NotADirectory { path } => write!(
                 f,
@@ -1272,6 +1534,12 @@ impl Error for OpenError {
             // The message includes that of the I/O error, so the source is its own cause.
             Self::Io { source, .. } => source.source(),
             Self::NotARepository { .. }
+            | Self::NoRepositoryAbove { .. }
+            | Self::Missing { .. }
+            | Self::NotADirectoryToStartIn { .. }
+            | Self::NotUtf8 { .. }
+            | Self::OtherOwner { .. }
+            | Self::AtVolumeRoot { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
             | Self::MalformedFormat { .. }
@@ -1997,6 +2265,293 @@ mod tests {
         assert!(matches!(error, OpenError::NotARepository { .. }), "{error}");
         let error = Repository::open(dir.path().join("missing")).unwrap_err();
         assert!(matches!(error, OpenError::NotARepository { .. }), "{error}");
+    }
+
+    #[test]
+    fn discover_finds_the_repository_at_the_start_or_above_it() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let found = Repository::discover(dir.path()).unwrap();
+        assert_eq!(
+            found.repository.path(),
+            dir.path(),
+            "at the start, the path stays as given"
+        );
+        assert_eq!(found.subdirectory, "");
+        fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        let found = Repository::discover(dir.path().join("a/b")).unwrap();
+        assert_eq!(
+            found.repository.path(),
+            fs::canonicalize(dir.path()).unwrap()
+        );
+        assert_eq!(found.subdirectory, "a/b");
+        // The nearest one wins: a repository inside a repository.
+        init(&dir.path().join("a")).unwrap();
+        let found = Repository::discover(dir.path().join("a/b")).unwrap();
+        assert_eq!(
+            found.repository.path(),
+            fs::canonicalize(dir.path().join("a")).unwrap()
+        );
+        assert_eq!(found.subdirectory, "b");
+    }
+
+    #[test]
+    fn discover_does_not_search_past_a_metadata_directory_that_is_in_the_way() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/.stemma"), b"x").unwrap();
+        let error = Repository::discover(dir.path().join("sub")).unwrap_err();
+        assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
+        // What the search finds above is opened strictly, too.
+        let dir = TempDir::new();
+        fs::create_dir_all(dir.path().join(".stemma")).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let error = Repository::discover(dir.path().join("sub")).unwrap_err();
+        assert!(matches!(error, OpenError::MissingFormat { .. }), "{error}");
+    }
+
+    #[test]
+    fn discover_without_a_repository_says_that_it_searched_above() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let start = dir.path().join("sub");
+        let error = Repository::discover(&start).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::NoRepositoryAbove { path } if *path == start),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`{}` is not in a repository: there is no `.stemma` in it or in a directory above \
+                 it",
+                start.display()
+            )
+        );
+    }
+
+    #[test]
+    fn discover_names_a_start_that_is_missing_or_not_a_directory() {
+        // Inside a repository, so that a search would find it: the message must not say that
+        // there is none.
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let missing = dir.path().join("sub/missing");
+        let error = Repository::discover(&missing).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::Missing { path } if *path == missing),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("`{}` does not exist", missing.display())
+        );
+        let file = dir.path().join("file");
+        fs::write(&file, b"x").unwrap();
+        let error = Repository::discover(&file).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::NotADirectoryToStartIn { path } if *path == file),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`{}` is not a directory; name a directory of a repository",
+                file.display()
+            )
+        );
+    }
+
+    #[test]
+    fn discover_checks_a_repository_that_it_finds_above_and_not_one_at_the_start() {
+        // The check stands for another owner: it refuses every `.stemma` it is shown.
+        let refuse = |found: &Path| {
+            Err(OpenError::OtherOwner {
+                found: found.to_path_buf(),
+            })
+        };
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let error = Repository::discover_with(&dir.path().join("sub"), &refuse).unwrap_err();
+        let found = fs::canonicalize(dir.path()).unwrap().join(METADATA_DIR);
+        assert!(
+            matches!(&error, OpenError::OtherOwner { found: at } if *at == found),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`{}` belongs to another user than the one who runs the command, so it is not \
+                 used; name its directory with `-C {}` to open it anyway",
+                found.display(),
+                found.parent().unwrap().display()
+            )
+        );
+        // Named directly, the repository is opened as before.
+        Repository::discover_with(dir.path(), &refuse).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_repository_that_the_user_who_runs_the_command_owns_is_trusted() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let metadata_dir = dir.path().join(METADATA_DIR);
+        trusted(&metadata_dir).unwrap();
+        // `/` belongs to root, so it stands for another owner unless the tests run as root.
+        let root = Path::new("/");
+        if fs::metadata(root).unwrap().uid() != rustix::process::geteuid().as_raw() {
+            assert!(matches!(trusted(root), Err(OpenError::OtherOwner { .. })));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "needs root: run with `sudo -E cargo test -- --ignored`"]
+    fn discover_trusts_by_the_user_who_runs_the_command_and_not_by_the_start() {
+        // Changing the owner needs root, as on a machine where another user made the repository.
+        use std::os::unix::fs::lchown;
+        assert_eq!(
+            rustix::process::geteuid().as_raw(),
+            0,
+            "the test needs root"
+        );
+        let other = Some(65534);
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        // A directory of another user in one's own repository, such as `build` after `sudo make`.
+        lchown(&sub, other, other).unwrap();
+        Repository::discover(&sub).unwrap();
+        // A repository of another user, also when the start belongs to that user.
+        lchown(dir.path().join(METADATA_DIR), other, other).unwrap();
+        let error = Repository::discover(&sub).unwrap_err();
+        assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+        lchown(&sub, Some(0), Some(0)).unwrap();
+        let error = Repository::discover(&sub).unwrap_err();
+        assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+        // Named directly, it is opened as before.
+        Repository::discover(dir.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_owner_of_a_found_link_counts_and_not_that_of_its_target() {
+        // A link that this user made to `/`, which belongs to root: the link is trusted, as its
+        // owner is this user, and the open that follows decides what it leads to.
+        let dir = TempDir::new();
+        let link = dir.path().join(METADATA_DIR);
+        std::os::unix::fs::symlink("/", &link).unwrap();
+        trusted(&link).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_repository_at_the_root_of_a_volume_is_not_trusted() {
+        for root in [r"C:\.stemma", r"\\?\C:\.stemma", r"\\server\share\.stemma"] {
+            assert!(
+                matches!(
+                    trusted(Path::new(root)),
+                    Err(OpenError::AtVolumeRoot { .. })
+                ),
+                "{root}"
+            );
+        }
+        trusted(Path::new(r"C:\x\.stemma")).unwrap();
+        trusted(Path::new(r"\\?\C:\x\.stemma")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_at_the_metadata_directory_above_stops_the_search() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        std::os::unix::fs::symlink("nowhere", dir.path().join(METADATA_DIR)).unwrap();
+        let error = Repository::discover(dir.path().join("sub")).unwrap_err();
+        assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_through_a_link_searches_along_the_real_path_and_says_so() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new();
+        let repo = dir.path().join("repo");
+        init(&repo).unwrap();
+        fs::create_dir(repo.join("sub")).unwrap();
+        // Without a link, the search says nothing.
+        let found = Repository::discover(repo.join("sub")).unwrap();
+        assert!(!found.through_link);
+        // A link from outside into the repository: the repository is found, through the link.
+        symlink(repo.join("sub"), dir.path().join("link")).unwrap();
+        let found = Repository::discover(dir.path().join("link")).unwrap();
+        assert_eq!(found.repository.path(), fs::canonicalize(&repo).unwrap());
+        assert_eq!(found.subdirectory, "sub");
+        assert!(found.through_link);
+        // A link in the repository that leads out of it is outside it.
+        fs::create_dir(dir.path().join("outside")).unwrap();
+        symlink(dir.path().join("outside"), repo.join("out")).unwrap();
+        let error = Repository::discover(repo.join("out")).unwrap_err();
+        assert!(
+            matches!(error, OpenError::NoRepositoryAbove { .. }),
+            "{error}"
+        );
+        // A `..` after a link leads up from the link for the shell, but the system goes up from
+        // its target: `link/../other` is `repo/other` for the system and a directory beside the
+        // link for the shell, so the repository is reached through the link.
+        fs::create_dir(repo.join("other")).unwrap();
+        let found = Repository::discover(dir.path().join("link/../other")).unwrap();
+        assert_eq!(found.subdirectory, "other");
+        assert!(found.through_link);
+        let deep = dir.path().join("deep");
+        fs::create_dir(&deep).unwrap();
+        symlink(repo.join("sub"), deep.join("link")).unwrap();
+        let found = Repository::discover(deep.join("link/..")).unwrap();
+        assert_eq!(found.repository.path(), deep.join("link/.."));
+        assert!(
+            found.through_link,
+            "the shell reads `deep/link/..` as `deep`"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_above_the_repository_or_to_its_root_is_no_detour() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new();
+        let repo = dir.path().join("data/repo");
+        init(&repo).unwrap();
+        fs::create_dir(repo.join("sub")).unwrap();
+        // A link above the repository, as `~/proj` to `/data/proj`: the root is on the way.
+        symlink(dir.path().join("data"), dir.path().join("alias")).unwrap();
+        let found = Repository::discover(dir.path().join("alias/repo/sub")).unwrap();
+        assert!(!found.through_link);
+        assert_eq!(found.subdirectory, "sub");
+        // A link to the root itself: the root is on the way as well.
+        symlink(&repo, dir.path().join("root")).unwrap();
+        let found = Repository::discover(dir.path().join("root/sub")).unwrap();
+        assert!(!found.through_link);
+        let found = Repository::discover(dir.path().join("root")).unwrap();
+        assert!(!found.through_link);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn discover_refuses_a_start_whose_path_in_the_repository_is_not_utf8() {
+        // A part that is not UTF-8 must not become another name, such as one with U+FFFD that a
+        // directory beside it may really have.
+        use std::os::unix::ffi::OsStrExt;
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let odd = dir.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        fs::create_dir(&odd).unwrap();
+        fs::create_dir(dir.path().join("caf\u{fffd}")).unwrap();
+        let error = Repository::discover(&odd).unwrap_err();
+        assert!(matches!(error, OpenError::NotUtf8 { .. }), "{error}");
     }
 
     #[test]

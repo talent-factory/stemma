@@ -202,9 +202,8 @@ art, not a template (ADR-015).
 - [ ] The path form is a `String` that the core validates and `normalize_path` writes. A
       `RepoPath` type that cannot be built from an invalid path would make the rule one
       definition; do it with the next command that takes paths (`status` takes none).
-- [ ] A command finds its repository in a parent directory when it runs below the root, as Git
-      does. Today a command takes the directory (`-C`, or the argument of `op log`) and the paths
-      of `track` are relative to it.
+- [x] A command finds its repository in a parent directory when it runs below the root, as Git
+      does, and the paths of `track` are relative to the directory of `-C` (STEMMA-72, ADR-009).
 - [x] The syntax of `.stemmaignore`: patterns, negation, and whether it is itself tracked and
       which level of ADR-004 it belongs to. Decided in ADR-012 and built (STEMMA-24).
 - [x] How long the operation log keeps the replaced commits of many snapshots (retention). The

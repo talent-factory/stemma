@@ -311,7 +311,7 @@ fn without_an_actor_the_command_fails_and_saves_nothing() {
 }
 
 #[test]
-fn in_a_directory_without_a_repository_the_command_fails_and_names_the_flag() {
+fn outside_a_repository_the_command_fails_and_names_the_flag() {
     let elsewhere = Dir::new();
 
     let result = status(elsewhere.path());
@@ -319,7 +319,7 @@ fn in_a_directory_without_a_repository_the_command_fails_and_names_the_flag() {
     assert_eq!(result.code, 1);
     assert_eq!(result.stdout, "");
     assert!(
-        result.stderr.contains("not in its parents") && result.stderr.contains("`status`"),
+        result.stderr.contains("is not in a repository") && result.stderr.contains("`-C`"),
         "{}",
         result.stderr
     );

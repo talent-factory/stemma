@@ -63,6 +63,31 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 
 ## Consequences
 
+- **Finding the repository** (STEMMA-72). `Repository::discover(start)` opens the repository at
+  `start`, as `open` does, or else the nearest directory above it that contains `.stemma`, and
+  names the directory of `start` below the root. Only a missing `.stemma` at `start` leads the
+  search upwards; anything else in the way there, and anything wrong with the repository that
+  the search finds, is the error of `open`. A `start` that does not exist or is no directory is
+  said so (`Missing`, `NotADirectoryToStartIn`), and a path from the root to `start` with a part
+  that is not UTF-8 is `NotUtf8`, since such a part would become another name.
+  The search goes along the path with its links resolved, and the result says whether it reached
+  the repository through a link (`through_link`); the command line warns then, as a command in a
+  link to a directory of another repository works in that one. The path is read as the shell
+  reads it: `.` and `..` apply to the names before any link is resolved, so `-C ..` from a link
+  is the directory of the link, and a relative start is taken from the `PWD` of the shell. Two
+  links are not seen: one that led to the directory of a process that a program started without
+  such a `PWD`, as `subprocess.run(cwd=...)` does, and one to the root of a repository itself,
+  which is no detour.
+  A `.stemma` found above `start` must be trusted: on Unix the effective user of the process
+  owns it (`OtherOwner` otherwise), as Git checks for `safe.directory`; on Windows, where `std`
+  gives no owner, it must not be at the root of a volume, where every user may create directories
+  (`AtVolumeRoot`). A user could otherwise put a `.stemma` into a shared directory such as
+  `/tmp`, and a command run below it would save the files that its tree names into the store of
+  that user. A refused repository is still opened when `-C` names its own directory, and the
+  message gives that call. Every command but `init` uses the search, and the paths of `track`
+  are relative to the directory of `-C`, as in Git: a `..` at their start leads up to the root
+  and not beyond, and any other `..` is refused as before, since it may follow a link. Neither
+  the search nor `..` crosses the root, so a nested repository is a repository of its own.
 - `open` is the place that checks the format. The two stores stay unchecked on construction, as
   ADR-007 and ADR-008 describe; the check in `open` closes the open item of ADR-007.
 - A new format version needs an ADR, a new number in `FORMAT_VERSION`, and a decision about the
@@ -88,8 +113,14 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - [ ] Hide the object store too, if an operation needs to be sure that it is the one of this
       repository; today `objects()` is safe, because anything stored through it belongs to this
       repository, and `update_branch` and `set_head` use it themselves.
-- [ ] Finding the repository from a subdirectory (searching upwards for `.stemma`), which `add`,
-      `commit`, and `status` need.
+- [x] Finding the repository from a subdirectory: `Repository::discover` (STEMMA-72), see
+      Consequences.
+- [ ] The search checks only a `.stemma` that it finds above the start; one at the start itself
+      is opened as before, so `cd /tmp` and a command there opens a `/tmp/.stemma` of another
+      user. Git checks that case as well and has a list of trusted directories
+      (`safe.directory`); decide whether stemma needs both when several users share a machine.
+- [ ] On Windows only the root of a volume is refused; other places that all users may write,
+      such as `C:\Users\Public`, stay open until the owner is checked by its SID (STEMMA-73).
 - [x] Removing a stale `.stemma-init-*` directory: the next writer that takes the lock removes
       it, if its name is exactly one that `init` makes (STEMMA-31).
 - [ ] A configuration file, and the user-level default branch it would allow.

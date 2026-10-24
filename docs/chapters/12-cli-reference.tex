@@ -26,10 +26,28 @@ stemma --version
 stemma --help
 \stoptyping
 
-{\bf Verzeichnis.} Jeder Befehl nimmt das Verzeichnis des Repositories mit
-\type{-C} (\type{--repository}) entgegen. Es gibt kein Positionsargument dafür,
-denn \type{track} braucht die Positionsargumente für die Pfade, \type{op restore}
-für die Nummer und \type{purge} für die ID des Blobs.
+{\bf Verzeichnis.} Jeder Befehl nimmt ein Verzeichnis des Repositories mit
+\type{-C} (\type{--repository}) entgegen, standardmässig das aktuelle. Es gibt kein
+Positionsargument dafür, denn \type{track} braucht die Positionsargumente für die Pfade,
+\type{op restore} für die Nummer und \type{purge} für die ID des Blobs.
+Ausser \type{init} öffnet jeder Befehl das Repository in diesem Verzeichnis oder, wenn es dort
+keines gibt, im nächsten übergeordneten Verzeichnis mit \type{.stemma} (ADR-009), wie Git.
+Ist an der Stelle selbst etwas im Weg, etwa ein \type{.stemma}, das eine Datei ist, sucht der
+Befehl nicht weiter. Ein \type{.stemma}, das die Suche oberhalb findet, muss unter Unix dem
+Benutzer gehören, der den Befehl ausführt; unter Windows darf es nicht im Wurzelverzeichnis eines
+Laufwerks liegen, wo jeder Benutzer Ordner anlegen darf. Sonst könnte ein anderer Benutzer ein
+\type{.stemma} in ein geteiltes Verzeichnis wie \type{/tmp} legen, und ein Snapshot speicherte
+Dateien in seinen Speicher. Ein solches Repository öffnet ein Befehl nur, wenn \type{-C} sein
+Verzeichnis selbst nennt; die Meldung nennt den Aufruf. Führt der Weg zum Repository über einen
+Link, warnt der Befehl und nennt das Repository, denn in einem Link auf ein Verzeichnis eines
+anderen Repositories arbeitet er in diesem. Den Weg liest er wie die Shell: \type{-C ..} aus einem
+Link ist das Verzeichnis, in dem der Link liegt. Ohne die Variable \type{PWD} der Shell, etwa
+wenn ein Programm den Befehl in einem Verzeichnis startet, sieht er einen Link nicht, der dorthin
+führte, und ein Link auf die Wurzel eines Repositories ist kein Umweg. Hat der Weg von der Wurzel
+zum Verzeichnis einen Namen, der kein UTF-8 ist, bricht jeder Befehl ab und nennt das Verzeichnis.
+Liegt das Verzeichnis in keinem Repository,
+nennt die Meldung \type{-C} und \type{stemma init}; gibt es das Verzeichnis nicht oder ist es
+eine Datei, sagt sie das.
 
 {\bf Akteur.} Jeder Befehl, der ein Repository ändert, braucht einen Akteur (ADR-002).
 Er kommt aus dem Schalter \type{--actor} oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}.
@@ -182,14 +200,14 @@ stemma track [-C VERZEICHNIS] --actor AKTEUR PFAD...
 \stoptyping
 
 \startitemize
-\item {\bf PFAD:} Eine Datei oder ein Verzeichnis, relativ zum Repository.
-Ein Verzeichnis steht für die Dateien darunter, \type{.} für das ganze Verzeichnis
-des Repositories. Mindestens ein Pfad ist nötig, sonst ist es ein Aufruffehler (Exit-Code 2).
+\item {\bf PFAD:} Eine Datei oder ein Verzeichnis, relativ zum Verzeichnis von \type{-C}.
+Ein Verzeichnis steht für die Dateien darunter, \type{.} für das Verzeichnis von \type{-C}.
+Ein \type{..} am Anfang führt nach oben, bis zur Wurzel des Repositories und nicht darüber.
+Mindestens ein Pfad ist nötig, sonst ist es ein Aufruffehler (Exit-Code 2).
 Ein Pfad darf mit \type{./} beginnen und mit \type{/} enden.
-\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
-also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
-Die Pfade sind relativ dazu. Ein Repository in einem übergeordneten Verzeichnis sucht
-der Befehl nicht (offener Punkt in ADR-010).
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+Die Pfade sind relativ dazu.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
@@ -215,14 +233,21 @@ tracked src/main.rs
 No new files to track
 \stoptyping
 
-Die Pfade der Ausgabe sind relativ zum Repository (anders als bei \type{init}),
-und ein Name erscheint maskiert, wie es bei \type{status} steht.
+Die Pfade der Ausgabe sind relativ zur Wurzel des Repositories (anders als bei \type{init}),
+auch wenn der Befehl darunter läuft, und ein Name erscheint maskiert, wie es bei \type{status}
+steht. In einem Unterverzeichnis \type{src} des Repositories ergibt \type{stemma track main.rs}:
+
+\starttyping
+tracked src/main.rs
+\stoptyping
+
 Ein Pfad, der schon verfolgt wird,
 ist kein Fehler und ändert nichts; ändert sich weder der Baum noch eine verfolgte Datei,
 entsteht weder ein Commit noch ein Eintrag.
 
-{\bf Fehler.} Ein Pfad, den es nicht gibt, ein Pfad, der absolut ist, \type{..} enthält oder auf
-\type{.stemma} zeigt, und ein Pfad, dessen Schreibweise nicht der auf dem Datenträger entspricht
+{\bf Fehler.} Ein Pfad, den es nicht gibt, ein Pfad, der absolut ist, auf \type{.stemma} zeigt
+oder ein \type{..} enthält, das nicht am Anfang steht oder aus dem Repository hinausführt,
+und ein Pfad, dessen Schreibweise nicht der auf dem Datenträger entspricht
 (ein Dateisystem ohne Unterscheidung von Gross- und Kleinschreibung nähme sonst \type{a.txt} für
 \type{A.txt}, und der Baum hielte die Datei zweimal), beenden den Befehl mit Exit-Code 1, bevor sich
 etwas ändert, ebenso ein offener Purge. Dasselbe gilt für eine Spezialdatei (Gerät, Socket, Pipe)
@@ -231,8 +256,8 @@ ablehnt: Der Befehl nennt den Pfad und ändert nichts. Namen, die auf \type{.ste
 überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so einem Namen ist
 dagegen ein Fehler. Dasselbe gilt für \type{.git}, die Metadaten von Git:
 Sie fehlen immer, auch ohne Muster, und ein genannter Pfad mit einem Teil \type{.git} ist ein
-Fehler. Liegt das Repository nicht im angegebenen Verzeichnis, sucht der Befehl nicht in den
-übergeordneten; die Meldung sagt das und nennt \type{-C}. Mit Exit-Code 3 endet der Befehl, wenn
+Fehler. Liegt das Verzeichnis in keinem Repository, nennt die Meldung \type{-C}.
+Mit Exit-Code 3 endet der Befehl, wenn
 die Dateien verfolgt sind, aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht
 gesichert ist; ein Skript wiederholt ihn dann nicht. Ist nur der Zeiger nicht gesichert, schreibt
 der Befehl die Liste der neuen Dateien zuerst und meldet den Fehler danach, damit ein Skript findet,
@@ -303,8 +328,8 @@ stemma commit -m NACHRICHT [-C VERZEICHNIS] --actor AKTEUR
 \item {\bf \type{-m}, \type{--message} NACHRICHT:} Die Nachricht des Commits. Sie braucht
 ein Zeichen, das kein Leerraum ist, sonst ist es ein Fehler (Exit-Code 1). Ohne \type{-m}
 ist es ein Aufruffehler (Exit-Code 2). Einen Editor gibt es in Phase 1 nicht.
-\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
-also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
@@ -336,8 +361,8 @@ ein Rebase kommt in Phase 3. Diese beiden Fälle lassen den Snapshot zurück, un
 Aufruf ist unbedenklich. Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das,
 und der Aufruf lässt sich wiederholen. Scheitert die Zeigerbewegung, nachdem der Eintrag im Log
 steht, endet der Befehl mit Exit-Code 1, hat nichts verschoben und hinterlässt einen Eintrag für
-eine Zeigerbewegung, die nicht stattfand. Liegt das Repository nicht im angegebenen Verzeichnis,
-sucht der Befehl nicht in den übergeordneten; die Meldung nennt \type{-C}.
+eine Zeigerbewegung, die nicht stattfand. Liegt das Verzeichnis in keinem Repository,
+nennt die Meldung \type{-C}.
 
 Mit Exit-Code 3 endet der Befehl, wenn der Commit gemacht ist,
 aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
@@ -379,8 +404,8 @@ stemma status [-C VERZEICHNIS] --actor AKTEUR
 \stoptyping
 
 \startitemize
-\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
-also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben. Der Befehl macht einen Snapshot,
 und der Akteur ist der Akteur dieses Snapshots.
 \stopitemize
@@ -430,7 +455,8 @@ Eine verfolgte Datei, die ein Muster der Ausschlussdatei ausschliesst, bleibt in
 Änderungen; sie wird weiter gespeichert.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist,
-wenn das Repository nicht im angegebenen Verzeichnis liegt (die Meldung nennt \type{-C})
+wenn das Verzeichnis in keinem Repository liegt (die Meldung nennt \type{-C} und
+\type{stemma init})
 und wenn ein Purge offen ist.
 Ebenso endet er bei einem Fehler im Repository, zum Beispiel einer beschädigten Datei
 \type{working-copy}, und bei einer Datei, die der Snapshot nicht lesen kann:
@@ -482,8 +508,8 @@ stemma op log [-C VERZEICHNIS] [-n ANZAHL] [--json]
 \stoptyping
 
 \startitemize
-\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
-also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{-n}, \type{--limit} ANZAHL:} Wie viele Einträge der Befehl zeigt.
 Standard ist 20. Null ist ein Aufruffehler (Exit-Code 2). Nur diese Einträge werden
 gelesen; von den übrigen liest der Befehl nur die Dateinamen.
@@ -620,8 +646,8 @@ stemma op verify [-C VERZEICHNIS] [--anchor NUMMER:HASH]
 \stoptyping
 
 \startitemize
-\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
-also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--anchor} NUMMER:HASH:} Ein Anker, den ein früheres \type{op verify}
 ausgab und den jemand ausserhalb des Repositories aufbewahrt hat. Der Eintrag mit der Nummer
 muss noch denselben Hash haben. Ein Anker in anderer Form, etwa mit einer führenden Null, mit
@@ -694,8 +720,8 @@ stemma op restore NUMMER [-C VERZEICHNIS] [--force] [--dry-run] --actor AKTEUR
 \startitemize
 \item {\bf NUMMER:} Die Nummer des Eintrags, dessen alte Werte zurückkommen.
 \type{op log} nennt die Nummern. Eine Zahl ist Pflicht (sonst Exit-Code 2).
-\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
-also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--force}:} Setzt zurück, auch wenn das Log und die Referenzen nicht
 zeigen, ob der Eintrag stattfand (siehe unten).
 \item {\bf \type{--dry-run}:} Zeigt, was zurückgesetzt würde, und schreibt nichts,
@@ -843,8 +869,8 @@ stemma purge --abort [-C VERZEICHNIS] --actor AKTEUR
 \type{purge} und die Stubs und löscht die alten Objekte.
 \item {\bf \type{--resume}:} Beendet einen Purge, der abbrach, aus seinem Journal.
 \item {\bf \type{--abort}:} Nimmt einen Purge zurück, der vor seinem Eintrag abbrach.
-\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories,
-also das, welches \type{.stemma} enthält. Standard ist das aktuelle.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Es muss ein Mensch sein.
 \stopitemize
 

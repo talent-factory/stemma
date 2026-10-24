@@ -5,7 +5,8 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{operations, repository, run, stemma, write, Dir, Run};
+use common::{operations, repository, run, stemma, write, Dir, Run, ACTOR};
+use stemma_core::object::Blob;
 
 fn track(dir: &Path, paths: &[&str]) -> Run {
     let mut args = vec!["track", "--actor", "human alice"];
@@ -145,14 +146,120 @@ fn a_relative_repository_is_the_base_of_the_paths() {
 }
 
 #[test]
-fn a_directory_below_the_repository_is_not_one_and_the_message_says_where_stemma_looks() {
+fn below_the_root_the_repository_is_found_and_the_paths_are_relative_to_the_directory() {
     let dir = repository();
-    fs::create_dir(dir.path().join("sub")).unwrap();
-    write(&dir.path().join("sub"), "a.txt", "one");
-    let result = track(&dir.path().join("sub"), &["a.txt"]);
+    let sub = dir.path().join("sub");
+    fs::create_dir_all(sub.join("deep")).unwrap();
+    write(&sub, "a.txt", "one");
+    write(&sub, "deep/b.txt", "two");
+    write(dir.path(), "top.txt", "three");
+    // `a.txt` is `sub/a.txt`, `..` leads up to the root, and `.` is the directory itself.
+    let result = track(&sub, &["a.txt", "../top.txt"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked sub/a.txt\ntracked top.txt\n");
+    let result = track(&sub.join("deep"), &["."]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked sub/deep/b.txt\n");
+    // A path that leaves the repository is refused, also when the file exists, and is not
+    // clamped to the root.
+    write(dir.path(), "outside.txt", "root");
+    let entries = operations(dir.path()).len();
+    let result = track(&sub, &["../../outside.txt"]);
     assert_eq!(result.code, 1, "{}", result.stderr);
     assert!(
-        result.stderr.contains("not in its parents"),
+        result.stderr.contains("`../outside.txt`"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn every_command_but_init_finds_the_repository_from_below_the_root() {
+    let dir = repository();
+    let sub = dir.path().join("sub/deep");
+    fs::create_dir_all(&sub).unwrap();
+    write(dir.path(), "a.txt", "one");
+    let result = track(&sub, &["../../a.txt"]);
+    assert_eq!(result.stdout, "tracked a.txt\n", "{}", result.stderr);
+    write(dir.path(), "a.txt", "two");
+    // `status` sees the whole working copy, not only the directory it runs in.
+    let result = run(&sub, &["status", "--actor", ACTOR]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(result.stdout.contains("a.txt"), "{}", result.stdout);
+    let blob = Blob::new("one").id().to_string();
+    for args in [
+        &["commit", "--actor", ACTOR, "-m", "from below"][..],
+        &["op", "log"],
+        &["op", "verify"],
+        &["op", "restore", "2", "--dry-run", "--actor", ACTOR],
+        // Without `--apply`, the plan only: it finds the blob in the history of the repository.
+        &["purge", &blob, "--actor", ACTOR],
+    ] {
+        let result = run(&sub, args);
+        assert_eq!(result.code, 0, "{args:?}: {}", result.stderr);
+        assert!(
+            !result.stderr.contains("warning"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_command_in_a_link_into_a_repository_warns_where_it_works() {
+    let dir = repository();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let elsewhere = Dir::new();
+    let link = elsewhere.path().join("link");
+    std::os::unix::fs::symlink(dir.path().join("sub"), &link).unwrap();
+    // Named with `-C`.
+    let named = link.to_string_lossy().into_owned();
+    let result = run(
+        elsewhere.path(),
+        &["status", "-C", &named, "--actor", ACTOR],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stderr.contains(&format!(
+            "stemma: warning: `{named}` leads through a link into the repository at `"
+        )),
+        "{}",
+        result.stderr
+    );
+    // `-C ..` from the link: the shell reads it as the directory of the link, not the root.
+    let result = stemma(
+        &link,
+        &["status", "-C", "..", "--actor", ACTOR],
+        |command| {
+            command.env("PWD", &link);
+        },
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result
+            .stderr
+            .contains("stemma: warning: `..` leads through a link"),
+        "{}",
+        result.stderr
+    );
+    // A `PWD` that names another directory does not count: no link can be seen then.
+    let result = stemma(&link, &["status", "--actor", ACTOR], |command| {
+        command.env("PWD", elsewhere.path());
+    });
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(!result.stderr.contains("warning"), "{}", result.stderr);
+    // Entered by `cd`: the process gets the directory with its links resolved, and the shell
+    // gives its name in `PWD`.
+    let result = stemma(&link, &["status", "--actor", ACTOR], |command| {
+        command.env("PWD", &link);
+    });
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result
+            .stderr
+            .contains("stemma: warning: `.` leads through a link into the repository at `"),
         "{}",
         result.stderr
     );
@@ -411,4 +518,29 @@ fn a_directory_as_the_exclusion_file_stops_the_command() {
         "{}",
         result.stderr
     );
+}
+
+#[test]
+fn a_relative_directory_below_the_root_is_found_without_a_warning() {
+    let dir = repository();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    write(dir.path(), "sub/a.txt", "one");
+    let parent = dir.path().parent().unwrap();
+    let name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let below = format!("{name}/sub");
+    let result = stemma(
+        parent,
+        &["track", "-C", &below, "--actor", ACTOR, "a.txt"],
+        |command| {
+            command.env("PWD", parent);
+        },
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "tracked sub/a.txt\n");
+    assert!(!result.stderr.contains("warning"), "{}", result.stderr);
 }
