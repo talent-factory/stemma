@@ -24,19 +24,24 @@ die API oder den MCP-Server muss dieselbe Entscheidung erhalten.
 
 \section{Akteure}
 
-Jede Operation hat einen Akteur. Ein Mensch wird durch seine Identität beschrieben.
+Jede Operation, die ein Repository ändert oder eine Änderung plant, hat einen Akteur.
+Ein Mensch wird durch seine Identität beschrieben.
 Ein Agent führt zusätzlich Modellversion, Session und einen auftraggebenden Menschen mit,
 den Sponsor. Der Sponsor verantwortet die Handlungen des Agenten.
 
 \section{Autorisierung}
 
-Der Kern ruft bei jeder Operation die Funktion \type{authorize(actor, operation, target)} auf.
+Der Kern ruft bei jeder solchen Operation die Funktion \type{authorize(actor, operation, target)}
+auf, auch für einen Plan wie \type{purge} ohne \type{--apply}. Die Befehle, die nur das Log
+lesen (\type{op log}, \type{op verify}), haben keinen Akteur und rufen sie nicht auf.
 In Phase 1 erlaubt sie alles. Der Aufruf ist trotzdem Pflicht,
 damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
 
 \section{Ort der Berechtigungen}
 
-Rollen und Policies liegen auf dem Server und werden dort durchgesetzt.
+Rollen und Policies liegen auf dem Server und werden dort durchgesetzt. Eine Regel steht fest
+im Kern: Nur ein Mensch darf einen Purge machen, denn er lässt sich nicht rückgängig machen
+(ADR-002, ADR-014).
 Signaturen von Commits und Freigaben liegen im Repository und lassen sich unabhängig vom Server
 prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
 

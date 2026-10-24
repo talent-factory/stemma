@@ -1,7 +1,9 @@
 # ADR-009: Repository layout and `init`
 
-**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed with the
-author on 2026-10-19; the others are proposals.
+**Status:** Accepted. The layout, the format file, the initial branch, the actor of `init`, and
+the bundle of the stores were confirmed by the author on 2026-10-19, the other decisions on
+2026-10-24 (STEMMA-9); all are implemented in Phase 1. The reason for a denial moves
+to Phase 4, bare repositories to Phase 5; the other open items stay open.
 
 ## Context
 
@@ -16,9 +18,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 
 - **One type bundles the stores** *(confirmed)*. `Repository` in `stemma-core` holds the
   directory, an `FsObjectStore`, an `FsRefStore`, and an `FsOpLog` (ADR-011).
-  The command line only calls it. Later
-  operations (`add`, `commit`) are methods of `Repository`, so they use the stores of one
-  repository.
+  The command line only calls it. The operations (`track`, `commit`, `status`, `op restore`,
+  `purge`) are methods of `Repository`, so they use the stores of one repository.
 - **Layout** *(confirmed)*. A repository is a directory that contains `.stemma/`. Inside:
   `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007),
   `oplog/` and `oplog-tip` (ADR-011),
@@ -30,24 +31,26 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 2, and the first purge raises it to 3 (ADR-014), so `open`
-  reads both. The version stays text, so a number larger than any integer is an unsupported
-  version and not a damaged file. The file is read up to 64 bytes. The hash function needs no
+  supports: `init` writes version 4, the version of the hash chain of the log (ADR-011), and
+  `open` reads versions 2 to 4: a repository made before the purge existed (2) or before the
+  chain (3) rises to 4 with its next entry or purge (ADR-014, ADR-011). A version never sinks.
+  The version stays text, so a number larger than any integer is an unsupported version and not
+  a damaged file. The file is read up to 64 bytes. The hash function needs no
   entry, because every ID carries its algorithm (ADR-001). `open` checks nothing but `format`
   (and that `.stemma` is a directory); the stores report what is wrong with the rest when they
   are used.
-- **`init` is atomic**. The directory is built under a temporary name next to its final place
-  and moved into place with one rename, so that a failure leaves no half-made repository. The
-  name is `.stemma-init-<pid>-<n>-<random>`; `init` creates it itself, tries the next name if
-  one is taken, and removes only the directory that it created. If removal fails, the error
-  names the directory (`Leftover`). If `.stemma` exists, even an empty one or a link, `init`
-  fails before it creates the temporary directory and changes nothing but missing parents. A
-  rename that fails while `.stemma` exists is reported as `AlreadyExists`, so the loser of two
-  concurrent `init`s sees that error.
-- **Durability**. The files, the new directories, missing parent directories, and the directory
-  that holds `.stemma` are flushed. If only the last flush fails, the repository is complete and
-  the error is `NotDurable`, not a plain I/O error, so that a retry does not meet an
-  unexplained `AlreadyExists`.
+- **`init` is atomic** *(confirmed)*. The directory is built under a temporary name next to its
+  final place and moved into place with one rename, so that a failure leaves no half-made
+  repository. The name is `.stemma-init-<pid>-<n>-<random>`; `init` creates it itself, tries
+  the next name if one is taken, and removes only the directory that it created. If removal
+  fails, the error names the directory (`Leftover`). If `.stemma` exists, even an empty one or a
+  link, `init` fails before it creates the temporary directory and changes nothing but missing
+  parents. A rename that fails while `.stemma` exists is reported as `AlreadyExists`, so the
+  loser of two concurrent `init`s sees that error.
+- **Durability** *(confirmed)*. The files, the new directories, missing parent directories, and
+  the directory that holds `.stemma` are flushed. If only the last flush fails, the repository
+  is complete and the error is `NotDurable`, not a plain I/O error, so that a retry does not
+  meet an unexplained `AlreadyExists`.
 - **The initial branch** *(confirmed)*. `init` takes it as an option (`InitOptions`), and `main`
   is the default. `stemma init` offers it as `--initial-branch`. There is no configuration file in
   phase 1. The name goes through `BranchName`, so an invalid name stops `init` before anything is
@@ -59,7 +62,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   in a repository that does not exist yet, so the caller supplies the authorizer; in phase 1 it
   is `AllowAll`. `init` records the actor in the first entry of the operation log (ADR-011);
   the actor is not stored in the format file or in HEAD.
-- **The directory is created if it does not exist**, as `git init` does.
+- **The directory is created if it does not exist** *(confirmed)*, as `git init` does.
 
 ## Consequences
 
@@ -92,7 +95,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   ADR-007 and ADR-008 describe; the check in `open` closes the open item of ADR-007.
 - A new format version needs an ADR, a new number in `FORMAT_VERSION`, and a decision about the
   migration of existing repositories. An older program refuses a newer repository.
-- A process that is killed during `init` can leave a `.stemma-init-…` directory. A later `add`
+- A process that is killed during `init` can leave a `.stemma-init-…` directory. A later `track`
   must not treat it as content of the working copy (ADR-005 reserves `.stemma` and its aliases;
   this name is not one of them). The next writer that takes the lock of the references removes
   it (ADR-011, STEMMA-31): once `.stemma` exists, an `init` that still builds such a directory
@@ -104,9 +107,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - `Repository` hands out the object store, but the references only as a view for reading
   (`Repository::refs()`, ADR-011). A pointer moves through `Repository::update_branch` and
   `set_head`, which use the object store of their own repository, so the gap that the context
-  names is closed for those two operations. The operations that need both (`commit`) will be methods
-  of `Repository`, and the stores
-  can become crate-private then; see the open items.
+  names is closed for those two operations. The operations that need both (`track`, `commit`,
+  `op restore`, `purge`) are methods of `Repository` as well. The object store stays public for
+  reading; hiding it is an open item.
 
 ## Open items
 
@@ -128,5 +131,5 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       the rename is replaced, because `rename` replaces an empty directory. Closing it needs
       `renameat2(RENAME_NOREPLACE)` or a platform call with the same effect.
 - [ ] The authorizer cannot give a reason for a denial (ADR-002); `init` reports only that it is
-      not allowed.
+      not allowed. Phase 4, with the policy model (ADR-004).
 - [ ] Bare repositories (no working copy) for a hub (phase 5).

@@ -69,7 +69,8 @@ Facts that bound the design:
   instead of calling it corrupt.
 - **Only a human may purge, and the call is authorized** *(confirmed)*. A purge removes history,
   which is level 3 of ADR-004 (a human owner). The core calls
-  `authorize(actor, "purge", target)` like every operation (ADR-002) and **in addition refuses an
+  `authorize(actor, "purge", target)` like every operation that changes a repository (ADR-002)
+  and **in addition refuses an
   actor that is an agent**, whatever the authorizer says: phase 1 allows everything, and an agent
   must not remove history on its own. This is a rule about the kind of actor and not a role, and
   it is an explicit exception to ADR-002, which leaves roles to the policy model. It is advisory

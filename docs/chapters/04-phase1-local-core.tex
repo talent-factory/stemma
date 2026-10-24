@@ -61,8 +61,8 @@ Der Befehl \type{stemma init} bietet ihn als \type{--initial-branch} an. HEAD ze
 den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Die Arbeitskopie ist
 von Anfang an ein Commit (ADR-010): \type{init} legt einen ersten Working-Copy-Commit
 mit dem leeren Baum, ohne Eltern und mit einer eigenen Change-ID an und hält seine ID
-in der Datei \type{working-copy} fest. Wie jede Operation ruft \type{init} zuerst
-\type{authorize} mit dem Akteur auf.
+in der Datei \type{working-copy} fest. Wie jede Operation, die ein Repository ändert, ruft
+\type{init} zuerst \type{authorize} mit dem Akteur auf.
 
 Ein Zeiger kann nur auf einen Commit gesetzt werden, der im Objektspeicher liegt (ADR-008).
 Nennt ein Zeiger später doch keinen gültigen Commit, etwa weil jemand eine Objektdatei entfernt
@@ -873,11 +873,14 @@ Plan einen Purge ab, der mehr als $2^{24}$ Einträge ersetzen würde.
 \section{Offene Fragen}
 
 \startitemize
-\item Format des Index: eigenes Binärformat oder lesbares Textformat für Debugging?
 \item Dateirechte: Ob ausser dem Ausführbit weitere Metadaten gespeichert werden.
 Das Ausführbit gehört zum Dateimodus (ADR-010).
 \item Symbolische Links: Ein Link wird als sein Ziel gespeichert (ADR-010).
 Offen ist, ob ein Ziel gespeichert werden darf, das kein UTF-8 ist.
-\item Wie viele und wie alte Snapshot-Einträge eine Aufbewahrungsregel behält, gemessen an
-einer echten Session eines Agenten, zusammen mit der Garbage Collection (ADR-007, ADR-011).
 \stopitemize
+
+Zwei Fragen der Phase sind entschieden (STEMMA-9). Einen Index als Datei gibt es nicht, denn die
+Arbeitskopie ist ein Commit; das Textformat \type{stemma-index 1} gilt nur, falls der Index
+später als Cache gespeichert wird (ADR-005). Aufbewahrung und Garbage Collection kommen in einer
+späteren Phase in einem Schritt, gemessen an einer echten Session eines Agenten (ADR-007,
+ADR-011); bis dahin wächst der Speicher nur.

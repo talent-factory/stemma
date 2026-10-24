@@ -1,7 +1,10 @@
 # ADR-008: References: Branches and HEAD
 
-**Status:** Proposal, partially confirmed. Decisions marked *(confirmed)* were agreed; the others
-are proposals.
+**Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
+confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
+The open items move to Phase 3 (deleting a branch, a compare-and-swap for HEAD) and to Phase 5
+(remote references); tags and packed references have no phase yet, and the rename on Windows
+waits for the CI run (STEMMA-33).
 
 ## Context
 
@@ -32,11 +35,11 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   bytes. Upper case is allowed, because names such as `feat/TF-792-login` are in use. Because the
   name is a file path on every platform, a name that works on one cannot fail on another.
   Loosening the rule later changes no ID.
-- **A name is checked before the commit** (`update_branch`). When another entry holds the name
-  (a case variant, a branch that is a prefix, or a directory of branches), the answer is
-  `Conflict` with the kind of the entry, also if the caller names an `expected` commit: there is
-  no branch of this name that could be at it, and `Stale` would hide the reason. `branch(name)`
-  says `None` for such a name; it means "no branch with exactly this name".
+- **A name is checked before the commit** *(confirmed)* (`update_branch`). When another entry holds
+  the name (a case variant, a branch that is a prefix, or a directory of branches), the answer is
+  `Conflict` with the kind of the entry, also if the caller names an `expected` commit: there is no
+  branch of this name that could be at it, and `Stale` would hide the reason. `branch(name)` says
+  `None` for such a name; it means "no branch with exactly this name".
 - **One name per file system entry** *(confirmed)*. A name cannot be a branch and the start of
   other names (`a` and `a/b`), and two names that differ only in case (`Main`, `main`) are
   refused, on every platform, because a repository can be copied to a file system that ignores
@@ -47,63 +50,61 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   is a commit that the object store has, so a branch cannot point to an object that is missing, or
   to a tree. As for `Index::write_tree` (ADR-005), no caller can forget a check. HEAD to a commit
   is checked the same way.
-- **One lock for all changes**. The check, the comparison, and the write happen while the file
-  `<metadata directory>/refs.lock` exists. It is created with "create new" and holds a token that
-  only the process that made it knows; it is removed when the change ends, but only if it still
-  holds that token, because a person may have removed a lock that looked stale, and another
-  process may hold a new one. A change that finds the lock fails at once with `Locked` and does
-  not wait. The lock is
-  outside `refs/`, so no branch name can collide with it. One lock for all references is coarse,
-  but a change is a few file operations, and it keeps the rule simple. A command that writes holds
-  it longer, from its first object to its last move, at least as long as its snapshot takes, and a
-  purge from its plan to its end (ADR-014, STEMMA-49). The command line removes the lock of an
-  interrupted command (Ctrl-C, a termination signal) before the process ends, so only `kill -9`,
-  a crash, or a handler that could not be installed leaves it behind.
-- **A lock that a process left is taken over** (STEMMA-51). While a process holds `refs.lock`,
-  it holds a lock of the operating system on the file `<metadata directory>/refs.lock.guard`,
-  which stays and has no content (`File::try_lock`). The operating system releases that lock when
-  the process ends in any way, also by `kill -9` or a crash, so a lock file whose guard is free was
-  left by a process that ended. The holder writes `stemma-lock 1`, `host <name>`,
-  `pid <process ID>`, and `token <token>`, one line each, and a change that holds the guard
-  replaces a file of exactly this form only if it names this host. A lock of the operating system
-  may not reach from one host to another on a file system that two hosts share (NFS without a
-  lock manager, a mount into a virtual machine), so a file of another host stays and is `Locked`
-  with that host; the message says that the file can be removed if no command runs there. The
-  rule assumes that no two hosts that share a repository carry the same name, so the defaults
-  `localhost`, `localhost.localdomain`, and `(none)` count as no name, and on macOS the name is
-  the local host name, which stays when the network changes. A file that names this process is
-  taken over as well: it was left by an earlier process with the same ID, as in a container whose
-  command always runs as the same process. A lock that this process holds is found in its own
-  list first, and is `Locked` as held by this process, since the lock is not re-entrant; the
-  guard is then not opened a second time, because closing a second handle releases the lock of
+- **One lock for all changes** *(confirmed)*. The check, the comparison, and the write happen while
+  the file `<metadata directory>/refs.lock` exists. It is created with "create new" and holds a
+  token that only the process that made it knows; it is removed when the change ends, but only if it
+  still holds that token, because a person may have removed a lock that looked stale, and another
+  process may hold a new one. A change that finds the lock fails at once with `Locked` and does not
+  wait. The lock is outside `refs/`, so no branch name can collide with it. One lock for all
+  references is coarse, but a change is a few file operations, and it keeps the rule simple. A
+  command that writes holds it longer, from its first object to its last move, at least as long as
+  its snapshot takes, and a purge from its plan to its end (ADR-014, STEMMA-49). The command line
+  removes the lock of an interrupted command (Ctrl-C, a termination signal) before the process ends,
+  so only `kill -9`, a crash, or a handler that could not be installed leaves it behind.
+- **A lock that a process left is taken over** *(confirmed, STEMMA-51)*. While a process holds
+  `refs.lock`, it holds a lock of the operating system on the file
+  `<metadata directory>/refs.lock.guard`, which stays and has no content (`File::try_lock`). The
+  operating system releases that lock when the process ends in any way, also by `kill -9` or a
+  crash, so a lock file whose guard is free was left by a process that ended. The holder writes
+  `stemma-lock 1`, `host <name>`, `pid <process ID>`, and `token <token>`, one line each, and a
+  change that holds the guard replaces a file of exactly this form only if it names this host. A
+  lock of the operating system may not reach from one host to another on a file system that two
+  hosts share (NFS without a lock manager, a mount into a virtual machine), so a file of another
+  host stays and is `Locked` with that host; the message says that the file can be removed if no
+  command runs there. The rule assumes that no two hosts that share a repository carry the same
+  name, so the defaults `localhost`, `localhost.localdomain`, and `(none)` count as no name, and on
+  macOS the name is the local host name, which stays when the network changes. A file that names
+  this process is taken over as well: it was left by an earlier process with the same ID, as in a
+  container whose command always runs as the same process. A lock that this process holds is found
+  in its own list first, and is `Locked` as held by this process, since the lock is not re-entrant;
+  the guard is then not opened a second time, because closing a second handle releases the lock of
   the first where the system keeps its locks per process (`fcntl` on NFS). While the journal of a
-  purge exists, a change does not take the lock over and fails with `PurgePending`; only
-  `--resume` and `--abort` replace it (ADR-014). A file of another form stays and is `Locked`: an
-  older version of stemma, a command without the guard, or a person made it, and so does the
-  empty file that a crash between making and writing the lock leaves; it must be removed by
-  hand. A guard that a running process holds is `Locked` with that process, whose message says
-  to try again and not to remove the file. If the guard cannot be locked for another reason than
-  a holder, or the name of the host is not known, the lock is made without a guard, in the form
-  of an older version, so that no command takes it over; a guard that fails costs the takeover
-  and never the exclusion, which `create_new` keeps. Such a command takes no lock over either,
-  and its message names why the guard could not be taken; only `--resume` and `--abort` replace
-  a file of another form then, which a purge without a guard leaves, as they did before the
-  guard. The guard and the lock file are taken in this order and released in the other, and only
-  a holder of the guard may replace a file of the guarded form, so two commands cannot take over
-  one lock at once. A person who removes the guard while a process holds it breaks the rule, as
-  one who removes the lock file does.
-- **Safe writes**. A file is written to a new temporary file in `<metadata directory>/tmp/`,
-  flushed, and renamed over the old one; the directory is flushed on Unix. The file is **not**
-  read-only, because Windows refuses to replace such a file. A reader sees the old content or the
-  new one. The temporary file is made before the directories of the branch, so that a failure of
-  the first leaves no directory behind; if a later step fails, the directories that are empty
-  again are removed. A directory without any file below it, which a crash can leave, is no
-  branch and in nobody's way: the next change that needs the name clears it. If the file is in
+  purge exists, a change does not take the lock over and fails with `PurgePending`; only `--resume`
+  and `--abort` replace it (ADR-014). A file of another form stays and is `Locked`: an older version
+  of stemma, a command without the guard, or a person made it, and so does the empty file that a
+  crash between making and writing the lock leaves; it must be removed by hand. A guard that a
+  running process holds is `Locked` with that process, whose message says to try again and not to
+  remove the file. If the guard cannot be locked for another reason than a holder, or the name of
+  the host is not known, the lock is made without a guard, in the form of an older version, so that
+  no command takes it over; a guard that fails costs the takeover and never the exclusion, which
+  `create_new` keeps. Such a command takes no lock over either, and its message names why the guard
+  could not be taken; only `--resume` and `--abort` replace a file of another form then, which a
+  purge without a guard leaves, as they did before the guard. The guard and the lock file are taken
+  in this order and released in the other, and only a holder of the guard may replace a file of the
+  guarded form, so two commands cannot take over one lock at once. A person who removes the guard
+  while a process holds it breaks the rule, as one who removes the lock file does.
+- **Safe writes** *(confirmed)*. A file is written to a new temporary file in
+  `<metadata directory>/tmp/`, flushed, and renamed over the old one; the directory is flushed on
+  Unix. The file is **not** read-only, because Windows refuses to replace such a file. A reader sees
+  the old content or the new one. The temporary file is made before the directories of the branch,
+  so that a failure of the first leaves no directory behind; if a later step fails, the directories
+  that are empty again are removed. A directory without any file below it, which a crash can leave,
+  is no branch and in nobody's way: the next change that needs the name clears it. If the file is in
   place and only the flush of the directory fails, the change has happened, and the error is
   `NotFlushed`; the caller reads the reference again and does not repeat the change with the old
   state.
 - **The module stores, and nothing more** *(confirmed)*. The module does not call the
-  authorization hook (ADR-002) and does not write the operation log (ADR-005); the layer above
+  authorization hook (ADR-002) and does not write the operation log (ADR-011); the layer above
   does, because it knows the actor and the operation. The default branch of a new repository is
   its decision as well. The module has the trait `RefStore` (sealed, like `ObjectStore`) and the
   implementation `FsRefStore`.
