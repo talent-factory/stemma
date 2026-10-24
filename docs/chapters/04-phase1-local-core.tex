@@ -229,7 +229,8 @@ die auf \type{.stemma} hinauslaufen,
 und jede Datei und jedes Verzeichnis namens \type{.git} in jeder Tiefe (ADR-012).
 Ebenso überspringt er eine temporäre Datei \type{.stemma-checkout-…}, die ein unterbrochenes
 \type{op restore} zurückliess: Sie enthält den Inhalt eines alten Blobs, vielleicht ein
-gepurgtes Geheimnis. \type{status} nennt sie, damit man sie entfernt (ADR-013).
+gepurgtes Geheimnis. Ein genannter Pfad mit so einer Datei ist ein Fehler, und \type{status}
+nennt sie, damit man sie entfernt (ADR-013).
 Jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
 \stopitemize
 \stopinfobox
@@ -300,6 +301,8 @@ Bei mehreren Eltern gilt der erste.
 Unverfolgt (\type{?}) sind die Dateien im Arbeitsverzeichnis,
 die nicht im Baum des Working-Copy-Commits stehen
 und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln da.
+Eine temporäre Datei, die ein unterbrochenes \type{op restore} zurückliess, steht in einem eigenen
+Abschnitt (\type{!}), damit man sie entfernt (ADR-013).
 
 \startinfobox
 {\bf Grenzfälle von \type{status}.}
