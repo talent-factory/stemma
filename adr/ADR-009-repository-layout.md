@@ -131,7 +131,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       on a handle that `open` holds. A `.stemma` that appears or is swapped between the checks
       and the open is therefore read before it is refused, and a `format` that is a FIFO would
       block that read. Closing it needs `O_NOFOLLOW`, the owner of that handle (`fstat`), and a
-      `read_format` that refuses anything but a regular file.
+      `read_format` that refuses anything but a regular file (STEMMA-88).
 - [ ] A list of trusted directories, as Git's `safe.directory`, for a repository that several
       users share on one machine; it needs the configuration file below.
 - [ ] On Windows only the root of a volume is refused; other places that all users may write,
