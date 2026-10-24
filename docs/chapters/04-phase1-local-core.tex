@@ -85,8 +85,8 @@ Besteht das Journal eines Purge vor oder nach der Prüfung, lehnt sie ab.
 Die Arbeitskopie ist in Stemma selbst ein Commit, der Working-Copy-Commit (ADR-010).
 Einen Index wie bei Git gibt es nicht:
 Verfolgt sind genau die Dateien, die im Baum des Working-Copy-Commits stehen.
-Jeder Befehl, der nicht nur das Log liest, hält zuerst den Stand des Arbeitsverzeichnisses
-in diesem Commit fest.
+Die Befehle, die den Stand der Arbeitskopie brauchen,
+halten das Arbeitsverzeichnis vor ihrer eigenen Arbeit in diesem Commit fest.
 Eine kurze Sitzung begleitet die folgenden Abschnitte;
 die Ausgaben stammen aus einem echten Lauf, nur die IDs sind gekürzt.
 
@@ -117,35 +117,39 @@ $ mkdir src && echo "fn main() {}" > src/main.rs
 
 Ein Snapshot hält den Stand des Arbeitsverzeichnisses im Working-Copy-Commit fest
 (\type{Repository::snapshot}, ADR-010).
-Die Befehle \type{track}, \type{commit}, \type{status}, \type{restore} und \type{purge --apply}
-machen ihn als Erstes.
+Die Befehle \type{commit}, \type{status}, \type{op restore} und \type{purge --apply}
+machen ihn, bevor sie ihre eigene Arbeit tun;
+\type{track} speichert die verfolgten Dateien in derselben Operation mit.
 Eine Änderung an einer verfolgten Datei landet so im Verlauf,
 ohne dass jemand sie eigens vormerken muss.
 
 Ein Snapshot läuft in diesen Schritten ab:
 
 \startitemize[n]
-\item Der Kern nimmt die Sperre der Referenzen.
+\item Der Kern prüft, ob der Akteur den Snapshot machen darf (\type{authorize}).
+\item Er nimmt die Sperre der Referenzen.
 \item Er liest den Baum des Working-Copy-Commits.
 \item Aus dem Arbeitsverzeichnis liest er genau die Dateien, die in diesem Baum stehen.
 Eine Datei ausserhalb des Baums ist nicht verfolgt;
 er speichert sie nicht und meldet sie nicht.
 \item Eine geänderte Datei speichert er, eine gelöschte verlässt den Baum.
-Die neuen Objekte schreibt er ungesichert nach \type{tmp/}
-und sichert sie gemeinsam, bevor ein Eintrag oder ein Zeiger sie nennt (ADR-007).
 \item Er baut einen neuen Commit mit dem neuen Baum.
 Der Commit behält Eltern, Change-ID und Nachricht des alten,
-sein Autor ist der Akteur des Snapshots.
+sein Autor ist der Akteur des Snapshots und seine Zeit die des Aufrufs.
+Alle neuen Objekte schreibt er zuerst ungesichert nach \type{tmp/}
+und sichert sie gemeinsam, bevor ein Eintrag oder ein Zeiger sie nennt (ADR-007).
 \item Er schreibt den Eintrag und bewegt dann den Zeiger des Working-Copy-Commits,
 wie es \in{Abbildung}[fig:oplog-write] zeigt.
 \stopitemize
 
 Ist der Baum unverändert, entstehen weder Commit noch Eintrag.
-Ein Absturz vor dem Eintrag verliert nur die neuen Objekte,
-und ihre Dateien räumt der nächste Schreiber weg.
-Weil der Kern die Objekte gemeinsam sichert,
-sichert er jedes Verzeichnis unter \type{objects/} einmal statt einmal je Objekt;
-das erste \type{track} vieler Dateien dauert so etwa halb so lange.
+Ein Absturz, bevor die Objekte gesichert sind, verliert nur sie;
+ihre Dateien in \type{tmp/} räumt der nächste Schreiber weg.
+Ein Absturz danach und vor dem Eintrag lässt Objekte zurück, die nichts nennt;
+sie schaden nicht.
+Weil die Objekte gemeinsam gesichert werden,
+wird jedes Verzeichnis unter \type{objects/} einmal gesichert statt einmal je Objekt.
+Das erste \type{track} vieler Dateien dauert dadurch etwa halb so lange.
 
 Ein Snapshot speichert, was im Verzeichnis liegt, und trägt den Akteur des Befehls ein.
 Arbeiten zwei Akteure im selben Verzeichnis,
@@ -159,16 +163,20 @@ die Durchsetzung kommt mit der zweiten Arbeitskopie (Worktree, Phase 3).
 \startinfobox
 {\bf Grenzfälle des Snapshots.}
 \startitemize
-\item Eine Datei, die ein Verzeichnis ersetzt hat, verlässt den Baum wie eine gelöschte,
-ebenso eine, die unter einem Verzeichnis liegt, das nun ein Link ist.
+\item Steht an der Stelle einer verfolgten Datei nun ein Verzeichnis,
+verlässt die Datei den Baum wie eine gelöschte;
+was in dem Verzeichnis liegt, bleibt unverfolgt.
+\item Steht an der Stelle eines Verzeichnisses nun eine Datei oder ein Link,
+verlassen die verfolgten Dateien darunter den Baum.
 \item Ein Pfad wird nie über einen Link verfolgt.
-Ein verfolgter Pfad, der selbst ein Link ist, wird als sein Ziel gespeichert.
+Ein verfolgter Pfad, der selbst ein Link ist, wird als Link gespeichert:
+mit dem Pfad, auf den er zeigt, nicht mit dem Inhalt des Ziels.
 \item Das Ausführbit gehört zum Dateimodus.
 \item Eine verfolgte Spezialdatei (Gerät, Socket, Pipe) bricht den Snapshot mit einem Fehler ab,
 statt still aus dem Verlauf zu fallen.
-\item Jede verfolgte Datei wird zweimal gelesen,
-einmal zum Speichern und einmal, wenn der Baum geschrieben wird;
-einen Cache gibt es noch nicht.
+\item Jede verfolgte Datei wird ganz gelesen und gespeichert,
+und ihr Blob wird beim Schreiben des Baums noch einmal gelesen.
+Das kostet etwa so viel wie zwei Lesevorgänge; einen Cache gibt es noch nicht.
 \stopitemize
 \stopinfobox
 
@@ -193,6 +201,7 @@ und \type{.} allein für das ganze Arbeitsverzeichnis.
 Die Kommandozeile bringt das, was eine Person tippt (\type{./a.txt}, \type{dir/}),
 in diese Form;
 ein leeres Argument lässt sie unverändert, damit der Kern es ablehnt (\type{normalize_path}).
+Synopsis und Exit-Codes stehen in der Befehlsreferenz.
 
 Der Kern baut den neuen Baum aus den verfolgten Dateien und den Dateien an den Pfaden
 und ersetzt den Working-Copy-Commit wie ein Snapshot (\type{Repository::track}).
@@ -255,13 +264,13 @@ Ein solcher Name bleibt dann unbemerkt verfolgt (offener Punkt in ADR-012).
 
 \subsection{Der Status}
 
-Auch \type{status} macht zuerst den Snapshot der verfolgten Dateien
+Auch \type{status} macht einen Snapshot der verfolgten Dateien
 (\type{Repository::status}, ADR-010).
 Der Befehl braucht deshalb einen Akteur,
 und ein Eintrag entsteht nur, wenn sich eine verfolgte Datei geändert hat.
-Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit.
-\quotation{Geändert} heisst deshalb, wie bei Jujutsu:
-was der Working-Copy-Commit gegenüber seinem Elternteil tut.
+Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit,
+\quotation{geändert} kann also nicht \quotation{anders als der Working-Copy-Commit} heissen.
+Es heisst, wie bei Jujutsu: was der Working-Copy-Commit gegenüber seinem Elternteil tut.
 Nach dem \type{track} der Sitzung hat der Working-Copy-Commit noch keinen Elternteil,
 also gilt der leere Baum, und beide Dateien sind hinzugefügt:
 
@@ -276,7 +285,9 @@ Die Ausgabe nennt hinzugefügte (\type{A}), geänderte (\type{M}) und gelöschte
 Dateien, nach Pfad sortiert.
 \type{M} gilt auch bei anderem Modus oder bei einem Link anstelle einer Datei.
 Die Dateien eines hinzugefügten oder gelöschten Verzeichnisses stehen einzeln da.
-Ein Wechsel von Datei zu Verzeichnis ist ein \type{D} und die \type{A} darunter.
+Ein Wechsel von Datei zu Verzeichnis ist ein \type{D} und die \type{A} darunter,
+sobald die Dateien darunter verfolgt sind;
+vorher stehen sie unter den unverfolgten.
 Bei mehreren Eltern gilt der erste.
 Unverfolgt (\type{?}) sind die Dateien im Arbeitsverzeichnis,
 die nicht im Baum des Working-Copy-Commits stehen
@@ -285,8 +296,8 @@ und die \type{.stemmaignore} nicht ausschliesst; auch sie stehen einzeln da.
 \startinfobox
 {\bf Grenzfälle von \type{status}.}
 \startitemize
-\item Vor dem Snapshot liest \type{status} die Ausschlussdatei und durchläuft das
-Arbeitsverzeichnis.
+\item Vor dem Snapshot liest \type{status} die Ausschlussdatei
+und durchläuft das Arbeitsverzeichnis.
 Es bricht dort ab, wo \type{track} abbricht:
 bei einer ungültigen Ausschlussdatei, bei einem Namen, den ein Baum ablehnt
 und den kein Muster ausschliesst, und bei einem Namen ohne UTF-8.
@@ -316,7 +327,7 @@ Der Commit läuft in diesen Schritten ab:
 
 \startitemize[n]
 \item Der Kern lehnt eine leere Nachricht und einen HEAD ohne Branch ab
-und prüft mit \type{authorize}, ob der Akteur den Commit machen darf.
+und prüft, ob der Akteur den Commit machen darf (\type{authorize}).
 Bis hier ist nichts geschrieben.
 \item Er nimmt die Sperre der Referenzen
 und hält sie bis zur letzten Zeigerbewegung,
@@ -335,16 +346,6 @@ mit demselben Baum, leerer Nachricht und eigener Change-ID.
 Der Branch rückt auf den benannten Commit,
 danach der Zeiger des Working-Copy-Commits auf den neuen.
 \stopitemize
-
-\in{Abbildung}[fig:commit-pointers] zeigt die Zeiger vor und nach dem zweiten Commit der Sitzung.
-Der neue Working-Copy-Commit ist leer, obwohl er einen Baum mit beiden Dateien hat:
-Leer heisst, er hat denselben Baum wie sein Elternteil,
-denn die verfolgten Dateien sind der Baum.
-
-\startplacefigure[title={Zeiger vor und nach \type{commit}},reference=fig:commit-pointers,
-location=here]
-\externalfigure[images/commit-pointers.pdf][width=0.9\textwidth]
-\stopplacefigure
 
 Vor dem zweiten Commit hat die Sitzung \type{README.md} geändert.
 Schon \type{status} hat die Änderung gespeichert, mit einem Eintrag \type{snapshot};
@@ -367,15 +368,25 @@ $ stemma op log
 ...
 \stoptyping
 
-Nach einem Commit stehen der Branch und der Working-Copy-Commit beide neu,
-und beide Bewegungen stehen in einem Eintrag.
-Scheitert der Commit vor dem Eintrag, ist nur der Snapshot geschehen.
+\in{Abbildung}[fig:commit-pointers] zeigt die Zeiger vor und nach dem zweiten Commit der Sitzung.
+Der neue Working-Copy-Commit ist leer, obwohl er einen Baum mit beiden Dateien hat:
+Leer heisst, er hat denselben Baum wie sein Elternteil,
+denn die verfolgten Dateien sind der Baum.
+
+\startplacefigure[title={Zeiger vor und nach \type{commit}},
+    reference=fig:commit-pointers,location=here]
+\externalfigure[images/commit-pointers.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+Scheitert der Commit nach dem Snapshot, aber vor dem Eintrag, bleibt nur der Snapshot;
+die neuen Commits liegen ohne Zeiger im Objektspeicher.
 
 \startinfobox
 {\bf Wann ein Commit abgelehnt wird oder halb stehen bleibt.}
 \startitemize
-\item Ein unveränderter Baum und ein Branch, der nicht beim Elternteil des
-Working-Copy-Commits steht, lassen nur den Snapshot zurück.
+\item Ein unveränderter Baum
+und ein Branch, der nicht beim Elternteil des Working-Copy-Commits steht,
+lassen nur den Snapshot zurück.
 Der zweite Fall wäre einer für einen Rebase (Phase 3).
 \item Hat ein anderer Prozess einen Zeiger zuerst bewegt, scheitert der Commit;
 er lässt sich wiederholen.
