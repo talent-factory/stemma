@@ -27,7 +27,9 @@ use super::snapshot::{lookup, read_object, SnapshotError};
 use super::Repository;
 use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::object::{BlobId, FileMode, Kind, Tree, TreeId, GIT_DIR, METADATA_DIR};
-use crate::store::{unique_temp_name, ObjectStore, CHECKOUT_TEMP_PREFIX as TEMP_PREFIX};
+use crate::store::{
+    is_checkout_temp_name, unique_temp_name, ObjectStore, CHECKOUT_TEMP_PREFIX as TEMP_PREFIX,
+};
 
 /// Whether the file systems of the platform usually ignore the case of names (macOS and Windows).
 /// Two paths of the new tree that differ only in case then name one file.
@@ -239,8 +241,9 @@ impl Repository {
     /// is there as an ordinary change of the actor (ADR-013). A stop after the first file was
     /// removed or written is reported as [`CheckoutError::Interrupted`], which says how many files
     /// were removed and written; a stop before that, after directories were created or removed,
-    /// is reported as it is. A killed process can leave a temporary file `.stemma-checkout-*` next to its
-    /// target. Directories are not flushed.
+    /// is reported as it is. A killed process can leave a temporary file `.stemma-checkout-*` next
+    /// to its target; a write that fails removes it, and if that fails too, the error is
+    /// [`CheckoutError::TempLeft`], which names the file. Directories are not flushed.
     ///
     /// # Errors
     ///
@@ -248,6 +251,7 @@ impl Repository {
     /// before anything is touched, [`CheckoutError::ThroughLink`], [`CheckoutError::InTheWay`], and
     /// [`CheckoutError::ChangedSincePlan`] for what has changed since the plan, and
     /// [`CheckoutError::Snapshot`] for a blob that cannot be read and a file system that fails,
+    /// wrapped in [`CheckoutError::TempLeft`] if the temporary file of the failed write stays,
     /// all of them as [`CheckoutError::Interrupted`] once a file was removed or written.
     pub fn apply_checkout(&self, plan: &CheckoutPlan) -> Result<(), CheckoutError> {
         if plan.root != self.path() {
@@ -417,23 +421,15 @@ impl Repository {
             Ok(_) | Err(_) => {}
         }
         let content = read_object(self.objects(), write.blob.object_id(), Kind::Blob)?;
-        let temp = parent.join(format!("{TEMP_PREFIX}{}", unique_temp_name()));
-        let _cleanup = TempFile(&temp);
-        create_content(&temp, write.mode, content.body())?;
-        // The window between this check and the rename remains: a file that appears in it is
-        // replaced (open item of ADR-013).
-        match fs::symlink_metadata(&target) {
-            Ok(metadata) if !write.replaces || metadata.is_dir() => {
-                return Err(CheckoutError::ChangedSincePlan {
-                    path: write.path.clone(),
-                });
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => return Err(io_error("inspect", &target, source)),
-        }
-        fs::rename(&temp, &target)
-            .map_err(|source| io_error("rename the temporary file to", &target, source))
+        let name = format!("{TEMP_PREFIX}{}", unique_temp_name());
+        let temp = TempFile(parent.join(&name));
+        place(write, &temp.0, &target, content.body()).map_err(|source| {
+            let path = match write.path.rsplit_once('/') {
+                Some((directory, _)) => format!("{directory}/{name}"),
+                None => name.clone(),
+            };
+            temp.discard(path, source)
+        })
     }
 
     /// Creates the directories above a path, one by one, and never goes through a link.
@@ -469,13 +465,57 @@ impl Repository {
     }
 }
 
-/// A temporary file that is removed when it goes out of scope, also on a panic. It is gone after
-/// a rename, and a failed removal is not reported: nothing can be done about it at that point.
-struct TempFile<'a>(&'a Path);
+/// Writes the content to the temporary file and renames it to the target, unless a file has
+/// appeared there since the plan.
+fn place(
+    write: &PlannedWrite,
+    temp: &Path,
+    target: &Path,
+    content: &[u8],
+) -> Result<(), CheckoutError> {
+    create_content(temp, write.mode, content)?;
+    // The window between this check and the rename remains: a file that appears in it is
+    // replaced (open item of ADR-013).
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if !write.replaces || metadata.is_dir() => {
+            return Err(CheckoutError::ChangedSincePlan {
+                path: write.path.clone(),
+            });
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(io_error("inspect", target, source)),
+    }
+    fs::rename(temp, target)
+        .map_err(|source| io_error("rename the temporary file to", target, source))
+}
 
-impl Drop for TempFile<'_> {
+/// A temporary file that is removed when it goes out of scope, also on a panic. It is gone after
+/// a rename. A write that fails removes it through [`TempFile::discard`], which reports a removal
+/// that fails as well; the removal on a drop is not reported, as nothing can be done about it
+/// there.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    /// Removes the file after the write failed with `source`, and returns the error to report.
+    /// If the file cannot be removed (permissions, a lock on Windows), the error names it by
+    /// `path`, relative to the working directory, so that it is not taken for the leftover of a
+    /// killed process.
+    fn discard(&self, path: String, source: CheckoutError) -> CheckoutError {
+        match fs::remove_file(&self.0) {
+            Err(removal) if removal.kind() != io::ErrorKind::NotFound => CheckoutError::TempLeft {
+                path,
+                removal,
+                source: Box::new(source),
+            },
+            _ => source,
+        }
+    }
+}
+
+impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = fs::remove_file(self.0);
+        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -797,6 +837,16 @@ pub enum CheckoutError {
         /// The directory the plan was made for.
         made_for: PathBuf,
     },
+    /// A write failed, and its temporary file could not be removed either. It stays in the working
+    /// directory with the content of the file; `status` lists it with the leftovers of a restore.
+    TempLeft {
+        /// The path of the temporary file.
+        path: String,
+        /// Why it could not be removed.
+        removal: io::Error,
+        /// Why the write failed.
+        source: Box<CheckoutError>,
+    },
     /// The apply stopped after it had changed the directory. The files named are done, and the
     /// rest is not; nothing is rolled back.
     Interrupted {
@@ -815,7 +865,7 @@ impl CheckoutError {
         match self {
             Self::Snapshot(error) => error.io_error(),
             Self::Ignore(error) => error.io_error(),
-            Self::Interrupted { source, .. } => source.io_error(),
+            Self::TempLeft { source, .. } | Self::Interrupted { source, .. } => source.io_error(),
             _ => None,
         }
     }
@@ -852,6 +902,12 @@ impl fmt::Display for CheckoutError {
                 "`{}` lies below a link and is not written through it",
                 path.escape_debug()
             ),
+            Self::InTheWay { path } if is_leftover(path) => write!(
+                f,
+                "`{}` was left by an interrupted restore and is in the way; it may hold an old \
+                 file or a purged secret, so remove it unless a restore is running",
+                path.escape_debug()
+            ),
             Self::InTheWay { path } => write!(
                 f,
                 "`{}` is not tracked and is in the way; move or remove it, or track it",
@@ -868,6 +924,16 @@ impl fmt::Display for CheckoutError {
                 "the plan was made for the directory `{}` and is not applied to another one",
                 made_for.display()
             ),
+            Self::TempLeft {
+                path,
+                removal,
+                source,
+            } => write!(
+                f,
+                "{source}; its temporary file `{}` could not be removed ({removal}) and may hold \
+                 an old file or a purged secret, so remove it",
+                path.escape_debug()
+            ),
             Self::Interrupted {
                 removed,
                 written,
@@ -879,6 +945,11 @@ impl fmt::Display for CheckoutError {
             ),
         }
     }
+}
+
+/// Whether the last part of the path is the name of a temporary file of a checkout.
+fn is_leftover(path: &str) -> bool {
+    is_checkout_temp_name(path.rsplit('/').next().unwrap_or(path))
 }
 
 impl Error for CheckoutError {}
@@ -1630,6 +1701,116 @@ mod tests {
             path: "a\nb".to_owned(),
         };
         assert!(!error.to_string().contains('\n'));
+    }
+
+    /// The name of a temporary file of a checkout, as a killed process leaves it.
+    const LEFTOVER: &str = ".stemma-checkout-4711-3-0123456789abcdef";
+
+    #[test]
+    fn a_leftover_of_a_restore_in_the_way_is_named_as_one() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, &format!("d/{LEFTOVER}"), "old");
+        let to = tree(&repository, &[plain("d", "new")]);
+        let error = repository.plan_checkout(None, to).unwrap_err();
+        assert!(
+            matches!(&error, CheckoutError::InTheWay { path } if *path == format!("d/{LEFTOVER}")),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("was left by an interrupted restore and is in the way"),
+            "{error}"
+        );
+        let other = CheckoutError::InTheWay {
+            path: "d/.stemma-checkout-notes".to_owned(),
+        };
+        assert!(other.to_string().contains("is not tracked"), "{other}");
+    }
+
+    #[test]
+    fn a_temporary_file_that_is_gone_leaves_the_error_of_the_write() {
+        let dir = TempDir::new();
+        let temp = TempFile(dir.path().join(LEFTOVER));
+        let error = temp.discard(
+            LEFTOVER.to_owned(),
+            CheckoutError::ChangedSincePlan {
+                path: "a".to_owned(),
+            },
+        );
+        assert!(
+            matches!(&error, CheckoutError::ChangedSincePlan { .. }),
+            "{error}"
+        );
+    }
+
+    /// Whether permissions have an effect: root may write into a directory without the permission.
+    #[cfg(unix)]
+    fn permissions_hold(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = dir.join("probe");
+        fs::create_dir(&probe).unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
+        let held = fs::write(probe.join("file"), b"").is_err();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(&probe).unwrap();
+        held
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_file_that_cannot_be_removed_is_named_with_the_error_of_the_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        if !permissions_hold(dir.path()) {
+            return;
+        }
+        write(&dir, &format!("d/{LEFTOVER}"), "old");
+        let directory = dir.path().join("d");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).unwrap();
+        let temp = TempFile(directory.join(LEFTOVER));
+        let error = CheckoutError::Interrupted {
+            removed: 0,
+            written: 1,
+            source: Box::new(temp.discard(
+                format!("d/{LEFTOVER}"),
+                CheckoutError::ChangedSincePlan {
+                    path: "d/new".to_owned(),
+                },
+            )),
+        };
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let CheckoutError::Interrupted { source, .. } = &error else {
+            unreachable!();
+        };
+        let CheckoutError::TempLeft {
+            path,
+            removal,
+            source,
+        } = &**source
+        else {
+            panic!("expected a temporary file that stays: {error}");
+        };
+        assert_eq!(*path, format!("d/{LEFTOVER}"));
+        assert_eq!(removal.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            matches!(&**source, CheckoutError::ChangedSincePlan { path } if path == "d/new"),
+            "{error}"
+        );
+        assert_eq!(
+            error.io_error().map(io::Error::kind),
+            None,
+            "the error of the write, not of the removal, is the cause"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains(&format!(
+                "its temporary file `d/{LEFTOVER}` could not be removed"
+            )),
+            "{text}"
+        );
+        assert!(text.ends_with("and nothing is rolled back"), "{text}");
     }
 
     #[cfg(unix)]
