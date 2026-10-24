@@ -28,6 +28,7 @@ use crate::{Actor, Authorizer};
 pub struct Purged {
     snapshot: Option<Entry>,
     plan: PurgePlan,
+    paths: Vec<String>,
     entries: Vec<Entry>,
     scratch_left: Vec<PathBuf>,
 }
@@ -42,6 +43,14 @@ impl Purged {
     /// What the purge did: the plan that it carried out.
     pub fn plan(&self) -> &PurgePlan {
         &self.plan
+    }
+
+    /// The paths, relative to the root, at which a rewritten commit held the blob, sorted. A file
+    /// that is still at such a path in the working directory is no longer tracked, but `track .`
+    /// would save the secret again, so the command names them (ADR-014). A resumed purge names
+    /// none: its journal does not keep them, and the old trees may be deleted.
+    pub fn paths(&self) -> &[String] {
+        &self.paths
     }
 
     /// The `purge` entries of the log; more than one if the list of stubs did not fit into one,
@@ -551,6 +560,7 @@ impl Repository {
         let lock = self.refs_store().lock_purge().map_err(pending)?;
         let left = scratch_left(&self.metadata_dir());
         let (plan, planner) = self.plan_blob(blob).map_err(ApplyPurgeError::Plan)?;
+        let paths = planner.paths();
         let start = |source| ApplyPurgeError::Start(source);
         let last = self
             .oplog()
@@ -595,6 +605,7 @@ impl Repository {
             .map(|entries| Purged {
                 snapshot: None,
                 plan: journal.plan,
+                paths,
                 entries,
                 scratch_left: left,
             }))
@@ -621,6 +632,7 @@ impl Repository {
             .map(|entries| Purged {
                 snapshot: None,
                 plan: journal.plan,
+                paths: Vec::new(),
                 entries,
                 scratch_left: left,
             }))
@@ -1096,8 +1108,9 @@ mod tests {
         let tip = repository.refs().branch(&main).unwrap().unwrap();
         let tip = super::super::super::snapshot::read_commit(repository.objects(), tip).unwrap();
         assert_eq!(tip.message(), "third");
-        // The directory is not touched: the file stays, untracked.
+        // The directory is not touched: the file stays, untracked, and the purge names it.
         assert!(dir.path().join("config").join("key").exists());
+        assert_eq!(purged.paths(), ["config/key"]);
     }
 
     #[test]
@@ -1238,6 +1251,10 @@ mod tests {
             assert!(lock_exists(&dir), "{stop:?}: the crash left the lock");
             let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
             assert_purged(&dir, &repository, &purged);
+            assert!(
+                purged.paths().is_empty(),
+                "{stop:?}: the journal keeps no paths"
+            );
             let purges = repository
                 .oplog()
                 .entries()

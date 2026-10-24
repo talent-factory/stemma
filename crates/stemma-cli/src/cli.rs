@@ -781,8 +781,10 @@ fn purge_text(plan: &PurgePlan) -> String {
 }
 
 /// What a purge did: the snapshot that came first, a line with the blob and the `purge` entries,
-/// and the lines of [`plan_lines`]. `done` says what was done: the purge, or its end. Returns the
-/// line with the entries as well, for an error of the output.
+/// the lines of [`plan_lines`], and the paths at which the history held the blob, with the advice
+/// to exclude them: a file that is still there is untracked now, but `track .` would save the
+/// secret again (ADR-014). `done` says what was done: the purge, or its end. Returns the line
+/// with the entries as well, for an error of the output.
 fn purged_text(done: &str, purged: &Purged) -> (String, String) {
     let numbers: Vec<String> = purged
         .entries()
@@ -797,11 +799,20 @@ fn purged_text(done: &str, purged: &Purged) -> (String, String) {
         "{done} blob {} as {entries} of the operation log",
         purged.plan().blob()
     );
-    let text = format!(
+    let mut text = format!(
         "{}{made}\n{}",
         saved_text(purged.snapshot()),
         plan_lines(purged.plan())
     );
+    if !purged.paths().is_empty() {
+        text.push_str(
+            "The secret was at these paths; a file that is still there is untracked now, but \
+             `track .` saves it again, so name it in `.stemmaignore` or remove it:\n",
+        );
+        for path in purged.paths() {
+            text.push_str(&format!("    path {}\n", escape_path(path)));
+        }
+    }
     (made, text)
 }
 

@@ -410,10 +410,11 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       moves any set of pointers in one entry are open. `commit` has a function for its two
       pointers (a branch and the working-copy commit); a third kind of operation, such as a
       merge, decides the general form.
-- [ ] `write_replacing` reports a failure to flush the directory as `NotFlushed` only if the
-      directory cannot be opened for the flush (`StoreError::Io`); any other error of the flush
-      after the rename becomes `RefError::Store`, so a move that was made is reported as one that
-      was not. It is older than `commit` and applies to every move.
+- [x] `write_replacing` reported a failure to flush the directory as `NotFlushed` only for a
+      `StoreError::Io` and turned any other error into `RefError::Store`, so a move that was made
+      could have been reported as one that was not. The flush gives only `StoreError::Io`, so
+      the other branch was dead; the references now take the error of the file system
+      (`flush_directory`), and every failed flush after a rename is `NotFlushed` (STEMMA-77).
 - [ ] If both moves of a `commit` are not flushed, the error names the first directory only, and
       if the second move fails after the first was not flushed, `PartlyMoved` does not carry the
       flush error of the first. The caller may not repeat the change in either case.
@@ -447,7 +448,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       restored from a backup of `.stemma`.
 - [x] A cleanup of `tmp/`: names that stay after a failed or interrupted write, of the log and of
       the references. The writer that takes the lock removes them (STEMMA-31).
-- [ ] Restoring: what `stemma op restore` does when the working directory has changed since, and
+- [x] Restoring: what `stemma op restore` does when the working directory has changed since, and
       the entry that the restore writes (STEMMA-28). Decided in ADR-013 and implemented (STEMMA-28).
 - [ ] Who may read the log (ADR-003): it holds IDs and the actor, no paths, but it makes
       commits reachable that a role may not be allowed to see.

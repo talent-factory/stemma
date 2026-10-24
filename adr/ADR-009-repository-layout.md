@@ -84,13 +84,17 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   links are not seen: one that led to the directory of a process that a program started without
   such a `PWD`, as `subprocess.run(cwd=...)` does, and one to the root of a repository itself,
   which is no detour.
-  A `.stemma` found above `start` must be trusted: on Unix the effective user of the process
-  owns it (`OtherOwner` otherwise), as Git checks for `safe.directory`; on Windows, where `std`
-  gives no owner, it must not be at the root of a volume, where every user may create directories
-  (`AtVolumeRoot`). A user could otherwise put a `.stemma` into a shared directory such as
-  `/tmp`, and a command run below it would save the files that its tree names into the store of
-  that user. A refused repository is still opened when `-C` names its own directory, and the
-  message gives that call. Every command but `init` uses the search, and the paths of `track`
+  A `.stemma` that the search finds must be trusted. On Unix the effective user of the process
+  owns it (`OtherOwner` otherwise), as Git checks for `safe.directory`, at `start` as well as
+  above it (STEMMA-77): `-C` defaults to the current directory, so `cd /tmp` and a command there
+  would otherwise open a `/tmp/.stemma` of another user. A user could otherwise put a `.stemma`
+  into a shared directory such as `/tmp`, and a command run in it or below it would save the
+  files that its tree names into the store of that user. There is no way around the check, and
+  the message says to run the command as the owner. On Windows, where `std` gives no owner, a
+  `.stemma` above `start` must not be at the root of a volume, where every user may create
+  directories (`AtVolumeRoot`); one at `start` is opened there, as `-C` reaches the root of a
+  volume only when it names it, and the message gives that call.
+  Every command but `init` uses the search, and the paths of `track`
   are relative to the directory of `-C`, as in Git: a `..` at their start leads up to the root
   and not beyond, and any other `..` is refused as before, since it may follow a link. Neither
   the search nor `..` crosses the root, so a nested repository is a repository of its own.
@@ -121,10 +125,15 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       repository, and `update_branch` and `set_head` use it themselves.
 - [x] Finding the repository from a subdirectory: `Repository::discover` (STEMMA-72), see
       Consequences.
-- [ ] The search checks only a `.stemma` that it finds above the start; one at the start itself
-      is opened as before, so `cd /tmp` and a command there opens a `/tmp/.stemma` of another
-      user. Git checks that case as well and has a list of trusted directories
-      (`safe.directory`); decide whether stemma needs both when several users share a machine.
+- [x] The owner of a `.stemma` at the start: checked on Unix as well, so `cd /tmp` does not
+      open a `/tmp/.stemma` of another user (STEMMA-77), see Consequences.
+- [ ] The owner is checked on the path, before `open` and, at the start, after it too, and not
+      on a handle that `open` holds. A `.stemma` that appears or is swapped between the checks
+      and the open is therefore read before it is refused, and a `format` that is a FIFO would
+      block that read. Closing it needs `O_NOFOLLOW`, the owner of that handle (`fstat`), and a
+      `read_format` that refuses anything but a regular file (STEMMA-88).
+- [ ] A list of trusted directories, as Git's `safe.directory`, for a repository that several
+      users share on one machine; it needs the configuration file below.
 - [ ] On Windows only the root of a volume is refused; other places that all users may write,
       such as `C:\Users\Public`, stay open until the owner is checked by its SID (STEMMA-73).
 - [x] Removing a stale `.stemma-init-*` directory: the next writer that takes the lock removes

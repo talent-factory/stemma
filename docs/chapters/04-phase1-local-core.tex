@@ -12,7 +12,7 @@ Commits erzeugt und der Status angezeigt.
 \item Referenzen für den Branch \type{main} und HEAD.
 \item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
 \item Befehle \type{init}, \type{track} (statt \type{add}), \type{commit}, \type{status},
-\type{op log} und \type{op restore}.
+\type{op log}, \type{op restore}, \type{op verify} und \type{purge}.
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
 \item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines
 Zeigers geschrieben werden (ADR-011).
@@ -25,9 +25,14 @@ Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher, Ref
 damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
 Ein Befehl findet sein Repository auch aus einem Unterverzeichnis: \type{Repository::discover}
 nimmt das Repository im Startverzeichnis oder sonst das nächste darüber, wie Git.
-Ein \type{.stemma}, das die Suche oberhalb findet, muss dem Benutzer gehören, der den Befehl
+Ein \type{.stemma}, das die Suche findet, muss dem Benutzer gehören, der den Befehl
 ausführt, damit niemand mit einem \type{.stemma} in einem geteilten Verzeichnis die Befehle
-anderer abfängt. Die Pfade von \type{track} sind dann relativ zum Unterverzeichnis.
+anderer abfängt. Unter Unix gilt das auch für ein \type{.stemma} im Startverzeichnis,
+denn \type{-C} ist ohne Angabe das aktuelle Verzeichnis: Nach \type{cd /tmp} öffnet ein
+Befehl kein \type{/tmp/.stemma} eines anderen Benutzers.
+Unter Windows, wo \type{std} keinen Besitzer liefert, wird nur ein \type{.stemma} oberhalb
+im Wurzelverzeichnis eines Laufwerks abgelehnt.
+Die Pfade von \type{track} sind relativ zum Unterverzeichnis.
 
 \starttyping
 .stemma/
@@ -850,6 +855,8 @@ oder etwas erreicht, das er löscht; sonst bricht er ab.
 
 Mit \type{--apply} wird der Purge gemacht.
 Die erste Zeile nennt den Eintrag des Purge, darunter stehen dieselben Zeilen wie im Plan.
+Zuletzt nennt der Purge die Pfade, an denen der Verlauf den Blob hielt,
+und rät, sie in \type{.stemmaignore} aufzunehmen.
 Danach zeigt \type{op log} den Eintrag \type{purge} und die beiden Stubs,
 und die Datei mit dem Schlüssel ist nicht mehr verfolgt:
 
@@ -857,6 +864,10 @@ und die Datei mit dem Schlüssel ist nicht mehr verfolgt:
 $ stemma purge b3:4cbc…156b --apply
 Purged blob b3:4cbc…156b as entry 9 of the operation log
     ...
+    delete blob b3:4cbc…156b
+The secret was at these paths; a file that is still there is untracked now,
+but `track .` saves it again, so name it in `.stemmaignore` or remove it:
+    path .env
 $ stemma op log
 9  2026-10-24T05:54:35Z  human daniel  purge
     commits 3  stubs 7-8
@@ -884,7 +895,10 @@ ist der Ausgang jedes Eintrags vor dem jüngsten Stub unbekannt.
 Deshalb tragen die Einträge 1 bis 6 nun die Zeile mit dem Fragezeichen,
 und ein Restore eines solchen Eintrags braucht \type{--force}.
 Die Datei \type{.env} bleibt im Verzeichnis;
-ein späteres \type{track} nähme sie wieder auf, wenn \type{.stemmaignore} sie nicht ausschliesst.
+ein späteres \type{track .} nähme sie wieder auf,
+wenn \type{.stemmaignore} sie nicht ausschliesst. Deshalb nennt der Purge ihren Pfad.
+Eine dauerhafte Liste der entfernten Blobs, die \type{track} prüft, folgt später (ADR-014).
+Ein mit \type{--resume} beendeter Purge nennt keine Pfade, denn das Journal hält sie nicht fest.
 
 \startinfobox
 {\bf Stubs im Log.}
@@ -1123,15 +1137,12 @@ Plan einen Purge ab, der mehr als $2^{24}$ Einträge ersetzen würde.
 
 \section{Offene Fragen}
 
-\startitemize
-\item Dateirechte: Ob ausser dem Ausführbit weitere Metadaten gespeichert werden.
-Das Ausführbit gehört zum Dateimodus (ADR-010).
-\item Symbolische Links: Ein Link wird als sein Ziel gespeichert (ADR-010).
-Offen ist, ob ein Ziel gespeichert werden darf, das kein UTF-8 ist.
-\stopitemize
-
-Zwei Fragen der Phase sind entschieden (STEMMA-9). Einen Index als Datei gibt es nicht, denn die
-Arbeitskopie ist ein Commit; das Textformat \type{stemma-index 1} gilt nur, falls der Index
-später als Cache gespeichert wird (ADR-005). Aufbewahrung und Garbage Collection kommen in einer
+Die Fragen der Phase sind entschieden.
+Vom Dateimodus speichert Stemma nur das Ausführbit, weitere Rechte und Metadaten nicht
+(ADR-010). Ein symbolischer Link wird als sein Ziel gespeichert, und ein Ziel, das kein UTF-8
+ist, lehnt der Snapshot in Phase~1 ab (STEMMA-77).
+Einen Index als Datei gibt es nicht, denn die Arbeitskopie ist ein Commit (STEMMA-9);
+das Textformat \type{stemma-index 1} gilt nur, falls der Index später als Cache gespeichert
+wird (ADR-005). Aufbewahrung und Garbage Collection kommen in einer
 späteren Phase in einem Schritt, gemessen an einer echten Session eines Agenten (ADR-007,
 ADR-011); bis dahin wächst der Speicher nur.

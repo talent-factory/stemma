@@ -18,7 +18,7 @@ pub(crate) use journal::fuzz as fuzz_journal;
 pub use apply::{Aborted, ApplyPurgeError, PurgeFailure, PurgeStep, Purged};
 pub use journal::JournalError;
 
-use std::collections::{hash_map, HashMap, HashSet};
+use std::collections::{hash_map, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
@@ -305,6 +305,14 @@ impl NewObject {
     }
 }
 
+/// Where a tree holds the blob: the names of its entries that are the blob, and the names and IDs
+/// of its subtrees that hold it.
+#[derive(Debug, Clone)]
+struct Places {
+    files: Vec<String>,
+    directories: Vec<(String, TreeId)>,
+}
+
 /// Rewrites commits and trees in memory, with a memo, so that each object is read and rewritten
 /// once. It keeps the links of every commit and tree it has seen, old and new, so that the walk of
 /// what is kept does not read the history a second time.
@@ -317,6 +325,8 @@ struct Planner<'a> {
     tree_links: HashMap<TreeId, (Vec<TreeId>, bool)>,
     /// The new trees, by their IDs.
     new_trees: HashMap<TreeId, Tree>,
+    /// Where each tree that holds the blob holds it, for [`paths`](Self::paths).
+    places: HashMap<TreeId, Places>,
     /// Every commit that was looked at, with the ID of its new version (the same ID if it does
     /// not change).
     commits: HashMap<CommitId, CommitId>,
@@ -336,6 +346,7 @@ impl<'a> Planner<'a> {
             trees: HashMap::new(),
             tree_links: HashMap::new(),
             new_trees: HashMap::new(),
+            places: HashMap::new(),
             commits: HashMap::new(),
             commit_links: HashMap::new(),
             new_commits: HashMap::new(),
@@ -412,11 +423,14 @@ impl<'a> Planner<'a> {
         let mut old_subtrees = Vec::new();
         let mut new_subtrees = Vec::new();
         let mut entries = Vec::with_capacity(tree.entries().len());
+        let mut files = Vec::new();
+        let mut directories = Vec::new();
         for entry in tree.entries() {
             if FileMode::from_entry_mode(entry.mode()).is_some() {
                 if entry.id() == self.blob.object_id() {
                     changed = true;
                     holds_blob = true;
+                    files.push(entry.name().to_owned());
                 } else {
                     entries.push(entry.clone());
                 }
@@ -431,6 +445,7 @@ impl<'a> Planner<'a> {
                 }
                 Some(new) => {
                     changed = true;
+                    directories.push((entry.name().to_owned(), subtree));
                     if !self.new_trees[&new].entries().is_empty() {
                         entries.push(
                             TreeEntry::directory(entry.name(), new)
@@ -446,12 +461,47 @@ impl<'a> Planner<'a> {
             self.trees.insert(id, None);
             return Ok(None);
         }
+        self.places.insert(id, Places { files, directories });
         let new = Tree::new(entries).expect("the entries of a valid tree");
         let new_id = new.id();
         self.tree_links.insert(new_id, (new_subtrees, false));
         self.new_trees.insert(new_id, new);
         self.trees.insert(id, Some(new_id));
         Ok(Some(new_id))
+    }
+
+    /// The paths at which the commits that the plan rewrites held the blob, sorted and each
+    /// once. A tree that only the store holds names no path, so it adds none.
+    fn paths(&self) -> Vec<String> {
+        let mut paths = BTreeSet::new();
+        let mut seen = HashSet::new();
+        let mut pending: Vec<(TreeId, String)> = self
+            .rewrites
+            .iter()
+            .map(|(old, _)| (self.commit_links[old].0, String::new()))
+            .collect();
+        let join = |prefix: &str, name: &str| {
+            if prefix.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{prefix}/{name}")
+            }
+        };
+        while let Some((tree, prefix)) = pending.pop() {
+            let Some(Places { files, directories }) = self.places.get(&tree) else {
+                continue;
+            };
+            if !seen.insert((tree, prefix.clone())) {
+                continue;
+            }
+            paths.extend(files.iter().map(|name| join(&prefix, name)));
+            pending.extend(
+                directories
+                    .iter()
+                    .map(|(name, subtree)| (*subtree, join(&prefix, name))),
+            );
+        }
+        paths.into_iter().collect()
     }
 
     /// Looks at every tree and commit in the store that the walk from the roots did not reach, so
@@ -1270,6 +1320,35 @@ mod tests {
         let plan = plan(&repository);
         let old: HashSet<CommitId> = plan.rewrites().iter().map(|(old, _)| *old).collect();
         assert_eq!(old.len(), plan.rewrites().len(), "each commit once");
+    }
+
+    #[test]
+    fn the_paths_name_every_place_of_the_blob_in_the_history_once() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a/b/key", SECRET);
+        write(&dir, "key.bak", SECRET);
+        write(&dir, "c.txt", "kept");
+        track(&repository, &["."]);
+        let first = commit(&repository, "first");
+        // A later commit moves the secret to a new place and keeps the old ones.
+        write(&dir, "d/key", SECRET);
+        track(&repository, &["d/key"]);
+        let second = commit(&repository, "second");
+        let mut planner = Planner::new(repository.objects(), BlobId::new(secret()));
+        planner.commit(second).unwrap();
+        assert!(planner.rewrites.iter().any(|(old, _)| *old == first));
+        assert_eq!(planner.paths(), ["a/b/key", "d/key", "key.bak"]);
+    }
+
+    #[test]
+    fn a_blob_in_no_commit_has_no_path() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        repository.objects().put_blob(&Blob::new(SECRET)).unwrap();
+        let mut planner = Planner::new(repository.objects(), BlobId::new(secret()));
+        planner.scan().unwrap();
+        assert!(planner.paths().is_empty());
     }
 
     #[test]

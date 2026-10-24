@@ -156,10 +156,17 @@ fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
         "{}",
         result.stdout
     );
+    // The file stays in the directory, so the purge names its path and says how to keep it out.
+    let [.., delete, advice, path] = lines.as_slice() else {
+        panic!("{}", result.stdout);
+    };
+    assert_eq!(*delete, format!("    delete blob {}", secret()));
     assert_eq!(
-        lines.last(),
-        Some(&format!("    delete blob {}", secret()).as_str())
+        *advice,
+        "The secret was at these paths; a file that is still there is untracked now, but \
+         `track .` saves it again, so name it in `.stemmaignore` or remove it:"
     );
+    assert_eq!(*path, "    path key");
     assert!(lines.iter().any(|line| line.starts_with("    rewrite ")));
     assert!(
         !object_path(dir.path(), &secret()).exists(),
