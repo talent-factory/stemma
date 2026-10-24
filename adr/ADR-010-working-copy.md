@@ -79,7 +79,9 @@ art, not a template (ADR-015).
   - *Empty* means the same tree as the commit it follows. The tracked set is the tree, so a tree
     without the files would leave every file untracked.
   - `commit` takes a snapshot of the tracked files first, so that a change since the last command
-    is part of the commit. The snapshot is an operation of its own and has its own entry.
+    is part of the commit. The snapshot is an operation of its own and has its own entry. A
+    failure after a snapshot that wrote an entry carries that entry
+    (`CommitError::AfterSnapshot`), and the message names it, as for `status` and `op restore`.
   - The named commit `W'` is the working-copy commit `W` with the message, the actor, and the time
     now: the parents and the change ID are kept. The new working-copy commit `N` has `W'` as its
     only parent, the tree of `W'`, an empty message, and a new change ID.

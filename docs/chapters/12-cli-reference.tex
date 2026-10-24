@@ -466,7 +466,16 @@ Mit Exit-Code 1 endet er auch, wenn nichts zu committen ist, weil der Baum der d
 (beim ersten Commit: leer), und wenn der Branch nicht beim Elternteil des Working-Copy-Commits
 steht, weil ihn jemand bewegt hat. Der Befehl lehnt dann ab, statt zu verwerfen, was der Branch hat;
 ein Rebase kommt in Phase 3. Diese beiden Fälle lassen den Snapshot zurück, und ein erneuter
-Aufruf ist unbedenklich. Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das,
+Aufruf ist unbedenklich.
+Hat der Snapshot einen Eintrag geschrieben, nennt ihn jede Meldung, die danach kommt, am Ende:
+
+\starttyping
+stemma: the branch `main` is at b3:4a0b66..., but the working-copy commit is based on
+b3:9c1d2e...; committing would leave out what the branch has; the working copy was saved
+first as entry 12
+\stoptyping
+
+Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das,
 und der Aufruf lässt sich wiederholen. Scheitert die Zeigerbewegung, nachdem der Eintrag im Log
 steht, endet der Befehl mit Exit-Code 1, hat nichts verschoben und hinterlässt einen Eintrag für
 eine Zeigerbewegung, die nicht stattfand. Liegt das Verzeichnis in keinem Repository,
