@@ -1,0 +1,28 @@
+# Configuration of `cargo deny check` (STEMMA-33): licenses, advisories, bans, and sources of the
+# dependency tree.
+
+[advisories]
+# A crate that is unmaintained or yanked fails the check as well as one with a vulnerability.
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+# The licenses that a dependency may carry. A dependency with a choice of licenses passes when
+# one of them is listed here.
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+confidence-threshold = 0.93
+
+[licenses.private]
+# The crates of the workspace are not published (`publish = false`), so their own license is not
+# checked.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# A path dependency inside the workspace has no version and is not a wildcard in that sense.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

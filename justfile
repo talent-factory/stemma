@@ -156,6 +156,13 @@ coverage:
 coverage-html:
     cargo llvm-cov --workspace --html --open
 
+# Check the dependency tree: known vulnerabilities, licenses, bans, and sources (see `deny.toml`;
+# needs `cargo install cargo-audit cargo-deny --locked`).
+[group('Quality')]
+deps:
+    cargo audit
+    cargo deny check
+
 # ─────────────────────────── Documentation ─────────────────────────────────
 
 # Build API documentation (rustdoc) and open it in the browser.
