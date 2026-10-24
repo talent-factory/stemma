@@ -20,6 +20,7 @@ use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::index::path_problem;
 use crate::object::{name_problem, FileMode, NameProblem, GIT_DIR};
 use crate::oplog::{Entry, OperationName};
+use crate::store::is_checkout_temp_name;
 use crate::{Actor, Authorizer};
 
 /// The operation that the log records for tracking files.
@@ -167,7 +168,7 @@ pub fn normalize_path_in(subdirectory: &str, path: &str) -> String {
 /// file below a directory that they exclude is left out.
 fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Tracked>, TrackError> {
     let mut named = BTreeSet::new();
-    let mut below = BTreeSet::new();
+    let mut below = Found::default();
     for path in paths {
         if path == "." {
             // The working directory itself: every file below it. It may be a link to the
@@ -194,6 +195,9 @@ fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Trac
         if path.split('/').any(is_git_dir) {
             return Err(TrackError::GitDirectory { path: path.clone() });
         }
+        if path.split('/').any(is_checkout_temp_name) {
+            return Err(TrackError::CheckoutLeftover { path: path.clone() });
+        }
         if let Some(line) = rules.matching(path, metadata.is_dir()) {
             return Err(TrackError::Excluded {
                 path: path.clone(),
@@ -207,7 +211,7 @@ fn expand(root: &Path, paths: &[String], rules: &IgnoreRules) -> Result<Vec<Trac
         }
     }
     let named_files = named.iter().map(|path| (path, true));
-    let found_files = below.iter().map(|path| (path, false));
+    let found_files = below.files.iter().map(|path| (path, false));
     let mut files: Vec<Tracked> = named_files
         .chain(found_files)
         .map(|(path, named)| Tracked {
@@ -288,6 +292,15 @@ fn check_spelling(root: &Path, path: &str) -> Result<(), TrackError> {
     Ok(())
 }
 
+/// What [`walk`] finds below a directory.
+#[derive(Debug, Default)]
+pub(super) struct Found {
+    /// The paths of the files that the rules do not exclude.
+    pub(super) files: BTreeSet<String>,
+    /// The paths of the temporary files that a checkout left behind ([`is_checkout_temp_name`]).
+    pub(super) leftovers: BTreeSet<String>,
+}
+
 /// Collects the paths of the files below a directory that the rules do not exclude. A directory is
 /// listed with the names sorted, and an explicit stack replaces the recursion, so that a deep tree
 /// cannot exhaust the stack.
@@ -295,7 +308,7 @@ pub(super) fn walk(
     dir: PathBuf,
     prefix: &str,
     rules: &IgnoreRules,
-    found: &mut BTreeSet<String>,
+    found: &mut Found,
 ) -> Result<(), TrackError> {
     let mut pending = vec![(dir, prefix.to_owned())];
     while let Some((dir, prefix)) = pending.pop() {
@@ -317,6 +330,13 @@ pub(super) fn walk(
             // The metadata of Git is left out at every depth, as a link file of a worktree or a
             // submodule is, and no pattern can lift that (ADR-012).
             if is_git_dir(name) {
+                continue;
+            }
+            // A temporary file of a checkout that a killed process left holds the content of an
+            // old blob, perhaps a secret that was purged since: it is never a file to track, and
+            // it is listed so that a person can remove it (ADR-013).
+            if is_checkout_temp_name(name) {
+                found.leftovers.insert(path);
                 continue;
             }
             let problem = name_problem(name);
@@ -343,7 +363,7 @@ pub(super) fn walk(
             if metadata.is_dir() {
                 pending.push((full, path));
             } else {
-                found.insert(path);
+                found.files.insert(path);
             }
         }
     }
@@ -414,6 +434,12 @@ pub enum TrackError {
         /// The path as it was given.
         path: String,
     },
+    /// A part of the path is a temporary file that a checkout left when its process was killed
+    /// (ADR-013), which `track` always leaves out: it holds the content of an old blob.
+    CheckoutLeftover {
+        /// The path as it was given.
+        path: String,
+    },
     /// `.stemmaignore` cannot be read, is not a regular file, changed while it was read, or is not
     /// valid. Nothing is tracked, as a rule that cannot be read must not become "exclude
     /// nothing".
@@ -452,6 +478,7 @@ impl TrackError {
             | Self::InvalidName { .. }
             | Self::Excluded { .. }
             | Self::GitDirectory { .. }
+            | Self::CheckoutLeftover { .. }
             | Self::NotFound { .. }
             | Self::Spelling { .. } => None,
         }
@@ -506,6 +533,12 @@ impl fmt::Display for TrackError {
             Self::GitDirectory { path } => write!(
                 f,
                 "`{}` is part of the metadata of Git, which `track` always leaves out",
+                path.escape_debug()
+            ),
+            Self::CheckoutLeftover { path } => write!(
+                f,
+                "`{}` is a temporary file that an interrupted `op restore` left, which `track` \
+                 always leaves out; remove it",
                 path.escape_debug()
             ),
             Self::Ignore(error) => write!(f, "{error}; nothing was tracked"),
@@ -1369,6 +1402,37 @@ mod tests {
         let tracking = track(&repository, &["."]).unwrap();
 
         assert_eq!(tracking.added, ["a.txt", "vendor/lib/x.txt"]);
+    }
+
+    #[test]
+    fn a_file_that_an_interrupted_checkout_left_is_never_tracked() {
+        // It holds the content of an old blob, which may be a secret that was purged since.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let left = ".stemma-checkout-4711-3-0123456789abcdef";
+        write(&dir, "a.txt", "a");
+        write(&dir, left, "key=hunter2");
+        write(&dir, &format!("d/{left}"), "old");
+        // A name of the working copy with the same start is an ordinary file.
+        write(&dir, ".stemma-checkout-notes", "n");
+        let tracking = track(&repository, &["."]).unwrap();
+        assert_eq!(tracking.added, [".stemma-checkout-notes", "a.txt"]);
+        // `.stemmaignore` cannot bring it back, and a name of it is an error.
+        ignore(&dir, "");
+        for path in [left.to_owned(), format!("d/{left}")] {
+            let error = track(&repository, &[&path]).unwrap_err();
+            assert!(
+                matches!(&error, TrackError::CheckoutLeftover { path: at } if *at == path),
+                "{error}"
+            );
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "`{path}` is a temporary file that an interrupted `op restore` left, which \
+                     `track` always leaves out; remove it"
+                )
+            );
+        }
     }
 
     #[test]

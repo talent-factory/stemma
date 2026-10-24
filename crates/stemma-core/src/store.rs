@@ -1121,13 +1121,29 @@ pub(crate) fn scratch_left(root: &Path) -> Vec<PathBuf> {
 /// The prefix of the temporary directory that `init` builds next to its final place (ADR-009).
 pub(crate) const INIT_STAGING_PREFIX: &str = ".stemma-init-";
 
+/// The prefix of the temporary file that a checkout writes next to its target before it renames
+/// it into place (ADR-013).
+pub(crate) const CHECKOUT_TEMP_PREFIX: &str = ".stemma-checkout-";
+
 /// Whether `name` is exactly a name that `init` gives its temporary directory: the prefix
-/// [`INIT_STAGING_PREFIX`] and a name of [`unique_temp_name`], which is a decimal process ID, a
-/// decimal counter, and 16 lowercase hexadecimal digits, separated by `-`. A name of the working
-/// copy such as `.stemma-init-notes` is not one.
+/// [`INIT_STAGING_PREFIX`] and a name of [`unique_temp_name`]. A name of the working copy such as
+/// `.stemma-init-notes` is not one.
 pub(crate) fn is_init_staging_name(name: &str) -> bool {
+    is_scratch_name(name, INIT_STAGING_PREFIX)
+}
+
+/// Whether `name` is exactly a name that a checkout gives its temporary file: the prefix
+/// [`CHECKOUT_TEMP_PREFIX`] and a name of [`unique_temp_name`]. A process that is killed between
+/// writing and renaming the file leaves it behind, with the content of an old blob (ADR-013).
+pub(crate) fn is_checkout_temp_name(name: &str) -> bool {
+    is_scratch_name(name, CHECKOUT_TEMP_PREFIX)
+}
+
+/// Whether `name` is `prefix` followed by a name of [`unique_temp_name`]: a decimal process ID, a
+/// decimal counter, and 16 lowercase hexadecimal digits, separated by `-`.
+fn is_scratch_name(name: &str, prefix: &str) -> bool {
     let decimal = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    let Some(rest) = name.strip_prefix(INIT_STAGING_PREFIX) else {
+    let Some(rest) = name.strip_prefix(prefix) else {
         return false;
     };
     let mut parts = rest.split('-');
@@ -1281,6 +1297,10 @@ mod tests {
         let made = format!("{INIT_STAGING_PREFIX}{}", unique_temp_name());
         assert!(is_init_staging_name(&made), "{made}");
         assert!(is_init_staging_name(".stemma-init-1-0-0123456789abcdef"));
+        let made = format!("{CHECKOUT_TEMP_PREFIX}{}", unique_temp_name());
+        assert!(is_checkout_temp_name(&made), "{made}");
+        assert!(!is_checkout_temp_name(".stemma-checkout-notes"));
+        assert!(!is_init_staging_name(&made), "the prefixes are told apart");
         for name in [
             ".stemma-init-",
             ".stemma-init-notes",

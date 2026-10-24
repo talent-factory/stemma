@@ -13,7 +13,7 @@ use std::fmt;
 use std::io;
 
 use super::snapshot::{read_commit, read_object, tracked_files};
-use super::track::walk;
+use super::track::{walk, Found};
 use super::{Repository, SnapshotError, TrackError, UpdateError};
 use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::object::{CommitId, EntryMode, Kind, Tree, TreeEntry, TreeId};
@@ -90,6 +90,10 @@ pub struct Status {
     /// that no pattern of `.stemmaignore` excludes, sorted by path. A directory is not listed,
     /// its files are.
     pub untracked: Vec<String>,
+    /// The temporary files that a checkout left when its process was killed, sorted by path
+    /// (ADR-013). They hold the content of an old blob, which may be a secret that was purged
+    /// since; nothing tracks them, and a person removes them.
+    pub leftovers: Vec<String>,
     /// The snapshot that this call made, or `None` if the tracked files were as the working-copy
     /// commit has them.
     pub snapshot: Option<Saved>,
@@ -139,7 +143,7 @@ impl Repository {
             .map_err(StatusError::Update)?;
         // What does not depend on the snapshot is read first, so that its failures leave nothing.
         let rules = IgnoreRules::read(self.path()).map_err(StatusError::Ignore)?;
-        let mut found = BTreeSet::new();
+        let mut found = Found::default();
         walk(self.path().to_path_buf(), "", &rules, &mut found).map_err(StatusError::Walk)?;
         let saved = match self.snapshot(actor, authorizer) {
             Ok(entry) => entry.map(|entry| Saved { entry, late: None }),
@@ -156,7 +160,8 @@ impl Repository {
                 working_copy,
                 parent,
                 changes,
-                untracked: found.difference(&tracked).cloned().collect(),
+                untracked: found.files.difference(&tracked).cloned().collect(),
+                leftovers: found.leftovers.into_iter().collect(),
                 snapshot: saved,
             }),
             Err(Failure::Refs(source)) => Err(StatusError::Refs {
@@ -694,6 +699,57 @@ mod tests {
         let status = status(&repository);
 
         assert_eq!(status.untracked, ["a.txt"]);
+    }
+
+    #[test]
+    fn a_leftover_that_a_tree_holds_already_stays_tracked_and_is_listed() {
+        // As in a repository where an older version tracked it: the snapshot keeps it, as for
+        // `.git` (ADR-012), and `status` names it so that a person removes it.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let left = ".stemma-checkout-4711-3-0123456789abcdef";
+        write(&dir, left, "key=hunter2");
+        // The step that an older `track` made: put the file into the tree of the working copy.
+        let operation = OperationName::new("track").unwrap();
+        repository
+            .replace_working_copy(&operation, &actor(), &AllowAll, |_| {
+                Ok::<_, SnapshotError>(vec![super::super::snapshot::Tracked {
+                    path: left.to_owned(),
+                    mode: crate::object::FileMode::File,
+                    named: true,
+                }])
+            })
+            .unwrap();
+
+        let status = status(&repository);
+
+        assert!(status.changes.iter().any(|change| change.path == left));
+        assert_eq!(status.leftovers, [left]);
+        assert!(status.untracked.is_empty());
+    }
+
+    #[test]
+    fn a_file_that_an_interrupted_checkout_left_is_listed_apart() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "a");
+        write(
+            &dir,
+            "d/.stemma-checkout-4711-3-0123456789abcdef",
+            "key=hunter2",
+        );
+        write(&dir, ".stemma-checkout-1-0-fedcba9876543210", "old");
+
+        let status = status(&repository);
+
+        assert_eq!(status.untracked, ["a.txt"]);
+        assert_eq!(
+            status.leftovers,
+            [
+                ".stemma-checkout-1-0-fedcba9876543210",
+                "d/.stemma-checkout-4711-3-0123456789abcdef"
+            ]
+        );
     }
 
     #[test]
