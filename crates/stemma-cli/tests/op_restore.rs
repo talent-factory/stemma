@@ -68,6 +68,30 @@ fn the_old_state_comes_back_and_the_output_says_how_to_undo_it() {
 }
 
 #[test]
+fn a_commit_after_a_restore_before_a_commit_is_refused_and_finishes_nothing() {
+    // The restored working-copy commit is an older version of the one that the second commit
+    // named; the log says that commit took effect, so it did not stop between its moves.
+    let (dir, snapshot) = two_commits();
+    ok(
+        dir.path(),
+        &["op", "restore", &snapshot.to_string(), "--actor", ACTOR],
+    );
+    let entries = numbers(dir.path()).len();
+
+    let result = run(dir.path(), &["commit", "-m", "third", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.contains("the branch `main` is at"),
+        "{}",
+        result.stderr
+    );
+    assert!(!result.stderr.contains("warning"), "{}", result.stderr);
+    assert_eq!(numbers(dir.path()).len(), entries);
+}
+
+#[test]
 fn an_unsaved_change_is_saved_first_and_named() {
     let (dir, snapshot) = two_commits();
     write(dir.path(), "a.txt", "scratch");

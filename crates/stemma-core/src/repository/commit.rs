@@ -13,7 +13,7 @@ use super::{now, Repository, SnapshotError, UpdateError};
 use crate::change::{ChangeId, GenerateError};
 use crate::index::Index;
 use crate::object::{Commit, CommitId};
-use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName};
+use crate::oplog::{outcomes, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome};
 use crate::refs::{BranchMove, BranchName, Head, Logged, RefError, WorkingCopyMove, WriteLock};
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
@@ -65,10 +65,12 @@ impl Repository {
     /// second, with one entry. If a stop or a failure comes between the two, the branch has the
     /// named commit and the working-copy commit is still the old one. The next call finds that
     /// state (the tip of the branch has the parents and the change ID of the working-copy commit,
-    /// and a message, which the working-copy commit has not) and finishes the first commit: it
+    /// and a message, which the working-copy commit has not, and the newest entry of a commit
+    /// moved the branch there but not the working-copy commit) and finishes the first commit: it
     /// starts the new working-copy commit and moves only that pointer, with an entry of its own.
     /// The result says [`resumed`](Committed::resumed), and the message of the second call is not
-    /// used.
+    /// used. A working-copy commit that `op restore` put back to an older version of itself looks
+    /// the same in the commits, but its entry took effect; it is [`CommitError::BranchMoved`].
     ///
     /// # Errors
     ///
@@ -84,7 +86,8 @@ impl Repository {
     /// refusal for the snapshot and every other failure of it is [`CommitError::Snapshot`].
     /// [`CommitError::Refs`] covers reading HEAD and the branch, [`CommitError::Tip`] reading the
     /// commit at the tip of the branch, [`CommitError::Store`] storing the new commits, and
-    /// [`CommitError::ChangeId`] the random source.
+    /// [`CommitError::ChangeId`] the random source, and [`CommitError::Log`] reading the log to
+    /// tell a stopped commit from a restored working copy.
     pub fn commit(
         &self,
         message: &str,
@@ -124,7 +127,8 @@ impl Repository {
             let named = read_commit(self.objects(), stopped).map_err(CommitError::Tip)?;
             let stopped_here = named.parents() == working.parents()
                 && named.change() == working.change()
-                && !named.message().is_empty();
+                && !named.message().is_empty()
+                && self.stopped_by_log(&name, stopped, current)?;
             if stopped_here {
                 return self.finish(&lock, &operation, name, &named, current, actor);
             }
@@ -223,6 +227,47 @@ impl Repository {
         })
     }
 
+    /// Whether the log says that a commit stopped between its two moves: the newest entry of a
+    /// `commit` moved `branch` to `tip` and the working-copy commit away from `current`, and
+    /// [`outcomes`] reads it as not taken. The commits alone cannot tell such a stop from a
+    /// working-copy commit that `op restore` put back to an older version of itself (ADR-013):
+    /// there the entry took effect, and a later entry moved the working-copy commit back. An
+    /// outcome that the log does not decide (behind a stub) is no stop either, so that the
+    /// message of the call is never dropped on a guess.
+    ///
+    /// The caller holds the lock of the references, so no writer is between its entry and its
+    /// moves, and the pointers are settled. Only the pointers of the entry decide its outcome;
+    /// HEAD and `branch` are the ones it can name, since a commit does not move HEAD.
+    fn stopped_by_log(
+        &self,
+        branch: &BranchName,
+        tip: CommitId,
+        current: CommitId,
+    ) -> Result<bool, CommitError> {
+        let entries = self.oplog().entries().map_err(CommitError::Log)?;
+        let Some(position) = entries.iter().rposition(|entry| {
+            entry
+                .change()
+                .is_some_and(|change| change.operation().as_str() == OPERATION)
+        }) else {
+            return Ok(false);
+        };
+        let change = entries[position].change().expect("found by its change");
+        let moved_branch = change
+            .branches()
+            .iter()
+            .any(|(name, moved)| name == branch && moved.after() == Some(&tip));
+        let left_current = change
+            .working_copy()
+            .is_some_and(|moved| moved.before() == Some(&current));
+        if !(moved_branch && left_current) {
+            return Ok(false);
+        }
+        let now = Current::new(Head::Branch(branch.clone()), [(branch.clone(), tip)], true)
+            .with_working_copy(Some(current));
+        Ok(outcomes(&entries, Some(&now))[position] == Outcome::NotTaken)
+    }
+
     /// Makes and stores the working-copy commit that follows `named`: the same tree, an empty
     /// message, and a change ID of its own.
     fn start_after(
@@ -308,6 +353,10 @@ pub enum CommitError {
     Update(UpdateError),
     /// The operating system gave no random bytes for the change ID of the new working-copy commit.
     ChangeId(GenerateError),
+    /// The log could not be read to tell a commit that stopped between its moves from a
+    /// working-copy commit that was put back to an older version of itself. Only the snapshot was
+    /// written.
+    Log(OpLogError),
 }
 
 impl CommitError {
@@ -333,6 +382,7 @@ impl CommitError {
             Self::Store(error) => error.io_error(),
             Self::Refs(error) => error.io_error(),
             Self::Update(error) => error.io_error(),
+            Self::Log(error) => error.io_error(),
             _ => None,
         }
     }
@@ -391,6 +441,7 @@ impl fmt::Display for CommitError {
             Self::Refs(error) => write!(f, "could not read the references: {error}"),
             Self::Update(error) => error.fmt(f),
             Self::ChangeId(error) => write!(f, "could not make a change ID: {error}"),
+            Self::Log(error) => write!(f, "could not read the operation log: {error}"),
         }
     }
 }
@@ -405,6 +456,7 @@ impl Error for CommitError {
             Self::Refs(error) => error.source(),
             Self::Update(error) => error.source(),
             Self::ChangeId(error) => error.source(),
+            Self::Log(error) => error.source(),
             _ => None,
         }
     }
@@ -907,6 +959,81 @@ mod tests {
         let after = commit(&repository, "after").unwrap();
         assert!(!after.resumed);
         assert_eq!(read(&repository, after.commit).parents(), [pending.named]);
+    }
+
+    #[test]
+    fn a_working_copy_that_a_restore_put_back_is_no_commit_that_stopped() {
+        // The restored working-copy commit has the parents and the change ID of the tip, and the
+        // tip has a message: the commits look like a stop between the moves, the log does not.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "one");
+        track(&repository, "a.txt");
+        let first = commit(&repository, "one").unwrap();
+        write(&dir, "a.txt", "two");
+        let snapshot = repository.snapshot(&actor(), &AllowAll).unwrap().unwrap();
+        let second = commit(&repository, "two").unwrap();
+        repository
+            .restore(snapshot.number(), false, &actor(), &AllowAll)
+            .unwrap();
+        let restored = repository.refs().working_copy().unwrap();
+        assert_eq!(read(&repository, restored).parents(), [first.commit]);
+        assert_eq!(
+            read(&repository, restored).change(),
+            read(&repository, second.commit).change()
+        );
+        let entries = repository.oplog().entries().unwrap().len();
+
+        let error = commit(&repository, "three").unwrap_err();
+
+        let CommitError::BranchMoved { tip, parents, .. } = &error else {
+            panic!("{error}");
+        };
+        assert_eq!(tip, &Some(second.commit));
+        assert_eq!(parents, &[first.commit]);
+        assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+        assert_eq!(repository.refs().working_copy().unwrap(), restored);
+        assert_eq!(
+            repository.refs().branch(&main()).unwrap(),
+            Some(second.commit)
+        );
+        // A restore of the commit itself moves the branch back too, and the commit goes through.
+        repository
+            .restore(second.entry.number(), false, &actor(), &AllowAll)
+            .unwrap();
+        write(&dir, "a.txt", "three");
+        let third = commit(&repository, "three").unwrap();
+        assert!(!third.resumed);
+        assert_eq!(read(&repository, third.commit).message(), "three");
+        assert_eq!(read(&repository, third.commit).parents(), [first.commit]);
+    }
+
+    #[test]
+    fn a_stop_that_the_log_does_not_record_is_not_finished() {
+        // The pointers of a stopped commit, set without the entry of a commit: nothing in the log
+        // says that a commit stopped, so the call does not take the message of the tip.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let pending = pending(&repository, &dir);
+        let operation = OperationName::new("branch").unwrap();
+        repository
+            .update_branch(
+                &operation,
+                &main(),
+                None,
+                pending.named,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+
+        let error = commit(&repository, "mine").unwrap_err();
+
+        assert!(
+            matches!(&error, CommitError::BranchMoved { tip, .. } if *tip == Some(pending.named)),
+            "{error}"
+        );
+        assert_eq!(repository.refs().working_copy().unwrap(), pending.working);
     }
 
     #[cfg(unix)]
