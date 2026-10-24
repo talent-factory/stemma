@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 580" font-family="Helvetica, Arial, sans-serif">
+<title>Ablauf einer Zeigerbewegung mit Absturzpunkten</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="580" height="580" fill="#FFFFFF"/>
+<!-- Steps: the bar on the left carries the colour of the zone that the step writes -->
+<g stroke="#64748B" stroke-width="1" fill="#FFFFFF">
+  <rect x="20" y="20" width="250" height="46" rx="4"/>
+  <rect x="20" y="96" width="250" height="46" rx="4"/>
+  <rect x="20" y="172" width="250" height="46" rx="4"/>
+  <rect x="20" y="248" width="250" height="46" rx="4"/>
+  <rect x="20" y="324" width="250" height="46" rx="4"/>
+  <rect x="20" y="400" width="250" height="46" rx="4"/>
+  <rect x="20" y="476" width="250" height="46" rx="4"/>
+</g>
+<g>
+  <rect x="20" y="20" width="8" height="46" fill="#64748B"/>
+  <rect x="20" y="96" width="8" height="46" fill="#64748B"/>
+  <rect x="20" y="172" width="8" height="46" fill="#64748B"/>
+  <rect x="20" y="248" width="8" height="46" fill="#6B46C1"/>
+  <rect x="20" y="324" width="8" height="46" fill="#6B46C1"/>
+  <rect x="20" y="400" width="8" height="46" fill="#2F7D32"/>
+  <rect x="20" y="476" width="8" height="46" fill="#64748B"/>
+</g>
+<g font-size="13" font-weight="bold" fill="#0F172A">
+  <text x="40" y="39">1  Sperre nehmen</text>
+  <text x="40" y="115">2  Objekte speichern</text>
+  <text x="40" y="191">3  Prüfen</text>
+  <text x="40" y="267" fill="#6B46C1">4  Eintrag schreiben</text>
+  <text x="40" y="343" fill="#6B46C1">5  <tspan font-family="Courier, monospace">oplog-tip</tspan> nachführen</text>
+  <text x="40" y="419" fill="#2F7D32">6  Zeiger bewegen</text>
+  <text x="40" y="495">7  Sperre freigeben</text>
+</g>
+<g font-size="11.5" fill="#64748B">
+  <text x="56" y="57"><tspan font-family="Courier, monospace">refs.lock</tspan> anlegen, <tspan font-family="Courier, monospace">tmp/</tspan> aufräumen</text>
+  <text x="56" y="133">Blobs, Trees und Commit</text>
+  <text x="56" y="209">Zeiger lesen, Commit prüfen</text>
+  <text x="56" y="285">in <tspan font-family="Courier, monospace">tmp/</tspan>, sichern, als n verweisen</text>
+  <text x="56" y="361">Nummer und Hash von n</text>
+  <text x="56" y="437">Branch, HEAD, Working-Copy-Commit</text>
+  <text x="56" y="513"><tspan font-family="Courier, monospace">refs.lock</tspan> entfernen</text>
+</g>
+<!-- Arrows between the steps -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="145" y1="66" x2="145" y2="94"/>
+  <line x1="145" y1="142" x2="145" y2="170"/>
+  <line x1="145" y1="218" x2="145" y2="246"/>
+  <line x1="145" y1="294" x2="145" y2="322"/>
+  <line x1="145" y1="370" x2="145" y2="398"/>
+  <line x1="145" y1="446" x2="145" y2="474"/>
+</g>
+<!-- Crash points: what remains after a crash at this point -->
+<g stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4">
+  <line x1="20" y1="157" x2="292" y2="157"/>
+  <line x1="20" y1="309" x2="292" y2="309"/>
+  <line x1="20" y1="385" x2="292" y2="385"/>
+  <line x1="20" y1="461" x2="292" y2="461"/>
+</g>
+<g font-size="12.5" font-weight="bold" fill="#B91C1C">
+  <text x="302" y="153">Absturz: kein Eintrag</text>
+  <text x="302" y="305">Absturz: Eintrag n steht</text>
+  <text x="302" y="381">Absturz: Eintrag und Datei stehen</text>
+  <text x="302" y="457">Absturz: Zeiger bewegt</text>
+</g>
+<g font-size="12" fill="#0F172A">
+  <text x="302" y="170">Der Zeiger ist unverändert, neue</text>
+  <text x="302" y="185">Objekte bleiben ohne Zeiger liegen.</text>
+  <text x="302" y="322"><tspan font-family="Courier, monospace">oplog-tip</tspan> nennt noch n−1; der</text>
+  <text x="302" y="337">nächste Schreiber führt sie nach.</text>
+  <text x="302" y="398">Der Zeiger hat den alten Wert. Das Log</text>
+  <text x="302" y="413">nennt den Ausgang unbekannt, bis der</text>
+  <text x="302" y="428">nächste Befehl die Sperre übernimmt.</text>
+  <text x="302" y="474">Der Eintrag stimmt; nur die Sperre</text>
+  <text x="302" y="489">bleibt liegen.</text>
+</g>
+<!-- The lock remains after every crash point -->
+<text x="302" y="528" font-size="11.5" fill="#64748B">Nach jedem Absturz bleibt <tspan font-family="Courier, monospace">refs.lock</tspan></text>
+<text x="302" y="543" font-size="11.5" fill="#64748B">liegen. Der nächste Befehl auf</text>
+<text x="302" y="558" font-size="11.5" fill="#64748B">demselben Rechner übernimmt sie.</text>
+</svg>
