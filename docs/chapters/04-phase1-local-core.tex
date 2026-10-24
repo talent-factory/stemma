@@ -629,16 +629,18 @@ und einen alten Eintrag hinter der Kette lehnt der Leser ab.
 \subsection{Den Zustand vor einem Eintrag wiederherstellen}
 
 Jeder Eintrag trägt den alten und den neuen Wert seiner Zeiger,
-also lässt sich jede Operation zurücksetzen, indem die alten Werte zurückkommen
+also lässt sich eine Operation zurücksetzen, indem die alten Werte zurückkommen
 (ADR-011, ADR-013).
 Die Zeiger allein reichen dafür nicht.
-Der Working-Copy-Commit ist der Zustand des Verzeichnisses (ADR-010);
-sonst liest der nächste Snapshot das unveränderte Verzeichnis
-und stellt den neuen Stand wieder her.
+Setzt das Restore nur sie zurück, liest der nächste Snapshot das unveränderte Verzeichnis
+und stellt den neuen Stand wieder her,
+denn der Working-Copy-Commit ist der Zustand des Verzeichnisses (ADR-010).
 Das Restore schreibt deshalb auch die Dateien des alten Baums ins Verzeichnis.
 
 In der Sitzung nimmt \type{op restore 5} den zweiten Commit zurück.
-Mit \type{--dry-run} zeigt der Befehl vorher, welche Zeiger er setzt, und schreibt nichts:
+Mit \type{--dry-run} zeigt der Befehl vorher, welche Zeiger er setzt
+und welche Dateien er schreibt oder entfernt, und schreibt nichts.
+Hier sind die beiden Bäume gleich, also stehen nur Zeiger da:
 
 \starttyping
 $ stemma op restore --dry-run 5
@@ -711,8 +713,8 @@ Unverfolgte Dateien, \type{.stemma} und \type{.git} lässt sie in Ruhe.
 \item Ein verfolgter Pfad wird auch dann zurückgesetzt,
 wenn die Ausschlussdatei ihn heute ausschliesst (ADR-012).
 \item Sie schreibt nie durch einen Link, lehnt Namen ab, die Windows nicht halten kann,
-und erkennt Namen, die auf einem Dateisystem ohne Unterscheidung der Gross- und
-Kleinschreibung zusammenfallen.
+und erkennt Namen,
+die auf einem Dateisystem ohne Unterscheidung der Gross- und Kleinschreibung zusammenfallen.
 \item Jede Datei geht über eine temporäre Datei und ein \type{rename},
 damit ein Leser die alte oder die neue Fassung sieht.
 Ist seit der Planung eine Datei im Weg aufgetaucht, bricht sie ab.
@@ -724,10 +726,14 @@ Ist seit der Planung eine Datei im Weg aufgetaucht, bricht sie ab.
 \startitemize
 \item Einen Stub und den Eintrag eines Purge lehnt es immer ab, auch mit \type{--force},
 ebenso einen Eintrag, den ein unfertiger Purge nennt.
+\item Einen Eintrag, der HEAD oder den Working-Copy-Commit erst angelegt hat,
+wie den von \type{init}, lehnt es ab, denn es gibt keinen alten Wert.
 \item Ist der Ausgang des Eintrags unbekannt, braucht es \type{--force}.
-Das gilt für jeden Eintrag vor dem jüngsten Stub
-und für den neuesten Eintrag, solange nach einem Absturz \type{refs.lock} liegt.
-Im zweiten Fall genügt auch ein anderer Befehl, der die Sperre übernimmt.
+Das gilt für jeden Eintrag vor dem jüngsten Stub,
+für einen Eintrag, dessen Zeiger jemand ausserhalb des Logs bewegt hat,
+und für den Eintrag, der einen Zeiger zuletzt bewegt hat,
+solange \type{refs.lock} liegt und der Zeiger nicht auf dem neuen Wert steht.
+Im letzten Fall genügt auch ein anderer Befehl, der schreibt und die Sperre übernimmt.
 \item Muss kein Zeiger zurück, schreibt das Restore nichts, auch keinen Eintrag.
 \item \type{--dry-run} schreibt nichts, nicht einmal den Snapshot.
 Eine ungesicherte Änderung im Verzeichnis sieht der Plan deshalb nicht.
@@ -742,13 +748,15 @@ Ein Restore hilft dagegen nicht, denn es entfernt nichts.
 Ein Purge entfernt den Schlüssel wieder (ADR-014).
 Er nimmt die ID des Blobs, der den Schlüssel enthält,
 schreibt jeden Commit um, der ihn erreicht, und löscht die alten Objekte.
+Ein Commit, dessen Baum den Blob enthält, bekommt einen Baum ohne ihn,
+und jeder Commit danach neue Eltern.
 Die Einträge des Logs, die einen umgeschriebenen Commit nennen, werden zu Stubs.
 Nur ein Mensch darf purgen, denn der Purge lässt sich nicht zurücksetzen.
 
 In der Sitzung gerät ein Zugangsschlüssel in den Verlauf.
-Die ID des Blobs ist der BLAKE3-Hash über einen Kopf und den Inhalt der Datei (ADR-001, ADR-005);
+Die ID des Blobs ist der BLAKE3-Hash über einen Kopf und den Inhalt der Datei (ADR-001, ADR-007);
 einen Befehl, der sie zu einem Pfad nennt, gibt es noch nicht.
-Ohne \type{--apply} zeigt \type{purge} nur den Plan:
+Ohne \type{--apply} zeigt \type{purge} nur den Plan und schreibt nichts:
 
 \starttyping
 $ echo "token=7f3a9c" > .env
@@ -824,7 +832,7 @@ nur die Zahl der umgeschriebenen Commits und die Nummern der Stubs als Bereiche;
 eine lange Liste verteilt sich auf mehrere Einträge.
 Weil ein Stub Zeigerbewegungen ersetzt, die niemand mehr kennt,
 ist der Ausgang jedes Eintrags vor dem jüngsten Stub unbekannt.
-Deshalb trägt Eintrag 6 nun die Zeile mit dem Fragezeichen,
+Deshalb tragen die Einträge 1 bis 6 nun die Zeile mit dem Fragezeichen,
 und ein Restore eines solchen Eintrags braucht \type{--force}.
 Die Datei \type{.env} bleibt im Verzeichnis;
 ein späteres \type{track} nähme sie wieder auf, wenn \type{.stemmaignore} sie nicht ausschliesst.
@@ -834,7 +842,8 @@ ein späteres \type{track} nähme sie wieder auf, wenn \type{.stemmaignore} sie 
 \startitemize
 \item Ein Stub behält den Hash des Rumpfs, den er ersetzt (\type{stub b3:…}).
 Damit behält er den Hash des ganzen Eintrags,
-und die Kette hält über einen Purge hinweg (\in{Abbildung}[fig:oplog-chain], ADR-014).
+und die Kette hält über einen Purge hinweg, während Zeit und Akteur weiter geschützt sind
+(\in{Abbildung}[fig:oplog-chain], ADR-014).
 \item In der Hash-Kette haben Stub und Eintrag \type{purge}
 die Version 3 der Kodierung wie jeder andere Eintrag;
 ein Stub eines Eintrags aus der Zeit vor der Kette behält die Version 2.
@@ -880,7 +889,7 @@ Solange er fehlt, ist nichts verloren:
 und ein Objekt, das der Speicher schon vorher hatte, bleibt.
 Das Format bleibt dabei 4, denn eine Version sinkt nie.
 Ist der Eintrag geschrieben, geht der Purge nur noch vorwärts, und \type{--abort} lehnt ab.
-\type{stemma purge --resume} beendet den Purge in jedem Zustand aus dem Journal.
+\type{stemma purge --resume} beendet den Purge aus dem Journal.
 Jeder Schritt lässt sich wiederholen:
 Ein Objekt, das schon da ist, bleibt, ein Zeiger auf seinem neuen Wert wird übersprungen,
 ein geschriebener Eintrag \type{purge} wird gefunden und nicht noch einmal geschrieben,
@@ -903,10 +912,9 @@ ersetzt es nur eine Datei in der alten Form, wie sie ein solcher Purge zurückl�
 
 Jeder Befehl, der schreibt, nimmt die Sperre der Referenzen,
 bevor er sein erstes Objekt schreibt, und hält sie bis zu seiner letzten Zeigerbewegung.
-Ohne diese Regel bliebe eine Lücke:
-Ein Befehl, der vor dem Journal geprüft hat und seinen Zeiger erst nach dem Purge bewegt,
-findet kein Journal mehr.
-Er kann einen Commit nennen, dessen Blob er noch einmal gespeichert hat,
+Sonst findet ein Befehl, der vor dem Journal geprüft hat
+und seinen Zeiger erst nach dem Purge bewegt, kein Journal mehr.
+Er kann dann einen Commit nennen, dessen Blob er noch einmal gespeichert hat,
 den der Purge aber inzwischen gelöscht hat.
 Hält er die Sperre schon beim Speichern, kann kein Purge beginnen, und umgekehrt.
 Ein Zähler der Purges oder eine Prüfung aller Objekte unter der Sperre
@@ -916,9 +924,10 @@ bei 10'000 Dateien etwa 0,7 Sekunden.
 
 Ctrl-C entfernt die Sperre, bevor der Prozess endet.
 Nach \type{kill -9} oder einem Absturz bleibt die Datei \type{refs.lock} liegen,
-und der nächste Befehl übernimmt sie.
-Wer die Sperre hält, hält dazu eine Sperre des Betriebssystems auf der Datei
-\type{refs.lock.guard} (ADR-008),
+und der nächste Befehl, der schreibt, übernimmt sie;
+nach einem abgebrochenen Purge tun das nur \type{--resume} und \type{--abort}.
+Wer die Sperre hält, hält dazu eine Sperre des Betriebssystems
+auf der Datei \type{refs.lock.guard} (ADR-008),
 und die gibt das Betriebssystem frei, wenn der Prozess endet, wie auch immer er endet.
 Ist diese Sperre frei und nennt \type{refs.lock} in der Form, die ihr Halter schreibt,
 diesen Rechner, war der Halter ein beendeter Prozess.
@@ -927,7 +936,7 @@ Die Regel braucht keine Frist und fragt das Betriebssystem nicht nach einer Proz
 \startinfobox
 {\bf Grenzfälle beim Übernehmen der Sperre.}
 \startitemize
-\item Nennt die Datei die Nummer des eigenen Prozesses, übernimmt er sie trotzdem:
+\item Nennt die Datei die Nummer des eigenen Prozesses, übernimmt der Befehl sie trotzdem:
 Ein früherer Prozess hatte sie,
 etwa in einem Container, in dem der Befehl stets als derselbe Prozess läuft.
 \item Eine Datei eines anderen Rechners übernimmt kein Befehl,

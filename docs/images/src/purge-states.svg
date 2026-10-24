@@ -70,7 +70,8 @@
 <g font-size="12" fill="#0F172A">
   <text x="302" y="44">Abbruch vor dem Journal: Es gibt</text>
   <text x="302" y="59">nichts fortzusetzen, der Purge lässt</text>
-  <text x="302" y="74">sich wiederholen.</text>
+  <text x="302" y="74">sich wiederholen. Ein Snapshot und</text>
+  <text x="302" y="89">das Format 4 können schon bestehen.</text>
 </g>
 <!-- Brackets: where abort and resume work -->
 <g stroke="#64748B" stroke-width="1.5" fill="none">
