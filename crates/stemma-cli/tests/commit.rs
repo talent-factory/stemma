@@ -8,11 +8,9 @@ use std::path::Path;
 use std::process::Command;
 
 use stemma_core::object::{Commit, CommitId, Kind};
-use stemma_core::oplog::OperationName;
 use stemma_core::refs::BranchName;
 use stemma_core::repository::Repository;
 use stemma_core::store::ObjectStore;
-use stemma_core::{Actor, AllowAll};
 
 use common::{operations, repository, run, stemma, track_ok, write, Dir, Run};
 
@@ -340,24 +338,20 @@ fn a_commit_that_stopped_between_its_moves_is_finished_by_the_next_one() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track_ok(dir.path(), "a.txt");
-    // The state of a stop after the move of the branch: it has the named commit, and the
-    // working-copy commit is still the one the commit was made from.
     let repository = Repository::open(dir.path()).unwrap();
-    let alice: Actor = "human alice".parse().unwrap();
     let before = repository.refs().working_copy().unwrap();
-    let working = read(&repository, before);
-    let named = working.rewrite(working.tree(), alice.clone(), 1, "stopped");
-    let named_id = repository.objects().put_commit(&named).unwrap();
-    repository
-        .update_branch(
-            &OperationName::new("commit").unwrap(),
-            &main_branch(),
-            None,
-            named_id,
-            &alice,
-            &AllowAll,
-        )
-        .unwrap();
+    assert_eq!(commit(dir.path(), "stopped").code, 0);
+    let named_id = repository.refs().branch(&main_branch()).unwrap().unwrap();
+    let named = read(&repository, named_id);
+    // The state of a stop after the move of the branch: the entry names both moves and the branch
+    // has the named commit, but the working-copy commit is still the one it was made from. The
+    // file is written directly, as a crash between the moves would leave it; it is no interface.
+    // The log reads the entry as not taken because the pointer is at the old value of the entry.
+    fs::write(
+        dir.path().join(".stemma").join("working-copy"),
+        format!("{before}\n"),
+    )
+    .unwrap();
     let entries = operations(dir.path()).len();
 
     let result = commit(dir.path(), "ignored");
@@ -386,6 +380,38 @@ fn a_commit_that_stopped_between_its_moves_is_finished_by_the_next_one() {
     // The repository works again.
     write(dir.path(), "a.txt", "three");
     assert_eq!(commit(dir.path(), "three").code, 0);
+}
+
+#[test]
+fn a_stop_is_finished_also_after_a_change_since_the_stop() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    let repository = Repository::open(dir.path()).unwrap();
+    let before = repository.refs().working_copy().unwrap();
+    assert_eq!(commit(dir.path(), "stopped").code, 0);
+    let named_id = repository.refs().branch(&main_branch()).unwrap().unwrap();
+    // A stop between the moves, written as in the test above, and then a change of a file.
+    fs::write(
+        dir.path().join(".stemma").join("working-copy"),
+        format!("{before}\n"),
+    )
+    .unwrap();
+    write(dir.path(), "a.txt", "two");
+
+    let result = commit(dir.path(), "ignored");
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stdout.starts_with(&format!(
+            "Finished the commit {named_id} on main that had stopped"
+        )),
+        "{}",
+        result.stdout
+    );
+    assert!(result.stderr.contains("warning"), "{}", result.stderr);
+    let next = read(&repository, repository.refs().working_copy().unwrap());
+    assert_eq!(next.parents(), [named_id]);
 }
 
 /// `/dev/full` fails every write: the commit is made, and the command says so with code 3.

@@ -68,6 +68,65 @@ fn the_old_state_comes_back_and_the_output_says_how_to_undo_it() {
 }
 
 #[test]
+fn a_commit_after_a_restore_before_a_commit_is_refused_and_finishes_nothing() {
+    // The restored working-copy commit is an older version of the one that the second commit
+    // named; the log says that commit took effect, so it did not stop between its moves.
+    let (dir, snapshot) = two_commits();
+    ok(
+        dir.path(),
+        &["op", "restore", &snapshot.to_string(), "--actor", ACTOR],
+    );
+    let entries = numbers(dir.path()).len();
+    let pointers = ["working-copy", "refs/heads/main"]
+        .map(|name| read(dir.path(), &format!(".stemma/{name}")));
+
+    let result = run(dir.path(), &["commit", "-m", "third", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.contains("the branch `main` is at"),
+        "{}",
+        result.stderr
+    );
+    assert!(!result.stderr.contains("warning"), "{}", result.stderr);
+    assert_eq!(numbers(dir.path()).len(), entries);
+    assert_eq!(
+        ["working-copy", "refs/heads/main"]
+            .map(|name| read(dir.path(), &format!(".stemma/{name}"))),
+        pointers
+    );
+}
+
+#[test]
+fn a_refused_commit_names_the_entry_of_the_snapshot_it_saved_first() {
+    let (dir, snapshot) = two_commits();
+    ok(
+        dir.path(),
+        &["op", "restore", &snapshot.to_string(), "--actor", ACTOR],
+    );
+    write(dir.path(), "a.txt", "scratch");
+
+    let result = run(dir.path(), &["commit", "-m", "third", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    let saved = *numbers(dir.path()).last().unwrap();
+    assert!(
+        result.stderr.starts_with("stemma: the branch `main` is at"),
+        "{}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.ends_with(&format!(
+            "; the working copy was saved first as entry {saved}\n"
+        )),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "scratch");
+}
+
+#[test]
 fn an_unsaved_change_is_saved_first_and_named() {
     let (dir, snapshot) = two_commits();
     write(dir.path(), "a.txt", "scratch");

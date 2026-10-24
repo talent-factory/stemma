@@ -79,7 +79,9 @@ art, not a template (ADR-015).
   - *Empty* means the same tree as the commit it follows. The tracked set is the tree, so a tree
     without the files would leave every file untracked.
   - `commit` takes a snapshot of the tracked files first, so that a change since the last command
-    is part of the commit. The snapshot is an operation of its own and has its own entry.
+    is part of the commit. The snapshot is an operation of its own and has its own entry. A
+    failure after a snapshot that wrote an entry carries that entry
+    (`CommitError::AfterSnapshot`), and the message names it, as for `status` and `op restore`.
   - The named commit `W'` is the working-copy commit `W` with the message, the actor, and the time
     now: the parents and the change ID are kept. The new working-copy commit `N` has `W'` as its
     only parent, the tree of `W'`, an empty message, and a new change ID.
@@ -91,6 +93,16 @@ art, not a template (ADR-015).
     the parents and the change ID of the working-copy commit, and a message) and finishes the
     commit: it starts the new working-copy commit and moves that pointer alone, with an entry of
     its own. The message of that call is not used (`Committed::resumed`).
+  - The commits alone do not prove such a stop: `op restore` of an entry from before a commit
+    puts the working-copy commit back to an older version of itself and leaves the branch
+    (ADR-013), which looks the same. So `commit` finishes only if the log says so: the newest
+    entry of a `commit` moved the branch to its tip, and `oplog::outcomes` reads it as not
+    taken. The next move of the working-copy commit decides it. After a stop it starts from the
+    old value of the entry: a snapshot of a change since the stop, which keeps the parents and
+    the change ID, so such a stop is still finished. After a restore it starts from the new
+    value, so the entry took effect, and the call is refused as a branch that moved, with its
+    message kept. An outcome that the log does not decide (behind a stub) is refused the same
+    way (STEMMA-76).
   - A commit is refused when the message is empty (there is no editor in phase 1), when HEAD
     names a commit and not a branch, when the tree is that of the parent (or empty, for a first
     commit), and when the branch is not at the parent of the working-copy commit: a commit on
@@ -187,8 +199,9 @@ art, not a template (ADR-015).
 - [x] `Commit::rewrite`, which takes the parents and the change ID from the commit it replaces
       (STEMMA-3).
 - [ ] A struct of named parts instead of six positional arguments of `Commit::new`.
-- [ ] A branch that someone moved to an older version of the working-copy commit that has a
-      message looks like a `commit` that stopped, and the next `commit` finishes it.
+- [x] A branch that someone moved to an older version of the working-copy commit that has a
+      message, or a working-copy commit that `op restore` put back, looked like a `commit` that
+      stopped, and the next `commit` finished it. The log decides it now (STEMMA-76).
 - [ ] A commit with an empty tree as an allowed empty commit, a commit while HEAD names a commit,
       and a commit while the branch has moved (a rebase, phase 3) are refused today.
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge

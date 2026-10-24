@@ -32,7 +32,8 @@
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
-//! is refused for nothing to commit or for a branch that moved, `status` when it cannot read the
+//! is refused for nothing to commit or for a branch that moved, or cannot read the log to tell a
+//! stopped commit from a restored working copy, `status` when it cannot read the
 //! repository or write its output, `op restore` when a later step fails, and `purge --apply`
 //! when the purge cannot be planned or started after it. The message of such a failure names the
 //! entry, and repeating the command is safe.
@@ -550,11 +551,18 @@ impl fmt::Display for CliError {
                  {source}; the commit was not made, and `stemma commit` can be run again",
                 entry.number()
             ),
-            Self::Commit(error @ CommitError::Update(UpdateError::PartlyMoved { .. })) => write!(
-                f,
-                "{error}; `stemma commit` run again finishes the commit, and the message of that \
-                 call is not used"
-            ),
+            Self::Commit(error)
+                if matches!(
+                    error.failure(),
+                    CommitError::Update(UpdateError::PartlyMoved { .. })
+                ) =>
+            {
+                write!(
+                    f,
+                    "{error}; `stemma commit` run again finishes the commit, and the message of \
+                     that call is not used"
+                )
+            }
             Self::Commit(error) => error.fmt(f),
             Self::CommitNotDurable {
                 committed,
@@ -2373,6 +2381,21 @@ mod tests {
         assert!(
             partly.to_string().contains("finishes the commit"),
             "{partly}"
+        );
+        // After a snapshot that wrote an entry: the same code and advice, and the entry is named.
+        let CliError::Commit(inner) = partly else {
+            unreachable!()
+        };
+        let saved = CliError::Commit(CommitError::AfterSnapshot {
+            snapshot: Box::new(entry.clone()),
+            source: Box::new(inner),
+        });
+        assert_eq!(saved.exit_code(), ExitCode::from(3));
+        let text = saved.to_string();
+        assert!(
+            text.contains(&format!("saved first as entry {}", entry.number()))
+                && text.ends_with("the message of that call is not used"),
+            "{text}"
         );
         let durable = CliError::Commit(CommitError::Update(UpdateError::NotDurable {
             entry: Box::new(entry.clone()),
