@@ -130,11 +130,11 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 /// Turns a path that a person gives relative to `subdirectory`, a directory below the root of the
-/// repository as [`Discovered::subdirectory`](super::Discovered) has it, into the form of
+/// repository as [`Discovered::subdirectory`](super::Discovered::subdirectory) has it, into the form of
 /// [`Repository::track`], relative to the root. A `..` at the start of the path leads up from
 /// `subdirectory`, to the root and not beyond. Any other `..` stays, and so does one that would
-/// leave the repository, and the core refuses such a path, as it does today: a `..` after a part
-/// that may be a link does not lead where the name says. An absolute path stays as it is, and so
+/// leave the repository, and the core refuses such a path: a `..` after a part that may be a link
+/// does not lead where the name says. An absolute path stays as it is, and so
 /// does an empty argument or one of slashes only, as in [`normalize_path`], so that a script with
 /// an empty variable does not track the whole subdirectory. With an empty `subdirectory`, this is
 /// [`normalize_path`].
@@ -463,8 +463,9 @@ impl fmt::Display for TrackError {
         match self {
             Self::InvalidPath { path } => write!(
                 f,
-                "`{}` cannot be tracked: a path is relative, written with `/`, and has no empty \
-                 part, no `.` or `..`, and no name that a tree refuses (such as `.stemma`)",
+                "`{}` cannot be tracked: a path in the repository is relative to its root, written \
+                 with `/`, and has no empty part, no `.` or `..`, and no name that a tree refuses \
+                 (such as `.stemma`); a `..` at the start may lead up to the root, not beyond it",
                 path.escape_debug()
             ),
             Self::InvalidName { path } => write!(

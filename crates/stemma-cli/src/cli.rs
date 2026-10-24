@@ -1173,11 +1173,25 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
 }
 
 /// Opens the repository that the directory of `-C` lies in (ADR-009): the directory itself, or
-/// the nearest one above it.
+/// the nearest one above it that contains `.stemma`.
 fn open(dir: &Path) -> Result<Repository, CliError> {
-    Repository::discover(dir)
-        .map(|found| found.repository)
-        .map_err(CliError::Open)
+    discover(dir).map(|found| found.repository)
+}
+
+/// Finds the repository as [`open`] does, and warns if the search reached it through a link:
+/// a command in a link to a directory of another repository works in that one.
+fn discover(dir: &Path) -> Result<Discovered, CliError> {
+    let found = Repository::discover(dir).map_err(CliError::Open)?;
+    if found.through_link {
+        // A warning that cannot be written is dropped on purpose, as in `main`.
+        let _ = writeln!(
+            io::stderr(),
+            "stemma: warning: `{}` leads through a link into the repository at `{}`",
+            dir.display(),
+            found.repository.path().display()
+        );
+    }
+    Ok(found)
 }
 
 /// Tracks the files and lists the ones that are new. `track` saves the tracked files as well, so
@@ -1188,7 +1202,8 @@ fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let Discovered {
         repository,
         subdirectory,
-    } = Repository::discover(&args.repository).map_err(CliError::Open)?;
+        ..
+    } = discover(&args.repository)?;
     let paths: Vec<String> = args
         .paths
         .iter()
