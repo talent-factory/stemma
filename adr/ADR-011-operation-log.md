@@ -6,8 +6,8 @@
 entries (STEMMA-39) on 2026-10-23. All are implemented; for the retention that means that
 phase 1 keeps every entry, and its rules for later are not built. The open items at the end are
 questions for later (retention together with the garbage collection, who may read the log, the
-width of the number, an anchor that the actor cannot change, Windows) and none of them changes a
-decision.
+width of the number, an anchor that the actor cannot change) and none of them changes a
+decision. The flush of directories on Windows was decided on 2026-10-24 (STEMMA-84).
 
 ## Context
 
@@ -456,5 +456,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       the files of the entries that are shown.
 - [ ] The `session` of an agent is part of its actor; whether the log offers "what did this
       session do" as a view.
-- [ ] Windows: the flush of a directory is a no-op there, so the order "entry, then move" holds
-      for atomicity but not for durability (ADR-007).
+- [x] Windows: the flush of a directory was a no-op there, so the order "entry, then move" held
+      for atomicity but not for durability (ADR-007). Decided and implemented on 2026-10-24
+      (STEMMA-84): Windows flushes the directory as Unix does, so the order holds for both, and
+      `NotFlushed` and `NotDurable` can occur there as well.

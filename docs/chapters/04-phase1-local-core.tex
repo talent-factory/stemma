@@ -488,6 +488,18 @@ Der nächste Befehl auf demselben Rechner übernimmt sie;
 bis dahin nennt das Log den Ausgang des neuesten Eintrags unbekannt.
 
 \startinfobox
+{\bf Was \quotation{gesichert} auf jeder Plattform heisst.}
+Eine Datei ist erst nach einem Stromausfall noch da, wenn auch ihr Verzeichnis gesichert ist,
+denn erst das Verzeichnis hält ihren Namen.
+Unter Unix und unter Windows sichert der Kern deshalb nach jeder Umbenennung das Verzeichnis,
+das die Datei aufnimmt, ob Objekt, Eintrag oder Zeiger (ADR-007).
+Kann ein Dateisystem ein Verzeichnis nicht sichern, etwa FAT oder manche Netzlaufwerke,
+meldet der Befehl einen Fehler: Die Änderung ist gemacht, aber nicht als gesichert bekannt.
+Auf anderen Plattformen bleibt jede Umbenennung atomar,
+ein Stromausfall kann dort aber die letzte Änderung zurücknehmen.
+\stopinfobox
+
+\startinfobox
 {\bf Wann das Log den Ausgang falsch einschätzt.}
 Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück,
 entscheidet die Kette richtig, solange niemand den Zeiger ausserhalb des Logs bewegt,
