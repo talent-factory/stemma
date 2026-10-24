@@ -51,8 +51,9 @@ use crate::refs::{
     encode_branch, BranchName, FsRefStore, Head, Logged, RefError, RefStore, WriteLock,
 };
 use crate::store::{
-    create_dirs_synced as create_store_dirs, create_temp, sync_directory as flush_store_directory,
-    unique_temp_name, FsObjectStore, ObjectStore, StoreError, INIT_STAGING_PREFIX,
+    create_dirs_synced as create_store_dirs, create_temp, flush_directory,
+    sync_directory as flush_store_directory, unique_temp_name, FsObjectStore, ObjectStore,
+    StoreError, INIT_STAGING_PREFIX,
 };
 use crate::verify::RefVerifyError;
 use crate::{Actor, Authorizer, Decision};
@@ -246,7 +247,7 @@ impl Repository {
             format!("{INIT_STAGING_PREFIX}{}", unique_temp_name())
         })?;
         install(&staging, &target, options, actor)?;
-        sync_directory(path).map_err(|source| InitError::NotDurable {
+        flush_directory(path).map_err(|source| InitError::NotDurable {
             path: path.to_path_buf(),
             source,
         })?;
@@ -948,10 +949,10 @@ fn create_dirs_synced(dir: &Path) -> Result<(), InitError> {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
-        sync_directory(parent).map_err(InitError::io("flush the directory", parent))?;
+        flush_directory(parent).map_err(InitError::io("flush the directory", parent))?;
     }
     for created in &missing {
-        sync_directory(created).map_err(InitError::io("flush the directory", created))?;
+        flush_directory(created).map_err(InitError::io("flush the directory", created))?;
     }
     Ok(())
 }
@@ -1079,7 +1080,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
     write_new(&dir.join("working-copy"), &encode_branch(&working_copy))?;
     write_new(&dir.join("HEAD"), &head.encode())?;
     for flushed in [&refs, &heads, &oplog, dir] {
-        sync_directory(flushed).map_err(InitError::io("flush the directory", flushed))?;
+        flush_directory(flushed).map_err(InitError::io("flush the directory", flushed))?;
     }
     Ok(())
 }
@@ -1101,17 +1102,6 @@ fn exists(path: &Path) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
-}
-
-#[cfg(unix)]
-fn sync_directory(dir: &Path) -> io::Result<()> {
-    fs::File::open(dir)?.sync_all()
-}
-
-/// No-op on platforms that cannot flush a directory: the rename is atomic but not made durable.
-#[cfg(not(unix))]
-fn sync_directory(_dir: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 /// Reasons why [`Repository::init`] fails.

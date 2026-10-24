@@ -1203,16 +1203,34 @@ pub(crate) fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreErr
 }
 
 /// Flushes a directory so that a rename or a new entry in it survives a crash.
-#[cfg(unix)]
 pub(crate) fn sync_directory(dir: &Path) -> Result<(), StoreError> {
-    File::open(dir)
-        .and_then(|directory| directory.sync_all())
-        .map_err(io_error("flush the directory", dir))
+    flush_directory(dir).map_err(io_error("flush the directory", dir))
+}
+
+/// Flushes a directory with the error of the file system as it is (see [`sync_directory`]).
+#[cfg(unix)]
+pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
+    File::open(dir)?.sync_all()
+}
+
+/// Flushes a directory on Windows. `CreateFileW` opens a directory only with
+/// `FILE_FLAG_BACKUP_SEMANTICS`, and `FlushFileBuffers` needs a handle with write access; a file
+/// system that cannot flush a directory reports an error, as on Unix.
+#[cfg(windows)]
+pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // The value from `winbase.h`; the standard library does not export it.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    OpenOptions::new()
+        .write(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)?
+        .sync_all()
 }
 
 /// No-op on platforms that cannot flush a directory: the rename is atomic but not made durable.
-#[cfg(not(unix))]
-pub(crate) fn sync_directory(_dir: &Path) -> Result<(), StoreError> {
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn flush_directory(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -1256,6 +1274,25 @@ mod tests {
     }
 
     // Contract
+
+    /// Runs on every platform: on Windows it shows that a directory opens for the flush and that
+    /// a failure reaches the caller instead of being skipped (STEMMA-84).
+    #[test]
+    fn a_directory_is_flushed_and_one_that_cannot_be_opened_is_an_error() {
+        let dir = TempDir::new();
+        fs::write(dir.path().join("entry"), b"x").unwrap();
+        sync_directory(dir.path()).unwrap();
+        let missing = dir.path().join("missing");
+        match sync_directory(&missing) {
+            Err(StoreError::Io {
+                operation, path, ..
+            }) => {
+                assert_eq!(operation, "flush the directory");
+                assert_eq!(path, missing);
+            }
+            other => panic!("expected an I/O error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn the_scratch_that_stays_is_listed_sorted_without_directories() {
