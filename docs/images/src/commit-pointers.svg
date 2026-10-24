@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 420" font-family="Helvetica, Arial, sans-serif">
+<title>Zeiger vor und nach commit</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/>
+  </marker>
+  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#B45309"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="580" height="420" fill="#FFFFFF"/>
+<g font-size="13" font-weight="bold" fill="#0F172A">
+  <text x="20" y="22">Vor <tspan font-family="Courier, monospace">commit -m "Gruss erweitern"</tspan></text>
+  <text x="20" y="212">Nach dem Commit</text>
+</g>
+<!-- Commits: grey frame for a named commit, orange frame for the working-copy commit -->
+<g stroke-width="1.5" fill="#FFFFFF">
+  <rect x="20" y="72" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="210" y="72" width="160" height="86" rx="4" stroke="#B45309"/>
+  <rect x="20" y="262" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="210" y="262" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="400" y="262" width="160" height="86" rx="4" stroke="#B45309"/>
+</g>
+<g font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#0F172A">
+  <text x="30" y="92">b3:22d8…</text>
+  <text x="220" y="92" fill="#B45309">b3:ae07…</text>
+  <text x="30" y="282">b3:22d8…</text>
+  <text x="220" y="282">b3:d0ed…</text>
+  <text x="410" y="282" fill="#B45309">b3:89db…</text>
+</g>
+<g font-size="12" fill="#0F172A">
+  <text x="30" y="110">Erste Fassung</text>
+  <text x="220" y="110" fill="#64748B" font-style="italic">leere Nachricht</text>
+  <text x="30" y="300">Erste Fassung</text>
+  <text x="220" y="300">Gruss erweitern</text>
+  <text x="410" y="300" fill="#64748B" font-style="italic">leere Nachricht</text>
+</g>
+<g font-family="Courier, monospace" font-size="11" fill="#64748B">
+  <text x="30" y="128">ch:feef…</text>
+  <text x="30" y="146">Baum b3:dd8a…</text>
+  <text x="220" y="128">ch:4d6d…</text>
+  <text x="220" y="146">Baum b3:9707…</text>
+  <text x="30" y="318">ch:feef…</text>
+  <text x="30" y="336">Baum b3:dd8a…</text>
+  <text x="220" y="318">ch:4d6d…</text>
+  <text x="220" y="336">Baum b3:9707…</text>
+  <text x="410" y="318">ch:8390…</text>
+  <text x="410" y="336">Baum b3:9707…</text>
+</g>
+<!-- Parent arrows: from a commit to its parent -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="210" y1="115" x2="182" y2="115"/>
+  <line x1="210" y1="305" x2="182" y2="305"/>
+  <line x1="400" y1="305" x2="372" y2="305"/>
+</g>
+<!-- Pointers -->
+<g stroke-width="1.5" fill="#FFFFFF">
+  <rect x="20" y="36" width="50" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="96" y="36" width="54" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="235" y="36" width="110" height="20" rx="3" stroke="#B45309"/>
+  <rect x="210" y="226" width="50" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="286" y="226" width="54" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="425" y="226" width="110" height="20" rx="3" stroke="#B45309"/>
+</g>
+<g font-family="Courier, monospace" font-size="12" font-weight="bold" text-anchor="middle">
+  <text x="45" y="50" fill="#2F7D32">HEAD</text>
+  <text x="123" y="50" fill="#2F7D32">main</text>
+  <text x="290" y="50" fill="#B45309">working-copy</text>
+  <text x="235" y="240" fill="#2F7D32">HEAD</text>
+  <text x="313" y="240" fill="#2F7D32">main</text>
+  <text x="480" y="240" fill="#B45309">working-copy</text>
+</g>
+<g stroke-width="1.5">
+  <line x1="70" y1="46" x2="94" y2="46" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="123" y1="56" x2="123" y2="70" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="290" y1="56" x2="290" y2="70" stroke="#B45309" marker-end="url(#arrow-orange)"/>
+  <line x1="260" y1="236" x2="284" y2="236" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="313" y1="246" x2="313" y2="260" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="480" y1="246" x2="480" y2="260" stroke="#B45309" marker-end="url(#arrow-orange)"/>
+</g>
+<!-- Explanation -->
+<g font-size="12" fill="#0F172A">
+  <text x="400" y="98">Die Pfeile zwischen den</text>
+  <text x="400" y="114">Commits zeigen auf den</text>
+  <text x="400" y="130">Elternteil.</text>
+  <text x="20" y="374"><tspan font-family="Courier, monospace">b3:d0ed…</tspan> ist <tspan font-family="Courier, monospace">b3:ae07…</tspan> mit Nachricht, Akteur und Zeit des Aufrufs:</text>
+  <text x="20" y="390">gleicher Baum, gleiche Eltern, gleiche Change-ID.</text>
+  <text x="20" y="406"><tspan font-family="Courier, monospace">b3:ae07…</tspan> bleibt ohne Zeiger liegen.</text>
+</g>
+</svg>
