@@ -491,10 +491,13 @@ bis dahin nennt das Log den Ausgang des neuesten Eintrags unbekannt.
 {\bf Was \quotation{gesichert} auf jeder Plattform heisst.}
 Eine Datei ist erst nach einem Stromausfall noch da, wenn auch ihr Verzeichnis gesichert ist,
 denn erst das Verzeichnis hält ihren Namen.
-Unter Unix und unter Windows sichert der Kern deshalb nach jeder Umbenennung das Verzeichnis,
-das die Datei aufnimmt, ob Objekt, Eintrag oder Zeiger (ADR-007).
-Kann ein Dateisystem ein Verzeichnis nicht sichern, etwa FAT oder manche Netzlaufwerke,
-meldet der Befehl einen Fehler: Die Änderung ist gemacht, aber nicht als gesichert bekannt.
+Unter Unix und unter Windows sichert der Kern deshalb das Verzeichnis,
+nachdem er ein Objekt, einen Eintrag oder einen Zeiger an seinen Platz gelegt hat (ADR-007);
+nur die Datei \type{oplog-tip} sichert er nach bestem Bemühen.
+Kann ein Dateisystem ein Verzeichnis nicht sichern, meldet der Befehl einen Fehler.
+Die Datei liegt dann an ihrem Platz, ist aber nicht als gesichert bekannt.
+Ein Objekt oder ein Eintrag gilt deshalb als nicht geschrieben,
+ein Zeiger dagegen als bewegt, wie oben beschrieben.
 Auf anderen Plattformen bleibt jede Umbenennung atomar,
 ein Stromausfall kann dort aber die letzte Änderung zurücknehmen.
 \stopinfobox

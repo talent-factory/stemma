@@ -40,10 +40,13 @@ server will later keep objects elsewhere (API-first). The implementation is
   reader sees no object or a complete one, provided that `tmp` and `objects` are on one file system.
   The store also flushes the directories it created and the directory that received the object,
   on Unix and on Windows (STEMMA-84). Windows opens a directory only with
-  `FILE_FLAG_BACKUP_SEMANTICS`, and `FlushFileBuffers` (`sync_all`) needs write access to it, so
-  the store opens it that way. A file system that cannot flush a directory, such as FAT or some
-  network drives, fails the call as it does on Unix: the change is made, but it is not known to be
-  durable. On other platforms only the atomicity holds, not the durability of the directory entries.
+  `FILE_FLAG_BACKUP_SEMANTICS`, and `FlushFileBuffers` (`sync_all`) needs the right to add a
+  subdirectory or the right to add a file, which the store asks for in that order. It does not ask
+  for write access as a whole, which a user who may only create folders, as below a drive root,
+  does not have. A file system that cannot flush a directory fails the call as it does on Unix.
+  The file is then in place, but not known to be durable, and the writer reports an error: a store
+  of an object or an entry of the log fails, a reference reports that it moved (ADR-008, ADR-011).
+  On other platforms only the atomicity holds, not the durability of the directory entries.
 - **Existing objects** *(confirmed)*. Storing an object that exists and reads back correctly changes
   nothing and flushes nothing again. The call returns when the object is stored and readable; it is
   durable once the writer that created it has returned. A damaged file, for example the rest of a
@@ -135,7 +138,7 @@ server will later keep objects elsewhere (API-first). The implementation is
       (`Repository::open`, ADR-009); the store itself does not check it.
 - [ ] Windows and other platforms: the code builds and its tests pass on Windows (a CI run,
       ADR-006),
-      but five tests run on Unix only, and the behavior there is not known: a rename over an
+      but several tests run on Unix only, and the behavior there is not known: a rename over an
       existing or read-only file, and replacing a damaged object (it is reported as an error for
       now). Decide what the store promises on each platform and test it. Flushing directory
       entries is decided (STEMMA-84): Windows flushes them as Unix does, and a test that runs on

@@ -458,5 +458,5 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       session do" as a view.
 - [x] Windows: the flush of a directory was a no-op there, so the order "entry, then move" held
       for atomicity but not for durability (ADR-007). Decided and implemented on 2026-10-24
-      (STEMMA-84): Windows flushes the directory as Unix does, so the order holds for both, and
-      `NotFlushed` and `NotDurable` can occur there as well.
+      (STEMMA-84): Windows flushes the directory as Unix does, so the order holds for atomicity
+      and for durability, and `NotFlushed` and `NotDurable` can occur there as well.
