@@ -2,42 +2,42 @@
   <title>Schichtenmodell von Stemma</title>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L10,5 L0,10 z" fill="#7C3AED"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#0F172A"/>
     </marker>
   </defs>
 
   <!-- Oberflaechen -->
   <g stroke-width="1.5">
-    <rect x="30" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#7C3AED" stroke-width="2"/>
-    <rect x="250" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#818CF8" stroke-dasharray="6 4"/>
-    <rect x="470" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#818CF8" stroke-dasharray="6 4"/>
+    <rect x="30" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
+    <rect x="250" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#64748B" stroke-dasharray="6 4"/>
+    <rect x="470" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#64748B" stroke-dasharray="6 4"/>
   </g>
   <g text-anchor="middle">
     <text x="130" y="48" font-size="15" font-weight="bold" fill="#0F172A">stemma-cli</text>
     <text x="130" y="68" font-size="12" fill="#64748B">Kommandozeile</text>
     <text x="350" y="48" font-size="15" font-weight="bold" fill="#0F172A">API-Server</text>
-    <text x="350" y="68" font-size="12" fill="#64748B">für Hub und Clients</text>
+    <text x="350" y="68" font-size="12" fill="#64748B">dieselben Operationen wie die CLI</text>
     <text x="570" y="48" font-size="15" font-weight="bold" fill="#0F172A">MCP-Server</text>
     <text x="570" y="68" font-size="12" fill="#64748B">Adapter für Agenten</text>
   </g>
 
   <!-- Aufrufe -->
-  <g stroke="#7C3AED" stroke-width="2" marker-end="url(#arrow)">
+  <g stroke="#0F172A" stroke-width="2" marker-end="url(#arrow)">
     <line x1="130" y1="84" x2="130" y2="128"/>
     <line x1="350" y1="84" x2="350" y2="128" stroke-dasharray="6 4"/>
     <line x1="570" y1="84" x2="570" y2="128" stroke-dasharray="6 4"/>
   </g>
 
   <!-- Kern -->
-  <rect x="30" y="132" width="640" height="190" rx="12" fill="#EEF2FF" stroke="#7C3AED" stroke-width="2"/>
-  <text x="50" y="160" font-size="16" font-weight="bold" fill="#7C3AED">stemma-core</text>
+  <rect x="30" y="132" width="640" height="190" rx="12" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
+  <text x="50" y="160" font-size="16" font-weight="bold" fill="#0F172A">stemma-core</text>
   <text x="650" y="160" font-size="12" fill="#64748B" text-anchor="end">enthält die gesamte Logik</text>
 
   <g stroke-width="1.5" fill="#FFFFFF">
-    <rect x="50" y="176" width="141" height="56" rx="6" stroke="#7C3AED"/>
-    <rect x="203" y="176" width="141" height="56" rx="6" stroke="#7C3AED"/>
-    <rect x="356" y="176" width="141" height="56" rx="6" stroke="#7C3AED"/>
-    <rect x="509" y="176" width="141" height="56" rx="6" stroke="#818CF8" stroke-dasharray="6 4"/>
+    <rect x="50" y="176" width="141" height="56" rx="6" stroke="#0F172A"/>
+    <rect x="203" y="176" width="141" height="56" rx="6" stroke="#0F172A"/>
+    <rect x="356" y="176" width="141" height="56" rx="6" stroke="#0F172A"/>
+    <rect x="509" y="176" width="141" height="56" rx="6" stroke="#64748B" stroke-dasharray="6 4"/>
   </g>
   <g text-anchor="middle" font-size="14" font-weight="bold" fill="#0F172A">
     <text x="120" y="208">Objektspeicher</text>
@@ -48,15 +48,15 @@
   <text x="579" y="220" text-anchor="middle" font-size="11" fill="#64748B">ab Phase 2</text>
 
   <!-- Autorisierung -->
-  <rect x="50" y="250" width="600" height="56" rx="6" fill="#7C3AED"/>
+  <rect x="50" y="250" width="600" height="56" rx="6" fill="#0F172A"/>
   <text x="350" y="274" text-anchor="middle" font-size="14" font-family="Courier, monospace" font-weight="bold" fill="#FFFFFF">authorize(actor, operation, target)</text>
-  <text x="350" y="294" text-anchor="middle" font-size="12" fill="#E0E7FF">bei jeder Operation; in Phase 1 erlaubt AllowAll alles</text>
+  <text x="350" y="294" text-anchor="middle" font-size="12" fill="#FFFFFF">bei jeder Operation; in Phase 1 erlaubt AllowAll alles</text>
 
   <!-- Legende -->
   <g font-size="12" fill="#64748B">
-    <rect x="30" y="338" width="22" height="12" rx="3" fill="#FFFFFF" stroke="#7C3AED" stroke-width="2"/>
+    <rect x="30" y="338" width="22" height="12" rx="3" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
     <text x="60" y="348">vorhanden</text>
-    <rect x="140" y="338" width="22" height="12" rx="3" fill="#FFFFFF" stroke="#818CF8" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <rect x="140" y="338" width="22" height="12" rx="3" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5" stroke-dasharray="4 3"/>
     <text x="170" y="348">folgt in einer späteren Phase</text>
   </g>
 </svg>

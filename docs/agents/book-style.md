@@ -131,6 +131,21 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Mindeststufe | Boden | Policy floor: a risk level that a namespace cannot lower (ADR-004) |
 | Akteur, Sponsor | Benutzer (for an actor) | ADR-002 |
 | Exit-Code | Rückgabewert | |
+| Change-ID | Änderungs-ID | The random ID a commit keeps when it is rewritten (ADR-010) |
+| verfolgt, unverfolgt | getrackt | A file in the tree of the Working-Copy-Commit, or not |
+| Ausschlussdatei | Ignore-Datei | `.stemmaignore` (ADR-012) |
+| Sperre der Referenzen | Lock | `refs.lock`: one writer at a time (ADR-008) |
+| Ausgang | | Whether the moves of an entry took effect (ADR-011) |
+| Hash-Kette | Hashkette | The link from each entry to the hash of the one before (ADR-011) |
+| Anker | | Number and hash of an entry, kept outside the repository (ADR-011) |
+| Aufbewahrung | | How many snapshot entries the log keeps (ADR-011) |
+| Restore | Wiederherstellung | `op restore` and its entry (ADR-013) |
+| Purge | Bereinigung | Removing a blob from history and log (ADR-014) |
+| Stub | | An entry whose operation and IDs a purge removed (ADR-014) |
+| Journal | | The record of a purge in progress (ADR-014); not the Operation Log |
+| strenger Leser | | A reader that accepts only the one encoding (ADR-005) |
+| Option | Schalter, Flag | A named argument of a command, such as `--actor` |
+| Sitzung | | A work session, such as the running example; `Session` only for the field of an agent |
 
 ## Figures
 

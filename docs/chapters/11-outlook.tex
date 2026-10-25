@@ -1,13 +1,68 @@
 \chapter{Ausblick und offene Fragen}
 
-Die wichtigsten offenen Fragen sammeln sich an drei Stellen:
+Dieses Kapitel sammelt die offenen Fragen der Kapitel 4 bis 10.
+Die vollständigen Listen stehen in den ADRs; hier stehen die Punkte,
+die den Gebrauch oder die nächsten Phasen bestimmen.
+Sie werden bei jeder Phase neu bewertet.
 
-\startitemize
-\item {\bf Architektur:} Peer-to-Peer-Sync, Signaturformate und die Übergabe zwischen Repositories.
-\item {\bf Durchsetzung:} Konkrete Pfadlisten,
-strengere Mindeststufen für Firmenkunden (ADR-004) und Agenten-Identitäten.
-\item {\bf Produkt:} Web-Verwaltung für administrative Aufgaben,
-Migration aus Git und die Wahl des Anbieters für den Hub.
-\stopitemize
+\section{Nach Phase 1}
 
-Die offenen Punkte stehen in den Kapiteln und in den ADRs. Sie werden bei jeder Phase neu bewertet.
+Aufbewahrung und Garbage Collection kommen in einem Schritt,
+sobald eine echte Sitzung eines Agenten gemessen ist (ADR-007, ADR-011);
+bis dahin wächst der Speicher nur.
+Ein Purge braucht die ID des Blobs; ein Befehl, der sie zu einem Pfad nennt,
+fehlt noch, ebenso eine dauerhafte Liste der entfernten Blobs, die \type{track} und
+\type{status} prüfen (ADR-014).
+Einen Blob, dessen Datei beschädigt ist, kann der Purge nicht entfernen.
+Einen Anker, den der Akteur nicht ändern kann, liefern erst Signaturen oder der Hub,
+und einen Befehl, der eine gebrochene Hash-Kette repariert, gibt es nicht (ADR-011).
+
+Die Arbeitskopie gehört einem Akteur, doch diese Regel wird noch nicht erzwungen (ADR-010).
+Ein Repository ohne die Datei \type{working-copy} lässt sich nicht reparieren,
+und eine verfolgte Datei, die zu einer Spezialdatei wurde, blockiert jeden Snapshot.
+Die Prüfung des Besitzers von \type{.stemma} ist nicht frei von Wettläufen,
+unter Windows wird nur ein \type{.stemma} im Wurzelverzeichnis eines Laufwerks abgelehnt,
+und eine Liste vertrauenswürdiger Verzeichnisse wie bei Git fehlt (ADR-009).
+Die Ausschlussdatei vergleicht Namen ohne Rücksicht darauf,
+ob das Dateisystem Gross- und Kleinschreibung oder Unicode-Formen gleichsetzt,
+und ob ihre Grenzen von 1024 Bytes je Zeile und 64~KiB je Datei passen,
+zeigt erst der Gebrauch (ADR-012).
+Der Plan eines Restore (\type{--dry-run}) macht keinen Snapshot, und ein Restore warnt nicht,
+wenn ein Zeiger seit dem Eintrag weitergezogen ist (ADR-013).
+
+\section{Diff, Branches und Merge}
+
+Für den Diff sind die Heuristiken für bessere Hunks, der Umgang mit Binärdateien und
+sehr grossen Dateien und ein Ausgabeformat für Maschinen offen (\in{Kapitel}[chap:phase2]).
+Phase 3 entscheidet über das Konfliktmodell, Daten im Commit oder klassische Markierung,
+über einen Rebase und über einen Branch, der in einem anderen Worktree ausgecheckt ist
+(\in{Kapitel}[chap:phase3]).
+
+\section{Zusammenarbeit}
+
+Phase 4 legt die Dauer eines Leases und das Verhalten bei abgestürzten Agenten fest,
+ob Agenten eine eigene Rolle oder eine Rolle mit menschlichem Sponsor haben,
+wer den Schnellweg für triviale Änderungen nutzen darf und welche Pfade zu welcher
+Risikostufe gehören (\in{Kapitel}[chap:phase4], ADR-004).
+Strengere Mindeststufen für Firmenkunden werden erst mit konkreten Kunden relevant.
+
+\section{Netzwerk und Agenten-Schnittstellen}
+
+Für den Hub sind das Übertragungsformat, Einzelobjekte oder Pakete mit Deltas,
+und die Authentifizierung von Menschen und Agenten offen.
+Ob der Hub Merges für Agenten ohne Klon ausführt, entscheidet ADR-015 für den ersten Hub
+dagegen; ob Peer-to-Peer-Sync später kommt oder bewusst ausgeschlossen bleibt,
+ist offen (ADR-003, \in{Kapitel}[chap:phase5]).
+Ob die Policies wie vorgeschlagen auf dem Hub liegen und die Signaturen im Repository,
+steht in ADR-003 noch als Vorschlag.
+Für die Agenten-Schnittstellen sind die Körnung der Werkzeuge, die Authentifizierung und der
+Ablauf von Zugriffstoken, das Verhalten bei Konflikten paralleler Agenten und Commits auf dem
+Server offen (\in{Kapitel}[chap:phase6]).
+
+\section{Lehre und Produkt}
+
+In der Lehre sind die Lizenz des Lehrmaterials, Kriterien für die Bewertung von Code,
+der mit Agenten entstanden ist, und die Trennung von Studierendennamespaces und Dozierendenrolle
+offen (\in{Kapitel}[chap:teaching]).
+Für das Produkt bleibt eine Web-Verwaltung für administrative Aufgaben denkbar
+(\in{Kapitel}[chap:introduction]).

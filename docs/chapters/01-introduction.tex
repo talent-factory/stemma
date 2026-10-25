@@ -1,4 +1,4 @@
-\chapter{Einleitung}
+\chapter[chap:introduction]{Einleitung}
 
 \section{Ausgangslage}
 
@@ -20,8 +20,7 @@ Anthropic hat für den eigenen Monorepo-Betrieb ein internes Versionskontrollsys
 eingeführt.
 Im selben Zeitraum stiegen die täglichen Merges von rund 2500 im Mai
 auf über 30000 im September 2026.
-Scion ist kein Ersatz für Git im allgemeinen Gebrauch,
-und der Beitrag nennt keine öffentliche Verfügbarkeit.
+Scion ist kein Ersatz für Git im allgemeinen Gebrauch und nicht öffentlich verfügbar.
 
 \section{Problemstellung}
 
@@ -47,7 +46,6 @@ Git wurde 2005 von Linus Torvalds entwickelt. Es ist ein verteiltes System:
 Jeder Klon enthält den vollständigen Verlauf, und Änderungen sind über ihren Inhalt adressiert.
 GitHub, GitLab, Bitbucket sowie Gitea und Forgejo ergänzen Git um Hosting, Pull Requests,
 Code-Reviews, Issue-Tracking, Continuous Integration, Berechtigungen und Suche.
-Microsoft hat GitHub 2018 übernommen.
 
 Diese Plattformen beruhen auf einer einfachen Übereinkunft.
 Das Repository ist der Ort der Wahrheit, der Pull Request ist die Einheit der Zusammenarbeit,
@@ -58,7 +56,9 @@ solange Menschen die Prüfung leisten und Änderungen in überschaubarer Zahl ei
 
 Git und seine Plattformen sind weit verbreitet.
 Entwicklerinnen und Entwickler kennen Git, Werkzeuge und Integrationen sind vorhanden,
-Agenten beherrschen die Git-Befehle gut, und Lernende kennen sie bereits.
+und Lernende kennen die Befehle bereits.
+Agenten bedienen Git zuverlässig, weil Git-Befehle und ihre Ausgaben
+in öffentlichem Code und in Dokumentation, also auch in ihren Trainingsdaten, häufig vorkommen.
 Der Pull Request bündelt Diff, Diskussion, Prüfungen und Freigaben in einem Objekt,
 das Menschen und Agenten gleichermassen lesen können.
 Auf geschützten Branches erzwingt die Plattform die Freigaben,
@@ -125,17 +125,18 @@ Ein Wechsel ist aufwendig. \stopxcell
 
 Die Grenzen sind teils Folgen des Datenmodells, etwa bei der Herkunft und den Konflikten.
 Teils sind sie Folgen der Plattform, etwa bei der Durchsetzung und der Abhängigkeit.
-Die beiden Ursachen verlangen unterschiedliche Antworten.
+Das Datenmodell ändert Stemma selbst, die Plattform ersetzt später der Hub aus Phase~5.
 
 \section{Kernaussagen}
 
-Das Grundlagendokument stützt sich auf fünf Aussagen:
+Das Buch stützt sich auf diese Aussagen:
 
 \startitemize[n]
 \item Das Datenmodell von Git ist für Agenten geeignet.
 Inhalte sind über Hashes adressiert, und Verläufe bilden einen unveränderlichen Graphen.
 Die Schwächen liegen in Arbeitsabläufen und Durchsetzung.
-\item Schreibhoheit gehört pro Branch zu genau einem Akteur und wird vom Server erzwungen.
+\item Ein Branch gehört genau einem Akteur, der ihn als einziger bewegen darf
+(Schreibhoheit), und der Server erzwingt das.
 Stille Überschreibungen sind damit ausgeschlossen.
 \item Herkunft gehört in die Daten. Akteur, Modellversion,
 Session und Sponsor tragen jede Änderung und jeden Eintrag im Operation Log.
@@ -255,7 +256,7 @@ und das Programm heisst wie das Verzeichnis, in dem ein Repository seine Daten a
 \item Agenten sind von Anfang an Akteure mit eigener Identität und Herkunft.
 \item Schreibhoheit pro Branch wird durchgesetzt, nicht nur empfohlen.
 \item Entscheidungen werden als ADR festgehalten und mit dem Code versioniert.
-\item Das Dokumentationsbuch entsteht im selben Repository wie das System.
+\item Das Buch entsteht im selben Repository wie das System.
 \stopitemize
 
 \subsection{Nicht-Ziele}
@@ -276,12 +277,24 @@ decken den Nutzen weitgehend ab.
 \item Ein Ersatz für GitHub im Alltag, bevor der Hub aus Phase 5 steht.
 \stopitemize
 
-\section{Aufbau des Dokuments}
+\section{Aufbau des Buches}
+
+Das Buch zeigt, wie Stemma arbeitet: seine Abläufe und die Arbeitsabläufe,
+die mehrere Befehle verbinden.
+Es ist zugleich das Referenzhandbuch für Menschen und für Agenten, die Stemma bedienen;
+die Befehlsreferenz im Anhang nennt zu jedem Befehl Vorbedingungen, Ausgaben und Exit-Codes.
+Für die Kurse DUA (Datenstrukturen und Algorithmen) und AISE (AI Assisted Software
+Engineering) ist es Nachschlagewerk und Lehrbuch (\in{Kapitel}[chap:teaching]).
+Es richtet sich an Informatikerinnen und Informatiker auf Masterstufe,
+die Git, Betriebssysteme und die grundlegenden Datenstrukturen kennen.
 
 Kapitel 2 und 3 legen die Grundlagen und die Architektur fest.
 Die Kapitel 4 bis 9 folgen den Projektphasen (\in{Abbildung}[fig:roadmap]).
-Jede Phase baut auf der vorigen auf, und jedes Kapitel nennt ihr Ziel, ihren Umfang und ihre offenen
-Fragen. Kapitel 10 beschreibt den Lehrbezug, Kapitel 11 sammelt offene Fragen.
+Jede Phase baut auf der vorigen auf, und jedes Kapitel nennt ihr Ziel,
+ihren Umfang und ihre offenen Fragen.
+Kapitel 4 beschreibt die umgesetzte Phase mit einer durchgehenden Beispielsitzung;
+die Kapitel 5 bis 9 nennen für spätere Phasen nur Ziel, Umfang und offene Fragen.
+Kapitel 10 beschreibt den Lehrbezug, Kapitel 11 sammelt die offenen Fragen aller Phasen.
 Der Anhang beschreibt die Befehle der Kommandozeile. Die Architekturentscheidungen liegen im
 Repository unter \type{adr/} und werden in den Kapiteln referenziert.
 

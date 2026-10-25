@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 458" font-family="Helvetica, Arial, sans-serif">
   <title>Welcher Befehl berührt welche Zone</title>
+  <rect x="0" y="0" width="740" height="458" fill="#FFFFFF"/>
 
   <!-- Zone headers: one colour per zone, dark enough for print -->
   <g font-size="12" font-weight="bold" text-anchor="middle">
@@ -12,11 +13,11 @@
     <text x="680" y="28" fill="#6B46C1">Operation</text>
     <text x="680" y="43" fill="#6B46C1">Log</text>
   </g>
-  <text x="20" y="43" font-size="12" font-weight="bold" fill="#4A4842">Befehl</text>
-  <line x1="20" y1="62" x2="730" y2="62" stroke="#2A2723" stroke-width="2"/>
+  <text x="20" y="43" font-size="12" font-weight="bold" fill="#0F172A">Befehl</text>
+  <line x1="20" y1="62" x2="730" y2="62" stroke="#0F172A" stroke-width="2"/>
 
   <!-- Row separators -->
-  <g stroke="#D6D2C4" stroke-width="1">
+  <g stroke="#64748B" stroke-width="1">
     <line x1="20" y1="106" x2="730" y2="106"/>
     <line x1="20" y1="150" x2="730" y2="150"/>
     <line x1="20" y1="194" x2="730" y2="194"/>
@@ -28,7 +29,7 @@
   </g>
 
   <!-- Commands -->
-  <g fill="#2A2723">
+  <g fill="#0F172A">
     <text x="20" y="81" font-family="Courier, monospace" font-size="15" font-weight="bold">init</text>
     <text x="20" y="125" font-family="Courier, monospace" font-size="15" font-weight="bold">track</text>
     <text x="20" y="169" font-family="Courier, monospace" font-size="15" font-weight="bold">commit</text>
@@ -38,7 +39,7 @@
     <text x="20" y="345" font-family="Courier, monospace" font-size="15" font-weight="bold">op restore</text>
     <text x="20" y="389" font-family="Courier, monospace" font-size="15" font-weight="bold">purge --apply</text>
   </g>
-  <g fill="#4A4842" font-size="12">
+  <g fill="#0F172A" font-size="12">
     <text x="20" y="97">legt das Repository an</text>
     <text x="20" y="141">nimmt Dateien in den Baum auf</text>
     <text x="20" y="185">benennt den Commit und beginnt einen neuen</text>
@@ -53,12 +54,12 @@
   <circle cx="480" cy="84" r="9" fill="#B45309"/>
   <circle cx="580" cy="84" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="84" r="9" fill="#6B46C1"/>
-  <text x="380" y="89" font-size="14" fill="#6B6B6B" text-anchor="middle">–</text>
+  <text x="380" y="89" font-size="14" fill="#64748B" text-anchor="middle">–</text>
 
   <!-- track: reads the directory, changes working-copy commit and log -->
   <circle cx="380" cy="128" r="8" fill="none" stroke="#2B6CB0" stroke-width="2"/>
   <circle cx="480" cy="128" r="9" fill="#B45309"/>
-  <text x="580" y="133" font-size="14" fill="#6B6B6B" text-anchor="middle">–</text>
+  <text x="580" y="133" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <circle cx="680" cy="128" r="9" fill="#6B46C1"/>
 
   <!-- commit: reads the directory, changes working-copy commit, branch and log -->
@@ -76,15 +77,15 @@
   <path d="M680,208 A8,8 0 0 0 680,224 Z" fill="#6B46C1"/>
 
   <!-- op log: only reads -->
-  <text x="380" y="265" font-size="14" fill="#6B6B6B" text-anchor="middle">–</text>
+  <text x="380" y="265" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <circle cx="480" cy="260" r="8" fill="none" stroke="#B45309" stroke-width="2"/>
   <circle cx="580" cy="260" r="8" fill="none" stroke="#2F7D32" stroke-width="2"/>
   <circle cx="680" cy="260" r="8" fill="none" stroke="#6B46C1" stroke-width="2"/>
 
   <!-- op verify: only reads the log -->
-  <text x="380" y="309" font-size="14" fill="#6B6B6B" text-anchor="middle">–</text>
-  <text x="480" y="309" font-size="14" fill="#6B6B6B" text-anchor="middle">–</text>
-  <text x="580" y="309" font-size="14" fill="#6B6B6B" text-anchor="middle">–</text>
+  <text x="380" y="309" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+  <text x="480" y="309" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+  <text x="580" y="309" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <circle cx="680" cy="304" r="8" fill="none" stroke="#6B46C1" stroke-width="2"/>
 
   <!-- op restore: saves and rewrites the directory, moves the pointers, writes an entry -->
@@ -100,15 +101,15 @@
   <circle cx="680" cy="392" r="9" fill="#6B46C1"/>
 
   <!-- Legend -->
-  <g fill="#4A4842" font-size="12">
-    <circle cx="28" cy="437" r="8" fill="#4A4842"/>
+  <g fill="#0F172A" font-size="12">
+    <circle cx="28" cy="437" r="8" fill="#0F172A"/>
     <text x="44" y="441">ändert</text>
-    <circle cx="116" cy="437" r="7" fill="none" stroke="#4A4842" stroke-width="2"/>
+    <circle cx="116" cy="437" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
     <text x="132" y="441">liest nur</text>
-    <circle cx="220" cy="437" r="7" fill="none" stroke="#4A4842" stroke-width="2"/>
-    <path d="M220,430 A7,7 0 0 0 220,444 Z" fill="#4A4842"/>
+    <circle cx="220" cy="437" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <path d="M220,430 A7,7 0 0 0 220,444 Z" fill="#0F172A"/>
     <text x="236" y="441">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
-    <text x="568" y="441" font-size="14" fill="#6B6B6B">–</text>
+    <text x="568" y="441" font-size="14" fill="#64748B">–</text>
     <text x="584" y="441">unberührt</text>
   </g>
 </svg>

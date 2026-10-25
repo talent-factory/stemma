@@ -21,7 +21,7 @@ die Zeile zeigt den Höchstfall.
 \section{Aufruf und gemeinsame Regeln}
 
 \starttyping
-stemma <Befehl> [Argumente] [Schalter]
+stemma <Befehl> [Argumente] [Optionen]
 stemma --version
 stemma --help
 \stoptyping
@@ -53,8 +53,8 @@ nennt die Meldung \type{-C} und \type{stemma init}; gibt es das Verzeichnis nich
 eine Datei, sagt sie das.
 
 {\bf Akteur.} Jeder Befehl, der ein Repository ändert, braucht einen Akteur (ADR-002).
-Er kommt aus dem Schalter \type{--actor} oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}.
-Der Schalter geht der Variablen vor. Der Text hat die Form der Akteur-Zeile eines Commits:
+Er kommt aus der Option \type{--actor} oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}.
+Die Option geht der Variablen vor. Der Text hat die Form der Akteur-Zeile eines Commits:
 
 \starttyping
 human daniel
@@ -64,7 +64,7 @@ agent claude model=opus-5-5 session=s1 sponsor=daniel
 Ein leerer Wert ist ein Fehler und fällt nicht auf die andere Quelle zurück.
 Ohne Akteur bricht der Befehl ab, bevor er etwas ändert (Exit-Code 1).
 Deshalb steht \type{--actor} in den Synopsen ohne eckige Klammern; ist \type{STEMMA_ACTOR}
-gesetzt, darf der Schalter in einem Aufruf fehlen. Die Beispiele ohne den Schalter
+gesetzt, darf die Option in einem Aufruf fehlen. Die Beispiele ohne die Option
 setzen die Variable voraus. Einen Standardwert aus
 dem Benutzernamen gibt es nicht. Die Angabe belegt nicht, wer den Befehl wirklich ausführt,
 sie nennt nur, in wessen Namen er läuft.
@@ -75,6 +75,24 @@ Verzeichnis speichert.
 Deshalb arbeitet jeder Akteur in einer eigenen Arbeitskopie; zwei Akteure in einem
 Verzeichnis sind kein unterstützter Betrieb (ADR-010). Das Programm prüft es nicht.
 
+Auch \type{op restore --dry-run} und \type{purge} ohne \type{--apply} verlangen einen Akteur,
+obwohl sie nichts schreiben; sie prüfen ihn, bevor sie das Repository öffnen.
+Nur \type{op log} und \type{op verify} laufen ohne Akteur.
+Eine Akteur-Zeile in falscher Form endet wie ein fehlender Akteur mit Exit-Code 1,
+nicht mit Exit-Code 2.
+
+{\bf Ausgabekanäle.} Das Ergebnis eines Befehls steht auf der Standardausgabe, sonst nichts.
+Fehler stehen auf der Fehlerausgabe mit dem Präfix \type{stemma:}, Warnungen mit
+\type{stemma: warning:}; eine Warnung ändert den Exit-Code nicht.
+Fehler der Argumente meldet die Bibliothek der Kommandozeile mit \type{error:} auf der
+Fehlerausgabe (Exit-Code 2). \type{--help} (\type{-h}) und \type{--version} (\type{-V})
+schreiben auf die Standardausgabe und enden mit Exit-Code 0.
+Für Programme bestimmt sind heute nur \type{op log --json} und die Zeile \type{anchor}
+von \type{op verify}; ob die übrige Textausgabe und der Text der Meldungen stabil bleiben,
+ist noch nicht festgelegt.
+Eine Meldung, die das Buch über mehrere Zeilen zeigt, ist in der Ausgabe eine Zeile;
+hier ist sie umbrochen.
+
 {\bf Exit-Codes.} Ein Skript kann sich auf diese Werte verlassen.
 
 \startitemize
@@ -83,10 +101,11 @@ Verzeichnis sind kein unterstützter Betrieb (ADR-010). Das Programm prüft es n
 \type{stemma:}. Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
 einen Eintrag für eine Zeigerbewegung,
 die nicht stattfand (\type{op log} markiert ihn mit \type{!}),
-und bei den Befehlen \type{commit}, \type{status} und \type{op restore} den Eintrag des
+und bei den Befehlen \type{commit}, \type{status}, \type{op restore} und \type{purge --apply}
+den Eintrag des
 Snapshots, den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein erneuter
 Aufruf ist unbedenklich.
-\item {\bf 2:} Die Argumente sind falsch, zum Beispiel ein unbekannter Schalter oder
+\item {\bf 2:} Die Argumente sind falsch, zum Beispiel eine unbekannte Option oder
 ein ungültiger Branch-Name. Das Programm gibt die Meldung selbst aus.
 \item {\bf 3:} Der Befehl hat sein Ergebnis ganz oder zum Teil angelegt,
 konnte aber nicht abschliessen.
@@ -249,14 +268,20 @@ der nächste versucht es wieder.
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
 lehnen \type{track}, \type{commit}, \type{status} und \type{op restore} ab, wenn sie die
 Sperre nehmen, also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
-nennt das Journal, \type{stemma purge --resume} und \type{--abort}. Lesen bleibt möglich:
-\type{op log}, \type{op restore --dry-run} und \type{purge} ohne \type{--apply} laufen.
+nennt das Journal, \type{stemma purge --resume} und \type{--abort}.
+\type{purge --apply} lehnt ebenfalls ab, mit Exit-Code 3, denn ein Purge ist schon begonnen.
+Lesen bleibt möglich: \type{op log}, \type{op verify}, \type{op restore --dry-run}
+und \type{purge} ohne \type{--apply} laufen.
 
 Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
 \type{stemma: <Meldung>} aus und läuft keine Kette von Ursachen ab.
 
-{\bf Pfade.} Die Ausgabe nennt Pfade absolut, damit ein Skript sie nach einem
-Verzeichniswechsel weiter verwenden kann.
+{\bf Pfade.} \type{init} nennt das Repository mit absolutem Pfad, damit ein Skript es nach
+einem Verzeichniswechsel findet. Die übrigen Befehle nennen Dateien relativ zur Wurzel des
+Repositories, auch wenn sie in einem Unterverzeichnis laufen, und maskiert wie bei
+\type{status}. Auch eine Meldung nennt einen Pfad relativ zur Wurzel; nur einen Pfad,
+der sich nicht in einen Pfad des Repositories umwandeln lässt, und das Verzeichnis von
+\type{-C} nennt sie so, wie sie übergeben wurden.
 
 \section{init}
 
@@ -291,6 +316,14 @@ ein Projekt lässt sich also nachträglich unter Versionskontrolle stellen.
 Mit Exit-Code 3 endet der Befehl, wenn das Repository angelegt ist,
 aber die Ausgabe sich nicht schreiben liess oder das Verzeichnis nicht gesichert ist;
 ein Skript wiederholt ihn dann nicht.
+
+Bricht \type{init} ab, bevor \type{.stemma} entsteht, bleiben höchstens ein Verzeichnis
+\type{.stemma-init-…} und die Verzeichnisse, die \type{init} für \type{-C} neu angelegt hat,
+und ein erneuter Aufruf ist unbedenklich; den Rest entfernt danach
+der erste Befehl, der die Sperre nimmt (siehe {\bf Aufräumen} oben).
+Nach einem gelungenen \type{init} endet ein erneuter Aufruf mit Exit-Code 1.
+Ein Skript, das \type{init} wiederholt, prüft deshalb vorher, ob \type{.stemma} besteht,
+denn Exit-Code 1 unterscheidet ein bestehendes Repository nicht von einem anderen Fehler.
 
 {\bf Beispiele.}
 
@@ -375,10 +408,15 @@ die Dateien verfolgt sind, aber die Ausgabe sich nicht schreiben liess oder der 
 gesichert ist; ein Skript wiederholt ihn dann nicht. Ist nur der Zeiger nicht gesichert, schreibt
 der Befehl die Liste der neuen Dateien zuerst und meldet den Fehler danach, damit ein Skript findet,
 was verfolgt ist. Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}), endet
-der Befehl mit Exit-Code 0, denn die Dateien sind verfolgt. Scheitert die Bewegung des Zeigers,
+der Befehl mit Exit-Code 0, denn die Dateien sind verfolgt;
+war der Zeiger nicht gesichert, bleibt es Exit-Code 3.
+Scheitert die Bewegung des Zeigers,
 nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 1 und hat nichts verfolgt,
 hinterlässt aber einen Eintrag für eine Zeigerbewegung, die nicht stattfand;
 \type{op log} markiert ihn mit \type{!}.
+Ein erneuter Aufruf ist nach einem Fehler und nach einem Absturz unbedenklich:
+Er nimmt auf, was noch fehlt. Nach einem Erfolg meldet er \type{No new files to track}
+und endet mit Exit-Code 0.
 
 {\bf Ausschlussdatei.} Die Datei \type{.stemmaignore} im Wurzelverzeichnis (ADR-012)
 nennt Pfade, die \type{track} nie aufnimmt.
@@ -497,7 +535,8 @@ Hat schon der Snapshot vor dem Commit einen Zeiger bewegt und nicht sichern kön
 endet der Befehl ebenfalls mit Exit-Code 3, aber der Commit ist dann nicht gemacht,
 und ein erneuter Aufruf ist richtig.
 Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}),
-endet der Befehl mit Exit-Code 0, denn der Commit ist gemacht.
+endet der Befehl mit Exit-Code 0, denn der Commit ist gemacht;
+war ein Verzeichnis nicht gesichert, bleibt es Exit-Code 3.
 
 Ebenfalls Exit-Code 3 gilt, wenn nur der erste der beiden Zeiger sich bewegt hat:
 Der Branch hat den Commit, der Working-Copy-Commit ist noch der alte,
@@ -558,9 +597,9 @@ sondern was dieser Commit gegenüber seinem Elternteil tut
 
 \starttyping
 Working copy changes:
+A docs/plan.md
 D gone.txt
 M src/main.rs
-A docs/plan.md
 Untracked files:
 ? notes.txt
 \stoptyping
@@ -639,7 +678,7 @@ meldet der Befehl nicht als solche; ein Bericht «verfolgt und ausgeschlossen»
 ist ein offener Punkt in ADR-012.
 Eine Spezialdatei (Socket, Pipe, Gerät) im Verzeichnis listet der Befehl als unverfolgt auf;
 \type{track} verweigert sie.
-Einen Schalter \type{--json} gibt es nicht.
+Eine Option \type{--json} gibt es nicht.
 Die Zeiger liest der Befehl nacheinander und nicht unter der Sperre,
 ein gleichzeitiger Prozess kann also HEAD und Commit aus zwei Zuständen liefern.
 
@@ -1026,7 +1065,9 @@ stemma purge --abort [-C VERZEICHNIS] --actor AKTEUR
 \startitemize
 \item {\bf BLOB:} Die volle ID des Blobs, der das Geheimnis enthält: \type{b3:} und
 64 Hexadezimalziffern in Kleinbuchstaben. Eine andere Form ist ein Fehler der Argumente
-(Exit-Code 2). Pfade oder Muster nimmt der Befehl noch nicht. Ohne \type{--resume} und
+(Exit-Code 2). Die ID ist der BLAKE3-Hash über den Kopf \type{blob <Länge>}, ein Nullbyte
+und den Inhalt (ADR-001); einen Befehl, der sie zu einem Pfad nennt, gibt es noch nicht.
+Pfade oder Muster nimmt der Befehl noch nicht. Ohne \type{--resume} und
 \type{--abort} ist die ID nötig, mit ihnen ist sie ein Fehler der Argumente.
 \item {\bf \type{--apply}:} Macht den Purge: schreibt die neuen Commits, den Eintrag
 \type{purge} und die Stubs und löscht die alten Objekte.
@@ -1155,6 +1196,8 @@ Journal, das Format kann aber schon 3 sein. Hat der Snapshot das Verzeichnis ges
 nennt die Meldung am Ende seinen Eintrag. Hat der Snapshot den Zeiger bewegt, aber nicht
 gesichert, ist es Exit-Code 3 wie bei \type{commit}. \type{--resume} und \type{--abort} ohne Journal
 enden mit Exit-Code 1 und der Meldung \type{no purge is pending}.
+Nach einem gelungenen Purge endet derselbe Aufruf mit \type{--apply} mit Exit-Code 1,
+weil der Blob fehlt, und ändert nichts.
 Ein Fehler beim Schreiben der Ausgabe des Plans ist Exit-Code 1, denn es wurde nichts gemacht;
 eine geschlossene Pipe ist kein Fehler.
 
@@ -1185,13 +1228,13 @@ Purge, und ein Zurücknehmen lässt das Repository wie vor dem Purge.
 {\bf Grenzen.} Der Plan ohne \type{--apply} geht vom heutigen Stand aus; der Purge sichert
 das Verzeichnis zuerst und plant unter der Sperre neu.
 Eine Datei, deren Blob entfernt wird, verlässt den Baum und ist danach nicht mehr verfolgt;
-das Verzeichnis bleibt, wie es ist, und ein späteres \type{track .} nähme das Geheimnis wieder
+das Verzeichnis bleibt, wie es ist, und ein späteres \type{track .} nimmt das Geheimnis wieder
 auf, wenn \type{.stemmaignore} es nicht nennt. Deshalb nennt \type{--apply} die Pfade; eine
 dauerhafte Liste der entfernten Blobs, die \type{track} prüft, gibt es noch nicht (ADR-014).
 Ein Befehl, der vor dem Purge begann, hält die Sperre schon, bevor er sein erstes Objekt
 schreibt; der Purge bricht dann mit Exit-Code 1 ab, bevor er das Format hebt oder das Journal
 schreibt, und lässt sich danach wiederholen. So kann kein Befehl ein Objekt nennen, das der
-Purge gelöscht hat (STEMMA-49).
+Purge gelöscht hat.
 Liegengebliebene Dateien in \type{.stemma/tmp/} entfernt der Purge, sobald er die Sperre hält.
 Lässt sich eine nicht entfernen, nennt \type{purge --apply} oder \type{--resume} sie in einer
 Warnung auf der Standardfehlerausgabe, denn sie kann das Geheimnis enthalten;
