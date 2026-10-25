@@ -1,8 +1,5 @@
 # Contributor License Agreement
 
-> **Entwurf, noch nicht rechtlich geprüft.** Vor der ersten Verwendung von einer Fachperson
-> im Open-Source-Recht prüfen lassen und diesen Hinweis entfernen.
-
 Version 1.0 (draft)
 
 Thank you for your interest in contributing to Stemma. This Contributor License Agreement
