@@ -108,7 +108,8 @@ _Avoid_: Lock (in prose), mutex
 **Orphaned lock**:
 A reference lock whose holder ended without releasing it (`kill -9`, a crash): `refs.lock` stays,
 but the operating system lock on `refs.lock.guard` is free. The next command of the same host
-that writes takes it over. (verwaiste Sperre)
+that writes takes it over; while the journal of a purge exists, only `purge --resume` and
+`--abort` do. (verwaiste Sperre)
 _Avoid_: dead lock, stale lock (in prose)
 
 **Operation**:

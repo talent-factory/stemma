@@ -819,9 +819,8 @@ Nach der Zeigerbewegung wird nichts mehr geschrieben, damit nichts halb geschrie
 
 Was nach einem Absturz an jeder Stelle zurückbleibt, steht in
 \in{Abbildung}[fig:oplog-write] rechts.
-Bis zum letzten Schritt bleibt dabei auch die Sperre liegen.
-Der nächste Befehl auf demselben Rechner übernimmt sie (\in{Abschnitt}[sec:refs-lock]);
-bis dahin nennt das Log den Ausgang des neuesten Eintrags unbekannt.
+Bis zum letzten Schritt bleibt dabei auch die Sperre liegen;
+wer sie übernimmt, beschreibt \in{Abschnitt}[sec:refs-lock].
 
 \startinfobox
 {\bf Was \quotation{gesichert} auf jeder Plattform heisst.}
@@ -846,7 +845,8 @@ Dafür sorgt die Sperre der Referenzen, die Datei \type{.stemma/refs.lock} (ADR-
 Ein Befehl, der schreibt, hält sie von seinem ersten Objekt bis zu seiner letzten Zeigerbewegung,
 ein Purge von seinem Plan bis zu seinem Ende.
 Ein zweiter Befehl, der in dieser Zeit schreiben will, wartet nicht:
-Er bricht sofort mit Exit-Code 1 ab, und die Meldung nennt den Prozess, der die Sperre hält.
+Er bricht sofort mit Exit-Code 1 ab,
+und die Meldung nennt den Prozess, der die Sperre hält, wenn sie ihn kennt.
 Eine einzige Sperre für alle Zeiger ist grob,
 aber ein Befehl hält sie meist nur kurz, und die Regel bleibt einfach.
 
@@ -890,7 +890,10 @@ Eine Sperre in diesem Zustand heisst verwaist.
 Der nächste Befehl, der auf diesem Rechner schreibt, übernimmt sie:
 Er hält die Sperre des Betriebssystems, findet eine Datei in der Form oben,
 die diesen Rechner nennt, und ersetzt sie durch seine eigene.
-Bis dahin nennt das Log den Ausgang des neuesten Eintrags unbekannt (\in{Abschnitt}[sec:outcome]).
+Bis dahin kann das Log nicht entscheiden, dass der neueste Eintrag nicht stattgefunden hat,
+denn ein Halter zwischen Eintrag und Zeigerbewegung sieht genauso aus;
+steht sein Zeiger noch auf dem alten Wert, nennt es den Ausgang unbekannt
+(\in{Abschnitt}[sec:outcome]).
 Besteht das Journal eines Purge,
 übernehmen nur \type{purge --resume} und \type{--abort} die Sperre;
 jeder andere Befehl, der schreibt, lehnt ab.
@@ -932,13 +935,15 @@ Die Meldung nennt dann den Rechner und den Prozess.
 Namen wie \type{localhost} gelten deshalb als unbekannt.
 \item Kann ein Befehl die Sperre des Betriebssystems nicht nehmen,
 etwa auf einem Dateisystem ohne Dateisperren,
-schreibt er die Datei in der alten Form und übernimmt keine Sperre;
+schreibt er die Datei in der alten Form,
+und ausser \type{purge --resume} und \type{--abort} übernimmt er keine Sperre;
 die Meldung nennt den Grund.
-\item Eine Datei in einer anderen Form übernimmt kein Befehl:
+\item Eine Datei in einer anderen Form übernehmen nur \type{purge --resume} und \type{--abort},
+solange das Journal eines Purge besteht:
 eine Datei einer älteren Version, eines Befehls ohne Sperre des Betriebssystems,
 eine von Hand angelegte und die leere Datei,
 die ein Absturz zwischen Anlegen und Schreiben zurücklässt.
-Sie ist von Hand zu entfernen, wenn kein Befehl mehr läuft.
+Ohne Journal ist sie von Hand zu entfernen, wenn kein Befehl mehr läuft.
 \stopitemize
 \stopinfobox
 
@@ -1682,7 +1687,8 @@ Sein Snapshot nimmt die Sperre der Referenzen;
 eine verwaiste Sperre dieses Rechners übernimmt er, und er räumt \type{tmp/} auf.
 Er hält eine Änderung im Verzeichnis fest
 und listet unter \type{!} die Reste eines unterbrochenen Restore.
-Jeder andere Befehl, der schreibt, würde die Sperre ebenso übernehmen.
+Jeder andere Befehl, der schreibt, würde die Sperre ebenso übernehmen,
+ausser \type{op restore}, das den Eintrag beurteilt, bevor es die Sperre nimmt.
 \type{status} kommt zuerst, weil es ausser einem Snapshot nichts schreibt.
 \item \type{stemma op log}.
 Die neuesten Einträge zeigen, was der unterbrochene Befehl hinterliess:
@@ -1690,20 +1696,24 @@ kein Eintrag, wenn er vor seinem Eintrag endete,
 ein Eintrag mit \type{!}, wenn seine Zeigerbewegung nicht stattfand,
 und ein Eintrag ohne Markierung, wenn sie stattfand.
 Erst nach dem ersten Schritt ist die Sperre frei,
-und nur dann kann \type{op log} den Ausgang des neuesten Eintrags entscheiden.
-Ein \type{?} bleibt danach nur bei einem Eintrag vor dem jüngsten Stub
-oder bei einem Zeiger, den jemand ausserhalb des Logs bewegt hat.
+und nur dann kann \type{op log} entscheiden, dass eine Zeigerbewegung nicht stattfand.
+Ein \type{?} danach hat die Ursachen aus \in{Abschnitt}[sec:outcome]:
+einen Eintrag vor dem jüngsten Stub, einen Purge, dessen Stubs noch ausstehen,
+einen Zeiger, den jemand ausserhalb des Logs bewegt hat, oder Referenzen,
+die sich nicht lesen lassen.
 \item Denselben Befehl wiederholen.
-Ein \type{commit} mit derselben Nachricht macht den Commit
+Ein \type{commit} macht den Commit
 oder beendet einen, der zwischen seinen beiden Zeigerbewegungen abbrach;
-dann verwendet er die eigene Nachricht nicht und sagt das.
+dann verwendet er seine Nachricht nicht, welche es auch ist, und sagt das.
 Ein \type{track} lässt sich ohne Weiteres wiederholen.
 Dasselbe \type{op restore N} lässt jeden Zeiger, der schon zurück ist, stehen
 und setzt die anderen; einen Rest \type{.stemma-checkout-…} entfernt man von Hand.
 Nach einem \type{purge --apply} lehnt jeder andere Befehl ab, solange das Journal besteht.
 \type{purge --resume} beendet den Purge,
 und \type{purge --abort} nimmt ihn zurück, solange sein Eintrag fehlt.
-Ohne Journal hat der Purge nicht begonnen, und \type{purge --apply} lässt sich wiederholen.
+Ohne Journal hat der Purge nicht begonnen oder ist fertig;
+\type{op log} zeigt, ob sein Eintrag besteht.
+Fehlt er, lässt sich \type{purge --apply} wiederholen.
 \item \type{stemma op verify}.
 Es prüft die Hash-Kette und die Datei \type{oplog-tip} und gibt den Anker aus.
 Wer einen Anker aufbewahrt hat, prüft mit \type{--anchor}, dass der Abbruch ihn nicht berührt hat.
@@ -1791,13 +1801,14 @@ Den neuen Working-Copy-Commit beginnt Eintrag 6 als Kind des benannten.
 \startxcell unverändert \stopxcell
 \startxcell der Branch rückt, falls er noch nicht stand;
 ein neuer Working-Copy-Commit beginnt \stopxcell
-\startxcell ein Eintrag \type{commit} \stopxcell
+\startxcell höchstens ein Eintrag \type{snapshot}, dann ein Eintrag \type{commit} \stopxcell
 \stopxrow
 \startxrow
 \startxcell \type{op restore N} \stopxcell
-\startxcell Dateien des alten Baums \stopxcell
+\startxcell Dateien des alten Baums, wenn der Working-Copy-Commit zurück muss \stopxcell
 \startxcell die Zeiger, die noch nicht zurück sind, gehen auf ihre alten Werte \stopxcell
-\startxcell ein Eintrag \type{restore}, wenn noch ein Zeiger zurück muss \stopxcell
+\startxcell höchstens ein Eintrag \type{snapshot}, dann ein Eintrag \type{restore},
+wenn noch ein Zeiger zurück muss \stopxcell
 \stopxrow
 \startxrow
 \startxcell \type{purge --resume} \stopxcell
@@ -1831,7 +1842,7 @@ läuft einer, wartet man auf sein Ende.
 Ein anderer schreibt gerade, etwa in einem zweiten Terminal.
 Die Meldung rät, es später wieder zu versuchen, und die Datei bleibt.
 \item Auf einem Dateisystem ohne Dateisperren schreibt jeder Befehl die Datei in der alten Form,
-und keiner übernimmt sie.
+und ausser \type{purge --resume} und \type{--abort} übernimmt keiner sie.
 Die Meldung nennt den Grund; nach einem Abbruch ist die Datei von Hand zu entfernen,
 sobald sicher kein Befehl mehr läuft.
 \item Besteht das Journal eines Purge, lehnt \type{status} ab und nennt
