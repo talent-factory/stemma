@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 400" font-family="Helvetica, Arial, sans-serif">
+<title>Zustände der Sperre der Referenzen</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+  <marker id="arrow-crash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="850" height="400" fill="#FFFFFF"/>
+<!-- States of refs.lock, as in ADR-008 and ADR-014 -->
+<g stroke="#64748B" stroke-width="1" fill="#FFFFFF">
+  <rect x="90" y="50" width="160" height="80" rx="4"/>
+  <rect x="370" y="50" width="160" height="80" rx="4"/>
+  <rect x="650" y="50" width="160" height="80" rx="4"/>
+  <rect x="90" y="270" width="160" height="80" rx="4"/>
+  <rect x="370" y="270" width="160" height="80" rx="4"/>
+</g>
+<g font-size="13" font-weight="bold" fill="#0F172A" text-anchor="middle">
+  <text x="170" y="74">frei</text>
+  <text x="450" y="74">gehalten</text>
+  <text x="730" y="74">Purge offen</text>
+  <text x="170" y="294">fremder Rechner</text>
+  <text x="450" y="294">verwaist</text>
+</g>
+<g font-size="11" fill="#64748B" text-anchor="middle">
+  <text x="170" y="94">kein <tspan font-family="Courier, monospace">refs.lock</tspan></text>
+  <text x="450" y="94"><tspan font-family="Courier, monospace">refs.lock</tspan>; ein laufender</text>
+  <text x="450" y="108">Prozess hält die Sperre auf</text>
+  <text x="450" y="122" font-family="Courier, monospace">refs.lock.guard</text>
+  <text x="730" y="94"><tspan font-family="Courier, monospace">purge-pending</tspan> besteht,</text>
+  <text x="730" y="108">Sperre verwaist oder frei</text>
+  <text x="170" y="314"><tspan font-family="Courier, monospace">refs.lock</tspan> nennt einen</text>
+  <text x="170" y="328">anderen Rechner</text>
+  <text x="450" y="314"><tspan font-family="Courier, monospace">refs.lock</tspan> nennt diesen</text>
+  <text x="450" y="328">Rechner, die Sperre auf</text>
+  <text x="450" y="342"><tspan font-family="Courier, monospace">refs.lock.guard</tspan> ist frei</text>
+</g>
+<!-- Ordinary transitions -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="250" y1="72" x2="368" y2="72"/>
+  <line x1="370" y1="98" x2="252" y2="98"/>
+  <line x1="650" y1="98" x2="532" y2="98"/>
+  <line x1="490" y1="270" x2="490" y2="132"/>
+  <line x1="130" y1="130" x2="130" y2="268"/>
+  <line x1="210" y1="270" x2="210" y2="132"/>
+</g>
+<!-- Transitions caused by a crash -->
+<g stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-crash)">
+  <line x1="530" y1="72" x2="648" y2="72"/>
+  <line x1="430" y1="130" x2="430" y2="268"/>
+</g>
+<g font-size="12" fill="#0F172A" text-anchor="middle">
+  <text x="309" y="64">nehmen</text>
+  <text x="311" y="114">freigeben,</text>
+  <text x="311" y="128">Ctrl-C</text>
+  <text x="591" y="114" font-family="Courier, monospace">--resume,</text>
+  <text x="591" y="128" font-family="Courier, monospace">--abort</text>
+  <text x="730" y="152">andere Befehle</text>
+  <text x="730" y="166">lehnen ab</text>
+  <text x="170" y="372">kein Befehl übernimmt</text>
+</g>
+<g font-size="12" fill="#B91C1C" text-anchor="middle">
+  <text x="589" y="48">Abbruch nach</text>
+  <text x="589" y="62">dem Journal</text>
+</g>
+<g font-size="12" fill="#B91C1C" text-anchor="end">
+  <text x="422" y="190">kill -9,</text>
+  <text x="422" y="204">Absturz</text>
+</g>
+<g font-size="12" fill="#0F172A" text-anchor="end">
+  <text x="122" y="190">anderer</text>
+  <text x="122" y="204">Rechner nimmt</text>
+</g>
+<g font-size="12" fill="#0F172A" text-anchor="start">
+  <text x="218" y="184">dort frei oder</text>
+  <text x="218" y="198">von Hand</text>
+  <text x="218" y="212">entfernt</text>
+  <text x="498" y="184">nächster Befehl</text>
+  <text x="498" y="198">übernimmt, räumt</text>
+  <text x="498" y="212"><tspan font-family="Courier, monospace">tmp/</tspan> auf</text>
+</g>
+<!-- Legend -->
+<line x1="590" y1="296" x2="630" y2="296" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="640" y="300" font-size="12" fill="#0F172A">Abbruch des Halters</text>
+<line x1="590" y1="320" x2="630" y2="320" stroke="#64748B" stroke-width="1.5"/>
+<text x="640" y="324" font-size="12" fill="#0F172A">Befehl</text>
+</svg>

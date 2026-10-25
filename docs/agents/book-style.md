@@ -137,6 +137,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | verfolgt, unverfolgt | getrackt | A file in the tree of the Working-Copy-Commit, or not |
 | Ausschlussdatei | Ignore-Datei | `.stemmaignore` (ADR-012) |
 | Sperre der Referenzen | Lock | `refs.lock`: one writer at a time (ADR-008) |
+| verwaiste Sperre | tote Sperre, Stale Lock | `refs.lock` of a process that ended; the next writer of the host takes it over (ADR-008) |
 | Write-Ahead-Regel | Write-Ahead-Log (for the Operation Log) | The entry is flushed before its pointer moves (ADR-011) |
 | Ausgang | | Whether the moves of an entry took effect (ADR-011) |
 | Hash-Kette | Hashkette | The link from each entry to the hash of the one before (ADR-011) |

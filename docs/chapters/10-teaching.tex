@@ -114,6 +114,12 @@ für Branches und den Working-Copy-Commit mit einem Compare-and-Swap unter der S
 \startxcell nicht im Buch; ARIES \cite[mohan1992aries] \stopxcell
 \stopxrow
 \startxrow
+\startxcell Gegenseitiger Ausschluss über eine Datei, die nur angelegt wird, wenn sie fehlt;
+eine verwaiste Sperre erkennt eine Sperre des Betriebssystems statt einer Frist \stopxcell
+\startxcell \type{acquire} und \type{Lock} (\type{refs.rs}) \stopxcell
+\startxcell nicht im Buch; kritischer Abschnitt \cite[silberschatz2018os] \stopxcell
+\stopxrow
+\startxrow
 \startxcell Tiefensuche durch den Commit-Graphen beim Purge, mit eigenem Stapel: ein Commit ist
 fertig, wenn alle Eltern fertig sind; danach eine Prüfung der Erreichbarkeit \stopxcell
 \startxcell \type{Planner::commit}, \type{reached} (\type{purge.rs}) \stopxcell
