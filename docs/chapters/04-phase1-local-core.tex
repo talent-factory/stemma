@@ -775,6 +775,28 @@ einen Eintrag bauen und schreiben kann nur Code des Kerns selbst.
 Das ist eine Vereinbarung der Schnittstelle und keine Grenze,
 denn die Dateien sind gewöhnliche Dateien.
 
+Die Reihenfolge ist die Write-Ahead-Regel der Datenbanken.
+Dort muss der Logsatz einer Änderung auf dem Datenträger stehen,
+bevor die geänderte Seite dorthin zurückgeschrieben wird,
+und ARIES baut sein Wiederherstellen nach einem Absturz darauf auf \cite[mohan1992aries].
+In Stemma nimmt der Zeiger den Platz der Seite ein und der Eintrag den des Logsatzes.
+Als Invariante gefasst:
+{\em Bevor ein Zeiger vom Wert $a$ auf den Wert $b$ geht,
+steht ein gesicherter Eintrag im Log, der für diesen Zeiger den alten Wert $a$
+und den neuen Wert $b$ nennt.}
+Solange nur der Kern die Zeiger bewegt, ist darum jeder Wert, den ein Zeiger je hatte,
+alter oder neuer Wert eines Eintrags,
+und ein Commit, den ein Zeiger einmal nannte, bleibt im Log genannt,
+bis ein Purge den Eintrag durch einen Stub ersetzt.
+
+Die Prüfung unter der Sperre ist ein Compare-and-Swap:
+Der Zeiger bewegt sich nur, wenn er noch den Wert hat, den der Aufrufer erwartet.
+Kein anderer Schreiber kommt zwischen Prüfung und Zeigerbewegung, denn jeder braucht die Sperre.
+Einen Unterschied zu ARIES gibt es:
+Stemma holt nach einem Absturz nichts von selbst nach und nimmt nichts von selbst zurück.
+Das Log dient dazu, den Ausgang eines Eintrags zu lesen (\in{Abschnitt}[sec:outcome]),
+und dem Restore, das ein Mensch oder ein Agent ausdrücklich aufruft.
+
 Ein Eintrag bleibt trotzdem eine Absicht.
 Das Dateisystem kann zwischen Eintrag und Zeigerbewegung ausfallen,
 und ein Eintrag, der nicht als gesichert bekannt ist, verhindert die Zeigerbewegung.
@@ -782,8 +804,8 @@ Der Fehler sagt in beiden Fällen, dass ein Eintrag existiert
 und dass sich der Zeiger nicht bewegt hat, und er trägt den Eintrag mit.
 Ein Aufrufer kann so ein Scheitern ohne Eintrag von einem mit Eintrag unterscheiden
 und weiss, ob er die Änderung wiederholen darf.
-Ob eine Zeigerbewegung stattgefunden hat, lässt sich an der Kette der Einträge eines Zeigers
-ablesen.
+Ob eine Zeigerbewegung stattgefunden hat, lässt sich an den späteren Einträgen desselben Zeigers
+und an seinem Wert ablesen (\in{Abschnitt}[sec:outcome]).
 Nach der Zeigerbewegung wird nichts mehr geschrieben, damit nichts halb geschrieben bleiben kann.
 
 Was nach einem Absturz an jeder Stelle zurückbleibt, steht in
@@ -807,21 +829,6 @@ Auf anderen Plattformen bleibt jede Umbenennung atomar,
 ein Stromausfall kann dort aber die letzte Änderung zurücknehmen.
 \stopinfobox
 
-\startinfobox
-{\bf Wann das Log den Ausgang falsch einschätzt.}
-Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück,
-entscheidet die Kette richtig, solange niemand den Zeiger ausserhalb des Logs bewegt,
-denn jeder Eintrag liest seinen alten Wert unter der Sperre.
-Setzt aber jemand ausserhalb des Logs einen Zeiger auf den alten Wert eines Eintrags zurück,
-sieht das Log dasselbe wie nach einer gescheiterten Zeigerbewegung.
-Es meldet dann, die Zeigerbewegung habe nicht stattgefunden, obwohl sie stattfand;
-beim neuesten Eintrag eines Zeigers nur, solange niemand schreibt,
-sonst ist der Ausgang unbekannt.
-Umgekehrt sieht eine gescheiterte Zeigerbewegung,
-nach der jemand den Zeiger ausserhalb des Logs auf den neuen Wert setzt,
-wie eine Zeigerbewegung aus, die stattfand.
-\stopinfobox
-
 \subsection{Nummern und die Datei \type{oplog-tip}}
 
 Jeder Eintrag entsteht in einer temporären Datei in \type{tmp/}
@@ -831,6 +838,16 @@ und ein Eintrag ist vom ersten Moment an vollständig.
 Schreiber, die die Sperre halten, treffen hier nicht aufeinander;
 die Wiederholung mit der nächsten Nummer gilt für Schreiber ohne Sperre.
 Eine Lücke in den Nummern meldet der Leser als verlorenen Eintrag.
+
+Für die Nummern gilt damit eine Invariante:
+{\em Ein Log aus $N$ Einträgen trägt die Nummern $1, 2, \ldots, N$ ohne Lücke,
+und jede Nummer gehört genau einem Eintrag.}
+Der harte Verweis sichert den zweiten Teil.
+Er legt den Namen in einem Schritt an und scheitert, wenn es ihn schon gibt,
+so dass zwei Schreiber nie dieselbe Nummer veröffentlichen.
+Der erste Teil folgt daraus, dass ein Schreiber immer die Nummer nach der grössten nimmt.
+Eine Lücke kann deshalb nur durch einen Verlust entstehen,
+etwa durch einen Stromausfall oder eine gelöschte Datei.
 
 Was in \type{tmp/} liegen bleibt, räumt der nächste Schreiber auf, sobald er die Sperre nimmt.
 Jeder, der in \type{tmp/} schreibt, hält die Sperre der Referenzen:
@@ -881,6 +898,12 @@ denn sonst würde er die Nummer ein zweites Mal an eine andere Zeigerbewegung ve
 Eine Datei, die um eins zurückliegt, ist kein Fehler:
 Der Vorgang brach zwischen dem Eintrag und der Datei ab,
 und der nächste Schreiber führt sie nach.
+Schreibt man $H(i)$ für den Hash von Eintrag $i$ (\in{Abschnitt}[sec:hash-chain]),
+gilt nach jedem vollständigen Schreiben $\mathit{tip} = (N, H(N))$,
+und nach einem Abbruch zwischen dem Eintrag und der Datei $\mathit{tip} = (N-1, H(N-1))$.
+Weiter zurück liegt die Datei nur, wenn ein Nachführen scheiterte
+oder ausblieb, weil sich das Verzeichnis eines Eintrags nicht sichern liess;
+das nehmen die Schreiber hin, und \type{stemma op verify} meldet es.
 Gegen einen Angriff hilft die Datei nicht, nur gegen Unfälle.
 Wer sie löscht, fällt erst \type{stemma op verify} auf,
 sofern der letzte Eintrag in der Kette steht,
@@ -904,7 +927,7 @@ denn eine Weigerung würde die Zeigerbewegung verhindern, die das Log reparieren
 \stopitemize
 \stopinfobox
 
-\subsection{Die Hash-Kette}
+\subsection[sec:hash-chain]{Die Hash-Kette}
 
 Ein Log aus Textdateien lässt sich leicht ändern.
 Die Hash-Kette macht eine Änderung sichtbar:
@@ -921,9 +944,27 @@ von denen ein Purge einen durch einen Stub ersetzt hat.
 \externalfigure[images/oplog-chain.pdf][width=\textwidth]
 \stopplacefigure
 
+Genauer: Sei $s$ die Nummer des ersten Eintrags der Kette und $N$ die des letzten.
+Für $s \le i \le N$ ist $H(i)$ der BLAKE3-Hash des Umschlags $u_i$,
+und $u_i$ enthält $i$, die Zeit und den Akteur von Eintrag $i$,
+den Wert $p(i)$ seiner Zeile \type{previous} und den Hash seines Rumpfs.
+Die Invariante der Kette lautet:
+{\em $p(s)$ ist leer (\type{-}), und $p(i) = H(i-1)$ für $s < i \le N$.}
+Die Idee stammt aus dem Zeitstempeln von Dokumenten.
+Haber und Stornetta verketten jeden Zeitstempel mit dem Hash des vorigen,
+so dass sich ein Dokument weder vor- noch zurückdatieren lässt
+\cite[haber1991timestamp].
+
 Der Leser prüft die Kette.
 Wird ein Eintrag in der Mitte geändert, gelöscht, eingefügt oder mit einem anderen vertauscht,
 bricht sie an dieser Stelle, und der Leser nennt die Nummer.
+Der Grund ist die Kollisionsresistenz von BLAKE3 (\in{Abschnitt}[sec:object-guarantees]).
+Ändert jemand Eintrag $j < N$, ändert sich $u_j$ und mit ihm $H(j)$,
+es sei denn, er findet zwei Umschläge mit demselben Hash.
+Dann gilt $p(j+1) \ne H(j)$, und die Prüfung bricht bei $j+1$.
+Wer das verbergen will, muss $p(j+1)$ ändern, damit auch $H(j+1)$, und so weiter bis $N$
+und bis zur Datei \type{oplog-tip}, die $H(N)$ nennt.
+Unbemerkt bleibt eine Änderung also nur, wenn jemand jeden Eintrag ab ihr neu schreibt.
 Auf den letzten Eintrag verweist noch keiner,
 deshalb nennt die Datei \type{oplog-tip} neben der Nummer auch seinen Hash.
 So fällt auch ein ersetzter letzter Eintrag auf,
@@ -954,6 +995,16 @@ Wer \type{.stemma} schreiben kann, kann jeden späteren Hash und die Datei \type
 neu berechnen.
 Das fällt nur mit einem Anker auf, der ausserhalb des Repositories liegt:
 Wer einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}.
+Ein Anker $(n, H(n))$ deckt die Einträge $s$ bis $n$,
+denn nach dem Argument oben bricht eine Änderung an einem von ihnen die Kette
+oder ändert $H(n)$.
+Er übersteht einen Purge, weil ein Stub den Hash seines Eintrags behält.
+Die Einträge nach $n$ deckt er nicht:
+Wer das Log nach $n$ abschneidet und neu schreibt, besteht die Prüfung mit diesem Anker.
+Crosby und Wallach zeigen, dass ein Log, das sein Schreiber selbst neu berechnen kann,
+Manipulationen erst durch solche Zusagen an Prüfer ausserhalb erkennen lässt,
+und dass der Nachweis über eine Kette linear in der Zahl der Einträge dazwischen ist;
+ihr Baum der Geschichte senkt ihn auf $O(\log N)$ \cite[crosby2009tamper].
 Für die Arbeit mit Agenten zählt das besonders:
 Ein Agent, der im Repository arbeitet, kann \type{.stemma} schreiben,
 und erst ein Anker beim Sponsor zeigt, ob das Log nach der Sitzung noch dasselbe ist.
@@ -966,6 +1017,153 @@ Ein solches Log behält seine alten Einträge vorne, und der erste neue Eintrag 
 Diese alten Einträge deckt die Kette nicht ab,
 und einen alten Eintrag hinter der Kette lehnt der Leser ab.
 \stopinfobox
+
+\subsection[sec:outcome]{Der Ausgang eines Eintrags}
+
+Ein Eintrag entsteht vor seiner Zeigerbewegung und kann deshalb eine Bewegung nennen,
+die nie stattfand.
+Ein Vermerk nach der Bewegung würde das nicht klären,
+denn er könnte selbst halb geschrieben sein oder verloren gehen (ADR-011).
+Stemma liest den Ausgang deshalb aus den Einträgen und den Zeigern ab.
+\type{op log} zeigt ihn an, mit \type{!} für eine Bewegung, die nicht stattfand,
+und mit \type{?} für einen unbekannten Ausgang;
+das Restore braucht für einen unbekannten Ausgang \type{--force}.
+
+Ein Eintrag $e$ bewegt einen oder mehrere Zeiger, den Zeiger $z$ vom Wert $a$ auf den Wert $b$.
+Sei $e'$ der nächste Eintrag nach $e$, der $z$ bewegt, und $a'$ sein alter Wert für $z$;
+sei $c$ der Wert, den $z$ jetzt hat.
+Für den Zeiger $z$ gilt:
+
+\startitemize
+\item Gibt es $e'$, hat die Bewegung stattgefunden, wenn $a' = b$,
+und nicht stattgefunden, wenn $a' = a$. Jeder andere Wert lässt sie unbekannt.
+\item Gibt es kein $e'$, hat sie stattgefunden, wenn $c = b$.
+Ist $c = a$, hat sie nicht stattgefunden, aber nur, wenn gerade niemand schreibt:
+Die Sperre der Referenzen liegt vor und nach dem Lesen der Zeiger nicht,
+und das Log ist dazwischen nicht gewachsen.
+Sonst ist sie unbekannt, ebenso, wenn sich $z$ nicht lesen lässt.
+\stopitemize
+
+Der Eintrag $e$ hat stattgefunden, wenn das für jeden seiner Zeiger gilt,
+und er hat nicht stattgefunden, wenn ein Zeiger sich nicht bewegt hat;
+sonst ist sein Ausgang unbekannt.
+So zeigt sich auch eine Bewegung mehrerer Zeiger, die nur zur Hälfte stattfand.
+Ein Stub und der Eintrag eines Purge haben einen unbekannten Ausgang.
+Ein Stub ist zudem eine Schranke:
+Die Bewegungen des Eintrags, den er ersetzt, sind nicht mehr bekannt,
+also ist auch der Ausgang jedes Eintrags vor dem jüngsten Stub unbekannt (ADR-014).
+
+Alle Ausgänge entstehen in einem einzigen Durchlauf vom neuesten Eintrag zum ältesten
+(\type{outcomes}).
+Der Durchlauf hält für HEAD, für den Working-Copy-Commit und für jeden Branch
+die Bewegung, die er zuletzt gesehen hat, die Branches in einer Hashtabelle nach ihrem Namen.
+Weil er rückwärts läuft, ist diese Bewegung genau die von $e'$.
+Für jeden Zeiger eines Eintrags vergleicht er mit ihr, oder mit $c$, wenn es noch keine gibt,
+und legt danach die Bewegung des Eintrags an ihren Platz.
+Trifft er auf einen Stub, gibt er allen älteren Einträgen den Ausgang unbekannt.
+
+Warum die Regel richtig entscheidet, folgt aus der Write-Ahead-Regel
+und aus dem Compare-and-Swap unter der Sperre (\in{Abschnitt}[sec:pointer-move]).
+Angenommen, nur der Kern bewegt die Zeiger.
+Zwischen $e$ und $e'$ bewegt kein Eintrag den Zeiger $z$,
+also hat $z$, wenn $e'$ seinen alten Wert unter der Sperre liest,
+den Wert, den $e$ hinterliess: $b$, wenn die Bewegung stattfand, und sonst $a$.
+Ein Eintrag nennt nur Zeiger, deren Wert sich ändert, also ist $a \ne b$,
+und $a'$ unterscheidet die beiden Fälle.
+Ohne $e'$ übernimmt $c$ die Rolle von $a'$.
+Ein Schreiber zwischen seinem Eintrag und seiner Zeigerbewegung sieht aber aus
+wie ein Absturz an dieser Stelle;
+deshalb gilt $c = a$ nur dann als Scheitern, wenn niemand schreibt.
+Ein dritter Wert kann unter der Annahme nicht auftreten
+und zeigt eine Bewegung ausserhalb des Logs an.
+
+Eine Bewegung ausserhalb des Logs kann keine Regel sicher beurteilen,
+die nur das Log und die Zeiger liest.
+Sie hinterlässt keinen Eintrag.
+Setzt jemand $z$ nach einem $e$, das stattfand, von $b$ auf $a$ zurück,
+sehen Log und Zeiger genau so aus wie nach einem $e$, das scheiterte:
+dieselben Einträge und derselbe Wert jetzt.
+Die beiden Geschichten liefern dieselbe Eingabe,
+also muss jede solche Regel in einer von beiden falsch liegen.
+Die Infobox unten nennt, wo Stemma falsch liegt.
+
+\startinfobox
+{\bf Wann das Log den Ausgang falsch einschätzt.}
+Kehrt ein Zeiger innerhalb des Logs zu einem früheren Wert zurück,
+entscheidet die Regel richtig, solange niemand den Zeiger ausserhalb des Logs bewegt,
+denn jeder Eintrag liest seinen alten Wert unter der Sperre.
+Setzt aber jemand ausserhalb des Logs einen Zeiger auf den alten Wert eines Eintrags zurück,
+sieht das Log dasselbe wie nach einer gescheiterten Zeigerbewegung.
+Es meldet dann, die Zeigerbewegung habe nicht stattgefunden, obwohl sie stattfand;
+beim neuesten Eintrag eines Zeigers nur, solange niemand schreibt,
+sonst ist der Ausgang unbekannt.
+Umgekehrt sieht eine gescheiterte Zeigerbewegung,
+nach der jemand den Zeiger ausserhalb des Logs auf den neuen Wert setzt,
+wie eine Zeigerbewegung aus, die stattfand.
+\stopinfobox
+
+\subsection[sec:oplog-costs]{Kosten des Logs}
+
+\in{Tabelle}[tab:oplog-costs] nennt die Kosten der Operationen auf dem Log.
+Darin ist $N$ die Zahl der Einträge, $e$ die grösste Grösse eines Eintrags (höchstens 64 KiB),
+$w$ die Zahl der Einträge, die \type{op log -n} zeigt,
+$P$ die Zahl der Zeiger, die die gelesenen Einträge zusammen bewegen,
+$B$ die Zahl der verschiedenen Branches darunter
+und $\ell$ die grösste Länge eines Branch-Namens.
+Das Sichern einer Datei oder eines Verzeichnisses zählt als Konstante.
+
+\startplacetable[title={Kosten der Operationen auf dem Log},reference=tab:oplog-costs,
+  location=here]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.32\textwidth] {\bf Operation} \stopxcell
+\startxcell[width=0.24\textwidth] {\bf Zeit} \stopxcell
+\startxcell[width=0.44\textwidth] {\bf Begründung} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Nummern auflisten \stopxcell
+\startxcell $O(N \log N)$ \stopxcell
+\startxcell Das Verzeichnis nennt $N$ Namen in keiner Ordnung; sie werden sortiert
+und auf Lücken geprüft. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Eintrag schreiben \stopxcell
+\startxcell $O(N \log N + e)$ \stopxcell
+\startxcell Auflisten, Lesen des Vorgängers, Schreiben des Eintrags und der Datei
+\type{oplog-tip}. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{op log -n} $w$ \stopxcell
+\startxcell $O(N \log N + w \cdot e)$ \stopxcell
+\startxcell Auflisten; Lesen und Hashen der $w$ Einträge und des Eintrags davor. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Ganzes Log prüfen (\type{op verify}, \type{check_chain}) \stopxcell
+\startxcell $O(N \cdot e)$ \stopxcell
+\startxcell Jeder Eintrag wird gelesen und gehasht;
+die Einträge liegen zugleich im Speicher. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Ausgänge bestimmen (\type{outcomes}) \stopxcell
+\startxcell $O(N + P \cdot \ell)$ \stopxcell
+\startxcell Ein Durchlauf; je Zeiger ein Vergleich und für einen Branch
+eine Suche und ein Einfügen in der Hashtabelle. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Die Hashtabelle braucht im Mittel eine konstante Zahl von Vergleichen je Suche,
+unter der Annahme, dass die Hashfunktion die Namen gleichmässig verteilt
+\cite[sedgewick2011algorithms] (Abschnitt 3.4); das Hashen eines Namens kostet $O(\ell)$.
+Der Durchlauf braucht $O(N + B)$ Speicher, für das Ergebnis und die Tabelle.
+Jeder Zeiger und sein Name stehen im Text eines Eintrags,
+also sind die Zeiger und die Namen, die der Durchlauf vergleicht und hasht,
+zusammen nicht länger als die gelesenen Einträge,
+und die Ausgänge kosten nie mehr als das Lesen.
+Jedes Lesen des Logs und jedes Schreiben listet das ganze Verzeichnis auf,
+auch \type{op log -n 1}.
+Bei einem langen Log überwiegt deshalb das Auflisten,
+während Prüfung und Ausgänge nur das gezeigte Fenster kosten.
 
 \subsection{Den Zustand vor einem Eintrag wiederherstellen}
 

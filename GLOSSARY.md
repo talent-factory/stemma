@@ -117,6 +117,11 @@ One record of the operation log: the operation, its actor and time, and the old 
 each pointer it moves. (Eintrag)
 _Avoid_: Logeintrag, event
 
+**Write-ahead rule**:
+An entry is written and flushed before the pointer that it names moves, so every value a pointer
+had is the old or new value of an entry. (Write-Ahead-Regel)
+_Avoid_: Write-Ahead-Log (for the operation log)
+
 **Outcome**:
 Whether the moves of an entry took effect, as far as the log can tell. (Ausgang)
 
