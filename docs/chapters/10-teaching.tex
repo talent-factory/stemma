@@ -14,6 +14,8 @@ Der Kurs AISE, AI Assisted Software Engineering, findet Akteure mit Sponsor und 
 jedes Commits, das Operation Log und das Restore als Rückweg nach dem Fehler eines Agenten
 und Operationen, die nur ein Mensch ausführen darf; ab Phase~4 kommen Branch-Regeln,
 Freigaben und Risikostufen dazu.
+Wie Stemma selbst mit Agenten entsteht, beschreibt \in{Abschnitt}[sec:agents]
+als Fallstudie für diesen Kurs.
 
 \section{Algorithmen im Code und im Buch}
 
@@ -264,10 +266,196 @@ Welche Regeln liessen sich maschinell prüfen, so wie \type{just doc-lines} die 
 und welche verlangen das Urteil einer Person?
 \stopitemize
 
+\section[sec:agents]{Wie Stemma mit Agenten entsteht}
+
+Stemma wird von einem Menschen und mehreren Agenten gemeinsam entwickelt.
+Die Agenten schreiben Code, Tests, ADRs und Kapitel dieses Buches;
+der Mensch entscheidet, gibt frei und bleibt für jede Änderung verantwortlich.
+Dieser Abschnitt beschreibt die Praktiken, die das Repository dafür heute enthält,
+und was sie über agentische Softwareentwicklung zeigen.
+
+\subsection{Entscheidungen und Begriffe}
+
+Ein Agent beginnt jede Sitzung ohne Gedächtnis an die vorige.
+Was er über das Projekt wissen muss, steht deshalb in Dateien des Repositories.
+Jede Entscheidung über Format, Verhalten oder Ablauf ist ein ADR in \type{adr/},
+in der Regel mit Kontext, Entscheidung, Folgen und offenen Punkten.
+Ein offener Punkt bleibt als Kästchen im ADR stehen,
+bis der Mensch ihn entscheidet und das Datum einträgt.
+Die gemeinsamen Begriffe stehen englisch in \type{GLOSSARY.md}
+und deutsch in der Terminologietabelle von \type{docs/agents/book-style.md}.
+Die Anleitung \type{docs/agents/domain.md} verlangt,
+dass ein Agent das Glossar und die ADRs eines Bereichs liest, bevor er ihn untersucht.
+Widerspricht sein Ergebnis einem ADR, muss er den Widerspruch nennen
+und darf das ADR nicht stillschweigend übergehen.
+So hängt eine Entscheidung nicht davon ab, ob sich ein Agent an eine frühere Sitzung erinnert.
+
+\subsection{Anweisungen für Agenten}
+
+Die Datei \type{CLAUDE.md} im Wurzelverzeichnis liest der eingesetzte Agent, Claude Code,
+zu Beginn jeder Sitzung.
+Sie legt die Sprachen fest (Code und Commits englisch, das Buch vorerst deutsch),
+nennt die Befehle von \type{just}, die Regeln für Commits und die Pflicht,
+das Buch mit dem Code zu ändern.
+Längere Anleitungen liegen unter \type{docs/agents/}:
+der Stil des Buches, die Prüfung des Buches nach einer Phase, der Umgang mit Issues,
+die Labels und die Domänendokumente.
+\type{CLAUDE.md} bleibt dadurch kurz,
+und ein Agent liest eine Anleitung erst, wenn seine Aufgabe sie berührt.
+
+Manche Regeln beugen einem Schaden vor, andere sind aus einem Fehler entstanden.
+Agentenwerkzeuge können Commits und Pull Requests eine Zeile
+mit dem Link zum vollständigen Protokoll der Sitzung anhängen.
+Ein solcher Link gehört nicht in einen dauerhaften, möglicherweise öffentlichen Verlauf.
+Deshalb verbietet \type{CLAUDE.md} ihn vorsorglich
+und verlangt, ihn zu entfernen, wenn ein Werkzeug ihn einfügt.
+Aus einem Fehler entstand dagegen die Regel für die Zeilen der Dokumentation.
+In den Kapiteln dieses Buches sammelten sich Leerzeichen am Zeilenende und überlange Zeilen,
+obwohl \type{CLAUDE.md} das Umbrechen von Hand schon verlangte,
+und eigene Commits mussten sie beseitigen.
+Seither prüft \type{just doc-lines} als Teil von \type{just ci}
+jede geänderte Zeile der Kapitel und der Markdown-Dateien unter \type{docs/}.
+Das Muster ist allgemein:
+Eine Regel, die nur im Text steht, hält, solange jemand an sie denkt;
+eine Regel, die ein Befehl prüft, hält auch für einen Agenten, der sie nie gelesen hat.
+
+\subsection{Kleine Schritte auf dem Trunk}
+
+Die Entwicklung folgt dem Trunk-based Development von ADR-006.
+Jeder Schritt hat einen eigenen Branch und einen eigenen Pull Request von \type{main} aus,
+lässt sich in einem Durchgang prüfen
+und wird mit einem Squash-Merge zu einem Commit auf \type{main}.
+Ein Branch, der nach drei Arbeitstagen nicht gemergt ist, gilt als zu lang und wird geteilt.
+In der Praxis arbeitet jeder Agent in einem eigenen Worktree von Git,
+damit zwei Agenten nicht im selben Verzeichnis schreiben.
+Eine Regel des Repositories ist das nur für die Prüfung des Buches;
+es entspricht aber der Konvention, die Stemma für seine Arbeitskopien aufstellt (ADR-010).
+Ein kleiner Pull Request passt zur Arbeit mit Agenten,
+weil der Mensch das Ergebnis einer Sitzung vollständig prüfen kann,
+bevor die nächste darauf aufbaut.
+
+Bis Phase~1 trugen die meisten Commits eine Zeile am Ende der Nachricht,
+die den Agenten als Mitautor nannte,
+etwa \type{Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>}.
+Git gibt dieser Zeile keine Bedeutung.
+Sie ist freier Text, den GitHub als zweiten Autor anzeigt und den niemand prüft,
+und sie fehlte bei einem Teil der Commits, an denen ein Agent mitgeschrieben hatte.
+Sie nennt das Modell, aber weder die Sitzung noch den Menschen,
+in dessen Auftrag der Agent handelte; als Autor des Commits steht der Mensch.
+Das Projekt verwendet die Zeile deshalb nicht mehr.
+Stemma trägt dagegen in jeden Commit und jeden Eintrag des Operation Log einen Akteur ein,
+\type{agent <id> model=<model> session=<session> sponsor=<sponsor>},
+der bei seiner Erzeugung geprüft wird (ADR-002, ADR-005).
+Die Sitzung ist dort eine Kennung.
+Sie ordnet jede Änderung einer Sitzung zu, ohne deren Protokoll offenzulegen,
+und vermeidet so das Problem, das zum Verbot der Links geführt hat.
+Sobald Stemma sich selbst verwaltet, übernimmt der Akteur die Aufgabe der Zeile.
+
+\subsection{Aufgaben für Agenten}
+
+Die Aufgaben liegen als Issues im Tracker des Projekts.
+Ein Issue mit dem Label \type{ready-for-agent} ist so weit beschrieben,
+dass ein Agent es ohne Rückfrage umsetzen kann, auch wenn kein Mensch daneben sitzt.
+In der Praxis nennt ein solches Issue das Ziel, den Umfang,
+die betroffenen Dateien und die Kriterien für den Abschluss.
+Ein Issue mit \type{ready-for-human} verlangt Arbeit oder ein Urteil,
+das nur der Mensch leisten kann, etwa eine Entscheidung in einem ADR oder eine Freigabe.
+Die Zuordnung der Labels steht in \type{docs/agents/triage-labels.md}.
+Auch dieser Abschnitt ging als Issue mit \type{ready-for-agent} an einen Agenten;
+das Issue nannte die Punkte, die der Abschnitt behandeln sollte,
+und verlangte, dass \type{just book} ohne Fehler durchläuft.
+Fehlt einem Issue eine solche Angabe, muss der Agent raten oder nachfragen,
+und beides kostet die Zeit, die das Label sparen soll.
+
+\subsection{Prüfschleifen}
+
+Ein Agent, der Code und Tests schreibt, teilt in beiden dieselben blinden Flecken.
+Das Projekt setzt deshalb auf Prüfungen, die nicht vom Autor abhängen.
+\type{just ci} prüft das Format, führt Clippy mit \type{-D warnings} aus,
+baut die Dokumentation der Crates ohne Warnung,
+prüft die Zeilen der Dokumentation und führt die Tests aus,
+die Unit-Tests im Kern und die Integrationstests,
+die jeden Befehl als eigenen Prozess aufrufen.
+\type{just ci} muss vor jedem Commit durchlaufen.
+Der Workflow auf dem Server läuft nur, wenn der Mensch ihn von Hand startet (ADR-006);
+\quotation{\type{main} ist immer grün} beruht also auf dem lokalen Lauf.
+
+Die strengen Leser der Formate (ADR-005) prüfen zwei Verfahren mit erzeugten Eingaben.
+Eigenschaftsbasierte Tests (\type{properties.rs}) laufen in \type{just ci}.
+Sie erzeugen Bäume, Commits, Indexe, Akteure, Einträge des Logs und Zeiger,
+und sie prüfen, dass jeder Leser genau das annimmt, was der Kodierer schreibt,
+und bei keiner Eingabe abbricht.
+Ein Fuzzer geht weiter: \type{just fuzz} erzeugt für einen der Leser zufällige Eingaben,
+ausgehend von gültigen Kodierungen in \type{fuzz/seeds/},
+und \type{just fuzz-all} tut das für alle sechs nacheinander.
+Er braucht die Nightly-Toolchain und läuft deshalb nicht in \type{just ci}.
+Beide Verfahren kennen die Absicht des Autors nicht und finden deshalb Eingaben,
+an die beim Schreiben der Tests niemand gedacht hat.
+Tests, die eine Invariante über zufälligen Folgen von Befehlen prüfen, gibt es noch nicht.
+
+Jeder Pull Request füllt eine Vorlage aus:
+\type{just ci} ist grün, das betroffene Kapitel und die Befehlsreferenz sind nachgeführt,
+und der Text folgt dem Stil des Buches.
+In der Praxis prüfen weitere Agenten mit eigenem Auftrag den Pull Request,
+etwa auf die Regeln des Projekts und auf die Richtigkeit des Textes.
+Ihre Befunde behebt der Autor in eigenen Commits, bevor der Mensch merget;
+eine Datei des Repositories schreibt das nicht vor.
+Nach jeder Phase prüft ein Agent nach \type{docs/agents/book-review.md}
+das Kapitel der Phase, die berührten Teile der Kapitel 1 bis 3,
+die Befehlsreferenz und die Kapitel 10 und 11.
+
+\subsection{Das Buch neben dem Code}
+
+Das Buch entsteht mit dem Code und nicht danach.
+Ein Pull Request, der Verhalten, ein Format oder eine Entscheidung ändert,
+ändert das Kapitel dazu; jeder neue Befehl und jede neue Option
+erscheint in der Befehlsreferenz mit Synopsis, Exit-Codes und einem Beispiel.
+Das kostet in jedem Schritt Zeit, und der Pull Request wird grösser.
+Der Nutzen ist ein Handbuch, das zum Code passt,
+für Menschen und für Agenten, die Stemma bedienen und das Buch statt des Codes lesen.
+
+Kleine Schritte lassen das Buch trotzdem auseinanderlaufen:
+Begriffe variieren, eine beantwortete offene Frage bleibt stehen,
+ein Abschnitt verliert das Muster der anderen.
+Gegen diese Drift prüft die Durchsicht nach jeder Phase die Kapitel in ihrem Umfang
+über die einzelnen Schritte hinweg, gegen den Code, die ADRs und den Stil.
+Dieser Abschnitt ist selbst ein Befund der Durchsicht nach Phase~1.
+Die Forderung nach ihm kam unmittelbar davor in die Anleitungen,
+und die Durchsicht stellte fest, dass er fehlte.
+
+\subsection{Messen statt annehmen}
+
+Wo eine Entscheidung von Zahlen abhängt, misst das Projekt,
+statt eine Annahme eines Agenten oder des Menschen zu übernehmen.
+Die Skripte \type{scripts/measure-*.sh} bauen den Release-Build
+und messen in einem neuen temporären Verzeichnis.
+\type{scripts/measure-track.sh} misst das erste \type{track} vieler kleiner Dateien;
+die Zahlen begründen in ADR-007, dass die Objekte eines Snapshots gemeinsam gesichert werden.
+Weil es noch keine echte Sitzung eines Agenten mit Stemma gibt,
+spielt \type{scripts/measure-retention.sh} eine nach.
+Es überträgt den Verlauf dieses Repositories so in ein neues Stemma-Repository,
+wie ein Agent arbeiten würde, der nach jeder Änderung einen Befehl aufruft,
+mit dem Akteur \type{agent replay model=none session=replay sponsor=measure}.
+Das Ergebnis steht in \in{Tabelle}[tab:retention] und begründet,
+dass das Log in Phase~1 jeden Eintrag behält (ADR-011).
+Die Skripte liegen im Repository,
+damit jede Zahl im Buch und in einem ADR wiederholt werden kann.
+
+\subsection{Bewertung von Code aus Agentenhand}
+
+Offen ist, wie Code bewertet wird, der mit Agenten entstanden ist,
+im Projekt wie in der Lehre.
+Die Prüfschleifen zeigen, ob Code die Regeln einhält und ob die Tests ihn bestätigen,
+nicht, ob der Mensch ihn verstanden hat.
+Für eine Abgabe in einem Kurs fehlen Kriterien, die das Verständnis der Studierenden messen
+und nicht nur das Ergebnis.
+Denkbar ist, die Aufträge an die Agenten, die Entscheidungen in den ADRs
+und die Antworten auf die Befunde eines Reviews mitzubewerten.
+Entschieden ist das nicht.
+
 \section{Offene Fragen}
 
 \startitemize
 \item Lizenz des Lehrmaterials und Umgang mit fremden Quellen.
-\item Bewertungskriterien für Code, der mit Agenten entstanden ist.
 \item Trennung von Studierendennamespaces und Dozierendenrolle.
 \stopitemize
