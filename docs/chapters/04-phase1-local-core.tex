@@ -186,7 +186,7 @@ gleicher Inhalt läge doppelt im Speicher, und der Vergleich fände Unterschiede
 \cite[sedgewick2011algorithms] (Abschnitt 4.2).
 Stemma prüft das nicht; es folgt aus der Konstruktion (\in{Abschnitt}[sec:object-guarantees]).
 
-\subsection{Die Ordnung der Pfade}
+\subsection[sec:path-order]{Die Ordnung der Pfade}
 
 Der Snapshot sammelt die verfolgten Dateien in einer geordneten Symboltabelle
 (\type{Index}, eine \type{BTreeMap}; trotz des Namens kein Staging-Bereich wie bei Git)
@@ -392,7 +392,7 @@ Das Ersetzen bleibt dort atomar, ein Stromausfall kann aber die letzte Änderung
 
 \subsection[sec:object-guarantees]{Warum die Garantien gelten}
 
-Alle Garantien des Objektspeichers stützen sich auf eine Annahme:
+Bis auf die Kreisfreiheit stützen sich die Garantien des Objektspeichers auf eine Annahme:
 Niemand kann zwei verschiedene Eingaben mit demselben BLAKE3-Hash finden
 (Kollisionsresistenz). Für einen Hash von 256 Bit braucht ein allgemeiner Angriff
 auf diese Eigenschaft in der Grössenordnung von $2^{128}$ Versuchen \cite[oconnor2020blake3].
@@ -595,7 +595,7 @@ Jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
 \stopitemize
 \stopinfobox
 
-\subsection{Die Ausschlussdatei}
+\subsection[sec:exclusion-file]{Die Ausschlussdatei}
 
 Die Ausschlussdatei \type{.stemmaignore} liegt im Wurzelverzeichnis
 und hält Dateien aus \type{track} und aus den unverfolgten Dateien von \type{status} heraus
@@ -711,7 +711,7 @@ Bewegt ein anderer Prozess einen dazwischen, können HEAD und Commit aus zwei Zu
 \stopitemize
 \stopinfobox
 
-\subsection{Der Commit}
+\subsection[sec:commit]{Der Commit}
 
 Ein Commit benennt den Working-Copy-Commit und beginnt einen neuen (ADR-010).
 Der benannte Commit wird Teil des Branches,
@@ -771,8 +771,10 @@ $ stemma op log
 Der neue Working-Copy-Commit ist leer, obwohl er einen Baum mit beiden Dateien hat:
 Leer heisst, er hat denselben Baum wie sein Elternteil,
 denn die verfolgten Dateien sind der Baum.
+Die mittlere Zeile zeigt, was ein Absturz zwischen den beiden Zeigerbewegungen zurücklässt;
+die Box am Ende des Abschnitts beschreibt diesen Fall.
 
-\startplacefigure[title={Zeiger vor und nach \type{commit}},
+\startplacefigure[title={Zeiger vor und nach \type{commit}, mit einem Absturz dazwischen},
     reference=fig:commit-pointers,location=here]
 \externalfigure[images/commit-pointers.pdf][width=0.9\textwidth]
 \stopplacefigure
@@ -910,9 +912,8 @@ Nach der Zeigerbewegung wird nichts mehr geschrieben, damit nichts halb geschrie
 
 Was nach einem Absturz an jeder Stelle zurückbleibt, steht in
 \in{Abbildung}[fig:oplog-write] rechts.
-Bis zum letzten Schritt bleibt dabei auch die Sperre liegen.
-Der nächste Befehl auf demselben Rechner übernimmt sie;
-bis dahin nennt das Log den Ausgang des neuesten Eintrags unbekannt.
+Bis zum letzten Schritt bleibt dabei auch die Sperre liegen;
+wer sie übernimmt, beschreibt \in{Abschnitt}[sec:refs-lock].
 
 \startinfobox
 {\bf Was \quotation{gesichert} auf jeder Plattform heisst.}
@@ -927,6 +928,116 @@ Ein Objekt oder ein Eintrag gilt deshalb als nicht geschrieben,
 ein Zeiger dagegen als bewegt, wie oben beschrieben.
 Auf anderen Plattformen bleibt jede Umbenennung atomar,
 ein Stromausfall kann dort aber die letzte Änderung zurücknehmen.
+\stopinfobox
+
+\subsection[sec:refs-lock]{Die Sperre der Referenzen}
+
+Die Prüfung unter der Sperre und die Write-Ahead-Regel setzen voraus,
+dass immer nur ein Befehl schreibt.
+Dafür sorgt die Sperre der Referenzen, die Datei \type{.stemma/refs.lock} (ADR-008).
+Ein Befehl, der schreibt, hält sie von seinem ersten Objekt bis zu seiner letzten Zeigerbewegung,
+ein Purge von seinem Plan bis zu seinem Ende.
+Ein zweiter Befehl, der in dieser Zeit schreiben will, wartet nicht:
+Er bricht sofort mit Exit-Code 1 ab,
+und die Meldung nennt den Prozess, der die Sperre hält, wenn sie ihn kennt.
+Eine einzige Sperre für alle Zeiger ist grob,
+aber ein Befehl hält sie meist nur kurz, und die Regel bleibt einfach.
+
+Ein Befehl nimmt die Sperre und gibt sie wieder frei, in diesen Schritten:
+
+\startitemize[n]
+\item Er nimmt eine Sperre des Betriebssystems auf die leere Datei \type{refs.lock.guard},
+ohne zu warten. Die Datei bleibt immer liegen; sie dient allein dieser Sperre.
+\item Er legt \type{refs.lock} so an, dass das Anlegen scheitert, wenn die Datei schon besteht.
+Besteht sie, prüft er, ob er sie übernehmen darf (siehe unten).
+\item In die Datei schreibt er seinen Rechner, seine Prozessnummer
+und ein Token, das nur er kennt.
+\item Er räumt \type{tmp/} auf (\in{Abschnitt}[sec:oplog-tip]).
+\item Er schreibt Objekte und Einträge und bewegt Zeiger.
+\item Er entfernt \type{refs.lock}, aber nur, wenn die Datei noch sein Token trägt,
+und gibt danach die Sperre des Betriebssystems frei.
+\stopitemize
+
+Ein Befehl, den \type{kill -9} während eines \type{track} beendet hat, liess diese Datei zurück:
+
+\starttyping
+stemma-lock 1
+host m4
+pid 47193
+token 47193-0-dfa39c62f7e3e18e
+\stoptyping
+
+Das Token schützt den Nachfolger.
+Hat jemand eine Sperre entfernt, die verlassen aussah, und hält inzwischen ein anderer Prozess
+eine neue, entfernt der erste Prozess beim Freigeben nicht die Datei des zweiten.
+
+Was nach dem Ende des Halters zurückbleibt, hängt davon ab, wie er endet
+(\in{Abbildung}[fig:lock-states]).
+Gelingt der Befehl oder scheitert er mit einem Fehler, gibt er die Sperre frei.
+Ctrl-C und die Signale zum Beenden fängt die Kommandozeile ab:
+Sie entfernt \type{refs.lock}, bevor der Prozess mit Exit-Code 130 endet.
+Nach \type{kill -9}, einem Absturz oder einem Stromausfall bleibt \type{refs.lock} liegen.
+Die Sperre des Betriebssystems gibt das Betriebssystem dagegen frei, wie auch immer der Prozess
+endet.
+Eine Sperre in diesem Zustand heisst verwaist.
+Der nächste Befehl, der auf diesem Rechner schreibt, übernimmt sie:
+Er hält die Sperre des Betriebssystems, findet eine Datei in der Form oben,
+die diesen Rechner nennt, und ersetzt sie durch seine eigene.
+Bis dahin kann das Log nicht entscheiden, dass der neueste Eintrag nicht stattgefunden hat,
+denn ein Halter zwischen Eintrag und Zeigerbewegung sieht genauso aus;
+steht sein Zeiger noch auf dem alten Wert, nennt es den Ausgang unbekannt
+(\in{Abschnitt}[sec:outcome]).
+Besteht das Journal eines Purge,
+übernehmen nur \type{purge --resume} und \type{--abort} die Sperre;
+jeder andere Befehl, der schreibt, lehnt ab.
+
+\startplacefigure[title={Zustände der Sperre der Referenzen},
+    reference=fig:lock-states,location=here]
+\externalfigure[images/lock-states.pdf][width=\textwidth]
+\stopplacefigure
+
+Die Sperre schützt einen kritischen Abschnitt im Sinn der Betriebssysteme
+\cite[silberschatz2018os], hier über Prozesse hinweg und mit einer Datei als Zustand.
+Für sie gilt eine Invariante:
+{\em Höchstens ein laufender Prozess hält \type{refs.lock}.}
+Ohne Übernahme sichert sie das Anlegen, das an einer bestehenden Datei scheitert.
+Übernehmen darf nur, wer die Sperre des Betriebssystems hält,
+und die hält höchstens ein Prozess.
+Der Halter nimmt sie vor der Datei und gibt sie erst nach ihr frei.
+Solange er läuft, kann also kein anderer Prozess übernehmen,
+und zwei Befehle können nicht dieselbe verwaiste Sperre zugleich übernehmen.
+Ist die Sperre des Betriebssystems frei, läuft auf diesem Rechner kein Halter mehr,
+denn das Betriebssystem gibt sie erst frei, wenn ihr Prozess endet.
+Die Regel braucht deshalb keine Frist und fragt das Betriebssystem nicht nach einer Prozessnummer.
+Eine Frist würde einen langsamen Schreiber wie das erste \type{track} vieler Dateien unterbrechen,
+und die Nummer eines beendeten Prozesses kann ein anderer Prozess erhalten.
+Die Invariante hält, solange niemand eine der beiden Dateien von Hand entfernt,
+während ein Prozess die Sperre hält.
+
+\startinfobox
+{\bf Grenzfälle beim Übernehmen der Sperre.}
+\startitemize
+\item Nennt die Datei die Nummer des eigenen Prozesses, übernimmt der Befehl sie trotzdem:
+Ein früherer Prozess hatte sie,
+etwa in einem Container, in dem der Befehl stets als derselbe Prozess läuft.
+\item Eine Datei eines anderen Rechners übernimmt kein Befehl,
+denn teilen sich zwei Rechner ein Dateisystem,
+reicht die Sperre des Betriebssystems nicht immer von einem zum anderen.
+Die Meldung nennt dann den Rechner und den Prozess.
+\item Die Regel setzt voraus, dass keine zwei Rechner, die ein Repository teilen, gleich heissen.
+Namen wie \type{localhost} gelten deshalb als unbekannt.
+\item Kann ein Befehl die Sperre des Betriebssystems nicht nehmen,
+etwa auf einem Dateisystem ohne Dateisperren,
+schreibt er die Datei in der alten Form,
+und ausser \type{purge --resume} und \type{--abort} übernimmt er keine Sperre;
+die Meldung nennt den Grund.
+\item Solange das Journal eines Purge besteht,
+übernehmen nur \type{purge --resume} und \type{--abort} eine Datei in einer anderen Form:
+eine Datei einer älteren Version, eines Befehls ohne Sperre des Betriebssystems,
+eine von Hand angelegte und die leere Datei,
+die ein Absturz zwischen Anlegen und Schreiben zurücklässt.
+Ohne Journal ist sie von Hand zu entfernen, wenn kein Befehl mehr läuft.
+\stopitemize
 \stopinfobox
 
 \subsection[sec:oplog-tip]{Nummern und die Datei \type{oplog-tip}}
@@ -1104,7 +1215,8 @@ Die Kette zeigt, dass die Einträge zueinander passen, nicht wer sie schrieb.
 Wer \type{.stemma} schreiben kann, kann jeden späteren Hash und die Datei \type{oplog-tip}
 neu berechnen.
 Das fällt nur mit einem Anker auf, der ausserhalb des Repositories liegt:
-Wer einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}.
+Wer einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}
+(\in{Abschnitt}[sec:verify-anchor]).
 Ein Anker $(n, H(n))$ deckt Nummer, Zeit, Akteur und Rumpf-Hash der Einträge $s$ bis $n$,
 denn nach dem Argument oben bricht eine Änderung daran die Kette oder ändert $H(n)$.
 Er übersteht einen Purge, weil ein Stub den Hash seines Eintrags behält.
@@ -1327,6 +1439,14 @@ denn vor Eintrag 5 hatte der Working-Copy-Commit sie schon:
 Der Snapshot von \type{status} hat sie in Eintrag 4 gespeichert.
 Das Restore nimmt also den Commit zurück und lässt die Änderung im Working-Copy-Commit.
 Wer auch sie zurücknehmen will, stellt danach den Zustand vor Eintrag 4 her.
+\in{Abbildung}[fig:restore-pointers] zeigt die Zeiger vor und nach dem Restore.
+Der Commit \quotation{Gruss erweitern} und der Working-Copy-Commit danach
+bleiben ohne Zeiger im Objektspeicher, und \type{op restore 6} setzt die Zeiger wieder auf sie.
+
+\startplacefigure[title={Zeiger vor und nach \type{op restore 5}},
+    reference=fig:restore-pointers,location=here]
+\externalfigure[images/restore-pointers.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Das Restore läuft in diesen Schritten ab:
 
@@ -1409,7 +1529,7 @@ Eine ungesicherte Änderung im Verzeichnis sieht der Plan deshalb nicht.
 \stopitemize
 \stopinfobox
 
-\subsection{Ein Geheimnis aus Verlauf und Log entfernen}
+\subsection[sec:purge]{Ein Geheimnis aus Verlauf und Log entfernen}
 
 Gerät ein Schlüssel in eine verfolgte Datei, hält ihn der nächste Snapshot fest,
 und das Log behält jeden Commit, den eine Operation verlassen hat.
@@ -1537,23 +1657,23 @@ Untracked files:
 ? .stemmaignore
 \stoptyping
 
-Nach dem Purge prüft \type{op verify} das ganze Log und gibt den Anker aus.
-Wer den Anker ausserhalb des Repositories aufbewahrt, prüft später mit \type{--anchor},
-ob der Eintrag noch denselben Hash hat:
-
-\starttyping
-$ stemma op verify
-Checked 9 entries of the operation log: the hash chain holds.
-anchor 9:b3:29a9…9450
-$ stemma op verify --anchor 9:b3:29a9…9450
-Checked 9 entries of the operation log: the hash chain holds.
-Entry 9 still has the hash of the anchor.
-anchor 9:b3:29a9…9450
-\stoptyping
-
+Dass die Kette über den Purge hält, prüft \type{op verify};
+die Sitzung tut das in \in{Abschnitt}[sec:verify-anchor].
 In der Ausgabe stehen die umbrochenen Meldungen auf einer Zeile.
 Eine dauerhafte Liste der entfernten Blobs, die \type{track} prüft, folgt später (ADR-014).
 Ein mit \type{--resume} beendeter Purge nennt keine Pfade, denn das Journal hält sie nicht fest.
+
+Damit ist die Sitzung zu Ende.
+\in{Abbildung}[fig:session-timeline] fasst sie als Zeitachse zusammen:
+Jede Zeile ist ein Eintrag des Logs, mit dem Befehl, der ihn schrieb,
+den Werten der beiden Zeiger danach und dem, was der Befehl im Verzeichnis las oder schrieb.
+Befehle ohne Eintrag fehlen: \type{status} ohne Änderung, \type{op log}, \type{op verify},
+die Pläne mit \type{--dry-run} oder ohne \type{--apply} und die abgelehnten Restores.
+
+\startplacefigure[title={Die Sitzung als Zeitachse},
+    reference=fig:session-timeline,location=here]
+\externalfigure[images/session-timeline.pdf][width=\textwidth]
+\stopplacefigure
 
 \startinfobox
 {\bf Stubs im Log.}
@@ -1677,33 +1797,339 @@ Sie wird dafür so lange gehalten, wie der Snapshot dauert,
 bei 10'000 Dateien etwa 0,7 Sekunden
 (Release-Build, macOS mit APFS auf einer SSD, ein Lauf, Dateien zu 1 KiB; ADR-010).
 
-Ctrl-C entfernt die Sperre, bevor der Prozess endet.
-Nach \type{kill -9} oder einem Absturz bleibt die Datei \type{refs.lock} liegen,
-und der nächste Befehl, der schreibt, übernimmt sie;
-nach einem abgebrochenen Purge tun das nur \type{--resume} und \type{--abort}.
-Wer die Sperre hält, hält dazu eine Sperre des Betriebssystems
-auf der Datei \type{refs.lock.guard} (ADR-008),
-und die gibt das Betriebssystem frei, wenn der Prozess endet, wie auch immer er endet.
-Ist diese Sperre frei und nennt \type{refs.lock} in der Form, die ihr Halter schreibt,
-diesen Rechner, war der Halter ein beendeter Prozess.
-Die Regel braucht keine Frist und fragt das Betriebssystem nicht nach einer Prozessnummer.
+Wie eine Sperre, die ein Abbruch zurückliess, übernommen wird, beschreibt
+\in{Abschnitt}[sec:refs-lock]; nach einem abgebrochenen Purge tun das nur \type{--resume}
+und \type{--abort}.
+
+\subsection[sec:recovery]{Nach einem Absturz oder Abbruch weiterarbeiten}
+
+Ein Befehl, der schreibt, kann an jeder Stelle enden:
+durch Ctrl-C, durch \type{kill}, durch einen Absturz oder einen Stromausfall.
+Was dann zurückbleibt, beschreiben die Abschnitte zur Zeigerbewegung, zum Commit, zum Restore
+und zum Purge jeweils für sich.
+Dieser Abschnitt fasst es zu einem Ablauf zusammen,
+der nach jedem Abbruch von \type{commit}, \type{track}, \type{op restore} oder \type{purge --apply}
+gilt.
+Er braucht kein Wissen darüber, an welcher Stelle der Befehl endete.
+Das ist für die Arbeit mit Agenten der wichtige Fall.
+Die Umgebung eines Agenten beendet einen Aufruf oft nach einer Frist,
+und der Agent erfährt nur, dass der Aufruf kein Ergebnis hatte.
+Er muss dann aus dem Repository allein ablesen, was geschehen ist,
+und einen Schritt wählen, der in jedem Fall sicher ist.
+
+Nach einem Abbruch folgen diese Schritte in dieser Reihenfolge:
+
+\startitemize[n]
+\item \type{stemma status}.
+Sein Snapshot nimmt die Sperre der Referenzen;
+eine verwaiste Sperre dieses Rechners übernimmt er, und er räumt \type{tmp/} auf.
+Er hält eine Änderung im Verzeichnis fest
+und listet unter \type{!} die Reste eines unterbrochenen Restore.
+Jeder andere Befehl, der schreibt, würde die Sperre ebenso übernehmen,
+ausser \type{op restore}, das den Eintrag beurteilt, bevor es die Sperre nimmt.
+\type{status} kommt zuerst, weil es ausser einem Snapshot nichts schreibt.
+\item \type{stemma op log}.
+Die neuesten Einträge zeigen, was der unterbrochene Befehl hinterliess:
+kein Eintrag, wenn er vor seinem Eintrag endete,
+ein Eintrag mit \type{!}, wenn seine Zeigerbewegung nicht stattfand,
+und ein Eintrag ohne Markierung, wenn sie stattfand.
+Erst nach dem ersten Schritt ist die Sperre frei,
+und nur dann kann \type{op log} entscheiden, dass eine Zeigerbewegung nicht stattfand.
+Ein \type{?} danach hat die Ursachen aus \in{Abschnitt}[sec:outcome]:
+einen Eintrag vor dem jüngsten Stub, einen Purge, dessen Stubs noch ausstehen,
+einen Zeiger, den jemand ausserhalb des Logs bewegt hat, oder Referenzen,
+die sich nicht lesen lassen.
+\item Denselben Befehl wiederholen.
+Ein \type{commit} macht den Commit
+oder beendet einen, der zwischen seinen beiden Zeigerbewegungen abbrach;
+dann verwendet er seine Nachricht nicht, welche es auch ist, und sagt das.
+Ein \type{track} lässt sich ohne Weiteres wiederholen.
+Dasselbe \type{op restore N} lässt jeden Zeiger, der schon zurück ist, stehen
+und setzt die anderen; einen Rest \type{.stemma-checkout-…} entfernt man von Hand.
+Nach einem \type{purge --apply} lehnt jeder andere Befehl ab, solange das Journal besteht.
+\type{purge --resume} beendet den Purge,
+und \type{purge --abort} nimmt ihn zurück, solange sein Eintrag fehlt.
+Ohne Journal hat der Purge nicht begonnen oder ist fertig;
+\type{op log} zeigt, ob sein Eintrag besteht.
+Fehlt er, lässt sich \type{purge --apply} wiederholen.
+\item \type{stemma op verify}.
+Es prüft die Hash-Kette und die Datei \type{oplog-tip} und gibt den Anker aus.
+Wer einen Anker aufbewahrt hat, prüft mit \type{--anchor}, dass der Abbruch ihn nicht berührt hat.
+\stopitemize
+
+In einem zweiten Lauf der Sitzung bricht der Commit \quotation{Gruss erweitern}
+zwischen seinen beiden Zeigerbewegungen ab.
+Mit \type{kill -9} lässt sich diese Stelle nicht zuverlässig treffen.
+Für die Ausgaben unten ist der Zustand deshalb von Hand nachgestellt:
+Der Zeiger des Working-Copy-Commits steht wieder auf seinem alten Wert,
+und \type{refs.lock} nennt diesen Rechner und einen beendeten Prozess.
+Solange die Sperre liegt, nennt \type{op log} den Ausgang unbekannt,
+und das Restore verlangt \type{--force}:
+
+\starttyping
+$ stemma op log -n 1
+5  2026-10-25T10:40:55Z  human daniel  commit
+    working-copy  b3:833f…9b0b -> b3:4e34…837a
+    branch main  b3:dc4a…0b9a -> b3:afb3…9ff1
+    ? it is not known whether the move took effect
+$ stemma op restore --dry-run 5
+stemma: the log does not show whether entry 5 took effect, so the state
+before it may not be what it says; use --force to restore anyway
+\stoptyping
+
+\type{status} übernimmt die Sperre.
+Sein Snapshot findet nichts Neues und schreibt keinen Eintrag.
+Die Änderung an \type{README.md} erscheint,
+weil der alte Working-Copy-Commit sie noch gegenüber \quotation{Erste Fassung} hält.
+Danach entscheidet \type{op log}, dass der Eintrag nicht stattgefunden hat,
+und der wiederholte \type{commit} beendet ihn:
+
+\starttyping
+$ stemma status
+Working copy changes:
+M README.md
+$ stemma op log -n 1
+5  2026-10-25T10:40:55Z  human daniel  commit
+    working-copy  b3:833f…9b0b -> b3:4e34…837a
+    branch main  b3:dc4a…0b9a -> b3:afb3…9ff1
+    ! the move did not take effect
+$ stemma commit -m "Gruss erweitern"
+stemma: warning: this call finished a commit that had stopped; its message
+was not used, and what changed since the stop is not in that commit
+Finished the commit b3:afb3…9ff1 on main that had stopped; the message of
+this call was not used
+$ stemma op log -n 1
+6  2026-10-25T10:40:55Z  human daniel  commit
+    working-copy  b3:833f…9b0b -> b3:b919…ce2e
+$ stemma status
+Working copy is clean
+$ stemma op verify
+Checked 6 entries of the operation log: the hash chain holds.
+anchor 6:b3:1250…de49
+\stoptyping
+
+Der Branch stand schon auf dem benannten Commit, also nennt Eintrag 6 nur den Working-Copy-Commit.
+Eintrag 5 behält sein \type{!}, denn sein Working-Copy-Commit kam nie an.
+Den neuen Working-Copy-Commit beginnt Eintrag 6 als Kind des benannten.
+\in{Tabelle}[tab:recovery] fasst zusammen, was jeder Schritt ändert.
+
+\startplacetable[title={Was die Schritte nach einem Abbruch ändern},reference=tab:recovery,
+    location=here]
+\startxtable[frame=off,option=stretch,align={flushleft,high}]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.23\textwidth] {\bf Schritt} \stopxcell
+\startxcell[width=0.16\textwidth] {\bf Verzeichnis} \stopxcell
+\startxcell[width=0.33\textwidth] {\bf Working-Copy-Commit und Zeiger} \stopxcell
+\startxcell {\bf Operation Log} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{status} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell der Snapshot hält Änderungen fest; Branches und HEAD bleiben \stopxcell
+\startxcell höchstens ein Eintrag \type{snapshot} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{op log} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell nur gelesen \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{commit} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell der Branch rückt, falls er noch nicht stand;
+ein neuer Working-Copy-Commit beginnt \stopxcell
+\startxcell höchstens ein Eintrag \type{snapshot}, dann ein Eintrag \type{commit} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{op restore N} \stopxcell
+\startxcell Dateien des alten Baums, wenn der Working-Copy-Commit zurück muss \stopxcell
+\startxcell die Zeiger, die noch nicht zurück sind, gehen auf ihre alten Werte \stopxcell
+\startxcell höchstens ein Eintrag \type{snapshot}, dann ein Eintrag \type{restore},
+wenn noch ein Zeiger zurück muss \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{purge --resume} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell die Zeiger gehen auf die umgeschriebenen Commits \stopxcell
+\startxcell der Eintrag \type{purge}, falls er fehlt, und die Stubs \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{purge --abort} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert; die neuen Objekte gehen \stopxcell
+\startxcell unverändert \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{op verify} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell nur gelesen \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
 
 \startinfobox
-{\bf Grenzfälle beim Übernehmen der Sperre.}
+{\bf Wenn \type{status} die Sperre nicht übernimmt.}
 \startitemize
-\item Nennt die Datei die Nummer des eigenen Prozesses, übernimmt der Befehl sie trotzdem:
-Ein früherer Prozess hatte sie,
-etwa in einem Container, in dem der Befehl stets als derselbe Prozess läuft.
-\item Eine Datei eines anderen Rechners übernimmt kein Befehl,
-denn teilen sich zwei Rechner ein Dateisystem,
-reicht die Sperre des Betriebssystems nicht immer von einem zum anderen.
-Die Meldung nennt dann den Rechner und den Prozess.
-\item Die Regel setzt voraus, dass keine zwei Rechner, die ein Repository teilen, gleich heissen.
-Namen wie \type{localhost} gelten deshalb als unbekannt.
-\item Kann ein Befehl die Sperre des Betriebssystems nicht nehmen,
-etwa auf einem Dateisystem ohne Dateisperren,
-schreibt er die Datei in der alten Form und übernimmt keine Sperre;
-die Meldung nennt den Grund.
+\item Nennt \type{refs.lock} einen anderen Rechner, bricht \type{status} mit Exit-Code 1 ab,
+und die Meldung nennt den Rechner und den Prozess.
+Läuft dort kein Befehl mehr, ist die Datei von Hand zu entfernen;
+läuft einer, wartet man auf sein Ende.
+\item Hält ein laufender Prozess die Sperre, ist kein Befehl abgebrochen:
+Ein anderer schreibt gerade, etwa in einem zweiten Terminal.
+Die Meldung rät, es später wieder zu versuchen, und die Datei bleibt.
+\item Auf einem Dateisystem ohne Dateisperren schreibt jeder Befehl die Datei in der alten Form,
+und ausser \type{purge --resume} und \type{--abort} übernimmt keiner sie.
+Die Meldung nennt den Grund; nach einem Abbruch ist die Datei von Hand zu entfernen,
+sobald sicher kein Befehl mehr läuft.
+\item Besteht das Journal eines Purge, lehnt \type{status} ab und nennt
+\type{purge --resume} und \type{--abort}.
+\stopitemize
+\stopinfobox
+
+\subsection[sec:verify-anchor]{Das Log prüfen und einen Anker aufbewahren}
+
+Eine Sitzung eines Agenten ist zu Ende, und sein Sponsor will wissen,
+was der Agent getan hat und ob das Log noch dasselbe ist wie vor der Sitzung.
+\type{op log} zeigt jede Operation des Agenten mit seinem Akteur.
+Ob das Log selbst geändert wurde, zeigt die Hash-Kette aber nur zusammen mit einem Anker,
+den der Sponsor vor der Sitzung ausserhalb des Repositories aufbewahrt hat
+(\in{Abschnitt}[sec:hash-chain]).
+
+Das Problem entsteht erst mit Agenten.
+Ein Agent läuft mit den Rechten eines Kontos und kann deshalb neben dem Arbeitsverzeichnis
+auch \type{.stemma} schreiben.
+Dazu braucht es keine böse Absicht;
+eine eingeschleuste Anweisung genügt oder der Versuch, einen eigenen Fehler aufzuräumen.
+Ein Mensch, der jeden Schritt selbst macht, führt das Log für sich.
+Für einen Agenten ist es der Bericht, an dem sein Sponsor die Sitzung prüft,
+ohne jeden Schritt gesehen zu haben.
+Ändert der Agent einen Eintrag und berechnet die Kette danach neu,
+besteht das Log jede Prüfung, die nur das Repository liest,
+denn alles, womit die Prüfung vergleicht, liegt im Repository.
+Sichtbar wird die Änderung erst an einem Wert, den der Agent nicht erreicht.
+
+Der Ablauf hat diese Schritte:
+
+\startitemize[n]
+\item Vor der Sitzung führt der Sponsor \type{op verify} aus
+und bewahrt den Wert hinter \type{anchor} auf, etwa \type{9:b3:…},
+an einem Ort, den der Agent nicht schreiben kann,
+zum Beispiel auf einem anderen Rechner, in einem Passwortmanager oder im Ticket der Aufgabe.
+Eine Datei unter demselben Konto reicht nicht, denn der Agent kann auch sie ändern.
+\item Der Agent arbeitet.
+Jeder Befehl, der schreibt, nennt im Log den Akteur, den der Agent angibt.
+Ob er sich ehrlich als Agent angibt, prüft niemand,
+bis die Akteure signieren (ADR-004).
+\item Nach der Sitzung liest der Sponsor mit \type{op log} die Einträge des Agenten.
+\item Er prüft mit \type{op verify --anchor} das ganze Log und den aufbewahrten Anker.
+\item Hält der Anker, bewahrt er den neuen Anker auf, den der Befehl ausgibt;
+er ist der Anker vor der nächsten Sitzung.
+\stopitemize
+
+In der Sitzung nimmt der Sponsor den Anker nach dem Purge:
+
+\starttyping
+$ stemma op verify
+Checked 9 entries of the operation log: the hash chain holds.
+anchor 9:b3:29a9…9450
+\stoptyping
+
+Am nächsten Tag arbeitet ein Agent im Repository.
+Er lässt das Programm den Gruss ausgeben und committet:
+
+\starttyping
+$ export STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel"
+$ echo 'fn main() { println!("Hallo Welt"); }' > src/main.rs
+$ stemma commit -m "Gruss ausgeben"
+Committed b3:238a…4024 on main
+\stoptyping
+
+Nach der Sitzung liest der Sponsor die neuen Einträge und prüft den Anker.
+\type{op log} und \type{op verify} brauchen keinen Akteur:
+
+% The actor of an agent makes a line of op log longer than the measure; a smaller body font
+% keeps every entry on one line.
+\start\switchtobodyfont[small]
+\starttyping
+$ stemma op log -n 3
+11  2026-10-25T10:41:55Z  agent claude model=opus-5-5 session=s1 sponsor=daniel  commit
+    working-copy  b3:e6f6…a5cf -> b3:0051…2bdd
+    branch main  b3:dd97…5918 -> b3:238a…4024
+10  2026-10-25T10:41:54Z  agent claude model=opus-5-5 session=s1 sponsor=daniel  snapshot
+    working-copy  b3:35cb…f216 -> b3:e6f6…a5cf
+9  2026-10-24T05:54:35Z  human daniel  purge
+    commits 3  stubs 7-8
+\stoptyping
+\stop
+
+\starttyping
+$ stemma op verify --anchor 9:b3:29a9…9450
+Checked 11 entries of the operation log: the hash chain holds.
+Entry 9 still has the hash of the anchor.
+anchor 11:b3:8e23…e4ff
+\stoptyping
+
+Der Agent hat zwei Einträge geschrieben, den Snapshot und den Commit,
+und die Einträge 1 bis 9 sind dieselben wie vor der Sitzung.
+Der Sponsor bewahrt nun \type{11:b3:8e23…e4ff} auf.
+
+Ändert der Agent einen früheren Eintrag, etwa den Akteur von Eintrag 5,
+bricht die Kette bei Eintrag 6, und schon \type{op verify} ohne Anker meldet es:
+
+\starttyping
+$ stemma op verify
+stemma: entry 6 does not name the hash of the entry before it:
+expected `previous b3:7c0c…794c`, found `previous b3:5f22…6192`;
+an entry up to 6 was changed, removed, or inserted;
+restore the log from a backup of `.stemma`, as no command repairs the log yet
+\stoptyping
+
+Berechnet der Agent die Zeilen \type{previous} ab Eintrag 6 und die Datei \type{oplog-tip} neu,
+besteht das Log die Prüfung ohne Anker.
+Nur der Anker zeigt die Änderung:
+
+\starttyping
+$ stemma op verify
+Checked 11 entries of the operation log: the hash chain holds.
+anchor 11:b3:d086…1eb8
+$ stemma op verify --anchor 9:b3:29a9…9450
+stemma: entry 9 has the hash b3:3c64…3974, not the hash b3:29a9…9450 of the anchor:
+the log was changed and its chain computed again since the anchor was taken
+\stoptyping
+
+Wie oben steht jede umbrochene Meldung in der Ausgabe auf einer Zeile.
+Der Befehl endet mit Exit-Code 1 und gibt keinen neuen Anker aus.
+Die Meldung nennt den Eintrag des Ankers, nicht den geänderten,
+denn der Anker zeigt nur, dass sich unter den Einträgen 1 bis 9 etwas geändert hat.
+Welcher Eintrag es war, zeigt erst ein Vergleich mit einer Sicherung von \type{.stemma}.
+
+\type{op log} und \type{op verify} lesen nur.
+Sie ändern weder das Arbeitsverzeichnis noch den Working-Copy-Commit, die Zeiger oder das Log,
+und \type{op verify} kostet so viel wie das Prüfen des ganzen Logs
+(\in{Tabelle}[tab:oplog-costs]).
+
+\startinfobox
+{\bf Was ein Anker nach einer Sitzung zeigt und was nicht.}
+\startitemize
+\item Hält der Anker $(n, H(n))$, sind die Einträge der Kette von $s$ bis $n$ unverändert,
+bis auf das Ersetzen durch einen Stub, das ein \type{purge}-Eintrag auflistet
+(\in{Abschnitt}[sec:hash-chain]).
+In der Sitzung beginnt die Kette mit Eintrag 1.
+\item Die Einträge nach $n$ deckt er nicht.
+Der Agent kann seine eigenen Einträge ändern,
+etwa seinen Akteur durch \type{human daniel} ersetzen,
+oder das Log nach $n$ abschneiden, und der Anker hält trotzdem.
+Dagegen helfen erst Signaturen der Akteure (ADR-004) oder ein Hub, der den letzten Eintrag
+bestätigt (Phase 5).
+\item Nennt der Anker einen Eintrag, den das Log nicht hat,
+oder einen Eintrag aus der Zeit vor der Kette, lehnt der Befehl ebenfalls mit Exit-Code 1 ab.
+Die Meldung nennt als zweite Ursache einen Anker eines anderen Repositories.
+\item Der Anker deckt nur das Log.
+Bewegt ein Agent einen Zeiger ausserhalb des Logs,
+zeigt das oft der Ausgang der Einträge, aber nicht immer
+(\in{Abschnitt}[sec:outcome]).
 \stopitemize
 \stopinfobox
 
@@ -1953,7 +2379,7 @@ Eintrag gilt danach als unbekannt, auch ein \type{commit}, ein \type{track} oder
 Aufbewahrungsregel läuft immer wieder. Aufbewahrung und Garbage Collection kommen in einem
 Schritt, denn das eine nützt ohne das andere nichts.
 
-\section{Wie die strengen Leser geprüft werden}
+\section[sec:strict-readers]{Wie die strengen Leser geprüft werden}
 
 Jeder Leser einer Datei des Repositories ist streng: Er nimmt nur an, was der Schreiber
 geschrieben hätte (ADR-005). Das gilt für Bäume, Commits, die Zeile des Akteurs, den Index,

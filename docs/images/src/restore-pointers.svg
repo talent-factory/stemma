@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 610" font-family="Helvetica, Arial, sans-serif">
+<title>Zeiger vor und nach op restore 5</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/>
+  </marker>
+  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#B45309"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="580" height="610" fill="#FFFFFF"/>
+<g font-size="13" font-weight="bold" fill="#0F172A">
+  <text x="20" y="22">Vor <tspan font-family="Courier, monospace">op restore 5</tspan></text>
+  <text x="20" y="302">Nach dem Restore, Eintrag 6</text>
+</g>
+<!-- Commits: grey frame without working-copy pointer, orange frame for the working-copy commit -->
+<g stroke-width="1.5" fill="#FFFFFF">
+  <rect x="20" y="72" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="210" y="72" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="400" y="72" width="160" height="86" rx="4" stroke="#B45309"/>
+  <rect x="210" y="178" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="20" y="352" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="210" y="352" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="400" y="352" width="160" height="86" rx="4" stroke="#64748B"/>
+  <rect x="210" y="458" width="160" height="86" rx="4" stroke="#B45309"/>
+</g>
+<g font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#0F172A">
+  <text x="30" y="92">b3:2037…</text>
+  <text x="220" y="92">b3:9d8a…</text>
+  <text x="410" y="92" fill="#B45309">b3:e394…</text>
+  <text x="220" y="198">b3:7694…</text>
+  <text x="30" y="372">b3:2037…</text>
+  <text x="220" y="372">b3:9d8a…</text>
+  <text x="410" y="372">b3:e394…</text>
+  <text x="220" y="478" fill="#B45309">b3:7694…</text>
+</g>
+<g font-size="12" fill="#0F172A">
+  <text x="30" y="110">Erste Fassung</text>
+  <text x="220" y="110">Gruss erweitern</text>
+  <text x="410" y="110" fill="#64748B" font-style="italic">leere Nachricht</text>
+  <text x="220" y="216" fill="#64748B" font-style="italic">leere Nachricht</text>
+  <text x="30" y="390">Erste Fassung</text>
+  <text x="220" y="390">Gruss erweitern</text>
+  <text x="410" y="390" fill="#64748B" font-style="italic">leere Nachricht</text>
+  <text x="220" y="496" fill="#64748B" font-style="italic">leere Nachricht</text>
+</g>
+<g font-family="Courier, monospace" font-size="11" fill="#64748B">
+  <text x="30" y="128">ch:c52e…</text>
+  <text x="30" y="146">Baum b3:dd8a…</text>
+  <text x="220" y="128">ch:bf9e…</text>
+  <text x="220" y="146">Baum b3:9707…</text>
+  <text x="410" y="128">ch:5bf7…</text>
+  <text x="410" y="146">Baum b3:9707…</text>
+  <text x="220" y="234">ch:bf9e…</text>
+  <text x="220" y="252">Baum b3:9707…</text>
+  <text x="30" y="408">ch:c52e…</text>
+  <text x="30" y="426">Baum b3:dd8a…</text>
+  <text x="220" y="408">ch:bf9e…</text>
+  <text x="220" y="426">Baum b3:9707…</text>
+  <text x="410" y="408">ch:5bf7…</text>
+  <text x="410" y="426">Baum b3:9707…</text>
+  <text x="220" y="514">ch:bf9e…</text>
+  <text x="220" y="532">Baum b3:9707…</text>
+</g>
+<!-- Parent arrows: from commit to parent -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="210" y1="115" x2="182" y2="115"/>
+  <line x1="400" y1="115" x2="372" y2="115"/>
+  <line x1="210" y1="221" x2="150" y2="161"/>
+  <line x1="210" y1="395" x2="182" y2="395"/>
+  <line x1="400" y1="395" x2="372" y2="395"/>
+  <line x1="210" y1="501" x2="150" y2="441"/>
+</g>
+<!-- Pointers -->
+<g stroke-width="1.5" fill="#FFFFFF">
+  <rect x="210" y="36" width="50" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="286" y="36" width="54" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="425" y="36" width="110" height="20" rx="3" stroke="#B45309"/>
+  <rect x="20" y="316" width="50" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="96" y="316" width="54" height="20" rx="3" stroke="#2F7D32"/>
+  <rect x="400" y="491" width="110" height="20" rx="3" stroke="#B45309"/>
+</g>
+<g font-family="Courier, monospace" font-size="12" font-weight="bold" text-anchor="middle">
+  <text x="235" y="50" fill="#2F7D32">HEAD</text>
+  <text x="313" y="50" fill="#2F7D32">main</text>
+  <text x="480" y="50" fill="#B45309">working-copy</text>
+  <text x="45" y="330" fill="#2F7D32">HEAD</text>
+  <text x="123" y="330" fill="#2F7D32">main</text>
+  <text x="455" y="505" fill="#B45309">working-copy</text>
+</g>
+<g stroke-width="1.5">
+  <line x1="260" y1="46" x2="284" y2="46" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="313" y1="56" x2="313" y2="70" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="480" y1="56" x2="480" y2="70" stroke="#B45309" marker-end="url(#arrow-orange)"/>
+  <line x1="70" y1="326" x2="94" y2="326" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="123" y1="336" x2="123" y2="350" stroke="#2F7D32" marker-end="url(#arrow-green)"/>
+  <line x1="400" y1="501" x2="372" y2="501" stroke="#B45309" marker-end="url(#arrow-orange)"/>
+</g>
+<!-- Explanation -->
+<g font-size="12" fill="#0F172A">
+  <text x="400" y="204">ohne Zeiger, seit der</text>
+  <text x="400" y="220">Commit ihn als</text>
+  <text x="400" y="236"><tspan font-family="Courier, monospace">b3:9d8a…</tspan> benannt hat</text>
+  <text x="20" y="568">Das Restore setzt beide Zeiger auf die alten Werte von Eintrag 5 zurück.</text>
+  <text x="20" y="584"><tspan font-family="Courier, monospace">b3:9d8a…</tspan> und <tspan font-family="Courier, monospace">b3:e394…</tspan> bleiben ohne Zeiger im Objektspeicher,</text>
+  <text x="20" y="600">und <tspan font-family="Courier, monospace">op restore 6</tspan> setzt die Zeiger wieder auf sie.</text>
+</g>
+</svg>

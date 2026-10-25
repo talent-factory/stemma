@@ -15,7 +15,7 @@ project `STEMMA`).
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"),
 use the corresponding label string from this table.
 
-The project has no labels yet. Create a missing label with `label create` the first time a skill
-needs it, then apply it with `workitem manage_label`.
+Labels are created on first use: if a skill needs one that the project does not have yet, create
+it with `label create`, then apply it with `workitem manage_label`. `ready-for-agent` exists.
 
 Edit the right-hand column to match whatever vocabulary you actually use.
