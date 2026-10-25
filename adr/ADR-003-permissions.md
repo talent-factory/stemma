@@ -12,14 +12,14 @@
 ## Open
 
 - [ ] Agreement with the proposal?
-- [ ] Peer-to-peer sync as a phase 4 goal, or deliberately excluded?
+- [ ] Peer-to-peer sync after the hub (phase 5), or deliberately excluded?
 - [ ] Record of ref updates on the hub: who set which branch to which commit, and when,
       signed (proposal). It tells readers who do not have the local operation log who rewrote a
       branch (ADR-005).
 
 ## Consequences
 
-- From phase 2 onwards a hub is required, because protected branches are enforced there.
+- From phase 5 onwards a hub is required, because protected branches are enforced there.
 - Local work remains possible. Writing to protected branches requires the server.
 - Peer-to-peer sync is conceivable later without losing enforcement,
   because the signatures reside in the repository.
