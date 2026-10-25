@@ -405,25 +405,29 @@ pub enum TrackError {
     /// The path is empty, absolute, ends in `/`, or has a part that a tree refuses or that the file
     /// system reads as more than one name.
     InvalidPath {
-        /// The path as it was given.
+        /// The path as it was passed to [`Repository::track`], which is not a path of the
+        /// repository. A caller that turned an argument into this form first (as
+        /// [`normalize_path_in`] does) finds its result here, not the argument.
         path: String,
     },
     /// A name below a directory that a tree refuses (a control character, an invisible character,
     /// a name of dots). The user did not type it, so it is not `InvalidPath`.
     InvalidName {
-        /// The path of the file that has the name.
+        /// The path of the file that has the name, relative to the root of the repository.
         path: String,
     },
     /// There is no file or directory at the path, a part before its last name is not a directory,
     /// or a file that was named is gone when it is saved.
     NotFound {
-        /// The path as it was given.
+        /// The path of the repository, relative to its root, as it was passed to
+        /// [`Repository::track`].
         path: String,
     },
     /// A name of the path differs from the name in the directory, in the case of its letters or
     /// in another way that the file system ignores.
     Spelling {
-        /// The path as it was given.
+        /// The path of the repository, relative to its root, as it was passed to
+        /// [`Repository::track`].
         path: String,
         /// The path as the directories spell it, if a name differs in case only.
         on_disk: Option<String>,
@@ -432,7 +436,8 @@ pub enum TrackError {
     /// caller names is added, and this holds for a path that is tracked already (it stays
     /// tracked). A file below a directory is skipped without a word instead.
     Excluded {
-        /// The path as it was given.
+        /// The path of the repository, relative to its root, as it was passed to
+        /// [`Repository::track`].
         path: String,
         /// The line of the pattern in `.stemmaignore`.
         line: NonZeroUsize,
@@ -440,7 +445,8 @@ pub enum TrackError {
     /// A part of the path is `.git`, the metadata of Git, which `track` always leaves out
     /// (ADR-012). Unlike [`TrackError::Excluded`] no line of `.stemmaignore` is involved.
     GitDirectory {
-        /// The path as it was given.
+        /// The path of the repository, relative to its root, as it was passed to
+        /// [`Repository::track`].
         path: String,
     },
     /// The path names a temporary file that a checkout left (ADR-013), as its process ended
@@ -448,7 +454,8 @@ pub enum TrackError {
     /// process ID, a counter, and 16 lowercase hexadecimal digits, which `track` always leaves
     /// out, as it holds the content of an old blob.
     CheckoutLeftover {
-        /// The path as it was given.
+        /// The path of the repository, relative to its root, as it was passed to
+        /// [`Repository::track`].
         path: String,
     },
     /// `.stemmaignore` cannot be read, is not a regular file, changed while it was read, or is not
