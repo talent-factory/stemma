@@ -2110,6 +2110,7 @@ mod tests {
     }
 
     /// The temporary files of a checkout in the directory, by name.
+    #[cfg(target_os = "macos")]
     fn temporary_files(directory: &Path) -> Vec<String> {
         fs::read_dir(directory)
             .unwrap()
