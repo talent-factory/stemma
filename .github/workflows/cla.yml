@@ -1,0 +1,35 @@
+name: "CLA Assistant"
+
+# Checks the contributor license agreement (CLA.md) on pull requests from other people.
+# The action runs with the rights of the base repository and never checks out the code of
+# the pull request, so the pull_request_target trigger is safe here.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+# Explicit, in case the default token permissions of the repository are read-only.
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  CLAAssistant:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "CLA Assistant"
+        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        # The action is archived upstream; pinned to the last release (v2.6.1) by its commit.
+        uses: cla-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-signatures: 'signatures/version1/cla.json'
+          path-to-document: 'https://github.com/talent-factory/stemma/blob/main/CLA.md'
+          # Signatures live on their own branch, because main is protected by a ruleset.
+          branch: 'cla-signatures'
+          allowlist: 'dsenften,rsenften,dependabot[bot]'
+          lock-pullrequest-aftermerge: 'true'
