@@ -1,7 +1,7 @@
 \chapter{Architektur}
 
 Dieses Kapitel beschreibt die Schichten des Systems und die Verteilung der Verantwortung.
-Es setzt die Entscheidungen aus ADR-002 und ADR-003 um.
+Es beschreibt die Entscheidungen aus ADR-002 und den Vorschlag aus ADR-003.
 
 \section{Schichtenmodell}
 
@@ -12,8 +12,8 @@ Er liegt in einer eigenen Bibliothek (\type{stemma-core}).
 Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
 In Phase 1 gibt es eine Oberfläche, die Kommandozeile (\type{stemma-cli})
 mit Befehlen wie \type{init}, \type{commit} und \type{op log}.
-Ein API-Server für Hub und Clients folgt in Phase 5,
-ein MCP-Server als Adapter für Agenten in Phase 6.
+Der Hub folgt in Phase~5, ein API-Server mit denselben Operationen wie die CLI
+und ein MCP-Server als Adapter für Agenten in Phase~6.
 
 \startplacefigure[title={Schichtenmodell von Stemma},reference=fig:layers,location=here]
 \externalfigure[images/layers.pdf][width=\textwidth]
@@ -54,17 +54,18 @@ denn er liest, was die Änderung berühren würde.
 Die Befehle, die nur das Log lesen (\type{op log}, \type{op verify}),
 haben keinen Akteur und fragen nicht.
 In Phase 1 erlaubt die Prüfung alles.
-Nur einen Purge verweigert der Kern einem Agenten schon vorher, fest im Code (ADR-014).
+Nur einen Purge verweigert der Kern einem Agenten schon vorher, fest im Code,
+denn ein Purge lässt sich nicht rückgängig machen (ADR-002, ADR-014).
 Die Frage ist trotzdem Pflicht,
 damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
 
 \section{Ort der Berechtigungen}
 
-Rollen und Policies liegen auf dem Server und werden dort durchgesetzt. Eine Regel steht fest
-im Kern: Nur ein Mensch darf einen Purge machen, denn er lässt sich nicht rückgängig machen
-(ADR-002, ADR-014).
-Signaturen von Commits und Freigaben liegen im Repository und lassen sich unabhängig vom Server
-prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
+Ab Phase~5 sollen Rollen und Policies auf dem Hub liegen und dort durchgesetzt werden.
+Signaturen von Commits und Freigaben sollen im Repository liegen
+und sich unabhängig vom Hub prüfen lassen.
+Die Policy-Dateien sind dann pro Namespace und selbst Stufe~3 aus ADR-004.
+ADR-003 hält das als Vorschlag fest; entschieden ist es noch nicht.
 
 \section{Phasenübersicht}
 
@@ -75,6 +76,7 @@ prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
 \startxcell {\bf Phase} \stopxcell
 \startxcell {\bf Inhalt} \stopxcell
 \startxcell {\bf Ergebnis} \stopxcell
+\startxcell {\bf Stand} \stopxcell
 \stopxrow
 \stopxtablehead
 \startxtablenext
@@ -82,38 +84,46 @@ prüfen. Die Policy-Dateien sind pro Namespace und selbst Stufe 3 aus ADR-004.
 \startxcell {\bf Phase} \stopxcell
 \startxcell {\bf Inhalt} \stopxcell
 \startxcell {\bf Ergebnis} \stopxcell
+\startxcell {\bf Stand} \stopxcell
 \stopxrow
 \stopxtablenext
 \startxrow
 \startxcell 1 \stopxcell
 \startxcell Lokaler Kern: Objekte, \type{init}, \type{track}, \type{commit},
-\type{status}, Operation Log, Purge \stopxcell
-\startxcell Ein Repository mit einem Nutzer \stopxcell
+\type{status}, Operation Log mit \type{op log}, \type{op restore}, \type{op verify},
+Purge \stopxcell
+\startxcell Ein Repository mit einem Akteur je Arbeitskopie \stopxcell
+\startxcell abgeschlossen \stopxcell
 \stopxrow
 \startxrow
 \startxcell 2 \stopxcell
 \startxcell Diff und Ausgabe \stopxcell
 \startxcell Änderungen werden angezeigt \stopxcell
+\startxcell offen \stopxcell
 \stopxrow
 \startxrow
 \startxcell 3 \stopxcell
 \startxcell Branches, \type{checkout}, \type{log}, Merge \stopxcell
 \startxcell Parallele Arbeit lokal \stopxcell
+\startxcell offen \stopxcell
 \stopxrow
 \startxrow
 \startxcell 4 \stopxcell
 \startxcell Akteure und Zusammenarbeit: Lease, PR, Freigaben, Risikostufen \stopxcell
 \startxcell Schreibhoheit und Freigaben werden erzwungen \stopxcell
+\startxcell offen \stopxcell
 \stopxrow
 \startxrow
 \startxcell 5 \stopxcell
 \startxcell Netzwerk und Hub: Sync, Server, Berechtigungen \stopxcell
 \startxcell Teamarbeit über einen Server \stopxcell
+\startxcell offen \stopxcell
 \stopxrow
 \startxrow[topframe=on,bottomframe=on]
 \startxcell 6 \stopxcell
 \startxcell Agenten-Schnittstellen: API und MCP \stopxcell
 \startxcell Agenten arbeiten über definierte Werkzeuge \stopxcell
+\startxcell offen \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable

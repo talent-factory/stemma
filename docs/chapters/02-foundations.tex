@@ -1,14 +1,15 @@
 \chapter{Grundlagen}
 
 Dieses Kapitel fasst die Konzepte zusammen, auf denen das System aufbaut.
-Es ist ein Entwurf und wird mit den Phasen präzisiert.
+Die Abschnitte zu Datenmodell, Arbeitskopie und Operation Log beschreiben den Stand
+nach Phase~1; die übrigen werden mit den Phasen präzisiert.
 
 \section{Datenmodell}
 
 Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden.
 Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse
 und Commits für gespeicherte Stände mit Verweis auf Vorgänger.
-Der Verlauf bildet damit einen azyklischen Graphen aus unveränderlichen Knoten.
+Der Verlauf bildet damit einen gerichteten azyklischen Graphen aus unveränderlichen Knoten.
 Dieser Aufbau ist die Stärke des Modells,
 weil identische Inhalte nur einmal gespeichert werden
 und Änderungen nachträglich nicht unbemerkt verändert werden können
@@ -18,15 +19,18 @@ und Änderungen nachträglich nicht unbemerkt verändert werden können
 \externalfigure[images/objects.pdf][width=\textwidth]
 \stopplacefigure
 
-Stemma übernimmt dieses Modell und ändert vier Dinge. Die ID eines Objekts trägt den Algorithmus
+Stemma übernimmt dieses Modell und ändert daran Folgendes.
+Die ID eines Objekts trägt den Algorithmus
 als Präfix (\type{b3:} für BLAKE3), damit später ein anderer Hash möglich bleibt.
 Jeder Commit trägt eine Change-ID (\type{ch:} und 32 Hexziffern),
 die bei jedem Umschreiben derselben Änderung gleich bleibt,
 damit ein Review oder ein Rebase \quotation{dieselbe Änderung} wiederfindet.
 Sie ist zufällig und wird nicht aus dem Inhalt abgeleitet.
 Jeder Commit nennt einen Akteur, einen Menschen oder einen Agenten mit Modell, Session und Sponsor.
-Einen Committer gibt es nicht. Die Leser sind streng: Was die Kodierung nicht geschrieben hätte,
-wird abgelehnt, damit jedes Objekt genau eine Kodierung und eine ID hat.
+Einen Committer gibt es nicht.
+Jeder Leser einer Datei des Repositories, also der Code, der sie einliest,
+ist streng (ein {\em strenger Leser}): Was die Kodierung nicht geschrieben hätte,
+wird abgelehnt, damit jedes Objekt genau eine Kodierung und eine ID hat (ADR-005).
 
 \section{Referenzen}
 
@@ -70,7 +74,8 @@ Der Preis ist der Teil-Commit:
 Der Index von Git erlaubt einem Menschen, nur einen Teil seiner Änderungen zu committen,
 und das gibt es in Phase 1 nicht.
 Dafür geht in Phase 1 kein Stand der verfolgten Dateien verloren,
-den ein Snapshot festgehalten hat; nur ein Purge entfernt ihn absichtlich.
+den ein Snapshot festgehalten hat; nur ein Purge, das absichtliche Entfernen eines Geheimnisses
+aus Verlauf und Log (ADR-014), entfernt ihn.
 Zwischen zwei Aufrufen sichert Stemma nichts, denn einen Dateiwächter gibt es in Phase 1 nicht.
 
 \section{Konflikte und Operation Log}
@@ -79,7 +84,9 @@ Git bricht einen Vorgang ab, wenn ein Konflikt entsteht.
 Jujutsu speichert Konflikte dagegen im Commit selbst \cite[jujutsu].
 Ein Agent kann so weiterarbeiten und den Konflikt später lösen.
 Ein Operation Log protokolliert jeden Schritt und ermöglicht das Zurücksetzen beliebiger
-Operationen. Beide Ideen passen gut zu Agenten, die viele Schritte ausführen.
+Operationen. Beide Ideen passen zu Agenten, die viele Schritte ohne Aufsicht ausführen:
+Ein Konflikt hält den Agenten nicht an,
+und jeder Schritt lässt sich danach nachvollziehen und zurücknehmen.
 
 In Stemma ist das Log lokal und gehört nicht zum Verlauf (ADR-005, ADR-011).
 Es hält fest, welche Zeiger eine Operation von welchem auf welchen Wert gesetzt hat, wer sie
@@ -87,10 +94,12 @@ ausgeführt hat und wann. Damit bleibt jeder ersetzte Commit erreichbar, auch de
 Working-Copy-Commit, den ein Snapshot ablöst. Der Eintrag wird geschrieben, bevor der Zeiger sich
 bewegt: Bricht ein Prozess dazwischen ab, steht der alte Commit schon im Log.
 Jeder Eintrag ist eine eigene Datei mit fortlaufender Nummer.
+Er nennt den Hash seines Vorgängers, sodass eine nachträgliche Änderung diese Hash-Kette bricht.
 Eine geschriebene Datei bleibt unverändert.
 Die einzige Ausnahme ist ein Purge, der ein Geheimnis entfernt:
 Er ersetzt den Eintrag durch einen Stub, der nur Nummer, Zeit, Akteur und Hash behält (ADR-014).
-Wer schreibt, hält dabei die Sperre der Referenzen.
+Wer schreibt, hält dabei die Sperre der Referenzen,
+die zu jedem Zeitpunkt nur einem Befehl das Schreiben erlaubt (ADR-008).
 Schreibt ein zweiter Agent gleichzeitig, scheitert er an der Sperre
 und muss es erneut versuchen.
 

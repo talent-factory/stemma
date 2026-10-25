@@ -62,8 +62,14 @@ A file that the tree of the working-copy commit lists, and that a snapshot there
 (verfolgte Datei)
 _Avoid_: Staged file, added file
 
+**Untracked file**:
+A file in the working directory that the tree of the working-copy commit does not list and the
+exclusion file does not exclude; `status` shows it with `?`. (unverfolgte Datei)
+_Avoid_: New file, unstaged file
+
 **Exclusion file**:
-The file `.stemmaignore`, whose patterns keep paths out of `track`. (Ausschlussdatei)
+The file `.stemmaignore`, whose patterns keep paths out of `track` and out of the untracked files
+of `status`. (Ausschlussdatei)
 _Avoid_: Ignore list
 
 ## Pointers and the operation log
@@ -82,6 +88,12 @@ The pointer that names the current branch. (HEAD)
 **Move**:
 Setting a pointer from an old value to a new one. (Zeigerbewegung)
 _Avoid_: Zug, update (of a pointer)
+
+**Reference lock**:
+The file `refs.lock` with an operating system lock on `refs.lock.guard`; a command that writes
+holds it from its first object to its last move, so only one command writes at a time.
+(Sperre der Referenzen)
+_Avoid_: Lock (in prose), mutex
 
 **Operation**:
 One command's change to the pointers of a repository, recorded as one entry. (Operation)
@@ -166,6 +178,11 @@ A group of repositories with their own policy, such as an organisation, a course
 A reader that accepts only what the writer would have written, so that every object has exactly
 one encoding. (strenger Leser)
 _Avoid_: Validating parser
+
+**Plan**:
+What a command would change, shown without writing anything: `purge` without `--apply`, and
+`op restore --dry-run`. (Plan)
+_Avoid_: Preview, simulation
 
 **Best effort**:
 A step whose failure does not fail the command; the next command tries again.

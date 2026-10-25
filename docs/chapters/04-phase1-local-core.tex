@@ -2,20 +2,29 @@
 
 \section{Ziel}
 
-Ein lokales Repository mit einem Nutzer. Es lässt sich anlegen, Dateien werden gespeichert,
-Commits erzeugt und der Status angezeigt.
+Ein lokales Repository mit einer Arbeitskopie, in der ein Akteur arbeitet, Mensch oder Agent.
+Es lässt sich anlegen, Dateien werden verfolgt und gespeichert, Commits erzeugt
+und der Status angezeigt.
+Jede Zeigerbewegung steht im Operation Log und lässt sich zurücksetzen,
+und ein Geheimnis lässt sich aus Verlauf und Log entfernen.
 
 \section{Umfang}
 
 \startitemize
 \item Objektspeicher mit Blobs, Trees und Commits, adressiert über BLAKE3 mit Präfix nach ADR-001.
 \item Referenzen für den Branch \type{main} und HEAD.
-\item Arbeitskopie als Commit mit Snapshot bei jedem Befehl und Change-IDs (ADR-010).
+\item Suche des Repositories aus einem Unterverzeichnis (ADR-009).
+\item Arbeitskopie als Commit mit Change-IDs (ADR-010): \type{commit}, \type{status},
+\type{op restore} und \type{purge --apply} halten das Verzeichnis zuerst in einem Snapshot fest,
+\type{track} speichert die verfolgten Dateien mit.
 \item Befehle \type{init}, \type{track} (statt \type{add}), \type{commit}, \type{status},
 \type{op log}, \type{op restore}, \type{op verify} und \type{purge}.
+\item Ausschlussdatei \type{.stemmaignore} (ADR-012).
 \item Akteur-Felder in jedem Commit und im Operation Log nach ADR-002.
 \item Operation Log als Verzeichnis nummerierter Einträge, die vor jeder Änderung eines
 Zeigers geschrieben werden (ADR-011).
+\item Hash-Kette über das Log mit einem Anker für \type{op verify --anchor} (ADR-011).
+\item Purge über ein Journal mit \type{--resume} und \type{--abort} (ADR-014).
 \stopitemize
 
 \section{Aufbau eines Repositories}
@@ -23,16 +32,18 @@ Zeigers geschrieben werden (ADR-011).
 Ein Repository ist ein Verzeichnis, das einen Ordner \type{.stemma} enthält.
 Die Schicht \type{Repository} in \type{stemma-core} bündelt Objektspeicher, Referenzen und Log,
 damit jede Operation die Speicher desselben Repositories verwendet (ADR-009).
-Ein Befehl findet sein Repository auch aus einem Unterverzeichnis: \type{Repository::discover}
-nimmt das Repository im Startverzeichnis oder sonst das nächste darüber, wie Git.
-Ein \type{.stemma}, das die Suche findet, muss dem Benutzer gehören, der den Befehl
-ausführt, damit niemand mit einem \type{.stemma} in einem geteilten Verzeichnis die Befehle
+Ein Befehl findet sein Repository auch aus einem Unterverzeichnis:
+Er nimmt das Repository im Startverzeichnis oder sonst das nächste darüber, wie Git
+(\type{Repository::discover}).
+
+Ein \type{.stemma}, das die Suche findet, muss dem Konto gehören, unter dem der Befehl läuft,
+damit niemand mit einem \type{.stemma} in einem geteilten Verzeichnis die Befehle
 anderer abfängt. Unter Unix gilt das auch für ein \type{.stemma} im Startverzeichnis,
 denn \type{-C} ist ohne Angabe das aktuelle Verzeichnis: Nach \type{cd /tmp} öffnet ein
-Befehl kein \type{/tmp/.stemma} eines anderen Benutzers.
-Unter Windows, wo \type{std} keinen Besitzer liefert, wird nur ein \type{.stemma} oberhalb
-im Wurzelverzeichnis eines Laufwerks abgelehnt.
-Die Pfade von \type{track} sind relativ zum Unterverzeichnis.
+Befehl kein \type{/tmp/.stemma} eines anderen Kontos.
+Unter Windows, wo die Standardbibliothek von Rust keinen Besitzer liefert,
+wird nur ein \type{.stemma} oberhalb im Wurzelverzeichnis eines Laufwerks abgelehnt.
+Die Prüfung ist nicht frei von Wettläufen (ADR-009).
 
 \starttyping
 .stemma/
@@ -56,39 +67,58 @@ bis 4 an und lehnt eine fehlende, eine nicht kanonische und jede andere Version 
 Version 1 der Repositories ohne Log. Eine Version sinkt nie.
 Ein älteres Programm weist damit ein neueres Repository zurück, statt es zu beschädigen.
 
-Die Funktion \type{Repository::init} baut den Ordner unter einem temporären Namen neben
-\type{.stemma} auf und benennt ihn am Ende um. Ein Fehler entfernt den temporären Ordner
-wieder und hinterlässt so kein halbes Repository; gelingt auch das Entfernen nicht,
-nennt die Fehlermeldung den Ordner. Existiert \type{.stemma} bereits, bricht \type{init} ab
-und ändert nichts. Alle neuen Dateien und Ordner werden auf den Datenträger geschrieben.
-Der Standard-Branch ist \type{main}, der Kern nimmt ihn als Option entgegen.
-Der Befehl \type{stemma init} bietet ihn als \type{--initial-branch} an. HEAD zeigt auf
-den Branch, der Branch selbst entsteht erst mit dem ersten Commit. Die Arbeitskopie ist
-von Anfang an ein Commit (ADR-010): \type{init} legt einen ersten Working-Copy-Commit
-mit dem leeren Baum, ohne Eltern und mit einer eigenen Change-ID an und hält seine ID
-in der Datei \type{working-copy} fest. Wie jede Operation, die ein Repository ändert, ruft
-\type{init} zuerst \type{authorize} mit dem Akteur auf.
+\type{init} legt ein Repository so an, dass nie ein halbes entsteht
+(\type{Repository::init}):
+
+\startitemize[n]
+\item Es ruft \type{authorize} mit dem Akteur auf,
+wie jede Operation, die ein Repository ändert.
+\item Es baut den Ordner unter einem temporären Namen neben \type{.stemma} auf.
+\item Es schreibt \type{format}, HEAD, den ersten Working-Copy-Commit und den ersten Eintrag
+des Logs.
+\item Es schreibt alle neuen Dateien und Ordner auf den Datenträger.
+\item Es benennt den Ordner in \type{.stemma} um und sichert das Verzeichnis darüber.
+\stopitemize
+
+HEAD zeigt auf den Branch, standardmässig \type{main} (Option \type{--initial-branch});
+der Branch selbst entsteht erst mit dem ersten Commit.
+Die Arbeitskopie ist von Anfang an ein Commit (ADR-010):
+Der erste Working-Copy-Commit hat den leeren Baum, keine Eltern und eine eigene Change-ID,
+und die Datei \type{working-copy} hält seine ID fest.
+Existiert \type{.stemma} bereits, bricht \type{init} ab und ändert nichts.
+Ein Fehler entfernt den temporären Ordner wieder; gelingt auch das Entfernen nicht,
+nennt die Fehlermeldung den Ordner.
+Ein leeres \type{.stemma}, das ein anderer Prozess zwischen Prüfung und Umbenennung anlegt,
+ersetzt \type{init} unter Unix noch (offener Punkt in ADR-009).
 
 Ein Zeiger kann nur auf einen Commit gesetzt werden, der im Objektspeicher liegt (ADR-008).
 Nennt ein Zeiger später doch keinen gültigen Commit, etwa weil jemand eine Objektdatei entfernt
-oder eine Referenzdatei von Hand geändert hat, findet das \type{Repository::verify_refs}.
-Die Funktion prüft einen abgekoppelten HEAD, den Working-Copy-Commit und jeden Branch.
+oder eine Referenzdatei von Hand geändert hat, findet das die Prüfung der Referenzen
+(\type{Repository::verify_refs}).
+Sie prüft einen abgekoppelten HEAD, den Working-Copy-Commit und jeden Branch.
 Sie meldet jeden Zeiger, dessen Commit fehlt, beschädigt ist oder sich nicht lesen lässt,
 und jeden, der auf ein Objekt anderer Art zeigt, etwa auf einen Baum.
-Die Prüfung ist flach: Der Commit wird gelesen und sein Hash geprüft, aber weder geparst,
-noch werden sein Baum und seine Eltern verfolgt.
-Ein HEAD, der einen noch nicht angelegten Branch nennt, ist kein Fehler.
-Eine Referenzdatei, die fehlt oder nicht in kanonischer Form ist, beendet die Prüfung mit
-ihrem Fehler.
-Die Prüfung liest ohne Sperre. Einen Zeiger, der durchfällt, liest sie deshalb ein zweites
-Mal und prüft ihn an seinem neuen Commit, falls er sich bewegt hat. Ein Purge, der während
-der Prüfung einen Zeiger versetzt und den alten Commit löscht, erzeugt so keinen Befund.
-Ein Branch, den eine andere Änderung während der Prüfung löscht, ist ebenfalls kein Befund
-und kein Fehler. Eine Datei oder ein Verzeichnis unter \type{refs/heads}, deren Name kein
-Branch-Name ist, bleibt dagegen ein Schaden und beendet die Prüfung, etwa die Sicherung
-\type{main~} eines Editors; die Meldung nennt den Pfad. Namen, die mit einem Punkt beginnen,
-wie \type{.DS_Store}, werden übersprungen.
-Besteht das Journal eines Purge vor oder nach der Prüfung, lehnt sie ab.
+
+\startinfobox
+{\bf Grenzfälle der Prüfung der Referenzen.}
+\startitemize
+\item Die Prüfung ist flach: Der Commit wird gelesen und sein Hash geprüft,
+aber weder geparst, noch werden sein Baum und seine Eltern verfolgt.
+\item Ein HEAD, der einen noch nicht angelegten Branch nennt, ist kein Fehler.
+\item Eine Referenzdatei, die fehlt oder nicht in kanonischer Form ist,
+beendet die Prüfung mit ihrem Fehler.
+\item Die Prüfung liest ohne Sperre. Einen Zeiger, der durchfällt, liest sie ein zweites Mal
+und prüft ihn an seinem neuen Commit, falls er sich bewegt hat.
+Ein Purge, der während der Prüfung einen Zeiger versetzt und den alten Commit löscht,
+erzeugt so keinen Befund.
+Ein Branch, den eine andere Änderung während der Prüfung löscht, ist ebenfalls kein Befund.
+\item Eine Datei oder ein Verzeichnis unter \type{refs/heads}, deren Name kein Branch-Name ist,
+bleibt ein Schaden und beendet die Prüfung, etwa die Sicherung \type{main~} eines Editors;
+die Meldung nennt den Pfad. Namen, die mit einem Punkt beginnen, wie \type{.DS_Store},
+werden übersprungen.
+\item Besteht das Journal eines Purge vor oder nach der Prüfung, lehnt sie ab.
+\stopitemize
+\stopinfobox
 
 \section{Arbeitskopie und Commits}
 
@@ -103,15 +133,23 @@ die Ausgaben stammen aus einem echten Lauf, nur die IDs sind gekürzt.
 \subsection{Der Akteur eines Befehls}
 
 Jeder Befehl, der schreibt, braucht einen Akteur.
-Die Kommandozeile liest ihn aus dem Schalter \type{--actor}
+Die Kommandozeile liest ihn aus der Option \type{--actor}
 oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}.
 Der Text hat die Form der Akteur-Zeile eines Commits,
 also \type{human daniel} oder \type{agent claude model=opus-5-5 session=s1 sponsor=daniel}.
-Der Schalter geht der Variablen vor.
-Ein leerer Wert gilt als Fehler und fällt nicht auf die Variable zurück.
 Ohne Akteur bricht der Befehl ab und legt nichts an.
-Einen Standardwert aus dem Benutzernamen gibt es bewusst nicht,
+Einen Standardwert aus dem Namen des Kontos gibt es bewusst nicht,
 damit ein Agent nie stillschweigend als Mensch auftritt.
+Modell und Session halten fest, welche Version eines Agenten in welchem Lauf gehandelt hat;
+der Sponsor ist der Mensch, der für den Agenten einsteht (ADR-002).
+
+\startinfobox
+{\bf Grenzfälle des Akteurs.}
+\startitemize
+\item Die Option geht der Variablen vor.
+\item Ein leerer Wert gilt als Fehler und fällt nicht auf die Variable zurück.
+\stopitemize
+\stopinfobox
 
 Die Sitzung beginnt mit einem neuen Repository und zwei Dateien:
 
@@ -148,8 +186,8 @@ Der Commit behält Eltern, Change-ID und Nachricht des alten,
 sein Autor ist der Akteur des Snapshots und seine Zeit die des Aufrufs.
 Alle neuen Objekte schreibt er zuerst ungesichert nach \type{tmp/}
 und sichert sie gemeinsam, bevor ein Eintrag oder ein Zeiger sie nennt (ADR-007).
-\item Er schreibt den Eintrag und bewegt dann den Zeiger des Working-Copy-Commits,
-wie es \in{Abbildung}[fig:oplog-write] zeigt.
+\item Er schreibt den Eintrag und bewegt dann den Zeiger des Working-Copy-Commits.
+\in{Abbildung}[fig:oplog-write] zeigt diese Schritte mit ihren Absturzpunkten.
 \stopitemize
 
 Ist der Baum unverändert, entstehen weder Commit noch Eintrag.
@@ -159,7 +197,9 @@ Ein Absturz danach und vor dem Eintrag lässt Objekte zurück, die nichts nennt;
 sie schaden nicht.
 Weil die Objekte gemeinsam gesichert werden,
 wird jedes Verzeichnis unter \type{objects/} einmal gesichert statt einmal je Objekt.
-Das erste \type{track} vieler Dateien dauert dadurch etwa halb so lange.
+Das erste \type{track} von 10'000 Dateien zu 1 KiB dauerte dadurch 49 statt 97 Sekunden
+(\type{scripts/measure-track.sh}, Release-Build, macOS mit APFS auf einer SSD, ein Lauf;
+ADR-007).
 
 Ein Snapshot speichert, was im Verzeichnis liegt, und trägt den Akteur des Befehls ein.
 Arbeiten zwei Akteure im selben Verzeichnis,
@@ -215,9 +255,11 @@ tracked README.md
 tracked src/main.rs
 \stoptyping
 
-Der Befehl nimmt relative Pfade.
+Der Befehl nimmt Pfade relativ zu dem Verzeichnis, in dem er läuft (oder das \type{-C} nennt),
+auch wenn das ein Unterverzeichnis des Repositories ist.
 Ein Verzeichnis steht für die Dateien darunter, ohne einen Ordner \type{.stemma},
-und \type{.} allein für das ganze Arbeitsverzeichnis.
+\type{.} allein für das Verzeichnis selbst;
+\type{..} führt bis zur Wurzel des Repositories hinauf.
 Die Kommandozeile bringt das, was eine Person tippt (\type{./a.txt}, \type{dir/}),
 in diese Form;
 ein leeres Argument lässt sie unverändert, damit der Kern es ablehnt (\type{normalize_path}).
@@ -245,7 +287,7 @@ und jede Datei und jedes Verzeichnis namens \type{.git} in jeder Tiefe (ADR-012)
 Ebenso überspringt er eine Datei oder einen Link namens \type{.stemma-checkout-…},
 den Rest eines unterbrochenen \type{op restore}:
 Er enthält den Inhalt eines alten Blobs, vielleicht ein gepurgtes Geheimnis.
-Ein genannter Pfad, der so einen Rest nennt, ist ein Fehler,
+Ein genannter Pfad durch \type{.git} oder auf so einen Rest ist ein Fehler,
 und \type{status} listet ihn, damit man ihn entfernt (ADR-013).
 Jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
 \stopitemize
@@ -254,7 +296,8 @@ Jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
 \subsection{Die Ausschlussdatei}
 
 Die Ausschlussdatei \type{.stemmaignore} liegt im Wurzelverzeichnis
-und hält Dateien aus \type{track} heraus (ADR-012, \type{ignore.rs}).
+und hält Dateien aus \type{track} und aus den unverfolgten Dateien von \type{status} heraus
+(ADR-012, \type{ignore.rs}).
 Eine Zeile ist ein Kommentar mit \type{#} oder ein Muster aus Teilen, die ein \type{/} trennt.
 Ein Teil ist ein Name mit den Platzhaltern \type{*} (eine beliebige Folge von Zeichen
 innerhalb eines Namens) und \type{?} (ein Zeichen),
@@ -264,10 +307,22 @@ ohne eins trifft es einen Namen auf jeder Ebene.
 Ein \type{/} am Ende trifft nur Verzeichnisse,
 und ein getroffenes Verzeichnis schliesst alles darunter aus.
 
-Die Datei wird bei jedem Aufruf von \type{track} aus dem Verzeichnis gelesen, nicht aus dem Baum.
+Ein Muster mit \type{**} prüft der Leser mit dynamischer Programmierung:
+Eine Tabelle hat eine Zelle je Paar aus einem Teil des Musters und einem Teil des Pfads
+(\type{parts_match}).
+Die Zeit ist damit höchstens das Produkt der beiden Längen,
+mal den Aufwand für den Vergleich eines Namens.
+Diesen Vergleich mit \type{*} und \type{?} macht ein Abgleich, der beim Scheitern nur zum
+letzten \type{*} zurückgeht (\type{glob_matches});
+auch er braucht höchstens das Produkt der Längen von Muster und Name.
+Ein naiver rekursiver Abgleich kann bei mehreren \type{**} exponentiell viel Zeit brauchen;
+hier lässt kein Muster die Zeit schneller als polynomiell wachsen.
+
+Die Datei wird bei jedem Aufruf von \type{track} und \type{status} aus dem Verzeichnis gelesen,
+nicht aus dem Baum.
 Ist sie ungültig, ein Link oder keine gewöhnliche Datei, oder ändert sie sich beim Lesen,
 bricht der Aufruf ab, bevor etwas verfolgt wird.
-Ein Snapshot, \type{commit} und ein Aufruf ohne Pfade lesen sie nie.
+Ein Snapshot und \type{commit} lesen sie nie.
 Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Muster aus.
 
 \startinfobox
@@ -301,6 +356,16 @@ und ein Eintrag entsteht nur, wenn sich eine verfolgte Datei geändert hat.
 Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit,
 \quotation{geändert} kann also nicht \quotation{anders als der Working-Copy-Commit} heissen.
 Es heisst, wie bei Jujutsu: was der Working-Copy-Commit gegenüber seinem Elternteil tut.
+Der Status läuft in diesen Schritten ab:
+
+\startitemize[n]
+\item Er liest die Ausschlussdatei und durchläuft das Arbeitsverzeichnis.
+Bis hier ist nichts geschrieben.
+\item Er macht einen Snapshot der verfolgten Dateien.
+\item Er vergleicht den Baum des Working-Copy-Commits mit dem seines ersten Elternteils.
+\item Er listet die unverfolgten Dateien und die Reste eines unterbrochenen Restore.
+\stopitemize
+
 Nach dem \type{track} der Sitzung hat der Working-Copy-Commit noch keinen Elternteil,
 also gilt der leere Baum, und beide Dateien sind hinzugefügt:
 
@@ -328,9 +393,7 @@ Abschnitt (\type{!}), damit man sie entfernt (ADR-013).
 \startinfobox
 {\bf Grenzfälle von \type{status}.}
 \startitemize
-\item Vor dem Snapshot liest \type{status} die Ausschlussdatei
-und durchläuft das Arbeitsverzeichnis.
-Es bricht dort ab, wo \type{track} abbricht:
+\item Beim Durchlaufen vor dem Snapshot bricht \type{status} dort ab, wo \type{track} abbricht:
 bei einer ungültigen Ausschlussdatei, bei einem Namen, den ein Baum ablehnt
 und den kein Muster ausschliesst, und bei einem Namen ohne UTF-8.
 Dann hat es noch nichts geschrieben.
@@ -443,8 +506,10 @@ statt seine Nachricht stillschweigend zu verwerfen (ADR-010, ADR-013).
 
 Jede Operation, die einen Zeiger ändert, schreibt einen Eintrag in das Verzeichnis
 \type{.stemma/oplog/} (ADR-011).
-Ein Eintrag ist eine Textdatei mit fortlaufender Nummer.
-Er nennt den Akteur, die Zeit, den Namen der Operation
+Ein Eintrag ist eine Textdatei, deren Name seine fortlaufende Nummer ist,
+zwölf Ziffern mit führenden Nullen (\type{000000000001});
+das Log hält damit höchstens 999'999'999'999 Einträge.
+Ein Eintrag nennt den Akteur, die Zeit, den Namen der Operation
 und für jeden geänderten Zeiger (HEAD, Working-Copy-Commit, Branches)
 den alten und den neuen Wert:
 
@@ -561,16 +626,22 @@ Wer die Sperre nimmt, ist also der einzige Schreiber,
 und jede Datei in \type{tmp/} stammt aus einem Schreiben, das scheiterte oder abgebrochen wurde.
 Gleich nach dem Nehmen entfernt er darum jede Datei in \type{tmp/}, ohne einem Verweis zu folgen,
 und jedes Verzeichnis neben \type{.stemma}, das ein abgebrochenes \type{init} zurückliess.
-Ein solches Verzeichnis erkennt er an seinem ganzen Namen:
-\type{.stemma-init-}, die Prozessnummer, ein Zähler und 16 kleine Hexadezimalziffern.
-Ein Verzeichnis des Projekts wie \type{.stemma-init-notes} gehört zum Inhalt und bleibt.
-Besteht das Journal eines Purge, räumt ein abgewiesener Befehl nichts auf;
-das übernehmen \type{purge --resume} und \type{--abort}.
-Auch das Aufräumen geschieht nach bestem Bemühen:
-Was sich nicht entfernen lässt, bleibt, und der nächste Schreiber versucht es wieder.
 Es zählt allein die Sperre; das Alter einer Datei spielt keine Rolle.
 So wird ein langsamer Schreiber wie das erste \type{track} vieler Dateien nie unterbrochen,
 und es gibt keinen Befehl, an den man denken müsste.
+
+\startinfobox
+{\bf Grenzfälle beim Aufräumen.}
+\startitemize
+\item Ein Verzeichnis eines abgebrochenen \type{init} erkennt der Schreiber an seinem ganzen
+Namen: \type{.stemma-init-}, die Prozessnummer, ein Zähler und 16 kleine Hexadezimalziffern.
+Ein Verzeichnis des Projekts wie \type{.stemma-init-notes} gehört zum Inhalt und bleibt.
+\item Besteht das Journal eines Purge, räumt ein abgewiesener Befehl nichts auf;
+das übernehmen \type{purge --resume} und \type{--abort}.
+\item Das Aufräumen geschieht nach bestem Bemühen:
+Was sich nicht entfernen lässt, bleibt, und der nächste Schreiber versucht es wieder.
+\stopitemize
+\stopinfobox
 
 \startinfobox
 {\bf Grenzfälle beim Schreiben eines Eintrags.}
@@ -584,7 +655,7 @@ das sich schon ab dem ersten Eintrag nicht mehr lesen lässt.
 Bleibt sie liegen, ist der Eintrag trotzdem vollständig, und die Zeigerbewegung geht weiter,
 denn ein Aufräumen darf keine Zeigerbewegung verhindern.
 \item Der Leser meldet eine Lücke erst, nachdem er das Verzeichnis ein zweites Mal gelesen hat,
-denn ein Verzeichnis ist während eines Schreibens kein Snapshot.
+denn während eines Schreibens liefert das Auflisten eines Verzeichnisses keinen festen Stand.
 Namen mit einem Punkt am Anfang überspringt er, jeden anderen fremden Namen meldet er.
 \stopitemize
 \stopinfobox
@@ -670,6 +741,9 @@ Wer \type{.stemma} schreiben kann, kann jeden späteren Hash und die Datei \type
 neu berechnen.
 Das fällt nur mit einem Anker auf, der ausserhalb des Repositories liegt:
 Wer einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}.
+Für die Arbeit mit Agenten zählt das besonders:
+Ein Agent, der im Repository arbeitet, kann \type{.stemma} schreiben,
+und erst ein Anker beim Sponsor zeigt, ob das Log nach der Sitzung noch dasselbe ist.
 Signaturen der Akteure (ADR-004) und ein Hub, der den letzten Eintrag bestätigt (Phase 5),
 wären Anker, die der Akteur selbst nicht ändern kann; beide sind offen.
 
@@ -690,6 +764,13 @@ Setzt das Restore nur sie zurück, liest der nächste Snapshot das unveränderte
 und stellt den neuen Stand wieder her,
 denn der Working-Copy-Commit ist der Zustand des Verzeichnisses (ADR-010).
 Das Restore schreibt deshalb auch die Dateien des alten Baums ins Verzeichnis.
+
+Für die Arbeit mit Agenten ist das Restore der Rückweg.
+Ein Agent führt viele Schritte aus, ohne dass ein Mensch jeden prüft.
+Geht einer schief, setzt ein Mensch oder der Agent selbst Zeiger und Verzeichnis
+auf den Stand davor zurück.
+Weil das Restore ein eigener Eintrag ist, bleibt auch der verworfene Stand im Log,
+und \type{--dry-run} zeigt den Plan, bevor etwas geschieht.
 
 In der Sitzung nimmt \type{op restore 5} den zweiten Commit zurück.
 Mit \type{--dry-run} zeigt der Befehl vorher, welche Zeiger er setzt
@@ -811,11 +892,17 @@ Ein Commit, dessen Baum den Blob enthält, bekommt einen Baum ohne ihn,
 und jeder Commit danach neue Eltern.
 Die Einträge des Logs, die einen umgeschriebenen Commit nennen, werden zu Stubs.
 Nur ein Mensch darf purgen, denn der Purge lässt sich nicht zurücksetzen.
+Ein Agent, der einer eingeschleusten Anweisung folgt oder einen Fund falsch deutet,
+könnte sonst Verlauf löschen, den kein Restore zurückbringt.
+Er meldet das Geheimnis, und sein Sponsor entscheidet.
 
 In der Sitzung gerät ein Zugangsschlüssel in den Verlauf.
 Die ID des Blobs ist der BLAKE3-Hash über einen Kopf aus Art und Länge
 und den Inhalt der Datei (ADR-001, ADR-007);
 einen Befehl, der sie zu einem Pfad nennt, gibt es noch nicht.
+Bis dahin findet \type{grep -rl} den Inhalt im Objektspeicher,
+denn ein loses Objekt liegt unkomprimiert unter \type{objects/b3/}.
+Aus dem Pfad wird die ID, indem man \type{b3:} voranstellt und den Schrägstrich weglässt.
 Ohne \type{--apply} zeigt \type{purge} nur den Plan und schreibt nichts:
 
 \starttyping
@@ -824,6 +911,8 @@ $ stemma track .env
 tracked .env
 $ stemma commit -m "Zugang"
 Committed b3:930a…db53 on main
+$ grep -rl 'token=7f3a9c' .stemma/objects
+.stemma/objects/b3/4c/bc3d…156b
 $ stemma purge b3:4cbc…156b
 Would purge blob b3:4cbc…156b; nothing is written
     rewrite b3:930a…db53 -> b3:dd97…5918
@@ -898,10 +987,41 @@ eine lange Liste verteilt sich auf mehrere Einträge.
 Weil ein Stub Zeigerbewegungen ersetzt, die niemand mehr kennt,
 ist der Ausgang jedes Eintrags vor dem jüngsten Stub unbekannt.
 Deshalb tragen die Einträge 1 bis 6 nun die Zeile mit dem Fragezeichen,
-und ein Restore eines solchen Eintrags braucht \type{--force}.
+und ein Restore eines solchen Eintrags braucht \type{--force}:
+
+\starttyping
+$ stemma op restore 3
+stemma: the log does not show whether entry 3 took effect, so the state
+before it may not be what it says; use --force to restore anyway
+\stoptyping
+
 Die Datei \type{.env} bleibt im Verzeichnis;
-ein späteres \type{track .} nähme sie wieder auf,
-wenn \type{.stemmaignore} sie nicht ausschliesst. Deshalb nennt der Purge ihren Pfad.
+ein späteres \type{track .} nimmt sie wieder auf,
+sofern \type{.stemmaignore} sie nicht ausschliesst. Deshalb nennt der Purge ihren Pfad.
+In der Sitzung schliesst eine Zeile die Datei aus:
+
+\starttyping
+$ echo ".env" > .stemmaignore
+$ stemma status
+Untracked files:
+? .stemmaignore
+\stoptyping
+
+Nach dem Purge prüft \type{op verify} das ganze Log und gibt den Anker aus.
+Wer den Anker ausserhalb des Repositories aufbewahrt, prüft später mit \type{--anchor},
+ob der Eintrag noch denselben Hash hat:
+
+\starttyping
+$ stemma op verify
+Checked 9 entries of the operation log: the hash chain holds.
+anchor 9:b3:29a9…9450
+$ stemma op verify --anchor 9:b3:29a9…9450
+Checked 9 entries of the operation log: the hash chain holds.
+Entry 9 still has the hash of the anchor.
+anchor 9:b3:29a9…9450
+\stoptyping
+
+In der Ausgabe stehen die umbrochenen Meldungen auf einer Zeile.
 Eine dauerhafte Liste der entfernten Blobs, die \type{track} prüft, folgt später (ADR-014).
 Ein mit \type{--resume} beendeter Purge nennt keine Pfade, denn das Journal hält sie nicht fest.
 
@@ -990,7 +1110,8 @@ Hält er die Sperre schon beim Speichern, kann kein Purge beginnen, und umgekehr
 Ein Zähler der Purges oder eine Prüfung aller Objekte unter der Sperre
 hätten das ebenfalls verhindert; die Sperre ist die einfachste Regel (ADR-014).
 Sie wird dafür so lange gehalten, wie der Snapshot dauert,
-bei 10'000 Dateien etwa 0,7 Sekunden.
+bei 10'000 Dateien etwa 0,7 Sekunden
+(Release-Build, macOS mit APFS auf einer SSD, ein Lauf, Dateien zu 1 KiB; ADR-010).
 
 Ctrl-C entfernt die Sperre, bevor der Prozess endet.
 Nach \type{kill -9} oder einem Absturz bleibt die Datei \type{refs.lock} liegen,
@@ -1026,8 +1147,8 @@ die Meldung nennt den Grund.
 
 Ein Snapshot bei jedem Befehl schreibt viele Einträge, und jeder nennt den Working-Copy-Commit,
 den er ersetzt hat. In Phase~1 behält das Log trotzdem jeden Eintrag und der Speicher jedes
-Objekt (ADR-011). Eine echte Session eines Agenten gibt es noch nicht, deshalb hat
-\type{scripts/measure-retention.sh} eine nachgespielt: die 110 Commits der Geschichte dieses
+Objekt (ADR-011). Eine echte Sitzung eines Agenten gibt es noch nicht, deshalb hat
+\type{scripts/measure-retention.sh} eine nachgespielt: die 110 Commits im Verlauf dieses
 Repositories bis \type{11f06a4}, vom 18. bis zum 23.~Oktober 2026, also sechs Tage. In der
 feinen Variante wird jede geänderte Datei einzeln geschrieben, und danach folgt ein Befehl, wie
 bei einem Agenten, der nach jeder Änderung einen Befehl aufruft. Die grobe Variante ruft
@@ -1035,7 +1156,7 @@ bei einem Agenten, der nach jeder Änderung einen Befehl aufruft. Die grobe Vari
 einmal je Variante, mit dem Release-Build unter macOS~27 mit APFS auf einer SSD; die Grössen
 sind die Summe der Dateilängen.
 
-\startplacetable[title={Eine nachgespielte Session},reference=tab:retention]
+\startplacetable[title={Eine nachgespielte Sitzung},reference=tab:retention]
 \startxtable[frame=off]
 \startxrow[topframe=on,bottomframe=on]
 \startxcell {\bf Grösse} \stopxcell
@@ -1074,15 +1195,15 @@ Der Endstand allein braucht 2,13 MB in 146 Objekten. In der feinen Variante häl
 rund 15 MB am Leben, etwa 2,5 MB je Tag. Die Einträge selbst machen davon nur gut ein Prozent
 aus. Den Platz brauchen die Fassungen weniger grosser Dateien, nicht die Zahl der Snapshots:
 Ein Snapshot je Befehl hält nur etwa 6 Prozent mehr am Leben als einer je Commit. Solange es
-keine Garbage Collection gibt (ADR-007), gäbe das Entfernen eines Eintrags ohnehin kein Byte
-frei, denn seine Objekte blieben im Speicher. Werden die Daten zu gross, helfen zuerst
+keine Garbage Collection gibt (ADR-007), gibt das Entfernen eines Eintrags ohnehin kein Byte
+frei, denn seine Objekte bleiben im Speicher. Werden die Daten zu gross, helfen zuerst
 Pack-Dateien mit Deltas, die keinen Zustand verlieren.
 
 Für später steht fest, wie Aufbewahrung und Garbage Collection zusammenspielen. Die Garbage
 Collection behält jedes Objekt, das eine Referenz oder der alte oder neue Wert eines Eintrags
 erreicht, der kein Stub ist; die Regel steht vollständig in ADR-011. Eine Aufbewahrungsregel
-löscht keinen Eintrag und legt keine Einträge zusammen, sondern ersetzt Einträge
-\type{snapshot} durch denselben Stub wie der Purge. So bleiben die Nummern lückenlos und die
+ersetzt Einträge \type{snapshot} durch denselben Stub wie der Purge;
+sie löscht keinen Eintrag und legt keine zusammen. So bleiben die Nummern lückenlos und die
 Hash-Kette ganz, und es braucht keinen Punkt, an dem die Kette neu beginnt. Einträge anderer
 Operationen bleiben, und mindestens der jüngste Snapshot bleibt.
 
@@ -1103,13 +1224,13 @@ Meldung, und ihre Kette von Ursachen endet; nur der Leser des Journals meldet bl
 beschädigt ist.
 Eine zweite Schreibweise derselben Sache gibt es dann nicht, und damit auch keine zweite ID.
 
-Drei Arten von Tests prüfen diese Regel. Die Golden Vectors legen die Bytes einzelner Objekte
+Mehrere Arten von Tests prüfen diese Regel. Die Golden Vectors legen die Bytes einzelner Objekte
 fest und ändern sie an je einer Stelle. Die Property-Tests in \type{properties.rs} erzeugen
 Tausende Eingaben: gültige Kodierungen, die an mehreren Stellen zugleich verändert sind,
 zusammengeklebte Stücke zweier Kodierungen, Bruchstücke des Formats und rohe Bytes. Der
 Startwert des Generators ist fest, damit ein Fehler wiederholbar ist; mit
 \type{STEMMA_PROPERTY_SEED} und \type{STEMMA_PROPERTY_CASES} lassen sich andere und mehr
-Eingaben prüfen. Beide Arten laufen in \type{just ci}.
+Eingaben prüfen. Golden Vectors und Property-Tests laufen in \type{just ci}.
 
 Der Generator sieht aber nicht, welche Zweige eines Lesers er erreicht. Das tut ein Fuzzer,
 der der Abdeckung folgt: \type{cargo fuzz} mit libFuzzer verändert die Eingaben so, dass sie
@@ -1140,14 +1261,48 @@ nach dem letzten Eintrag, den das Journal nennt, und mehr als $2^{24}$ Stubs sin
 Damit kein Purge ein Journal schreibt, das er selbst nicht wieder lesen kann, lehnt schon der
 Plan einen Purge ab, der mehr als $2^{24}$ Einträge ersetzen würde.
 
+Für Code, den Agenten schreiben, sind Property-Tests und Fuzzer eine Prüfung,
+die nicht vom Urteil des Agenten oder der Person im Review abhängt:
+Sie prüfen eine Regel an Eingaben, an die niemand gedacht hat.
+Der Fehler im Leser des Journals ist so gefunden worden.
+
 \section{Offene Fragen}
 
-Die Fragen der Phase sind entschieden.
+Die Fragen, die Phase~1 zum Abschluss braucht, sind entschieden.
 Vom Dateimodus speichert Stemma nur das Ausführbit, weitere Rechte und Metadaten nicht
-(ADR-010). Ein symbolischer Link wird als sein Ziel gespeichert, und ein Ziel, das kein UTF-8
-ist, lehnt der Snapshot in Phase~1 ab (STEMMA-77).
-Einen Index als Datei gibt es nicht, denn die Arbeitskopie ist ein Commit (STEMMA-9);
+(ADR-010). Ein symbolischer Link wird als sein Ziel gespeichert,
+und ein Ziel, das kein UTF-8 ist, lehnt der Snapshot ab (ADR-010).
+Einen Index als Datei gibt es nicht, denn die Arbeitskopie ist ein Commit (ADR-010);
 das Textformat \type{stemma-index 1} gilt nur, falls der Index später als Cache gespeichert
-wird (ADR-005). Aufbewahrung und Garbage Collection kommen in einer
-späteren Phase in einem Schritt, gemessen an einer echten Session eines Agenten (ADR-007,
-ADR-011); bis dahin wächst der Speicher nur.
+wird (ADR-005).
+
+Offen für spätere Phasen bleiben diese Punkte:
+
+\startitemize
+\item Aufbewahrung und Garbage Collection kommen in einem Schritt,
+gemessen an einer echten Sitzung eines Agenten (ADR-007, ADR-011);
+bis dahin wächst der Speicher nur.
+\item Die Prüfung des Besitzers von \type{.stemma} ist nicht frei von Wettläufen,
+unter Windows prüft sie nur das Wurzelverzeichnis eines Laufwerks,
+und \type{init} ersetzt unter Unix ein leeres \type{.stemma},
+das ein anderer Prozess im falschen Augenblick anlegt (ADR-009).
+\item Die Regel, dass jeder Akteur in einer eigenen Arbeitskopie arbeitet,
+setzt der Kern noch nicht durch; das kommt mit der zweiten Arbeitskopie in Phase~3 (ADR-010).
+\item Ein Repository ohne die Datei \type{working-copy} lässt sich nicht mehr reparieren,
+eine verfolgte Spezialdatei hält jeden Snapshot an,
+und ein verfolgtes Verzeichnis, das zum Link wird, verliert seine Dateien ohne Warnung.
+Die Dateien eines Snapshots stammen nicht aus einem einzigen Augenblick (ADR-010).
+\item Kein Befehl repariert eine gebrochene Hash-Kette oder ein Log ohne seinen letzten Eintrag,
+und einen Anker, den der Akteur nicht ändern kann, liefern erst Signaturen oder der Hub
+(ADR-011).
+\item Muster der Ausschlussdatei vergleichen Bytes, auch auf einem Dateisystem,
+das Gross- und Kleinschreibung oder Unicode-Formen gleichsetzt;
+ob die Grenzen von 1024 Byte und 64 KiB passen, zeigen erst echte Dateien (ADR-012).
+\item Ein Probelauf des Restore macht keinen Snapshot und sieht ungesicherte Änderungen nicht,
+und ein Restore warnt nicht, wenn sich ein Zeiger seit dem Eintrag weiterbewegt hat (ADR-013).
+\item Eine dauerhafte Liste der entfernten Blobs, die \type{track} und \type{status} prüfen,
+und ein Befehl, der die ID eines Blobs zu einem Pfad nennt, fehlen;
+ein Blob mit beschädigter Datei lässt sich nicht purgen (ADR-014).
+\stopitemize
+
+Kapitel~11 sammelt diese Punkte mit den offenen Fragen der späteren Phasen.
