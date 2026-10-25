@@ -19,7 +19,9 @@ that person signs the Contributor License Agreement (CLA) of Talent Factory GmbH
 The CLA lets Talent Factory GmbH license the contribution under other terms as well,
 for example for a commercial offering of the hub (phase 5).
 You keep the copyright of your contribution.
-We send you the CLA when you open your first pull request.
+The text of the agreement is in `CLA.md`.
+When you open your first pull request, the CLA assistant asks you to sign it with a comment
+on the pull request. The pull request cannot be merged before you have signed.
 
 Apart from the CLA, every contribution is licensed under the terms of the project,
 `MIT OR Apache-2.0` (see `LICENSE-MIT` and `LICENSE-APACHE`).
@@ -53,4 +55,4 @@ The pull request template lists the checks that every pull request confirms.
 ## Reporting a security issue
 
 Do not report a security issue in a public issue.
-Write to the maintainers of Talent Factory GmbH instead.
+Write to Talent Factory GmbH at support@talent-factory.ch instead.
