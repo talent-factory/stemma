@@ -120,7 +120,7 @@ werden übersprungen.
 \stopitemize
 \stopinfobox
 
-\section{Objekte und ihre IDs}
+\section[sec:object-ids]{Objekte und ihre IDs}
 
 Alles, was Stemma vom Inhalt eines Repositories speichert, ist ein Objekt:
 ein Blob für den Inhalt einer Datei, ein Baum für ein Verzeichnis
@@ -153,14 +153,16 @@ so dass kein einzelnes Verzeichnis alle Objekte hält.
 
 Für den Speicher gilt eine Invariante:
 {\em Die Bytes unter einer ID hashen auf diese ID.}
-Der Speicher prüft sie bei jedem Lesen. Er liest die Datei,
+Der Speicher prüft sie bei jedem Lesen eines Objekts. Er liest die Datei,
 verlangt genau den Kopf, den Art und Länge ergeben, hasht und vergleicht.
 Ein Objekt, das die Prüfung nicht besteht, meldet er als beschädigt
 und gibt es nie weiter (\type{read_checked}).
 Beim Schreiben berechnet er die ID zuerst.
 Liegt unter ihr schon ein unversehrtes Objekt, schreibt er nichts;
 gleicher Inhalt liegt so nur einmal im Speicher.
-Ein beschädigtes Objekt ersetzt er unter Unix durch das neue.
+Ein beschädigtes Objekt ersetzt er unter Unix durch das neue;
+auf anderen Systemen, und wenn statt einer Datei etwa ein Verzeichnis im Weg liegt,
+meldet er den Schaden.
 
 \subsection{Der Merkle-Graph}
 
@@ -177,19 +179,18 @@ so dass die ID eines Commits den ganzen Stand festlegt.
 Zum Graphen gehören weitere Invarianten.
 {\em Jedes Objekt hat genau eine Kodierung.}
 Die strengen Leser nehmen nur die kanonische Form an:
-sortierte Einträge, einen Kopf mit der Länge ohne führende Null,
-keine überzähligen Zeichen (ADR-005).
+sortierte Einträge, einen kanonischen Kopf, keine überzähligen Zeichen (ADR-005).
 Hätte derselbe Baum zwei Kodierungen, hätte er zwei IDs;
 gleicher Inhalt läge doppelt im Speicher, und der Vergleich fände Unterschiede, wo keine sind.
 {\em Der Graph hat keinen Kreis}; er ist ein gerichteter azyklischer Graph
 \cite[sedgewick2011algorithms] (Abschnitt 4.2).
-Stemma prüft das nicht, es folgt aus der Konstruktion, wie der Abschnitt über die Korrektheit
-zeigt.
+Stemma prüft das nicht; es folgt aus der Konstruktion (\in{Abschnitt}[sec:object-guarantees]).
 
 \subsection{Die Ordnung der Pfade}
 
 Der Snapshot sammelt die verfolgten Dateien in einer geordneten Symboltabelle
-(\type{Index}, ein \type{BTreeMap}) und baut daraus die Bäume.
+(\type{Index}, eine \type{BTreeMap}; trotz des Namens kein Staging-Bereich wie bei Git)
+und baut daraus die Bäume.
 Die Tabelle ordnet zwei Pfade Komponente für Komponente:
 Sie zerlegt beide an \type{/}, vergleicht die Teile in der Bytefolge von UTF-8,
 und ein Pfad, der Anfang eines anderen ist, kommt zuerst (\type{compare_paths}).
@@ -203,7 +204,8 @@ ohne angehängten Schrägstrich.
 
 Weil die Tabelle in dieser Ordnung durchlaufen wird, stehen die Dateien eines Verzeichnisses
 hintereinander, und ein Verzeichnis ist vollständig, sobald der Durchlauf es verlässt.
-\type{write_tree} nutzt das in einem einzigen Durchlauf mit einem Stapel offener Verzeichnisse:
+Das Schreiben der Bäume nutzt das in einem einzigen Durchlauf
+mit einem Stapel offener Verzeichnisse (\type{write_tree}):
 
 \startitemize[n]
 \item Für jeden Pfad schliesst es die offenen Verzeichnisse, die der Pfad nicht mehr teilt,
@@ -223,7 +225,9 @@ und eine Schleife ersetzt die Rekursion, so dass ein tiefer Baum den Aufrufstape
 \in{Tabelle}[tab:object-costs] nennt die Kosten der Operationen.
 Darin ist $s$ die Grösse eines Objekts, $n$ die Zahl der verfolgten Dateien,
 $S$ ihre Gesamtgrösse in Bytes, $L$ die grösste Länge eines Pfads,
-$k$ die Zahl der Dateien, die sich unterscheiden, und $d$ die Tiefe des tiefsten Pfads.
+$k$ die Zahl der Dateien, die sich unterscheiden, $d$ die Zahl der Komponenten
+des längsten Pfads (eine Datei in der Wurzel hat Tiefe 1)
+und $b$ die grösste Zahl von Einträgen eines Verzeichnisses.
 Die Kosten des Betriebssystems für das Öffnen einer Datei und das Sichern auf den Datenträger
 zählen als Konstante je Datei.
 
@@ -252,41 +256,49 @@ zählen als Konstante je Datei.
 \stopxrow
 \startxrow
 \startxcell Pfade in die Tabelle einfügen \stopxcell
-\startxcell $O(n \log n \cdot L)$ \stopxcell
-\startxcell $O(\log n)$ Vergleiche je Pfad, jeder höchstens $O(L)$. \stopxcell
+\startxcell $O(n \cdot d \log n \cdot L)$ \stopxcell
+\startxcell Je Pfad bis zu $d$ Suchen (Einfügen und Prüfung der Elternverzeichnisse),
+je $O(\log n)$ Vergleiche zu höchstens $O(L)$. \stopxcell
 \stopxrow
 \startxrow
 \startxcell Bäume schreiben (\type{write_tree}) \stopxcell
-\startxcell $O(n \cdot L)$ \stopxcell
-\startxcell Ein Durchlauf; es entstehen höchstens $n \cdot d$ Einträge. \stopxcell
+\startxcell $O(S + n \cdot L)$ \stopxcell
+\startxcell Zuerst Prüfung jedes Blobs ($O(S)$), dann ein Durchlauf
+mit höchstens $n \cdot d$ Einträgen. \stopxcell
 \stopxrow
 \startxrow
 \startxcell Snapshot \stopxcell
-\startxcell $O(S + n \log n \cdot L)$ \stopxcell
+\startxcell $O(S + n \cdot d \log n \cdot L)$ \stopxcell
 \startxcell Jede Datei wird gelesen und gehasht; das überwiegt. \stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
 \startxcell Zwei Bäume vergleichen (\type{status}) \stopxcell
-\startxcell $O(k \cdot d)$ Paare \stopxcell
-\startxcell Nur Verzeichnisse auf dem Weg zu einem Unterschied werden gelesen. \stopxcell
+\startxcell $O((1 + k \cdot d) \cdot b)$ \stopxcell
+\startxcell Höchstens $1 + k \cdot d$ Paare von Verzeichnissen,
+jedes linear in seinen Einträgen. \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
 Der Snapshot liest jede unveränderte Datei dreimal:
 aus dem Arbeitsverzeichnis, als gespeichertes Objekt, wenn das Schreiben prüft,
-ob es schon unversehrt vorliegt, und noch einmal, wenn \type{write_tree} vor dem Schreiben
+ob es schon unversehrt vorliegt, und noch einmal, wenn der Kern vor dem Schreiben
 der Bäume jeden Blob prüft (\type{Index::verify}).
+Eine Datei, deren Inhalt neu ist, liest er zweimal und schreibt sie einmal.
 Das ändert die Ordnung $O(S)$ nicht, wohl aber die Konstante;
 einen Cache, der unveränderte Dateien erkennt, gibt es noch nicht.
 Der Vergleich zweier Bäume für \type{status} liest beide Seiten Verzeichnis für Verzeichnis.
 Zwei Verzeichnisse mit gleicher ID überspringt er, ohne sie zu lesen.
-Zwei andere mischt er wie das Mischen zweier sortierter Folgen beim Sortieren durch Mischen,
+Zwei Verzeichnisse mit verschiedener ID durchläuft er nebeneinander
+wie den Mischschritt beim Sortieren durch Mischen,
 in einer Zeit, die linear in der Zahl ihrer Einträge ist
 \cite[sedgewick2011algorithms] (Abschnitt 2.2).
-Gelesen werden höchstens die Verzeichnisse auf den Wegen von der Wurzel zu den $k$ Unterschieden.
+Gelesen werden die Wurzel und höchstens die Verzeichnisse auf den Wegen
+zu den $k$ Unterschieden;
+ein ganz neues oder ganz entferntes Verzeichnis liest er vollständig,
+doch jede Datei darin zählt zu den $k$.
 
-\subsection{Warum die Garantien gelten}
+\subsection[sec:object-guarantees]{Warum die Garantien gelten}
 
 Alle Garantien des Objektspeichers stützen sich auf eine Annahme:
 Niemand kann zwei verschiedene Eingaben mit demselben BLAKE3-Hash finden
@@ -298,8 +310,9 @@ Darauf beruhen das einmalige Speichern und das Überspringen gleicher Verzeichni
 Eine Änderung an gespeicherten Bytes fällt beim nächsten Lesen auf,
 denn sie bricht die Invariante des Speichers.
 Erkannt heisst nicht verhindert: Ein beschädigtes Objekt bleibt beschädigt,
-bis ein Snapshot denselben Inhalt wieder speichert,
-und ein fehlendes Objekt bringt Stemma nicht zurück.
+bis unter Unix ein Snapshot denselben Inhalt wieder speichert;
+anderswo bricht das Speichern mit dem Fehler ab.
+Ein fehlendes Objekt bringt Stemma nicht zurück.
 
 Ein Kreis im Graphen verlangt ein Objekt, dessen Kodierung über eine Kette von Objekten
 die eigene ID enthält. Die ID ist aber der Hash eben dieser Kodierung.
@@ -432,8 +445,8 @@ zu einer gewöhnlichen Datei kann ein verfolgter Link unter Windows noch nicht w
 \item Das Ausführbit gehört zum Dateimodus.
 \item Eine verfolgte Spezialdatei (Gerät, Socket, Pipe) bricht den Snapshot mit einem Fehler ab,
 statt still aus dem Verlauf zu fallen.
-\item Jede verfolgte Datei wird ganz gelesen und gespeichert;
-eine unveränderte Datei liest der Snapshot dreimal (\in{Abschnitt}[sec:object-costs]).
+\item Jede verfolgte Datei wird ganz gelesen; eine unveränderte liest der Snapshot dreimal,
+eine neue zweimal, und schreibt sie einmal (\in{Abschnitt}[sec:object-costs]).
 Einen Cache gibt es noch nicht.
 \stopitemize
 \stopinfobox
@@ -1098,7 +1111,7 @@ Er meldet das Geheimnis, und sein Sponsor entscheidet.
 
 In der Sitzung gerät ein Zugangsschlüssel in den Verlauf.
 Die ID des Blobs ist der BLAKE3-Hash über einen Kopf aus Art und Länge
-und den Inhalt der Datei (ADR-001, ADR-007);
+und den Inhalt der Datei (\in{Abschnitt}[sec:object-ids], ADR-001, ADR-007);
 einen Befehl, der sie zu einem Pfad nennt, gibt es noch nicht.
 Bis dahin findet \type{grep -rl} den Inhalt im Objektspeicher,
 denn ein loses Objekt liegt unkomprimiert unter \type{objects/b3/}.
