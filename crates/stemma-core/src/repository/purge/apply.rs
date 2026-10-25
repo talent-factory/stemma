@@ -832,13 +832,12 @@ impl Repository {
         }
         let entries = numbers(&written);
 
-        // Step 7: the stubs.
+        // Step 7: the stubs. The `purge` entries that list them are at hand, so the log is not
+        // read again for each stub.
         for number in &plan.entries {
-            self.oplog().replace_with_stub(*number).map_err(stopped(
-                PurgeStep::Stubs,
-                &entries,
-                PurgeFailure::Log,
-            ))?;
+            self.oplog()
+                .replace_with_stub_listed(*number, &written)
+                .map_err(stopped(PurgeStep::Stubs, &entries, PurgeFailure::Log))?;
         }
         if stop == Some(Stop::Stubs) {
             lock.leak();

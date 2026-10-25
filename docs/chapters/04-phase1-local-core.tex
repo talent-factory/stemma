@@ -1825,10 +1825,10 @@ jede Datei atomar ersetzt (\in{Abschnitt}[sec:atomic-replace]). \stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
 \startxcell Stubs schreiben mit \type{--apply} \stopxcell
-\startxcell $O(R \cdot (N \log N + N \cdot E))$ \stopxcell
-\startxcell Vor jedem Stub listet das Log seine Einträge
-und liest die späteren, bis es den Eintrag \type{purge} findet, der den Stub aufführt;
-dieser steht am Ende. \stopxcell
+\startxcell $O(N \log N + N \cdot E)$ \stopxcell
+\startxcell Der Purge liest das Log einmal, um einen geschriebenen Eintrag \type{purge} zu finden.
+Den Eintrag, der die Stubs aufführt, hat er danach in der Hand,
+und jeder der $R$ Stubs liest nur seinen eigenen Eintrag. \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
@@ -1843,8 +1843,6 @@ In einem Durchlauf liegt ein Commit höchstens einmal je Kind auf dem Stapel,
 dazu einmal als Wurzel.
 Die Durchsicht des Speichers ist der Preis dafür, dass kein Rest den Blob behält:
 Sie kostet auch dann $O(M)$, wenn nur ein einziger Commit den Blob enthält.
-Bei den Stubs überwiegt die Suche nach dem Eintrag \type{purge};
-nennt ein frühes Geheimnis viele Einträge, wächst sie quadratisch in $N$.
 
 Nach dem Purge gilt die Invariante:
 {\em Kein Objekt, das bleibt, erreicht den Blob.}

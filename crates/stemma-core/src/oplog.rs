@@ -2577,33 +2577,55 @@ impl FsOpLog {
         }
     }
 
+    /// [`replace_with_stub_listed`](Self::replace_with_stub_listed) with the `purge` entries that
+    /// follow the entry, read from the log. Each call lists the log and reads the later entries,
+    /// so a purge passes the entries it holds instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`numbers`](Self::numbers) and [`read`](Self::read) return for a later entry,
+    /// and what [`replace_with_stub_listed`](Self::replace_with_stub_listed) returns.
+    #[cfg(test)]
+    pub(crate) fn replace_with_stub(&self, number: u64) -> Result<Entry, OpLogError> {
+        // A later entry that cannot be read is an error of its own: it may be the purge entry.
+        let mut purges = Vec::new();
+        for later in self.numbers()?.into_iter().filter(|later| *later > number) {
+            let entry = self.read(later)?;
+            if matches!(entry.record(), Record::Purge(_)) {
+                purges.push(entry);
+            }
+        }
+        self.replace_with_stub_listed(number, &purges)
+    }
+
     /// Replaces the entry by its stub (ADR-014): the stub is written to a temporary file in `tmp/`,
     /// flushed, and renamed over the entry, so a reader sees the entry or the stub and never a
     /// mix; then the directory is flushed. A stub is replaced by itself, so the call can be
     /// repeated. It is called after the `purge` entry that lists the number is written; a stub
     /// that no `purge` entry lists is an error of the log.
     ///
+    /// `purges` are entries of this log, read from it or written to it under the lock that the
+    /// caller still holds; one of them has to be a `purge` entry after the entry that lists it.
+    /// The log is not listed again, so a purge with many stubs reads each entry once.
+    ///
     /// # Errors
     ///
-    /// Returns what [`numbers`](Self::numbers) returns and what [`read`](Self::read) returns for
-    /// the entry or a later one, [`OpLogError::NotListed`] if no `purge` entry lists the number
-    /// (nothing is written, as the stub would make the log unreadable), [`OpLogError::Entry`] with
-    /// [`EntryError::PurgeNotReplaceable`] for the entry of a purge, [`OpLogError::Io`] if the
-    /// storage fails before the stub is in place, and
+    /// Returns what [`read`](Self::read) returns for the entry, [`OpLogError::NotListed`] if no
+    /// `purge` entry of `purges` lists the number (nothing is written, as the stub would make the
+    /// log unreadable), [`OpLogError::Entry`] with [`EntryError::PurgeNotReplaceable`] for the
+    /// entry of a purge, [`OpLogError::Io`] if the storage fails before the stub is in place, and
     /// [`OpLogError::NotFlushed`] with the stub if it is in place but the directory could not be
     /// flushed; a repeated call is harmless.
-    pub(crate) fn replace_with_stub(&self, number: u64) -> Result<Entry, OpLogError> {
+    pub(crate) fn replace_with_stub_listed(
+        &self,
+        number: u64,
+        purges: &[Entry],
+    ) -> Result<Entry, OpLogError> {
         let stub = self.read(number)?.to_stub().map_err(OpLogError::Entry)?;
-        // A later entry that cannot be read is an error of its own: it may be the purge entry.
-        let mut listed = false;
-        for later in self.numbers()?.into_iter().filter(|later| *later > number) {
-            if let Record::Purge(purge) = self.read(later)?.record() {
-                if purge.lists(number) {
-                    listed = true;
-                    break;
-                }
-            }
-        }
+        let listed = purges.iter().any(|entry| {
+            entry.number() > number
+                && matches!(entry.record(), Record::Purge(purge) if purge.lists(number))
+        });
         if !listed {
             return Err(OpLogError::NotListed { number });
         }
@@ -5238,6 +5260,37 @@ mod tests {
             log.replace_with_stub(9),
             Err(OpLogError::Missing { .. })
         ));
+    }
+
+    #[test]
+    fn a_stub_needs_a_given_purge_entry_after_it_that_lists_it() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        log.append(&change("a", None, A)).unwrap();
+        log.append(&change("b", None, B)).unwrap();
+        let written = log
+            .append_purge(Purge::new(TIME + 9, human(), 1, &[2]).unwrap())
+            .unwrap();
+        let before = fs::read(dir.path().join("oplog/000000000002")).unwrap();
+        let others = log.entries().unwrap()[..2].to_vec();
+        for purges in [&[][..], &others[..]] {
+            assert!(matches!(
+                log.replace_with_stub_listed(2, purges),
+                Err(OpLogError::NotListed { number: 2 })
+            ));
+        }
+        assert!(matches!(
+            log.replace_with_stub_listed(1, &written),
+            Err(OpLogError::NotListed { number: 1 })
+        ));
+        assert_eq!(
+            fs::read(dir.path().join("oplog/000000000002")).unwrap(),
+            before,
+            "nothing is written"
+        );
+        let stub = log.replace_with_stub_listed(2, &written).unwrap();
+        assert_eq!(log.read(2).unwrap(), stub);
+        assert_eq!(log.entries().unwrap().len(), 3);
     }
 
     #[test]
