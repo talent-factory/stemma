@@ -303,10 +303,13 @@ doch jede Datei darin zählt zu den $k$.
 Ein Absturz kann ein Programm mitten im Schreiben einer Datei anhalten.
 Schreibt es die Datei an ihrem Platz, bleibt dort eine abgeschnittene Datei
 oder ein Gemisch aus altem und neuem Inhalt.
-Stemma schreibt deshalb keine Datei des Repositories an ihrem Platz.
+Stemma schreibt deshalb keine Datei, die ein Leser als Zustand des Repositories liest,
+an ihrem Platz.
 Jedes Objekt, jeder Zeiger, jeder Eintrag des Logs, die Datei \type{oplog-tip}
 und das Journal eines Purge entstehen unter einem anderen Namen
 und kommen erst vollständig an ihren Pfad.
+Die Sperre der Referenzen gehört nicht dazu, denn sie hält keinen Zustand,
+der einen Absturz überstehen muss.
 
 Gegeben sind ein Pfad $p$ und ein Inhalt aus $s$ Bytes.
 Das Ersetzen geht in vier Schritten:
@@ -334,24 +337,28 @@ beide liegen unter \type{.stemma}.
 
 Das Ersetzen kostet $O(s)$ Zeit für das Schreiben und dazu zwei Sicherungen,
 eine der Datei und eine des Verzeichnisses.
-Die Sicherungen hängen nicht von $s$ ab, überwiegen aber bei kleinen Dateien,
+Eine Sicherung schreibt auch die $s$ Bytes, hat aber einen festen Anteil,
+der nicht von $s$ abhängt und bei kleinen Dateien überwiegt,
 denn unter macOS leert jede Sicherung einer Datei den Cache des ganzen Geräts.
-Ein Snapshot schreibt seine neuen Objekte deshalb als Stapel (ADR-007).
+Ein Snapshot schreibt seine neuen Objekte deshalb gebündelt (ADR-007).
 Er legt jedes Objekt in \type{tmp/} an, ohne es zu sichern.
 Bevor ein Eintrag oder ein Zeiger eines davon nennt, sichert er jede Datei und benennt sie um,
 und danach sichert er jedes Verzeichnis, das ein Objekt erhalten hat, ein einziges Mal.
 Für $k$ Objekte in $r$ Verzeichnissen sind das $k + r$ statt $2k$ Sicherungen,
+dazu zwei für jedes Verzeichnis, das dabei neu entsteht,
 und $r$ ist höchstens 256, die Zahl der Verzeichnisse unter \type{objects/b3/}.
 Das erste \type{track} von 10'000 Dateien dauerte so 49 statt 97 Sekunden,
 von 1'000 Dateien 6,7 statt 11,3 Sekunden
-(Release-Build, macOS mit APFS auf einer SSD, ein Lauf je Messung, Dateien zu 1 KiB; ADR-007).
-Mehr als die Hälfte spart der Stapel nicht, weil er weiterhin jede Datei für sich sichert.
+(Release-Build, macOS mit APFS auf einer SSD, ein Lauf je Messung, Dateien zu 1 KiB,
+100 Dateien je Verzeichnis, andere Prozesse liefen mit;
+gemessen mit \type{scripts/measure-track.sh}, ADR-007).
+Mehr als die Hälfte spart das Bündeln nicht, weil es weiterhin jede Datei für sich sichert.
 
-Die Invariante folgt aus zwei Zusagen des Dateisystems.
+Die Invariante folgt aus Zusagen des Dateisystems.
 Eine Umbenennung innerhalb eines Dateisystems ist atomar:
 Jeder Prozess findet unter $p$ entweder die alte oder die neue Datei.
 Ein harter Verweis legt einen Namen in einem Schritt an oder scheitert.
-Beide Zusagen betreffen nur die Namen, nicht den Inhalt.
+Diese Zusagen betreffen nur die Namen, nicht den Inhalt.
 Ohne Schritt~2 darf ein Dateisystem die Umbenennung vor den Daten auf den Datenträger bringen,
 und nach einem Stromausfall nennt $p$ eine leere oder halb geschriebene Datei.
 Pillai und andere haben solche Umordnungen bei verbreiteten Dateisystemen nachgewiesen
@@ -360,9 +367,12 @@ und in Anwendungen, darunter Git und Mercurial, Fehler gefunden, die daraus folg
 Schritt~4 macht den neuen Namen dauerhaft, denn erst das Verzeichnis hält ihn.
 
 Ein Absturz vor Schritt~3 lässt $p$ unberührt; zurück bleibt eine Datei in \type{tmp/}.
-Ein Absturz nach Schritt~3 lässt nach einem Stromausfall den alten oder den neuen Namen zurück,
-in beiden Fällen mit vollständigem Inhalt, weil Schritt~2 den Inhalt schon gesichert hat.
-Die Datei in \type{tmp/} entfernt der nächste Befehl, der die Sperre der Referenzen nimmt
+Nach einem Absturz nach Schritt~3 liegt unter $p$ die alte oder die neue Datei;
+bei einem harten Verweis gibt es den neuen Namen oder keinen.
+In jedem Fall ist der Inhalt vollständig, weil Schritt~2 ihn schon gesichert hat.
+Ein harter Verweis lässt zudem den temporären Namen bestehen;
+der Schreiber entfernt ihn danach nur nach bestem Bemühen.
+Was in \type{tmp/} liegen bleibt, entfernt der nächste Befehl, der die Sperre der Referenzen nimmt
 (\in{Abschnitt}[sec:oplog-tip]).
 
 \startinfobox
@@ -375,7 +385,7 @@ Ein neues Objekt macht er vor dem Umbenennen schreibgeschützt.
 ist aber nicht als gesichert bekannt.
 Was das für ein Objekt, einen Eintrag und einen Zeiger heisst, steht in
 \in{Abschnitt}[sec:pointer-move].
-\item Ausser unter Unix und Windows sichert der Kern kein Verzeichnis.
+\item Ausser unter Unix und Windows sichert Stemma kein Verzeichnis.
 Das Ersetzen bleibt dort atomar, ein Stromausfall kann aber die letzte Änderung zurücknehmen.
 \stopitemize
 \stopinfobox
@@ -908,9 +918,9 @@ bis dahin nennt das Log den Ausgang des neuesten Eintrags unbekannt.
 {\bf Was \quotation{gesichert} auf jeder Plattform heisst.}
 Eine Datei ist erst nach einem Stromausfall noch da, wenn auch ihr Verzeichnis gesichert ist,
 denn erst das Verzeichnis hält ihren Namen.
-Unter Unix und unter Windows sichert der Kern deshalb das Verzeichnis,
-nachdem er ein Objekt, einen Eintrag oder einen Zeiger an seinen Platz gelegt hat (ADR-007);
-nur die Datei \type{oplog-tip} sichert er nach bestem Bemühen.
+Unter Unix und unter Windows sichert Stemma deshalb das Verzeichnis,
+nachdem es ein Objekt, einen Eintrag oder einen Zeiger an seinen Platz gelegt hat (ADR-007);
+nur das Verzeichnis der Datei \type{oplog-tip} sichert es nach bestem Bemühen.
 Kann ein Dateisystem ein Verzeichnis nicht sichern, meldet der Befehl einen Fehler.
 Die Datei liegt dann an ihrem Platz, ist aber nicht als gesichert bekannt.
 Ein Objekt oder ein Eintrag gilt deshalb als nicht geschrieben,
@@ -1207,7 +1217,7 @@ wie eine Zeigerbewegung aus, die stattfand.
 \subsection[sec:oplog-costs]{Kosten des Logs}
 
 \in{Tabelle}[tab:oplog-costs] nennt die Kosten der Operationen auf dem Log.
-Darin ist $N$ die Zahl der Einträge, $E$ die grösste Grösse eines Eintrags (höchstens 64 KiB),
+Darin ist $N$ die Zahl der Einträge, $E$ die Grösse des grössten Eintrags (höchstens 64 KiB),
 $w$ die Zahl der Einträge, die \type{op log -n} zeigt,
 $m$ die Zahl der Einträge, deren Ausgang bestimmt wird
 ($w$ bei \type{op log -n}, $N$ beim Restore),
@@ -1273,7 +1283,7 @@ geht einmal durch das ganze Verzeichnis, auch \type{op log -n 1}.
 Bei einem langen Log überwiegt deshalb das Auflisten,
 während Prüfung und Ausgänge nur das gezeigte Fenster kosten.
 
-\subsection{Den Zustand vor einem Eintrag wiederherstellen}
+\subsection[sec:restore]{Den Zustand vor einem Eintrag wiederherstellen}
 
 Jeder Eintrag trägt den alten und den neuen Wert seiner Zeiger,
 also lässt sich eine Operation zurücksetzen, indem die alten Werte zurückkommen
@@ -1609,27 +1619,33 @@ und die Meldung nennt ihn.
 
 Das Journal folgt dem Recovery von Datenbanken, wie es Gray und Reuter beschreiben
 \cite[gray1993transaction].
-Der Eintrag \type{purge} spielt die Rolle des Commit-Satzes einer Transaktion.
-Vor ihm sind nur neue Objekte geschrieben, die kein Zeiger und kein Eintrag nennt,
-und \type{--abort} nimmt sie zurück, indem es jedes Objekt der Zeilen \type{new} entfernt (Undo).
-Nach ihm holt \type{--resume} die übrigen Schritte nach (Redo).
+Der Eintrag \type{purge} spielt die Rolle des Commit-Satzes,
+des Satzes im Log einer Datenbank, der eine Transaktion abschliesst.
+Vor ihm hat der Purge nur das Format, das Journal und neue Objekte geschrieben,
+und die neuen Objekte nennt kein Zeiger und kein Eintrag.
+\type{--abort} nimmt sie zurück, indem es jedes Objekt der Zeilen \type{new} entfernt;
+im Recovery heisst dieser Schritt Undo, mit dem Restore aus \in{Abschnitt}[sec:restore]
+hat er nichts zu tun.
+Nach dem Eintrag holt \type{--resume} die übrigen Schritte nach, im Recovery Redo genannt.
 Welcher Fall vorliegt, ergibt eine Analyse wie bei ARIES \cite[mohan1992aries]:
 Beide Modi suchen einen Eintrag \type{purge} nach der Nummer, die das Journal als letzte nennt.
 Einen anderen Eintrag kann es dort nicht geben, denn die Sperre hält jeden anderen Schreiber fern.
+
 Vor dem Eintrag steht auch \type{--resume} offen.
 Es baut die neuen Objekte aus den alten neu, denn das Journal hält nur ihre IDs;
 das geht, weil vor dem Eintrag nichts gelöscht wird.
 Ergibt das eine andere ID, als das Journal nennt, hat sich der Speicher geändert,
 und \type{--resume} hält an.
 
-Für das Redo braucht jeder Schritt eine Eigenschaft:
-{\em Ein Schritt, der ganz oder zum Teil ausgeführt ist, hinterlässt beim Wiederholen
-denselben Zustand wie nach einer einzigen Ausführung.}
-Ein solcher Schritt heisst idempotent.
+Für das Redo braucht jeder Schritt eine Eigenschaft.
+Ein Schritt heisst idempotent, wenn zwei Ausführungen denselben Zustand hinterlassen wie eine.
+Das Redo verlangt mehr:
+{\em Ein Schritt, der zum Teil ausgeführt ist, hinterlässt beim Wiederholen
+denselben Zustand wie nach einer einzigen vollständigen Ausführung.}
 ARIES erreicht das, indem es die Nummer des letzten Logsatzes auf jeder Seite vermerkt
 und beim Redo damit vergleicht.
 Der Purge wählt Schritte, die selbst prüfen, ob ihr Ziel schon erreicht ist,
-wie im Absatz oben aufgezählt.
+wie oben bei \type{--resume} aufgezählt.
 Ein Absturz während \type{--resume} oder \type{--abort} schadet deshalb nicht,
 und beide lassen sich wiederholen, bis sie gelingen.
 Anders als eine Datenbank startet Stemma das Recovery nicht selbst beim nächsten Befehl;
@@ -1694,7 +1710,7 @@ die Meldung nennt den Grund.
 \subsection[sec:purge-plan]{Wie der Plan eines Purge entsteht}
 
 Der Plan muss jeden Commit finden, der den Blob erreicht,
-und ihn mit allen Commits danach umschreiben, ohne einen Baum oder Commit zweimal zu lesen.
+und ihn mit allen Commits danach umschreiben, ohne einen Baum oder Commit zweimal umzuschreiben.
 Weil die ID eines Objekts von den IDs aller Objekte abhängt, die es erreicht,
 steht die neue ID eines Commits erst fest, wenn die neuen IDs seiner Eltern feststehen.
 Der Plan durchläuft den Commit-Graphen deshalb in Postorder,
@@ -1708,12 +1724,12 @@ mit dem Baum $f(t)$ und den Eltern $f(p_1), \ldots, f(p_m)$;
 Change-ID, Autor, Zeit und Nachricht bleiben.
 Ändert sich nichts, ist $f(x) = x$.
 Weil eine ID ihren ganzen Teilgraphen festlegt, hängt $f(x)$ nur von der ID von $x$ ab.
-Der Plan hält deshalb $f$ für jede ID, die er gesehen hat, in einer Hashtabelle fest (Memo),
-und einen Baum oder Commit, den mehrere Commits teilen, liest und schreibt er einmal um.
+Der Plan hält deshalb $f$ für jede ID, die er gesehen hat, in einer Hashtabelle fest,
+dem Memo, und einen Baum oder Commit, den mehrere Commits teilen, schreibt er einmal um.
 
-Der Durchlauf beginnt bei jeder Wurzel:
-dem Working-Copy-Commit, jedem Branch, einem abgekoppelten HEAD
-und jedem Commit, den ein Eintrag des Logs nennt.
+Der Durchlauf beginnt bei jeder Wurzel, das heisst
+beim Working-Copy-Commit, bei jedem Branch, bei einem abgekoppelten HEAD
+und bei jedem Commit, den ein Eintrag des Logs nennt.
 Ein Verlauf kann tausende Commits lang sein,
 deshalb hält der Durchlauf einen eigenen Stapel statt der Rekursion (\type{Planner::commit}):
 
@@ -1721,14 +1737,15 @@ deshalb hält der Durchlauf einen eigenen Stapel statt der Rekursion (\type{Plan
 \item Er nimmt den obersten Commit $c$ des Stapels.
 Kennt das Memo $f(c)$ schon, entfernt er $c$ und fährt mit dem nächsten fort.
 \item Sonst liest er $c$.
-Fehlt einem Elter von $c$ der Wert im Memo, legt er diese Eltern auf den Stapel
-und beginnt mit Schritt~1; $c$ bleibt darunter liegen.
+Fehlt für einen oder mehrere Eltern von $c$ der Wert im Memo,
+legt er jeden dieser Eltern auf den Stapel und beginnt mit Schritt~1;
+$c$ bleibt darunter liegen.
 \item Kennt das Memo alle Eltern, entfernt er $c$, berechnet $f(t)$ für den Baum $t$ von $c$
 und daraus $f(c)$ und trägt $f(c)$ ins Memo ein.
 Ist $f(c) \ne c$, hängt er das Paar $(c, f(c))$ an die Liste der Umschreibungen.
 \stopitemize
 
-Den Baum schreibt \type{Planner::tree} rekursiv um, ebenfalls mit dem Memo;
+Einen Baum schreibt der Plan rekursiv um, ebenfalls mit dem Memo (\type{Planner::tree});
 die Rekursion ist nie tiefer als der tiefste Pfad.
 Für den Durchlauf gilt die Invariante:
 {\em Für jeden Commit $c$ im Memo stehen auch seine Eltern im Memo, und sein Wert ist $f(c)$.}
@@ -1750,52 +1767,28 @@ etwa den Commit eines Snapshots, dessen Eintrag nicht geschrieben wurde.
 Enthält ein solcher Rest den Blob, bleibt sonst das Geheimnis nach dem Purge auf dem Datenträger.
 Der Plan geht darum alle $M$ Objekte des Speichers durch (\type{scan}).
 Ein Objekt, dessen ID das Memo kennt, überspringt er.
-Von jedem anderen liest er nur den Kopf, um seine Art zu erfahren,
+Von jedem anderen liest er zuerst nur den Kopf, um seine Art zu erfahren,
 so dass er keinen Blob ganz liest,
-und einen Baum oder Commit schreibt er mit demselben Memo um.
+und einen Baum oder Commit liest er danach ganz und schreibt ihn mit demselben Memo um.
 Ein Rest, der den Blob erreicht oder auf einen Commit mit ihm folgt, kommt zu den Objekten,
 die gelöscht werden; seine neue Fassung wird nie geschrieben.
-
-Nach dem Purge gilt die Invariante:
-{\em Kein Objekt, das bleibt, erreicht den Blob.}
-Sie folgt aus der Konstruktion.
-Dass $f(t)$ den Blob nicht nennt, zeigt eine Induktion über die Tiefe von $t$:
-Die Einträge mit $b$ entfallen, und jeder Unterbaum ist schon umgeschrieben.
-Ebenso erreicht $f(c)$ den Blob nicht, mit einer Induktion über die Postorder,
-denn sein Baum ist $f(t)$ und seine Eltern sind die $f(p_i)$.
-Die Wurzeln, die bleiben, sind die neuen Werte der Zeiger und die Commits der Einträge,
-die nicht zu Stubs werden.
-Ein solcher Eintrag nennt nur Commits mit $f(c) = c$.
-Ein Commit, der den Blob erreicht, hat aber eine andere ID als $f(c)$,
-weil sich sein Baum oder einer seiner Eltern ändert.
-Gelöscht wird nur ein Objekt $x$ mit $f(x) \ne x$,
-also erreicht auch kein Objekt, das bleibt, ein gelöschtes.
-
-Der Plan prüft das Ergebnis trotzdem (\type{reached}).
-Von den Wurzeln, die bleiben, durchläuft er den Graphen nach dem Purge
-mit einer Menge der besuchten IDs, und zwar aus den Verweisen, die er schon im Speicher hält.
-Trifft er auf einen Baum, der den Blob nennt, oder auf ein Objekt, das gelöscht werden soll,
-bricht er ab.
-Solange das Argument und der Code stimmen, schlägt die Prüfung nie an;
-ein Fehler in einem von beiden wird so zu einem Abbruch statt zu einem Geheimnis, das bleibt.
-Die Hash-Kette des Logs hält über den Purge,
-weil jeder Stub den Hash des Rumpfs behält, den er ersetzt (\in{Abschnitt}[sec:hash-chain]).
 
 \in{Tabelle}[tab:purge-costs] nennt die Kosten.
 Darin sind $C$ und $T$ die Zahl der Commits und der Bäume, die der Durchlauf erreicht,
 von den Wurzeln aus oder als Rest,
 $K$ die Zahl der Verweise zwischen ihnen (Eltern eines Commits und Einträge eines Baums),
 $M$ die Zahl der Objekte im Speicher,
-$N$ die Zahl der Einträge des Logs und $E$ die grösste Grösse eines Eintrags.
-Das Lesen und Hashen eines Baums oder Commits zählt linear in der Zahl seiner Einträge,
+$N$ die Zahl der Einträge des Logs, $R \le N$ die Zahl der Einträge, die zu Stubs werden,
+und $E$ die Grösse des grössten Eintrags.
+Das Lesen und Hashen eines Baums oder Commits kostet Zeit linear in der Zahl seiner Einträge,
 und das Sichern einer Datei oder eines Verzeichnisses zählt als Konstante.
 
 \startplacetable[title={Kosten eines Purge},reference=tab:purge-costs,location=here]
 \startxtable[frame=off,option=stretch]
 \startxrow[topframe=on,bottomframe=on]
-\startxcell[width=0.30\textwidth] {\bf Schritt} \stopxcell
-\startxcell[width=0.30\textwidth] {\bf Zeit} \stopxcell
-\startxcell[width=0.40\textwidth] {\bf Begründung} \stopxcell
+\startxcell[width=0.28\textwidth] {\bf Schritt} \stopxcell
+\startxcell[width=0.34\textwidth] {\bf Zeit} \stopxcell
+\startxcell[width=0.38\textwidth] {\bf Begründung} \stopxcell
 \stopxrow
 \startxrow
 \startxcell Wurzeln bestimmen \stopxcell
@@ -1815,7 +1808,7 @@ je Verweis eine Suche im Memo. \stopxcell
 die Reste zählen zu $C$, $T$ und $K$. \stopxcell
 \stopxrow
 \startxrow
-\startxcell Prüfung (\type{reached}) \stopxcell
+\startxcell Prüfung (\type{check}, \type{reached}) \stopxcell
 \startxcell $O(C + T + K)$ \stopxcell
 \startxcell Ein Durchlauf über die Verweise im Speicher. \stopxcell
 \stopxrow
@@ -1824,23 +1817,59 @@ die Reste zählen zu $C$, $T$ und $K$. \stopxcell
 \startxcell $O((C + T) \log (C + T))$ \stopxcell
 \startxcell Die gelöschten Commits und Bäume stehen sortiert im Journal. \stopxcell
 \stopxrow
-\startxrow[bottomframe=on]
-\startxcell Ausführen mit \type{--apply} \stopxcell
-\startxcell $O(C + T + K + N \cdot E)$ \stopxcell
-\startxcell Höchstens $C + T$ neue Objekte, $N$ Stubs und $C + T + 1$ gelöschte Objekte,
+\startxrow
+\startxcell Objekte schreiben und löschen mit \type{--apply} \stopxcell
+\startxcell $O(C + T + K)$ \stopxcell
+\startxcell Höchstens $C + T$ neue und $C + T + 1$ gelöschte Objekte,
 jede Datei atomar ersetzt (\in{Abschnitt}[sec:atomic-replace]). \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Stubs schreiben mit \type{--apply} \stopxcell
+\startxcell $O(R \cdot (N \log N + N \cdot E))$ \stopxcell
+\startxcell Vor jedem Stub listet das Log seine Einträge
+und liest die späteren, bis es den Eintrag \type{purge} findet, der den Stub aufführt;
+dieser steht am Ende. \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
 Die Hashtabellen brauchen im Mittel eine konstante Zahl von Vergleichen je Suche
 \cite[sedgewick2011algorithms] (Abschnitt 3.4).
-Der Speicherbedarf ist $O(C + T + K)$,
-denn das Memo hält für jedes Objekt seinen neuen Wert und seine Verweise,
-damit die Prüfung den Verlauf nicht ein zweites Mal liest;
-ein Commit kann mehrmals auf dem Stapel liegen, aber höchstens einmal je Kind.
+Der Speicherbedarf ist $O(C + T + K + M)$.
+Das Memo hält für jedes Objekt seinen neuen Wert und seine Verweise,
+damit die Prüfung den Verlauf nicht ein zweites Mal liest,
+und die Durchsicht hält die Liste aller IDs des Speichers.
+In einem Durchlauf liegt ein Commit höchstens einmal je Kind auf dem Stapel,
+dazu einmal als Wurzel.
 Die Durchsicht des Speichers ist der Preis dafür, dass kein Rest den Blob behält:
 Sie kostet auch dann $O(M)$, wenn nur ein einziger Commit den Blob enthält.
+Bei den Stubs überwiegt die Suche nach dem Eintrag \type{purge};
+nennt ein frühes Geheimnis viele Einträge, wächst sie quadratisch in $N$.
+
+Nach dem Purge gilt die Invariante:
+{\em Kein Objekt, das bleibt, erreicht den Blob.}
+Sie folgt aus der Konstruktion.
+Dass $f(t)$ den Blob nicht nennt, zeigt eine Induktion über die Tiefe von $t$:
+Die Einträge mit $b$ entfallen, und jeder Unterbaum ist schon umgeschrieben.
+Ebenso erreicht $f(c)$ den Blob nicht, mit einer Induktion über die Postorder,
+denn sein Baum ist $f(t)$ und seine Eltern sind die $f(p_i)$.
+Mit denselben Induktionen gilt $f(x) \ne x$ genau dann, wenn $x$ den Blob erreicht.
+Die Wurzeln, die bleiben, sind die neuen Werte der Zeiger und die Commits der Einträge,
+die nicht zu Stubs werden; ein solcher Eintrag nennt nur Commits mit $f(c) = c$.
+Gelöscht werden der Blob und jedes Objekt $x$ mit $f(x) \ne x$, also genau die Objekte,
+die den Blob erreichen.
+Ein Objekt, das bleibt, erreicht keines von ihnen,
+denn sonst würde es über dieses Objekt auch den Blob erreichen.
+
+Der Plan prüft das Ergebnis trotzdem (\type{check} mit \type{reached}).
+Von den Wurzeln, die bleiben, durchläuft er den Graphen nach dem Purge
+mit einer Menge der besuchten IDs, und zwar aus den Verweisen, die er schon im Speicher hält.
+Trifft er auf einen Baum, der den Blob nennt, oder auf ein Objekt, das gelöscht werden soll,
+bricht er ab.
+Solange das Argument und der Code stimmen, schlägt die Prüfung nie an;
+ein Fehler in einem von beiden wird so zu einem Abbruch statt zu einem Geheimnis, das bleibt.
+Die Hash-Kette des Logs hält über den Purge,
+weil jeder Stub den Hash des Rumpfs behält, den er ersetzt (\in{Abschnitt}[sec:hash-chain]).
 
 \startinfobox
 {\bf Grenzfälle des Plans.}
@@ -1849,8 +1878,9 @@ Sie kostet auch dann $O(M)$, wenn nur ein einziger Commit den Blob enthält.
 und die Meldung nennt ihn, denn ein Commit darf keinen Elter zweimal nennen.
 \item Ein beschädigter Baum oder Commit hält den Plan an, denn er könnte den Blob nennen.
 Ein Rest, dessen Elter fehlt, hält ihn ebenfalls an, und die Meldung nennt den Rest.
-\item Ein Objekt, das zwischen dem Auflisten des Speichers und dem Lesen verschwindet,
+\item Ein Objekt, das zwischen dem Auflisten des Speichers und dem Lesen seines Kopfs verschwindet,
 nennt nichts mehr und wird übersprungen.
+Verschwindet es erst danach, hält der Plan an.
 \item Die Grenzen der Durchsicht bei einem beschädigten Kopf stehen in ADR-014.
 \stopitemize
 \stopinfobox

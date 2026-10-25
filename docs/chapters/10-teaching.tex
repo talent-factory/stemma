@@ -115,7 +115,7 @@ für Branches und den Working-Copy-Commit mit einem Compare-and-Swap unter der S
 \stopxrow
 \startxrow
 \startxcell Atomares Ersetzen einer Datei: temporäre Datei, sichern, umbenennen oder verknüpfen,
-Verzeichnis sichern; ein Stapel von Objekten sichert jedes Verzeichnis einmal \stopxcell
+Verzeichnis sichern; gebündelte Objekte sichern jedes Verzeichnis einmal \stopxcell
 \startxcell \type{place} und \type{Batch::finish} (\type{store.rs}),
 \type{write_replacing} (\type{refs.rs}), \type{publish} (\type{oplog.rs}) \stopxcell
 \startxcell nicht im Buch; Pillai und andere \cite[pillai2014crash] \stopxcell
@@ -124,7 +124,8 @@ Verzeichnis sichern; ein Stapel von Objekten sichert jedes Verzeichnis einmal \s
 \startxcell Tiefensuche durch den Commit-Graphen beim Purge in Postorder, mit eigenem Stapel
 und Memo: ein Commit ist fertig, wenn alle Eltern fertig sind; danach eine Durchsicht des
 Speichers und eine Prüfung der Erreichbarkeit \stopxcell
-\startxcell \type{Planner::commit}, \type{Planner::tree}, \type{scan}, \type{reached}
+\startxcell \type{Planner::commit}, \type{Planner::tree}, \type{scan}, \type{check},
+\type{reached}
 (\type{purge.rs}) \stopxcell
 \startxcell Abschnitt 4.2, Tiefensuche und topologische Ordnung (umgekehrte Postorder);
 Abschnitt 3.4, Hashtabellen \stopxcell
