@@ -406,8 +406,10 @@ Ein getroffenes Verzeichnis schliesst alles darunter aus.
 Negation, Escape und Zeichenklassen gibt es nicht; die Zeichen dafür lehnt der Leser ab.
 Namen und Muster werden Byte für Byte verglichen, mit Gross- und Kleinschreibung.
 
+Eine Zeile endet mit \type{\n} oder mit \type{\r\n} (Windows);
+alle Zeilen einer Datei enden wie die erste.
 Ist die Datei ungültig, zum Beispiel mit einer Leerzeile, einer Zeile mit \type{!}
-oder einem Windows-Zeilenende, oder ist sie ein Link oder ein Verzeichnis,
+oder gemischten Zeilenenden, oder ist sie ein Link oder ein Verzeichnis,
 endet der Befehl mit Exit-Code 1 und verfolgt nichts.
 Die Meldung nennt die Zeile und sagt, dass nichts verfolgt wurde.
 Dasselbe gilt, wenn die Datei sich während des Lesens ändert; dann hilft ein neuer Aufruf.
