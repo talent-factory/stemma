@@ -18,3 +18,9 @@ Versionskontrollsystem in Rust. API-first, mit Git-artiger CLI, ohne Git-Reposit
 - `adr/`: Architekturentscheidungen. Siehe `adr/README.md`.
 
 API-Server und MCP-Server folgen als eigene Crates, sobald der Kern steht.
+
+## Lizenz
+
+Copyright (c) 2026 Talent Factory GmbH.
+
+Stemma steht wahlweise unter der MIT-Lizenz (`LICENSE-MIT`) oder der Apache-Lizenz 2.0 (`LICENSE-APACHE`). Das gilt für den Kern, die Kommandozeile und das Buch in diesem Repository. Den Hub aus Phase 5 kann die Talent Factory GmbH zusätzlich als kostenpflichtigen Dienst anbieten. Wie Beiträge angenommen werden, steht in `CONTRIBUTING.md`.
