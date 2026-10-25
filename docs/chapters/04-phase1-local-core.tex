@@ -1121,7 +1121,8 @@ Die Kette zeigt, dass die Einträge zueinander passen, nicht wer sie schrieb.
 Wer \type{.stemma} schreiben kann, kann jeden späteren Hash und die Datei \type{oplog-tip}
 neu berechnen.
 Das fällt nur mit einem Anker auf, der ausserhalb des Repositories liegt:
-Wer einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}.
+Wer einen Anker aufbewahrt, prüft ihn später mit \type{stemma op verify --anchor}
+(\in{Abschnitt}[sec:verify-anchor]).
 Ein Anker $(n, H(n))$ deckt Nummer, Zeit, Akteur und Rumpf-Hash der Einträge $s$ bis $n$,
 denn nach dem Argument oben bricht eine Änderung daran die Kette oder ändert $H(n)$.
 Er übersteht einen Purge, weil ein Stub den Hash seines Eintrags behält.
@@ -1553,20 +1554,8 @@ Untracked files:
 ? .stemmaignore
 \stoptyping
 
-Nach dem Purge prüft \type{op verify} das ganze Log und gibt den Anker aus.
-Wer den Anker ausserhalb des Repositories aufbewahrt, prüft später mit \type{--anchor},
-ob der Eintrag noch denselben Hash hat:
-
-\starttyping
-$ stemma op verify
-Checked 9 entries of the operation log: the hash chain holds.
-anchor 9:b3:29a9…9450
-$ stemma op verify --anchor 9:b3:29a9…9450
-Checked 9 entries of the operation log: the hash chain holds.
-Entry 9 still has the hash of the anchor.
-anchor 9:b3:29a9…9450
-\stoptyping
-
+Dass die Kette über den Purge hält, prüft \type{op verify};
+die Sitzung tut das in \in{Abschnitt}[sec:verify-anchor].
 In der Ausgabe stehen die umbrochenen Meldungen auf einer Zeile.
 Eine dauerhafte Liste der entfernten Blobs, die \type{track} prüft, folgt später (ADR-014).
 Ein mit \type{--resume} beendeter Purge nennt keine Pfade, denn das Journal hält sie nicht fest.
@@ -1847,6 +1836,151 @@ Die Meldung nennt den Grund; nach einem Abbruch ist die Datei von Hand zu entfer
 sobald sicher kein Befehl mehr läuft.
 \item Besteht das Journal eines Purge, lehnt \type{status} ab und nennt
 \type{purge --resume} und \type{--abort}.
+\stopitemize
+\stopinfobox
+
+\subsection[sec:verify-anchor]{Das Log prüfen und einen Anker aufbewahren}
+
+Eine Sitzung eines Agenten ist zu Ende, und sein Sponsor will wissen,
+was der Agent getan hat und ob das Log noch dasselbe ist wie vor der Sitzung.
+\type{op log} zeigt jede Operation des Agenten mit seinem Akteur.
+Ob das Log selbst geändert wurde, zeigt die Hash-Kette aber nur zusammen mit einem Anker,
+den der Sponsor vor der Sitzung ausserhalb des Repositories aufbewahrt hat
+(\in{Abschnitt}[sec:hash-chain]).
+
+Das Problem entsteht erst mit Agenten.
+Ein Agent läuft mit den Rechten eines Kontos und kann deshalb neben dem Arbeitsverzeichnis
+auch \type{.stemma} schreiben.
+Dazu braucht es keine böse Absicht;
+eine eingeschleuste Anweisung genügt oder der Versuch, einen eigenen Fehler aufzuräumen.
+Ein Mensch, der jeden Schritt selbst macht, führt das Log für sich.
+Für einen Agenten ist es der Bericht, an dem sein Sponsor die Sitzung prüft,
+ohne jeden Schritt gesehen zu haben.
+Ändert der Agent einen Eintrag und berechnet die Kette danach neu,
+besteht das Log jede Prüfung, die nur das Repository liest,
+denn alles, womit die Prüfung vergleicht, liegt im Repository.
+Sichtbar wird die Änderung erst an einem Wert, den der Agent nicht erreicht.
+
+Der Ablauf hat diese Schritte:
+
+\startitemize[n]
+\item Vor der Sitzung führt der Sponsor \type{op verify} aus
+und bewahrt den Wert hinter \type{anchor} auf, etwa \type{9:b3:…},
+an einem Ort, den der Agent nicht schreiben kann,
+zum Beispiel auf einem anderen Rechner, in einem Passwortmanager oder im Ticket der Aufgabe.
+Eine Datei unter demselben Konto reicht nicht, denn der Agent kann auch sie ändern.
+\item Der Agent arbeitet.
+Jeder Befehl, der schreibt, nennt im Log den Akteur, den der Agent angibt.
+Ob er sich ehrlich als Agent angibt, prüft niemand,
+bis die Akteure signieren (ADR-004).
+\item Nach der Sitzung liest der Sponsor mit \type{op log} die Einträge des Agenten.
+\item Er prüft mit \type{op verify --anchor} das ganze Log und den aufbewahrten Anker.
+\item Hält der Anker, bewahrt er den neuen Anker auf, den der Befehl ausgibt;
+er ist der Anker vor der nächsten Sitzung.
+\stopitemize
+
+In der Sitzung nimmt der Sponsor den Anker nach dem Purge:
+
+\starttyping
+$ stemma op verify
+Checked 9 entries of the operation log: the hash chain holds.
+anchor 9:b3:29a9…9450
+\stoptyping
+
+Am nächsten Tag arbeitet ein Agent im Repository.
+Er lässt das Programm den Gruss ausgeben und committet:
+
+\starttyping
+$ export STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel"
+$ echo 'fn main() { println!("Hallo Welt"); }' > src/main.rs
+$ stemma commit -m "Gruss ausgeben"
+Committed b3:238a…4024 on main
+\stoptyping
+
+Nach der Sitzung liest der Sponsor die neuen Einträge und prüft den Anker.
+\type{op log} und \type{op verify} brauchen keinen Akteur:
+
+% The actor of an agent makes a line of op log longer than the measure; a smaller body font
+% keeps every entry on one line.
+\start\switchtobodyfont[small]
+\starttyping
+$ stemma op log -n 3
+11  2026-10-25T10:41:55Z  agent claude model=opus-5-5 session=s1 sponsor=daniel  commit
+    working-copy  b3:e6f6…a5cf -> b3:0051…2bdd
+    branch main  b3:dd97…5918 -> b3:238a…4024
+10  2026-10-25T10:41:54Z  agent claude model=opus-5-5 session=s1 sponsor=daniel  snapshot
+    working-copy  b3:35cb…f216 -> b3:e6f6…a5cf
+9  2026-10-24T05:54:35Z  human daniel  purge
+    commits 3  stubs 7-8
+\stoptyping
+\stop
+
+\starttyping
+$ stemma op verify --anchor 9:b3:29a9…9450
+Checked 11 entries of the operation log: the hash chain holds.
+Entry 9 still has the hash of the anchor.
+anchor 11:b3:8e23…e4ff
+\stoptyping
+
+Der Agent hat zwei Einträge geschrieben, den Snapshot und den Commit,
+und die Einträge 1 bis 9 sind dieselben wie vor der Sitzung.
+Der Sponsor bewahrt nun \type{11:b3:8e23…e4ff} auf.
+
+Ändert der Agent einen früheren Eintrag, etwa den Akteur von Eintrag 5,
+bricht die Kette bei Eintrag 6, und schon \type{op verify} ohne Anker meldet es:
+
+\starttyping
+$ stemma op verify
+stemma: entry 6 does not name the hash of the entry before it:
+expected `previous b3:7c0c…794c`, found `previous b3:5f22…6192`;
+an entry up to 6 was changed, removed, or inserted;
+restore the log from a backup of `.stemma`, as no command repairs the log yet
+\stoptyping
+
+Berechnet der Agent die Zeilen \type{previous} ab Eintrag 6 und die Datei \type{oplog-tip} neu,
+besteht das Log die Prüfung ohne Anker.
+Nur der Anker zeigt die Änderung:
+
+\starttyping
+$ stemma op verify
+Checked 11 entries of the operation log: the hash chain holds.
+anchor 11:b3:d086…1eb8
+$ stemma op verify --anchor 9:b3:29a9…9450
+stemma: entry 9 has the hash b3:3c64…3974, not the hash b3:29a9…9450 of the anchor:
+the log was changed and its chain computed again since the anchor was taken
+\stoptyping
+
+Wie oben steht jede umbrochene Meldung in der Ausgabe auf einer Zeile.
+Der Befehl endet mit Exit-Code 1 und gibt keinen neuen Anker aus.
+Die Meldung nennt den Eintrag des Ankers, nicht den geänderten,
+denn der Anker zeigt nur, dass sich unter den Einträgen 1 bis 9 etwas geändert hat.
+Welcher Eintrag es war, zeigt erst ein Vergleich mit einer Sicherung von \type{.stemma}.
+
+\type{op log} und \type{op verify} lesen nur.
+Sie ändern weder das Arbeitsverzeichnis noch den Working-Copy-Commit, die Zeiger oder das Log,
+und \type{op verify} kostet so viel wie das Prüfen des ganzen Logs
+(\in{Tabelle}[tab:oplog-costs]).
+
+\startinfobox
+{\bf Was ein Anker nach einer Sitzung zeigt und was nicht.}
+\startitemize
+\item Hält der Anker $(n, H(n))$, sind die Einträge der Kette von $s$ bis $n$ unverändert,
+bis auf das Ersetzen durch einen Stub, das ein \type{purge}-Eintrag auflistet
+(\in{Abschnitt}[sec:hash-chain]).
+In der Sitzung beginnt die Kette mit Eintrag 1.
+\item Die Einträge nach $n$ deckt er nicht.
+Der Agent kann seine eigenen Einträge ändern,
+etwa seinen Akteur durch \type{human daniel} ersetzen,
+oder das Log nach $n$ abschneiden, und der Anker hält trotzdem.
+Dagegen helfen erst Signaturen der Akteure (ADR-004) oder ein Hub, der den letzten Eintrag
+bestätigt (Phase 5).
+\item Nennt der Anker einen Eintrag, den das Log nicht hat,
+oder einen Eintrag aus der Zeit vor der Kette, lehnt der Befehl ebenfalls mit Exit-Code 1 ab.
+Die Meldung nennt als zweite Ursache einen Anker eines anderen Repositories.
+\item Der Anker deckt nur das Log.
+Bewegt ein Agent einen Zeiger ausserhalb des Logs,
+zeigt das oft der Ausgang der Einträge, aber nicht immer
+(\in{Abschnitt}[sec:outcome]).
 \stopitemize
 \stopinfobox
 
