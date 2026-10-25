@@ -132,6 +132,8 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Akteur, Sponsor | Benutzer (for an actor) | ADR-002 |
 | Exit-Code | Rückgabewert | |
 | Change-ID | Änderungs-ID | The random ID a commit keeps when it is rewritten (ADR-010) |
+| Inhaltsadressierung | | Content addressing: an object stored under its hash (ADR-001, ADR-007) |
+| Merkle-Graph | Merkle-Baum, Hash-Baum | The graph of trees and commits named by ID (ADR-005) |
 | verfolgt, unverfolgt | getrackt | A file in the tree of the Working-Copy-Commit, or not |
 | Ausschlussdatei | Ignore-Datei | `.stemmaignore` (ADR-012) |
 | Sperre der Referenzen | Lock | `refs.lock`: one writer at a time (ADR-008) |

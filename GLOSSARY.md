@@ -17,6 +17,16 @@ _Avoid_: Record, item
 The hash of an object's encoding with the algorithm as prefix, such as `b3:` for BLAKE3.
 _Avoid_: SHA, checksum
 
+**Content addressing**:
+Storing an object under the hash of its encoding, so that equal content is stored once and a
+changed byte is found on read. (Inhaltsadressierung)
+_Avoid_: Hash storage
+
+**Merkle graph**:
+The directed acyclic graph of trees and commits that name their parts by object ID, so that an
+ID fixes everything it reaches. (Merkle-Graph)
+_Avoid_: Merkle tree (for the commit graph), hash tree
+
 **Blob**:
 An object that holds the content of one file. (Blob)
 _Avoid_: File object
