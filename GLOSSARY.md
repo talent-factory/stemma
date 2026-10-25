@@ -119,7 +119,9 @@ _Avoid_: Logeintrag, event
 
 **Write-ahead rule**:
 An entry is written and flushed before the pointer that it names moves, so every value a pointer
-had is the old or new value of an entry. (Write-Ahead-Regel)
+had is the old or new value of an entry, as long as only the core moves pointers and no purge
+ran: a purge moves pointers to rewritten commits without naming them (ADR-014).
+(Write-Ahead-Regel)
 _Avoid_: Write-Ahead-Log (for the operation log)
 
 **Outcome**:

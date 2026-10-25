@@ -106,10 +106,11 @@ Einträge zweier Verzeichnisse zusammengeführt \stopxcell
 Crosby und Wallach \cite[crosby2009tamper] \stopxcell
 \stopxrow
 \startxrow
-\startxcell Write-Ahead-Regel: Der Eintrag ist gesichert, bevor sich der Zeiger bewegt,
-mit einem Compare-and-Swap unter der Sperre \stopxcell
-\startxcell \type{update_branch_after}, \type{set_head_after} (\type{refs.rs}),
-\type{append} (\type{oplog.rs}) \stopxcell
+\startxcell Write-Ahead-Regel: Der Eintrag ist gesichert, bevor sich der Zeiger bewegt;
+für Branches und den Working-Copy-Commit mit einem Compare-and-Swap unter der Sperre \stopxcell
+\startxcell die Funktionen \type{*_after} (\type{refs.rs}),
+\type{update_branch} und \type{set_head} (\type{repository.rs}),
+\type{append} und \type{publish} (\type{oplog.rs}) \stopxcell
 \startxcell nicht im Buch; ARIES \cite[mohan1992aries] \stopxcell
 \stopxrow
 \startxrow
@@ -160,7 +161,7 @@ Sie geht auf das Zeitstempeln von Dokumenten zurück \cite[haber1991timestamp],
 und Crosby und Wallach behandeln, wann ein solches Log Manipulationen erkennen lässt
 \cite[crosby2009tamper].
 Die Write-Ahead-Regel, nach der ein Eintrag vor der Zeigerbewegung gesichert ist,
-stammt aus der Wiederherstellung von Datenbanken \cite[mohan1992aries].
+kommt aus dem Recovery von Datenbanken, wie es etwa ARIES beschreibt \cite[mohan1992aries].
 
 Der Myers-Diff kommt erst in Phase~2 in den Code, und er steht nicht im Buch.
 Am nächsten liegt das Problem der längsten gemeinsamen Teilfolge, das sich mit dynamischer
