@@ -1595,11 +1595,14 @@ Der Ablauf hat diese Schritte:
 
 \startitemize[n]
 \item Vor der Sitzung führt der Sponsor \type{op verify} aus
-und bewahrt die Zeile \type{anchor} an einem Ort auf, den der Agent nicht schreiben kann,
-etwa auf einem anderen Rechner, in einem Passwortmanager oder im Ticket der Aufgabe.
+und bewahrt den Wert hinter \type{anchor} auf, etwa \type{9:b3:…},
+an einem Ort, den der Agent nicht schreiben kann,
+zum Beispiel auf einem anderen Rechner, in einem Passwortmanager oder im Ticket der Aufgabe.
 Eine Datei unter demselben Konto reicht nicht, denn der Agent kann auch sie ändern.
 \item Der Agent arbeitet.
-Jeder Befehl, der schreibt, nennt im Log den Akteur des Agenten.
+Jeder Befehl, der schreibt, nennt im Log den Akteur, den der Agent angibt.
+Ob er sich ehrlich als Agent angibt, prüft niemand,
+bis die Akteure signieren (ADR-004).
 \item Nach der Sitzung liest der Sponsor mit \type{op log} die Einträge des Agenten.
 \item Er prüft mit \type{op verify --anchor} das ganze Log und den aufbewahrten Anker.
 \item Hält der Anker, bewahrt er den neuen Anker auf, den der Befehl ausgibt;
@@ -1653,8 +1656,8 @@ Der Agent hat zwei Einträge geschrieben, den Snapshot und den Commit,
 und die Einträge 1 bis 9 sind dieselben wie vor der Sitzung.
 Der Sponsor bewahrt nun \type{11:b3:8e23…e4ff} auf.
 
-Hätte der Agent einen früheren Eintrag geändert, etwa den Akteur von Eintrag 5,
-bräche die Kette bei Eintrag 6, und schon \type{op verify} ohne Anker meldete es:
+Ändert der Agent einen früheren Eintrag, etwa den Akteur von Eintrag 5,
+bricht die Kette bei Eintrag 6, und schon \type{op verify} ohne Anker meldet es:
 
 \starttyping
 $ stemma op verify
@@ -1682,7 +1685,8 @@ Der Befehl endet mit Exit-Code 1 und gibt keinen neuen Anker aus.
 Die Meldung nennt den Eintrag des Ankers, nicht den geänderten,
 denn der Anker zeigt nur, dass sich unter den Einträgen 1 bis 9 etwas geändert hat.
 Welcher Eintrag es war, zeigt erst ein Vergleich mit einer Sicherung von \type{.stemma}.
-Beide Befehle lesen nur.
+
+\type{op log} und \type{op verify} lesen nur.
 Sie ändern weder das Arbeitsverzeichnis noch den Working-Copy-Commit, die Zeiger oder das Log,
 und \type{op verify} kostet so viel wie das Prüfen des ganzen Logs
 (\in{Tabelle}[tab:oplog-costs]).
@@ -1690,9 +1694,10 @@ und \type{op verify} kostet so viel wie das Prüfen des ganzen Logs
 \startinfobox
 {\bf Was ein Anker nach einer Sitzung zeigt und was nicht.}
 \startitemize
-\item Hält der Anker $(n, H(n))$, sind die Einträge 1 bis $n$ unverändert,
+\item Hält der Anker $(n, H(n))$, sind die Einträge der Kette von $s$ bis $n$ unverändert,
 bis auf das Ersetzen durch einen Stub, das ein \type{purge}-Eintrag auflistet
 (\in{Abschnitt}[sec:hash-chain]).
+In der Sitzung beginnt die Kette mit Eintrag 1.
 \item Die Einträge nach $n$ deckt er nicht.
 Der Agent kann seine eigenen Einträge ändern,
 etwa seinen Akteur durch \type{human daniel} ersetzen,
