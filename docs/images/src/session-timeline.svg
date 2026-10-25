@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 522" font-family="Helvetica, Arial, sans-serif">
+<title>Die Sitzung als Zeitachse</title>
+<rect x="0" y="0" width="700" height="522" fill="#FFFFFF"/>
+<!-- Stubs after the purge: rows 7 and 8 on a grey ground -->
+<rect x="10" y="302" width="680" height="40" fill="#64748B" fill-opacity="0.12"/>
+<rect x="10" y="342" width="680" height="40" fill="#64748B" fill-opacity="0.12"/>
+<!-- Column headers: one colour per zone, as in commands.svg -->
+<g font-size="12" font-weight="bold">
+  <text x="20" y="43" fill="#0F172A">Befehl</text>
+  <text x="236" y="28" fill="#6B46C1">Eintrag und</text>
+  <text x="236" y="43" fill="#6B46C1">Operation</text>
+  <text x="328" y="28" fill="#B45309">Working-Copy-</text>
+  <text x="328" y="43" fill="#B45309">Commit</text>
+  <text x="434" y="43" fill="#2F7D32">main</text>
+  <text x="526" y="43" fill="#2B6CB0">Verzeichnis</text>
+</g>
+<line x1="10" y1="62" x2="690" y2="62" stroke="#0F172A" stroke-width="2"/>
+<!-- Row separators -->
+<g stroke="#64748B" stroke-width="1">
+  <line x1="10" y1="102" x2="690" y2="102"/>
+  <line x1="10" y1="142" x2="690" y2="142"/>
+  <line x1="10" y1="182" x2="690" y2="182"/>
+  <line x1="10" y1="222" x2="690" y2="222"/>
+  <line x1="10" y1="262" x2="690" y2="262"/>
+  <line x1="10" y1="302" x2="690" y2="302"/>
+  <line x1="10" y1="342" x2="690" y2="342"/>
+  <line x1="10" y1="382" x2="690" y2="382"/>
+  <line x1="10" y1="422" x2="690" y2="422"/>
+</g>
+<!-- Rows: the value after the entry; bold in the colour of the zone when the entry changed it -->
+<text x="20" y="90" font-family="Courier, monospace" font-size="12" fill="#0F172A">init</text>
+<text x="236" y="90" font-size="12" fill="#6B46C1"><tspan font-weight="bold">1</tspan> <tspan font-family="Courier, monospace">init</tspan></text>
+<text x="328" y="90" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:4feb…</text>
+<text x="434" y="90"  font-size="12" fill="#64748B">–</text>
+<text x="526" y="90" font-size="12" fill="#64748B">–</text>
+<text x="20" y="130" font-family="Courier, monospace" font-size="12" fill="#0F172A">track README.md src</text>
+<text x="236" y="130" font-size="12" fill="#6B46C1"><tspan font-weight="bold">2</tspan> <tspan font-family="Courier, monospace">track</tspan></text>
+<text x="328" y="130" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">Baum b3:dd8a…</text>
+<text x="434" y="130"  font-size="12" fill="#64748B">–</text>
+<text x="526" y="119" font-size="11" fill="#2B6CB0">liest README.md und</text>
+<text x="526" y="134" font-size="11" fill="#2B6CB0">src/main.rs</text>
+<text x="20" y="170" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit -m &quot;Erste Fassung&quot;</text>
+<text x="236" y="170" font-size="12" fill="#6B46C1"><tspan font-weight="bold">3</tspan> <tspan font-family="Courier, monospace">commit</tspan></text>
+<text x="328" y="170" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:e6a3…</text>
+<text x="434" y="170" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:2037…</text>
+<text x="526" y="170" font-size="12" fill="#64748B">–</text>
+<text x="20" y="210" font-family="Courier, monospace" font-size="12" fill="#0F172A">status</text>
+<text x="236" y="210" font-size="12" fill="#6B46C1"><tspan font-weight="bold">4</tspan> <tspan font-family="Courier, monospace">snapshot</tspan></text>
+<text x="328" y="210" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:7694…</text>
+<text x="434" y="210" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:2037…</text>
+<text x="526" y="199" font-size="11" fill="#2B6CB0">liest README.md, von Hand</text>
+<text x="526" y="214" font-size="11" fill="#2B6CB0">auf «Hallo Welt» geändert</text>
+<text x="20" y="250" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit -m &quot;Gruss erweitern&quot;</text>
+<text x="236" y="250" font-size="12" fill="#6B46C1"><tspan font-weight="bold">5</tspan> <tspan font-family="Courier, monospace">commit</tspan></text>
+<text x="328" y="250" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:e394…</text>
+<text x="434" y="250" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:9d8a…</text>
+<text x="526" y="250" font-size="12" fill="#64748B">–</text>
+<text x="20" y="290" font-family="Courier, monospace" font-size="12" fill="#0F172A">op restore 5</text>
+<text x="236" y="290" font-size="12" fill="#6B46C1"><tspan font-weight="bold">6</tspan> <tspan font-family="Courier, monospace">restore</tspan></text>
+<text x="328" y="290" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:7694…</text>
+<text x="434" y="290" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:2037…</text>
+<text x="526" y="279" font-size="11" fill="#2B6CB0">schreibt nichts, Bäume gleich;</text>
+<text x="526" y="294" font-size="11" fill="#2B6CB0">README.md bleibt geändert</text>
+<text x="20" y="330" font-family="Courier, monospace" font-size="12" fill="#0F172A">track .env</text>
+<text x="236" y="319" font-size="12" fill="#6B46C1"><tspan font-weight="bold">7</tspan> <tspan font-family="Courier, monospace">track</tspan></text>
+<text x="236" y="334" font-size="11" font-style="italic" fill="#64748B">danach Stub</text>
+<text x="328" y="330" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:fece…</text>
+<text x="434" y="330" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:2037…</text>
+<text x="526" y="319" font-size="11" fill="#2B6CB0">liest .env, von Hand</text>
+<text x="526" y="334" font-size="11" fill="#2B6CB0">mit dem Schlüssel angelegt</text>
+<text x="20" y="370" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit -m &quot;Zugang&quot;</text>
+<text x="236" y="359" font-size="12" fill="#6B46C1"><tspan font-weight="bold">8</tspan> <tspan font-family="Courier, monospace">commit</tspan></text>
+<text x="236" y="374" font-size="11" font-style="italic" fill="#64748B">danach Stub</text>
+<text x="328" y="370" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:f082…</text>
+<text x="434" y="370" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:930a…</text>
+<text x="526" y="370" font-size="12" fill="#64748B">–</text>
+<text x="20" y="410" font-family="Courier, monospace" font-size="12" fill="#0F172A">purge b3:4cbc… --apply</text>
+<text x="236" y="410" font-size="12" fill="#6B46C1"><tspan font-weight="bold">9</tspan> <tspan font-family="Courier, monospace">purge</tspan></text>
+<text x="328" y="410" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:35cb…</text>
+<text x="434" y="410" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:dd97…</text>
+<text x="526" y="399" font-size="11" fill="#2B6CB0">.env bleibt, ist aber</text>
+<text x="526" y="414" font-size="11" fill="#2B6CB0">nicht mehr verfolgt</text>
+<!-- Explanation -->
+<g font-size="12" fill="#0F172A">
+  <text x="20" y="444">Jede Zeile nennt die Werte nach dem Eintrag. Fett: vom Befehl geändert; grau: unverändert.</text>
+  <text x="20" y="460">Der Eintrag des Purge nennt keinen Zeiger; die Werte in Zeile 9 stehen nur in den Referenzen.</text>
+  <text x="20" y="476">Nach Eintrag 2 steht der Baum des Working-Copy-Commits, denn seine ID nennt der Text nicht.</text>
+  <text x="20" y="492">Grau hinterlegt: Der Purge macht die Einträge 7 und 8 zu Stubs. Nummer, Zeit und Akteur bleiben;</text>
+  <text x="20" y="508">die Operation und die IDs, die hier noch stehen, kennt das Log danach nicht mehr.</text>
+</g>
+</svg>

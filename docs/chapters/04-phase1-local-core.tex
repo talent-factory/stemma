@@ -680,8 +680,10 @@ $ stemma op log
 Der neue Working-Copy-Commit ist leer, obwohl er einen Baum mit beiden Dateien hat:
 Leer heisst, er hat denselben Baum wie sein Elternteil,
 denn die verfolgten Dateien sind der Baum.
+Die mittlere Zeile zeigt, was ein Absturz zwischen den beiden Zeigerbewegungen zurücklässt;
+die Box am Ende des Abschnitts beschreibt diesen Fall.
 
-\startplacefigure[title={Zeiger vor und nach \type{commit}},
+\startplacefigure[title={Zeiger vor und nach \type{commit}, mit einem Absturz dazwischen},
     reference=fig:commit-pointers,location=here]
 \externalfigure[images/commit-pointers.pdf][width=0.9\textwidth]
 \stopplacefigure
@@ -1345,6 +1347,14 @@ denn vor Eintrag 5 hatte der Working-Copy-Commit sie schon:
 Der Snapshot von \type{status} hat sie in Eintrag 4 gespeichert.
 Das Restore nimmt also den Commit zurück und lässt die Änderung im Working-Copy-Commit.
 Wer auch sie zurücknehmen will, stellt danach den Zustand vor Eintrag 4 her.
+\in{Abbildung}[fig:restore-pointers] zeigt die Zeiger vor und nach dem Restore.
+Der Commit \quotation{Gruss erweitern} und der Working-Copy-Commit danach
+bleiben ohne Zeiger im Objektspeicher, und \type{op restore 6} setzt die Zeiger wieder auf sie.
+
+\startplacefigure[title={Zeiger vor und nach \type{op restore 5}},
+    reference=fig:restore-pointers,location=here]
+\externalfigure[images/restore-pointers.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Das Restore läuft in diesen Schritten ab:
 
@@ -1559,6 +1569,18 @@ die Sitzung tut das in \in{Abschnitt}[sec:verify-anchor].
 In der Ausgabe stehen die umbrochenen Meldungen auf einer Zeile.
 Eine dauerhafte Liste der entfernten Blobs, die \type{track} prüft, folgt später (ADR-014).
 Ein mit \type{--resume} beendeter Purge nennt keine Pfade, denn das Journal hält sie nicht fest.
+
+Damit ist die Sitzung zu Ende.
+\in{Abbildung}[fig:session-timeline] fasst sie als Zeitachse zusammen:
+Jede Zeile ist ein Eintrag des Logs, mit dem Befehl, der ihn schrieb,
+den Werten der beiden Zeiger danach und dem, was der Befehl im Verzeichnis las oder schrieb.
+Befehle ohne Eintrag fehlen: \type{status} ohne Änderung, \type{op log}, \type{op verify},
+die Pläne mit \type{--dry-run} oder ohne \type{--apply} und die abgelehnten Restores.
+
+\startplacefigure[title={Die Sitzung als Zeitachse},
+    reference=fig:session-timeline,location=here]
+\externalfigure[images/session-timeline.pdf][width=\textwidth]
+\stopplacefigure
 
 \startinfobox
 {\bf Stubs im Log.}
