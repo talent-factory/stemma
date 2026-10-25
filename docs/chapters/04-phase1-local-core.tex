@@ -186,7 +186,7 @@ gleicher Inhalt läge doppelt im Speicher, und der Vergleich fände Unterschiede
 \cite[sedgewick2011algorithms] (Abschnitt 4.2).
 Stemma prüft das nicht; es folgt aus der Konstruktion (\in{Abschnitt}[sec:object-guarantees]).
 
-\subsection{Die Ordnung der Pfade}
+\subsection[sec:path-order]{Die Ordnung der Pfade}
 
 Der Snapshot sammelt die verfolgten Dateien in einer geordneten Symboltabelle
 (\type{Index}, eine \type{BTreeMap}; trotz des Namens kein Staging-Bereich wie bei Git)
@@ -300,7 +300,7 @@ doch jede Datei darin zählt zu den $k$.
 
 \subsection[sec:object-guarantees]{Warum die Garantien gelten}
 
-Alle Garantien des Objektspeichers stützen sich auf eine Annahme:
+Bis auf die Kreisfreiheit stützen sich die Garantien des Objektspeichers auf eine Annahme:
 Niemand kann zwei verschiedene Eingaben mit demselben BLAKE3-Hash finden
 (Kollisionsresistenz). Für einen Hash von 256 Bit braucht ein allgemeiner Angriff
 auf diese Eigenschaft in der Grössenordnung von $2^{128}$ Versuchen \cite[oconnor2020blake3].
@@ -504,7 +504,7 @@ Jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
 \stopitemize
 \stopinfobox
 
-\subsection{Die Ausschlussdatei}
+\subsection[sec:exclusion-file]{Die Ausschlussdatei}
 
 Die Ausschlussdatei \type{.stemmaignore} liegt im Wurzelverzeichnis
 und hält Dateien aus \type{track} und aus den unverfolgten Dateien von \type{status} heraus
@@ -620,7 +620,7 @@ Bewegt ein anderer Prozess einen dazwischen, können HEAD und Commit aus zwei Zu
 \stopitemize
 \stopinfobox
 
-\subsection{Der Commit}
+\subsection[sec:commit]{Der Commit}
 
 Ein Commit benennt den Working-Copy-Commit und beginnt einen neuen (ADR-010).
 Der benannte Commit wird Teil des Branches,
@@ -1317,7 +1317,7 @@ Eine ungesicherte Änderung im Verzeichnis sieht der Plan deshalb nicht.
 \stopitemize
 \stopinfobox
 
-\subsection{Ein Geheimnis aus Verlauf und Log entfernen}
+\subsection[sec:purge]{Ein Geheimnis aus Verlauf und Log entfernen}
 
 Gerät ein Schlüssel in eine verfolgte Datei, hält ihn der nächste Snapshot fest,
 und das Log behält jeden Commit, den eine Operation verlassen hat.
@@ -1650,7 +1650,7 @@ Eintrag gilt danach als unbekannt, auch ein \type{commit}, ein \type{track} oder
 Aufbewahrungsregel läuft immer wieder. Aufbewahrung und Garbage Collection kommen in einem
 Schritt, denn das eine nützt ohne das andere nichts.
 
-\section{Wie die strengen Leser geprüft werden}
+\section[sec:strict-readers]{Wie die strengen Leser geprüft werden}
 
 Jeder Leser einer Datei des Repositories ist streng: Er nimmt nur an, was der Schreiber
 geschrieben hätte (ADR-005). Das gilt für Bäume, Commits, die Zeile des Akteurs, den Index,
