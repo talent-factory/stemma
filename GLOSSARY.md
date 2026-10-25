@@ -27,6 +27,12 @@ The directed acyclic graph of trees and commits that name their parts by object 
 ID fixes everything it reaches. (Merkle-Graph)
 _Avoid_: Merkle tree (for the commit graph), hash tree
 
+**Atomic replacement**:
+Writing a file under a temporary name, flushing it, renaming or linking it to its path, and
+flushing the directory, so that the path names the complete old or the complete new content.
+(atomares Ersetzen)
+_Avoid_: Atomic write (for the whole procedure)
+
 **Blob**:
 An object that holds the content of one file. (Blob)
 _Avoid_: File object

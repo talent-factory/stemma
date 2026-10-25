@@ -134,6 +134,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Change-ID | Änderungs-ID | The random ID a commit keeps when it is rewritten (ADR-010) |
 | Inhaltsadressierung | | Content addressing: an object stored under its hash (ADR-001, ADR-007) |
 | Merkle-Graph | Merkle-Baum, Hash-Baum | The graph of trees and commits named by ID (ADR-005) |
+| atomares Ersetzen | atomares Schreiben | Temporary file, flush, rename or link, flush the directory (ADR-007) |
 | verfolgt, unverfolgt | getrackt | A file in the tree of the Working-Copy-Commit, or not |
 | Ausschlussdatei | Ignore-Datei | `.stemmaignore` (ADR-012) |
 | Sperre der Referenzen | Lock | `refs.lock`: one writer at a time (ADR-008) |
