@@ -5,8 +5,14 @@ chapter or a figure follows these rules, so that the book reads as one text acro
 The line length and the ConTeXt rules stay in `CLAUDE.md`; this file covers structure, language,
 terminology, and figures.
 
-The book is read by students (DUA, AISE), colleagues, and future contributors, usually without the
+The book is read by students of computer science at Master's level (MSc) in the courses DUA and
+AISE, by colleagues, by future contributors, and by agents that operate Stemma, usually without the
 code open. The code and the ADRs are authoritative; the book explains them.
+
+The reader knows Git, operating systems, and the basic data structures and algorithms. The text
+does not explain these at length; it names them and refers to the literature. What it does state
+is the precise definition of each new concept, the invariants, the complexity, and the argument
+why a guarantee holds, including after a crash.
 
 ## What belongs where
 
@@ -14,7 +20,10 @@ code open. The code and the ADRs are authoritative; the book explains them.
 |---|---|
 | Idea, flow, guarantees, reasons, examples | Book chapter |
 | Decision, rejected alternatives, the complete rule | ADR in `adr/` |
-| Synopsis, options, exit codes, one example per command | `docs/chapters/12-cli-reference.tex` |
+| Workflows across several commands | Phase chapter, with the running example |
+| Teaching: definition, invariant, complexity, correctness | Phase chapter, where it is introduced |
+| Map of algorithms, exercises, how Stemma is developed with agents | Chapter 10 |
+| Synopsis, options, exit codes, contract, one example per command | `docs/chapters/12-cli-reference.tex` |
 | Function names, error variants, file names of the code | Code |
 
 - Names from the code (`Repository::commit`, `PartlyMoved`) appear only where a reader needs them
@@ -42,6 +51,42 @@ A running example threads through chapter 4 and the later phase chapters: one sh
 (`init`, `track`, an edit, `status`, `commit`, `op log`, `op restore`) whose real output appears
 where a section discusses the command. Extend it rather than inventing a new one; regenerate the
 output when the format changes.
+
+A section that explains a workflow describes the situation, the sequence of commands, and what
+each step changes in the working directory, the Working-Copy-Commit, the pointers, and the
+Operation Log. It uses the running example where it can.
+
+## Teaching content
+
+Where a phase chapter introduces a data structure or an algorithm (a Merkle graph, the hash chain
+of the log, the atomic replacement of a file), it explains it in this order:
+
+1. **Definition.** What the structure is, in precise terms, with the notation the course uses.
+2. **Invariant.** What holds at all times, and which operation could break it.
+3. **Complexity.** Time and space in O-notation, with the meaning of each variable (`n` files,
+   `k` entries).
+4. **Correctness.** Why the invariant and the guarantees of the section hold, including after a
+   crash at any step.
+5. **Literature.** A reference to the course book or a primary source with `\cite[...]`, and an
+   entry in the table of algorithms in chapter 10.
+
+A short structure can combine the steps in one paragraph. A long argument goes into the ADR, and
+the chapter gives its idea.
+
+For AISE, a section on a feature that serves agentic work (actors, provenance, ownership, risk
+levels, recovery) states the problem of agentic work it answers. Chapter 10 describes how Stemma
+itself is developed with agents, as a case study.
+
+## Command line reference
+
+A section of `12-cli-reference.tex` serves humans and agents alike. Besides the synopsis, the
+arguments, and an example, it states the contract a script or an agent relies on:
+
+- the preconditions, and what the command does when one does not hold;
+- what goes to standard output and what to standard error, and whether the output is stable
+  enough to be parsed;
+- every exit code with its cause and the next step;
+- whether the command can be repeated safely, after success, after an error, and after a crash.
 
 ## Paragraphs and sentences
 
@@ -127,3 +172,5 @@ Rules:
 - `just doc-lines` and `just book` pass without errors or warnings.
 - New figures appear in the list of figures and are referenced in the text.
 - New terms are in the terminology table.
+- A new data structure or algorithm follows the teaching pattern and is in the table of chapter 10.
+- A new or changed command states its contract in the command line reference.
