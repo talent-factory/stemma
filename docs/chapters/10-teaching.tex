@@ -116,6 +116,12 @@ für Branches und den Working-Copy-Commit mit einem Compare-and-Swap unter der S
 \startxcell nicht im Buch; ARIES \cite[mohan1992aries] \stopxcell
 \stopxrow
 \startxrow
+\startxcell Gegenseitiger Ausschluss über eine Datei, die nur angelegt wird, wenn sie fehlt;
+eine verwaiste Sperre erkennt eine Sperre des Betriebssystems statt einer Frist \stopxcell
+\startxcell \type{acquire} und \type{Lock} (\type{refs.rs}) \stopxcell
+\startxcell nicht im Buch; kritischer Abschnitt \cite[silberschatz2018os] \stopxcell
+\stopxrow
+\startxrow
 \startxcell Tiefensuche durch den Commit-Graphen beim Purge, mit eigenem Stapel: ein Commit ist
 fertig, wenn alle Eltern fertig sind; danach eine Prüfung der Erreichbarkeit \stopxcell
 \startxcell \type{Planner::commit}, \type{reached} (\type{purge.rs}) \stopxcell
@@ -171,12 +177,94 @@ Programmierung in einer Zeit proportional zu $N \cdot M$ lösen lässt.
 Myers löst es in $O((N+M)\,D)$ Zeit, wobei $N$ und $M$ die Längen der beiden Folgen
 und $D$ die Zahl der Unterschiede sind \cite[myers1986ond].
 
-\section{Übungen je Phase}
+\section[sec:exercises]{Übungen je Phase}
 
 Jede Phase lässt sich als Übung formulieren. Studierende implementieren einen Teil
 selbst und vergleichen ihn mit einer Referenzimplementierung. Die Phase 4 eignet
 sich besonders, weil Freigaben und Selbstfreigabeverbot eine Prüfung durch Agenten
 und Menschen verlangen.
+
+Die Übungen setzen die Abschnitte des Phasenkapitels voraus, auf die sie verweisen.
+Vor jeder Übung steht der Kurs, für den sie gedacht ist.
+Eine Übung für DUA verlangt einen Beweis, eine Herleitung der Kosten oder eine Implementierung,
+die sich am Code von Stemma messen lässt.
+Eine Übung für AISE verlangt eine Begründung oder ein Protokoll der Arbeit mit einem Agenten;
+eine einzige richtige Lösung hat sie meist nicht.
+
+\subsection{Phase 1}
+
+\startitemize[n]
+\item (DUA) Zeigen Sie, dass der Merkle-Graph keinen Kreis hat
+(\in{Abschnitt}[sec:object-guarantees]).
+Prüfen Sie dann, welche Eigenschaft der Hashfunktion das Argument braucht.
+Genügt Kollisionsresistenz?
+Konstruieren Sie dazu aus einer kollisionsresistenten Hashfunktion $H$ eine Funktion $H'$,
+die ebenfalls kollisionsresistent ist und eine Eingabe hat, die ihren eigenen Hash enthält.
+\item (DUA) Implementieren Sie \type{write_tree} für eine Liste von Pfaden,
+die nach Komponenten sortiert ist, mit einem Stapel offener Verzeichnisse
+(\in{Abschnitt}[sec:path-order]).
+Zeigen Sie, dass der Durchlauf jeden Baum genau einmal und in Postorder schreibt
+und dass er höchstens $n \cdot d$ Einträge erzeugt.
+Geben Sie eine Familie von Eingaben an, die diese Schranke bis auf einen konstanten Faktor erreicht.
+\item (DUA) Die Ordnung nach Komponenten setzt \type{a/z} vor \type{a.b},
+die Bytefolge der ganzen Zeichenkette umgekehrt.
+Zeigen Sie, dass auch in der Bytefolge die Pfade unter einem Verzeichnis
+einen zusammenhängenden Abschnitt bilden,
+und folgern Sie, dass \type{write_tree} mit der Bytefolge dieselben Bäume schreiben würde.
+Welche Eigenschaft von \type{Tree::new} braucht dieser Schluss?
+Zeigen Sie dann an einem Beispiel, dass ein Vergleich, der den Index
+und einen Baum in einem einzigen Durchlauf nebeneinander liest,
+mit der Bytefolge falsche Unterschiede meldet (ADR-005).
+Für welche Bytes, die in einem Namen erlaubt sind, tritt das ausser \type{.} auf?
+\item (DUA) Geben Sie ein Muster mit $k$ Teilen \type{**} und einen Pfad an,
+für die ein naiver rekursiver Abgleich eine Zahl von Aufrufen braucht,
+die exponentiell in $k$ wächst (\in{Abschnitt}[sec:exclusion-file]).
+Leiten Sie die Schranke der dynamischen Programmierung in \type{parts_match} her,
+mit dem Faktor für die übergeordneten Verzeichnisse,
+und vergleichen Sie sie mit der Simulation eines nichtdeterministischen Automaten
+\cite[sedgewick2011algorithms] (Abschnitt 5.4).
+\item (DUA) Zählen Sie die Stellen auf, an denen ein \type{commit} abstürzen kann
+(\in{Abschnitt}[sec:commit] und \in{Abbildung}[fig:oplog-write]).
+Geben Sie für jede an, was im Objektspeicher, im Log und in den Zeigern bleibt,
+welchen Ausgang \type{op log} danach zeigt und was der nächste \type{commit} tut.
+\item (DUA) \in{Abschnitt}[sec:outcome] zeigt an einem Zeiger,
+den jemand ausserhalb des Logs auf den alten Wert zurücksetzt,
+dass keine Regel, die nur Log und Zeiger liest, jeden Ausgang richtig beurteilt.
+Führen Sie das Argument für den umgekehrten Fall:
+Die Zeigerbewegung scheitert, und danach setzt jemand den Zeiger auf den neuen Wert.
+Angenommen, jeder Zeiger speicherte zusätzlich die Nummer des Eintrags,
+der ihn zuletzt bewegt hat.
+Welche Bewegungen ausserhalb des Logs erkennt das Log dann, welche nicht,
+und was kostet die Änderung beim Schreiben und beim Purge?
+\item (DUA) Sei $N$ die Zahl der Einträge im Log, $B$ die Zahl der Branches
+und $M$ die Zahl der Objekte im Speicher.
+Zeigen Sie, dass sich der Plan eines Purge in $O(N + B + M)$ Lesevorgängen berechnen lässt,
+wenn er jedes Objekt höchstens einmal liest
+(\in{Abschnitt}[sec:purge], ADR-014).
+Warum durchsucht der Plan den ganzen Speicher, statt den Graphen nur von den Zeigern
+und den Einträgen aus zu durchlaufen?
+Nennen Sie ein Objekt, das ein solcher Durchlauf nicht fände, und den Schaden,
+der entstünde, wenn der Purge es behielte.
+\item (AISE) Entwerfen Sie eine Regel, unter der ein Agent sicher purgen darf,
+etwa nur mit einer Freigabe seines Sponsors oder nur für Blobs, die eine Suche nach Geheimnissen
+meldet.
+Argumentieren Sie dann aus ADR-014 und ADR-002 dagegen:
+Was kann eine eingeschleuste Anweisung unter Ihrer Regel noch erreichen,
+solange sich ein Akteur nicht nachweisen lässt,
+und was müssten die Risikostufen von Phase~4 dafür leisten?
+\item (AISE) Wählen Sie ein kleines Format, für das es noch keinen Leser gibt,
+und schreiben Sie zuerst einen Property-Test nach der Regel der strengen Leser:
+Entweder lehnt der Leser eine Eingabe ab, oder ihr Kodieren ergibt genau die Eingabe
+(\in{Abschnitt}[sec:strict-readers]).
+Lassen Sie dann einen Agenten den Leser gegen den Test implementieren.
+Halten Sie fest, welche Fehler der Test fand, die der Agent nicht gemeldet hatte,
+und welche Lücken des Tests der Agent ausnutzte.
+\item (AISE) Lassen Sie einen Agenten einen Abschnitt über eine Funktion von Phase~1 schreiben
+und prüfen Sie den Pull Request gegen \type{docs/agents/book-style.md}:
+den Aufbau des Abschnitts, die Begriffe der Tabelle und die Muster, die der Text meiden soll.
+Welche Regeln liessen sich maschinell prüfen, so wie \type{just doc-lines} die Länge der Zeilen,
+und welche verlangen das Urteil einer Person?
+\stopitemize
 
 \section[sec:agents]{Wie Stemma mit Agenten entsteht}
 
