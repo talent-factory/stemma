@@ -310,8 +310,10 @@ und ein getroffenes Verzeichnis schliesst alles darunter aus.
 Ein Muster mit \type{**} prüft der Leser mit dynamischer Programmierung:
 Eine Tabelle hat eine Zelle je Paar aus einem Teil des Musters und einem Teil des Pfads
 (\type{parts_match}).
-Die Zeit ist damit höchstens das Produkt der beiden Längen,
-mal den Aufwand für den Vergleich eines Namens.
+Ein Muster und ein Pfad brauchen damit höchstens das Produkt der beiden Längen,
+mal den Aufwand für den Vergleich eines Namens;
+weil der Leser auch jedes übergeordnete Verzeichnis des Pfads prüft,
+kommt für einen ganzen Pfad ein Faktor seiner Länge hinzu.
 Diesen Vergleich mit \type{*} und \type{?} macht ein Abgleich, der beim Scheitern nur zum
 letzten \type{*} zurückgeht (\type{glob_matches});
 auch er braucht höchstens das Produkt der Längen von Muster und Name.
@@ -1283,7 +1285,7 @@ Offen für spätere Phasen bleiben diese Punkte:
 gemessen an einer echten Sitzung eines Agenten (ADR-007, ADR-011);
 bis dahin wächst der Speicher nur.
 \item Die Prüfung des Besitzers von \type{.stemma} ist nicht frei von Wettläufen,
-unter Windows prüft sie nur das Wurzelverzeichnis eines Laufwerks,
+unter Windows lehnt sie nur ein \type{.stemma} im Wurzelverzeichnis eines Laufwerks ab,
 und \type{init} ersetzt unter Unix ein leeres \type{.stemma},
 das ein anderer Prozess im falschen Augenblick anlegt (ADR-009).
 \item Die Regel, dass jeder Akteur in einer eigenen Arbeitskopie arbeitet,
@@ -1298,7 +1300,8 @@ und einen Anker, den der Akteur nicht ändern kann, liefern erst Signaturen oder
 \item Muster der Ausschlussdatei vergleichen Bytes, auch auf einem Dateisystem,
 das Gross- und Kleinschreibung oder Unicode-Formen gleichsetzt;
 ob die Grenzen von 1024 Byte und 64 KiB passen, zeigen erst echte Dateien (ADR-012).
-\item Ein Probelauf des Restore macht keinen Snapshot und sieht ungesicherte Änderungen nicht,
+\item Der Plan eines Restore (\type{--dry-run}) macht keinen Snapshot
+und sieht ungesicherte Änderungen nicht,
 und ein Restore warnt nicht, wenn sich ein Zeiger seit dem Eintrag weiterbewegt hat (ADR-013).
 \item Eine dauerhafte Liste der entfernten Blobs, die \type{track} und \type{status} prüfen,
 und ein Befehl, der die ID eines Blobs zu einem Pfad nennt, fehlen;

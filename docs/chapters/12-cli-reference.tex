@@ -279,7 +279,9 @@ Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
 {\bf Pfade.} \type{init} nennt das Repository mit absolutem Pfad, damit ein Skript es nach
 einem Verzeichniswechsel findet. Die übrigen Befehle nennen Dateien relativ zur Wurzel des
 Repositories, auch wenn sie in einem Unterverzeichnis laufen, und maskiert wie bei
-\type{status}. Eine Meldung nennt einen Pfad so, wie er übergeben wurde.
+\type{status}. Auch eine Meldung nennt einen Pfad relativ zur Wurzel; nur einen Pfad,
+der sich nicht in einen Pfad des Repositories umwandeln lässt, und das Verzeichnis von
+\type{-C} nennt sie so, wie sie übergeben wurden.
 
 \section{init}
 
@@ -315,8 +317,9 @@ Mit Exit-Code 3 endet der Befehl, wenn das Repository angelegt ist,
 aber die Ausgabe sich nicht schreiben liess oder das Verzeichnis nicht gesichert ist;
 ein Skript wiederholt ihn dann nicht.
 
-Bricht \type{init} ab, bevor \type{.stemma} entsteht, bleibt höchstens ein Verzeichnis
-\type{.stemma-init-…}, und ein erneuter Aufruf ist unbedenklich; den Rest entfernt danach
+Bricht \type{init} ab, bevor \type{.stemma} entsteht, bleiben höchstens ein Verzeichnis
+\type{.stemma-init-…} und die Verzeichnisse, die \type{init} für \type{-C} neu angelegt hat,
+und ein erneuter Aufruf ist unbedenklich; den Rest entfernt danach
 der erste Befehl, der die Sperre nimmt (siehe {\bf Aufräumen} oben).
 Nach einem gelungenen \type{init} endet ein erneuter Aufruf mit Exit-Code 1.
 Ein Skript, das \type{init} wiederholt, prüft deshalb vorher, ob \type{.stemma} besteht,
