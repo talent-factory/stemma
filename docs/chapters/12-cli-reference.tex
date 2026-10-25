@@ -279,9 +279,10 @@ Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
 {\bf Pfade.} \type{init} nennt das Repository mit absolutem Pfad, damit ein Skript es nach
 einem Verzeichniswechsel findet. Die übrigen Befehle nennen Dateien relativ zur Wurzel des
 Repositories, auch wenn sie in einem Unterverzeichnis laufen, und maskiert wie bei
-\type{status}. Auch eine Meldung nennt einen Pfad relativ zur Wurzel; nur einen Pfad,
-der sich nicht in einen Pfad des Repositories umwandeln lässt, und das Verzeichnis von
-\type{-C} nennt sie so, wie sie übergeben wurden.
+\type{status}. Auch eine Meldung nennt einen Pfad relativ zur Wurzel, einen ungültigen ebenso,
+soweit sich das Argument umwandeln lässt: \type{a/../b} in \type{src} erscheint als
+\type{src/a/../b}. Nur einen absoluten oder leeren Pfad und das Verzeichnis von \type{-C}
+nennt sie so, wie sie übergeben wurden.
 
 \section{init}
 
