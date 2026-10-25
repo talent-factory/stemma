@@ -55,4 +55,4 @@ The pull request template lists the checks that every pull request confirms.
 ## Reporting a security issue
 
 Do not report a security issue in a public issue.
-Write to Talent Factory GmbH at support@talent-factory.ch instead.
+Write to Talent Factory GmbH at security@talent-factory.ch instead.
