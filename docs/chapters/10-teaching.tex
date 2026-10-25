@@ -122,10 +122,28 @@ eine verwaiste Sperre erkennt eine Sperre des Betriebssystems statt einer Frist 
 \startxcell nicht im Buch; kritischer Abschnitt \cite[silberschatz2018os] \stopxcell
 \stopxrow
 \startxrow
-\startxcell Tiefensuche durch den Commit-Graphen beim Purge, mit eigenem Stapel: ein Commit ist
-fertig, wenn alle Eltern fertig sind; danach eine Prüfung der Erreichbarkeit \stopxcell
-\startxcell \type{Planner::commit}, \type{reached} (\type{purge.rs}) \stopxcell
-\startxcell Abschnitt 4.2, Tiefensuche und topologische Ordnung \stopxcell
+\startxcell Atomares Ersetzen einer Datei: temporäre Datei, sichern, umbenennen oder verknüpfen,
+Verzeichnis sichern; gebündelte Objekte sichern jedes Verzeichnis einmal \stopxcell
+\startxcell \type{place} und \type{Batch::finish} (\type{store.rs}),
+\type{write_replacing} (\type{refs.rs}), \type{publish} (\type{oplog.rs}) \stopxcell
+\startxcell nicht im Buch; Pillai und andere \cite[pillai2014crash] \stopxcell
+\stopxrow
+\startxrow
+\startxcell Tiefensuche durch den Commit-Graphen beim Purge in Postorder, mit eigenem Stapel
+und Memo: ein Commit ist fertig, wenn alle Eltern fertig sind; danach eine Durchsicht des
+Speichers und eine Prüfung der Erreichbarkeit \stopxcell
+\startxcell \type{Planner::commit}, \type{Planner::tree}, \type{scan}, \type{check},
+\type{reached}
+(\type{purge.rs}) \stopxcell
+\startxcell Abschnitt 4.2, Tiefensuche und topologische Ordnung (umgekehrte Postorder);
+Abschnitt 3.4, Hashtabellen \stopxcell
+\stopxrow
+\startxrow
+\startxcell Journal eines Purge: Undo vor dem Eintrag \type{purge}, Redo danach,
+jeder Schritt idempotent \stopxcell
+\startxcell \type{abort_purge}, \type{carry_out}, \type{written_purge} (\type{apply.rs}) \stopxcell
+\startxcell nicht im Buch; Gray und Reuter \cite[gray1993transaction],
+ARIES \cite[mohan1992aries] \stopxcell
 \stopxrow
 \startxrow
 \startxcell Menge der Pfade in Kleinschreibung, um Kollisionen auf Dateisystemen ohne
@@ -170,6 +188,11 @@ und Crosby und Wallach behandeln, wann ein solches Log Manipulationen erkennen l
 \cite[crosby2009tamper].
 Die Write-Ahead-Regel, nach der ein Eintrag vor der Zeigerbewegung gesichert ist,
 kommt aus dem Recovery von Datenbanken, wie es etwa ARIES beschreibt \cite[mohan1992aries].
+Von dort stammt auch das Journal eines Purge mit Undo vor dem Commit-Satz und Redo danach
+\cite[gray1993transaction].
+Wie eine Datei einen Absturz übersteht, hängt davon ab, was ein Dateisystem in welcher
+Reihenfolge auf den Datenträger bringt; Pillai und andere zeigen, wie leicht Anwendungen
+dabei Fehler machen \cite[pillai2014crash].
 
 Der Myers-Diff kommt erst in Phase~2 in den Code, und er steht nicht im Buch.
 Am nächsten liegt das Problem der längsten gemeinsamen Teilfolge, das sich mit dynamischer

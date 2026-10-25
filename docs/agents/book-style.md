@@ -134,6 +134,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Change-ID | Änderungs-ID | The random ID a commit keeps when it is rewritten (ADR-010) |
 | Inhaltsadressierung | | Content addressing: an object stored under its hash (ADR-001, ADR-007) |
 | Merkle-Graph | Merkle-Baum, Hash-Baum | The graph of trees and commits named by ID (ADR-005) |
+| atomares Ersetzen | atomares Schreiben | Temporary file, flush, rename or link, flush the directory (ADR-007) |
 | verfolgt, unverfolgt | getrackt | A file in the tree of the Working-Copy-Commit, or not |
 | Ausschlussdatei | Ignore-Datei | `.stemmaignore` (ADR-012) |
 | Sperre der Referenzen | Lock | `refs.lock`: one writer at a time (ADR-008) |
@@ -147,6 +148,10 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Purge | Bereinigung | Removing a blob from history and log (ADR-014) |
 | Stub | | An entry whose operation and IDs a purge removed (ADR-014) |
 | Journal | | The record of a purge in progress (ADR-014); not the Operation Log |
+| Wurzel | | A commit from which the plan of a purge starts (working-copy commit, branch, HEAD, log) |
+| Memo | | The hash table of rewritten trees and commits in the plan of a purge |
+| Undo, Redo | | Only the two directions of the journal of a purge; never for `op restore` |
+| Commit-Satz | | The record that completes a transaction in database recovery |
 | strenger Leser | | A reader that accepts only the one encoding (ADR-005) |
 | Option | Schalter, Flag | A named argument of a command, such as `--actor` |
 | Sitzung | | A work session, such as the running example; `Session` only for the field of an agent |

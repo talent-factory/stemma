@@ -27,6 +27,12 @@ The directed acyclic graph of trees and commits that name their parts by object 
 ID fixes everything it reaches. (Merkle-Graph)
 _Avoid_: Merkle tree (for the commit graph), hash tree
 
+**Atomic replacement**:
+Writing a file under a temporary name, flushing it, renaming or linking it to its path, and
+flushing the directory, so that the path names the complete old or the complete new content.
+(atomares Ersetzen)
+_Avoid_: Atomic write (for the whole procedure)
+
 **Blob**:
 An object that holds the content of one file. (Blob)
 _Avoid_: File object
@@ -159,6 +165,24 @@ _Avoid_: Delete, scrub
 **Journal**:
 The record of a purge in progress, from which it resumes or aborts. (Journal)
 _Avoid_: Operation log (for this record)
+
+**Root (of a purge)**:
+A commit from which the plan of a purge starts its walk: the working-copy commit, a branch, a
+detached HEAD, or a commit that an entry of the log names. (Wurzel)
+
+**Memo**:
+The hash table in which the plan of a purge keeps the rewritten version of every tree and commit
+it has seen, so that each is rewritten once. (Memo)
+
+**Undo, redo (of a purge)**:
+The terms of database recovery for the two directions of the journal: `--abort` removes the new
+objects before the `purge` entry (undo), `--resume` finishes the steps after it (redo). Used only
+in this sense, never for a restore. (Undo, Redo)
+
+**Commit record**:
+In database recovery, the log record that completes a transaction; the `purge` entry plays its
+role for a purge. (Commit-Satz)
+_Avoid_: Commit (for this record)
 
 **Retention**:
 The rule for how many snapshot entries the operation log keeps. (Aufbewahrung)
