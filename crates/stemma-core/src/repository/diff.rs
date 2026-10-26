@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::snapshot::{read_commit, read_object, SnapshotError};
 use super::Repository;
-use crate::diff::is_binary;
 use crate::object::{BlobId, CommitId, EntryMode, FileMode, Kind, Tree, TreeId};
 use crate::store::ObjectStore;
 
@@ -20,11 +19,14 @@ pub struct FileDiff {
     pub new: Option<Vec<u8>>,
 }
 
-impl FileDiff {
-    /// Whether one side is a binary file, so that its content is not shown.
-    pub fn is_binary(&self) -> bool {
-        self.old.as_deref().is_some_and(is_binary) || self.new.as_deref().is_some_and(is_binary)
-    }
+/// Why [`Repository::file_diffs`] failed. The variant names the side whose tree or blob could
+/// not be read, so that the caller can name the commit of that side.
+#[derive(Debug)]
+pub enum FileDiffError {
+    /// A tree or a blob of the old side could not be read.
+    Old(SnapshotError),
+    /// A tree or a blob of the new side could not be read.
+    New(SnapshotError),
 }
 
 impl Repository {
@@ -43,18 +45,19 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`SnapshotError`] if a tree or a blob is missing or damaged.
+    /// Returns [`FileDiffError::Old`] or [`FileDiffError::New`] if a tree or a blob of that side is
+    /// missing or damaged.
     pub fn file_diffs(
         &self,
         old: Option<TreeId>,
         new: TreeId,
-    ) -> Result<Vec<FileDiff>, SnapshotError> {
+    ) -> Result<Vec<FileDiff>, FileDiffError> {
         let objects = self.objects();
         let old_files = match old {
-            Some(root) => blob_files(objects, root)?,
+            Some(root) => blob_files(objects, root).map_err(FileDiffError::Old)?,
             None => BTreeMap::new(),
         };
-        let new_files = blob_files(objects, new)?;
+        let new_files = blob_files(objects, new).map_err(FileDiffError::New)?;
         let paths: BTreeSet<&String> = old_files.keys().chain(new_files.keys()).collect();
         let mut diffs = Vec::new();
         for path in paths {
@@ -65,16 +68,22 @@ impl Repository {
             }
             diffs.push(FileDiff {
                 path: path.clone(),
-                old: before.map(|blob| content(objects, blob)).transpose()?,
-                new: after.map(|blob| content(objects, blob)).transpose()?,
+                old: before
+                    .map(|blob| content(objects, blob))
+                    .transpose()
+                    .map_err(FileDiffError::Old)?,
+                new: after
+                    .map(|blob| content(objects, blob))
+                    .transpose()
+                    .map_err(FileDiffError::New)?,
             });
         }
         Ok(diffs)
     }
 }
 
-/// The files of a tree, with the ID of their blob, keyed by path. Directories are walked; a
-/// symbolic link or another entry that is not a file is left out, as the status leaves it out.
+/// The files of a tree, with the ID of their blob, keyed by path. Directories are walked. A
+/// symbolic link is a file here, as it is for the status, and so are its blob and its path.
 fn blob_files(
     objects: &dyn ObjectStore,
     root: TreeId,

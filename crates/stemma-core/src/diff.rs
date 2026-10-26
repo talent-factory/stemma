@@ -243,12 +243,23 @@ pub fn is_binary(content: &[u8]) -> bool {
     probe.contains(&0)
 }
 
-/// The text of the diff of one file in the form of git: a header with the two sides, then the
-/// hunks with `context` unchanged lines around each change. `old_name` and `new_name` name the
-/// sides as they are written (for example `/dev/null` for a file that is not there). A file
-/// that is binary on either side gets the summary line instead of the hunks. The result is empty
-/// if the contents are equal.
-pub fn patch(old_name: &str, new_name: &str, old: &[u8], new: &[u8], context: usize) -> Vec<u8> {
+/// The text of the diff of one file, with the hunk format of git: a header with the two sides,
+/// then the hunks with `context` unchanged lines around each change. `old_name` and `new_name` name the
+/// sides as they are written (for example `/dev/null` for a file that is not there). `None` is a
+/// side on which the file is not there; it differs from an empty file, which has no lines but is
+/// there. A file that is binary on either side gets the summary line instead of the hunks. The
+/// result is empty if the two sides are equal.
+pub fn patch(
+    old_name: &str,
+    new_name: &str,
+    old: Option<&[u8]>,
+    new: Option<&[u8]>,
+    context: usize,
+) -> Vec<u8> {
+    if old == new {
+        return Vec::new();
+    }
+    let (old, new) = (old.unwrap_or_default(), new.unwrap_or_default());
     if is_binary(old) || is_binary(new) {
         return format!("Binary files {old_name} and {new_name} differ\n").into_bytes();
     }
@@ -257,7 +268,8 @@ pub fn patch(old_name: &str, new_name: &str, old: &[u8], new: &[u8], context: us
     let edits = diff(&old_lines, &new_lines);
     let hunks = hunks(&edits, context);
     if hunks.is_empty() {
-        return Vec::new();
+        // An empty file that is added or deleted: the header alone says so.
+        return format!("--- {old_name}\n+++ {new_name}\n").into_bytes();
     }
 
     let mut text = format!("--- {old_name}\n+++ {new_name}\n").into_bytes();
@@ -326,12 +338,12 @@ mod tests {
 
     #[test]
     fn equal_contents_give_no_patch() {
-        assert!(patch("a", "b", b"x\n", b"x\n", 3).is_empty());
+        assert!(patch("a", "b", Some(b"x\n"), Some(b"x\n"), 3).is_empty());
     }
 
     #[test]
     fn an_added_file_starts_from_dev_null() {
-        let text = patch("/dev/null", "new b", b"", b"one\ntwo\n", 3);
+        let text = patch("/dev/null", "new b", None, Some(b"one\ntwo\n"), 3);
         assert_eq!(
             String::from_utf8(text).unwrap(),
             "--- /dev/null\n+++ new b\n@@ -0,0 +1,2 @@\n+one\n+two\n"
@@ -341,7 +353,7 @@ mod tests {
     #[test]
     fn an_insertion_names_the_line_before_it() {
         // Three lines, and a fourth one inserted after them: the old range is empty at line 3.
-        let text = patch("o", "n", b"a\nb\nc\n", b"a\nb\nc\nd\n", 0);
+        let text = patch("o", "n", Some(b"a\nb\nc\n"), Some(b"a\nb\nc\nd\n"), 0);
         assert_eq!(
             String::from_utf8(text).unwrap(),
             "--- o\n+++ n\n@@ -3,0 +4 @@\n+d\n"
@@ -350,7 +362,7 @@ mod tests {
 
     #[test]
     fn a_last_line_without_newline_is_marked() {
-        let text = patch("o", "n", b"a\nb", b"a\nc", 3);
+        let text = patch("o", "n", Some(b"a\nb"), Some(b"a\nc"), 3);
         assert_eq!(
             String::from_utf8(text).unwrap(),
             "--- o\n+++ n\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"
@@ -358,8 +370,17 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_file_that_is_added_gets_a_header_without_hunks() {
+        let text = patch("/dev/null", "new e", None, Some(b""), 3);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "--- /dev/null\n+++ new e\n"
+        );
+    }
+
+    #[test]
     fn a_binary_side_gets_the_summary_line() {
-        let text = patch("o", "n", b"\0a", b"b", 3);
+        let text = patch("o", "n", Some(b"\0a"), Some(b"b"), 3);
         assert_eq!(
             String::from_utf8(text).unwrap(),
             "Binary files o and n differ\n"

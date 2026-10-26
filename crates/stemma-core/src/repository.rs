@@ -37,7 +37,7 @@ mod track;
 
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};
 pub use commit::{CommitError, Committed};
-pub use diff::FileDiff;
+pub use diff::{FileDiff, FileDiffError};
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
 };

@@ -62,9 +62,9 @@ use stemma_core::object::{CommitId, Kind, ObjectId, ObjectIdParseError, TreeId, 
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
-    normalize_path_in, ApplyPurgeError, CommitError, Committed, Discovered, InitError, InitOptions,
-    OpenError, PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan, SnapshotError,
-    Status, StatusError, TrackError, Tracking, UpdateError,
+    normalize_path_in, ApplyPurgeError, CommitError, Committed, Discovered, FileDiffError,
+    InitError, InitOptions, OpenError, PurgeError, PurgePlan, Purged, Repository, RestoreError,
+    RestorePlan, SnapshotError, Status, StatusError, TrackError, Tracking, UpdateError,
 };
 use stemma_core::store::ObjectStore;
 use stemma_core::{Actor, ActorParseError, AllowAll};
@@ -336,7 +336,8 @@ struct DiffArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 
-    /// Exit with 4 when a file differs, and with 0 otherwise, as `git diff --exit-code`
+    /// Exit with 4 when a file differs, and with 0 otherwise. Git uses 1 here; stemma keeps 1 for
+    /// failures
     #[arg(long = "exit-code")]
     exit_code: bool,
 
@@ -442,9 +443,16 @@ enum CliError {
         id: ObjectId,
         /// The error of the store or of the tree.
         source: Box<SnapshotError>,
+        /// The number of the entry of the snapshot that the call made, if one.
+        entry: Option<u64>,
     },
     /// The output of `diff` could not be written.
-    DiffOutput(io::Error),
+    DiffOutput {
+        /// The error of the output.
+        source: io::Error,
+        /// The number of the entry of the snapshot that the call made, if one.
+        entry: Option<u64>,
+    },
     /// The restore was refused or stopped. [`RestoreError::pointer_moved`] says whether a pointer
     /// moved; the error says what is in the log and what state the files are in.
     Restore(RestoreError),
@@ -550,7 +558,7 @@ impl CliError {
             | Self::Status(_)
             | Self::StatusOutput { .. }
             | Self::DiffCommit { .. }
-            | Self::DiffOutput(_)
+            | Self::DiffOutput { .. }
             | Self::Restore(_)
             | Self::RestoreOutput { .. }
             | Self::Purge(_)
@@ -564,6 +572,17 @@ impl CliError {
             | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
         }
+    }
+}
+
+/// Adds the note that the working copy was saved first, when the command made a snapshot.
+fn snapshot_saved(f: &mut fmt::Formatter<'_>, entry: Option<u64>) -> fmt::Result {
+    match entry {
+        Some(entry) => write!(
+            f,
+            "; the working copy was saved first as entry {entry} of the operation log"
+        ),
+        None => Ok(()),
     }
 }
 
@@ -653,10 +672,14 @@ impl fmt::Display for CliError {
             Self::DiffOperand { text, source } => {
                 write!(f, "`{text}` is not a commit identifier: {source}")
             }
-            Self::DiffCommit { id, source } => {
-                write!(f, "could not read the commit {id} for the diff: {source}")
+            Self::DiffCommit { id, source, entry } => {
+                write!(f, "could not read the commit {id} for the diff: {source}")?;
+                snapshot_saved(f, *entry)
             }
-            Self::DiffOutput(source) => write!(f, "could not write the diff: {source}"),
+            Self::DiffOutput { source, entry } => {
+                write!(f, "could not write the diff: {source}")?;
+                snapshot_saved(f, *entry)
+            }
             Self::StatusOutput { source, entry } => {
                 write!(f, "could not write the status: {source}")?;
                 match entry {
@@ -768,8 +791,8 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
 /// snapshot first is what `status` does, so the working copy is compared as it is on disk.
 ///
 /// Without `--exit-code` the command ends with 0 whether or not a file differs; with it, a
-/// difference ends with 4. A commit that cannot be read or a closed pipe is handled as in the
-/// other commands.
+/// difference ends with 4. A snapshot that moved the pointer but could not be flushed ends with 3,
+/// as in `status`, and the diff is written first. A closed pipe ends the output quietly.
 fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
@@ -788,16 +811,34 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         [first, second] => (Some(*first), *second),
         _ => unreachable!("the argument parser allows at most two commits"),
     };
-    let old_tree = old.map(|id| commit_tree(&repository, id)).transpose()?;
-    let new_tree = commit_tree(&repository, new)?;
+    // The entry of the snapshot, and the error of its flush if the pointer moved without it.
+    let saved = status
+        .snapshot
+        .map(|saved| (saved.entry.number(), saved.late));
+    let entry = saved.as_ref().map(|(entry, _)| *entry);
+    let late = saved.and_then(|(_, late)| late);
+
+    let old_tree = old
+        .map(|id| commit_tree(&repository, id, entry))
+        .transpose()?;
+    let new_tree = commit_tree(&repository, new, entry)?;
     let diffs = repository
         .file_diffs(old_tree, new_tree)
-        .map_err(|source| CliError::DiffCommit {
-            id: new.object_id(),
-            source: Box::new(source),
+        .map_err(|error| match error {
+            // An old side without a tree has no tree to fail on, so `new` is only a fallback.
+            FileDiffError::Old(source) => CliError::DiffCommit {
+                id: old.unwrap_or(new).object_id(),
+                source: Box::new(source),
+                entry,
+            },
+            FileDiffError::New(source) => CliError::DiffCommit {
+                id: new.object_id(),
+                source: Box::new(source),
+                entry,
+            },
         })?;
 
-    let old_side = |id: Option<CommitId>| match id {
+    let old_side = match old {
         Some(id) => id.to_string(),
         None => "/dev/null".to_owned(),
     };
@@ -806,36 +847,46 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     } else {
         format!("working-copy {working_copy}")
     };
-    let mut differs = false;
     for file in &diffs {
+        let path = escape_path(&file.path);
         let old_name = match file.old {
-            Some(_) => format!("{} {}", old_side(old), escape_path(&file.path)),
+            Some(_) => format!("{old_side} {path}"),
             None => "/dev/null".to_owned(),
         };
         let new_name = match file.new {
-            Some(_) => format!("{new_side} {}", escape_path(&file.path)),
+            Some(_) => format!("{new_side} {path}"),
             None => "/dev/null".to_owned(),
         };
         let text = stemma_core::diff::patch(
             &old_name,
             &new_name,
-            file.old.as_deref().unwrap_or_default(),
-            file.new.as_deref().unwrap_or_default(),
+            file.old.as_deref(),
+            file.new.as_deref(),
             DIFF_CONTEXT,
         );
-        if text.is_empty() {
-            continue;
-        }
-        differs = true;
         match out.write_all(&text) {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
-                return Ok(ExitCode::SUCCESS)
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(source) => {
+                return Err(match (entry, late) {
+                    (Some(entry), Some(late)) => CliError::StatusNotDurable {
+                        entry,
+                        source: Box::new(late),
+                        output: Some(source),
+                    },
+                    _ => CliError::DiffOutput { source, entry },
+                })
             }
-            Err(source) => return Err(CliError::DiffOutput(source)),
         }
     }
-    Ok(if args.exit_code && differs {
+    if let (Some(entry), Some(late)) = (entry, late) {
+        return Err(CliError::StatusNotDurable {
+            entry,
+            source: Box::new(late),
+            output: None,
+        });
+    }
+    Ok(if args.exit_code && !diffs.is_empty() {
         ExitCode::from(4)
     } else {
         ExitCode::SUCCESS
@@ -862,21 +913,28 @@ fn parse_commit(repository: &Repository, text: &str) -> Result<CommitId, CliErro
                 id,
                 kind: Kind::Commit,
             }),
+            entry: None,
         }),
         Err(error) => Err(CliError::DiffCommit {
             id,
             source: Box::new(SnapshotError::Store(Box::new(error))),
+            entry: None,
         }),
     }
 }
 
-/// The tree of a commit, or the error that names the commit.
-fn commit_tree(repository: &Repository, id: CommitId) -> Result<TreeId, CliError> {
+/// The tree of a commit, or the error that names the commit and the snapshot made before it.
+fn commit_tree(
+    repository: &Repository,
+    id: CommitId,
+    entry: Option<u64>,
+) -> Result<TreeId, CliError> {
     repository
         .commit_tree(id)
         .map_err(|source| CliError::DiffCommit {
             id: id.object_id(),
             source: Box::new(source),
+            entry,
         })
 }
 
