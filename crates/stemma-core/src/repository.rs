@@ -26,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod checkout;
 mod commit;
+mod difference;
 mod purge;
 #[cfg(any(fuzzing, test))]
 pub(crate) use purge::fuzz_journal;
@@ -36,6 +37,7 @@ mod track;
 
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};
 pub use commit::{CommitError, Committed};
+pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side};
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
 };
