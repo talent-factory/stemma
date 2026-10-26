@@ -232,9 +232,43 @@ pub fn hunks(edits: &[Edit], context: usize) -> Vec<Hunk> {
         .collect()
 }
 
+/// The number of leading bytes that [`is_binary`] searches for a NUL byte. It is the length that
+/// git uses.
+pub const BINARY_PROBE_LEN: usize = 8000;
+
+/// Tells whether a file is binary: a NUL byte among its first [`BINARY_PROBE_LEN`] bytes makes it
+/// binary, as in git. Later bytes do not count, so the check reads only the start of the file.
+pub fn is_binary(content: &[u8]) -> bool {
+    let probe = &content[..content.len().min(BINARY_PROBE_LEN)];
+    probe.contains(&0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_text_file_is_not_binary() {
+        assert!(!is_binary(b""));
+        assert!(!is_binary("fn main() {}\n".as_bytes()));
+    }
+
+    #[test]
+    fn a_nul_byte_at_the_start_makes_a_file_binary() {
+        assert!(is_binary(b"\0abc"));
+        assert!(is_binary(b"ab\0c"));
+    }
+
+    #[test]
+    fn only_the_first_probe_bytes_are_searched() {
+        let mut inside = vec![b'a'; BINARY_PROBE_LEN];
+        inside[BINARY_PROBE_LEN - 1] = 0;
+        assert!(is_binary(&inside), "the last probed byte is a NUL");
+
+        let mut outside = vec![b'a'; BINARY_PROBE_LEN + 1];
+        outside[BINARY_PROBE_LEN] = 0;
+        assert!(!is_binary(&outside), "the NUL lies after the probe");
+    }
 
     /// Checks that `edits` turns `old` into `new`: the equal steps match, every element of both
     /// sequences appears once and in order, and the number of changes is `expected`.
