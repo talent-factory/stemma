@@ -289,6 +289,52 @@ fn an_unknown_operand_is_an_error_that_names_it() {
     );
 }
 
+/// The identifiers of all objects of the store, `b3:…`, in no particular order.
+fn object_ids(dir: &Path) -> Vec<String> {
+    let mut ids = Vec::new();
+    let objects = dir.join(".stemma").join("objects");
+    for algorithm in fs::read_dir(&objects).unwrap() {
+        let algorithm = algorithm.unwrap();
+        let name = algorithm.file_name().into_string().unwrap();
+        for fan in fs::read_dir(algorithm.path()).unwrap() {
+            let fan = fan.unwrap();
+            let prefix = fan.file_name().into_string().unwrap();
+            for file in fs::read_dir(fan.path()).unwrap() {
+                let rest = file.unwrap().file_name().into_string().unwrap();
+                ids.push(format!("{name}:{prefix}{rest}"));
+            }
+        }
+    }
+    ids
+}
+
+#[test]
+fn an_object_that_is_not_a_commit_is_an_unknown_commit_whatever_its_kind() {
+    let dir = edited_repository();
+    let ids = object_ids(dir.path());
+    let (mut commits, mut others) = (0, 0);
+
+    for id in &ids {
+        let result = diff(dir.path(), &[id.as_str()]);
+        if result.code == 0 {
+            commits += 1;
+            continue;
+        }
+        assert_eq!(result.code, 1, "{id}: {}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .contains(&format!("`{id}` is not the identifier of a commit")),
+            "{id}: {}",
+            result.stderr
+        );
+        others += 1;
+    }
+
+    assert!(commits >= 1, "the commit is accepted");
+    assert!(others >= 2, "the blobs and the tree are refused: {ids:?}");
+}
+
 #[test]
 fn three_operands_are_a_usage_error() {
     let dir = edited_repository();

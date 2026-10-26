@@ -2477,6 +2477,24 @@ mod tests {
     }
 
     #[test]
+    fn a_diff_whose_snapshot_was_not_flushed_is_code_3_and_others_are_code_1() {
+        let (_dir, entry) = repository_with_entry("diff-table");
+        // The snapshot moved the working copy but could not flush it: nothing was written.
+        let late = CliError::Diff(DiffError::Snapshot(SnapshotError::Update(
+            UpdateError::NotDurable {
+                entry: Box::new(entry),
+                source: not_durable(),
+            },
+        )));
+        assert_eq!(late.exit_code(), ExitCode::from(3));
+        // An operand that names no commit fails before anything is written: code 1.
+        let unknown = CliError::Diff(DiffError::UnknownCommit {
+            operand: "b3:x".to_owned(),
+        });
+        assert_eq!(unknown.exit_code(), ExitCode::from(1));
+    }
+
+    #[test]
     fn a_path_is_written_so_that_two_different_paths_never_look_alike() {
         // NFC and NFD of the same letter are two names, and both are written differently.
         assert_eq!(escape_path("\u{e9}.txt"), "é.txt");
