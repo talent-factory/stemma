@@ -1408,42 +1408,66 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<(), CliError> {
 }
 
 /// The text of a diff: a header with the two sides, then each file that differs. A side is
-/// written as `op log` writes it, and the header has no time stamp (ADR-010). A binary file is
-/// named by one line; a text file has the `@@` line of each hunk, followed by its lines marked
-/// with a space, `-`, or `+`. A path is written with [`escape_path`].
+/// written as `op log` writes it, and the header has no time stamp, because the time changes with
+/// every call (ADR-010). A file has its `diff` line; a binary file then says `Binary files
+/// differ`, and a text file has the `@@` line of each hunk, followed by its lines marked with a
+/// space, `-`, or `+`. A path is written with [`escape_path`].
 fn diff_text(diff: &Diff) -> String {
     let old = diff
         .old_side()
         .map_or_else(|| "-".to_owned(), |side| side.to_string());
     let mut text = format!("--- {old}\n+++ {}\n", diff.new_side());
     for file in diff.files() {
-        text.push_str(&format!("diff {}\n", escape_path(&file.path)));
-        let (old_lines, new_lines, hunks) = match &file.content {
+        text.push_str(&format!("diff {}\n", escape_path(file.path())));
+        let text_diff = match file.content() {
             Content::Binary => {
                 text.push_str("Binary files differ\n");
                 continue;
             }
-            Content::Text { old, new, hunks } => (old, new, hunks),
+            Content::Text(text_diff) => text_diff,
+            // A kind of content that this version of the command does not know how to show.
+            _ => {
+                text.push_str("The content of this file cannot be shown\n");
+                continue;
+            }
         };
-        for hunk in hunks {
+        let (old_lines, new_lines) = (text_diff.old_lines(), text_diff.new_lines());
+        for hunk in text_diff.hunks() {
             text.push_str(&format!(
-                "@@ -{},{} +{},{} @@\n",
-                hunk.old_start + 1,
-                hunk.old_len,
-                hunk.new_start + 1,
-                hunk.new_len
+                "@@ -{} +{} @@\n",
+                range(hunk.old_start, hunk.old_len),
+                range(hunk.new_start, hunk.new_len)
             ));
             for edit in &hunk.edits {
-                let (mark, line) = match *edit {
-                    Edit::Equal { old, .. } => (' ', &old_lines[old]),
-                    Edit::Delete { old } => ('-', &old_lines[old]),
-                    Edit::Insert { new } => ('+', &new_lines[new]),
-                };
-                text.push_str(&format!("{mark}{line}\n"));
+                match *edit {
+                    Edit::Equal { old, .. } => push_line(&mut text, ' ', &old_lines[old]),
+                    Edit::Delete { old } => push_line(&mut text, '-', &old_lines[old]),
+                    Edit::Insert { new } => push_line(&mut text, '+', &new_lines[new]),
+                }
             }
         }
     }
     text
+}
+
+/// The range of a hunk in an `@@` line: its first line, counted from one, and its length. An
+/// empty range names the line before it, as unified diffs do, so a new file has `0,0`.
+fn range(start: usize, len: usize) -> String {
+    if len == 0 {
+        format!("{start},0")
+    } else {
+        format!("{},{len}", start + 1)
+    }
+}
+
+/// Appends one line of a hunk with its mark. A last line without a line end gets the marker that
+/// git writes after it.
+fn push_line(text: &mut String, mark: char, line: &str) {
+    text.push(mark);
+    text.push_str(line);
+    if !line.ends_with('\n') {
+        text.push_str("\n\\ No newline at end of file\n");
+    }
 }
 
 /// Writes the status. If the snapshot could not be flushed, the status is written first and the
