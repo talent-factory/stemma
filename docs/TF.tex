@@ -157,15 +157,30 @@
         return branch, commit, date
     end
 
+    -- Short working-copy commit of the Stemma repository in the parent directory (ADR-010)
+    local function get_stemma_commit()
+        local commit = "unknown"
+        local file = io.open("../.stemma/working-copy", "r")
+        if file then
+            commit = (file:read("*a") or ""):match("b3:(%x+)") or commit
+            file:close()
+        end
+        return commit:sub(1, 12)
+    end
+
     local branch, commit, date = get_git_info()
+    local stemma = get_stemma_commit()
     document.gitbranch = branch
     document.gitcommit = commit
     document.gitdate = date
+    document.stemmacommit = stemma
     document.gitinfo = "[git] • Branch: " .. branch .. "@" .. commit
+    document.stemmainfo = "[stemma] • Working-Copy-Commit: " .. stemma
 \stopluacode
 
 % Make the git information available as TeX macros
 \def\gitinfo{\ctxlua{context(document.gitinfo)}}
+\def\stemmainfo{\ctxlua{context(document.stemmainfo)}}
 \def\gitbranch{\ctxlua{context(document.gitbranch)}}
 \def\gitcommit{\ctxlua{context(document.gitcommit)}}
 \def\gitdate{\ctxlua{context(document.gitdate)}}
@@ -190,9 +205,11 @@
         \kern 0.4em
         \blackrule[width=\hsize,height=0.6pt,color=tfmuted]}]
 
-% Footer: git information centered, page number right
+% Footer: git and Stemma references centered, one above the other; page number right
 \setupfootertexts
-    [][\hbox to \hsize{\hfil\gitinfo\hfil\llap{\pagenumber}}]
+    [][\vbox{%
+        \hbox to \hsize{\hfil\gitinfo\hfil\llap{\pagenumber}}%
+        \hbox to \hsize{\hfil\stemmainfo\hfil}}]
 
 \setupheader[style=\small, color=black]
 \setupfooter[style=\small, color=black]
