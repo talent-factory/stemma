@@ -232,8 +232,8 @@ pub fn hunks(edits: &[Edit], context: usize) -> Vec<Hunk> {
         .collect()
 }
 
-/// The number of leading bytes that [`is_binary`] searches for a NUL byte. It is the length that
-/// git uses.
+/// The number of leading bytes that [`is_binary`] searches for a NUL byte. Git uses the same
+/// length.
 pub const BINARY_PROBE_LEN: usize = 8000;
 
 /// Tells whether a file is binary: a NUL byte among its first [`BINARY_PROBE_LEN`] bytes makes it
