@@ -159,7 +159,7 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
     unreachable!("the two searches meet within (N+M+1)/2 rounds")
 }
 
-/// Moves the boundaries of the change groups in the manner of git's diff post-processing.
+/// Moves the boundaries of the change groups, modelled on git's diff post-processing.
 ///
 /// A group of changes slides up or down along the unchanged lines that equal its own first or last
 /// line. Sliding keeps the number of changes. Among the positions a group can take, the indent
@@ -167,8 +167,9 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
 /// for a blank line. The function is not yet called by [`diff`] or [`hunks`].
 ///
 /// A replacement, a run of changes with both deletions and insertions, stays where the diff put
-/// it. Its two sides already line up, and sliding one side would split the replacement. Git
-/// aligns the groups of both sides in a more detailed way; this is a simpler rule.
+/// it. Its two sides already line up, and sliding one side would split the replacement. A pure
+/// deletion or insertion never slides next to a replacement, so the two do not merge. Git aligns
+/// the groups of both sides in a more detailed way; this is a simpler rule.
 pub fn slide<T: PartialEq, F: Fn(&T) -> Option<usize>>(
     old: &[T],
     new: &[T],
@@ -218,9 +219,9 @@ fn replacements(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, V
     (frozen_old, frozen_new)
 }
 
-// The limit of the sliding and the weights of the indent heuristic. They follow git's xdiff
-// (xdiffi.c) as far as they are remembered. They are not yet checked against git's output, and the
-// search window is simplified.
+// The weights of the indent heuristic follow git's xdiff (xdiffi.c) as far as the author recalls
+// them. They are not yet checked against git's output. `MAX_BLANKS` limits the scan over blank
+// lines, and `MAX_SLIDING` limits the search window, which is simplified.
 const MAX_BLANKS: usize = 20;
 const MAX_SLIDING: usize = 100;
 const INDENT_WEIGHT: i64 = 60;
@@ -239,7 +240,8 @@ const RELATIVE_DEDENT_WITH_BLANK_PENALTY: i64 = 17;
 struct Split {
     /// Whether the split lies at the end of the file.
     end_of_file: bool,
-    /// The indentation of the line at the split. `None` for a blank line and at the end of the file.
+    /// The indentation of the line at the split. `None` for a blank line and at the end of the
+    /// file.
     indent: Option<usize>,
     /// The number of blank lines directly before the split.
     pre_blank: usize,
@@ -316,7 +318,8 @@ impl Score {
         if m.end_of_file {
             self.penalty += END_OF_FILE_PENALTY;
         }
-        // As in git, the end of the file counts as a blank line.
+        // A split without a line of its own counts one blank line: at the end of the file, or before
+        // a blank line. The end of the file therefore reads as a blank line, as in git's model.
         let post_blank = if m.indent.is_none() {
             1 + m.post_blank
         } else {
@@ -381,7 +384,7 @@ fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
             continue;
         }
         // A step down removes the group's first line and adds the unchanged line after the group.
-        // The two lines must be equal, so the group can move one line at a time. A step up works the
+        // The two lines must be equal, so the group moves one line at a time. A step up works the
         // same way at the other end.
         let mut down = 0;
         while e + down < n && !changed[e + down] && lines[s + down] == lines[e + down] {
@@ -393,10 +396,16 @@ fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
         }
 
         // Each position in reach is scored by the splits before and after the group. The lowest
-        // score wins; on a tie the later position does, as in git.
+        // score wins; on a tie the later position does. A position that puts the group
+        // next to another change is skipped, so that the group does not merge with it.
         let len = e - s;
         let mut best: Option<(usize, Score)> = None;
         for p in (s - up.min(MAX_SLIDING))..=(s + down.min(MAX_SLIDING)) {
+            let touches = (p > 0 && changed[p - 1] && !(s..e).contains(&(p - 1)))
+                || (p + len < n && changed[p + len] && !(s..e).contains(&(p + len)));
+            if touches {
+                continue;
+            }
             let mut score = Score::default();
             score.add(&measure(lines, indent, p));
             score.add(&measure(lines, indent, p + len));
@@ -414,7 +423,8 @@ fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
             let moved = (s as isize + shift) as usize..(e as isize + shift) as usize;
             changed[moved].fill(true);
         }
-        // The next group starts after the unchanged line that follows this one.
+        // The next group is searched after the moved group. A group that moved up ends at `e`, so
+        // the search continues there; a group that moved down ends after `e + shift`.
         start = (e as isize + shift.max(0)) as usize;
     }
 }
@@ -612,15 +622,17 @@ mod tests {
         );
     }
 
-    /// The indentation of a line written as a digit, which is its depth.
+    /// The depth of a line written as a digit. Any other character has no indentation and counts
+    /// as a blank line.
     fn digit_indent(line: &char) -> Option<usize> {
         line.to_digit(10).map(|depth| depth as usize)
     }
 
     #[test]
     fn a_group_moves_to_the_shallower_boundary() {
-        // The inserted block '0 4' can sit at the start or at the end of the file. The start has the
-        // lower effective indentation (0 against 3), so the group moves there.
+        // The inserted block sits at the end of the file as '4 0'. It can slide up to the start,
+        // where it reads '0 4'. The start has the lower effective indentation (0 against 3), so the
+        // group moves there.
         let old = ['0', '4', '0'];
         let new = ['0', '4', '0', '4', '0'];
         let edits = diff(&old, &new);
@@ -691,7 +703,8 @@ mod tests {
 
     #[test]
     fn a_deletion_comes_before_an_insertion_at_the_same_place() {
-        // Nothing slides here, so the order comes from the rebuild alone.
+        // This is a replacement, so it is frozen and does not slide. The order of its deletion and
+        // insertion then comes from the rebuild alone.
         let old = ['0', '4'];
         let new = ['0', '5'];
         let edits = diff(&old, &new);
@@ -713,6 +726,14 @@ mod tests {
         let new = ['b', 'a'];
         let edits = diff(&old, &new);
         assert_eq!(
+            edits,
+            vec![
+                Edit::Delete { old: 0 },
+                Edit::Insert { new: 0 },
+                Edit::Equal { old: 1, new: 1 },
+            ]
+        );
+        assert_eq!(
             slide(&old, &new, &edits, |line| Some(if *line == 'a' {
                 0
             } else {
@@ -724,6 +745,58 @@ mod tests {
                 Edit::Equal { old: 1, new: 1 },
             ]
         );
+    }
+
+    #[test]
+    fn a_pure_insertion_does_not_slide_next_to_a_replacement() {
+        // The inserted 'a' at new index 2 could slide up next to the replacement at index 0. That
+        // would merge the two into one run, so it stays where the diff put it.
+        let old = ['b', 'a', 'b'];
+        let new = ['a', 'a', 'a', 'b', 'a'];
+        let edits = diff(&old, &new);
+        assert_eq!(
+            slide(&old, &new, &edits, |line| Some(if *line == 'a' {
+                0
+            } else {
+                4
+            })),
+            vec![
+                Edit::Delete { old: 0 },
+                Edit::Insert { new: 0 },
+                Edit::Equal { old: 1, new: 1 },
+                Edit::Insert { new: 2 },
+                Edit::Equal { old: 2, new: 3 },
+                Edit::Insert { new: 4 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tie_keeps_the_later_position() {
+        // Every position scores the same, so the deleted 'a' stays at the later of the tied
+        // positions instead of moving to the first one.
+        let old = ['a', 'a', 'a', 'b'];
+        let new = ['a', 'a', 'b'];
+        let edits = diff(&old, &new);
+        assert_eq!(
+            slide(&old, &new, &edits, |_| Some(0)),
+            vec![
+                Edit::Equal { old: 0, new: 0 },
+                Edit::Equal { old: 1, new: 1 },
+                Edit::Delete { old: 2 },
+                Edit::Equal { old: 3, new: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_scan_over_blank_lines_stops_at_max_blanks() {
+        // One indented line, followed by more blank lines than the scan reads.
+        let mut lines = vec!['4'];
+        lines.extend(vec![' '; MAX_BLANKS + 5]);
+        let split = measure(&lines, &digit_indent, lines.len());
+        assert_eq!(split.pre_blank, MAX_BLANKS);
+        assert_eq!(split.pre_indent, Some(0));
     }
 
     #[test]
