@@ -469,6 +469,31 @@ dass das Log in Phase~1 jeden Eintrag behält (ADR-011).
 Die Skripte liegen im Repository,
 damit jede Zahl im Buch und in einem ADR wiederholt werden kann.
 
+\subsection[sec:case-study]{Stemma im eigenen Repository}
+
+Git bleibt im Projekt die einzige Wahrheit über den Verlauf: Commits, Branches und Pull Requests
+laufen über Git. Stemma läuft im selben Verzeichnis daneben, als Beispiel für das Buch.
+Die beiden Historien sind deshalb absichtlich doppelt, und keine ersetzt die andere.
+Die Fallstudie beschreibt, was dabei aufgefallen ist.
+
+Der erste Befund betrifft den Akteur.
+Ohne Angabe verweigert \type{init} jeden Befehl, und die Meldung nennt das Format des Akteurs,
+\type{human <id>} oder \type{agent <id> model=… session=… sponsor=…}, und die Variable
+\type{STEMMA\_ACTOR}. Die Variable gilt nur in der Shell, in der sie gesetzt wurde.
+Der zweite betrifft die Ausschlüsse. \type{.git} schliesst Stemma immer aus (ADR-012),
+und das Verzeichnis \type{.stemma} steht in der \type{.gitignore}, damit Git es nicht sieht.
+Die Ausschlussdatei \type{.stemmaignore} hält Build-Ausgaben wie \type{target/} aus dem Verlauf.
+
+Der dritte Befund betrifft den Anfang. Das Repository hatte schon ein \type{.stemma} mit
+älteren Einträgen, und \type{init} änderte darin nichts.
+Ein Commit legt sich deshalb auf den vorhandenen Verlauf, und der Verlauf wächst über Sitzungen,
+statt pro Aufgabe neu zu beginnen.
+Dabei hält jeder Befehl, der die Arbeitskopie ändert, einen Snapshot fest (ADR-010),
+also auch Zwischenstände, die Git nie sieht.
+
+Die Erprobung lief zuerst in einer Kopie des Stands \type{main}, ohne Eingriff in Git.
+Erst danach wurde der Basis-Commit im Repository angelegt.
+
 \subsection{Bewertung von Code aus Agentenhand}
 
 Offen ist, wie Code bewertet wird, der mit Agenten entstanden ist,
