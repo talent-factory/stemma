@@ -87,9 +87,9 @@ fn align<T: PartialEq>(
 
 /// Finds a middle snake of a shortest edit script for `a` and `b`, both non-empty.
 ///
-/// The search runs from the start (forward) and from the end (backward) at the same time. Round
-/// `d` extends the furthest reaching paths of `d` edits in both directions. The paths meet on a
-/// snake of a shortest script. The snake is returned as `(x, y, u, v)`: it runs from `(x, y)` to
+/// The search alternates: round `d` extends the forward paths of `d` edits from the start, then the
+/// backward paths from the end, and each half checks for an overlap with the other side. The
+/// paths meet on a snake of a shortest script. The snake is returned as `(x, y, u, v)`: it runs from `(x, y)` to
 /// `(u, v)` in the edit graph of `a` and `b`.
 fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) {
     let n = a.len() as isize;
@@ -102,8 +102,9 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
     let index = |k: isize| (k + offset) as usize;
     let mut vf = vec![0isize; (2 * max + 3) as usize];
     let mut vb = vec![0isize; (2 * max + 3) as usize];
-    // The forward diagonal `k` and the backward diagonal `c` describe the same cell when
-    // `k = delta - c`. An odd `delta` makes them meet in a forward round, an even one in a
+    // The forward diagonal `k` and the backward diagonal `c` are the same line of the edit graph
+    // when `k = delta - c`, because the reversed coordinates map `x` to `n - x` and `y` to `m - y`.
+    // An odd `delta` therefore makes the paths overlap in a forward round, an even one in a
     // backward round.
     let delta = n - m;
     let odd = delta % 2 != 0;
@@ -304,5 +305,32 @@ mod tests {
         let old: Vec<u32> = (0..2000).collect();
         let new: Vec<u32> = (2000..4000).collect();
         check(&old, &new, 4000);
+    }
+
+    #[test]
+    fn a_common_prefix_is_kept_and_the_rest_is_inserted() {
+        check(&['a', 'b'], &['a', 'b', 'c', 'd'], 2);
+    }
+
+    #[test]
+    fn a_common_suffix_is_kept_and_the_rest_is_inserted() {
+        check(&['c', 'd'], &['a', 'b', 'c', 'd'], 2);
+    }
+
+    #[test]
+    fn a_short_sequence_against_a_much_longer_one() {
+        // The element 7 is the only one in common: 1 + 501 - 2 changes.
+        let long: Vec<u32> = (0..501).collect();
+        check(&[7u32], &long, 500);
+    }
+
+    #[test]
+    fn many_short_matches_at_several_levels() {
+        // Every second element matches, so the LCS is 500 and the script has 1000 changes.
+        let old: Vec<u32> = (0..1000).collect();
+        let new: Vec<u32> = (0..1000)
+            .map(|i| if i % 2 == 0 { i } else { i + 5000 })
+            .collect();
+        check(&old, &new, 1000);
     }
 }
