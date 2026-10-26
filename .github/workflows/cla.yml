@@ -1,17 +1,17 @@
 name: "CLA Assistant"
 
 # Checks the contributor license agreement (CLA.md) on pull requests from other people.
-# The action runs with the rights of the base repository and never checks out the code of
-# the pull request, so the pull_request_target trigger is safe here.
+# The script runs with the rights of the base repository and only reads the event payload and the
+# API. It never checks out the code of the pull request, so the pull_request_target trigger is
+# safe here. It replaces the archived cla-assistant/github-action, which runs on Node 20.
 on:
   issue_comment:
     types: [created]
   pull_request_target:
-    types: [opened, closed, synchronize]
+    types: [opened, synchronize]
 
 # Explicit, in case the default token permissions of the repository are read-only.
 permissions:
-  actions: write
   contents: write
   pull-requests: write
   statuses: write
@@ -19,17 +19,160 @@ permissions:
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target' || github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'
     steps:
       - name: "CLA Assistant"
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
-        # The action is archived upstream; pinned to the last release (v2.6.1) by its commit.
-        uses: cla-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
-          path-to-signatures: 'signatures/version1/cla.json'
-          path-to-document: 'https://github.com/talent-factory/stemma/blob/main/CLA.md'
-          # Signatures live on their own branch, because main is protected by a ruleset.
-          branch: 'cla-signatures'
-          allowlist: 'dsenften,rsenften,dependabot[bot]'
-          lock-pullrequest-aftermerge: 'true'
+          script: |
+            const SIGN_PHRASE = 'I have read the CLA Document and I hereby sign the CLA';
+            // Contributors who do not sign: the maintainers and the dependency bot.
+            const ALLOWLIST = ['dsenften', 'rsenften', 'dependabot[bot]'];
+            const SIGNATURES_BRANCH = 'cla-signatures';
+            // The same file as cla-assistant wrote, so that existing signatures stay valid.
+            const SIGNATURES_PATH = 'signatures/version1/cla.json';
+            // The status context of cla-assistant, so that a required check keeps working.
+            const STATUS_CONTEXT = 'license/cla';
+            const MARKER = '<!-- cla-assistant -->';
+            const { owner, repo } = context.repo;
+            const event = context.payload;
+
+            async function ensureBranch() {
+              try {
+                await github.rest.repos.getBranch({ owner, repo, branch: SIGNATURES_BRANCH });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                const { data: main } = await github.rest.repos.get({ owner, repo });
+                const { data: base } = await github.rest.repos.getBranch({
+                  owner,
+                  repo,
+                  branch: main.default_branch,
+                });
+                await github.rest.git.createRef({
+                  owner,
+                  repo,
+                  ref: `refs/heads/${SIGNATURES_BRANCH}`,
+                  sha: base.commit.sha,
+                });
+              }
+            }
+
+            // A missing file or branch means that nobody has signed yet.
+            async function readSignatures() {
+              try {
+                const { data } = await github.rest.repos.getContent({
+                  owner,
+                  repo,
+                  path: SIGNATURES_PATH,
+                  ref: SIGNATURES_BRANCH,
+                });
+                const json = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+                return { signers: json.signedContributors, sha: data.sha };
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                return { signers: [], sha: undefined };
+              }
+            }
+
+            async function sign(login, userId, commentId) {
+              await ensureBranch();
+              const { signers, sha } = await readSignatures();
+              if (signers.some((signer) => signer.name === login)) return;
+              signers.push({
+                name: login,
+                id: userId,
+                comment_id: commentId,
+                created_at: new Date().toISOString(),
+              });
+              await github.rest.repos.createOrUpdateFileContents({
+                owner,
+                repo,
+                path: SIGNATURES_PATH,
+                branch: SIGNATURES_BRANCH,
+                message: `Add CLA signature of ${login}`,
+                content: Buffer.from(JSON.stringify({ signedContributors: signers }, null, 2) + '\n').toString('base64'),
+                sha,
+              });
+            }
+
+            // Creates the comment that asks for a signature, or updates the one it wrote before.
+            async function upsertComment(number, body, create) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: number,
+                per_page: 100,
+              });
+              const existing = comments.find(
+                (comment) => comment.user?.type === 'Bot' && comment.body?.includes(MARKER)
+              );
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              } else if (create) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+              }
+            }
+
+            async function evaluate(number, headSha) {
+              const commits = await github.paginate(github.rest.pulls.listCommits, {
+                owner,
+                repo,
+                pull_number: number,
+                per_page: 100,
+              });
+              const { signers } = await readSignatures();
+              const signed = new Set(signers.map((signer) => signer.name));
+              const unsigned = new Set();
+              for (const commit of commits) {
+                const login = commit.author?.login;
+                if (!login) {
+                  // A commit whose e-mail address is not linked to a GitHub account cannot sign.
+                  unsigned.add(`${commit.commit.author.name} <${commit.commit.author.email}>`);
+                } else if (!ALLOWLIST.includes(login) && !signed.has(login)) {
+                  unsigned.add(login);
+                }
+              }
+
+              const state = unsigned.size === 0 ? 'success' : 'failure';
+              const description =
+                state === 'success'
+                  ? 'All contributors have signed the CLA'
+                  : `Not signed yet: ${[...unsigned].join(', ')}`.slice(0, 140);
+              await github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: headSha,
+                state,
+                context: STATUS_CONTEXT,
+                description,
+              });
+
+              const body =
+                state === 'success'
+                  ? `All contributors have signed the CLA.\n\n${MARKER}`
+                  : `Thank you for your contribution. Before we can merge it, please read ` +
+                    `[CLA.md](https://github.com/${owner}/${repo}/blob/main/CLA.md) and reply ` +
+                    `to this pull request with the following sentence:\n\n` +
+                    `> ${SIGN_PHRASE}\n\n` +
+                    `Not signed yet: ${[...unsigned].join(', ')}\n\n${MARKER}`;
+              await upsertComment(number, body, state !== 'success');
+            }
+
+            if (event.issue) {
+              // A comment on a pull request: a signature, or a request to check again.
+              if (!event.issue.pull_request) return;
+              const text = event.comment.body.trim();
+              if (text === SIGN_PHRASE) {
+                await sign(event.comment.user.login, event.comment.user.id, event.comment.id);
+              } else if (text !== 'recheck') {
+                return;
+              }
+              const { data: pr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: event.issue.number,
+              });
+              await evaluate(pr.number, pr.head.sha);
+            } else {
+              await evaluate(event.pull_request.number, event.pull_request.head.sha);
+            }
