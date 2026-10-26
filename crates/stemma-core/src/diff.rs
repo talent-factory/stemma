@@ -159,15 +159,16 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
     unreachable!("the two searches meet within (N+M+1)/2 rounds")
 }
 
-/// Moves the boundaries of the change groups, as git does after the diff.
+/// Moves the boundaries of the change groups in the manner of git's diff post-processing.
 ///
 /// A group of changes slides up or down along the unchanged lines that equal its own first or last
 /// line. Sliding keeps the number of changes. Among the positions a group can take, the indent
-/// heuristic of git chooses the one that reads best. `indent` gives the indentation of a line, or
-/// `None` for a blank line.
+/// heuristic chooses the one that reads best. `indent` gives the indentation of a line, or `None`
+/// for a blank line. The function is not yet called by [`diff`] or [`hunks`].
 ///
 /// A replacement, a run of changes with both deletions and insertions, stays where the diff put
-/// it. Its two sides already line up, and sliding one side would split the replacement.
+/// it. Its two sides already line up, and sliding one side would split the replacement. Git
+/// aligns the groups of both sides in a more detailed way; this is a simpler rule.
 pub fn slide<T: PartialEq, F: Fn(&T) -> Option<usize>>(
     old: &[T],
     new: &[T],
@@ -217,8 +218,9 @@ fn replacements(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, V
     (frozen_old, frozen_new)
 }
 
-// The limit of the sliding and the weights of the indent heuristic. They are the values of git's
-// xdiff (xdiffi.c), which scores a boundary by the indentation of the lines around it.
+// The limit of the sliding and the weights of the indent heuristic. They follow git's xdiff
+// (xdiffi.c) as far as they are remembered. They are not yet checked against git's output, and the
+// search window is simplified.
 const MAX_BLANKS: usize = 20;
 const MAX_SLIDING: usize = 100;
 const INDENT_WEIGHT: i64 = 60;
@@ -235,14 +237,19 @@ const RELATIVE_DEDENT_WITH_BLANK_PENALTY: i64 = 17;
 
 /// The lines around a split point, as the indent heuristic reads them.
 struct Split {
+    /// Whether the split lies at the end of the file.
     end_of_file: bool,
-    /// The indentation of the line after the split, `None` for a blank line.
+    /// The indentation of the line at the split. `None` for a blank line and at the end of the file.
     indent: Option<usize>,
+    /// The number of blank lines directly before the split.
     pre_blank: usize,
-    /// The indentation of the nearest non-blank line before the split.
+    /// The indentation of the nearest non-blank line before the split. After `MAX_BLANKS` blank
+    /// lines it is `Some(0)`, and it is `None` when no non-blank line lies before the split.
     pre_indent: Option<usize>,
+    /// The number of blank lines after the line at the split.
     post_blank: usize,
-    /// The indentation of the nearest non-blank line after the line at the split.
+    /// The indentation of the nearest non-blank line after the line at the split. The same rules
+    /// as for `pre_indent` apply.
     post_indent: Option<usize>,
 }
 
@@ -309,6 +316,7 @@ impl Score {
         if m.end_of_file {
             self.penalty += END_OF_FILE_PENALTY;
         }
+        // As in git, the end of the file counts as a blank line.
         let post_blank = if m.indent.is_none() {
             1 + m.post_blank
         } else {
@@ -372,8 +380,9 @@ fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
             start = e;
             continue;
         }
-        // A step down removes the first line of the group and adds the unchanged line after it, so
-        // it needs both to be equal. A step up is the same at the other end.
+        // A step down removes the group's first line and adds the unchanged line after the group.
+        // The two lines must be equal, so the group can move one line at a time. A step up works the
+        // same way at the other end.
         let mut down = 0;
         while e + down < n && !changed[e + down] && lines[s + down] == lines[e + down] {
             down += 1;
@@ -411,8 +420,14 @@ fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
 }
 
 /// Builds an edit script from the flags of the changed lines of both sides. The unchanged lines
-/// pair up in order, and a deletion comes before an insertion at the same place.
+/// pair up in order, and a deletion comes before an insertion at the same place. Both sides must
+/// have the same number of unchanged lines, which sliding preserves.
 fn rebuild(changed_old: &[bool], changed_new: &[bool]) -> Vec<Edit> {
+    debug_assert_eq!(
+        changed_old.iter().filter(|changed| !**changed).count(),
+        changed_new.iter().filter(|changed| !**changed).count(),
+        "both sides keep the same number of unchanged lines"
+    );
     let mut edits = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < changed_old.len() || j < changed_new.len() {
@@ -597,15 +612,15 @@ mod tests {
         );
     }
 
-    /// The indentation of a line written as a digit, where a space stands for a blank line.
+    /// The indentation of a line written as a digit, which is its depth.
     fn digit_indent(line: &char) -> Option<usize> {
         line.to_digit(10).map(|depth| depth as usize)
     }
 
     #[test]
     fn a_group_moves_to_the_shallower_boundary() {
-        // The inserted block '4 0' can sit at the start or at the end of the file. Starting at the
-        // shallow line '0' scores better than ending there, so the group moves up to the start.
+        // The inserted block '0 4' can sit at the start or at the end of the file. The start has the
+        // lower effective indentation (0 against 3), so the group moves there.
         let old = ['0', '4', '0'];
         let new = ['0', '4', '0', '4', '0'];
         let edits = diff(&old, &new);
@@ -626,8 +641,8 @@ mod tests {
 
     #[test]
     fn a_group_stays_where_the_indentation_reads_best() {
-        // The inserted '4' can follow the first '4' or precede the closing '0'. The second position
-        // has the lower effective indentation, so the group stays.
+        // The inserted '4' can sit after the leading '0' or after the first '4'. The second position
+        // has the lower effective indentation (4 against 8), so the group stays.
         let old = ['0', '4', '0'];
         let new = ['0', '4', '4', '0'];
         let edits = diff(&old, &new);
@@ -636,8 +651,8 @@ mod tests {
 
     #[test]
     fn sliding_keeps_the_number_of_changes_and_a_valid_script() {
-        // Every pair of short sequences over {a, b}, once with the letters as indentation and once
-        // with 'a' as a blank line.
+        // Every pair of short sequences over {a, b}, once with 'a' at indentation 0 and 'b' at 4,
+        // and once with 'a' as a blank line.
         let indents: [fn(&char) -> Option<usize>; 2] = [
             |line| Some(if *line == 'a' { 0 } else { 4 }),
             |line| if *line == 'a' { None } else { Some(4) },
