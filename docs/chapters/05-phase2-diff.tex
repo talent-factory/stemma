@@ -27,8 +27,8 @@ Eine Grössengrenze gibt es in Phase 2 nicht.
 \item Die Seiten des Diffs werden über ihre Kennungen benannt, wie \type{op log} sie
 anzeigt. Die Arbeitskopie erscheint als \type{working-copy} mit ihrer Snapshot-Kennung,
 ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
-\item Keine Ausgabe für Maschinen in Phase 2. Die Hunk-Struktur im Kern bleibt serialisierbar,
-damit das Format aus Phase 6 darauf aufsetzen kann (Kapitel 9).
+\item Keine Ausgabe für Maschinen in Phase 2. Die Hunk-Struktur im Kern sind reine Daten,
+auf die das Format aus Phase 6 aufsetzen kann (Kapitel 9).
 \stopitemize
 
 \section[sec:myers]{Der Myers-Diff}
@@ -83,6 +83,18 @@ Ein gemeinsames Element am Rand liegt ebenfalls auf einem kürzesten Skript, des
 Abschneiden nichts verloren \cite[myers1986ond]. Die Teile liegen in der Reihenfolge der Schlange
 aneinander. Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die
 Reihenfolge.
+
+\section[sec:hunks]{Hunks und Kontextzeilen}
+
+Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk ist eine Gruppe von Änderungen mit den
+unveränderten Zeilen davor und danach. Jede Änderung bekommt so viele Kontextzeilen auf beiden
+Seiten, wie die Anzeige verlangt. Die Anzahl $c$ setzt der Aufruf.
+
+Zwei benachbarte Änderungen landen im selben Hunk, wenn höchstens $2c$ unveränderte Zeilen
+zwischen ihnen liegen. Dann überlappen oder berühren sich ihre Kontextfenster. Solche Nachbarn
+bilden Ketten, sodass ein Hunk auch Änderungen umfassen kann, die weiter auseinanderliegen.
+Ein Hunk speichert nur die Schritte des Skripts und die Positionen seiner Zeilen auf beiden
+Seiten. Die Zeilen selbst bleiben in den Folgen.
 
 \section{Offene Fragen}
 
