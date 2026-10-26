@@ -58,13 +58,15 @@ use std::str::FromStr;
 use clap::{Args, Parser, Subcommand};
 
 use crate::op_log;
+use stemma_core::diff::Edit;
 use stemma_core::object::{ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
-    normalize_path_in, ApplyPurgeError, CommitError, Committed, Discovered, InitError, InitOptions,
-    OpenError, PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan, SnapshotError,
-    Status, StatusError, TrackError, Tracking, UpdateError,
+    normalize_path_in, ApplyPurgeError, CommitError, Committed, Comparison, Content, Diff,
+    DiffError, Discovered, InitError, InitOptions, OpenError, PurgeError, PurgePlan, Purged,
+    Repository, RestoreError, RestorePlan, SnapshotError, Status, StatusError, TrackError,
+    Tracking, UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -92,6 +94,8 @@ enum Command {
     Commit(CommitArgs),
     /// Show what the working copy changes and which files are not tracked
     Status(StatusArgs),
+    /// Show the changes between two commits, or between a commit and the working copy
+    Diff(DiffArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -316,6 +320,29 @@ struct StatusArgs {
 }
 
 #[derive(Debug, Args)]
+struct DiffArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. The snapshot of the working copy is made by this actor
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<String>,
+
+    /// The commits to compare, by identifier: none compares the working copy with its parent,
+    /// one compares that commit with the working copy, and two compare the first with the second
+    #[arg(value_name = "COMMIT", num_args = 0..=2)]
+    commits: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 struct InitArgs {
     /// The directory of the repository; it is created if it does not exist
     #[arg(
@@ -398,6 +425,11 @@ enum CliError {
         /// The number of the entry of the snapshot that the call made, if one.
         entry: Option<u64>,
     },
+    /// The diff could not be read. The message says which operand failed, or what the snapshot
+    /// of the working copy or the store did.
+    Diff(DiffError),
+    /// The diff could not be written to the output.
+    DiffOutput(io::Error),
     /// The restore was refused or stopped. [`RestoreError::pointer_moved`] says whether a pointer
     /// moved; the error says what is in the log and what state the files are in.
     Restore(RestoreError),
@@ -486,6 +518,7 @@ impl CliError {
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
+            Self::Diff(error) if error.not_durable() => ExitCode::from(3),
             Self::ApplyPurge(error) if error.made() => ExitCode::from(3),
             Self::ApplyPurge(ApplyPurgeError::Snapshot(SnapshotError::Update(error)))
                 if error.pointer_moved() =>
@@ -501,6 +534,8 @@ impl CliError {
             | Self::Commit(_)
             | Self::Status(_)
             | Self::StatusOutput { .. }
+            | Self::Diff(_)
+            | Self::DiffOutput(_)
             | Self::Restore(_)
             | Self::RestoreOutput { .. }
             | Self::Purge(_)
@@ -584,6 +619,8 @@ impl fmt::Display for CliError {
                 "committed {committed}, but could not write the result: {source}"
             ),
             Self::Status(error) => error.fmt(f),
+            Self::Diff(error) => error.fmt(f),
+            Self::DiffOutput(source) => write!(f, "the diff could not be written: {source}"),
             Self::StatusNotDurable {
                 entry,
                 source,
@@ -691,6 +728,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
         Command::Track(args) => track(args, out),
         Command::Commit(args) => commit(args, out),
         Command::Status(args) => status(args, out),
+        Command::Diff(args) => diff(args, out),
         Command::Op {
             command: OpCommand::Log(args),
         } => show_op_log(args, out),
@@ -1344,6 +1382,92 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
         .status(&actor, &AllowAll)
         .map_err(CliError::Status)?;
     finish_status(result, out)
+}
+
+/// Shows the changes between two sides, named as `op log` names them. The core saves the tracked
+/// files first when a side is the working copy.
+fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let comparison = match args.commits.as_slice() {
+        [] => Comparison::WithParent,
+        [commit] => Comparison::WithWorkingCopy(commit.as_str()),
+        [first, second] => Comparison::Commits(first.as_str(), second.as_str()),
+        // The argument parser accepts at most two commits.
+        _ => unreachable!("the diff takes at most two commits"),
+    };
+    let result = repository
+        .diff(&actor, &AllowAll, comparison)
+        .map_err(CliError::Diff)?;
+    match out.write_all(diff_text(&result).as_bytes()) {
+        Ok(()) => Ok(()),
+        // A closed pipe ends the output quietly, as for `status`.
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(CliError::DiffOutput(source)),
+    }
+}
+
+/// The text of a diff: a header with the two sides, then each file that differs. A side is
+/// written as `op log` writes it, and the header has no time stamp, because the time changes with
+/// every call (ADR-010). A file has its `diff` line; a binary file then says `Binary files
+/// differ`, and a text file has the `@@` line of each hunk, followed by its lines marked with a
+/// space, `-`, or `+`. A path is written with [`escape_path`].
+fn diff_text(diff: &Diff) -> String {
+    let old = diff
+        .old_side()
+        .map_or_else(|| "-".to_owned(), |side| side.to_string());
+    let mut text = format!("--- {old}\n+++ {}\n", diff.new_side());
+    for file in diff.files() {
+        text.push_str(&format!("diff {}\n", escape_path(file.path())));
+        let text_diff = match file.content() {
+            Content::Binary => {
+                text.push_str("Binary files differ\n");
+                continue;
+            }
+            Content::Text(text_diff) => text_diff,
+            // A kind of content that this version of the command does not know how to show.
+            _ => {
+                text.push_str("The content of this file cannot be shown\n");
+                continue;
+            }
+        };
+        let (old_lines, new_lines) = (text_diff.old_lines(), text_diff.new_lines());
+        for hunk in text_diff.hunks() {
+            text.push_str(&format!(
+                "@@ -{} +{} @@\n",
+                range(hunk.old_start, hunk.old_len),
+                range(hunk.new_start, hunk.new_len)
+            ));
+            for edit in &hunk.edits {
+                match *edit {
+                    Edit::Equal { old, .. } => push_line(&mut text, ' ', &old_lines[old]),
+                    Edit::Delete { old } => push_line(&mut text, '-', &old_lines[old]),
+                    Edit::Insert { new } => push_line(&mut text, '+', &new_lines[new]),
+                }
+            }
+        }
+    }
+    text
+}
+
+/// The range of a hunk in an `@@` line: its first line, counted from one, and its length. An
+/// empty range names the line before it, as unified diffs do, so a new file has `0,0`.
+fn range(start: usize, len: usize) -> String {
+    if len == 0 {
+        format!("{start},0")
+    } else {
+        format!("{},{len}", start + 1)
+    }
+}
+
+/// Appends one line of a hunk with its mark. A last line without a line end gets the marker that
+/// git writes after it.
+fn push_line(text: &mut String, mark: char, line: &str) {
+    text.push(mark);
+    text.push_str(line);
+    if !line.ends_with('\n') {
+        text.push_str("\n\\ No newline at end of file\n");
+    }
 }
 
 /// Writes the status. If the snapshot could not be flushed, the status is written first and the
@@ -2350,6 +2474,24 @@ mod tests {
         assert_eq!(ranges(&[]), "");
         assert_eq!(ranges(&[4]), "4");
         assert_eq!(ranges(&[3, 5, 6, 7, 9, 10]), "3, 5-7, 9-10");
+    }
+
+    #[test]
+    fn a_diff_whose_snapshot_was_not_flushed_is_code_3_and_others_are_code_1() {
+        let (_dir, entry) = repository_with_entry("diff-table");
+        // The snapshot moved the working copy but could not flush it: nothing was written.
+        let late = CliError::Diff(DiffError::Snapshot(SnapshotError::Update(
+            UpdateError::NotDurable {
+                entry: Box::new(entry),
+                source: not_durable(),
+            },
+        )));
+        assert_eq!(late.exit_code(), ExitCode::from(3));
+        // An operand that names no commit fails before anything is written: code 1.
+        let unknown = CliError::Diff(DiffError::UnknownCommit {
+            operand: "b3:x".to_owned(),
+        });
+        assert_eq!(unknown.exit_code(), ExitCode::from(1));
     }
 
     #[test]

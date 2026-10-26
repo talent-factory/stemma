@@ -70,8 +70,8 @@ dem Benutzernamen gibt es nicht. Die Angabe belegt nicht, wer den Befehl wirklic
 sie nennt nur, in wessen Namen er läuft.
 
 Ein Befehl, der einen Snapshot macht (\type{track}, \type{commit}, \type{status},
-\type{restore}, \type{purge --apply}), trägt diesen Akteur für alles ein, was er im
-Verzeichnis speichert.
+\type{diff} mit dem Working-Copy-Commit, \type{restore}, \type{purge --apply}), trägt diesen
+Akteur für alles ein, was er im Verzeichnis speichert.
 Deshalb arbeitet jeder Akteur in einer eigenen Arbeitskopie; zwei Akteure in einem
 Verzeichnis sind kein unterstützter Betrieb (ADR-010). Das Programm prüft es nicht.
 
@@ -688,6 +688,90 @@ ein gleichzeitiger Prozess kann also HEAD und Commit aus zwei Zuständen liefern
 \starttyping
 stemma status --actor "human daniel"
 stemma status -C projekt
+\stoptyping
+
+\section{diff}
+
+Zeigt die Änderungen zwischen zwei Commits oder zwischen einem Commit und dem
+Working-Copy-Commit, zeilenweise mit Kontext (ADR-010).
+
+\starttyping
+stemma diff [-C VERZEICHNIS] --actor AKTEUR [COMMIT [COMMIT]]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Siehe \type{status}.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben. Macht der Befehl einen Snapshot,
+ist dieser Akteur der des Snapshots.
+\item {\bf \type{COMMIT}:} Die Kennung eines Commits, so wie \type{op log} sie schreibt,
+also \type{b3:} gefolgt vom Hash. Ohne Argument vergleicht der Befehl den Working-Copy-Commit
+mit seinem Elternteil. Mit einem Argument vergleicht er diesen Commit mit dem
+Working-Copy-Commit. Mit zwei Argumenten vergleicht er den ersten mit dem zweiten.
+Mehr als zwei Argumente sind ein Aufruffehler (Exit-Code 2).
+\stopitemize
+
+{\bf Verhalten.} Ist eine Seite der Working-Copy-Commit, speichert der Befehl zuerst die
+verfolgten Dateien wie ein Snapshot (Operation \type{snapshot}), wie \type{status} es tut.
+Danach vergleicht er die Dateien der beiden Seiten nach ihrem Inhalt; der Modus zählt nicht.
+Eine Datei, die auf beiden Seiten gleich ist, erscheint nicht.
+Eine Datei mit einem NUL-Byte in den ersten 8000 Bytes ist binär: Der Befehl zeigt ihren
+Inhalt nicht, sondern nur \type{Binary files differ}. Ist eine der beiden Fassungen binär,
+gilt das für die ganze Datei.
+
+Zeilen vergleicht der Befehl so, wie sie gespeichert sind, samt Zeilenende.
+Eine Änderung nur der Zeilenenden erscheint deshalb ebenso wie ein Byte, das kein UTF-8 ist.
+Angezeigt wird ein solches Byte als Ersatzzeichen. Hat die letzte Zeile kein Zeilenende,
+folgt ihr die Marke aus dem Beispiel. Jeder Hunk zeigt drei unveränderte Zeilen als Kontext.
+Ein Pfad wird maskiert, wie bei \type{status}.
+
+\starttyping
++one
+\ No newline at end of file
+\stoptyping
+
+Der Kopf nennt die beiden Seiten so, wie \type{op log} sie nennt:
+ein Commit mit seiner Kennung, der Working-Copy-Commit als \type{working-copy} mit der Kennung
+seines Snapshots. Ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert.
+Hat der alte Commit keinen Elternteil, also ist er der erste, steht dort \type{-}
+für den leeren Baum.
+Danach folgt jede Datei mit ihrem Pfad und ihren Hunks.
+Ein Hunk beginnt mit einer Zeile \type{@@}, die Anfang und Anzahl der Zeilen auf beiden
+Seiten nennt, von eins gezählt. Ist der Bereich einer Seite leer, wie bei einer neuen Datei,
+steht dort die Zeile davor, also \type{0,0}. Seine Zeilen beginnen mit einem Leerzeichen für eine
+unveränderte, mit \type{-} für eine gelöschte und mit \type{+} für eine eingefügte Zeile:
+
+\starttyping
+--- b3:4f2a0c…
++++ working-copy b3:9c1e7d…
+diff a.txt
+@@ -1,1 +1,1 @@
+-one
++two
+\stoptyping
+
+Sind keine Dateien verschieden, endet der Befehl ohne Ausgabe ausser dem Kopf.
+Die Ausgabe hat keine Farbe und keinen Pager.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist, wenn das Verzeichnis
+in keinem Repository liegt, wenn ein Argument keine Kennung eines Commits im Repository ist
+(auch die eines Baums oder einer Datei gilt als unbekannt),
+wenn der Snapshot fehlschlägt, wenn ein Objekt, das der Vergleich braucht, fehlt oder beschädigt
+ist, oder wenn eine Referenz nicht lesbar ist.
+Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt.
+Hat der Snapshot den Zeiger bewegt, aber nicht sichern können, endet der Befehl mit
+Exit-Code 3, wie \type{status}; die Ausgabe bleibt dann aus.
+Schliesst der Leser der Ausgabe die Pipe früh, endet der Befehl mit Exit-Code 0.
+
+{\bf Grenzen.} Der Befehl nimmt keine Pfade und keine Namen wie \type{HEAD} oder einen
+Branch an; er löst nur Kennungen auf. Eine Verschiebung von Zeilen zeigt er als Löschung
+und Einfügung. Eine Option für ein Format für Maschinen gibt es nicht.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma diff --actor "human daniel"
+stemma diff b3:4f2a0c… --actor "human daniel"
+stemma diff b3:4f2a0c… b3:7d9e21… --actor "human daniel"
 \stoptyping
 
 \section{op log}
