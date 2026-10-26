@@ -336,6 +336,11 @@ struct DiffArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 
+    /// Exit with 4 when a file differs, and with 0 otherwise. Git uses 1 here; stemma keeps 1 for
+    /// failures
+    #[arg(long = "exit-code")]
+    exit_code: bool,
+
     /// The commits to compare, by identifier: none compares the working copy with its parent,
     /// one compares that commit with the working copy, and two compare the first with the second
     #[arg(value_name = "COMMIT", num_args = 0..=2)]
@@ -721,24 +726,25 @@ impl fmt::Display for CliError {
 
 impl Error for CliError {}
 
-/// Runs the command and writes its result to `out`.
-fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
+/// Runs the command and writes its result to `out`. The exit code is success, unless the command
+/// reports a result of its own (`diff --exit-code`).
+fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     match cli.command {
-        Command::Init(args) => init(args, out),
-        Command::Track(args) => track(args, out),
-        Command::Commit(args) => commit(args, out),
-        Command::Status(args) => status(args, out),
+        Command::Init(args) => init(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Track(args) => track(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
         Command::Diff(args) => diff(args, out),
         Command::Op {
             command: OpCommand::Log(args),
-        } => show_op_log(args, out),
+        } => show_op_log(args, out).map(|()| ExitCode::SUCCESS),
         Command::Op {
             command: OpCommand::Restore(args),
-        } => restore(args, out),
+        } => restore(args, out).map(|()| ExitCode::SUCCESS),
         Command::Op {
             command: OpCommand::Verify(args),
-        } => verify_op_log(args, out),
-        Command::Purge(args) => purge(args, out),
+        } => verify_op_log(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
     }
 }
 
@@ -1386,7 +1392,7 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
 
 /// Shows the changes between two sides, named as `op log` names them. The core saves the tracked
 /// files first when a side is the working copy.
-fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<(), CliError> {
+fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
     let comparison = match args.commits.as_slice() {
@@ -1399,29 +1405,44 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let result = repository
         .diff(&actor, &AllowAll, comparison)
         .map_err(CliError::Diff)?;
+    let differs = !result.files().is_empty();
     match out.write_all(diff_text(&result).as_bytes()) {
-        Ok(()) => Ok(()),
-        // A closed pipe ends the output quietly, as for `status`.
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(source) => Err(CliError::DiffOutput(source)),
+        // A closed pipe ends the output quietly, as for `status`; the exit code is still the
+        // result of the diff.
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(source) => return Err(CliError::DiffOutput(source)),
     }
+    Ok(if args.exit_code && differs {
+        ExitCode::from(4)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
-/// The text of a diff: a header with the two sides, then each file that differs. A side is
-/// written as `op log` writes it, and the header has no time stamp, because the time changes with
-/// every call (ADR-010). A file has its `diff` line; a binary file then says `Binary files
-/// differ`, and a text file has the `@@` line of each hunk, followed by its lines marked with a
-/// space, `-`, or `+`. A path is written with [`escape_path`].
+/// The text of a diff: each file that differs, with its line `diff` and a header that names the
+/// two sides, as in git. A side is written as `op log` writes it, and a file that is not on a side
+/// is `/dev/null`. The header has no time stamp, because the time changes with every call
+/// (ADR-010). A binary file then says `Binary files <old> and <new> differ`; a text file has the
+/// `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`. A path is
+/// written with [`escape_path`].
 fn diff_text(diff: &Diff) -> String {
-    let old = diff
-        .old_side()
-        .map_or_else(|| "-".to_owned(), |side| side.to_string());
-    let mut text = format!("--- {old}\n+++ {}\n", diff.new_side());
+    let mut text = String::new();
     for file in diff.files() {
-        text.push_str(&format!("diff {}\n", escape_path(file.path())));
+        let path = escape_path(file.path());
+        let old_name = match diff.old_side() {
+            Some(side) if file.old_exists() => format!("{side} {path}"),
+            _ => "/dev/null".to_owned(),
+        };
+        let new_name = if file.new_exists() {
+            format!("{} {path}", diff.new_side())
+        } else {
+            "/dev/null".to_owned()
+        };
+        text.push_str(&format!("diff {path}\n"));
         let text_diff = match file.content() {
             Content::Binary => {
-                text.push_str("Binary files differ\n");
+                text.push_str(&format!("Binary files {old_name} and {new_name} differ\n"));
                 continue;
             }
             Content::Text(text_diff) => text_diff,
@@ -1431,6 +1452,7 @@ fn diff_text(diff: &Diff) -> String {
                 continue;
             }
         };
+        text.push_str(&format!("--- {old_name}\n+++ {new_name}\n"));
         let (old_lines, new_lines) = (text_diff.old_lines(), text_diff.new_lines());
         for hunk in text_diff.hunks() {
             text.push_str(&format!(
@@ -1453,10 +1475,10 @@ fn diff_text(diff: &Diff) -> String {
 /// The range of a hunk in an `@@` line: its first line, counted from one, and its length. An
 /// empty range names the line before it, as unified diffs do, so a new file has `0,0`.
 fn range(start: usize, len: usize) -> String {
-    if len == 0 {
-        format!("{start},0")
-    } else {
-        format!("{},{len}", start + 1)
+    match len {
+        0 => format!("{start},0"),
+        1 => format!("{}", start + 1),
+        _ => format!("{},{len}", start + 1),
     }
 }
 
@@ -1628,7 +1650,7 @@ pub fn main() -> ExitCode {
     // Help and version go to the output with code 0, a usage error to stderr with code 2.
     let cli = Cli::parse();
     match run(cli, &mut io::stdout().lock()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             // The one result that is dropped on purpose: if stderr is closed, there is no channel
             // left to report on, and a panic would replace the exit code with 101.

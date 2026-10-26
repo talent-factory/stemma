@@ -111,12 +111,30 @@ pub enum Content {
 pub struct FileDiff {
     path: String,
     content: Content,
+    old_exists: bool,
+    new_exists: bool,
 }
 
 impl FileDiff {
-    /// Builds the entry of one file.
-    fn new(path: String, content: Content) -> Self {
-        Self { path, content }
+    /// Builds the entry of one file. The two flags tell whether the file is on each side; an
+    /// empty file is on its side, so it is not the same as a file that is not there.
+    fn new(path: String, content: Content, old_exists: bool, new_exists: bool) -> Self {
+        Self {
+            path,
+            content,
+            old_exists,
+            new_exists,
+        }
+    }
+
+    /// Tells whether the file is on the old side. It is not, if the file was added.
+    pub fn old_exists(&self) -> bool {
+        self.old_exists
+    }
+
+    /// Tells whether the file is on the new side. It is not, if the file was deleted.
+    pub fn new_exists(&self) -> bool {
+        self.new_exists
     }
 
     /// Returns the path, relative to the root of the working copy (the directory that contains
@@ -295,7 +313,12 @@ impl Repository {
                     hunks(&edits, CONTEXT),
                 ))
             };
-            files.push(FileDiff::new(path.clone(), content));
+            files.push(FileDiff::new(
+                path.clone(),
+                content,
+                before.is_some(),
+                after.is_some(),
+            ));
         }
         Ok(Diff { old, new, files })
     }
