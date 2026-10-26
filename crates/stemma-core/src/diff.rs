@@ -159,6 +159,77 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
     unreachable!("the two searches meet within (N+M+1)/2 rounds")
 }
 
+/// A group of changes together with the unchanged lines around it.
+///
+/// The hunk is a part of an edit script. Its steps are kept in `edits`, the unchanged lines before
+/// and after the changes included. The positions give the first line and the number of lines of
+/// the hunk on both sides, counted from zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hunk {
+    /// The first line of the hunk in the old sequence.
+    pub old_start: usize,
+    /// The number of lines of the hunk in the old sequence.
+    pub old_len: usize,
+    /// The first line of the hunk in the new sequence.
+    pub new_start: usize,
+    /// The number of lines of the hunk in the new sequence.
+    pub new_len: usize,
+    /// The steps of the hunk in order, context lines included.
+    pub edits: Vec<Edit>,
+}
+
+/// Groups an edit script into hunks with `context` unchanged lines on either side of each change.
+///
+/// Two changes end up in the same hunk when at most `2 * context` unchanged lines lie between
+/// them, because their context lines then overlap or touch. The hunks follow the order of the
+/// script. A script without any change gives no hunk.
+pub fn hunks(edits: &[Edit], context: usize) -> Vec<Hunk> {
+    // The windows of the steps to keep, end exclusive. A window of a change reaches `context`
+    // steps to either side, and touching or overlapping windows are merged.
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    for (i, edit) in edits.iter().enumerate() {
+        if matches!(edit, Edit::Equal { .. }) {
+            continue;
+        }
+        let start = i.saturating_sub(context);
+        let end = (i + context + 1).min(edits.len());
+        match windows.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => windows.push((start, end)),
+        }
+    }
+
+    // The number of old and new lines that the steps before each position consume.
+    let mut old_before = Vec::with_capacity(edits.len() + 1);
+    let mut new_before = Vec::with_capacity(edits.len() + 1);
+    let (mut old_count, mut new_count) = (0, 0);
+    for edit in edits {
+        old_before.push(old_count);
+        new_before.push(new_count);
+        match edit {
+            Edit::Equal { .. } => {
+                old_count += 1;
+                new_count += 1;
+            }
+            Edit::Delete { .. } => old_count += 1,
+            Edit::Insert { .. } => new_count += 1,
+        }
+    }
+    old_before.push(old_count);
+    new_before.push(new_count);
+
+    windows
+        .into_iter()
+        .map(|(start, end)| Hunk {
+            old_start: old_before[start],
+            old_len: old_before[end] - old_before[start],
+            new_start: new_before[start],
+            new_len: new_before[end] - new_before[start],
+            edits: edits[start..end].to_vec(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +403,80 @@ mod tests {
             .map(|i| if i % 2 == 0 { i } else { i + 5000 })
             .collect();
         check(&old, &new, 1000);
+    }
+
+    /// The sequence `0..len` with the elements at `changed` replaced by values that are not in it.
+    fn replaced(len: u32, changed: &[u32]) -> Vec<u32> {
+        (0..len)
+            .map(|i| if changed.contains(&i) { i + 1000 } else { i })
+            .collect()
+    }
+
+    #[test]
+    fn an_unchanged_script_gives_no_hunk() {
+        let old = [1, 2, 3];
+        assert!(hunks(&diff(&old, &old), 3).is_empty());
+    }
+
+    #[test]
+    fn a_change_at_the_start_is_clipped_at_the_first_line() {
+        let old: Vec<u32> = (0..10).collect();
+        let new = replaced(10, &[0]);
+        let found = hunks(&diff(&old, &new), 2);
+        assert_eq!(found.len(), 1);
+        let hunk = &found[0];
+        assert_eq!((hunk.old_start, hunk.old_len), (0, 3));
+        assert_eq!((hunk.new_start, hunk.new_len), (0, 3));
+        assert_eq!(hunk.edits.len(), 4);
+    }
+
+    #[test]
+    fn a_change_at_the_end_is_clipped_at_the_last_line() {
+        let old: Vec<u32> = (0..10).collect();
+        let new = replaced(10, &[9]);
+        let found = hunks(&diff(&old, &new), 2);
+        assert_eq!(found.len(), 1);
+        let hunk = &found[0];
+        assert_eq!((hunk.old_start, hunk.old_len), (7, 3));
+        assert_eq!((hunk.new_start, hunk.new_len), (7, 3));
+        assert_eq!(hunk.old_start + hunk.old_len, old.len());
+    }
+
+    #[test]
+    fn changes_with_exactly_twice_the_context_between_them_form_one_hunk() {
+        // Two changes with nine unchanged lines between them.
+        let old: Vec<u32> = (0..30).collect();
+        let new = replaced(30, &[5, 15]);
+        let edits = diff(&old, &new);
+        assert_eq!(
+            hunks(&edits, 3).len(),
+            2,
+            "nine lines apart, context 3: two hunks"
+        );
+        assert_eq!(
+            hunks(&edits, 5).len(),
+            1,
+            "nine lines apart, context 5: one hunk"
+        );
+    }
+
+    #[test]
+    fn a_hunk_counts_the_lines_of_both_sides() {
+        let old: Vec<u32> = (0..10).collect();
+        let new = replaced(10, &[4]);
+        let found = hunks(&diff(&old, &new), 3);
+        assert_eq!(found.len(), 1);
+        let hunk = &found[0];
+        let old_lines = hunk
+            .edits
+            .iter()
+            .filter(|e| !matches!(e, Edit::Insert { .. }))
+            .count();
+        let new_lines = hunk
+            .edits
+            .iter()
+            .filter(|e| !matches!(e, Edit::Delete { .. }))
+            .count();
+        assert_eq!((hunk.old_len, hunk.new_len), (old_lines, new_lines));
     }
 }
