@@ -442,3 +442,30 @@ fn a_binary_file_names_both_sides_as_the_summary_line_does() {
     );
     assert!(line.contains(" and working-copy b3:"), "{line}");
 }
+
+#[test]
+fn a_failure_after_the_snapshot_names_its_entry() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one\n");
+    track_ok(dir.path(), "a.txt");
+    let first = commit(dir.path(), "first");
+    write(dir.path(), "a.txt", "two\n");
+    // The parent commit is read after the snapshot; without its object the diff fails there.
+    let hex = first.strip_prefix("b3:").unwrap();
+    let object = dir
+        .path()
+        .join(".stemma/objects/b3")
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    assert!(object.exists(), "{}", object.display());
+    fs::remove_file(&object).unwrap();
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("saved first as entry"),
+        "{}",
+        result.stderr
+    );
+}

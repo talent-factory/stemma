@@ -434,7 +434,12 @@ enum CliError {
     /// of the working copy or the store did.
     Diff(DiffError),
     /// The diff could not be written to the output.
-    DiffOutput(io::Error),
+    DiffOutput {
+        /// The error of the output.
+        source: io::Error,
+        /// The number of the entry of the snapshot that the call made, if one.
+        entry: Option<u64>,
+    },
     /// The restore was refused or stopped. [`RestoreError::pointer_moved`] says whether a pointer
     /// moved; the error says what is in the log and what state the files are in.
     Restore(RestoreError),
@@ -540,7 +545,7 @@ impl CliError {
             | Self::Status(_)
             | Self::StatusOutput { .. }
             | Self::Diff(_)
-            | Self::DiffOutput(_)
+            | Self::DiffOutput { .. }
             | Self::Restore(_)
             | Self::RestoreOutput { .. }
             | Self::Purge(_)
@@ -625,7 +630,16 @@ impl fmt::Display for CliError {
             ),
             Self::Status(error) => error.fmt(f),
             Self::Diff(error) => error.fmt(f),
-            Self::DiffOutput(source) => write!(f, "the diff could not be written: {source}"),
+            Self::DiffOutput { source, entry } => {
+                write!(f, "the diff could not be written: {source}")?;
+                match entry {
+                    Some(entry) => write!(
+                        f,
+                        "; the working copy was saved first as entry {entry} of the operation log"
+                    ),
+                    None => Ok(()),
+                }
+            }
             Self::StatusNotDurable {
                 entry,
                 source,
@@ -1411,7 +1425,12 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         // result of the diff.
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
-        Err(source) => return Err(CliError::DiffOutput(source)),
+        Err(source) => {
+            return Err(CliError::DiffOutput {
+                source,
+                entry: result.saved_entry(),
+            })
+        }
     }
     Ok(if args.exit_code && differs {
         ExitCode::from(4)

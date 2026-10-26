@@ -156,6 +156,7 @@ pub struct Diff {
     old: Option<Side>,
     new: Side,
     files: Vec<FileDiff>,
+    saved: Option<u64>,
 }
 
 impl Diff {
@@ -174,6 +175,12 @@ impl Diff {
     /// in the list.
     pub fn files(&self) -> &[FileDiff] {
         &self.files
+    }
+
+    /// Returns the number of the entry of the snapshot that the diff saved the working copy with,
+    /// if the call made one.
+    pub fn saved_entry(&self) -> Option<u64> {
+        self.saved
     }
 }
 
@@ -205,6 +212,13 @@ pub enum DiffError {
         /// The operand as it was given.
         operand: String,
     },
+    /// The working copy was saved as an entry of the operation log, and then the diff failed.
+    AfterSnapshot {
+        /// The number of the entry of the snapshot.
+        entry: u64,
+        /// The error that the diff met after the snapshot.
+        source: Box<DiffError>,
+    },
 }
 
 impl fmt::Display for DiffError {
@@ -221,6 +235,10 @@ impl fmt::Display for DiffError {
                     "`{operand}` is not the identifier of a commit in this repository"
                 )
             }
+            Self::AfterSnapshot { entry, source } => write!(
+                f,
+                "{source}; the working copy was saved first as entry {entry} of the operation log"
+            ),
         }
     }
 }
@@ -228,6 +246,8 @@ impl fmt::Display for DiffError {
 impl Error for DiffError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            // The message above prints the error, so the source is the cause of that error.
+            Self::AfterSnapshot { source, .. } => source.source(),
             Self::Snapshot(error) => Some(error),
             Self::Refs(error) => Some(error),
             Self::Store(error) => Some(error),
@@ -266,9 +286,28 @@ impl Repository {
         authorizer: &dyn Authorizer,
         comparison: Comparison<'_>,
     ) -> Result<Diff, DiffError> {
+        let mut saved = None;
+        self.compare_sides(actor, authorizer, comparison, &mut saved)
+            .map_err(|error| match saved {
+                Some(entry) => DiffError::AfterSnapshot {
+                    entry,
+                    source: Box::new(error),
+                },
+                None => error,
+            })
+    }
+
+    /// The work of [`Repository::diff`]. `saved` receives the entry of the snapshot, if one is made.
+    fn compare_sides(
+        &self,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+        comparison: Comparison<'_>,
+        saved: &mut Option<u64>,
+    ) -> Result<Diff, DiffError> {
         let (old, new) = match comparison {
             Comparison::WithParent => {
-                let working = self.working_copy_side(actor, authorizer)?;
+                let working = self.working_copy_side(actor, authorizer, saved)?;
                 let parent = commit_of(self.objects(), working.commit())?
                     .parents()
                     .first()
@@ -277,7 +316,7 @@ impl Repository {
             }
             Comparison::WithWorkingCopy(commit) => {
                 let old = Side::Commit(self.commit_operand(commit)?);
-                (Some(old), self.working_copy_side(actor, authorizer)?)
+                (Some(old), self.working_copy_side(actor, authorizer, saved)?)
             }
             Comparison::Commits(first, second) => {
                 let old = Side::Commit(self.commit_operand(first)?);
@@ -320,7 +359,12 @@ impl Repository {
                 after.is_some(),
             ));
         }
-        Ok(Diff { old, new, files })
+        Ok(Diff {
+            old,
+            new,
+            files,
+            saved: *saved,
+        })
     }
 
     /// Saves the working copy as a snapshot, and returns its commit as the working-copy side.
@@ -328,9 +372,12 @@ impl Repository {
         &self,
         actor: &Actor,
         authorizer: &dyn Authorizer,
+        saved: &mut Option<u64>,
     ) -> Result<Side, DiffError> {
-        self.snapshot(actor, authorizer)
+        let entry = self
+            .snapshot(actor, authorizer)
             .map_err(DiffError::Snapshot)?;
+        *saved = entry.map(|entry| entry.number());
         let id = self.refs().working_copy().map_err(DiffError::Refs)?;
         Ok(Side::WorkingCopy(id))
     }
