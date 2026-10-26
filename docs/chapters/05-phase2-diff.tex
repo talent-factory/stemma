@@ -8,15 +8,35 @@
 
 \startitemize
 \item Eigene Implementierung des Myers-Diff-Algorithmus mit Tests gegen bekannte Fälle.
+Der Algorithmus sucht eine kürzeste Folge von Einfügungen und Löschungen.
+\item Nachbearbeitung der Grenzen nach dem Verfahren von git: Verschieben von Blöcken
+und Bewertung von Einrückungen. Sie ändert nur die Lage der Grenzen, nicht die Zahl der
+Änderungen.
 \item Gruppierung in Hunks und Darstellung mit Kontextzeilen.
 \item Farbausgabe und Einbindung eines Pagers.
-\item Trennung nach Stufe 1 (Darstellung) und Stufe 2 (Berechnung im Merge-Pfad) gemäss ADR-004.
+\item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Stufe 1 nach ADR-004.
+Die Verwendung im Merge-Pfad, Stufe 2, folgt in Phase 3.
+\item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
+Verschiebungen. Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
+Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken. Eine Markierung der Verschiebung
+als reine Anzeige, wie \type{--color-moved} in git, lässt sich später ohne Änderung der Hunks
+nachrüsten.
+\item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten Bytes, wie git. Er zeigt
+dann eine Zusammenfassungszeile wie \quotation{Binary files differ} statt des Inhalts.
+Eine Größengrenze gibt es in Phase 2 nicht.
+\item Die Seiten des Diffs werden über ihre Kennungen benannt, wie \type{op log} sie
+anzeigt. Die Arbeitskopie erscheint als \type{working-copy} mit ihrer Snapshot-Kennung,
+ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
+\item Keine Ausgabe für Maschinen in Phase 2. Die Hunk-Struktur im Kern bleibt serialisierbar,
+damit das Format aus Phase 6 darauf aufsetzen kann (Kapitel 9).
 \stopitemize
 
 \section{Offene Fragen}
 
+Die folgenden Fragen sind vertagt und nicht entschieden. Sie gehören zu späteren Phasen.
+
 \startitemize
-\item Heuristiken für bessere Hunks bei verschobenen Zeilen.
-\item Umgang mit Binärdateien und sehr grossen Dateien.
-\item Ausgabeformat für Maschinen, etwa für Agenten, zusätzlich zur Darstellung für Menschen.
+\item Größengrenze für sehr große Dateien. In Phase 2 ist das eine bekannte Einschränkung.
+\item Markierung verschobener Zeilen als Anzeige, in einer Phase nach 2.
+\item Ausgabeformat für Maschinen, Entscheidung in Phase 6.
 \stopitemize
