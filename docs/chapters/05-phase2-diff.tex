@@ -31,6 +31,52 @@ ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
 damit das Format aus Phase 6 darauf aufsetzen kann (Kapitel 9).
 \stopitemize
 
+\section[sec:myers]{Der Myers-Diff}
+
+Der Diff vergleicht zwei Folgen, meist die Zeilen zweier Dateien. Er sucht eine kürzeste
+Folge von Einfügungen und Löschungen, die die alte Folge in die neue überführt. Die Zahl dieser
+Änderungen heisst $D$. Myers hat dafür ein Verfahren über den Editiergraphen angegeben
+\cite[myers1986ond]. Der Code steht in \type{diff.rs} als \type{diff}.
+
+\subsection{Definition}
+
+Der Editiergraph hat die Gitterpunkte $(x,y)$ mit $0 \le x \le N$ und $0 \le y \le M$.
+Ein Schritt von $(x,y)$ nach $(x+1,y)$ löscht das Element $a_x$ der alten Folge.
+Ein Schritt nach $(x,y+1)$ fügt das Element $b_y$ der neuen Folge ein.
+Eine Diagonale von $(x,y)$ nach $(x+1,y+1)$ kostet nichts und ist nur erlaubt, wenn $a_x = b_y$
+gilt. Ein Skript ist ein Weg von $(0,0)$ nach $(N,M)$. Ein kürzestes Skript hat $D$ Schritte,
+die keine Diagonale sind. Die Diagonale $k = x - y$ fasst die Punkte zusammen, die denselben
+Abstand zur Hauptdiagonale haben. Eine Löschung erhöht $k$ um eins,
+eine Einfügung senkt es um eins.
+
+\subsection{Invariante}
+
+Nach der Runde $d$ kennt das Verfahren für jede Diagonale $k$ mit $|k| \le d$ den weitesten
+erreichten Punkt $V[k]$: den grössten $x$-Wert, den ein Skript mit $d$ Schritten auf dieser
+Diagonale erreicht. Die Runde $d+1$ rechnet nur mit diesen Werten. Vor der ersten Runde gilt die
+Invariante, weil $(0,0)$ ohne Schritte erreicht wird. Jede Runde stellt sie wieder her, weil sie
+jede Diagonale aus den Werten der Diagonalen $k-1$ und $k+1$ der Runde davor berechnet.
+
+\subsection{Komplexität}
+
+Die Runden $0$ bis $D$ besuchen höchstens $2D+1$ Diagonalen. Auf einer Diagonale wächst $x$
+nie, also durchläuft das Folgen gleicher Elemente auf allen Diagonalen zusammen
+höchstens $O(N\,D)$ Schritte. Die Laufzeit ist damit $O((N+M)\,D)$
+\cite[myers1986ond]. Der Code speichert vor jeder Runde eine Kopie von $V$ mit $2(N+M)+3$
+Einträgen. Der Speicher ist deshalb ebenfalls $O((N+M)\,D)$. Die Variante mit linearem Speicher
+aus dem Paper ist nicht umgesetzt.
+
+\subsection{Korrektheit}
+
+Der Algorithmus findet ein kürzestes Skript, und der Rückweg liefert ein gültiges Skript.
+Dass der weiteste Punkt auf einer Diagonale genügt, zeigt Myers: Ein Punkt weiter vorne auf
+derselben Diagonale braucht für den Rest des Weges nicht mehr Schritte \cite[myers1986ond].
+Deshalb kann jede Diagonale nur den weitesten Punkt speichern. Die erste Runde $D$, in der
+$(N,M)$ erreicht wird, hat $D$ Schritte, und keine kürzere Runde erreicht den Endpunkt.
+Der Rückweg folgt in jeder Runde dem gespeicherten Vorgänger. Er erzeugt je Runde einen
+Schritt, der keine Diagonale ist, und dazwischen die Diagonalen, die gleiche Elemente verbinden.
+Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die Reihenfolge.
+
 \section{Offene Fragen}
 
 Die folgenden Fragen sind vertagt und nicht entschieden. Sie gehören zu späteren Phasen.

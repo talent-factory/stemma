@@ -157,6 +157,11 @@ Zeiger zu finden \stopxcell
 \startxcell \type{outcomes} (\type{oplog.rs}) \stopxcell
 \startxcell Abschnitt 1.3, Durchlaufen einer Folge, und 3.4, Hashtabelle \stopxcell
 \stopxrow
+\startxrow
+\startxcell Kürzeste Folge von Einfügungen und Löschungen, Myers-Diff in $O((N+M)\,D)$ \stopxcell
+\startxcell \type{diff} (\type{diff.rs}) \stopxcell
+\startxcell Nicht im Buch von Sedgewick und Wayne; \in{Abschnitt}[sec:myers] \stopxcell
+\stopxrow
 \stopxtable
 \stopplacetable
 
@@ -194,7 +199,7 @@ Wie eine Datei einen Absturz übersteht, hängt davon ab, was ein Dateisystem in
 Reihenfolge auf den Datenträger bringt; Pillai und andere zeigen, wie leicht Anwendungen
 dabei Fehler machen \cite[pillai2014crash].
 
-Der Myers-Diff kommt erst in Phase~2 in den Code, und er steht nicht im Buch.
+Der Myers-Diff kommt in Phase~2 in den Code und wird in \in{Abschnitt}[sec:myers] erklärt.
 Am nächsten liegt das Problem der längsten gemeinsamen Teilfolge, das sich mit dynamischer
 Programmierung in einer Zeit proportional zu $N \cdot M$ lösen lässt.
 Myers löst es in $O((N+M)\,D)$ Zeit, wobei $N$ und $M$ die Längen der beiden Folgen
