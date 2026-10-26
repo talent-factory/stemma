@@ -29,6 +29,7 @@
 
 mod actor;
 pub mod change;
+pub mod diff;
 #[cfg(any(fuzzing, test))]
 #[doc(hidden)]
 pub mod fuzz;
