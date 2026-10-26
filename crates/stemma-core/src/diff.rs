@@ -159,6 +159,240 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
     unreachable!("the two searches meet within (N+M+1)/2 rounds")
 }
 
+/// Moves the boundaries of the change groups, as git does after the diff.
+///
+/// A group of changes slides up or down along the unchanged lines that equal its own first or last
+/// line. Sliding keeps the number of changes. Among the positions a group can take, the indent
+/// heuristic of git chooses the one that reads best. `indent` gives the indentation of a line, or
+/// `None` for a blank line.
+pub fn slide<T: PartialEq, F: Fn(&T) -> Option<usize>>(
+    old: &[T],
+    new: &[T],
+    edits: &[Edit],
+    indent: F,
+) -> Vec<Edit> {
+    let mut changed_old = vec![false; old.len()];
+    let mut changed_new = vec![false; new.len()];
+    for edit in edits {
+        match *edit {
+            Edit::Equal { .. } => {}
+            Edit::Delete { old: i } => changed_old[i] = true,
+            Edit::Insert { new: j } => changed_new[j] = true,
+        }
+    }
+    slide_side(old, &mut changed_old, &indent);
+    slide_side(new, &mut changed_new, &indent);
+    rebuild(&changed_old, &changed_new)
+}
+
+// The limit of the sliding and the weights of the indent heuristic. They are the values of git's
+// xdiff (xdiffi.c), which scores a boundary by the indentation of the lines around it.
+const MAX_BLANKS: usize = 20;
+const MAX_SLIDING: usize = 100;
+const INDENT_WEIGHT: i64 = 60;
+const START_OF_FILE_PENALTY: i64 = 1;
+const END_OF_FILE_PENALTY: i64 = 21;
+const TOTAL_BLANK_WEIGHT: i64 = -30;
+const POST_BLANK_WEIGHT: i64 = 6;
+const RELATIVE_INDENT_PENALTY: i64 = -4;
+const RELATIVE_INDENT_WITH_BLANK_PENALTY: i64 = 10;
+const RELATIVE_OUTDENT_PENALTY: i64 = 24;
+const RELATIVE_OUTDENT_WITH_BLANK_PENALTY: i64 = 17;
+const RELATIVE_DEDENT_PENALTY: i64 = 23;
+const RELATIVE_DEDENT_WITH_BLANK_PENALTY: i64 = 17;
+
+/// The lines around a split point, as the indent heuristic reads them.
+struct Split {
+    end_of_file: bool,
+    /// The indentation of the line after the split, `None` for a blank line.
+    indent: Option<usize>,
+    pre_blank: usize,
+    /// The indentation of the nearest non-blank line before the split.
+    pre_indent: Option<usize>,
+    post_blank: usize,
+    /// The indentation of the nearest non-blank line after the line at the split.
+    post_indent: Option<usize>,
+}
+
+/// Reads the lines around the split point `split`, which lies before the line with that index.
+fn measure<T, F: Fn(&T) -> Option<usize>>(lines: &[T], indent: &F, split: usize) -> Split {
+    let end_of_file = split >= lines.len();
+    let at = if end_of_file {
+        None
+    } else {
+        indent(&lines[split])
+    };
+
+    let mut pre_blank = 0;
+    let mut pre_indent = None;
+    for line in lines[..split].iter().rev() {
+        pre_indent = indent(line);
+        if pre_indent.is_some() {
+            break;
+        }
+        pre_blank += 1;
+        if pre_blank == MAX_BLANKS {
+            pre_indent = Some(0);
+            break;
+        }
+    }
+
+    let mut post_blank = 0;
+    let mut post_indent = None;
+    for line in lines.iter().skip(split + 1) {
+        post_indent = indent(line);
+        if post_indent.is_some() {
+            break;
+        }
+        post_blank += 1;
+        if post_blank == MAX_BLANKS {
+            post_indent = Some(0);
+            break;
+        }
+    }
+
+    Split {
+        end_of_file,
+        indent: at,
+        pre_blank,
+        pre_indent,
+        post_blank,
+        post_indent,
+    }
+}
+
+/// The penalty and the effective indentation of a position. A lower score is better.
+#[derive(Default)]
+struct Score {
+    penalty: i64,
+    effective_indent: i64,
+}
+
+impl Score {
+    /// Adds the cost of one split point.
+    fn add(&mut self, m: &Split) {
+        if m.pre_indent.is_none() && m.pre_blank == 0 {
+            self.penalty += START_OF_FILE_PENALTY;
+        }
+        if m.end_of_file {
+            self.penalty += END_OF_FILE_PENALTY;
+        }
+        let post_blank = if m.indent.is_none() {
+            1 + m.post_blank
+        } else {
+            0
+        };
+        let total_blank = m.pre_blank + post_blank;
+        self.penalty += TOTAL_BLANK_WEIGHT * total_blank as i64;
+        self.penalty += POST_BLANK_WEIGHT * post_blank as i64;
+
+        let indent = m.indent.or(m.post_indent);
+        let any_blanks = total_blank != 0;
+        self.effective_indent += indent.map_or(-1, |value| value as i64);
+        match (indent, m.pre_indent) {
+            (Some(i), Some(pre)) if i > pre => {
+                self.penalty += if any_blanks {
+                    RELATIVE_INDENT_WITH_BLANK_PENALTY
+                } else {
+                    RELATIVE_INDENT_PENALTY
+                };
+            }
+            (Some(i), Some(pre)) if i < pre => {
+                let outdent = m.post_indent.is_some_and(|post| post > i);
+                self.penalty += match (outdent, any_blanks) {
+                    (true, true) => RELATIVE_OUTDENT_WITH_BLANK_PENALTY,
+                    (true, false) => RELATIVE_OUTDENT_PENALTY,
+                    (false, true) => RELATIVE_DEDENT_WITH_BLANK_PENALTY,
+                    (false, false) => RELATIVE_DEDENT_PENALTY,
+                };
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Compares two scores: a negative result means that `a` is better than `b`.
+fn compare(a: &Score, b: &Score) -> i64 {
+    INDENT_WEIGHT * (a.effective_indent - b.effective_indent).signum() + (a.penalty - b.penalty)
+}
+
+/// Slides the groups of changed lines of one side, given by the flags in `changed`.
+fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
+    lines: &[T],
+    changed: &mut [bool],
+    indent: &F,
+) {
+    let n = lines.len();
+    let mut start = 0;
+    while start < n {
+        if !changed[start] {
+            start += 1;
+            continue;
+        }
+        let s = start;
+        let mut e = s;
+        while e < n && changed[e] {
+            e += 1;
+        }
+        // A step down removes the first line of the group and adds the unchanged line after it, so
+        // it needs both to be equal. A step up is the same at the other end.
+        let mut down = 0;
+        while e + down < n && !changed[e + down] && lines[s + down] == lines[e + down] {
+            down += 1;
+        }
+        let mut up = 0;
+        while up < s && !changed[s - up - 1] && lines[s - up - 1] == lines[e - up - 1] {
+            up += 1;
+        }
+
+        // Each position in reach is scored by the splits before and after the group. The lowest
+        // score wins; on a tie the later position does, as in git.
+        let len = e - s;
+        let mut best: Option<(usize, Score)> = None;
+        for p in (s - up.min(MAX_SLIDING))..=(s + down.min(MAX_SLIDING)) {
+            let mut score = Score::default();
+            score.add(&measure(lines, indent, p));
+            score.add(&measure(lines, indent, p + len));
+            let better = match &best {
+                None => true,
+                Some((_, previous)) => compare(&score, previous) <= 0,
+            };
+            if better {
+                best = Some((p, score));
+            }
+        }
+        let shift = best.map_or(0, |(p, _)| p as isize - s as isize);
+        if shift != 0 {
+            changed[s..e].fill(false);
+            let moved = (s as isize + shift) as usize..(e as isize + shift) as usize;
+            changed[moved].fill(true);
+        }
+        // The next group starts after the unchanged line that follows this one.
+        start = (e as isize + shift.max(0)) as usize;
+    }
+}
+
+/// Builds an edit script from the flags of the changed lines of both sides. The unchanged lines
+/// pair up in order, and a deletion comes before an insertion at the same place.
+fn rebuild(changed_old: &[bool], changed_new: &[bool]) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < changed_old.len() || j < changed_new.len() {
+        if i < changed_old.len() && changed_old[i] {
+            edits.push(Edit::Delete { old: i });
+            i += 1;
+        } else if j < changed_new.len() && changed_new[j] {
+            edits.push(Edit::Insert { new: j });
+            j += 1;
+        } else {
+            edits.push(Edit::Equal { old: i, new: j });
+            i += 1;
+            j += 1;
+        }
+    }
+    edits
+}
+
 /// A group of changes together with the unchanged lines around it.
 ///
 /// The hunk is a part of an edit script. Its steps are kept in `edits`, the unchanged lines before
@@ -273,11 +507,28 @@ mod tests {
     /// Checks that `edits` turns `old` into `new`: the equal steps match, every element of both
     /// sequences appears once and in order, and the number of changes is `expected`.
     fn check<T: PartialEq + std::fmt::Debug>(old: &[T], new: &[T], expected: usize) {
-        let edits = diff(old, new);
+        check_script(old, new, &diff(old, new), expected);
+    }
+
+    /// The number of insertions and deletions in `edits`.
+    fn changes(edits: &[Edit]) -> usize {
+        edits
+            .iter()
+            .filter(|edit| !matches!(edit, Edit::Equal { .. }))
+            .count()
+    }
+
+    /// Checks that `edits` turns `old` into `new` and that it has `expected` changes.
+    fn check_script<T: PartialEq + std::fmt::Debug>(
+        old: &[T],
+        new: &[T],
+        edits: &[Edit],
+        expected: usize,
+    ) {
         let mut o = 0;
         let mut n = 0;
         let mut changes = 0;
-        for edit in &edits {
+        for edit in edits {
             match *edit {
                 Edit::Equal { old: i, new: j } => {
                     assert_eq!((i, j), (o, n), "equal step out of order");
@@ -306,6 +557,62 @@ mod tests {
             changes, expected,
             "the script is not a shortest one: {edits:?}"
         );
+    }
+
+    /// The indentation of a line written as a digit, where a space stands for a blank line.
+    fn digit_indent(line: &char) -> Option<usize> {
+        line.to_digit(10).map(|depth| depth as usize)
+    }
+
+    #[test]
+    fn a_group_moves_to_the_shallower_boundary() {
+        // The inserted block '4 0' can sit at the start or at the end of the file. Starting at the
+        // shallow line '0' scores better than ending there, so the group moves up to the start.
+        let old = ['0', '4', '0'];
+        let new = ['0', '4', '0', '4', '0'];
+        let edits = diff(&old, &new);
+        assert_eq!(edits[3], Edit::Insert { new: 3 });
+
+        let slid = slide(&old, &new, &edits, digit_indent);
+        assert_eq!(
+            slid,
+            vec![
+                Edit::Insert { new: 0 },
+                Edit::Insert { new: 1 },
+                Edit::Equal { old: 0, new: 2 },
+                Edit::Equal { old: 1, new: 3 },
+                Edit::Equal { old: 2, new: 4 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_group_stays_where_the_indentation_reads_best() {
+        // The inserted '4' can follow the first '4' or precede the closing '0'. The second position
+        // has the lower effective indentation, so the group stays.
+        let old = ['0', '4', '0'];
+        let new = ['0', '4', '4', '0'];
+        let edits = diff(&old, &new);
+        assert_eq!(slide(&old, &new, &edits, digit_indent), edits);
+    }
+
+    #[test]
+    fn sliding_keeps_the_number_of_changes_and_a_valid_script() {
+        // Every pair of short sequences over {a, b}, once with the letters as indentation and once
+        // with 'a' as a blank line.
+        let indents: [fn(&char) -> Option<usize>; 2] = [
+            |line| Some(if *line == 'a' { 0 } else { 4 }),
+            |line| if *line == 'a' { None } else { Some(4) },
+        ];
+        for indent in indents {
+            for old in &short_sequences() {
+                for new in &short_sequences() {
+                    let edits = diff(old, new);
+                    let slid = slide(old, new, &edits, indent);
+                    check_script(old, new, &slid, changes(&edits));
+                }
+            }
+        }
     }
 
     #[test]
@@ -379,10 +686,9 @@ mod tests {
         table[a.len()][b.len()]
     }
 
-    #[test]
-    fn every_pair_of_short_sequences_has_the_lcs_distance() {
-        // All sequences over {a, b} of length up to 5. A shortest script has N + M - 2·LCS changes.
-        let all: Vec<Vec<char>> = (0..=5u32)
+    /// All sequences over {a, b} of length up to 5.
+    fn short_sequences() -> Vec<Vec<char>> {
+        (0..=5u32)
             .flat_map(|len| {
                 (0..1u32 << len).map(move |bits| {
                     (0..len)
@@ -390,7 +696,13 @@ mod tests {
                         .collect()
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn every_pair_of_short_sequences_has_the_lcs_distance() {
+        // A shortest script has N + M - 2·LCS changes.
+        let all = short_sequences();
         for old in &all {
             for new in &all {
                 check(old, new, old.len() + new.len() - 2 * lcs_len(old, new));
