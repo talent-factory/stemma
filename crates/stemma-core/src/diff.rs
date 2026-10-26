@@ -165,6 +165,9 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
 /// line. Sliding keeps the number of changes. Among the positions a group can take, the indent
 /// heuristic of git chooses the one that reads best. `indent` gives the indentation of a line, or
 /// `None` for a blank line.
+///
+/// A replacement, a run of changes with both deletions and insertions, stays where the diff put
+/// it. Its two sides already line up, and sliding one side would split the replacement.
 pub fn slide<T: PartialEq, F: Fn(&T) -> Option<usize>>(
     old: &[T],
     new: &[T],
@@ -180,9 +183,38 @@ pub fn slide<T: PartialEq, F: Fn(&T) -> Option<usize>>(
             Edit::Insert { new: j } => changed_new[j] = true,
         }
     }
-    slide_side(old, &mut changed_old, &indent);
-    slide_side(new, &mut changed_new, &indent);
+    let (frozen_old, frozen_new) = replacements(edits, old.len(), new.len());
+    slide_side(old, &mut changed_old, &frozen_old, &indent);
+    slide_side(new, &mut changed_new, &frozen_new, &indent);
     rebuild(&changed_old, &changed_new)
+}
+
+/// Marks the lines of the replacements in `edits`, one flag per line of each side.
+fn replacements(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, Vec<bool>) {
+    let mut frozen_old = vec![false; old_len];
+    let mut frozen_new = vec![false; new_len];
+    let mut start = 0;
+    while start < edits.len() {
+        // A run of changes ends at the next unchanged step, which is skipped.
+        let end = edits[start..]
+            .iter()
+            .position(|edit| matches!(edit, Edit::Equal { .. }))
+            .map_or(edits.len(), |offset| start + offset);
+        let run = &edits[start..end];
+        let has_delete = run.iter().any(|edit| matches!(edit, Edit::Delete { .. }));
+        let has_insert = run.iter().any(|edit| matches!(edit, Edit::Insert { .. }));
+        if has_delete && has_insert {
+            for edit in run {
+                match *edit {
+                    Edit::Delete { old } => frozen_old[old] = true,
+                    Edit::Insert { new } => frozen_new[new] = true,
+                    Edit::Equal { .. } => {}
+                }
+            }
+        }
+        start = end + 1;
+    }
+    (frozen_old, frozen_new)
 }
 
 // The limit of the sliding and the weights of the indent heuristic. They are the values of git's
@@ -316,10 +348,12 @@ fn compare(a: &Score, b: &Score) -> i64 {
     INDENT_WEIGHT * (a.effective_indent - b.effective_indent).signum() + (a.penalty - b.penalty)
 }
 
-/// Slides the groups of changed lines of one side, given by the flags in `changed`.
+/// Slides the groups of changed lines of one side, given by the flags in `changed`. A group whose
+/// first line is flagged in `frozen` stays in place.
 fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
     lines: &[T],
     changed: &mut [bool],
+    frozen: &[bool],
     indent: &F,
 ) {
     let n = lines.len();
@@ -333,6 +367,10 @@ fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
         let mut e = s;
         while e < n && changed[e] {
             e += 1;
+        }
+        if frozen[s] {
+            start = e;
+            continue;
         }
         // A step down removes the first line of the group and adds the unchanged line after it, so
         // it needs both to be equal. A step up is the same at the other end.
@@ -648,6 +686,27 @@ mod tests {
                 Edit::Equal { old: 0, new: 0 },
                 Edit::Delete { old: 1 },
                 Edit::Insert { new: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_replacement_is_not_split_by_sliding() {
+        // The deleted 'a' could slide down past the equal 'a', away from the inserted 'b'. A
+        // replacement stays together, so the script keeps both changes in front of the equal line.
+        let old = ['a', 'a'];
+        let new = ['b', 'a'];
+        let edits = diff(&old, &new);
+        assert_eq!(
+            slide(&old, &new, &edits, |line| Some(if *line == 'a' {
+                0
+            } else {
+                4
+            })),
+            vec![
+                Edit::Delete { old: 0 },
+                Edit::Insert { new: 0 },
+                Edit::Equal { old: 1, new: 1 },
             ]
         );
     }
