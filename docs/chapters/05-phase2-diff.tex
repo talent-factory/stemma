@@ -84,6 +84,18 @@ Abschneiden nichts verloren \cite[myers1986ond]. Die Teile liegen in der Reihenf
 aneinander. Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die
 Reihenfolge.
 
+\section[sec:hunks]{Hunks und Kontextzeilen}
+
+Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk ist eine Gruppe von Änderungen mit den
+unveränderten Zeilen davor und danach. Jede Änderung bekommt so viele Kontextzeilen auf beiden
+Seiten, wie die Anzeige verlangt. Die Anzahl $c$ setzt der Aufruf.
+
+Zwei Änderungen landen im selben Hunk, wenn höchstens $2c$ unveränderte Zeilen zwischen ihnen
+liegen. Dann überlappen oder berühren sich ihre Kontextfenster. Ein Hunk speichert nur die
+Schritte des Skripts und die Positionen seiner Zeilen auf beiden Seiten. Die Zeilen selbst
+bleiben in den Folgen. So bleibt die Struktur für die Ausgabe für Maschinen nutzbar, die
+Kapitel 9 beschreibt.
+
 \section{Offene Fragen}
 
 Die folgenden Fragen sind vertagt und nicht entschieden. Sie gehören zu späteren Phasen.
