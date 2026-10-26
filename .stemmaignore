@@ -8,6 +8,10 @@ target/
 # Rust
 *.rs.bk
 *.pdb
+# Fuzzing output (fuzz/.gitignore); the seeds in fuzz/seeds stay tracked
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
 # ConTeXt (intermediate files and output)
 *.log
 *.pdf
@@ -18,3 +22,5 @@ target/
 *.synctex.gz
 *.synctex
 texmf-cache/
+# Secrets (ADR-012: a secret in the history stays until a purge)
+.env
