@@ -616,6 +616,96 @@ mod tests {
     }
 
     #[test]
+    fn a_deleted_group_moves_to_the_shallower_boundary() {
+        // The mirror of the insertion test: the deleted block '4 0' sits at the end of the old side.
+        let old = ['0', '4', '0', '4', '0'];
+        let new = ['0', '4', '0'];
+        let edits = diff(&old, &new);
+        assert_eq!(edits[3], Edit::Delete { old: 3 });
+
+        let slid = slide(&old, &new, &edits, digit_indent);
+        assert_eq!(
+            slid,
+            vec![
+                Edit::Delete { old: 0 },
+                Edit::Delete { old: 1 },
+                Edit::Equal { old: 2, new: 0 },
+                Edit::Equal { old: 3, new: 1 },
+                Edit::Equal { old: 4, new: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_deletion_comes_before_an_insertion_at_the_same_place() {
+        // Nothing slides here, so the order comes from the rebuild alone.
+        let old = ['0', '4'];
+        let new = ['0', '5'];
+        let edits = diff(&old, &new);
+        assert_eq!(
+            slide(&old, &new, &edits, digit_indent),
+            vec![
+                Edit::Equal { old: 0, new: 0 },
+                Edit::Delete { old: 1 },
+                Edit::Insert { new: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_end_of_the_file_adds_its_penalty_and_counts_as_a_blank_line() {
+        // A split at the end has no line, so it reads as a blank one: its post blank line is
+        // penalised with the blank weights as well.
+        let mut score = Score::default();
+        score.add(&Split {
+            end_of_file: true,
+            indent: None,
+            pre_blank: 0,
+            pre_indent: Some(4),
+            post_blank: 0,
+            post_indent: None,
+        });
+        assert_eq!(
+            score.penalty,
+            END_OF_FILE_PENALTY + TOTAL_BLANK_WEIGHT + POST_BLANK_WEIGHT
+        );
+        assert_eq!(score.effective_indent, -1);
+    }
+
+    #[test]
+    fn the_start_of_the_file_adds_its_penalty() {
+        let mut score = Score::default();
+        score.add(&Split {
+            end_of_file: false,
+            indent: Some(0),
+            pre_blank: 0,
+            pre_indent: None,
+            post_blank: 0,
+            post_indent: None,
+        });
+        assert_eq!(score.penalty, START_OF_FILE_PENALTY);
+        assert_eq!(score.effective_indent, 0);
+    }
+
+    #[test]
+    fn a_blank_line_before_an_indent_changes_its_penalty() {
+        let mut score = Score::default();
+        score.add(&Split {
+            end_of_file: false,
+            indent: Some(4),
+            pre_blank: 1,
+            pre_indent: Some(0),
+            post_blank: 0,
+            post_indent: Some(4),
+        });
+        assert_eq!(
+            score.penalty,
+            TOTAL_BLANK_WEIGHT + RELATIVE_INDENT_WITH_BLANK_PENALTY
+        );
+        assert_eq!(score.effective_indent, 4);
+    }
+
+    #[test]
     fn empty_sides_give_an_empty_script() {
         check::<char>(&[], &[], 0);
     }
