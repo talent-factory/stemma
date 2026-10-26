@@ -17,4 +17,4 @@ stemma-core = { path = "../stemma-core" }
 
 # Sends SIGINT to the command under test directly, without spawning `kill` (tests/interrupt.rs).
 [target.'cfg(unix)'.dev-dependencies]
-nix = { version = "0.31.3", features = ["signal"] }
+nix = { version = "0.31.3", features = ["signal", "term"] }

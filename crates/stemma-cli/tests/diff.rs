@@ -2,10 +2,12 @@
 
 mod common;
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
-use common::{operations, repository, run, track_ok, write, Dir, Run, ACTOR};
+use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
 
 /// Commits and returns the identifier of the new commit, `b3:…`.
 fn commit(dir: &Path, message: &str) -> String {
@@ -468,4 +470,60 @@ fn a_failure_after_the_snapshot_names_its_entry() {
         "{}",
         result.stderr
     );
+}
+
+#[test]
+fn a_diff_written_to_a_pipe_has_no_colour_and_no_pager() {
+    let dir = edited_repository();
+    let result = stemma(dir.path(), &["diff", "--actor", "human alice"], |command| {
+        command.env("PAGER", "echo PAGER-RAN");
+    });
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(!result.stdout.contains('\x1b'), "{:?}", result.stdout);
+    assert!(!result.stdout.contains("PAGER-RAN"), "{}", result.stdout);
+    assert!(result.stdout.contains("-one\n+two\n"), "{}", result.stdout);
+}
+
+/// Runs `diff` with its output on a terminal, as a person sees it, and returns what the terminal
+/// got. The pager is `cat` followed by a marker, so that the test sees both the colour and the
+/// pager.
+#[cfg(unix)]
+fn diff_on_terminal(dir: &Path) -> String {
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
+    command
+        .current_dir(dir)
+        .env_remove("STEMMA_ACTOR")
+        .env("PAGER", "cat && echo PAGER-DONE")
+        .args(["diff", "--actor", "human alice"])
+        .stdout(Stdio::from(pty.slave.try_clone().unwrap()))
+        .stderr(Stdio::from(pty.slave));
+    let mut child = command.spawn().unwrap();
+    // The command holds the terminal until it is dropped, and the read ends when it is gone.
+    drop(command);
+    let mut output = String::new();
+    let mut master = File::from(pty.master);
+    let mut buffer = [0; 1024];
+    while let Ok(read) = master.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        output.push_str(&String::from_utf8_lossy(&buffer[..read]));
+    }
+    assert!(child.wait().unwrap().success());
+    output
+}
+
+#[cfg(unix)]
+#[test]
+fn a_diff_on_a_terminal_is_coloured_and_shown_by_the_pager() {
+    let dir = edited_repository();
+
+    let output = diff_on_terminal(dir.path());
+
+    assert!(output.contains("\x1b[31m-one\x1b[m"), "{output:?}");
+    assert!(output.contains("\x1b[32m+two\x1b[m"), "{output:?}");
+    assert!(output.contains("\x1b[36m@@ -1 +1 @@\x1b[m"), "{output:?}");
+    assert!(output.contains("PAGER-DONE"), "{output:?}");
 }

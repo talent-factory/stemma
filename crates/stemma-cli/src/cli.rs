@@ -47,12 +47,13 @@
 //! of `stemma-core`). The argument parser prints its own errors.
 
 use std::collections::BTreeSet;
+use std::env;
 use std::error::Error;
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::num::NonZeroUsize;
 use std::path::{self, Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{self, ExitCode, Stdio};
 use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
@@ -1420,7 +1421,15 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         .diff(&actor, &AllowAll, comparison)
         .map_err(CliError::Diff)?;
     let differs = !result.files().is_empty();
-    match out.write_all(diff_text(&result).as_bytes()) {
+    // A terminal gets colour and a pager. A pipe or a file gets plain text, so that scripts read it.
+    let terminal = io::stdout().is_terminal();
+    let text = diff_text(&result, terminal);
+    let written = if terminal {
+        write_paged(&text, out)
+    } else {
+        out.write_all(text.as_bytes())
+    };
+    match written {
         // A closed pipe ends the output quietly, as for `status`; the exit code is still the
         // result of the diff.
         Ok(()) => {}
@@ -1444,8 +1453,9 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
 /// is `/dev/null`. The header has no time stamp, because the time changes with every call
 /// (ADR-010). A binary file then says `Binary files <old> and <new> differ`; a text file has the
 /// `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`. A path is
-/// written with [`escape_path`].
-fn diff_text(diff: &Diff) -> String {
+/// written with [`escape_path`]. With `colour`, the header is bold, the `@@` lines cyan, and the
+/// removed and added lines red and green, as git colours them.
+fn diff_text(diff: &Diff, colour: bool) -> String {
     let mut text = String::new();
     for file in diff.files() {
         let path = escape_path(file.path());
@@ -1458,7 +1468,8 @@ fn diff_text(diff: &Diff) -> String {
         } else {
             "/dev/null".to_owned()
         };
-        text.push_str(&format!("diff {path}\n"));
+        let (bold, reset) = (paint(colour, BOLD), paint(colour, RESET));
+        text.push_str(&format!("{bold}diff {path}{reset}\n"));
         let text_diff = match file.content() {
             Content::Binary => {
                 text.push_str(&format!("Binary files {old_name} and {new_name} differ\n"));
@@ -1471,24 +1482,78 @@ fn diff_text(diff: &Diff) -> String {
                 continue;
             }
         };
-        text.push_str(&format!("--- {old_name}\n+++ {new_name}\n"));
+        text.push_str(&format!(
+            "{bold}--- {old_name}{reset}\n{bold}+++ {new_name}{reset}\n"
+        ));
         let (old_lines, new_lines) = (text_diff.old_lines(), text_diff.new_lines());
+        let cyan = paint(colour, CYAN);
         for hunk in text_diff.hunks() {
             text.push_str(&format!(
-                "@@ -{} +{} @@\n",
+                "{cyan}@@ -{} +{} @@{reset}\n",
                 range(hunk.old_start, hunk.old_len),
                 range(hunk.new_start, hunk.new_len)
             ));
             for edit in &hunk.edits {
                 match *edit {
-                    Edit::Equal { old, .. } => push_line(&mut text, ' ', &old_lines[old]),
-                    Edit::Delete { old } => push_line(&mut text, '-', &old_lines[old]),
-                    Edit::Insert { new } => push_line(&mut text, '+', &new_lines[new]),
+                    Edit::Equal { old, .. } => push_line(&mut text, "", ' ', &old_lines[old]),
+                    Edit::Delete { old } => {
+                        push_line(&mut text, paint(colour, RED), '-', &old_lines[old]);
+                    }
+                    Edit::Insert { new } => {
+                        push_line(&mut text, paint(colour, GREEN), '+', &new_lines[new]);
+                    }
                 }
             }
         }
     }
     text
+}
+
+/// The escape sequences of the colours of a diff, as git writes them. Without colour they are
+/// empty, so that the text is plain.
+const BOLD: &str = "\x1b[1m";
+const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[32m";
+const CYAN: &str = "\x1b[36m";
+const RESET: &str = "\x1b[m";
+
+/// The escape sequence `code` when `colour` is on, and nothing otherwise.
+fn paint(colour: bool, code: &'static str) -> &'static str {
+    if colour {
+        code
+    } else {
+        ""
+    }
+}
+
+/// Writes the text through the pager, which is the command in `PAGER` or `less`, as git runs it.
+/// The shell runs the command, and `less` gets the `FRX` options unless `LESS` is set. If the
+/// pager cannot start, the text goes to `out`. A pager that quits before it has read all the text
+/// is not an error, and neither is its exit code.
+fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
+    let pager = env::var("PAGER")
+        .ok()
+        .filter(|pager| !pager.is_empty())
+        .unwrap_or_else(|| "less".to_owned());
+    let less = env::var("LESS").unwrap_or_else(|_| "FRX".to_owned());
+    let child = process::Command::new("sh")
+        .arg("-c")
+        .arg(&pager)
+        .env("LESS", less)
+        .stdin(Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        return out.write_all(text.as_bytes());
+    };
+    let mut input = child.stdin.take().expect("the input of the pager is piped");
+    match input.write_all(text.as_bytes()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(error) => return Err(error),
+    }
+    drop(input);
+    child.wait()?;
+    Ok(())
 }
 
 /// The range of a hunk in an `@@` line: its first line, counted from one, and its length. An
@@ -1503,10 +1568,14 @@ fn range(start: usize, len: usize) -> String {
 
 /// Appends one line of a hunk with its mark. A last line without a line end gets the marker that
 /// git writes after it.
-fn push_line(text: &mut String, mark: char, line: &str) {
+fn push_line(text: &mut String, style: &str, mark: char, line: &str) {
+    text.push_str(style);
     text.push(mark);
-    text.push_str(line);
-    if !line.ends_with('\n') {
+    text.push_str(line.strip_suffix('\n').unwrap_or(line));
+    text.push_str(paint(!style.is_empty(), RESET));
+    if line.ends_with('\n') {
+        text.push('\n');
+    } else {
         text.push_str("\n\\ No newline at end of file\n");
     }
 }
