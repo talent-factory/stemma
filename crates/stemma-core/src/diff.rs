@@ -21,9 +21,11 @@
 pub enum Edit {
     /// The element at `old` is equal to the element at `new`; it is kept.
     Equal { old: usize, new: usize },
-    /// The element at `old` is not matched by an element of the new sequence; the script removes it.
+    /// The element at `old` is not matched by an element of the new sequence; the script removes
+    /// it.
     Delete { old: usize },
-    /// The element at `new` is not matched by an element of the old sequence; the script inserts it.
+    /// The element at `new` is not matched by an element of the old sequence; the script inserts
+    /// it.
     Insert { new: usize },
 }
 
@@ -35,6 +37,25 @@ pub fn diff<T: PartialEq>(old: &[T], new: &[T]) -> Vec<Edit> {
     let mut edits = Vec::new();
     align(old, new, 0, 0, &mut edits);
     edits
+}
+
+/// Returns the edit script for two sequences of lines, with the boundaries of the change groups
+/// moved by the indent heuristic (see [`slide`]).
+///
+/// The indentation of a line is the number of bytes of whitespace that begin it, and a line of
+/// whitespace only is blank. Git counts a tab differently, so the heuristic can differ from git
+/// where tabs are used for indentation.
+pub fn diff_lines(old: &[&str], new: &[&str]) -> Vec<Edit> {
+    slide(old, new, &diff(old, new), line_indent)
+}
+
+/// The indentation of a line, or `None` for a blank line.
+fn line_indent(line: &&str) -> Option<usize> {
+    if line.trim().is_empty() {
+        None
+    } else {
+        Some(line.len() - line.trim_start().len())
+    }
 }
 
 /// Appends the edit script for `old` and `new` to `edits`. `old_base` and `new_base` are the
@@ -89,8 +110,8 @@ fn align<T: PartialEq>(
 ///
 /// The search alternates: round `d` extends the forward paths of `d` edits from the start, then the
 /// backward paths from the end, and each half checks for an overlap with the other side. The
-/// paths meet on a snake of a shortest script. The snake is returned as `(x, y, u, v)`: it runs from `(x, y)` to
-/// `(u, v)` in the edit graph of `a` and `b`.
+/// paths meet on a snake of a shortest script. The snake is returned as `(x, y, u, v)`: it runs
+/// from `(x, y)` to `(u, v)` in the edit graph of `a` and `b`.
 fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) {
     let n = a.len() as isize;
     let m = b.len() as isize;
@@ -164,7 +185,7 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
 /// A group of changes slides up or down along the unchanged lines that equal its own first or last
 /// line. Sliding keeps the number of changes. Among the positions a group can take, the indent
 /// heuristic chooses the one that reads best. `indent` gives the indentation of a line, or `None`
-/// for a blank line. The function is not yet called by [`diff`] or [`hunks`].
+/// for a blank line. [`diff_lines`] calls it; [`diff`] itself does not.
 ///
 /// A replacement, a run of changes with both deletions and insertions, stays where the diff put
 /// it. Its two sides already line up, and sliding one side would split the replacement. A pure
@@ -219,9 +240,10 @@ fn replacements(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, V
     (frozen_old, frozen_new)
 }
 
-// The weights of the indent heuristic follow git's xdiff (xdiffi.c) as far as the author recalls
-// them. They are not yet checked against git's output. `MAX_BLANKS` limits the scan over blank
-// lines, and `MAX_SLIDING` limits the search window, which is simplified.
+// The weights of the indent heuristic follow git's xdiff (xdiffi.c). A differential check against
+// `git diff` on random small files agrees with git wherever the plain diffs agree and no
+// replacement is involved; a replacement is kept together by design and may differ from git.
+// `MAX_BLANKS` limits the scan over blank lines, and `MAX_SLIDING` limits the search window.
 const MAX_BLANKS: usize = 20;
 const MAX_SLIDING: usize = 100;
 const INDENT_WEIGHT: i64 = 60;
@@ -318,8 +340,9 @@ impl Score {
         if m.end_of_file {
             self.penalty += END_OF_FILE_PENALTY;
         }
-        // A split without a line of its own counts one blank line: at the end of the file, or before
-        // a blank line. The end of the file therefore reads as a blank line, as in git's model.
+        // A split without a line of its own counts one blank line: at the end of the file, or
+        // before a blank line. The end of the file therefore reads as a blank line, as in git's
+        // model.
         let post_blank = if m.indent.is_none() {
             1 + m.post_blank
         } else {
@@ -653,7 +676,8 @@ mod tests {
 
     #[test]
     fn a_group_stays_where_the_indentation_reads_best() {
-        // The inserted '4' can sit after the leading '0' or after the first '4'. The second position
+        // The inserted '4' can sit after the leading '0' or after the first '4'. The second
+        // position
         // has the lower effective indentation (4 against 8), so the group stays.
         let old = ['0', '4', '0'];
         let new = ['0', '4', '4', '0'];
@@ -682,7 +706,8 @@ mod tests {
 
     #[test]
     fn a_deleted_group_moves_to_the_shallower_boundary() {
-        // The mirror of the insertion test: the deleted block '4 0' sits at the end of the old side.
+        // The mirror of the insertion test: the deleted block '4 0' sits at the end of the old
+        // side.
         let old = ['0', '4', '0', '4', '0'];
         let new = ['0', '4', '0'];
         let edits = diff(&old, &new);
@@ -743,6 +768,23 @@ mod tests {
                 Edit::Delete { old: 0 },
                 Edit::Insert { new: 0 },
                 Edit::Equal { old: 1, new: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_lines_moves_an_insertion_by_the_indentation_of_its_lines() {
+        // The same case as the insertion test above, with the indentation written as spaces.
+        let old = ["x", "    x", "x"];
+        let new = ["x", "    x", "x", "    x", "x"];
+        assert_eq!(
+            diff_lines(&old, &new),
+            vec![
+                Edit::Insert { new: 0 },
+                Edit::Insert { new: 1 },
+                Edit::Equal { old: 0, new: 2 },
+                Edit::Equal { old: 1, new: 3 },
+                Edit::Equal { old: 2, new: 4 },
             ]
         );
     }
