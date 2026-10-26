@@ -6,14 +6,12 @@
 //! level 1). The merge path does not call it: diff computation in the merge path is level 2 under
 //! ADR-004.
 //!
-//! The algorithm is the greedy forward search of the paper. It walks the edit graph diagonal by
-//! diagonal, and for each number of edits `d` it keeps the furthest reaching point on every
-//! diagonal `k`. The edit script is rebuilt by walking back through the saved furthest points.
+//! The algorithm is the linear-space variant of the paper. Common prefixes and suffixes are cut
+//! off first. Then a search from both ends finds a middle snake, a diagonal run of equal elements
+//! that lies on a shortest script. The two parts on either side of it are compared the same way.
 //!
 //! Time is O((N+M)·D) for sequences of length N and M and a shortest script of D edits. Space is
-//! O((N+M)·D): each round keeps a copy of the array of furthest points, which has 2·(N+M)+3
-//! entries. The linear-space variant of the paper is not implemented, so memory limits the size of
-//! the files that can be compared.
+//! O(N+M): the search keeps two arrays of furthest points, and the recursion keeps no copy of them.
 
 /// One step of an edit script.
 ///
@@ -34,92 +32,131 @@ pub enum Edit {
 /// The script has the fewest deletions and insertions that any edit script can have. Both sequences
 /// may be empty.
 pub fn diff<T: PartialEq>(old: &[T], new: &[T]) -> Vec<Edit> {
-    let n = old.len() as isize;
-    let m = new.len() as isize;
+    let mut edits = Vec::new();
+    align(old, new, 0, 0, &mut edits);
+    edits
+}
+
+/// Appends the edit script for `old` and `new` to `edits`. `old_base` and `new_base` are the
+/// positions of the two slices in the whole sequences, so that the steps carry whole indices.
+fn align<T: PartialEq>(
+    old: &[T],
+    new: &[T],
+    old_base: usize,
+    new_base: usize,
+    edits: &mut Vec<Edit>,
+) {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    for i in 0..prefix {
+        edits.push(Edit::Equal {
+            old: old_base + i,
+            new: new_base + i,
+        });
+    }
+
+    let a = &old[prefix..old.len() - suffix];
+    let b = &new[prefix..new.len() - suffix];
+    let (a_base, b_base) = (old_base + prefix, new_base + prefix);
+    if a.is_empty() {
+        edits.extend((0..b.len()).map(|j| Edit::Insert { new: b_base + j }));
+    } else if b.is_empty() {
+        edits.extend((0..a.len()).map(|i| Edit::Delete { old: a_base + i }));
+    } else {
+        let (x, y, u, v) = middle_snake(a, b);
+        align(&a[..x], &b[..y], a_base, b_base, edits);
+        edits.extend((0..u - x).map(|t| Edit::Equal {
+            old: a_base + x + t,
+            new: b_base + y + t,
+        }));
+        align(&a[u..], &b[v..], a_base + u, b_base + v, edits);
+    }
+
+    for i in 0..suffix {
+        edits.push(Edit::Equal {
+            old: old_base + old.len() - suffix + i,
+            new: new_base + new.len() - suffix + i,
+        });
+    }
+}
+
+/// Finds a middle snake of a shortest edit script for `a` and `b`, both non-empty.
+///
+/// The search alternates: round `d` extends the forward paths of `d` edits from the start, then the
+/// backward paths from the end, and each half checks for an overlap with the other side. The
+/// paths meet on a snake of a shortest script. The snake is returned as `(x, y, u, v)`: it runs from `(x, y)` to
+/// `(u, v)` in the edit graph of `a` and `b`.
+fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) {
+    let n = a.len() as isize;
+    let m = b.len() as isize;
     let max = n + m;
-    // `v[k + offset]` is the furthest `x` reached on diagonal `k = x - y`. The offset keeps the
-    // index of `k + 1` in range for every `k` in `-max..=max`.
+    // `vf[k + offset]` is the furthest `x` reached forward on diagonal `k = x - y`, and `vb` the
+    // furthest `x` reached backward, counted from the end, on diagonal `c` of the reversed
+    // sequences. The offset keeps every `k ± 1` in range.
     let offset = max + 1;
     let index = |k: isize| (k + offset) as usize;
+    let mut vf = vec![0isize; (2 * max + 3) as usize];
+    let mut vb = vec![0isize; (2 * max + 3) as usize];
+    // The forward diagonal `k` and the backward diagonal `c` are the same line of the edit graph
+    // when `k = delta - c`, because the reversed coordinates map `x` to `n - x` and `y` to `m - y`.
+    // An odd `delta` therefore makes the paths overlap in a forward round, an even one in a
+    // backward round.
+    let delta = n - m;
+    let odd = delta % 2 != 0;
 
-    let mut v = vec![0isize; (2 * max + 3) as usize];
-    // `trace[d]` holds `v` as it was before the round `d`, which is what backtracking reads.
-    let mut trace: Vec<Vec<isize>> = Vec::new();
-
-    for d in 0..=max {
-        trace.push(v.clone());
+    for d in 0..=(max + 1) / 2 {
         for k in (-d..=d).step_by(2) {
-            // Move down (an insertion) from diagonal `k + 1`, or right (a deletion) from `k - 1`.
-            // Both moves come from the furthest point of the previous round.
-            let mut x = if k == -d || (k != d && v[index(k - 1)] < v[index(k + 1)]) {
-                v[index(k + 1)]
+            let mut x = if k == -d || (k != d && vf[index(k - 1)] < vf[index(k + 1)]) {
+                vf[index(k + 1)]
             } else {
-                v[index(k - 1)] + 1
+                vf[index(k - 1)] + 1
             };
             let mut y = x - k;
-            // Follow the snake of equal elements as far as it goes.
-            while x < n && y < m && old[x as usize] == new[y as usize] {
+            let (x_start, y_start) = (x, y);
+            while x < n && y < m && a[x as usize] == b[y as usize] {
                 x += 1;
                 y += 1;
             }
-            v[index(k)] = x;
-            if x >= n && y >= m {
-                return backtrack(&trace, n, m);
+            vf[index(k)] = x;
+            // The backward paths of round `d - 1` cover the diagonals with `|c| <= d - 1`.
+            let c = delta - k;
+            if odd && c.abs() < d && x >= n - vb[index(c)] {
+                return (x_start as usize, y_start as usize, x as usize, y as usize);
             }
         }
-    }
-    unreachable!("the edit graph always reaches the end at d = N + M")
-}
-
-/// Rebuilds the edit script from the saved furthest points, from the end to the start.
-fn backtrack(trace: &[Vec<isize>], n: isize, m: isize) -> Vec<Edit> {
-    let max = n + m;
-    let offset = max + 1;
-    let index = |k: isize| (k + offset) as usize;
-
-    let (mut x, mut y) = (n, m);
-    let mut edits = Vec::new();
-    for (d, v) in trace.iter().enumerate().rev() {
-        let d = d as isize;
-        let k = x - y;
-        // The move that round `d` made, from diagonal `prev_k` of round `d - 1`. Round 0 has no
-        // previous round: `v` is still zero there, and the move is not used.
-        let prev_k = if k == -d || (k != d && v[index(k - 1)] < v[index(k + 1)]) {
-            k + 1
-        } else {
-            k - 1
-        };
-        let prev_x = v[index(prev_k)];
-        let prev_y = prev_x - prev_k;
-
-        // The snake of equal elements after the move, walked backwards.
-        while x > prev_x && y > prev_y {
-            x -= 1;
-            y -= 1;
-            edits.push(Edit::Equal {
-                old: x as usize,
-                new: y as usize,
-            });
-        }
-        // The move itself. Round 0 has no move, only the snake from the origin.
-        if d > 0 {
-            if x == prev_x {
-                // The move went down: `new[prev_y]` was inserted.
-                edits.push(Edit::Insert {
-                    new: prev_y as usize,
-                });
+        for c in (-d..=d).step_by(2) {
+            let mut x = if c == -d || (c != d && vb[index(c - 1)] < vb[index(c + 1)]) {
+                vb[index(c + 1)]
             } else {
-                // The move went right: `old[prev_x]` was deleted.
-                edits.push(Edit::Delete {
-                    old: prev_x as usize,
-                });
+                vb[index(c - 1)] + 1
+            };
+            let mut y = x - c;
+            let (x_start, y_start) = (x, y);
+            while x < n && y < m && a[(n - 1 - x) as usize] == b[(m - 1 - y) as usize] {
+                x += 1;
+                y += 1;
+            }
+            vb[index(c)] = x;
+            // The forward paths of round `d` cover the diagonals with `|k| <= d`.
+            let k = delta - c;
+            if !odd && k.abs() <= d && vf[index(k)] >= n - x {
+                // Counted from the start, the backward snake runs from `(n - x, m - y)` to
+                // `(n - x_start, m - y_start)`.
+                return (
+                    (n - x) as usize,
+                    (m - y) as usize,
+                    (n - x_start) as usize,
+                    (m - y_start) as usize,
+                );
             }
         }
-        x = prev_x;
-        y = prev_y;
     }
-    edits.reverse();
-    edits
+    unreachable!("the two searches meet within (N+M+1)/2 rounds")
 }
 
 #[cfg(test)]
@@ -259,5 +296,41 @@ mod tests {
         let old = ["fn main() {", "    one();", "}"];
         let new = ["fn main() {", "    two();", "    three();", "}"];
         check(&old, &new, 3);
+    }
+
+    #[test]
+    fn large_disjoint_sides_keep_every_change() {
+        // Two files of 2000 lines with no line in common: the script deletes all of the old
+        // lines and inserts all of the new ones.
+        let old: Vec<u32> = (0..2000).collect();
+        let new: Vec<u32> = (2000..4000).collect();
+        check(&old, &new, 4000);
+    }
+
+    #[test]
+    fn a_common_prefix_is_kept_and_the_rest_is_inserted() {
+        check(&['a', 'b'], &['a', 'b', 'c', 'd'], 2);
+    }
+
+    #[test]
+    fn a_common_suffix_is_kept_and_the_rest_is_inserted() {
+        check(&['c', 'd'], &['a', 'b', 'c', 'd'], 2);
+    }
+
+    #[test]
+    fn a_short_sequence_against_a_much_longer_one() {
+        // The element 7 is the only one in common: 1 + 501 - 2 changes.
+        let long: Vec<u32> = (0..501).collect();
+        check(&[7u32], &long, 500);
+    }
+
+    #[test]
+    fn many_short_matches_at_several_levels() {
+        // Every second element matches, so the LCS is 500 and the script has 1000 changes.
+        let old: Vec<u32> = (0..1000).collect();
+        let new: Vec<u32> = (0..1000)
+            .map(|i| if i % 2 == 0 { i } else { i + 5000 })
+            .collect();
+        check(&old, &new, 1000);
     }
 }
