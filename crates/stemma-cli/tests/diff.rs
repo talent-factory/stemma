@@ -7,9 +7,16 @@ use std::path::Path;
 
 use common::{operations, repository, run, track_ok, write, Dir, Run, ACTOR};
 
-fn commit(dir: &Path, message: &str) {
+/// Commits and returns the identifier of the new commit, `b3:…`.
+fn commit(dir: &Path, message: &str) -> String {
     let result = run(dir, &["commit", "-m", message, "--actor", ACTOR]);
     assert_eq!(result.code, 0, "{}", result.stderr);
+    result
+        .stdout
+        .split_whitespace()
+        .nth(1)
+        .expect("the commit names its identifier")
+        .to_owned()
 }
 
 fn diff(dir: &Path, operands: &[&str]) -> Run {
@@ -18,12 +25,12 @@ fn diff(dir: &Path, operands: &[&str]) -> Run {
     run(dir, &args)
 }
 
-/// The identifier of the commit that the first line of a diff names, `b3:…`.
+/// The identifier of the commit that the old side of the first file names, `b3:…`.
 fn old_side(output: &str) -> String {
     output
         .lines()
-        .next()
-        .and_then(|line| line.strip_prefix("--- "))
+        .find_map(|line| line.strip_prefix("--- "))
+        .and_then(|side| side.split_whitespace().next())
         .unwrap()
         .to_owned()
 }
@@ -59,11 +66,13 @@ fn the_working_copy_is_named_by_its_snapshot_identifier_and_no_time() {
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(result.stderr, "");
     let mut lines = result.stdout.lines();
+    assert_eq!(lines.next(), Some("diff a.txt"), "{}", result.stdout);
     let old = lines.next().unwrap();
     let new = lines.next().unwrap();
     assert!(old.starts_with("--- b3:"), "{old}");
     let working_copy = new
         .strip_prefix("+++ working-copy ")
+        .and_then(|side| side.split_whitespace().next())
         .unwrap_or_else(|| panic!("the new side names the working copy: {new}"));
     assert!(working_copy.starts_with("b3:"), "{new}");
     assert_eq!(
@@ -84,7 +93,13 @@ fn a_commit_is_compared_with_the_working_copy_by_its_identifier() {
 
     assert_eq!(result.code, 0, "{}", result.stderr);
     let mut lines = result.stdout.lines();
-    assert_eq!(lines.next(), Some(format!("--- {old}").as_str()));
+    assert_eq!(lines.next(), Some("diff a.txt"), "{}", result.stdout);
+    assert_eq!(
+        lines.next(),
+        Some(format!("--- {old} a.txt").as_str()),
+        "{}",
+        result.stdout
+    );
     assert!(
         lines
             .next()
@@ -100,10 +115,17 @@ fn one_changed_line_is_one_hunk_with_its_header_and_lines() {
 
     let result = diff(dir.path(), &[]);
 
-    let lines: Vec<&str> = result.stdout.lines().skip(2).collect();
+    let lines: Vec<&str> = result.stdout.lines().collect();
+    assert_eq!(lines[0], "diff a.txt", "{}", result.stdout);
+    assert!(lines[1].starts_with("--- b3:"), "{}", result.stdout);
+    assert!(
+        lines[2].starts_with("+++ working-copy b3:"),
+        "{}",
+        result.stdout
+    );
     assert_eq!(
-        lines,
-        ["diff a.txt", "@@ -1,1 +1,1 @@", "-one", "+two"],
+        &lines[3..],
+        ["@@ -1 +1 @@", "-one", "+two"],
         "{}",
         result.stdout
     );
@@ -117,7 +139,7 @@ fn an_unchanged_working_copy_shows_the_header_only() {
     let result = diff(dir.path(), &[]);
 
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert_eq!(result.stdout.lines().count(), 2, "{}", result.stdout);
+    assert_eq!(result.stdout, "", "{}", result.stdout);
 }
 
 #[test]
@@ -159,11 +181,7 @@ fn a_change_of_bytes_that_are_not_utf8_is_shown() {
     let result = diff(dir.path(), &[]);
 
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(
-        result.stdout.contains("@@ -1,1 +1,1 @@"),
-        "{}",
-        result.stdout
-    );
+    assert!(result.stdout.contains("@@ -1 +1 @@"), "{}", result.stdout);
 }
 
 #[test]
@@ -174,9 +192,13 @@ fn a_binary_file_is_named_without_its_lines() {
 
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
-        result
-            .stdout
-            .contains("diff bin.dat\nBinary files differ\n"),
+        result.stdout.starts_with("diff bin.dat\nBinary files b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains(" bin.dat and working-copy b3:")
+            && result.stdout.ends_with(" bin.dat differ\n"),
         "{}",
         result.stdout
     );
@@ -207,7 +229,12 @@ fn an_added_file_has_an_empty_old_range() {
     assert!(
         result
             .stdout
-            .contains("diff new.txt\n@@ -0,0 +1,1 @@\n+fresh\n"),
+            .contains("diff new.txt\n--- /dev/null\n+++ working-copy b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("@@ -0,0 +1 @@\n+fresh\n"),
         "{}",
         result.stdout
     );
@@ -221,9 +248,14 @@ fn a_deleted_file_has_an_empty_new_range() {
     let result = diff(dir.path(), &[]);
 
     assert!(
+        result.stdout.starts_with("diff gone.txt\n--- b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(
         result
             .stdout
-            .contains("diff gone.txt\n@@ -1,1 +0,0 @@\n-bye\n"),
+            .contains(" gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n"),
         "{}",
         result.stdout
     );
@@ -239,7 +271,9 @@ fn the_first_commit_has_no_old_side() {
 
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
-        result.stdout.starts_with("--- -\n+++ working-copy b3:"),
+        result
+            .stdout
+            .starts_with("diff a.txt\n--- /dev/null\n+++ working-copy b3:"),
         "{}",
         result.stdout
     );
@@ -250,8 +284,7 @@ fn the_first_commit_has_no_old_side() {
 fn two_commits_are_compared_without_a_snapshot_of_the_working_copy() {
     let dir = edited_repository();
     let first = old_side(&diff(dir.path(), &[]).stdout);
-    commit(dir.path(), "second");
-    let second = old_side(&diff(dir.path(), &[]).stdout);
+    let second = commit(dir.path(), "second");
     write(dir.path(), "a.txt", "three\n");
     let entries = operations(dir.path()).len();
 
@@ -259,9 +292,9 @@ fn two_commits_are_compared_without_a_snapshot_of_the_working_copy() {
 
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
-        result
-            .stdout
-            .starts_with(&format!("--- {first}\n+++ {second}\n")),
+        result.stdout.starts_with(&format!(
+            "diff a.txt\n--- {first} a.txt\n+++ {second} a.txt\n"
+        )),
         "{}",
         result.stdout
     );
@@ -342,4 +375,97 @@ fn three_operands_are_a_usage_error() {
     let result = diff(dir.path(), &["b3:a", "b3:b", "b3:c"]);
 
     assert_eq!(result.code, 2, "{}", result.stderr);
+}
+
+#[test]
+fn exit_code_four_reports_a_difference_only_with_the_flag() {
+    let dir = edited_repository();
+
+    let plain = diff(dir.path(), &[]);
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+    let flagged = diff(dir.path(), &["--exit-code"]);
+    assert_eq!(flagged.code, 4, "{}", flagged.stderr);
+    assert_eq!(
+        flagged.stdout, plain.stdout,
+        "the flag changes only the code"
+    );
+}
+
+#[test]
+fn exit_code_zero_when_nothing_differs_even_with_the_flag() {
+    let dir = edited_repository();
+    write(dir.path(), "a.txt", "one\n");
+
+    let result = diff(dir.path(), &["--exit-code"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+}
+
+#[test]
+fn an_empty_added_file_is_a_difference_with_a_header_and_no_hunk() {
+    let dir = edited_repository();
+    write(dir.path(), "empty.txt", "");
+    track_ok(dir.path(), "empty.txt");
+
+    let result = diff(dir.path(), &["--exit-code"]);
+
+    assert_eq!(result.code, 4, "{}", result.stderr);
+    let section = result
+        .stdout
+        .split("diff empty.txt\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{}", result.stdout));
+    assert!(
+        section.starts_with("--- /dev/null\n+++ working-copy b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(!section.contains("@@"), "{}", result.stdout);
+}
+
+#[test]
+fn a_binary_file_names_both_sides_as_the_summary_line_does() {
+    let dir = repository_with_edit("bin.dat", b"a\0b", b"a\0c");
+
+    let result = diff(dir.path(), &["--exit-code"]);
+
+    assert_eq!(result.code, 4, "{}", result.stderr);
+    let line = result
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("Binary files "))
+        .unwrap_or_else(|| panic!("{}", result.stdout));
+    assert!(
+        line.starts_with("Binary files b3:") && line.ends_with(" bin.dat differ"),
+        "{line}"
+    );
+    assert!(line.contains(" and working-copy b3:"), "{line}");
+}
+
+#[test]
+fn a_failure_after_the_snapshot_names_its_entry() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one\n");
+    track_ok(dir.path(), "a.txt");
+    let first = commit(dir.path(), "first");
+    write(dir.path(), "a.txt", "two\n");
+    // The parent commit is read after the snapshot; without its object the diff fails there.
+    let hex = first.strip_prefix("b3:").unwrap();
+    let object = dir
+        .path()
+        .join(".stemma/objects/b3")
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    assert!(object.exists(), "{}", object.display());
+    fs::remove_file(&object).unwrap();
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("saved first as entry"),
+        "{}",
+        result.stderr
+    );
 }
