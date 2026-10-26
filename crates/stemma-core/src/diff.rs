@@ -243,6 +243,60 @@ pub fn is_binary(content: &[u8]) -> bool {
     probe.contains(&0)
 }
 
+/// The text of the diff of one file in the form of git: a header with the two sides, then the
+/// hunks with `context` unchanged lines around each change. `old_name` and `new_name` name the
+/// sides as they are written (for example `/dev/null` for a file that is not there). A file
+/// that is binary on either side gets the summary line instead of the hunks. The result is empty
+/// if the contents are equal.
+pub fn patch(old_name: &str, new_name: &str, old: &[u8], new: &[u8], context: usize) -> Vec<u8> {
+    if is_binary(old) || is_binary(new) {
+        return format!("Binary files {old_name} and {new_name} differ\n").into_bytes();
+    }
+    let old_lines: Vec<&[u8]> = old.split_inclusive(|byte| *byte == b'\n').collect();
+    let new_lines: Vec<&[u8]> = new.split_inclusive(|byte| *byte == b'\n').collect();
+    let edits = diff(&old_lines, &new_lines);
+    let hunks = hunks(&edits, context);
+    if hunks.is_empty() {
+        return Vec::new();
+    }
+
+    let mut text = format!("--- {old_name}\n+++ {new_name}\n").into_bytes();
+    for hunk in &hunks {
+        text.extend_from_slice(
+            format!(
+                "@@ -{} +{} @@\n",
+                range(hunk.old_start, hunk.old_len),
+                range(hunk.new_start, hunk.new_len)
+            )
+            .as_bytes(),
+        );
+        for edit in &hunk.edits {
+            let (marker, line) = match *edit {
+                Edit::Equal { old: index, .. } => (b' ', old_lines[index]),
+                Edit::Delete { old: index } => (b'-', old_lines[index]),
+                Edit::Insert { new: index } => (b'+', new_lines[index]),
+            };
+            text.push(marker);
+            text.extend_from_slice(line);
+            if !line.ends_with(b"\n") {
+                text.extend_from_slice(b"\n\\ No newline at end of file\n");
+            }
+        }
+    }
+    text
+}
+
+/// The range of a hunk as git writes it: the first line counted from one, and the number of
+/// lines, which is left out for one line. An empty range names the line before it, counted from
+/// zero, so `0,0` is an empty file.
+fn range(start: usize, len: usize) -> String {
+    match len {
+        0 => format!("{start},0"),
+        1 => format!("{}", start + 1),
+        _ => format!("{},{len}", start + 1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +322,48 @@ mod tests {
         let mut outside = vec![b'a'; BINARY_PROBE_LEN + 1];
         outside[BINARY_PROBE_LEN] = 0;
         assert!(!is_binary(&outside), "the NUL lies after the probe");
+    }
+
+    #[test]
+    fn equal_contents_give_no_patch() {
+        assert!(patch("a", "b", b"x\n", b"x\n", 3).is_empty());
+    }
+
+    #[test]
+    fn an_added_file_starts_from_dev_null() {
+        let text = patch("/dev/null", "new b", b"", b"one\ntwo\n", 3);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "--- /dev/null\n+++ new b\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+        );
+    }
+
+    #[test]
+    fn an_insertion_names_the_line_before_it() {
+        // Three lines, and a fourth one inserted after them: the old range is empty at line 3.
+        let text = patch("o", "n", b"a\nb\nc\n", b"a\nb\nc\nd\n", 0);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "--- o\n+++ n\n@@ -3,0 +4 @@\n+d\n"
+        );
+    }
+
+    #[test]
+    fn a_last_line_without_newline_is_marked() {
+        let text = patch("o", "n", b"a\nb", b"a\nc", 3);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "--- o\n+++ n\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"
+        );
+    }
+
+    #[test]
+    fn a_binary_side_gets_the_summary_line() {
+        let text = patch("o", "n", b"\0a", b"b", 3);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "Binary files o and n differ\n"
+        );
     }
 
     /// Checks that `edits` turns `old` into `new`: the equal steps match, every element of both

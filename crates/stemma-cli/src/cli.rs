@@ -58,7 +58,7 @@ use std::str::FromStr;
 use clap::{Args, Parser, Subcommand};
 
 use crate::op_log;
-use stemma_core::object::{ObjectId, METADATA_DIR};
+use stemma_core::object::{CommitId, Kind, ObjectId, ObjectIdParseError, TreeId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
@@ -66,6 +66,7 @@ use stemma_core::repository::{
     OpenError, PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan, SnapshotError,
     Status, StatusError, TrackError, Tracking, UpdateError,
 };
+use stemma_core::store::ObjectStore;
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
 /// The name of the environment variable that holds the actor.
@@ -92,6 +93,8 @@ enum Command {
     Commit(CommitArgs),
     /// Show what the working copy changes and which files are not tracked
     Status(StatusArgs),
+    /// Show the changes between commits and the working copy
+    Diff(DiffArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -316,6 +319,34 @@ struct StatusArgs {
 }
 
 #[derive(Debug, Args)]
+struct DiffArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. The command takes a snapshot of the working copy first, as
+    /// `status` does, and this actor makes it
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<String>,
+
+    /// Exit with 4 when a file differs, and with 0 otherwise, as `git diff --exit-code`
+    #[arg(long = "exit-code")]
+    exit_code: bool,
+
+    /// The commits to compare, as `b3:<id>`. Without a commit the working copy is compared with
+    /// its parent; with one commit, that commit with the working copy; with two, the two commits
+    #[arg(value_name = "COMMIT", num_args = 0..=2)]
+    commits: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 struct InitArgs {
     /// The directory of the repository; it is created if it does not exist
     #[arg(
@@ -398,6 +429,22 @@ enum CliError {
         /// The number of the entry of the snapshot that the call made, if one.
         entry: Option<u64>,
     },
+    /// A commit operand of `diff` is not a commit identifier of the form `b3:<hex>`.
+    DiffOperand {
+        /// The operand as it was written.
+        text: String,
+        /// Why it is not an identifier.
+        source: ObjectIdParseError,
+    },
+    /// A commit of `diff` could not be read, or a file of it could not be read.
+    DiffCommit {
+        /// The commit, as its identifier.
+        id: ObjectId,
+        /// The error of the store or of the tree.
+        source: Box<SnapshotError>,
+    },
+    /// The output of `diff` could not be written.
+    DiffOutput(io::Error),
     /// The restore was refused or stopped. [`RestoreError::pointer_moved`] says whether a pointer
     /// moved; the error says what is in the log and what state the files are in.
     Restore(RestoreError),
@@ -492,6 +539,7 @@ impl CliError {
             {
                 ExitCode::from(3)
             }
+            Self::DiffOperand { .. } => ExitCode::from(2),
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
@@ -501,6 +549,8 @@ impl CliError {
             | Self::Commit(_)
             | Self::Status(_)
             | Self::StatusOutput { .. }
+            | Self::DiffCommit { .. }
+            | Self::DiffOutput(_)
             | Self::Restore(_)
             | Self::RestoreOutput { .. }
             | Self::Purge(_)
@@ -600,6 +650,13 @@ impl fmt::Display for CliError {
                     None => Ok(()),
                 }
             }
+            Self::DiffOperand { text, source } => {
+                write!(f, "`{text}` is not a commit identifier: {source}")
+            }
+            Self::DiffCommit { id, source } => {
+                write!(f, "could not read the commit {id} for the diff: {source}")
+            }
+            Self::DiffOutput(source) => write!(f, "could not write the diff: {source}"),
             Self::StatusOutput { source, entry } => {
                 write!(f, "could not write the status: {source}")?;
                 match entry {
@@ -684,24 +741,143 @@ impl fmt::Display for CliError {
 
 impl Error for CliError {}
 
-/// Runs the command and writes its result to `out`.
-fn run(cli: Cli, out: &mut dyn Write) -> Result<(), CliError> {
+/// Runs the command and writes its result to `out`. The exit code is success, unless the command
+/// reports a result of its own (`diff --exit-code`).
+fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     match cli.command {
-        Command::Init(args) => init(args, out),
-        Command::Track(args) => track(args, out),
-        Command::Commit(args) => commit(args, out),
-        Command::Status(args) => status(args, out),
+        Command::Init(args) => init(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Track(args) => track(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Diff(args) => diff(args, out),
         Command::Op {
             command: OpCommand::Log(args),
-        } => show_op_log(args, out),
+        } => show_op_log(args, out).map(|()| ExitCode::SUCCESS),
         Command::Op {
             command: OpCommand::Restore(args),
-        } => restore(args, out),
+        } => restore(args, out).map(|()| ExitCode::SUCCESS),
         Command::Op {
             command: OpCommand::Verify(args),
-        } => verify_op_log(args, out),
-        Command::Purge(args) => purge(args, out),
+        } => verify_op_log(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
     }
+}
+
+/// Shows the changes between two trees, as a diff of the files in path order (chapter 5). The
+/// two sides are the parent or a commit and the working-copy commit, or two commits. Taking the
+/// snapshot first is what `status` does, so the working copy is compared as it is on disk.
+///
+/// Without `--exit-code` the command ends with 0 whether or not a file differs; with it, a
+/// difference ends with 4. A commit that cannot be read or a closed pipe is handled as in the
+/// other commands.
+fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let commits = args
+        .commits
+        .iter()
+        .map(|text| parse_commit(&repository, text))
+        .collect::<Result<Vec<CommitId>, CliError>>()?;
+    let status = repository
+        .status(&actor, &AllowAll)
+        .map_err(CliError::Status)?;
+    let working_copy = status.working_copy;
+    let (old, new) = match commits.as_slice() {
+        [] => (status.parent, working_copy),
+        [commit] => (Some(*commit), working_copy),
+        [first, second] => (Some(*first), *second),
+        _ => unreachable!("the argument parser allows at most two commits"),
+    };
+    let old_tree = old.map(|id| commit_tree(&repository, id)).transpose()?;
+    let new_tree = commit_tree(&repository, new)?;
+    let diffs = repository
+        .file_diffs(old_tree, new_tree)
+        .map_err(|source| CliError::DiffCommit {
+            id: new.object_id(),
+            source: Box::new(source),
+        })?;
+
+    let old_side = |id: Option<CommitId>| match id {
+        Some(id) => id.to_string(),
+        None => "/dev/null".to_owned(),
+    };
+    let new_side = if commits.len() == 2 {
+        new.to_string()
+    } else {
+        format!("working-copy {working_copy}")
+    };
+    let mut differs = false;
+    for file in &diffs {
+        let old_name = match file.old {
+            Some(_) => format!("{} {}", old_side(old), escape_path(&file.path)),
+            None => "/dev/null".to_owned(),
+        };
+        let new_name = match file.new {
+            Some(_) => format!("{new_side} {}", escape_path(&file.path)),
+            None => "/dev/null".to_owned(),
+        };
+        let text = stemma_core::diff::patch(
+            &old_name,
+            &new_name,
+            file.old.as_deref().unwrap_or_default(),
+            file.new.as_deref().unwrap_or_default(),
+            DIFF_CONTEXT,
+        );
+        if text.is_empty() {
+            continue;
+        }
+        differs = true;
+        match out.write_all(&text) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                return Ok(ExitCode::SUCCESS)
+            }
+            Err(source) => return Err(CliError::DiffOutput(source)),
+        }
+    }
+    Ok(if args.exit_code && differs {
+        ExitCode::from(4)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// The number of unchanged lines that `diff` shows around each change, as git does by default.
+const DIFF_CONTEXT: usize = 3;
+
+/// Parses a commit operand of `diff` and checks in the store that it names a commit, so that a
+/// typed ID never comes from the text alone.
+fn parse_commit(repository: &Repository, text: &str) -> Result<CommitId, CliError> {
+    let id = text
+        .parse::<ObjectId>()
+        .map_err(|source| CliError::DiffOperand {
+            text: text.to_owned(),
+            source,
+        })?;
+    match repository.objects().resolve_commit(&id) {
+        Ok(Some(commit)) => Ok(commit),
+        Ok(None) => Err(CliError::DiffCommit {
+            id,
+            source: Box::new(SnapshotError::Missing {
+                id,
+                kind: Kind::Commit,
+            }),
+        }),
+        Err(error) => Err(CliError::DiffCommit {
+            id,
+            source: Box::new(SnapshotError::Store(Box::new(error))),
+        }),
+    }
+}
+
+/// The tree of a commit, or the error that names the commit.
+fn commit_tree(repository: &Repository, id: CommitId) -> Result<TreeId, CliError> {
+    repository
+        .commit_tree(id)
+        .map_err(|source| CliError::DiffCommit {
+            id: id.object_id(),
+            source: Box::new(source),
+        })
 }
 
 /// Purges a blob (ADR-014), or shows what that would do. The core refuses an agent before it
@@ -1504,7 +1680,7 @@ pub fn main() -> ExitCode {
     // Help and version go to the output with code 0, a usage error to stderr with code 2.
     let cli = Cli::parse();
     match run(cli, &mut io::stdout().lock()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             // The one result that is dropped on purpose: if stderr is closed, there is no channel
             // left to report on, and a panic would replace the exit code with 101.

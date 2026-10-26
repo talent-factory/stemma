@@ -690,6 +690,86 @@ stemma status --actor "human daniel"
 stemma status -C projekt
 \stoptyping
 
+\section{diff}
+
+Zeigt die Änderungen zwischen Commits und dem Working-Copy-Commit,
+als Diff der Dateien in der Reihenfolge der Pfade (Kapitel 5).
+
+\starttyping
+stemma diff [-C VERZEICHNIS] --actor AKTEUR [--exit-code] [COMMIT [COMMIT]]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben. Der Befehl macht einen Snapshot,
+und der Akteur ist der Akteur dieses Snapshots.
+\item {\bf \type{--exit-code}:} Endet mit Exit-Code 4, wenn eine Datei sich unterscheidet.
+\item {\bf \type{COMMIT}:} Ein Commit als \type{b3:} und seine Kennung. Ohne Commit
+vergleicht der Befehl den Working-Copy-Commit mit seinem Elternteil; mit einem Commit
+vergleicht er diesen mit dem Working-Copy-Commit; mit zwei Commits vergleicht er die beiden.
+\stopitemize
+
+{\bf Verhalten.} Der Befehl macht zuerst einen Snapshot wie \type{status}
+(Operation \type{snapshot}), damit der Working-Copy-Commit den Stand auf der Platte zeigt.
+Danach liest er die Bäume der beiden Seiten und vergleicht die Dateien, deren Inhalt
+sich unterscheidet. Eine Datei, die nur ihren Modus ändert, zeigt er nicht.
+
+Die Ausgabe folgt dem Format von git. Jede Datei beginnt mit einer Kopfzeile
+für die alte und die neue Seite; eine Seite, auf der die Datei fehlt, heisst
+\type{/dev/null}. Eine Seite ist ein Commit mit seiner Kennung, der Working-Copy-Commit
+steht als \type{working-copy} mit seiner Kennung. Danach folgen die Hunks mit drei Zeilen
+Kontext; sie beginnen mit einer Zeile \type{@@} mit den Bereichen auf beiden Seiten.
+
+\starttyping
+--- b3:0fe9b8ed... a.txt
++++ working-copy b3:82cd438f... a.txt
+@@ -1,5 +1,6 @@
+ one
+ two
+-three
++THREE
+ four
+ five
++six
+\ No newline at end of file
+--- /dev/null
++++ working-copy b3:82cd438f... b.txt
+@@ -0,0 +1 @@
++new
+\stoptyping
+
+Eine Datei mit einem Null-Byte unter den ersten 8000 Bytes auf einer Seite zeigt der Befehl
+als Zeile \type{Binary files ... and ... differ}, ohne Inhalt.
+
+{\bf Exit-Codes.} Ein Skript kann sich auf diese Werte verlassen.
+\startitemize
+\item \type{0}: Erfolg. Ohne \type{--exit-code} ist das auch dann so,
+wenn sich Dateien unterscheiden.
+\item \type{1}: Ein Commit lässt sich nicht lesen, oder ein Baum oder ein Blob ist beschädigt.
+Die Meldung nennt den Commit. Nichts wird geschrieben, ausser dem Snapshot.
+\item \type{2}: Aufruffehler: eine Angabe ist keine Commit-Kennung, oder es gibt mehr als zwei
+Commits.
+\item \type{3}: Der Snapshot hat den Zeiger bewegt, aber das Verzeichnis nicht gesichert.
+Der Befehl verhält sich wie \type{status}.
+\item \type{4}: Mit \type{--exit-code}: mindestens eine Datei unterscheidet sich.
+\stopitemize
+
+Ein Schliessen der Pipe durch den Leser der Ausgabe endet ohne Fehler.
+
+{\bf Grenzen.} Die Kontextzeilen sind fest auf drei gesetzt; eine Option dafür gibt es nicht.
+Ein Pfad als Argument gibt es nicht. Der Befehl zeigt keine Modusänderung und keine
+Umbenennung. Farbe und Pager sind nicht umgesetzt. Die Ausgabe mit \type{--tui} folgt,
+sobald die Bibliothek gewählt ist.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma diff --actor "human daniel"
+stemma diff --actor "human daniel" --exit-code
+stemma diff --actor "human daniel" b3:0fe9b8ed... b3:2ef3339f...
+\stoptyping
+
 \section{op log}
 
 Zeigt das Operation Log (ADR-011), die neuesten Einträge zuerst.
