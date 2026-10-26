@@ -51,31 +51,38 @@ eine Einfügung senkt es um eins.
 
 \subsection{Invariante}
 
-Nach der Runde $d$ kennt das Verfahren für jede Diagonale $k$ mit $|k| \le d$ den weitesten
-erreichten Punkt $V[k]$: den grössten $x$-Wert, den ein Skript mit $d$ Schritten auf dieser
-Diagonale erreicht. Die Runde $d+1$ rechnet nur mit diesen Werten. Vor der ersten Runde gilt die
-Invariante, weil $(0,0)$ ohne Schritte erreicht wird. Jede Runde stellt sie wieder her, weil sie
-jede Diagonale aus den Werten der Diagonalen $k-1$ und $k+1$ der Runde davor berechnet.
+Die Suche läuft vorwärts vom Anfang und rückwärts vom Ende zugleich. Nach der Runde $d$ kennt
+die Vorwärtssuche für jede Diagonale $k$ mit $|k| \le d$ den weitesten erreichten Punkt $V[k]$:
+den grössten $x$-Wert, den ein Skript mit $d$ Schritten auf dieser Diagonale erreicht. Die
+Rückwärtssuche hält dasselbe vom Ende her fest. Beide Suchen rechnen jede Runde nur mit den
+Werten der Runde davor. Vor der ersten Runde gilt die Invariante, weil der Startpunkt ohne Schritte
+erreicht wird. Jede Runde stellt sie wieder her.
 
 \subsection{Komplexität}
 
-Die Runden $0$ bis $D$ besuchen höchstens $2D+1$ Diagonalen. Auf einer Diagonale wächst $x$
-nie, also durchläuft das Folgen gleicher Elemente auf allen Diagonalen zusammen
-höchstens $O(N\,D)$ Schritte. Die Laufzeit ist damit $O((N+M)\,D)$
-\cite[myers1986ond]. Der Code speichert vor jeder Runde eine Kopie von $V$ mit $2(N+M)+3$
-Einträgen. Der Speicher ist deshalb ebenfalls $O((N+M)\,D)$. Die Variante mit linearem Speicher
-aus dem Paper ist nicht umgesetzt.
+Die Suchen besuchen zusammen höchstens $O(D)$ Runden mit je $O(D)$ Diagonalen. Auf einer
+Diagonale wächst $x$ nie, also durchläuft das Folgen gleicher Elemente auf allen Diagonalen
+zusammen höchstens $O(N\,D)$ Schritte. Die Laufzeit ist damit $O((N+M)\,D)$
+\cite[myers1986ond]. Der Speicher ist $O(N+M)$: Die Suche hält zwei Felder der Länge
+$2(N+M)+3$, und jeder Aufruf gibt sie wieder frei, bevor er die Teile rekursiv behandelt.
 
 \subsection{Korrektheit}
 
-Der Algorithmus findet ein kürzestes Skript, und der Rückweg liefert ein gültiges Skript.
-Dass der weiteste Punkt auf einer Diagonale genügt, zeigt Myers: Ein Punkt weiter vorne auf
-derselben Diagonale braucht für den Rest des Weges nicht mehr Schritte \cite[myers1986ond].
-Deshalb kann jede Diagonale nur den weitesten Punkt speichern. Die erste Runde $D$, in der
-$(N,M)$ erreicht wird, hat $D$ Schritte, und keine kürzere Runde erreicht den Endpunkt.
-Der Rückweg folgt in jeder Runde dem gespeicherten Vorgänger. Er erzeugt je Runde einen
-Schritt, der keine Diagonale ist, und dazwischen die Diagonalen, die gleiche Elemente verbinden.
-Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die Reihenfolge.
+\subsection{Mittelschlange}
+
+Treffen sich die beiden Suchen auf einer Diagonale, liegt dort eine Schlange gleicher Elemente auf
+einem kürzesten Skript. Das Verfahren zerlegt die Aufgabe an dieser Schlange in zwei Teile und
+behandelt jeden Teil genauso. Jeder Teil hat etwa die Hälfte der Schritte des Ganzen, deshalb
+endet die Rekursion nach $O(\log D)$ Ebenen. Gemeinsame Präfixe und Suffixe schneidet es vorher ab.
+
+\subsection{Korrektheit}
+
+Die Schlange liegt auf einem kürzesten Skript, und die Summe der Schritte der beiden Teile ist
+$D$. Ein kürzeres Skript für einen Teil würde das Ganze verkürzen, also ist jeder Teil kürzest.
+Ein gemeinsames Element am Rand liegt ebenfalls auf einem kürzesten Skript, deshalb geht beim
+Abschneiden nichts verloren \cite[myers1986ond]. Die Teile liegen in der Reihenfolge der Schlange
+aneinander. Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die
+Reihenfolge.
 
 \section{Offene Fragen}
 
