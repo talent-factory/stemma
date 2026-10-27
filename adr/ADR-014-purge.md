@@ -204,10 +204,10 @@ set, a crash after step 7 does not leave the blob behind as an object that "was 
 unreachable".
 
 **Abort.** `stemma purge --abort` removes the journal and the objects that step 5 wrote, as long
-as the `purge` entry is not written; the format stays where the purge raised it.
-Once the entry is written, the purge
-can only go forward: that is the point of no return, and a purge that cannot finish (a missing
-object, an unreadable log) is left for a person to repair.
+as the `purge` entry is not written; the format stays where the purge raised it. It removes the
+objects as step 8 does, so the journal goes only after their removal is durable (STEMMA-101).
+Once the entry is written, the purge can only go forward: that is the point of no return, and a
+purge that cannot finish (a missing object, an unreadable log) is left for a person to repair.
 
 ## Consequences
 

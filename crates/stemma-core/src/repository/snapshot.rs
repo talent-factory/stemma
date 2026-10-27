@@ -198,9 +198,9 @@ impl Repository {
             .map_err(SnapshotError::WriteTree)?;
         if tree == commit.tree() {
             // An unchanged tree has all its objects already, unless one was damaged and saved
-            // again. The entry that names the working-copy commit is durable, and so are the
-            // objects below it (ADR-011); only the new ones are flushed, so that `status` does not
-            // flush the directories of a whole tree.
+            // again. The entry that names the working-copy commit was written after its objects
+            // were durable (ADR-011), so only the new ones are flushed; flushing the directories
+            // of a whole tree would slow every command that takes a snapshot of an unchanged tree.
             finish_new(objects)?;
             return Ok(Replaced {
                 entry: None,
@@ -247,7 +247,8 @@ fn finish(objects: Batch<'_>) -> Result<(), SnapshotError> {
         .map_err(|error| SnapshotError::Store(Box::new(error)))
 }
 
-/// Finishes the batch of a snapshot whose tree did not change, and flushes only its new objects.
+/// Finishes the batch of a snapshot whose tree did not change. The directories of the objects
+/// that the store had are not flushed; those of new objects are.
 fn finish_new(objects: Batch<'_>) -> Result<(), SnapshotError> {
     objects
         .finish_new()

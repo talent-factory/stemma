@@ -472,7 +472,9 @@ const REPLACE_DAMAGED: bool = cfg!(unix);
 /// read-only, and then renamed to its final path. A reader therefore sees either no object or a
 /// complete one, provided that `tmp` and `objects` are on one file system. On Unix and Windows
 /// the directories that were created, and the directory that received the object, are flushed as
-/// well. On other targets (WASI, for example) only the atomicity holds, not the durability of the
+/// well. An object that exists already is not written again, but its directory is flushed, and
+/// so is the directory of an object that is removed, also when the file is gone (STEMMA-101). On
+/// other targets (WASI, for example) only the atomicity holds, not the durability of the
 /// directory entries.
 #[derive(Debug, Clone)]
 pub struct FsObjectStore {
@@ -635,15 +637,17 @@ impl FsObjectStore {
     /// Returns `false` if the store has no file for the ID. Either way the removal is durable when
     /// the call returns, and the call fails if the flush fails. A repeated call is therefore
     /// harmless, but it flushes the directory again, because an earlier call may have removed the
-    /// file and failed to flush.
+    /// file and failed to flush. For the same reason, an object that never existed fails if its
+    /// directory exists and cannot be flushed.
     ///
     /// A link at the path is removed as a link and never followed; a directory there is an error.
     /// An object is read-only, which Windows refuses to remove, so the flag is cleared first there.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Corrupt`] if the path is a directory, and [`StoreError::Io`] if the
-    /// file cannot be inspected or removed, or the directory cannot be flushed.
+    /// Returns [`StoreError::Corrupt`] if the path is a directory, and [`StoreError::Io`] if
+    /// `root` is not a directory, the file cannot be inspected or removed (on Windows, also if its
+    /// read-only flag cannot be cleared), or the directory cannot be flushed.
     pub(crate) fn remove(&self, id: &ObjectId) -> Result<bool, StoreError> {
         let path = self.object_path(id);
         let fan_out = self.fan_out_path(id)?;
@@ -684,7 +688,8 @@ impl FsObjectStore {
         Ok(true)
     }
 
-    /// The directory that holds the file of the object.
+    /// The directory that holds the file of the object. The error cannot occur for a path that
+    /// [`object_path`](Self::object_path) builds, which always has a parent.
     fn fan_out_path(&self, id: &ObjectId) -> Result<PathBuf, StoreError> {
         let path = self.object_path(id);
         path.parent()
@@ -944,8 +949,9 @@ pub(crate) struct Batch<'a> {
 
 impl Batch<'_> {
     /// Adds the object, unless the batch or the store has it already; the directory of an object
-    /// that the store has is flushed by [`finish`](Self::finish). A damaged object in the store
-    /// is replaced where the platform allows it, as [`FsObjectStore::put_raw`] does.
+    /// that the store has is flushed by [`finish`](Self::finish), but not by
+    /// [`finish_new`](Self::finish_new). A damaged object in the store is replaced where the
+    /// platform allows it, as [`FsObjectStore::put_raw`] does.
     fn put_raw(&self, kind: Kind, body: &[u8]) -> Result<ObjectId, StoreError> {
         let id = hash_encoding(kind, body);
         if self.pending.borrow().contains_key(&id) {
@@ -967,23 +973,23 @@ impl Batch<'_> {
     /// Flushes every object of the batch and moves it into place, then flushes the directories
     /// that received one and those of the objects that the store had already. After an error, the
     /// objects that were moved stay, which is harmless, and the files of the others are removed.
-    /// The flush stops at the first directory that fails.
+    /// Every directory is flushed, even after one has failed, and the first error is returned.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Io`] if a file cannot be opened, flushed, or moved, or a directory
-    /// cannot be created or flushed. The directory of an object that the store had already is not
-    /// created again: if it has vanished since the object was added, the error is that of the
-    /// flush, and not a second write as in [`FsObjectStore::put_raw`]. The lock of the references
-    /// rules that out in practice.
+    /// cannot be created or flushed. If the directory of an object that the store had already has
+    /// vanished since the object was added, the error is the failed flush (`NotFound`); unlike
+    /// [`FsObjectStore::put_raw`], the batch does not write the object again. The lock of the
+    /// references rules that out in practice.
     pub(crate) fn finish(self) -> Result<(), StoreError> {
         self.finish_with(true)
     }
 
     /// Like [`finish`](Self::finish), but leaves the directories of the objects that the store
-    /// had already alone. For a caller whose objects are all named by an entry that is durable,
-    /// such as the tree of a working copy that did not change: flushing them would only cost time
-    /// (about 5 ms each on macOS) on every `status`.
+    /// had already alone. For a caller that finds all its present objects named by an entry that
+    /// is durable, such as the tree of a working copy that did not change: flushing them would
+    /// cost a flush per directory on every run of a command that only reads.
     ///
     /// # Errors
     ///
@@ -1006,10 +1012,13 @@ impl Batch<'_> {
                 .map_err(io_error("open the temporary file", &temp.path))?;
             directories.insert(self.store.place(&id, file, temp)?);
         }
+        let mut first_error = None;
         for directory in &directories {
-            sync_directory(directory)?;
+            if let Err(error) = sync_directory(directory) {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -1294,7 +1303,7 @@ fn already_removed(fan_out: &Path) -> Result<bool, StoreError> {
 pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
     #[cfg(test)]
     {
-        FLUSHES.with(|count| count.set(count.get() + 1));
+        FLUSHES.with(|flushes| flushes.borrow_mut().push(dir.to_path_buf()));
         if let Some(error) = injected_flush_failure(dir) {
             return Err(error);
         }
@@ -1345,19 +1354,32 @@ fn flush_directory_of_platform(_dir: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 thread_local! {
-    /// The directory whose flush fails on this thread, if a test asked for it.
-    static FAILING_FLUSH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-    /// The number of calls of `flush_directory` on this thread.
-    static FLUSHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The flush that fails on this thread, if a test asked for it.
+    static FAILING_FLUSH: RefCell<Option<InjectedFlush>> = const { RefCell::new(None) };
+    /// The directories that `flush_directory` was asked to flush on this thread, in order.
+    static FLUSHES: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A flush failure that a test asked for: the directory, the kind of the error, and whether it
+/// happens for the next flush only.
+#[cfg(test)]
+struct InjectedFlush {
+    dir: PathBuf,
+    kind: io::ErrorKind,
+    once: bool,
 }
 
 /// The error that a test injected for `dir`, if any.
 #[cfg(test)]
 fn injected_flush_failure(dir: &Path) -> Option<io::Error> {
     FAILING_FLUSH.with(|failing| {
-        let failing = failing.borrow();
-        (failing.as_deref() == Some(dir))
-            .then(|| io::Error::new(io::ErrorKind::PermissionDenied, "injected flush failure"))
+        let mut failing = failing.borrow_mut();
+        let injected = failing.as_ref().filter(|injected| injected.dir == dir)?;
+        let error = io::Error::new(injected.kind, "injected flush failure");
+        if injected.once {
+            *failing = None;
+        }
+        Some(error)
     })
 }
 
@@ -1365,15 +1387,41 @@ fn injected_flush_failure(dir: &Path) -> Option<io::Error> {
 /// A test takes the difference of two readings to count the flushes of a step.
 #[cfg(test)]
 pub(crate) fn flush_count() -> usize {
-    FLUSHES.with(std::cell::Cell::get)
+    FLUSHES.with(|flushes| flushes.borrow().len())
 }
 
-/// Makes the flush of `dir` fail on this thread until the guard is dropped. Unlike a directory
-/// mode, it works on every platform and for a privileged user. One directory is armed per thread:
-/// a second call replaces the first, and dropping the guards in reverse order restores it.
+/// The directories that this thread has asked to flush from the `since`-th flush on, failed ones
+/// included; `since` is a reading of [`flush_count`].
+#[cfg(test)]
+pub(crate) fn flushed_since(since: usize) -> Vec<PathBuf> {
+    FLUSHES.with(|flushes| flushes.borrow()[since..].to_vec())
+}
+
+/// Makes the flush of `dir` fail with `PermissionDenied` on this thread until the guard is
+/// dropped. Unlike a directory mode, it works on every platform and for a privileged user. See
+/// [`inject_flush_failure`] for the rules that hold for all injections.
 #[cfg(test)]
 pub(crate) fn fail_flush_of(dir: &Path) -> FlushFailure {
-    let earlier = FAILING_FLUSH.with(|failing| failing.borrow_mut().replace(dir.to_path_buf()));
+    inject_flush_failure(dir, io::ErrorKind::PermissionDenied, false)
+}
+
+/// Makes the next flush of `dir` fail with an error of the given kind, and only that one: the
+/// directory that has vanished since the check is the case for `NotFound`.
+#[cfg(test)]
+pub(crate) fn fail_next_flush_of(dir: &Path, kind: io::ErrorKind) -> FlushFailure {
+    inject_flush_failure(dir, kind, true)
+}
+
+/// One injection is armed per thread: a new one replaces the earlier one, which comes back when
+/// the guard of the new one is dropped, so guards must be dropped in reverse order.
+#[cfg(test)]
+fn inject_flush_failure(dir: &Path, kind: io::ErrorKind, once: bool) -> FlushFailure {
+    let injected = InjectedFlush {
+        dir: dir.to_path_buf(),
+        kind,
+        once,
+    };
+    let earlier = FAILING_FLUSH.with(|failing| failing.borrow_mut().replace(injected));
     FlushFailure { earlier }
 }
 
@@ -1382,7 +1430,7 @@ pub(crate) fn fail_flush_of(dir: &Path) -> FlushFailure {
 #[cfg(test)]
 #[must_use = "the failure ends when the guard is dropped"]
 pub(crate) struct FlushFailure {
-    earlier: Option<PathBuf>,
+    earlier: Option<InjectedFlush>,
 }
 
 #[cfg(test)]
@@ -1569,20 +1617,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_flushes_the_directory_when_the_object_is_already_gone() {
-        let dir = TempDir::new();
-        let store = dir.store();
-        let id = store.put_blob(&Blob::new("hello")).unwrap().object_id();
-        assert!(store.remove(&id).unwrap());
-        let fan_out = store.fan_out_path(&id).unwrap();
-        {
-            let _failure = fail_flush_of(&fan_out);
-            assert_flush_failed(store.remove(&id), &fan_out);
-        }
-        assert!(!store.remove(&id).unwrap(), "the flush works again");
-    }
-
-    #[test]
     fn a_removal_whose_flush_failed_is_not_reported_as_done_by_the_repeat() {
         let dir = TempDir::new();
         let store = dir.store();
@@ -1665,9 +1699,30 @@ mod tests {
             assert_flush_failed(store.put_blob(&blob), &fan_out);
         }
         assert!(store.object_path(&id).exists(), "the object was placed");
-        let before = flush_count();
+        {
+            let _failure = fail_flush_of(&fan_out);
+            assert_flush_failed(store.put_blob(&blob), &fan_out);
+        }
         assert_eq!(store.put_blob(&blob).unwrap().object_id(), id);
-        assert_eq!(flush_count() - before, 1, "the retry flushes the directory");
+    }
+
+    #[test]
+    fn put_raw_writes_the_object_again_when_its_directory_has_vanished() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let id = store.put_blob(&blob).unwrap().object_id();
+        let fan_out = store.fan_out_path(&id).unwrap();
+        let before = flush_count();
+        {
+            let _failure = fail_next_flush_of(&fan_out, io::ErrorKind::NotFound);
+            assert_eq!(store.put_blob(&blob).unwrap().object_id(), id);
+        }
+        assert!(
+            flush_count() - before >= 2,
+            "the flush that found nothing, then the one after the new write"
+        );
+        assert!(store.contains(&id).unwrap());
     }
 
     #[test]
@@ -1686,11 +1741,15 @@ mod tests {
         }
         assert!(store.object_path(&id).exists(), "the object was placed");
         assert_eq!(temp_entries(&dir), 0, "no temporary file is left");
+        {
+            let _failure = fail_flush_of(&fan_out);
+            let batch = store.batch();
+            assert_eq!(batch.put_blob(&blob).unwrap().object_id(), id);
+            assert_flush_failed(batch.finish(), &fan_out);
+        }
         let batch = store.batch();
-        assert_eq!(batch.put_blob(&blob).unwrap().object_id(), id);
-        let before = flush_count();
+        batch.put_blob(&blob).unwrap();
         batch.finish().unwrap();
-        assert_eq!(flush_count() - before, 1, "the retry flushes the directory");
     }
 
     #[test]
@@ -1716,6 +1775,61 @@ mod tests {
             1,
             "once, however often it was found"
         );
+    }
+
+    #[test]
+    fn finish_new_flushes_the_directory_of_a_new_object_only() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let present = Blob::new("hello");
+        let present_dir = store
+            .fan_out_path(&store.put_blob(&present).unwrap().object_id())
+            .unwrap();
+        let new = Blob::new("world");
+        let new_dir = store.fan_out_path(&new.id().object_id()).unwrap();
+        assert_ne!(present_dir, new_dir);
+
+        {
+            let _failure = fail_flush_of(&present_dir);
+            let batch = store.batch();
+            batch.put_blob(&present).unwrap();
+            batch.put_blob(&new).unwrap();
+            batch.finish_new().unwrap();
+        }
+
+        let newer = Blob::new("again");
+        let newer_dir = store.fan_out_path(&newer.id().object_id()).unwrap();
+        assert_ne!(present_dir, newer_dir);
+        let _failure = fail_flush_of(&newer_dir);
+        let batch = store.batch();
+        batch.put_blob(&present).unwrap();
+        batch.put_blob(&newer).unwrap();
+        assert_flush_failed(batch.finish_new(), &newer_dir);
+    }
+
+    #[test]
+    fn finish_flushes_every_directory_and_reports_the_first_failure() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let (first, second) = (Blob::new("hello"), Blob::new("world"));
+        let first_dir = store.fan_out_path(&first.id().object_id()).unwrap();
+        let second_dir = store.fan_out_path(&second.id().object_id()).unwrap();
+        assert_ne!(first_dir, second_dir);
+        // The directories exist, so that only the flush after the renames fails.
+        fs::create_dir_all(&first_dir).unwrap();
+        fs::create_dir_all(&second_dir).unwrap();
+        // The directories are flushed in path order, so the smaller one fails first.
+        let failing = first_dir.clone().min(second_dir.clone());
+        let _failure = fail_flush_of(&failing);
+        let batch = store.batch();
+        batch.put_blob(&first).unwrap();
+        batch.put_blob(&second).unwrap();
+        let before = flush_count();
+        assert_flush_failed(batch.finish(), &failing);
+        let flushed = flushed_since(before);
+        for directory in [&first_dir, &second_dir] {
+            assert!(flushed.contains(directory), "{directory:?} was not flushed");
+        }
     }
 
     #[test]
