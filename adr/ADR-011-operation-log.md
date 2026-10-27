@@ -62,7 +62,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   `op restore`) takes the lock even earlier, before its first object, and keeps it over its
   snapshot to its last move, so that no purge deletes an object between the two (ADR-014,
   STEMMA-49); while it saves, a reader finds the lock held and reads the newest entry as
-  possibly unfinished. Ctrl-C removes the lock before the process ends.
+  possibly unfinished. Ctrl-C and a termination signal remove the lock before the process ends.
 - **An entry is an intent, not a proof, and nothing is written after the move** *(confirmed)*.
   With the lock held over the checks, an entry describes a move that was going to be made. It can
   still name a move that did not happen: the file system can fail between the entry and the move,

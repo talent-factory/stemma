@@ -689,6 +689,51 @@ fn an_interrupt_waits_for_the_pager_and_does_not_end_the_diff() {
 
 #[cfg(unix)]
 #[test]
+fn a_termination_signal_ends_the_pager_and_the_diff_at_once() {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+
+    for (signal, code) in [(Signal::SIGTERM, 143), (Signal::SIGHUP, 129)] {
+        let dir = edited_repository();
+        let marker = dir.path().join("pager-pid");
+        let (mut child, mut master) = spawn_on_terminal(dir.path(), |command| {
+            command.env(
+                "PAGER",
+                format!(
+                    "echo $$ > '{}'; echo PAGER-READY; exec sleep 30",
+                    marker.display()
+                ),
+            );
+        });
+        read_until(&mut master, "PAGER-READY");
+        let pager = Pid::from_raw(fs::read_to_string(&marker).unwrap().trim().parse().unwrap());
+        let process = Pid::from_raw(i32::try_from(child.id()).unwrap());
+        let start = std::time::Instant::now();
+        kill(process, signal).unwrap();
+
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(code), "{signal:?} {status:?}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "{signal:?}"
+        );
+        // The pager is gone too. Its process may take a moment to end, and an orphan that
+        // nobody has reaped yet (a zombie) counts as gone.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pager.to_string()])
+                .output()
+                .expect("the test needs the `ps` command");
+            let state = String::from_utf8_lossy(&state.stdout);
+            state.trim().is_empty() || state.trim().starts_with('Z')
+        });
+        assert!(gone, "{signal:?}: the pager is still running");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn a_pager_that_is_not_executable_leaves_the_diff_on_the_terminal() {
     use std::os::unix::fs::PermissionsExt;
     let dir = edited_repository();

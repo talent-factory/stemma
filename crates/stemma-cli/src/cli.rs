@@ -55,7 +55,7 @@ use std::num::NonZeroUsize;
 use std::path::{self, Path, PathBuf};
 use std::process::{self, ExitCode, Stdio};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -1527,11 +1527,21 @@ fn paint(colour: bool, code: &'static str) -> &'static str {
     }
 }
 
-/// Set while the pager runs, so that the interrupt handler leaves the process alone. A Ctrl-C
-/// reaches the pager as well as this process; the pager handles it, and this process must not end
-/// before the pager does, or the shell and the pager would fight over the terminal (git does the
-/// same). The diff has finished its work on the references before the pager starts.
+/// Set while the pager runs, so that the interrupt handler leaves the process alone for `SIGINT`.
+/// A Ctrl-C reaches the pager as well as this process; the pager handles it, and this process
+/// must not end before the pager does, or the shell and the pager would fight over the terminal
+/// (the same as in other tools). The diff has finished its work on the references before the
+/// pager starts. `SIGTERM` and `SIGHUP` are not waited out; `handle_interrupt` ends the pager.
 static PAGING: AtomicBool = AtomicBool::new(false);
+
+/// The process ID of the shell that runs the pager while the pager runs, and 0 otherwise.
+static PAGER: AtomicU32 = AtomicU32::new(0);
+
+/// Set when a termination signal has begun to end the command. The main thread then does not
+/// end the process on its own once the pager is gone, so that the handler gives the exit code.
+/// A signal that arrives at the very moment the pager ends by itself may still lose this race;
+/// either exit code is defensible then.
+static TERMINATING: AtomicBool = AtomicBool::new(false);
 
 /// Marks the pager as running until it is dropped.
 struct Paging;
@@ -1541,10 +1551,23 @@ impl Paging {
         PAGING.store(true, Ordering::SeqCst);
         Paging
     }
+
+    /// Records the process ID of the shell that runs the pager, so that `handle_interrupt` can
+    /// signal it. Until then (between the start of the shell and this call) a signal finds no
+    /// pager to end.
+    fn attach(&self, pid: u32) {
+        PAGER.store(pid, Ordering::SeqCst);
+    }
+
+    /// Forgets the process ID, once the shell has been waited for and its number may be reused.
+    fn detach(&self) {
+        PAGER.store(0, Ordering::SeqCst);
+    }
 }
 
 impl Drop for Paging {
     fn drop(&mut self) {
+        PAGER.store(0, Ordering::SeqCst);
         PAGING.store(false, Ordering::SeqCst);
     }
 }
@@ -1568,11 +1591,20 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
         .env("LESS", less)
         .stdin(Stdio::piped())
         .spawn();
-    let Ok(mut child) = spawned else {
-        // No pager runs, so an interrupt must end the command as usual.
-        drop(paging);
-        return out.write_all(text.as_bytes());
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            // No pager runs, so an interrupt must end the command as usual.
+            drop(paging);
+            let _ = writeln!(
+                io::stderr(),
+                "stemma: the pager `{pager}` could not be started ({error}); the diff follows \
+                 without it"
+            );
+            return out.write_all(text.as_bytes());
+        }
     };
+    paging.attach(child.id());
     let mut input = child.stdin.take().expect("the input of the pager is piped");
     let written = input.write_all(text.as_bytes());
     drop(input);
@@ -1580,8 +1612,14 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
     // process and keep the terminal.
     let status = child
         .wait()
-        .map_err(|error| io::Error::new(error.kind(), format!("the pager `{pager}`: {error}")))?;
+        .map_err(|error| io::Error::new(error.kind(), format!("the pager `{pager}`: {error}")));
+    paging.detach();
     drop(paging);
+    // A termination signal ended the pager; the handler ends the process with its exit code.
+    while TERMINATING.load(Ordering::SeqCst) {
+        std::thread::park();
+    }
+    let status = status?;
     if matches!(status.code(), Some(126 | 127)) {
         // Usually nothing was read: the shell found no command to run. The shell has said so on stderr.
         let _ = writeln!(
@@ -1759,27 +1797,16 @@ fn actor(text: Option<String>) -> Result<Actor, CliError> {
 
 pub fn main() -> ExitCode {
     // A command that writes holds the lock of the references at least as long as its snapshot takes
-    // (ADR-014). Ctrl-C (or a termination signal) removes it before the process ends, so that the
-    // next command does not find it; the process ends with 130, as a shell reports an interrupt.
+    // (ADR-014). An interrupt (Ctrl-C, or a termination signal) removes it before the process ends,
+    // so that the next command does not find it; the process ends with 128 plus the signal number,
+    // the status a shell reports (130 for Ctrl-C, 143 for SIGTERM, 129 for SIGHUP).
     // A restore that is writing a file removes its temporary file first, while it still holds the
-    // lock, and names one that stays (ADR-013). Stderr is taken only for such a file: the main
-    // thread may hold it in a write that blocks, and the handler would then never end the process.
-    // Without the handler (it could not be installed) an interrupt leaves both behind.
-    let _ = ctrlc::set_handler(|| {
-        // The pager gets the same signal and handles it; the diff waits for the pager (`PAGING`).
-        if PAGING.load(Ordering::SeqCst) {
-            return;
-        }
-        let left = stemma_core::repository::remove_temp_files_for_exit();
-        stemma_core::refs::release_locks_for_exit();
-        if !left.is_empty() {
-            let mut stderr = io::stderr().lock();
-            for (path, error) in left {
-                let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
-            }
-        }
-        std::process::exit(INTERRUPTED);
-    });
+    // lock, and names one that stays (ADR-013). See `handle_interrupt`: it takes stderr only for
+    // such a file, because the main thread may hold it in a write that blocks, and the handler
+    // would then never end the process.
+    // Without the handler (it could not be installed) an interrupt leaves both behind, and the
+    // command says so on stderr.
+    install_interrupt_handler();
     // Help and version go to the output with code 0, a usage error to stderr with code 2.
     let cli = Cli::parse();
     match run(cli, &mut io::stdout().lock()) {
@@ -1793,8 +1820,112 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// The exit code of a command that was interrupted: 128 and the number of `SIGINT`.
-const INTERRUPTED: i32 = 130;
+/// The number of `SIGINT`, the one signal that this process waits out while the pager runs.
+#[cfg(unix)]
+const SIGINT: i32 = signal_hook::consts::SIGINT;
+/// The number of `SIGINT`, for a platform without the signal constants of `signal-hook`.
+#[cfg(not(unix))]
+const SIGINT: i32 = 2;
+
+/// The warning for a command that runs without its interrupt handler.
+fn no_handler_warning(error: &io::Error) {
+    let _ = writeln!(
+        io::stderr(),
+        "stemma: warning: no interrupt handler ({error}); an interrupt may leave a lock or a \
+         temporary file behind"
+    );
+}
+
+/// Runs `handle_interrupt` for `SIGINT`, `SIGTERM` and `SIGHUP` on a thread of its own: a real
+/// signal handler may call only async-signal-safe functions, which rules out removing files and
+/// taking locks.
+#[cfg(unix)]
+fn install_interrupt_handler() {
+    use signal_hook::consts::{SIGHUP, SIGTERM};
+    let mut signals = match signal_hook::iterator::Signals::new([SIGINT, SIGTERM, SIGHUP]) {
+        Ok(signals) => signals,
+        Err(error) => return no_handler_warning(&error),
+    };
+    let spawned = std::thread::Builder::new().spawn(move || {
+        for signal in signals.forever() {
+            handle_interrupt(signal);
+        }
+    });
+    if let Err(error) = spawned {
+        no_handler_warning(&error);
+    }
+}
+
+/// Windows has no termination signals for this process: the handler covers Ctrl-C only and
+/// reports it as `SIGINT`, so that the command ends with 130.
+#[cfg(not(unix))]
+fn install_interrupt_handler() {
+    if let Err(error) = ctrlc::set_handler(|| handle_interrupt(SIGINT)) {
+        no_handler_warning(&io::Error::other(error));
+    }
+}
+
+/// Ends the command after it received `signal`: removes the temporary files and the locks, then
+/// exits with 128 plus the signal number.
+///
+/// While the pager runs (`PAGING`), `SIGINT` is ignored here: the terminal sends it to the pager
+/// too, and the command ends, with its own exit code, when the pager does. Any other signal may
+/// have reached this process alone (a `kill` on its process ID), so the pager is stopped first;
+/// a pager that got the signal as well ends all the same.
+fn handle_interrupt(signal: i32) {
+    if signal == SIGINT && PAGING.load(Ordering::SeqCst) {
+        return;
+    }
+    // Before the pager ends, so that the main thread does not end the process meanwhile.
+    TERMINATING.store(true, Ordering::SeqCst);
+    // Whatever happens below, the process ends with the exit code of the signal.
+    let _exit = ExitOnDrop(128 + signal);
+    if PAGING.load(Ordering::SeqCst) {
+        stop_pager(signal);
+    }
+    let left = stemma_core::repository::remove_temp_files_for_exit();
+    stemma_core::refs::release_locks_for_exit();
+    if !left.is_empty() {
+        let mut stderr = io::stderr().lock();
+        for (path, error) in left {
+            let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
+        }
+    }
+}
+
+/// Ends the process with its code when it is dropped, also during a panic: the handler thread
+/// is the only one that reacts to a signal, and a main thread that waits for it would hang if it
+/// died without ending the process.
+struct ExitOnDrop(i32);
+
+impl Drop for ExitOnDrop {
+    fn drop(&mut self) {
+        std::process::exit(self.0);
+    }
+}
+
+/// Sends `signal` to the shell that runs the pager, so that the pager does not outlive the
+/// command and keep the terminal. A pager that is a single command is usually executed in place
+/// of the shell and so gets the signal itself; the commands of a longer command line are not
+/// reached and may run until the terminal closes. The send is best effort: a pager that has
+/// already ended is the expected failure, and the command ends right after.
+#[cfg(unix)]
+fn stop_pager(signal: i32) {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    let pid = PAGER.load(Ordering::SeqCst);
+    // Only `SIGTERM` and `SIGHUP` get here, so the conversions hold; a pid of 0 means that no
+    // pager runs, and `kill` with 0 would signal the whole process group.
+    let (Ok(pid), Ok(signal)) = (i32::try_from(pid), Signal::try_from(signal)) else {
+        return;
+    };
+    if pid != 0 {
+        let _ = kill(Pid::from_raw(pid), signal);
+    }
+}
+
+#[cfg(not(unix))]
+fn stop_pager(_signal: i32) {}
 
 /// The report of a temporary file of a checkout that an interrupted command could not remove.
 fn temp_left_message(path: &Path, error: &io::Error) -> String {
