@@ -37,8 +37,9 @@ sehr grossen Dateien und ein Ausgabeformat für Maschinen offen (\in{Kapitel}[ch
 Phase 3 entscheidet über das Konfliktmodell, Daten im Commit oder klassische Markierung,
 über einen Rebase und über einen Branch, der in einem anderen Worktree ausgecheckt ist
 (\in{Kapitel}[chap:phase3]).
-Wo abgeleitete Daten wie Indizes für \type{log} und Blame liegen, entscheidet ADR-017;
-der Vorschlag ist noch offen, ebenso die erste Art, die gespeichert wird.
+Abgeleitete Daten wie Indizes für \type{log} und Blame liegen nach ADR-017 in einem Cache
+unter \type{.stemma/derived/}; offen sind die erste Art, die gespeichert wird, und die
+Bereinigung alter Einträge.
 
 \section{Zusammenarbeit}
 

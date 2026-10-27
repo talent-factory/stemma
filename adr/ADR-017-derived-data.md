@@ -1,8 +1,10 @@
 # ADR-017: Derived data
 
-**Status:** Proposal, open for decision (STEMMA-18). Nothing here is implemented. The first slice
-that needs derived data (the diff work of phase 2, or `log` of phase 3) turns it into code. The
-proposal amends ADR-009 (the layout names `derived/`) and ADR-014 (step 8 of the purge deletes it).
+**Status:** Accepted. Decisions marked *(confirmed)* agreed with the author on
+2026-10-27 (STEMMA-18). Nothing here is implemented. The first slice that needs derived data (the
+diff work of phase 2, or `log` of phase 3) turns it into code. The ADR amends ADR-009 (the layout
+names `derived/`) and ADR-014 (step 8 of the purge deletes it). The open items below are questions
+for later slices; none of them changes a decision above.
 
 ## Context
 
@@ -27,7 +29,7 @@ Four facts of the existing design bound the answer:
 
 ## Decision
 
-### Derived data is a cache outside the object model *(proposed)*
+### Derived data is a cache outside the object model *(confirmed)*
 
 Derived data lives in `.stemma/derived/`, next to `objects/` and not inside it (ADR-009). No
 object, no reference, and no entry of the operation log refers to it, and no ID is computed from
@@ -35,7 +37,7 @@ it. A repository without the directory is complete; deleting the directory loses
 else. `Repository::open` does not check it. A clone, a fetch, and a push never copy it: it is
 local and can be recomputed.
 
-### The key is the kind, its version, and the commit *(proposed)*
+### The key is the kind, its version, and the commit *(confirmed)*
 
 An entry is a file at `derived/<kind>-v<n>/<algorithm>/<first 2 hex digits>/<remaining hex
 digits>`, the path form of ADR-007 for the ID of the commit, so that no colon of an ID ends up in
@@ -47,7 +49,7 @@ invalidation: a new commit adds entries and invalidates none.
 The encoding of every kind is deterministic: the same value gives the same bytes. A decoder
 distrusts its input; an entry that it cannot decode is ignored and computed again.
 
-### Computation is deferred and recursive *(proposed)*
+### Computation is deferred and recursive *(confirmed)*
 
 Nothing is computed by `commit`, `track`, or any other writing command. A query asks the core
 for the value of a commit; the core reads the entry, or computes it from the entries of the
@@ -57,14 +59,14 @@ would pay for all of them; it is not rejected for the lock, because a query take
 well (ADR-010). A later command may fill the cache ahead of time; the format does not change
 for it.
 
-### Every commit but the working copy is stored *(proposed)*
+### Every commit but the working copy is stored *(confirmed)*
 
 The value for the commit of the working copy (ADR-010) is computed from the stored value of its
 parent and the changes of the working copy, in memory, and dropped. The value of every other
 commit is stored, reachable from a branch or not: no check of reachability is needed, and a
 detached HEAD or a rewritten branch needs no rule.
 
-### Writes hold the lock of the references *(proposed)*
+### Writes hold the lock of the references *(confirmed)*
 
 A query reads and computes without a lock. To store its entries it takes `refs.lock`, as every
 writer of `tmp/` does (ADR-011), writes each entry to `tmp/`, and moves it into place by a rename,
@@ -79,14 +81,14 @@ as objects are (ADR-007). Three rules keep the cache clean:
   removed.
 - The lock is held for the writes only, not for the computation.
 
-### A purge removes the cache *(proposed)*
+### A purge removes the cache *(confirmed)*
 
 Derived data can hold content that a purge must remove, for example the lines of a blame. Step 8
 of the purge deletes `.stemma/derived/` completely, with the delete set and before the journal is
 removed. `--resume` repeats it; `--abort` leaves it alone, because nothing has been removed before
 the `purge` entry (ADR-014). The next queries recompute what they need.
 
-### The first entry raises the format version *(proposed)*
+### The first entry raises the format version *(confirmed)*
 
 The command that stores the first entry raises `.stemma/format` to the next version, under the
 lock and by the rule of ADR-009 (a version never sinks). An older program then refuses the
@@ -94,7 +96,7 @@ repository instead of opening it and purging without knowing `derived/`, which w
 cache in place and report success. A repository that never stores an entry stays at its version.
 The version is raised again only if a later ADR changes the cache itself.
 
-### The operations belong to the core *(proposed)*
+### The operations belong to the core *(confirmed)*
 
 Each kind is an operation of `Repository` that the CLI and, later, the API call (ADR-015, API
 parity). The format of the value of a kind is decided by the slice that introduces the kind, and
