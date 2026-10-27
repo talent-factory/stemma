@@ -132,7 +132,7 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
 }
 
 /// A string as a JSON string literal.
-fn quote(text: &str) -> String {
+pub fn quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for c in text.chars() {
@@ -176,7 +176,7 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
     match entry.record() {
         Record::Change(change) => change_json(entry, change, outcome, pending),
         Record::Stub(_) => format!(
-            "{{\"number\":{},\"kind\":\"stub\",\"time\":{},\"actor\":{}}}",
+            "{{\"schema\":1,\"number\":{},\"kind\":\"stub\",\"time\":{},\"actor\":{}}}",
             entry.number(),
             entry.time(),
             quote(&entry.actor().to_string())
@@ -192,7 +192,7 @@ fn purge_json(entry: &Entry, purge: &Purge) -> String {
         .map(|(start, end)| format!("[{start},{end}]"))
         .collect();
     format!(
-        "{{\"number\":{},\"kind\":\"purge\",\"time\":{},\"actor\":{},\"operation\":\"purge\",\
+        "{{\"schema\":1,\"number\":{},\"kind\":\"purge\",\"time\":{},\"actor\":{},\"operation\":\"purge\",\
          \"commits\":{},\"stubs\":[{}]}}",
         entry.number(),
         entry.time(),
@@ -234,7 +234,7 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
         })
         .collect();
     format!(
-        "{{\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
+        "{{\"schema\":1,\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
          \"head\":{head},\
          \"working_copy\":{working_copy},\"branches\":[{}],\"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",

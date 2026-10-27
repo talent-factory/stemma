@@ -91,7 +91,7 @@ fn a_changed_entry_breaks_the_chain_and_is_named() {
     fs::write(entry_file(dir.path(), 2), changed).unwrap();
 
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert_eq!(result.stdout, "");
     assert!(
         result
@@ -126,7 +126,7 @@ fn a_log_whose_chain_was_computed_again_is_found_only_by_the_anchor() {
     assert_eq!(result.code, 0, "{}", result.stderr);
 
     let result = run(dir.path(), &["op", "verify", "--anchor", &kept]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr
@@ -146,7 +146,7 @@ fn an_anchor_beyond_the_log_or_in_the_wrong_form_is_refused() {
         dir.path(),
         &["op", "verify", "--anchor", &format!("99:{hash}")],
     );
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr
@@ -262,7 +262,7 @@ fn a_tip_file_more_than_one_entry_behind_is_reported() {
     )
     .unwrap();
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert_eq!(result.stdout, "");
     assert!(
         result.stderr.contains(&format!(
@@ -279,7 +279,7 @@ fn a_missing_tip_file_is_reported() {
     let dir = repository();
     fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert_eq!(result.stdout, "");
     assert!(result.stderr.contains("no tip file"), "{}", result.stderr);
     // `op log` reads the log all the same.
@@ -303,5 +303,5 @@ fn op_log_warns_when_it_cannot_check_the_link_of_its_oldest_entry() {
         result.stderr
     );
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
 }

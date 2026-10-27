@@ -12,7 +12,7 @@ use stemma_core::refs::BranchName;
 use stemma_core::repository::Repository;
 use stemma_core::store::ObjectStore;
 
-use common::{operations, repository, run, stemma, track_ok, write, Dir, Run};
+use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
 
 fn commit(dir: &Path, message: &str) -> Run {
     run(dir, &["commit", "-m", message, "--actor", "human alice"])
@@ -443,4 +443,51 @@ fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
     assert!(operations(dir.path())[0].contains("\"operation\":\"commit\""));
     let repository = Repository::open(dir.path()).unwrap();
     assert!(repository.refs().branch(&main_branch()).unwrap().is_some());
+}
+
+/// A lock that a command of another host holds is not taken over (ADR-008). The commit ends with
+/// code 4, so that a script knows that it can try again later (ADR-017).
+#[test]
+fn a_held_lock_ends_with_code_4() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    fs::write(
+        dir.path().join(".stemma").join("refs.lock"),
+        "stemma-lock 1\nhost other-host\npid 4711\ntoken 1-0-left\n",
+    )
+    .unwrap();
+
+    let result = run(dir.path(), &["commit", "-m", "Add a", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 4, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+    assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
+}
+
+#[test]
+fn json_names_the_commit_and_the_branch() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+
+    let result = run(
+        dir.path(),
+        &["commit", "-m", "Add a", "--actor", ACTOR, "--json"],
+    );
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stdout.starts_with("{\"schema\":1,\"commit\":\"b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result
+            .stdout
+            .ends_with("\",\"branch\":\"main\",\"resumed\":false}\n"),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(result.stdout.lines().count(), 1);
 }

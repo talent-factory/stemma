@@ -87,18 +87,31 @@ Fehler stehen auf der Fehlerausgabe mit dem Präfix \type{stemma:}, Warnungen mi
 Fehler der Argumente meldet die Bibliothek der Kommandozeile mit \type{error:} auf der
 Fehlerausgabe (Exit-Code 2). \type{--help} (\type{-h}) und \type{--version} (\type{-V})
 schreiben auf die Standardausgabe und enden mit Exit-Code 0.
-Für Programme bestimmt sind heute nur \type{op log --json} und die Zeile \type{anchor}
-von \type{op verify}; ob die übrige Textausgabe und der Text der Meldungen stabil bleiben,
-ist noch nicht festgelegt.
+Für Programme bestimmt sind die JSON-Ausgabe, die Zeile \type{anchor} von \type{op verify}
+und die Exit-Codes (ADR-017). Die übrigen Textzeilen und der Text der Meldungen sind für
+Menschen und können sich mit jeder Version ändern; ein Skript liest sie nicht.
 Eine Meldung, die das Buch über mehrere Zeilen zeigt, ist in der Ausgabe eine Zeile;
 hier ist sie umbrochen.
+
+{\bf Maschinenlesbare Ausgabe.} Mit \type{--json} schreiben \type{status}, \type{commit} und
+\type{op log} JSON statt Text: \type{status} und \type{commit} ein Objekt,
+\type{op log} ein Objekt pro Zeile.
+Jedes Objekt hat das Feld \type{schema}, eine ganze Zahl, heute 1.
+Ein neues Feld ändert sie nicht, und wer JSON liest, übergeht Felder, die er nicht kennt.
+Ein Feld zu entfernen, umzubenennen oder im Typ zu ändern hebt \type{schema} an;
+das Buch nennt die Änderung.
+Bei einem Fehler schreibt der Befehl kein JSON; es gelten der Exit-Code
+und die Meldung auf der Fehlerausgabe.
+Endet ein Befehl mit Exit-Code 3, steht sein Objekt vor dem Fehler auf der Standardausgabe.
+Die übrigen Befehle haben keine JSON-Form; sie folgt mit den Schnittstellen der Phase 6.
 
 {\bf Exit-Codes.} Ein Skript kann sich auf diese Werte verlassen.
 
 \startitemize
 \item {\bf 0:} Der Befehl ist gelungen.
-\item {\bf 1:} Der Befehl ist gescheitert. Die Meldung auf der Fehlerausgabe hat das Präfix
-\type{stemma:}. Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
+\item {\bf 1:} Der Befehl ist gescheitert, aus einem anderen Grund als bei 4 und 5.
+Die Meldung auf der Fehlerausgabe hat das Präfix \type{stemma:}.
+Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
 einen Eintrag für eine Zeigerbewegung,
 die nicht stattfand (\type{op log} markiert ihn mit \type{!}),
 und bei den Befehlen \type{commit}, \type{status}, \type{diff}, \type{op restore}
@@ -117,6 +130,14 @@ Eine Ausgabe, die sich nicht schreiben liess, führt nur dann zu Code 3,
 wenn der Befehl etwas angelegt hat, das sonst nur die Ausgabe nennt.
 Bei \type{diff}, \type{status}, \type{op log}, \type{op verify}, \type{--dry-run}
 und dem Plan von \type{purge} ist sie Code 1.
+\item {\bf 4:} Der Befehl ist gescheitert, weil eine Sperre gehalten ist: die Sperre der
+Referenzen, oder das Log, dessen Schreiber jede Nummer an einen anderen verlor.
+Er hinterlässt höchstens die Spuren von Code 1, und ein späterer Aufruf kann gelingen:
+Ein Skript wartet und wiederholt den Befehl.
+\item {\bf 5:} Der Befehl hat einen Schaden gefunden: Das Operation Log hat eine Lücke
+oder eine falsche Nummer, seine Kette hält nicht, ein Eintrag oder eine Referenz ist nicht
+in kanonischer Form, oder ein Anker passt nicht. Ein Skript wiederholt den Befehl nicht;
+eine Person sieht sich das Repository an.
 \item {\bf 130, 143, 129:} Der Befehl wurde unterbrochen: mit Ctrl-C (130),
 mit \type{SIGTERM} (143) oder mit \type{SIGHUP} (129).
 Die Codes 143 und 129 gibt es nur unter Unix; unter Windows endet Ctrl-C mit 130.
@@ -248,7 +269,7 @@ und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
 \type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
 und hält sie bis zu seiner letzten Zeigerbewegung, also mindestens so lange, wie sein Snapshot
 dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
-Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit Exit-Code 1 ab und meldet
+Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit Exit-Code 4 ab und meldet
 die Sperre; er wartet nicht. Zwei Prozesse in einem Repository sind ohnehin nicht vorgesehen.
 Die Meldung nennt den Prozess, der die Sperre hält, wenn sie ihn kennt.
 Nach \type{kill -9} oder einem Absturz bleibt die Datei liegen (oder wenn das Programm Ctrl-C
@@ -485,7 +506,7 @@ stemma track -C projekt src
 Benennt den Working-Copy-Commit und beginnt einen neuen (ADR-010).
 
 \starttyping
-stemma commit -m NACHRICHT [-C VERZEICHNIS] --actor AKTEUR
+stemma commit -m NACHRICHT [-C VERZEICHNIS] --actor AKTEUR [--json]
 \stoptyping
 
 \startitemize
@@ -495,6 +516,7 @@ ist es ein Aufruffehler (Exit-Code 2). Einen Editor gibt es in Phase 1 nicht.
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\item {\bf \type{--json}:} Schreibt ein JSON-Objekt statt der Zeile (siehe unten).
 \stopitemize
 
 {\bf Verhalten.} Zuerst speichert der Befehl die verfolgten Dateien wie ein Snapshot
@@ -515,6 +537,15 @@ Der Befehl gibt eine Zeile mit der ID des Commits und dem Branch aus:
 Committed b3:4a0b66... on main
 \stoptyping
 
+{\bf JSON-Form.} Mit \type{--json} schreibt der Befehl statt dieser Zeile ein Objekt mit den
+Feldern \type{schema} (1), \type{commit} (die ID), \type{branch} und \type{resumed}.
+\type{resumed} ist \type{true}, wenn der Aufruf einen Commit beendet hat, der zwischen seinen
+beiden Zeigerbewegungen stehen geblieben war:
+
+\starttyping
+{"schema":1,"commit":"b3:4a0b66...","branch":"main","resumed":false}
+\stoptyping
+
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einer leeren Nachricht, bei einem offenen Purge
 und bei einem HEAD, der einen Commit und keinen Branch nennt.
 Diese Fälle brechen ab, bevor der Snapshot läuft, und ändern nichts.
@@ -524,6 +555,9 @@ steht, weil ihn jemand bewegt hat. Der Befehl lehnt dann ab, statt zu verwerfen,
 ein Rebase kommt in Phase 3. Diese beiden Fälle lassen den Snapshot zurück, und ein erneuter
 Aufruf ist unbedenklich.
 Hat der Snapshot einen Eintrag geschrieben, nennt ihn jede Meldung, die danach kommt, am Ende:
+
+Eine gehaltene Sperre beendet den Befehl mit Exit-Code 4, ein Schaden am Log oder an den
+Referenzen mit Exit-Code 5; der Aufruf lässt sich nach einer Sperre wiederholen.
 
 \starttyping
 stemma: the branch `main` is at b3:4a0b66..., but the working-copy commit is based on
@@ -585,7 +619,7 @@ Zeigt, was der Working-Copy-Commit gegenüber seinem Elternteil ändert,
 und welche Dateien nicht verfolgt sind (ADR-010).
 
 \starttyping
-stemma status [-C VERZEICHNIS] --actor AKTEUR
+stemma status [-C VERZEICHNIS] --actor AKTEUR [--json]
 \stoptyping
 
 \startitemize
@@ -593,6 +627,7 @@ stemma status [-C VERZEICHNIS] --actor AKTEUR
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben. Der Befehl macht einen Snapshot,
 und der Akteur ist der Akteur dieses Snapshots.
+\item {\bf \type{--json}:} Schreibt ein JSON-Objekt statt des Textes (siehe unten).
 \stopitemize
 
 Der Befehl nimmt keine Pfade und keine weiteren Argumente;
@@ -659,9 +694,10 @@ Eine verfolgte Datei, die ein Muster der Ausschlussdatei ausschliesst, bleibt in
 wenn das Verzeichnis in keinem Repository liegt (die Meldung nennt \type{-C} und
 \type{stemma init})
 und wenn ein Purge offen ist.
-Ebenso endet er bei einem Fehler im Repository, zum Beispiel einer beschädigten Datei
-\type{working-copy}, und bei einer Datei, die der Snapshot nicht lesen kann:
-Der Snapshot bricht ab, bevor sich ein Zeiger bewegt.
+Ebenso endet er bei einem Fehler im Repository und bei einer Datei, die der Snapshot
+nicht lesen kann: Der Snapshot bricht ab, bevor sich ein Zeiger bewegt.
+Eine beschädigte Datei \type{working-copy} ist ein Schaden (Exit-Code 5),
+eine gehaltene Sperre endet mit Exit-Code 4.
 Mit Exit-Code 1 endet er auch bei einer ungültigen Ausschlussdatei,
 bei einem Namen im Verzeichnis, den ein Baum ablehnt und den kein Muster ausschliesst,
 bei einem Namen ohne UTF-8 und bei einem Fehler des Dateisystems beim Auflisten.
@@ -689,7 +725,6 @@ meldet der Befehl nicht als solche; ein Bericht «verfolgt und ausgeschlossen»
 ist ein offener Punkt in ADR-012.
 Eine Spezialdatei (Socket, Pipe, Gerät) im Verzeichnis listet der Befehl als unverfolgt auf;
 \type{track} verweigert sie.
-Eine Option \type{--json} gibt es nicht.
 Die Zeiger liest der Befehl nacheinander und nicht unter der Sperre,
 ein gleichzeitiger Prozess kann also HEAD und Commit aus zwei Zuständen liefern.
 
@@ -874,7 +909,7 @@ Purge.
 3  2023-11-14T22:13:20Z  human daniel  (purged)
 \stoptyping
 
-{\bf JSON-Form.} Jede Zeile beginnt mit \type{number} und \type{kind}:
+{\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
 \type{change}, \type{stub} oder \type{purge}. Ein Stub hat dazu nur \type{time} und \type{actor};
 ein Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits} und \type{stubs}, eine
 Liste von Bereichen \type{[start, end]}. Für eine Änderung sind die weiteren Felder \type{time}
@@ -894,7 +929,7 @@ ist ein Eintrag nicht in kanonischer Form, passt die Nummer
 im Eintrag nicht zum Dateinamen, steht in \type{oplog/} eine fremde Datei,
 ist die Datei \type{oplog-tip} nicht kanonisch oder nennt sie einen Eintrag, den das
 Verzeichnis nicht hat, oder ist das Log ganz leer, bricht er ab, gibt nichts aus und
-endet mit Exit-Code 1.
+endet mit Exit-Code 5.
 Dasselbe gilt, wenn die Hash-Kette in den gezeigten Einträgen oder an ihrem Anschluss an den
 Eintrag davor bricht (\type{entry 3 does not name the hash of the entry before it}), wenn ein
 Eintrag aus der Zeit vor der Kette hinter ihr steht, und wenn die Datei \type{oplog-tip}
@@ -992,19 +1027,20 @@ anchor 12:b3:5c0e...7a41
 
 (Im Beispiel ist der Hash gekürzt; der Befehl gibt ihn vollständig aus.)
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn die Kette bricht: Die Meldung nennt den
+{\bf Fehler.} Mit Exit-Code 5 endet der Befehl, wenn die Kette bricht: Die Meldung nennt den
 ersten Eintrag, der nicht den Hash seines Vorgängers nennt
 (\type{entry 3 does not name the hash of the entry before it}). Ein geänderter, gelöschter,
 eingefügter oder vertauschter Eintrag bricht die Kette an dieser Stelle. Ebenso endet er bei
 einem Eintrag aus der Zeit vor der Kette, der hinter ihr steht, bei einer Datei
 \type{oplog-tip}, die für ihren Eintrag einen anderen Hash nennt, und bei jedem Fehler, den
-auch \type{op log} meldet. Ebenso endet er, wenn der letzte Eintrag in der Kette steht und
+auch \type{op log} meldet, mit dessen Exit-Code.
+Ebenso endet er, wenn der letzte Eintrag in der Kette steht und
 die Datei \type{oplog-tip} fehlt oder einen Eintrag nennt, der mehr als einen vor dem
 letzten liegt: Dann haben die Schreiber nichts mit ihr verglichen. Die übrigen Befehle nehmen
 das hin, denn ein Abbruch direkt nach einem Eintrag oder ein fehlgeschlagenes Schreiben der
 Datei hinterlässt es; der nächste Eintrag schreibt sie neu. Eine Datei \type{oplog-tip} der
 Version 1, die einen Eintrag der Kette nennt, ist nicht kanonisch. Mit \type{--anchor} endet
-der Befehl mit Exit-Code 1, wenn der Eintrag des Ankers fehlt, aus der Zeit vor der Kette
+der Befehl mit Exit-Code 5, wenn der Eintrag des Ankers fehlt, aus der Zeit vor der Kette
 stammt oder einen anderen Hash hat. Die Ausgabe erscheint nur, wenn alles hält. Lässt sie
 sich nicht schreiben, ist das Exit-Code 1; eine Pipe, die der Leser früh schliesst, ist kein
 Fehler.

@@ -61,6 +61,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::op_log;
 use stemma_core::diff::Edit;
+use stemma_core::failure::{Classify, FailureKind};
 use stemma_core::object::{ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
@@ -301,6 +302,10 @@ struct CommitArgs {
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
+
+    /// Write one JSON object instead of text (schema 1, ADR-017)
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -319,6 +324,10 @@ struct StatusArgs {
     /// environment sets STEMMA_ACTOR. The snapshot that the command takes is made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
+
+    /// Write one JSON object instead of text (schema 1, ADR-017)
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -509,6 +518,16 @@ enum CliError {
     },
 }
 
+/// The exit code of a failure of the given kind (ADR-017): 4 if a lock is held, 5 if the repository
+/// is damaged, 1 otherwise.
+fn by_kind(kind: FailureKind) -> ExitCode {
+    match kind {
+        FailureKind::Locked => ExitCode::from(4),
+        FailureKind::Damaged => ExitCode::from(5),
+        FailureKind::Other => ExitCode::FAILURE,
+    }
+}
+
 impl CliError {
     /// The exit code of the error (see the module documentation).
     fn exit_code(&self) -> ExitCode {
@@ -537,28 +556,29 @@ impl CliError {
             {
                 ExitCode::from(3)
             }
+            Self::Track(error) => by_kind(error.kind()),
+            Self::Commit(error) => by_kind(error.kind()),
+            Self::Status(error) => by_kind(error.kind()),
+            Self::Diff(error) => by_kind(error.kind()),
+            Self::Restore(error) => by_kind(error.kind()),
+            Self::OpLog(error) => by_kind(error.kind()),
+            Self::ApplyPurge(ApplyPurgeError::Snapshot(error)) => by_kind(error.kind()),
+            Self::AnchorMissing { .. } | Self::AnchorMismatch { .. } | Self::EmptyLog => {
+                ExitCode::from(5)
+            }
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
             | Self::Init(_)
             | Self::Open(_)
-            | Self::Track(_)
-            | Self::Commit(_)
-            | Self::Status(_)
             | Self::StatusOutput { .. }
-            | Self::Diff(_)
             | Self::DiffOutput { .. }
-            | Self::Restore(_)
             | Self::RestoreOutput { .. }
             | Self::Purge(_)
             | Self::PurgeOutput(_)
             | Self::ApplyPurge(_)
-            | Self::OpLog(_)
-            | Self::AnchorMissing { .. }
             | Self::AnchorUnchained { .. }
-            | Self::AnchorMismatch { .. }
             | Self::VerifyOutput(_)
-            | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
@@ -1361,14 +1381,24 @@ fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
              used, and what changed since the stop is not in that commit"
         );
     }
-    finish_commit(result, out)
+    finish_commit_as(result, args.json, out)
 }
 
 /// Writes what `commit` did. If a directory could not be flushed, the result is written first, so
 /// that a script can read the commit ID from the output before it sees the error. A closed pipe
 /// ends the output quietly.
+#[cfg(test)]
 fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError> {
-    let text = commit_text(&result);
+    finish_commit_as(result, false, out)
+}
+
+/// Like `finish_commit`, as text or as the JSON object of ADR-017.
+fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let text = if json {
+        commit_json(&result)
+    } else {
+        commit_text(&result)
+    };
     let committed = format!("{} on {}", result.commit, result.branch);
     let late = result.late;
     match out.write_all(text.as_bytes()) {
@@ -1403,7 +1433,7 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let result = repository
         .status(&actor, &AllowAll)
         .map_err(CliError::Status)?;
-    finish_status(result, out)
+    finish_status_as(result, args.json, out)
 }
 
 /// Shows the changes between two sides, named as `op log` names them. The core saves the tracked
@@ -1662,8 +1692,18 @@ fn push_line(text: &mut String, style: &str, mark: char, line: &str) {
 /// Writes the status. If the snapshot could not be flushed, the status is written first and the
 /// error comes after it. A closed pipe ends the output quietly, as for `op log`, and the error of
 /// flushing stays.
+#[cfg(test)]
 fn finish_status(status: Status, out: &mut dyn Write) -> Result<(), CliError> {
-    let text = status_text(&status);
+    finish_status_as(status, false, out)
+}
+
+/// Like `finish_status`, as text or as the JSON object of ADR-017.
+fn finish_status_as(status: Status, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let text = if json {
+        status_json(&status)
+    } else {
+        status_text(&status)
+    };
     let entry = status.snapshot.as_ref().map(|saved| saved.entry.number());
     let late = status.snapshot.and_then(|saved| saved.late);
     match out.write_all(text.as_bytes()) {
@@ -1744,6 +1784,49 @@ fn escape_path(path: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// The status as one JSON object and a newline (`schema` 1): `clean`, `changes` (a list of `kind`
+/// and `path`), `untracked`, and `leftovers`. A path is a plain JSON string, not escaped by
+/// [`escape_path`].
+fn status_json(status: &Status) -> String {
+    let paths = |paths: &[String]| {
+        paths
+            .iter()
+            .map(|path| op_log::quote(path))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let changes = status
+        .changes
+        .iter()
+        .map(|change| {
+            format!(
+                "{{\"kind\":\"{}\",\"path\":{}}}",
+                change.kind.letter(),
+                op_log::quote(&change.path)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let clean =
+        status.changes.is_empty() && status.untracked.is_empty() && status.leftovers.is_empty();
+    format!(
+        "{{\"schema\":1,\"clean\":{clean},\"changes\":[{changes}],\"untracked\":[{}],\
+         \"leftovers\":[{}]}}\n",
+        paths(&status.untracked),
+        paths(&status.leftovers)
+    )
+}
+
+/// The commit as one JSON object and a newline (`schema` 1): `commit`, `branch`, and `resumed`.
+fn commit_json(result: &Committed) -> String {
+    format!(
+        "{{\"schema\":1,\"commit\":{},\"branch\":{},\"resumed\":{}}}\n",
+        op_log::quote(&result.commit.to_string()),
+        op_log::quote(&result.branch.to_string()),
+        result.resumed
+    )
 }
 
 /// The one line that reports the commit: `Committed` for a new commit, `Finished the commit` if
@@ -2096,15 +2179,18 @@ mod tests {
             }),
             ExitCode::from(3)
         );
+        assert_eq!(
+            code(RestoreError::NoSuchEntry { number: 9 }),
+            ExitCode::FAILURE
+        );
         for error in [
             RestoreError::MoveFailed {
                 entry: entry.clone(),
                 source: locked(),
             },
-            RestoreError::NoSuchEntry { number: 9 },
             RestoreError::Refs(locked()),
         ] {
-            assert_eq!(code(error), ExitCode::FAILURE);
+            assert_eq!(code(error), ExitCode::from(4), "a held lock is retryable");
         }
         assert_eq!(
             code(RestoreError::SnapshotNotDurable {
@@ -2734,17 +2820,18 @@ mod tests {
             }),
             StatusError::Ignore(stemma_core::ignore::IgnoreError::Changed { path: dir.clone() }),
             StatusError::Walk(TrackError::InvalidName { path: "x".into() }),
-            StatusError::Refs {
-                source: RefError::Locked {
-                    path: dir.clone(),
-                    holder: stemma_core::refs::LockHolder::Unknown,
-                },
-                saved: None,
-            },
         ] {
             let error = CliError::Status(error);
             assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
         }
+        let locked = CliError::Status(StatusError::Refs {
+            source: RefError::Locked {
+                path: dir.clone(),
+                holder: stemma_core::refs::LockHolder::Unknown,
+            },
+            saved: None,
+        });
+        assert_eq!(locked.exit_code(), ExitCode::from(4), "{locked}");
         let walk = CliError::Status(StatusError::Walk(TrackError::InvalidName {
             path: "x".into(),
         }));
@@ -2817,16 +2904,21 @@ mod tests {
                 parents: Vec::new(),
                 tip: None,
             },
-            CommitError::Update(UpdateError::MoveFailed {
-                entry: Box::new(entry.clone()),
-                source: RefError::Locked {
-                    path: dir.clone(),
-                    holder: stemma_core::refs::LockHolder::Unknown,
-                },
-            }),
         ] {
             assert_eq!(CliError::Commit(error).exit_code(), ExitCode::FAILURE);
         }
+        let locked = CommitError::Update(UpdateError::MoveFailed {
+            entry: Box::new(entry.clone()),
+            source: RefError::Locked {
+                path: dir.clone(),
+                holder: stemma_core::refs::LockHolder::Unknown,
+            },
+        });
+        assert_eq!(
+            CliError::Commit(locked).exit_code(),
+            ExitCode::from(4),
+            "a held lock is retryable"
+        );
         // A pointer moved: code 3, and the text says what to do.
         let partly = CliError::Commit(CommitError::Update(UpdateError::PartlyMoved {
             entry: Box::new(entry.clone()),
@@ -3069,8 +3161,6 @@ mod tests {
             CliError::Open(OpenError::NotARepository {
                 path: PathBuf::from("."),
             }),
-            CliError::OpLog(OpLogError::Gap { missing: 2 }),
-            CliError::EmptyLog,
             CliError::Write {
                 entry: 1,
                 source: io_error(),
@@ -3086,6 +3176,12 @@ mod tests {
         ];
         for error in failed {
             assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
+        }
+        for error in [
+            CliError::OpLog(OpLogError::Gap { missing: 2 }),
+            CliError::EmptyLog,
+        ] {
+            assert_eq!(error.exit_code(), ExitCode::from(5), "damage: {error}");
         }
         let made = [
             CliError::Init(InitError::NotDurable {

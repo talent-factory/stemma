@@ -120,7 +120,7 @@ fn the_json_form_is_one_object_per_line() {
     assert_eq!(
         lines[0],
         format!(
-            "{{\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
+            "{{\"schema\":1,\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
              \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
@@ -128,7 +128,7 @@ fn the_json_form_is_one_object_per_line() {
         )
     );
     assert!(
-        lines[1].starts_with("{\"number\":1,")
+        lines[1].starts_with("{\"schema\":1,\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
             && lines[1].ends_with("\"branches\":[],\"purge_pending\":false,\"took_effect\":true}"),
         "{}",
@@ -151,7 +151,7 @@ fn a_gap_is_reported_and_nothing_is_listed() {
     let dir = repository();
     snapshot(dir.path(), 3, A, B);
     let result = run(dir.path(), &["op", "log"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr
@@ -170,7 +170,7 @@ fn an_empty_log_is_reported_and_nothing_is_listed() {
     fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();
     for args in [&["op", "log"][..], &["op", "log", "--json"][..]] {
         let result = run(dir.path(), args);
-        assert_eq!(result.code, 1);
+        assert_eq!(result.code, 5);
         assert!(
             result
                 .stderr
@@ -188,7 +188,7 @@ fn a_lost_last_entry_is_reported_by_the_tip_file_and_nothing_is_listed() {
     fs::remove_file(dir.path().join(".stemma/oplog/000000000001")).unwrap();
     for args in [&["op", "log"][..], &["op", "log", "--json"][..]] {
         let result = run(dir.path(), args);
-        assert_eq!(result.code, 1);
+        assert_eq!(result.code, 5);
         assert!(
             result.stderr.starts_with(
                 "stemma: the operation log ends at entry 0, but the tip file names entry 1"
@@ -206,7 +206,7 @@ fn a_damaged_entry_is_reported_and_nothing_is_listed() {
     snapshot(dir.path(), 2, "-", A);
     write_entry(dir.path(), 3, "time 1\nactor human daniel\n");
     let result = run(dir.path(), &["op", "log"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result.stderr.starts_with("stemma: the entry `") && result.stderr.contains("000000000003"),
         "{}",
@@ -562,12 +562,12 @@ fn a_stub_and_a_purge_are_shown_without_ids() {
     let lines: Vec<&str> = result.stdout.lines().collect();
     assert_eq!(
         lines[0],
-        "{\"number\":4,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
+        "{\"schema\":1,\"number\":4,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
          \"operation\":\"purge\",\"commits\":2,\"stubs\":[[2,3]]}"
     );
     assert_eq!(
         lines[1],
-        "{\"number\":3,\"kind\":\"stub\",\"time\":1700000000,\"actor\":\"human daniel\"}"
+        "{\"schema\":1,\"number\":3,\"kind\":\"stub\",\"time\":1700000000,\"actor\":\"human daniel\"}"
     );
 }
 
@@ -597,7 +597,7 @@ fn a_purge_with_several_ranges_lists_each() {
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(
         result.stdout,
-        "{\"number\":6,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
+        "{\"schema\":1,\"number\":6,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
          \"operation\":\"purge\",\"commits\":3,\"stubs\":[[2,3],[5,5]]}\n"
     );
 }
@@ -679,7 +679,11 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
     let result = run(dir.path(), &["op", "log", "--json"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     let lines: Vec<&str> = result.stdout.lines().collect();
-    assert!(lines[0].starts_with("{\"number\":5,"), "{}", result.stdout);
+    assert!(
+        lines[0].starts_with("{\"schema\":1,\"number\":5,"),
+        "{}",
+        result.stdout
+    );
     assert!(
         lines[0].ends_with("\"took_effect\":true}"),
         "{}",
@@ -687,7 +691,7 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
     );
     for (line, number) in [(3, 2), (4, 1)] {
         assert!(
-            lines[line].starts_with(&format!("{{\"number\":{number},")),
+            lines[line].starts_with(&format!("{{\"schema\":1,\"number\":{number},")),
             "{}",
             result.stdout
         );

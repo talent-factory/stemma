@@ -341,16 +341,6 @@ fn an_argument_that_status_does_not_take_is_a_usage_error_and_saves_nothing() {
 }
 
 #[test]
-fn there_is_no_json_form() {
-    let dir = repository();
-
-    let result = run(dir.path(), &["status", "--actor", "human alice", "--json"]);
-
-    assert_eq!(result.code, 2, "{}", result.stderr);
-    assert_eq!(result.stdout, "");
-}
-
-#[test]
 fn the_help_names_the_command_and_its_flags() {
     let dir = repository();
 
@@ -424,7 +414,7 @@ fn a_name_that_a_tree_refuses_is_left_out_when_a_pattern_excludes_it() {
 }
 
 #[test]
-fn a_file_that_is_corrupt_in_the_repository_fails_without_a_trace() {
+fn a_file_that_is_corrupt_in_the_repository_is_damage_with_code_5_and_no_trace() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
@@ -432,7 +422,7 @@ fn a_file_that_is_corrupt_in_the_repository_fails_without_a_trace() {
 
     let result = status(dir.path());
 
-    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.code, 5, "{}", result.stdout);
     assert_eq!(result.stdout, "");
     assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
     assert_eq!(operations(dir.path()).len(), entries);
@@ -633,5 +623,37 @@ fn a_leftover_of_an_interrupted_restore_is_listed_in_its_own_section() {
         operations(dir.path()).len(),
         entries,
         "no snapshot: nothing changed"
+    );
+}
+
+#[test]
+fn json_of_a_clean_working_copy() {
+    let dir = repository();
+
+    let result = run(dir.path(), &["status", "--actor", ACTOR, "--json"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "{\"schema\":1,\"clean\":true,\"changes\":[],\"untracked\":[],\"leftovers\":[]}\n"
+    );
+}
+
+#[test]
+fn json_lists_changes_and_untracked_files_with_plain_paths() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    commit(dir.path(), "Add a");
+    write(dir.path(), "a.txt", "two");
+    write(dir.path(), "new \"name\".txt", "x");
+
+    let result = run(dir.path(), &["status", "--actor", ACTOR, "--json"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "{\"schema\":1,\"clean\":false,\"changes\":[{\"kind\":\"M\",\"path\":\"a.txt\"}],\
+         \"untracked\":[\"new \\\"name\\\".txt\"],\"leftovers\":[]}\n"
     );
 }

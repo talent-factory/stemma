@@ -341,7 +341,7 @@ fn a_lost_last_entry_stops_track_and_changes_nothing() {
 
     let result = track(dir.path(), &["b.txt"]);
 
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result.stderr.contains("the tip file names entry 2"),
         "{}",
