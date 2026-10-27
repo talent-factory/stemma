@@ -12,10 +12,6 @@ Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und 
 \item Konflikte als Daten im Commit oder als Markierung in der Arbeitskopie.
 Kapitel 2 beschreibt das Vorbild Jujutsu; die Entscheidung ist offen.
 \item Berechnung des Merges ist Stufe 2 nach ADR-004.
-\item Abgeleitete Daten, etwa Indizes für \type{log} oder später Blame, sind ein Cache
-unter \type{.stemma/derived/}, der nie zum Objektmodell gehört. Sie werden bei der ersten
-Abfrage aus den Werten der Eltern berechnet; ein Löschen des Verzeichnisses kostet nur Zeit,
-und ein Purge entfernt es (ADR-017, Vorschlag).
 \stopitemize
 
 \section{Offene Fragen}
@@ -24,4 +20,8 @@ und ein Purge entfernt es (ADR-017, Vorschlag).
 \item Konfliktmodell: Daten im Commit oder klassische Markierung?
 \item Rebase: Ja oder nein in Phase 3?
 \item Verhalten bei einem Branch, der in einem anderen Worktree ausgecheckt ist.
+\item Abgeleitete Daten, etwa Indizes für \type{log} oder später Blame, auch schon für den
+Diff aus Phase 2. ADR-017 schlägt einen Cache unter \type{.stemma/derived/} vor, der nie zum
+Objektmodell gehört. Er wird bei der ersten Abfrage aus den Werten der Eltern gefüllt, ein
+Löschen kostet nur Zeit, und ein Purge entfernt ihn. Der Vorschlag ist nicht entschieden.
 \stopitemize
