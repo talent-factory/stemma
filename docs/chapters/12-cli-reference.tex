@@ -706,7 +706,7 @@ Zeigt die Änderungen zwischen zwei Commits oder zwischen einem Commit und dem
 Working-Copy-Commit, zeilenweise mit Kontext (ADR-010).
 
 \starttyping
-stemma diff [-C VERZEICHNIS] --actor AKTEUR [--exit-code] [COMMIT [COMMIT]]
+stemma diff [-C VERZEICHNIS] --actor AKTEUR [--exit-code] [--tui] [COMMIT [COMMIT]]
 \stoptyping
 
 \startitemize
@@ -715,6 +715,9 @@ stemma diff [-C VERZEICHNIS] --actor AKTEUR [--exit-code] [COMMIT [COMMIT]]
 ist dieser Akteur der des Snapshots.
 \item {\bf \type{--exit-code}:} Endet mit Exit-Code 4, wenn sich mindestens eine Datei
 unterscheidet; sonst mit 0. Ohne diese Option endet er mit 0, auch bei Unterschieden.
+\item {\bf \type{--tui}:} Zeigt den Diff in einer Oberfläche im Terminal, in der man durch
+die Dateien und Hunks blättert, statt ihn auszugeben (ADR-016). Sie braucht ein Terminal
+auf der Standardausgabe.
 \item {\bf \type{COMMIT}:} Die Kennung eines Commits, so wie \type{op log} sie schreibt,
 also \type{b3:} gefolgt vom Hash. Ohne Argument vergleicht der Befehl den Working-Copy-Commit
 mit seinem Elternteil. Mit einem Argument vergleicht er diesen Commit mit dem
@@ -786,12 +789,37 @@ ebenfalls ab, bis der Pager endet.
 Ist die Ausgabe kein Terminal, also eine Pipe oder eine Datei, gibt es weder Farbe noch Pager,
 damit Skripte reinen Text lesen. Unter Windows gibt es zurzeit immer reinen Text.
 
+Mit \type{--tui} zeigt der Befehl links die Dateien und rechts die Zeilen der gewählten Datei.
+Entfernte Zeilen sind rot, eingefügte grün und die Zeilen \type{@@} cyan; der Pfad steht im
+Rahmen der Datei, Kopfzeilen mit \type{diff}, \type{---} und \type{+++} gibt es nicht.
+Hat die letzte Zeile kein Zeilenende, folgt ihr die Zeile
+\type{\ No newline at end of file}, wie im Text des Befehls.
+Ein Tabulator erscheint als vier Leerzeichen.
+Die Oberfläche ist schreibgeschützt. Die Tasten:
+\type{J} und \type{K} (oder Tab und Shift-Tab) wählen die nächste und die vorige Datei,
+\type{n} und \type{p} den nächsten und den vorigen Hunk, über Dateigrenzen hinweg,
+\type{j} und \type{k} (oder die Pfeiltasten) blättern um eine Zeile,
+Leertaste und \type{b} (oder Bild ab und Bild auf) um 20 Zeilen.
+Das Blättern endet an der letzten Zeile der Datei, die dann als oberste Zeile steht.
+Es verschiebt die Auswahl nicht: \type{n} und \type{p} gehen vom zuletzt gewählten Hunk aus,
+auch wenn das Blättern einen anderen ins Bild gebracht hat.
+\type{q}, Esc und Ctrl-C beenden die Oberfläche. Ctrl-C kommt im Raw-Modus als Taste an und
+wirkt wie \type{q}: Der Befehl endet mit 0, oder mit 4 bei \type{--exit-code} und
+Unterschieden, nicht mit 130.
+Ein Signal, das nur den Befehl trifft (\type{SIGTERM}, \type{SIGHUP}, \type{kill -INT}),
+beendet zuerst die Oberfläche, die das Terminal zurückgibt, und dann den Befehl mit 143, 129
+oder 130. Ein \type{SIGKILL} lässt sich nicht abfangen; das Terminal braucht dann \type{reset}.
+Sind keine Dateien verschieden, startet die Oberfläche nicht.
+Ist die Ausgabe kein Terminal, oder läuft der Befehl unter Windows, endet er mit Exit-Code 1,
+ehe er etwas liest oder speichert; Skripte nehmen \type{diff} ohne \type{--tui}.
+
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist, wenn das Verzeichnis
 in keinem Repository liegt, wenn ein Argument keine Kennung eines Commits im Repository ist
 (auch die eines Baums oder einer Datei gilt als unbekannt),
 wenn der Snapshot fehlschlägt, wenn ein Objekt, das der Vergleich braucht, fehlt oder beschädigt
 ist, oder wenn eine Referenz nicht lesbar ist.
-Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt.
+Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt oder wenn die Oberfläche
+von \type{--tui} ausfällt, etwa weil sich das Terminal nicht einrichten lässt.
 Hat der Snapshot den Zeiger bewegt, aber nicht sichern können, endet der Befehl mit
 Exit-Code 3, wie \type{status}; die Ausgabe bleibt dann aus.
 Schliesst der Leser der Ausgabe die Pipe früh, endet der Befehl ohne Fehler; mit
@@ -810,6 +838,7 @@ und Einfügung. Eine Option für ein Format für Maschinen gibt es nicht.
 \starttyping
 stemma diff --actor "human daniel"
 stemma diff --actor "human daniel" --exit-code
+stemma diff --actor "human daniel" --tui
 stemma diff b3:4f2a0c… --actor "human daniel"
 stemma diff b3:4f2a0c… b3:7d9e21… --actor "human daniel"
 \stoptyping
