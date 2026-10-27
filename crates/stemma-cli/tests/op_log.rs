@@ -612,7 +612,7 @@ fn a_stub_that_no_purge_lists_is_reported() {
     snapshot(dir.path(), 2, &first, A);
     write_stub_entry(dir.path(), 2, "stub\n");
     let result = run(dir.path(), &["op", "log"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr

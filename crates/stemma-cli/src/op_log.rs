@@ -6,6 +6,10 @@ use std::fmt::{self, Display, Write};
 use stemma_core::oplog::{Change, Entry, Moved, Outcome, Purge, Record};
 use stemma_core::refs::Head;
 
+/// The `schema` of every JSON object the program writes (ADR-017). One number covers all of them:
+/// removing, renaming, or retyping a field of any object raises it.
+pub const JSON_SCHEMA: u32 = 1;
+
 /// The value of a pointer as the log writes it: `-` if it does not exist.
 pub(crate) fn value<T: Display>(value: Option<&T>) -> String {
     value.map_or_else(|| "-".to_owned(), ToString::to_string)
@@ -176,7 +180,7 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
     match entry.record() {
         Record::Change(change) => change_json(entry, change, outcome, pending),
         Record::Stub(_) => format!(
-            "{{\"schema\":1,\"number\":{},\"kind\":\"stub\",\"time\":{},\"actor\":{}}}",
+            "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"stub\",\"time\":{},\"actor\":{}}}",
             entry.number(),
             entry.time(),
             quote(&entry.actor().to_string())
@@ -192,7 +196,7 @@ fn purge_json(entry: &Entry, purge: &Purge) -> String {
         .map(|(start, end)| format!("[{start},{end}]"))
         .collect();
     format!(
-        "{{\"schema\":1,\"number\":{},\"kind\":\"purge\",\"time\":{},\"actor\":{},\"operation\":\"purge\",\
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"purge\",\"time\":{},\"actor\":{},\"operation\":\"purge\",\
          \"commits\":{},\"stubs\":[{}]}}",
         entry.number(),
         entry.time(),
@@ -234,7 +238,7 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
         })
         .collect();
     format!(
-        "{{\"schema\":1,\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
          \"head\":{head},\
          \"working_copy\":{working_copy},\"branches\":[{}],\"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",

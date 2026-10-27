@@ -130,14 +130,18 @@ Eine Ausgabe, die sich nicht schreiben liess, führt nur dann zu Code 3,
 wenn der Befehl etwas angelegt hat, das sonst nur die Ausgabe nennt.
 Bei \type{diff}, \type{status}, \type{op log}, \type{op verify}, \type{--dry-run}
 und dem Plan von \type{purge} ist sie Code 1.
-\item {\bf 4:} Der Befehl ist gescheitert, weil eine Sperre gehalten ist: die Sperre der
+\item {\bf 4:} Nur bei \type{diff --exit-code}: Mindestens eine Datei unterscheidet sich.
+Dieser Code ist kein Fehler und wird nie für eine Sperre verwendet.
+\item {\bf 5:} Der Befehl hat einen Schaden gefunden: Das Operation Log hat eine Lücke
+oder eine falsche Nummer, seine Kette hält nicht, ein Eintrag oder eine Referenz ist nicht
+in kanonischer Form, ein Objekt, das ein Commit nennt, fehlt oder lässt sich nicht lesen,
+oder ein Anker passt nicht (sein Eintrag fehlt, stammt aus der Zeit vor der Kette oder hat
+einen anderen Hash).
+Ein Skript wiederholt den Befehl nicht; eine Person sieht sich das Repository an.
+\item {\bf 6:} Der Befehl ist gescheitert, weil eine Sperre gehalten ist: die Sperre der
 Referenzen, oder das Log, dessen Schreiber jede Nummer an einen anderen verlor.
 Er hinterlässt höchstens die Spuren von Code 1, und ein späterer Aufruf kann gelingen:
 Ein Skript wartet und wiederholt den Befehl.
-\item {\bf 5:} Der Befehl hat einen Schaden gefunden: Das Operation Log hat eine Lücke
-oder eine falsche Nummer, seine Kette hält nicht, ein Eintrag oder eine Referenz ist nicht
-in kanonischer Form, oder ein Anker passt nicht. Ein Skript wiederholt den Befehl nicht;
-eine Person sieht sich das Repository an.
 \item {\bf 130, 143, 129:} Der Befehl wurde unterbrochen: mit Ctrl-C (130),
 mit \type{SIGTERM} (143) oder mit \type{SIGHUP} (129).
 Die Codes 143 und 129 gibt es nur unter Unix; unter Windows endet Ctrl-C mit 130.
@@ -269,7 +273,7 @@ und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
 \type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
 und hält sie bis zu seiner letzten Zeigerbewegung, also mindestens so lange, wie sein Snapshot
 dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
-Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit Exit-Code 4 ab und meldet
+Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit Exit-Code 6 ab und meldet
 die Sperre; er wartet nicht. Zwei Prozesse in einem Repository sind ohnehin nicht vorgesehen.
 Die Meldung nennt den Prozess, der die Sperre hält, wenn sie ihn kennt.
 Nach \type{kill -9} oder einem Absturz bleibt die Datei liegen (oder wenn das Programm Ctrl-C
@@ -556,14 +560,14 @@ ein Rebase kommt in Phase 3. Diese beiden Fälle lassen den Snapshot zurück, un
 Aufruf ist unbedenklich.
 Hat der Snapshot einen Eintrag geschrieben, nennt ihn jede Meldung, die danach kommt, am Ende:
 
-Eine gehaltene Sperre beendet den Befehl mit Exit-Code 4, ein Schaden am Log oder an den
-Referenzen mit Exit-Code 5; der Aufruf lässt sich nach einer Sperre wiederholen.
-
 \starttyping
 stemma: the branch `main` is at b3:4a0b66..., but the working-copy commit is based on
 b3:9c1d2e...; committing would leave out what the branch has; the working copy was saved
 first as entry 12
 \stoptyping
+
+Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und lässt sich wiederholen;
+ein Schaden am Log, an den Referenzen oder an einem Objekt beendet ihn mit Exit-Code 5.
 
 Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das,
 und der Aufruf lässt sich wiederholen. Scheitert die Zeigerbewegung, nachdem der Eintrag im Log
@@ -690,22 +694,42 @@ Bei \type{track} gilt dieselbe Regel.
 Eine verfolgte Datei, die ein Muster der Ausschlussdatei ausschliesst, bleibt in den
 Änderungen; sie wird weiter gespeichert.
 
+{\bf JSON-Form.} Mit \type{--json} schreibt der Befehl statt des Textes ein Objekt mit den Feldern
+\type{schema} (1), \type{clean}, \type{changes}, \type{untracked} und \type{leftovers}.
+\type{clean} ist \type{true}, wenn alle drei Listen leer sind.
+\type{changes} enthält je Änderung \type{kind} und \type{path}; \type{kind} ist {\tt A}
+(neu), {\tt M} (geändert) oder {\tt D} (gelöscht), und diese Buchstaben gehören zu Schema 1,
+auch wenn sich der Text ändern darf.
+Die Pfade sind JSON-Strings und nicht so maskiert wie im Text.
+Das Beispiel ist umgebrochen; der Befehl schreibt eine Zeile:
+
+\starttyping
+{"schema":1,"clean":false,
+"changes":[{"kind":"M","path":"a.txt"}],
+"untracked":["b.txt"],"leftovers":[]}
+\stoptyping
+
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist,
 wenn das Verzeichnis in keinem Repository liegt (die Meldung nennt \type{-C} und
 \type{stemma init})
 und wenn ein Purge offen ist.
-Ebenso endet er bei einem Fehler im Repository und bei einer Datei, die der Snapshot
-nicht lesen kann: Der Snapshot bricht ab, bevor sich ein Zeiger bewegt.
-Eine beschädigte Datei \type{working-copy} ist ein Schaden (Exit-Code 5),
-eine gehaltene Sperre endet mit Exit-Code 4.
 Mit Exit-Code 1 endet er auch bei einer ungültigen Ausschlussdatei,
 bei einem Namen im Verzeichnis, den ein Baum ablehnt und den kein Muster ausschliesst,
-bei einem Namen ohne UTF-8 und bei einem Fehler des Dateisystems beim Auflisten.
+bei einem Namen ohne UTF-8, bei einem Fehler des Dateisystems beim Auflisten
+und bei einer Datei, die der Snapshot nicht lesen kann: Der Snapshot bricht ab,
+bevor sich ein Zeiger bewegt.
 Die Ausschlussdatei liest der Befehl und das Verzeichnis durchläuft er vor dem Snapshot;
 diese Meldungen sagen, dass nichts geschrieben wurde.
 
+Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6.
+Ein Schaden endet mit Exit-Code 5: eine beschädigte Datei \type{working-copy} oder Referenz,
+ein Log mit Lücke, ein Objekt, das der Working-Copy-Commit nennt und das fehlt oder sich nicht
+lesen lässt.
+Mit \type{--json} schreibt der Befehl in beiden Fällen nichts auf die Standardausgabe.
+
 Scheitert das Lesen der Referenzen, der Commits oder der Bäume erst nach dem Snapshot,
-oder lässt sich die Ausgabe nicht schreiben, endet der Befehl ebenfalls mit Exit-Code 1.
+oder lässt sich die Ausgabe nicht schreiben, endet der Befehl mit Exit-Code 1
+(bei einem Schaden mit Exit-Code 5).
 Hat der Snapshot einen Eintrag gemacht, bleibt dieser (zweite Spur oben),
 und die Meldung nennt ihn; ein erneuter Aufruf findet dann nichts mehr zu speichern.
 Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}),
@@ -824,9 +848,10 @@ damit Skripte reinen Text lesen. Unter Windows gibt es zurzeit immer reinen Text
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist, wenn das Verzeichnis
 in keinem Repository liegt, wenn ein Argument keine Kennung eines Commits im Repository ist
 (auch die eines Baums oder einer Datei gilt als unbekannt),
-wenn der Snapshot fehlschlägt, wenn ein Objekt, das der Vergleich braucht, fehlt oder beschädigt
-ist, oder wenn eine Referenz nicht lesbar ist.
+wenn der Snapshot fehlschlägt oder wenn eine Referenz nicht lesbar ist.
 Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt.
+Ein Objekt, das der Vergleich braucht und das fehlt oder beschädigt ist, ist ein Schaden
+und endet mit Exit-Code 5; eine gehaltene Sperre beim Snapshot endet mit Exit-Code 6.
 Hat der Snapshot den Zeiger bewegt, aber nicht sichern können, endet der Befehl mit
 Exit-Code 3, wie \type{status}; die Ausgabe bleibt dann aus.
 Schliesst der Leser der Ausgabe die Pipe früh, endet der Befehl ohne Fehler; mit
@@ -1156,10 +1181,12 @@ einem Eintrag, den ein Purge nennt, der noch nicht fertig ist;
 diese Fälle hebt auch \type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren
 Zeigerbewegungen niemand mehr kennt; der Ausgang jedes Eintrags vor dem jüngsten Stub ist deshalb
 unbekannt, und er braucht \type{--force}. Nennt kein Purge einen Stub im Log, endet der Befehl
-ebenfalls mit Exit-Code 1, und ebenso, wenn die Hash-Kette des Logs bricht (siehe \type{op verify}).
-Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt, eine Sperre
-der Referenzen (ein anderer Vorgang schreibt: später noch einmal) und eine Datei oder ein
-Verzeichnis, das nicht verfolgt wird und dort liegt, wo der Baum eine Datei braucht.
+ebenfalls mit Exit-Code 5, und ebenso, wenn die Hash-Kette des Logs bricht (siehe \type{op verify}).
+Dazu kommen ein Commit, der im Objektspeicher fehlt, ein Branch-Name, der im Weg liegt,
+und eine Datei oder ein Verzeichnis, das nicht verfolgt wird und dort liegt,
+wo der Baum eine Datei braucht.
+Eine Sperre der Referenzen (ein anderer Vorgang schreibt: später noch einmal)
+endet mit Exit-Code 6, ein beschädigtes Log oder eine beschädigte Referenz mit Exit-Code 5.
 In diesen Fällen hat das Restore nichts geschrieben; hatte der Befehl vorher einen Snapshot
 gemacht, nennt die Meldung ihn.
 
@@ -1345,6 +1372,8 @@ Agent ist, wenn das Verzeichnis kein Repository ist, wenn der Objektspeicher kei
 der ID hat (auch wenn die ID einen Commit oder einen Baum nennt) oder die Datei des Blobs
 beschädigt ist, wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
 und wenn ein Objekt im Speicher beschädigt ist: Dann ist nicht bekannt, ob es den Blob nennt.
+Ist die Ursache ein Schaden, endet der Befehl mit Exit-Code 5 statt 1, bei einer gehaltenen
+Sperre mit Exit-Code 6.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.
 Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung eines Agenten
 mit \type{could not plan the purge, nothing was written}.
@@ -1352,8 +1381,9 @@ Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen w�
 erst ein Merge (Phase 3). Er endet auch, wenn der Purge mehr als $2^{24}$ Einträge des Log
 ersetzen würde, mehr, als sein Journal aufnimmt.
 Mit \type{--apply} endet er mit Exit-Code 1 auch, wenn der Snapshot scheitert oder der Purge
-unter der Sperre nicht beginnen kann, etwa weil die Sperre gehalten wird; dann besteht kein
-Journal, das Format kann aber schon 3 sein. Hat der Snapshot das Verzeichnis gespeichert,
+unter der Sperre nicht beginnen kann; dann besteht kein Journal, das Format kann aber schon 3
+sein. Eine gehaltene Sperre endet dabei mit Exit-Code 6, ein Schaden mit Exit-Code 5.
+Hat der Snapshot das Verzeichnis gespeichert,
 nennt die Meldung am Ende seinen Eintrag. Hat der Snapshot den Zeiger bewegt, aber nicht
 gesichert, ist es Exit-Code 3 wie bei \type{commit}. \type{--resume} und \type{--abort} ohne Journal
 enden mit Exit-Code 1 und der Meldung \type{no purge is pending}.

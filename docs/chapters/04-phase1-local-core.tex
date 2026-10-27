@@ -940,7 +940,7 @@ Dafür sorgt die Sperre der Referenzen, die Datei \type{.stemma/refs.lock} (ADR-
 Ein Befehl, der schreibt, hält sie von seinem ersten Objekt bis zu seiner letzten Zeigerbewegung,
 ein Purge von seinem Plan bis zu seinem Ende.
 Ein zweiter Befehl, der in dieser Zeit schreiben will, wartet nicht:
-Er bricht sofort mit Exit-Code 4 ab,
+Er bricht sofort mit Exit-Code 6 ab,
 und die Meldung nennt den Prozess, der die Sperre hält, wenn sie ihn kennt.
 Eine einzige Sperre für alle Zeiger ist grob,
 aber ein Befehl hält sie meist nur kurz, und die Regel bleibt einfach.
@@ -1975,7 +1975,7 @@ wenn noch ein Zeiger zurück muss \stopxcell
 \startinfobox
 {\bf Wenn \type{status} die Sperre nicht übernimmt.}
 \startitemize
-\item Nennt \type{refs.lock} einen anderen Rechner, bricht \type{status} mit Exit-Code 4 ab,
+\item Nennt \type{refs.lock} einen anderen Rechner, bricht \type{status} mit Exit-Code 6 ab,
 und die Meldung nennt den Rechner und den Prozess.
 Läuft dort kein Befehl mehr, ist die Datei von Hand zu entfernen;
 läuft einer, wartet man auf sein Ende.

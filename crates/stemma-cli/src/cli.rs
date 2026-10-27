@@ -27,7 +27,14 @@
 //! An `op restore` writes its result before an error that follows a restore that was made, as
 //! `commit` does.
 //!
-//! Code 1 can leave two traces. A write that fails after its entry is in the operation log
+//! Two more codes split code 1 (ADR-017, [`FailureKind`]). Code 5 is damage: the log, a
+//! reference file, or an object is not as it must be, or the chain does not match an anchor; a
+//! retry does not help. Code 6 is a held lock, or a log whose writer lost every number race; a
+//! later call can succeed. Code 4 is not among them: `diff --exit-code` ends with it when a file
+//! differs. Code 3 takes precedence: a command that moved a pointer ends with 3 whatever the cause
+//! was. `init` and a repository that cannot be opened stay at 1.
+//!
+//! Codes 1 and 6 can leave two traces. A write that fails after its entry is in the operation log
 //! (`track`, `commit`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
 //! and no pointer moved: the same call run again completes it. And a command that saves the
@@ -59,7 +66,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::op_log;
+use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::diff::Edit;
 use stemma_core::failure::{Classify, FailureKind};
 use stemma_core::object::{ObjectId, METADATA_DIR};
@@ -303,7 +310,7 @@ struct CommitArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 
-    /// Write one JSON object instead of text (schema 1, ADR-017)
+    /// Write one JSON object instead of text (the schema of ADR-017)
     #[arg(long)]
     json: bool,
 }
@@ -325,7 +332,7 @@ struct StatusArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 
-    /// Write one JSON object instead of text (schema 1, ADR-017)
+    /// Write one JSON object instead of text (the schema of ADR-017)
     #[arg(long)]
     json: bool,
 }
@@ -518,11 +525,11 @@ enum CliError {
     },
 }
 
-/// The exit code of a failure of the given kind (ADR-017): 4 if a lock is held, 5 if the repository
-/// is damaged, 1 otherwise.
+/// The exit code of a failure of the given kind (ADR-017): 6 if a lock is held, 5 if the repository
+/// is damaged, 1 otherwise. Code 4 is taken by `diff --exit-code`.
 fn by_kind(kind: FailureKind) -> ExitCode {
     match kind {
-        FailureKind::Locked => ExitCode::from(4),
+        FailureKind::Locked => ExitCode::from(6),
         FailureKind::Damaged => ExitCode::from(5),
         FailureKind::Other => ExitCode::FAILURE,
     }
@@ -562,10 +569,12 @@ impl CliError {
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
             Self::OpLog(error) => by_kind(error.kind()),
-            Self::ApplyPurge(ApplyPurgeError::Snapshot(error)) => by_kind(error.kind()),
-            Self::AnchorMissing { .. } | Self::AnchorMismatch { .. } | Self::EmptyLog => {
-                ExitCode::from(5)
-            }
+            Self::Purge(error) => by_kind(error.kind()),
+            Self::ApplyPurge(error) => by_kind(error.kind()),
+            Self::AnchorMissing { .. }
+            | Self::AnchorUnchained { .. }
+            | Self::AnchorMismatch { .. }
+            | Self::EmptyLog => ExitCode::from(5),
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
@@ -574,10 +583,7 @@ impl CliError {
             | Self::StatusOutput { .. }
             | Self::DiffOutput { .. }
             | Self::RestoreOutput { .. }
-            | Self::Purge(_)
             | Self::PurgeOutput(_)
-            | Self::ApplyPurge(_)
-            | Self::AnchorUnchained { .. }
             | Self::VerifyOutput(_)
             | Self::Write { .. } => ExitCode::FAILURE,
         }
@@ -1384,15 +1390,15 @@ fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     finish_commit_as(result, args.json, out)
 }
 
-/// Writes what `commit` did. If a directory could not be flushed, the result is written first, so
-/// that a script can read the commit ID from the output before it sees the error. A closed pipe
-/// ends the output quietly.
+/// The text form of [`finish_commit_as`], for tests.
 #[cfg(test)]
 fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError> {
     finish_commit_as(result, false, out)
 }
 
-/// Like `finish_commit`, as text or as the JSON object of ADR-017.
+/// Writes what `commit` did, as text or as the JSON object of ADR-017. If a directory could not
+/// be flushed, the result is written first, so that a script can read the commit ID from the
+/// output before it sees the error. A closed pipe ends the output quietly.
 fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
     let text = if json {
         commit_json(&result)
@@ -1689,15 +1695,15 @@ fn push_line(text: &mut String, style: &str, mark: char, line: &str) {
     text.push_str(line_end);
 }
 
-/// Writes the status. If the snapshot could not be flushed, the status is written first and the
-/// error comes after it. A closed pipe ends the output quietly, as for `op log`, and the error of
-/// flushing stays.
+/// The text form of [`finish_status_as`], for tests.
 #[cfg(test)]
 fn finish_status(status: Status, out: &mut dyn Write) -> Result<(), CliError> {
     finish_status_as(status, false, out)
 }
 
-/// Like `finish_status`, as text or as the JSON object of ADR-017.
+/// Writes the status, as text or as the JSON object of ADR-017. If the snapshot could not be
+/// flushed, the status is written first and the error comes after it. A closed pipe ends the
+/// output quietly, as for `op log`, and the error of flushing stays.
 fn finish_status_as(status: Status, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
     let text = if json {
         status_json(&status)
@@ -1786,7 +1792,7 @@ fn escape_path(path: &str) -> String {
         .join("/")
 }
 
-/// The status as one JSON object and a newline (`schema` 1): `clean`, `changes` (a list of `kind`
+/// The status as one JSON object and a newline (`schema`, ADR-017): `clean`, `changes` (a list of `kind`
 /// and `path`), `untracked`, and `leftovers`. A path is a plain JSON string, not escaped by
 /// [`escape_path`].
 fn status_json(status: &Status) -> String {
@@ -1812,17 +1818,17 @@ fn status_json(status: &Status) -> String {
     let clean =
         status.changes.is_empty() && status.untracked.is_empty() && status.leftovers.is_empty();
     format!(
-        "{{\"schema\":1,\"clean\":{clean},\"changes\":[{changes}],\"untracked\":[{}],\
+        "{{\"schema\":{JSON_SCHEMA},\"clean\":{clean},\"changes\":[{changes}],\"untracked\":[{}],\
          \"leftovers\":[{}]}}\n",
         paths(&status.untracked),
         paths(&status.leftovers)
     )
 }
 
-/// The commit as one JSON object and a newline (`schema` 1): `commit`, `branch`, and `resumed`.
+/// The commit as one JSON object and a newline (`schema`, ADR-017): `commit`, `branch`, and `resumed`.
 fn commit_json(result: &Committed) -> String {
     format!(
-        "{{\"schema\":1,\"commit\":{},\"branch\":{},\"resumed\":{}}}\n",
+        "{{\"schema\":{JSON_SCHEMA},\"commit\":{},\"branch\":{},\"resumed\":{}}}\n",
         op_log::quote(&result.commit.to_string()),
         op_log::quote(&result.branch.to_string()),
         result.resumed
@@ -2083,7 +2089,7 @@ mod tests {
     }
 
     #[test]
-    fn a_purge_that_leaves_its_journal_ends_with_code_3_and_one_that_did_not_start_with_code_1() {
+    fn a_purge_that_leaves_its_journal_ends_with_code_3_and_one_that_did_not_start_by_its_kind() {
         use stemma_core::repository::{PurgeFailure, PurgeStep};
         let path = PathBuf::from(".stemma/purge-pending");
         let code = |error: ApplyPurgeError| CliError::ApplyPurge(error).exit_code();
@@ -2140,7 +2146,7 @@ mod tests {
                     holder: stemma_core::refs::LockHolder::Unknown,
                 }
             ))),
-            ExitCode::FAILURE
+            ExitCode::from(6)
         );
     }
 
@@ -2190,7 +2196,7 @@ mod tests {
             },
             RestoreError::Refs(locked()),
         ] {
-            assert_eq!(code(error), ExitCode::from(4), "a held lock is retryable");
+            assert_eq!(code(error), ExitCode::from(6), "a held lock is retryable");
         }
         assert_eq!(
             code(RestoreError::SnapshotNotDurable {
@@ -2732,7 +2738,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_of_reading_after_a_snapshot_is_code_1_and_names_its_entry() {
+    fn a_failure_of_reading_after_a_snapshot_is_damage_and_names_its_entry() {
         let (dir, _) = repository_with_entry("status-read");
         let repository = Repository::open(&dir).unwrap();
         let actor: Actor = "human daniel".parse().unwrap();
@@ -2758,7 +2764,7 @@ mod tests {
 
         let error = CliError::Status(repository.status(&actor, &AllowAll).unwrap_err());
 
-        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert_eq!(error.exit_code(), ExitCode::from(5));
         assert!(
             error.to_string().contains("saved before as entry"),
             "{error}"
@@ -2831,7 +2837,7 @@ mod tests {
             },
             saved: None,
         });
-        assert_eq!(locked.exit_code(), ExitCode::from(4), "{locked}");
+        assert_eq!(locked.exit_code(), ExitCode::from(6), "{locked}");
         let walk = CliError::Status(StatusError::Walk(TrackError::InvalidName {
             path: "x".into(),
         }));
@@ -2916,7 +2922,7 @@ mod tests {
         });
         assert_eq!(
             CliError::Commit(locked).exit_code(),
-            ExitCode::from(4),
+            ExitCode::from(6),
             "a held lock is retryable"
         );
         // A pointer moved: code 3, and the text says what to do.
@@ -3180,6 +3186,7 @@ mod tests {
         for error in [
             CliError::OpLog(OpLogError::Gap { missing: 2 }),
             CliError::EmptyLog,
+            CliError::AnchorUnchained { number: 2 },
         ] {
             assert_eq!(error.exit_code(), ExitCode::from(5), "damage: {error}");
         }

@@ -215,7 +215,7 @@ fn a_log_from_before_the_chain_has_no_anchor_until_op_restore_starts_the_chain()
     );
     // The entry of an anchor from before is now from before the chain, with no hash.
     let result = run(dir.path(), &["op", "verify", "--anchor", &kept]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result.stderr.contains("written before the hash chain"),
         "{}",

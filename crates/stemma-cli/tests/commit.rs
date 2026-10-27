@@ -445,24 +445,51 @@ fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
     assert!(repository.refs().branch(&main_branch()).unwrap().is_some());
 }
 
-/// A lock that a command of another host holds is not taken over (ADR-008). The commit ends with
-/// code 4, so that a script knows that it can try again later (ADR-017).
-#[test]
-fn a_held_lock_ends_with_code_4() {
-    let dir = repository();
-    write(dir.path(), "a.txt", "one");
-    track_ok(dir.path(), "a.txt");
+/// Takes the references lock as a command of another host does (ADR-008): the core does not take
+/// over such a lock, and its file format is not part of the public interface.
+fn hold_the_lock(dir: &Path) {
     fs::write(
-        dir.path().join(".stemma").join("refs.lock"),
+        dir.join(".stemma").join("refs.lock"),
         "stemma-lock 1\nhost other-host\npid 4711\ntoken 1-0-left\n",
     )
     .unwrap();
+}
+
+/// A lock that a command of another host holds is not taken over (ADR-008). The commit ends with
+/// code 6, so that a script knows that it can try again later (ADR-017), and it changes nothing.
+#[test]
+fn a_held_lock_ends_with_code_6_and_changes_nothing() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    let entries = operations(dir.path()).len();
+    hold_the_lock(dir.path());
 
     let result = run(dir.path(), &["commit", "-m", "Add a", "--actor", ACTOR]);
 
-    assert_eq!(result.code, 4, "{}", result.stderr);
+    assert_eq!(result.code, 6, "{}", result.stderr);
     assert_eq!(result.stdout, "");
     assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
+    assert_eq!(operations(dir.path()).len(), entries);
+    let repository = Repository::open(dir.path()).unwrap();
+    assert!(repository.refs().branch(&main_branch()).unwrap().is_none());
+}
+
+/// With `--json` a failure writes nothing to the standard output (ADR-017).
+#[test]
+fn a_held_lock_with_json_writes_no_json() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    hold_the_lock(dir.path());
+
+    let result = run(
+        dir.path(),
+        &["commit", "-m", "Add a", "--actor", ACTOR, "--json"],
+    );
+
+    assert_eq!(result.code, 6, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
 }
 
 #[test]

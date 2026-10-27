@@ -429,7 +429,45 @@ fn a_file_that_is_corrupt_in_the_repository_is_damage_with_code_5_and_no_trace()
 }
 
 #[test]
-fn a_failure_of_reading_after_the_snapshot_is_code_1_with_the_entry_named_and_no_second_snapshot() {
+fn damage_with_json_writes_no_json() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
+
+    let result = run(dir.path(), &["status", "--actor", "human alice", "--json"]);
+
+    assert_eq!(result.code, 5, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+}
+
+/// A lock of another host is not taken over (ADR-008): code 6, and nothing is written.
+#[test]
+fn a_held_lock_is_code_6_and_writes_nothing() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    fs::write(
+        dir.path().join(".stemma").join("refs.lock"),
+        "stemma-lock 1\nhost other-host\npid 4711\ntoken 1-0-left\n",
+    )
+    .unwrap();
+    write(dir.path(), "a.txt", "two");
+    let entries = operations(dir.path()).len();
+
+    for args in [
+        &["status", "--actor", "human alice"][..],
+        &["status", "--actor", "human alice", "--json"][..],
+    ] {
+        let result = run(dir.path(), args);
+
+        assert_eq!(result.code, 6, "{}", result.stderr);
+        assert_eq!(result.stdout, "");
+    }
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn a_missing_object_after_the_snapshot_is_damage_with_the_entry_named_and_no_second_snapshot() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track_ok(dir.path(), "a.txt");
@@ -449,7 +487,7 @@ fn a_failure_of_reading_after_the_snapshot_is_code_1_with_the_entry_named_and_no
 
     let first = status(dir.path());
 
-    assert_eq!(first.code, 1, "{}", first.stdout);
+    assert_eq!(first.code, 5, "{}", first.stdout);
     assert_eq!(first.stdout, "");
     let log = operations(dir.path());
     assert_eq!(log.len(), entries + 1, "{log:?}");
@@ -460,7 +498,7 @@ fn a_failure_of_reading_after_the_snapshot_is_code_1_with_the_entry_named_and_no
         first.stderr
     );
     let again = status(dir.path());
-    assert_eq!(again.code, 1);
+    assert_eq!(again.code, 5);
     assert_eq!(
         operations(dir.path()).len(),
         entries + 1,

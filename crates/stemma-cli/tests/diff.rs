@@ -450,7 +450,7 @@ fn a_binary_file_names_both_sides_as_the_summary_line_does() {
 }
 
 #[test]
-fn a_failure_after_the_snapshot_names_its_entry() {
+fn a_missing_object_after_the_snapshot_is_damage_and_names_its_entry() {
     let dir = repository();
     write(dir.path(), "a.txt", "one\n");
     track_ok(dir.path(), "a.txt");
@@ -468,7 +468,7 @@ fn a_failure_after_the_snapshot_names_its_entry() {
 
     let result = diff(dir.path(), &[]);
 
-    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.code, 5, "{}", result.stdout);
     assert!(
         result.stderr.contains("saved first as entry"),
         "{}",
