@@ -485,25 +485,30 @@ fn a_diff_written_to_a_pipe_has_no_colour_and_no_pager() {
     assert!(result.stdout.contains("-one\n+two\n"), "{}", result.stdout);
 }
 
-/// Runs `diff` with its output on a terminal, as a person sees it, and returns what the terminal
-/// got. The pager is `cat` followed by a marker, so that the test sees both the colour and the
-/// pager.
+/// Starts `diff` with its output and its errors on a terminal, as a person sees it. `setup` sets
+/// the environment, and `LESS` is not inherited. The terminal is returned with the child.
 #[cfg(unix)]
-fn diff_on_terminal(dir: &Path) -> String {
+fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (std::process::Child, File) {
     let pty = nix::pty::openpty(None, None).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
-        .env("PAGER", "cat && echo PAGER-DONE")
+        .env_remove("LESS")
         .args(["diff", "--actor", "human alice"])
         .stdout(Stdio::from(pty.slave.try_clone().unwrap()))
         .stderr(Stdio::from(pty.slave));
-    let mut child = command.spawn().unwrap();
+    setup(&mut command);
+    let child = command.spawn().unwrap();
     // The command holds the terminal until it is dropped, and the read ends when it is gone.
     drop(command);
+    (child, File::from(pty.master))
+}
+
+/// Reads what the terminal got until the command has gone.
+#[cfg(unix)]
+fn read_terminal(mut master: File) -> String {
     let mut output = String::new();
-    let mut master = File::from(pty.master);
     let mut buffer = [0; 1024];
     while let Ok(read) = master.read(&mut buffer) {
         if read == 0 {
@@ -511,8 +516,38 @@ fn diff_on_terminal(dir: &Path) -> String {
         }
         output.push_str(&String::from_utf8_lossy(&buffer[..read]));
     }
-    assert!(child.wait().unwrap().success());
+    // A terminal ends a line with CR LF.
+    output.replace("\r\n", "\n")
+}
+
+/// Runs `diff` on a terminal with the environment of `setup`, and returns what the terminal got.
+/// The command must end with 0.
+#[cfg(unix)]
+fn diff_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> String {
+    let (mut child, master) = spawn_on_terminal(dir, setup);
+    let output = read_terminal(master);
+    assert!(child.wait().unwrap().success(), "{output:?}");
     output
+}
+
+/// The text without its colour escape sequences.
+#[cfg(unix)]
+fn without_colour(text: &str) -> String {
+    let mut plain = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // An escape sequence ends with a letter.
+            for skipped in chars.by_ref() {
+                if skipped.is_ascii_alphabetic() || skipped == 'm' {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
 }
 
 #[cfg(unix)]
@@ -520,10 +555,122 @@ fn diff_on_terminal(dir: &Path) -> String {
 fn a_diff_on_a_terminal_is_coloured_and_shown_by_the_pager() {
     let dir = edited_repository();
 
-    let output = diff_on_terminal(dir.path());
+    // The pager is `cat` followed by a marker, so that the test sees both colour and pager.
+    let output = diff_on_terminal(dir.path(), |command| {
+        command.env("PAGER", "cat && echo PAGER-DONE");
+    });
 
     assert!(output.contains("\x1b[31m-one\x1b[m"), "{output:?}");
     assert!(output.contains("\x1b[32m+two\x1b[m"), "{output:?}");
     assert!(output.contains("\x1b[36m@@ -1 +1 @@\x1b[m"), "{output:?}");
-    assert!(output.contains("PAGER-DONE"), "{output:?}");
+    assert!(output.contains("\x1b[1m--- "), "{output:?}");
+    // The pager ran after the text, and context lines stay plain.
+    assert!(output.find("-one").unwrap() < output.find("PAGER-DONE").unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_colour_only_adds_escape_sequences_to_the_plain_text() {
+    let dir = edited_repository();
+    let plain = diff(dir.path(), &[]).stdout;
+
+    let output = diff_on_terminal(dir.path(), |command| {
+        command.env("PAGER", "cat");
+    });
+
+    assert_eq!(without_colour(&output), plain);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pager_that_cannot_run_leaves_the_diff_on_the_terminal() {
+    let dir = edited_repository();
+
+    let output = diff_on_terminal(dir.path(), |command| {
+        command.env("PAGER", "/nonexistent/pager");
+    });
+
+    assert!(output.contains("-one"), "{output:?}");
+    assert!(output.contains("+two"), "{output:?}");
+    assert!(output.contains("could not be run"), "{output:?}");
+}
+
+/// A directory with an executable `less` that prints a marker after the text, put in front of
+/// `PATH`, so that the test sees whether the default pager was called.
+#[cfg(unix)]
+fn fake_less(dir: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let less = bin.join("less");
+    fs::write(&less, "#!/bin/sh\ncat\necho \"LESS-RAN $LESS\"\n").unwrap();
+    fs::set_permissions(&less, fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{}:/usr/bin:/bin", bin.display())
+}
+
+#[cfg(unix)]
+#[test]
+fn without_a_pager_the_default_is_less_with_the_options_frx() {
+    for pager in [None, Some("")] {
+        let dir = edited_repository();
+        let path = fake_less(dir.path());
+
+        let output = diff_on_terminal(dir.path(), |command| {
+            command.env("PATH", &path).env_remove("PAGER");
+            if let Some(pager) = pager {
+                command.env("PAGER", pager);
+            }
+        });
+
+        assert!(output.contains("LESS-RAN FRX"), "{pager:?}: {output:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_less_options_of_the_user_are_kept() {
+    let dir = edited_repository();
+
+    let output = diff_on_terminal(dir.path(), |command| {
+        command.env("PAGER", "echo LESS=$LESS").env("LESS", "-i");
+    });
+
+    assert!(output.contains("LESS=-i"), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pager_that_quits_early_or_fails_is_not_an_error() {
+    let dir = edited_repository();
+
+    // `true` does not read the text, and the exit code of `exit 3` is not the one of the diff.
+    for pager in ["true", "cat >/dev/null; exit 3"] {
+        let output = diff_on_terminal(dir.path(), |command| {
+            command.env("PAGER", pager);
+        });
+
+        assert!(!output.contains("could not be run"), "{pager}: {output:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interrupt_waits_for_the_pager_and_does_not_end_the_diff() {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    use std::time::Duration;
+
+    let dir = edited_repository();
+    let (mut child, master) = spawn_on_terminal(dir.path(), |command| {
+        command.env("PAGER", "sleep 2; cat");
+    });
+    // The signal arrives while the pager sleeps; the process ends only when the pager does.
+    std::thread::sleep(Duration::from_millis(700));
+    let process = Pid::from_raw(i32::try_from(child.id()).unwrap());
+    kill(process, Signal::SIGINT).unwrap();
+    let output = read_terminal(master);
+
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{status:?} {output:?}");
+    assert!(output.contains("-one"), "{output:?}");
 }

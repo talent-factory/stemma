@@ -15,6 +15,7 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
 stemma-core = { path = "../stemma-core" }
 
-# Sends SIGINT to the command under test directly, without spawning `kill` (tests/interrupt.rs).
+# Sends SIGINT to the command under test directly, without spawning `kill` (tests/interrupt.rs),
+# and gives a command a terminal of its own (tests/diff.rs).
 [target.'cfg(unix)'.dev-dependencies]
 nix = { version = "0.31.3", features = ["signal", "term"] }

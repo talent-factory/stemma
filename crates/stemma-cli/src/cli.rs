@@ -55,6 +55,7 @@ use std::num::NonZeroUsize;
 use std::path::{self, Path, PathBuf};
 use std::process::{self, ExitCode, Stdio};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -1406,7 +1407,9 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
 }
 
 /// Shows the changes between two sides, named as `op log` names them. The core saves the tracked
-/// files first when a side is the working copy.
+/// files first when a side is the working copy. When the real stdout is a terminal, the text is
+/// coloured and goes through the pager instead of `out`; `out` then takes it only if the pager
+/// cannot run.
 fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
@@ -1421,8 +1424,9 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         .diff(&actor, &AllowAll, comparison)
         .map_err(CliError::Diff)?;
     let differs = !result.files().is_empty();
-    // A terminal gets colour and a pager. A pipe or a file gets plain text, so that scripts read it.
-    let terminal = io::stdout().is_terminal();
+    // A terminal gets colour and a pager; a pipe or a file gets plain text for scripts. Windows
+    // gets plain text for now: the console needs escape processing and a shell for the pager.
+    let terminal = cfg!(unix) && io::stdout().is_terminal();
     let text = diff_text(&result, terminal);
     let written = if terminal {
         write_paged(&text, out)
@@ -1453,8 +1457,9 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
 /// is `/dev/null`. The header has no time stamp, because the time changes with every call
 /// (ADR-010). A binary file then says `Binary files <old> and <new> differ`; a text file has the
 /// `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`. A path is
-/// written with [`escape_path`]. With `colour`, the header is bold, the `@@` lines cyan, and the
-/// removed and added lines red and green, as git colours them.
+/// written with [`escape_path`]. With `colour`, the `diff`, `---`, and `+++` lines are bold, the
+/// `@@` lines cyan, and the removed and added lines red and green, as git colours them. The other
+/// lines stay plain.
 fn diff_text(diff: &Diff, colour: bool) -> String {
     let mut text = String::new();
     for file in diff.files() {
@@ -1509,8 +1514,8 @@ fn diff_text(diff: &Diff, colour: bool) -> String {
     text
 }
 
-/// The escape sequences of the colours of a diff, as git writes them. Without colour they are
-/// empty, so that the text is plain.
+// The escape sequences of the colours of a diff, with the values that git uses. They are used
+// through `paint`, which yields nothing when the colour is off.
 const BOLD: &str = "\x1b[1m";
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
@@ -1526,16 +1531,41 @@ fn paint(colour: bool, code: &'static str) -> &'static str {
     }
 }
 
-/// Writes the text through the pager, which is the command in `PAGER` or `less`, as git runs it.
-/// The shell runs the command, and `less` gets the `FRX` options unless `LESS` is set. If the
-/// pager cannot start, the text goes to `out`. A pager that quits before it has read all the text
-/// is not an error, and neither is its exit code.
+/// Set while the pager runs, so that the interrupt handler leaves the process alone. A Ctrl-C
+/// reaches the pager as well as this process; the pager handles it, and this process must not end
+/// before the pager does, or the shell and the pager would fight over the terminal (git does the
+/// same). The diff has finished its work on the references before the pager starts.
+static PAGING: AtomicBool = AtomicBool::new(false);
+
+/// Marks the pager as running until it is dropped.
+struct Paging;
+
+impl Paging {
+    fn begin() -> Self {
+        PAGING.store(true, Ordering::SeqCst);
+        Paging
+    }
+}
+
+impl Drop for Paging {
+    fn drop(&mut self) {
+        PAGING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Writes the text through the pager, which is the command in `PAGER`, or `less` if `PAGER` is
+/// unset or empty. Unlike git, it does not look at `GIT_PAGER` or `core.pager`. The shell runs the
+/// command, and the pager gets `LESS=FRX` unless `LESS` is set. If the shell cannot start, or
+/// cannot run the command (exit code 126 or 127, as for a mistyped `PAGER`), the text goes to
+/// `out` and a note to stderr, so that the diff is never lost. A pager that quits before it has
+/// read all the text is not an error, and neither is any other exit code.
 fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
     let pager = env::var("PAGER")
         .ok()
         .filter(|pager| !pager.is_empty())
         .unwrap_or_else(|| "less".to_owned());
     let less = env::var("LESS").unwrap_or_else(|_| "FRX".to_owned());
+    let _paging = Paging::begin();
     let child = process::Command::new("sh")
         .arg("-c")
         .arg(&pager)
@@ -1546,14 +1576,25 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
         return out.write_all(text.as_bytes());
     };
     let mut input = child.stdin.take().expect("the input of the pager is piped");
-    match input.write_all(text.as_bytes()) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
-        Err(error) => return Err(error),
-    }
+    let written = input.write_all(text.as_bytes());
     drop(input);
-    child.wait()?;
-    Ok(())
+    // The pager is always waited for, also after a failed write, so that it does not outlive this
+    // process and keep the terminal.
+    let status = child
+        .wait()
+        .map_err(|error| io::Error::new(error.kind(), format!("the pager `{pager}`: {error}")))?;
+    if matches!(status.code(), Some(126 | 127)) {
+        // Nothing was read: the shell found no command to run. The shell has said so on stderr.
+        let _ = writeln!(
+            io::stderr(),
+            "stemma: the pager `{pager}` could not be run; the diff follows without it"
+        );
+        return out.write_all(text.as_bytes());
+    }
+    match written {
+        Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error),
+        _ => Ok(()),
+    }
 }
 
 /// The range of a hunk in an `@@` line: its first line, counted from one, and its length. An
@@ -1566,8 +1607,9 @@ fn range(start: usize, len: usize) -> String {
     }
 }
 
-/// Appends one line of a hunk with its mark. A last line without a line end gets the marker that
-/// git writes after it.
+/// Appends one line of a hunk with its mark, wrapped in `style` (empty for plain text). The reset
+/// comes before the line end, so that a colour does not run into the next line. A last line
+/// without a line end gets the marker that git writes after it.
 fn push_line(text: &mut String, style: &str, mark: char, line: &str) {
     text.push_str(style);
     text.push(mark);
@@ -1725,6 +1767,10 @@ pub fn main() -> ExitCode {
     // thread may hold it in a write that blocks, and the handler would then never end the process.
     // Without the handler (it could not be installed) an interrupt leaves both behind.
     let _ = ctrlc::set_handler(|| {
+        // The pager gets the same signal and handles it; the diff waits for the pager (`PAGING`).
+        if PAGING.load(Ordering::SeqCst) {
+            return;
+        }
         let left = stemma_core::repository::remove_temp_files_for_exit();
         stemma_core::refs::release_locks_for_exit();
         if !left.is_empty() {

@@ -763,11 +763,17 @@ diff a.txt
 
 Sind keine Dateien verschieden, endet der Befehl ohne Ausgabe.
 
-Schreibt der Befehl auf ein Terminal, färbt er die Zeilen und gibt die Ausgabe an einen Pager
-weiter. Entfernte Zeilen sind rot, eingefügte grün, die Zeilen \type{@@} cyan und die
-Kopfzeilen fett. Der Pager ist der Befehl in \type{PAGER}, sonst \type{less}; ist \type{LESS}
-nicht gesetzt, bekommt \type{less} die Optionen \type{FRX}. Ohne Terminal, also in einer Pipe
-oder einer Datei, gibt es weder Farbe noch Pager, damit Skripte reinen Text lesen.
+Ist die Ausgabe ein Terminal, färbt der Befehl die Zeilen und gibt sie an einen Pager weiter.
+Entfernte Zeilen sind rot, eingefügte grün, die Zeilen \type{@@} cyan und die Kopfzeilen
+(\type{diff}, \type{---} und \type{+++}) fett.
+Der Pager ist der Befehl in \type{PAGER}; eine leere oder fehlende Variable gilt als nicht
+gesetzt, dann läuft \type{less}. Die Shell führt den Befehl aus. Ist \type{LESS} nicht gesetzt,
+bekommt der Pager \type{LESS=FRX}. Kann der Pager nicht laufen, etwa weil \type{PAGER} einen
+unbekannten Befehl nennt, steht der Diff ungefiltert auf dem Terminal, mit einem Hinweis auf
+stderr. Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers ist kein Fehler.
+Ctrl-C beendet den Pager, nicht den Befehl vorzeitig.
+Ist die Ausgabe kein Terminal, also eine Pipe oder eine Datei, gibt es weder Farbe noch Pager,
+damit Skripte reinen Text lesen. Unter Windows gibt es zurzeit immer reinen Text.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist, wenn das Verzeichnis
 in keinem Repository liegt, wenn ein Argument keine Kennung eines Commits im Repository ist
