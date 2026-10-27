@@ -240,11 +240,12 @@ fn replacements(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, V
     (frozen_old, frozen_new)
 }
 
-// The weights of the indent heuristic follow git's xdiff (xdiffi.c). The ignored tests
-// `diff_lines_agrees_with_git_*` compare `diff_lines` with `git diff` on random files; they agree
-// wherever the plain diffs agree, replacements included. `MAX_BLANKS` limits the scan over blank
-// lines. `MAX_SLIDING` limits the search window to that many positions above the lowest one, and
-// as in git the window is also no larger than the size of the group plus one.
+// The weights of the indent heuristic follow git's xdiff (xdiffi.c). The tests
+// `diff_lines_agrees_with_git_*` need git on the PATH. They compare `diff_lines` with `git diff`
+// on random files and agree wherever the plain diffs agree, replacements included. `MAX_BLANKS`
+// limits the scan over blank lines. `MAX_SLIDING` limits the search window to that many positions
+// above the lowest one, and as in git the window is also no larger than the size of the group
+// plus one.
 const MAX_BLANKS: usize = 20;
 const MAX_SLIDING: usize = 100;
 const INDENT_WEIGHT: i64 = 60;
@@ -1269,8 +1270,8 @@ mod tests {
         (old_flags, new_flags)
     }
 
-    /// Compares `diff_lines` with `git diff` on pseudo-random files over `alphabet`, and returns the
-    /// mismatches. Only the cases where git's plain diff equals ours are compared, because the
+    /// Compares `diff_lines` with `git diff` on pseudo-random files over `alphabet`, and returns
+    /// the mismatches. Only the cases where git's plain diff equals ours are compared, because the
     /// heuristic only moves the boundaries of a given diff.
     fn compare_with_git(
         alphabet: &[&str],
@@ -1322,7 +1323,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs git on the PATH and spawns a process per case"]
     fn diff_lines_agrees_with_git_on_short_files() {
         let alphabet = ["x", "  x", "    x", "", "}", "  }", "{", "  {"];
         let mismatches = compare_with_git(&alphabet, 9, 1500, 12345);
@@ -1330,7 +1330,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs git on the PATH and spawns a process per case"]
     fn diff_lines_agrees_with_git_on_long_runs_of_equal_lines() {
         // Few distinct lines in long files give change groups that can slide over many lines.
         let alphabet = ["a", "a", "a", "  a", "", "}", "b"];
@@ -1339,7 +1338,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs git on the PATH and spawns a process per case"]
     fn diff_lines_agrees_with_git_beyond_the_sliding_window() {
         // Mostly equal lines give groups that can slide over more than MAX_SLIDING lines.
         let mut alphabet = vec!["a"; 300];
