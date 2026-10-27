@@ -412,6 +412,11 @@ fn a_stop_is_finished_also_after_a_change_since_the_stop() {
     assert!(result.stderr.contains("warning"), "{}", result.stderr);
     let next = read(&repository, repository.refs().working_copy().unwrap());
     assert_eq!(next.parents(), [named_id]);
+    assert_ne!(next.tree(), read(&repository, named_id).tree());
+    // The change is kept: the next commit records it.
+    assert_eq!(commit(dir.path(), "two").code, 0);
+    let tip = repository.refs().branch(&main_branch()).unwrap().unwrap();
+    assert_eq!(read(&repository, tip).tree(), next.tree());
 }
 
 /// `/dev/full` fails every write: the commit is made, and the command says so with code 3.

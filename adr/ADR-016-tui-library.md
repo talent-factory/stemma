@@ -1,8 +1,9 @@
 # ADR-016: the library of the terminal interface of `diff --tui`
 
 **Status:** Proposal, chosen by the author on 2026-10-27 in STEMMA-126. A new direct dependency is
-level 2 under ADR-004, so the change that adds it needs two agents and a human maintainer. This
-ADR adds no code and no dependency.
+level 2 under ADR-004, so the change that adds it needs two agents and a human maintainer. The
+change of STEMMA-128 builds the crate `stemma-tui`, adds ratatui and the license `Zlib`, and
+awaits that review; the decisions below stay proposals until it is confirmed.
 
 ## Context
 
@@ -40,7 +41,13 @@ Candidates, measured on 2026-10-27 in a scratch crate against `deny.toml`:
 ## Open Points
 
 - [ ] Confirmation of the level 2 review of the change that adds the dependency.
-- [ ] Windows: the pager is plain text there for now (PR #154). Whether the interface starts
-      on Windows is decided when it is built.
-- [ ] Whether `stemma-cli` makes `--tui` a cargo feature, so that a build without it keeps the
-      smaller tree.
+- [x] Windows: the pager is plain text there (PR #154), and `--tui` is refused with exit code 1
+      until the console handling is verified (STEMMA-128).
+- [x] `--tui` is not a cargo feature: `stemma-cli` depends on `stemma-tui` unconditionally
+      (STEMMA-128), and the tree grows by the crates that ratatui needs. A feature stays possible
+      if a build without the interface is wanted.
+- [x] Signals: a signal that ends the command asks the interface to end, and the process exits
+      once the interface has given the terminal back (STEMMA-128). The handler does not touch the
+      terminal itself: `main` holds the lock of standard output, so a write from the handler
+      would wait for it for ever. A `SIGKILL` cannot be handled, and the terminal then needs
+      `reset`.

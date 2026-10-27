@@ -9,7 +9,7 @@ yanked = "deny"
 [licenses]
 # The licenses that a dependency may carry. A dependency with a choice of licenses passes when
 # one of them is listed here.
-allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.93
 
 [licenses.private]

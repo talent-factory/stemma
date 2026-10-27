@@ -14,6 +14,7 @@ Versionskontrollsystem in Rust. API-first, mit Git-artiger CLI, ohne Git-Reposit
 
 - `crates/stemma-core`: Kern (Objekte, Refs, Autorisierung). Alle Oberflächen rufen diesen Kern auf.
 - `crates/stemma-cli`: Kommandozeile, Binary `stemma`.
+- `crates/stemma-tui`: Oberfläche im Terminal für `stemma diff --tui` (ratatui).
 - `docs/`: Buch (ConTeXt), Quellen folgen.
 - `adr/`: Architekturentscheidungen. Siehe `adr/README.md`.
 
