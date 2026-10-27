@@ -154,6 +154,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Commit-Satz | | The record that completes a transaction in database recovery |
 | strenger Leser | | A reader that accepts only the one encoding (ADR-005) |
 | Option | Schalter, Flag | A named argument of a command, such as `--actor` |
+| abgeleitete Daten | Metadaten, Index (für den ganzen Cache) | A value computed from a commit and its ancestors and kept in `.stemma/derived/`; never part of the object model (ADR-017) |
 | Sitzung | | A work session, such as the running example; `Session` only for the field of an agent |
 
 ## Figures

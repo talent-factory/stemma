@@ -236,3 +236,9 @@ _Avoid_: Preview, simulation
 A step whose failure does not fail the command; the next command tries again.
 (nach bestem Bemühen)
 _Avoid_: auf Verdacht
+
+**Derived data**:
+A value that is a function of a commit and its ancestors, such as a blame or an index of the log,
+kept in the cache `.stemma/derived/` outside the object model. It can be deleted and computed
+again, and a purge removes it (ADR-017). (abgeleitete Daten)
+_Avoid_: Index (for the cache as a whole), metadata
