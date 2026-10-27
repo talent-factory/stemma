@@ -2,10 +2,14 @@
 
 mod common;
 
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::process::{Child, Command, Stdio};
 
 use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
 
@@ -488,7 +492,7 @@ fn a_diff_written_to_a_pipe_has_no_colour_and_no_pager() {
 /// Starts `diff` with its output and its errors on a terminal, as a person sees it. `setup` sets
 /// the environment, and `LESS` is not inherited. The terminal is returned with the child.
 #[cfg(unix)]
-fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (std::process::Child, File) {
+fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (Child, File) {
     let pty = nix::pty::openpty(None, None).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
@@ -538,11 +542,7 @@ fn without_colour(text: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\x1b' {
             // An escape sequence ends with a letter.
-            for skipped in chars.by_ref() {
-                if skipped.is_ascii_alphabetic() || skipped == 'm' {
-                    break;
-                }
-            }
+            chars.by_ref().find(char::is_ascii_alphabetic);
         } else {
             plain.push(c);
         }

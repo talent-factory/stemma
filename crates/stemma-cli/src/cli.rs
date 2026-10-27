@@ -1461,6 +1461,8 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
 /// `@@` lines cyan, and the removed and added lines red and green, as git colours them. The other
 /// lines stay plain.
 fn diff_text(diff: &Diff, colour: bool) -> String {
+    let [bold, cyan, red, green, reset] =
+        [BOLD, CYAN, RED, GREEN, RESET].map(|code| paint(colour, code));
     let mut text = String::new();
     for file in diff.files() {
         let path = escape_path(file.path());
@@ -1473,7 +1475,6 @@ fn diff_text(diff: &Diff, colour: bool) -> String {
         } else {
             "/dev/null".to_owned()
         };
-        let (bold, reset) = (paint(colour, BOLD), paint(colour, RESET));
         text.push_str(&format!("{bold}diff {path}{reset}\n"));
         let text_diff = match file.content() {
             Content::Binary => {
@@ -1491,7 +1492,6 @@ fn diff_text(diff: &Diff, colour: bool) -> String {
             "{bold}--- {old_name}{reset}\n{bold}+++ {new_name}{reset}\n"
         ));
         let (old_lines, new_lines) = (text_diff.old_lines(), text_diff.new_lines());
-        let cyan = paint(colour, CYAN);
         for hunk in text_diff.hunks() {
             text.push_str(&format!(
                 "{cyan}@@ -{} +{} @@{reset}\n",
@@ -1501,12 +1501,8 @@ fn diff_text(diff: &Diff, colour: bool) -> String {
             for edit in &hunk.edits {
                 match *edit {
                     Edit::Equal { old, .. } => push_line(&mut text, "", ' ', &old_lines[old]),
-                    Edit::Delete { old } => {
-                        push_line(&mut text, paint(colour, RED), '-', &old_lines[old]);
-                    }
-                    Edit::Insert { new } => {
-                        push_line(&mut text, paint(colour, GREEN), '+', &new_lines[new]);
-                    }
+                    Edit::Delete { old } => push_line(&mut text, red, '-', &old_lines[old]),
+                    Edit::Insert { new } => push_line(&mut text, green, '+', &new_lines[new]),
                 }
             }
         }
@@ -1566,13 +1562,13 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
         .unwrap_or_else(|| "less".to_owned());
     let less = env::var("LESS").unwrap_or_else(|_| "FRX".to_owned());
     let _paging = Paging::begin();
-    let child = process::Command::new("sh")
+    let spawned = process::Command::new("sh")
         .arg("-c")
         .arg(&pager)
         .env("LESS", less)
         .stdin(Stdio::piped())
         .spawn();
-    let Ok(mut child) = child else {
+    let Ok(mut child) = spawned else {
         return out.write_all(text.as_bytes());
     };
     let mut input = child.stdin.take().expect("the input of the pager is piped");
@@ -1611,15 +1607,15 @@ fn range(start: usize, len: usize) -> String {
 /// comes before the line end, so that a colour does not run into the next line. A last line
 /// without a line end gets the marker that git writes after it.
 fn push_line(text: &mut String, style: &str, mark: char, line: &str) {
+    let (content, line_end) = match line.strip_suffix('\n') {
+        Some(content) => (content, "\n"),
+        None => (line, "\n\\ No newline at end of file\n"),
+    };
     text.push_str(style);
     text.push(mark);
-    text.push_str(line.strip_suffix('\n').unwrap_or(line));
+    text.push_str(content);
     text.push_str(paint(!style.is_empty(), RESET));
-    if line.ends_with('\n') {
-        text.push('\n');
-    } else {
-        text.push_str("\n\\ No newline at end of file\n");
-    }
+    text.push_str(line_end);
 }
 
 /// Writes the status. If the snapshot could not be flushed, the status is written first and the
