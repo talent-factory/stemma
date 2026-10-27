@@ -31,8 +31,21 @@ fn stemma(dir: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// The signals that end a command, and the exit code that each one gives (128 plus its number).
+const INTERRUPTS: [(Signal, i32); 3] = [
+    (Signal::SIGINT, 130),
+    (Signal::SIGTERM, 143),
+    (Signal::SIGHUP, 129),
+];
+
 #[test]
-fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
+fn an_interrupt_during_a_snapshot_removes_the_lock_and_ends_with_128_plus_the_signal() {
+    for (signal, code) in INTERRUPTS {
+        interrupt_a_snapshot(signal, code);
+    }
+}
+
+fn interrupt_a_snapshot(signal: Signal, code: i32) {
     let dir = Dir::new();
     let status = stemma(dir.path(), &["init", "--actor", ACTOR])
         .status()
@@ -63,18 +76,14 @@ fn ctrl_c_during_a_snapshot_removes_the_lock_and_ends_with_130() {
         eprintln!("skipped: the command ended before its lock was seen");
         return;
     }
-    let killed = Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
+    signal::kill(Pid::from_raw(i32::try_from(child.id()).unwrap()), signal).unwrap();
     let status = child.wait().unwrap();
     if status.success() {
         // The command ended between the check of the lock and the signal.
         eprintln!("skipped: the command ended before the signal");
         return;
     }
-    assert_eq!(status.code(), Some(130), "{status:?}");
+    assert_eq!(status.code(), Some(code), "{signal:?} {status:?}");
     assert!(!lock.exists(), "the interrupted command removed its lock");
     let status = stemma(dir.path(), &["status", "--actor", ACTOR])
         .status()
@@ -172,7 +181,7 @@ fn temporary_files(dir: &Path) -> Vec<String> {
 
 /// Interrupts a restore of many files while it writes one, and checks what it leaves. Returns
 /// why it could not interrupt the restore while it was writing, which the caller tries again.
-fn interrupt_a_restore() -> Result<(), &'static str> {
+fn interrupt_a_restore(signal: Signal, code: i32) -> Result<(), &'static str> {
     let dir = Dir::new();
     ok(dir.path(), &["init", "--actor", ACTOR]);
     // A restore that brings back many files writes long enough to be interrupted, and it spends
@@ -210,7 +219,7 @@ fn interrupt_a_restore() -> Result<(), &'static str> {
     }
     // Directly, not through a `kill` process, which would take longer than one write.
     let process = Pid::from_raw(i32::try_from(child.id()).unwrap());
-    signal::kill(process, Signal::SIGINT).unwrap();
+    signal::kill(process, signal).unwrap();
     let output = child.wait_with_output().unwrap();
     let restored = files
         .iter()
@@ -219,7 +228,12 @@ fn interrupt_a_restore() -> Result<(), &'static str> {
     if output.status.success() || restored == files.len() {
         return Err("the restore had written every file before the signal");
     }
-    assert_eq!(output.status.code(), Some(130), "{:?}", output.status);
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{signal:?} {:?}",
+        output.status
+    );
     assert_eq!(temporary_files(dir.path()), Vec::<String>::new());
     assert!(!lock.exists(), "the interrupted restore removed its lock");
     assert_eq!(
@@ -231,15 +245,21 @@ fn interrupt_a_restore() -> Result<(), &'static str> {
 }
 
 #[test]
-fn ctrl_c_during_a_restore_removes_the_temporary_file_and_the_lock() {
-    // An attempt that misses the writes is tried again, so that the test does not pass without
-    // having interrupted a write.
-    let mut missed = Vec::new();
-    for _ in 0..3 {
-        match interrupt_a_restore() {
-            Ok(()) => return,
-            Err(reason) => missed.push(reason),
-        }
+fn an_interrupt_during_a_restore_removes_the_temporary_file_and_the_lock() {
+    for (signal, code) in INTERRUPTS {
+        // An attempt that misses the writes is tried again, so that the test does not pass
+        // without having interrupted a write.
+        let mut missed = Vec::new();
+        let interrupted = (0..3).any(|_| match interrupt_a_restore(signal, code) {
+            Ok(()) => true,
+            Err(reason) => {
+                missed.push(reason);
+                false
+            }
+        });
+        assert!(
+            interrupted,
+            "{signal:?}: no attempt interrupted the restore while it wrote: {missed:?}"
+        );
     }
-    panic!("no attempt interrupted the restore while it wrote: {missed:?}");
 }

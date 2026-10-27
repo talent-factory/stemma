@@ -117,8 +117,8 @@ Eine Ausgabe, die sich nicht schreiben liess, führt nur dann zu Code 3,
 wenn der Befehl etwas angelegt hat, das sonst nur die Ausgabe nennt.
 Bei \type{diff}, \type{status}, \type{op log}, \type{op verify}, \type{--dry-run}
 und dem Plan von \type{purge} ist sie Code 1.
-\item {\bf 130, 143, 129:} Der Befehl wurde mit Ctrl-C (130) oder einem Signal zum Beenden
-unterbrochen: \type{SIGTERM} (143) oder \type{SIGHUP} (129).
+\item {\bf 130, 143, 129:} Der Befehl wurde unterbrochen: mit Ctrl-C (130),
+mit \type{SIGTERM} (143) oder mit \type{SIGHUP} (129).
 Er hat die Sperre der Referenzen entfernt, bevor er endete.
 Ein unterbrochenes \type{op restore} entfernt ausserdem die temporäre Datei, die es gerade
 schrieb; liess sie sich nicht entfernen, nennt die Fehlermeldung sie.
@@ -772,10 +772,14 @@ gesetzt, dann läuft \type{less}. Die Shell führt den Befehl aus. Ist \type{LES
 bekommt der Pager \type{LESS=FRX}. Kann der Pager nicht laufen, etwa weil \type{PAGER} einen
 unbekannten Befehl nennt, steht der Diff ungefiltert auf dem Terminal, mit einem Hinweis auf
 stderr. Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers ist kein Fehler.
-Ctrl-C erreicht den Pager; der Befehl wartet, bis der Pager endet.
+Ctrl-C erreicht den Pager; der Befehl wartet, bis der Pager endet,
+und endet dann mit seinem eigenen Exit-Code.
 Ein Signal zum Beenden (\type{SIGTERM} oder \type{SIGHUP}), das nur den Befehl trifft,
-etwa ein \type{kill} auf seine Prozessnummer, beendet den Pager und den Befehl sofort,
-mit Exit-Code 143 (bei \type{SIGHUP} 129).
+etwa ein \type{kill} auf seine Prozessnummer, sendet der Befehl an die Shell des Pagers
+und endet sofort, mit Exit-Code 143 (bei \type{SIGHUP} 129).
+Ist \type{PAGER} ein einzelner Befehl, ersetzt er meistens die Shell und endet mit ihr;
+eine längere Befehlszeile verliert ihre Shell, und ihre Befehle laufen weiter,
+bis das Terminal schliesst.
 Ist die Ausgabe kein Terminal, also eine Pipe oder eine Datei, gibt es weder Farbe noch Pager,
 damit Skripte reinen Text lesen. Unter Windows gibt es zurzeit immer reinen Text.
 

@@ -975,8 +975,8 @@ Was nach dem Ende des Halters zurückbleibt, hängt davon ab, wie er endet
 (\in{Abbildung}[fig:lock-states]).
 Gelingt der Befehl oder scheitert er mit einem Fehler, gibt er die Sperre frei.
 Ctrl-C und die Signale zum Beenden fängt die Kommandozeile ab:
-Sie entfernt \type{refs.lock}, bevor der Prozess endet,
-mit Exit-Code 130 bei Ctrl-C, 143 bei \type{SIGTERM} und 129 bei \type{SIGHUP}.
+Sie entfernt \type{refs.lock}, bevor der Prozess endet.
+Er endet mit 130 bei Ctrl-C, mit 143 bei \type{SIGTERM} und mit 129 bei \type{SIGHUP}.
 Nach \type{kill -9}, einem Absturz oder einem Stromausfall bleibt \type{refs.lock} liegen.
 Die Sperre des Betriebssystems gibt das Betriebssystem dagegen frei, wie auch immer der Prozess
 endet.

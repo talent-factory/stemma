@@ -167,10 +167,9 @@ lock may be held.
      ADR-007). A second command that writes in the same repository meanwhile fails at once with
      `Locked` (two processes in one repository are not supported, ADR-010), and `op log` reads
      the newest entry as possibly unfinished while the lock is held (ADR-011). Ctrl-C and a
-     termination signal remove the lock before the process ends (exit code 130 for Ctrl-C, 143 for
-     SIGTERM, 129 for SIGHUP), so an
-     interrupted command does not leave it behind; an interrupted writer is left as a crash
-     leaves it, with objects that no commit names and at most an entry without its move.
+     termination signal remove the lock before the process ends (exit code 130 for Ctrl-C, 143
+     for `SIGTERM`, 129 for `SIGHUP`), so an interrupted command does not leave it behind; an
+     interrupted writer is left as a crash leaves it, with objects that no commit names and at most an entry without its move.
      `kill -9` and a crash of the system still leave the lock file, and the next writer of this
      host takes it over, since its guard is free (ADR-008, STEMMA-51); while the journal of a
      purge exists, it stays for `--resume` and `--abort`.

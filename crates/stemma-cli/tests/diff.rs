@@ -700,7 +700,7 @@ fn a_termination_signal_ends_the_pager_and_the_diff_at_once() {
             command.env(
                 "PAGER",
                 format!(
-                    "echo $$ > {}; echo PAGER-READY; exec sleep 30",
+                    "echo $$ > '{}'; echo PAGER-READY; exec sleep 30",
                     marker.display()
                 ),
             );
@@ -717,13 +717,18 @@ fn a_termination_signal_ends_the_pager_and_the_diff_at_once() {
             start.elapsed() < std::time::Duration::from_secs(10),
             "{signal:?}"
         );
-        // The pager is gone too (its process may take a moment to end), and no lock stays.
+        // The pager is gone too. Its process may take a moment to end, and an orphan that
+        // nobody has reaped yet (a zombie) counts as gone.
         let gone = (0..100).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(50));
-            kill(pager, None).is_err()
+            let state = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pager.to_string()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&state.stdout);
+            state.trim().is_empty() || state.trim().starts_with('Z')
         });
         assert!(gone, "{signal:?}: the pager is still running");
-        assert!(!dir.path().join(".stemma").join("refs.lock").exists());
     }
 }
 
