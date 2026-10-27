@@ -12,7 +12,7 @@ use super::snapshot::read_commit;
 use super::{now, Repository, SnapshotError, UpdateError};
 use crate::change::{ChangeId, GenerateError};
 use crate::index::Index;
-use crate::object::{Commit, CommitId};
+use crate::object::{Commit, CommitId, TreeId};
 use crate::oplog::{outcomes, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome};
 use crate::refs::{BranchMove, BranchName, Head, Logged, RefError, WorkingCopyMove, WriteLock};
 use crate::store::{ObjectStore, StoreError};
@@ -152,7 +152,7 @@ impl Repository {
                 && !named.message().is_empty()
                 && self.stopped_by_log(&name, stopped, current)?;
             if stopped_here {
-                return self.finish(lock, operation, name, &named, current, actor);
+                return self.finish(lock, operation, name, &named, &working, current, actor);
             }
             return Err(CommitError::BranchMoved {
                 branch: name,
@@ -174,7 +174,7 @@ impl Repository {
 
         let named = working.rewrite(working.tree(), actor.clone(), now(), message);
         let named_id = self.put(&named)?;
-        let (next, next_id) = self.start_after(&named, named_id, actor)?;
+        let (next, next_id) = self.start_after(named.tree(), named_id, actor)?;
         debug_assert_eq!(next.tree(), named.tree());
 
         let outcome = self
@@ -221,18 +221,22 @@ impl Repository {
     }
 
     /// Finishes a commit that stopped after the move of the branch: `named` is at the tip of the
-    /// branch, and the working-copy commit is still the one it was made from.
+    /// branch, and `working` is the working-copy commit at `current`. It is the commit that
+    /// `named` was made from, or a snapshot of a change since the stop. The new working-copy commit
+    /// takes the tree of `working`, so that the snapshot is kept.
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
         lock: &WriteLock,
         operation: &OperationName,
         branch: BranchName,
         named: &Commit,
+        working: &Commit,
         current: CommitId,
         actor: &Actor,
     ) -> Result<Committed, CommitError> {
         let named_id = named.id();
-        let (_, next_id) = self.start_after(named, named_id, actor)?;
+        let (_, next_id) = self.start_after(working.tree(), named_id, actor)?;
         let (entry, late) = match self.move_working_copy(lock, operation, current, next_id, actor) {
             Ok(Some(entry)) => (entry, None),
             Ok(None) => unreachable!("the working-copy commit changes: its parents differ"),
@@ -289,16 +293,16 @@ impl Repository {
         Ok(outcomes(&entries, Some(&now))[position] == Outcome::NotTaken)
     }
 
-    /// Makes and stores the working-copy commit that follows `named`: the same tree, an empty
+    /// Makes and stores the working-copy commit that follows `named_id`: the given tree, an empty
     /// message, and a change ID of its own.
     fn start_after(
         &self,
-        named: &Commit,
+        tree: TreeId,
         named_id: CommitId,
         actor: &Actor,
     ) -> Result<(Commit, CommitId), CommitError> {
         let next = Commit::new(
-            named.tree(),
+            tree,
             vec![named_id],
             ChangeId::generate().map_err(CommitError::ChangeId)?,
             actor.clone(),
@@ -919,7 +923,7 @@ mod tests {
         let named = old.rewrite(old.tree(), actor(), now(), "stopped");
         let named = repository.put(&named).unwrap();
         let (_, next) = repository
-            .start_after(&read(repository, named), named, &actor())
+            .start_after(read(repository, named).tree(), named, &actor())
             .unwrap();
         Pending {
             named,
@@ -1049,10 +1053,11 @@ mod tests {
         assert!(done.resumed);
         assert_eq!(done.commit, pending.named);
         assert_eq!(read(&repository, done.commit).message(), "stopped");
-        assert_eq!(
-            read(&repository, done.working_copy).parents(),
-            [pending.named]
-        );
+        let next = read(&repository, done.working_copy);
+        assert_eq!(next.parents(), [pending.named]);
+        // The change since the stop is kept: the new working-copy commit has the tree of the
+        // snapshot, not the tree of the named commit.
+        assert_ne!(next.tree(), read(&repository, pending.named).tree());
     }
 
     #[cfg(unix)]
