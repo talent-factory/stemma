@@ -240,10 +240,11 @@ fn replacements(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, V
     (frozen_old, frozen_new)
 }
 
-// The weights of the indent heuristic follow git's xdiff (xdiffi.c). A differential check against
-// `git diff` on random small files agrees with git wherever the plain diffs agree and no
-// replacement is involved; a replacement is kept together by design and may differ from git.
-// `MAX_BLANKS` limits the scan over blank lines, and `MAX_SLIDING` limits the search window.
+// The weights of the indent heuristic follow git's xdiff (xdiffi.c). The ignored tests
+// `diff_lines_agrees_with_git_*` compare `diff_lines` with `git diff` on random files; they agree
+// wherever the plain diffs agree, replacements included. `MAX_BLANKS` limits the scan over blank
+// lines. `MAX_SLIDING` limits the search window to that many positions above the lowest one, and
+// as in git the window is also no larger than the size of the group plus one.
 const MAX_BLANKS: usize = 20;
 const MAX_SLIDING: usize = 100;
 const INDENT_WEIGHT: i64 = 60;
@@ -418,12 +419,17 @@ fn slide_side<T: PartialEq, F: Fn(&T) -> Option<usize>>(
             up += 1;
         }
 
-        // Each position in reach is scored by the splits before and after the group. The lowest
-        // score wins; on a tie the later position does. A position that puts the group
+        // Each position in the window is scored by the splits before and after the group. The
+        // window ends at the lowest position the group can take and reaches up as far as git's.
+        // The lowest score wins; on a tie the later position does. A position that puts the group
         // next to another change is skipped, so that the group does not merge with it.
         let len = e - s;
+        let bottom = s + down;
+        let first = (s - up)
+            .max(bottom.saturating_sub(len + 1))
+            .max(bottom.saturating_sub(MAX_SLIDING));
         let mut best: Option<(usize, Score)> = None;
-        for p in (s - up.min(MAX_SLIDING))..=(s + down.min(MAX_SLIDING)) {
+        for p in first..=bottom {
             let touches = (p > 0 && changed[p - 1] && !(s..e).contains(&(p - 1)))
                 || (p + len < n && changed[p + len] && !(s..e).contains(&(p + len)));
             if touches {
@@ -699,9 +705,34 @@ mod tests {
                     let edits = diff(old, new);
                     let slid = slide(old, new, &edits, indent);
                     check_script(old, new, &slid, changes(&edits));
+                    assert_eq!(
+                        slide(old, new, &slid, indent),
+                        slid,
+                        "sliding twice moves nothing: {old:?} {new:?}"
+                    );
                 }
             }
         }
+    }
+
+    #[test]
+    fn several_groups_on_one_side_are_judged_one_by_one() {
+        // Two inserted blocks '4 0', each in a run '0 4 0 4 0' and apart by a '9'. The first slides
+        // up to the shallower boundary. The second is judged on its own, after the '9', and stays
+        // where git puts it too. The search for it starts after the first.
+        let old = ['0', '4', '0', '9', '0', '4', '0'];
+        let new = ['0', '4', '0', '4', '0', '9', '0', '4', '0', '4', '0'];
+        let edits = diff(&old, &new);
+        let slid = slide(&old, &new, &edits, digit_indent);
+        check_script(&old, &new, &slid, changes(&edits));
+        let inserted: Vec<usize> = slid
+            .iter()
+            .filter_map(|edit| match *edit {
+                Edit::Insert { new } => Some(new),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inserted, vec![0, 1, 8, 9]);
     }
 
     #[test]
@@ -1180,5 +1211,196 @@ mod tests {
             .filter(|e| !matches!(e, Edit::Delete { .. }))
             .count();
         assert_eq!((hunk.old_len, hunk.new_len), (old_lines, new_lines));
+    }
+
+    /// Per line of each side, whether the script changes it.
+    fn changed_flags(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, Vec<bool>) {
+        let mut old = vec![false; old_len];
+        let mut new = vec![false; new_len];
+        for edit in edits {
+            match *edit {
+                Edit::Equal { .. } => {}
+                Edit::Delete { old: i } => old[i] = true,
+                Edit::Insert { new: j } => new[j] = true,
+            }
+        }
+        (old, new)
+    }
+
+    /// The changed lines of the output of `git diff` with or without the indent heuristic.
+    fn git_flags(
+        old: &std::path::Path,
+        new: &std::path::Path,
+        heuristic: bool,
+        sizes: (usize, usize),
+    ) -> (Vec<bool>, Vec<bool>) {
+        let flag = if heuristic {
+            "--indent-heuristic"
+        } else {
+            "--no-indent-heuristic"
+        };
+        let output = std::process::Command::new("git")
+            .args(["diff", "--no-index", "-U0", "--diff-algorithm=myers", flag])
+            .arg(old)
+            .arg(new)
+            .output()
+            .expect("git is installed");
+        let text = String::from_utf8(output.stdout).expect("git prints UTF-8");
+        let (mut old_flags, mut new_flags) = (vec![false; sizes.0], vec![false; sizes.1]);
+        // A hunk header reads `@@ -start[,count] +start[,count] @@`.
+        let range = |part: &str| {
+            let mut numbers = part[1..].split(',');
+            let start: usize = numbers.next().unwrap().parse().unwrap();
+            let count: usize = numbers.next().map_or(1, |count| count.parse().unwrap());
+            (start, count)
+        };
+        for header in text.lines().filter(|line| line.starts_with("@@")) {
+            let parts: Vec<&str> = header.split_whitespace().collect();
+            let (old_start, old_count) = range(parts[1]);
+            let (new_start, new_count) = range(parts[2]);
+            // With a count of zero the start names the line before the gap, so nothing is filled.
+            if old_count > 0 {
+                old_flags[old_start - 1..old_start - 1 + old_count].fill(true);
+            }
+            if new_count > 0 {
+                new_flags[new_start - 1..new_start - 1 + new_count].fill(true);
+            }
+        }
+        (old_flags, new_flags)
+    }
+
+    /// Compares `diff_lines` with `git diff` on pseudo-random files over `alphabet`, and returns the
+    /// mismatches. Only the cases where git's plain diff equals ours are compared, because the
+    /// heuristic only moves the boundaries of a given diff.
+    fn compare_with_git(
+        alphabet: &[&str],
+        max_len: usize,
+        cases: usize,
+        seed: u64,
+    ) -> Vec<(Vec<String>, Vec<String>)> {
+        let mut state = seed;
+        let mut next = move |bound: usize| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as usize % bound
+        };
+        let dir =
+            std::env::temp_dir().join(format!("stemma-diff-git-{}-{seed}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (old_path, new_path) = (dir.join("old.txt"), dir.join("new.txt"));
+        let mut mismatches = Vec::new();
+        for _ in 0..cases {
+            let (old_len, new_len) = (1 + next(max_len), 1 + next(max_len));
+            let old: Vec<&str> = (0..old_len)
+                .map(|_| alphabet[next(alphabet.len())])
+                .collect();
+            let new: Vec<&str> = (0..new_len)
+                .map(|_| alphabet[next(alphabet.len())])
+                .collect();
+            let text = |lines: &[&str]| {
+                lines
+                    .iter()
+                    .map(|line| format!("{line}\n"))
+                    .collect::<String>()
+            };
+            std::fs::write(&old_path, text(&old)).unwrap();
+            std::fs::write(&new_path, text(&new)).unwrap();
+            let sizes = (old.len(), new.len());
+            let plain = changed_flags(&diff(&old, &new), sizes.0, sizes.1);
+            if plain != git_flags(&old_path, &new_path, false, sizes) {
+                continue;
+            }
+            let ours = changed_flags(&diff_lines(&old, &new), sizes.0, sizes.1);
+            if ours != git_flags(&old_path, &new_path, true, sizes) {
+                let owned = |lines: Vec<&str>| lines.into_iter().map(String::from).collect();
+                mismatches.push((owned(old), owned(new)));
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        mismatches
+    }
+
+    #[test]
+    #[ignore = "needs git on the PATH and spawns a process per case"]
+    fn diff_lines_agrees_with_git_on_short_files() {
+        let alphabet = ["x", "  x", "    x", "", "}", "  }", "{", "  {"];
+        let mismatches = compare_with_git(&alphabet, 9, 1500, 12345);
+        assert!(mismatches.is_empty(), "differs from git: {mismatches:?}");
+    }
+
+    #[test]
+    #[ignore = "needs git on the PATH and spawns a process per case"]
+    fn diff_lines_agrees_with_git_on_long_runs_of_equal_lines() {
+        // Few distinct lines in long files give change groups that can slide over many lines.
+        let alphabet = ["a", "a", "a", "  a", "", "}", "b"];
+        let mismatches = compare_with_git(&alphabet, 40, 1500, 777);
+        assert!(mismatches.is_empty(), "differs from git: {mismatches:?}");
+    }
+
+    #[test]
+    #[ignore = "needs git on the PATH and spawns a process per case"]
+    fn diff_lines_agrees_with_git_beyond_the_sliding_window() {
+        // Mostly equal lines give groups that can slide over more than MAX_SLIDING lines.
+        let mut alphabet = vec!["a"; 300];
+        alphabet.extend(["  a", "", "b"]);
+        let mismatches = compare_with_git(&alphabet, 400, 600, 4242);
+        assert!(
+            mismatches.is_empty(),
+            "differs from git: {} cases",
+            mismatches.len()
+        );
+    }
+
+    /// The script of a run of `extra` inserted lines at the top of a run of equal lines, between
+    /// the lines `head` and `tail`.
+    fn insertion_at_the_top_of_a_run(
+        run: usize,
+        extra: usize,
+        head: char,
+        tail: char,
+    ) -> (Vec<char>, Vec<char>, Vec<Edit>) {
+        let build = |len: usize| {
+            let mut lines = vec![head];
+            lines.extend(vec!['1'; len]);
+            lines.push(tail);
+            lines
+        };
+        let (old, new) = (build(run), build(run + extra));
+        let mut edits = vec![Edit::Equal { old: 0, new: 0 }];
+        edits.extend((1..=extra).map(|new| Edit::Insert { new }));
+        edits.extend((1..old.len()).map(|old| Edit::Equal {
+            old,
+            new: old + extra,
+        }));
+        (old, new, edits)
+    }
+
+    fn first_insert(edits: &[Edit]) -> usize {
+        edits
+            .iter()
+            .position(|edit| matches!(edit, Edit::Insert { .. }))
+            .unwrap()
+    }
+
+    #[test]
+    fn the_window_reaches_up_by_the_size_of_the_group_plus_one() {
+        // After a blank line the top of the run reads best, but it lies further above the lowest
+        // position than the one-line group plus one. As in git, the search does not reach it.
+        let (old, new, edits) = insertion_at_the_top_of_a_run(6, 1, ' ', '5');
+        let slid = slide(&old, &new, &edits, digit_indent);
+        assert_eq!(first_insert(&slid), 6);
+    }
+
+    #[test]
+    fn the_window_reaches_up_by_at_most_max_sliding() {
+        // The group is large, so the size limit alone would reach the top of the run, which reads
+        // best. Only MAX_SLIDING positions above the lowest one are searched, so it stays out of
+        // reach.
+        let (run, extra) = (MAX_SLIDING + 20, MAX_SLIDING + 50);
+        let (old, new, edits) = insertion_at_the_top_of_a_run(run, extra, ' ', '5');
+        let slid = slide(&old, &new, &edits, digit_indent);
+        let lowest = 1 + run;
+        assert!(first_insert(&slid) >= lowest - MAX_SLIDING);
     }
 }
