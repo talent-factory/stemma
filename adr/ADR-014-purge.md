@@ -181,7 +181,9 @@ lock may be held.
    pointer is at its old or at its new value, and `--resume` finishes it.
 7. Replace the entries that name a rewritten commit by stubs (a temporary file in `tmp/` and a
    rename, never a name inside `oplog/`).
-8. Delete the delete set, then remove the journal.
+8. Delete the delete set, then remove the journal. Deleting an object flushes its directory, and
+   deleting one that is gone flushes it too: an earlier run may have unlinked the file and failed
+   to flush, and the journal must not go before the removal is durable (STEMMA-101).
 
 **Resume.** `stemma purge --resume` reads the journal and repeats the steps from step 5. A crash
 leaves `refs.lock` behind (ADR-011), and the lock would stop the resume. While the journal exists,

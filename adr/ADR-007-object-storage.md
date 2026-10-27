@@ -47,9 +47,12 @@ server will later keep objects elsewhere (API-first). The implementation is
   The file is then in place, but not known to be durable, and the writer reports an error: a store
   of an object or an entry of the log fails, a reference reports that it moved (ADR-008, ADR-011).
   On other platforms only the atomicity holds, not the durability of the directory entries.
-- **Existing objects** *(confirmed)*. Storing an object that exists and reads back correctly changes
-  nothing and flushes nothing again. The call returns when the object is stored and readable; it is
-  durable once the writer that created it has returned. A damaged file, for example the rest of a
+- **Existing objects** *(confirmed, amended by STEMMA-101)*. Storing an object that exists and
+  reads back correctly writes nothing again, but flushes its directory: the writer that created it
+  may have renamed it into place and failed before the flush, or crashed, and the caller is about to
+  name the object in a log entry or a pointer (ADR-011). The call returns when the object is stored,
+  readable, and durable. If the directory has vanished meanwhile, the object is not there after
+  all and is written again. A damaged file, for example the rest of a
   failed write, is replaced when the same object is stored again, where a rename replaces an
   existing file (Unix). An entry that is not a regular file blocks the path and is reported as
   `Corrupt`. When two writers race, the second rename replaces the file with one of identical
@@ -58,9 +61,12 @@ server will later keep objects elsewhere (API-first). The implementation is
 - **Objects of a snapshot are flushed together** *(confirmed, STEMMA-40)*. A snapshot (ADR-010)
   writes its new blobs, trees, and commit as a batch: each object goes to its own file in `tmp/`
   without a flush, and before the log entry and the move of the pointer name any of them, every
-  file is flushed and renamed, and then each directory that received one is flushed once. A
-  read inside the snapshot sees the objects of the batch, so a tree is still checked against its
-  blobs. What a batch may lose is decided by ADR-011: an object that nothing names is harmless,
+  file is flushed and renamed, and then each directory that received one is flushed once. The
+  directory of an object that the store had already is flushed in the same pass (STEMMA-101),
+  except in a snapshot whose tree did not change: all its objects are named by the working-copy
+  commit, which a durable entry names already, and `status` would otherwise flush up to 256
+  directories each time. A read inside the snapshot sees the objects of the batch, so a tree is
+  still checked against its blobs. What a batch may lose is decided by ADR-011: an object that nothing names is harmless,
   but no entry and no pointer may name an object that is not on disk. A crash before the batch
   is finished therefore loses its objects and nothing else; their files stay in `tmp/` until the
   next writer removes them. A batch that fails removes its files, and the objects that it had

@@ -198,8 +198,10 @@ impl Repository {
             .map_err(SnapshotError::WriteTree)?;
         if tree == commit.tree() {
             // An unchanged tree has all its objects already, unless one was damaged and saved
-            // again.
-            finish(objects)?;
+            // again. The entry that names the working-copy commit is durable, and so are the
+            // objects below it (ADR-011); only the new ones are flushed, so that `status` does not
+            // flush the directories of a whole tree.
+            finish_new(objects)?;
             return Ok(Replaced {
                 entry: None,
                 added: saved,
@@ -242,6 +244,13 @@ pub(super) struct Replaced {
 fn finish(objects: Batch<'_>) -> Result<(), SnapshotError> {
     objects
         .finish()
+        .map_err(|error| SnapshotError::Store(Box::new(error)))
+}
+
+/// Finishes the batch of a snapshot whose tree did not change, and flushes only its new objects.
+fn finish_new(objects: Batch<'_>) -> Result<(), SnapshotError> {
+    objects
+        .finish_new()
         .map_err(|error| SnapshotError::Store(Box::new(error)))
 }
 
@@ -835,6 +844,27 @@ mod tests {
         assert!(snapshot(&repository).is_none());
         assert_eq!(repository.refs().working_copy().unwrap(), before);
         assert_eq!(repository.oplog().numbers().unwrap(), numbers);
+    }
+
+    #[test]
+    fn a_snapshot_of_an_unchanged_tree_flushes_no_directory() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let files: Vec<_> = (0..20)
+            .map(|n| (format!("f{n}.txt"), format!("content {n}")))
+            .collect();
+        let files: Vec<_> = files
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_str()))
+            .collect();
+        track(&repository, &dir, &files);
+        let before = crate::store::flush_count();
+        assert!(snapshot(&repository).is_none());
+        assert_eq!(
+            crate::store::flush_count() - before,
+            0,
+            "the objects of an unchanged tree are durable already"
+        );
     }
 
     #[test]
