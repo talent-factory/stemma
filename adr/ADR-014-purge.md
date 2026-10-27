@@ -183,8 +183,10 @@ lock may be held.
 7. Replace the entries that name a rewritten commit by stubs (a temporary file in `tmp/` and a
    rename, never a name inside `oplog/`).
 8. Delete the delete set and the derived data (`.stemma/derived/`, ADR-017), then remove the
-   journal. `--resume` repeats the deletion of `derived/`; `--abort` leaves it alone, because
-   before the `purge` entry nothing has been removed.
+   journal. Deleting an object flushes its directory, and deleting one that is gone flushes it
+   too: an earlier run may have unlinked the file and failed to flush, and the journal must not go
+   before the removal is durable (STEMMA-101). `--resume` repeats the deletion of `derived/`;
+   `--abort` leaves it alone, because before the `purge` entry nothing has been removed.
 
 **Resume.** `stemma purge --resume` reads the journal and repeats the steps from step 5. A crash
 leaves `refs.lock` behind (ADR-011), and the lock would stop the resume. While the journal exists,
@@ -205,10 +207,10 @@ set, a crash after step 7 does not leave the blob behind as an object that "was 
 unreachable".
 
 **Abort.** `stemma purge --abort` removes the journal and the objects that step 5 wrote, as long
-as the `purge` entry is not written; the format stays where the purge raised it.
-Once the entry is written, the purge
-can only go forward: that is the point of no return, and a purge that cannot finish (a missing
-object, an unreadable log) is left for a person to repair.
+as the `purge` entry is not written; the format stays where the purge raised it. It removes the
+objects as step 8 does, so the journal goes only after their removal is durable (STEMMA-101).
+Once the entry is written, the purge can only go forward: that is the point of no return, and a
+purge that cannot finish (a missing object, an unreadable log) is left for a person to repair.
 
 ## Consequences
 

@@ -344,7 +344,11 @@ Ein Snapshot schreibt seine neuen Objekte deshalb gebündelt (ADR-007).
 Er legt jedes Objekt in \type{tmp/} an, ohne es zu sichern.
 Bevor ein Eintrag oder ein Zeiger eines davon nennt, sichert er jede Datei und benennt sie um,
 und danach sichert er jedes Verzeichnis, das ein Objekt erhalten hat, ein einziges Mal.
-Für $k$ Objekte in $r$ Verzeichnissen sind das $k + r$ statt $2k$ Sicherungen,
+Auch das Verzeichnis eines Objekts, das der Speicher schon hatte, sichert er dabei,
+weil ein früherer Schreiber es umbenannt haben kann, ohne das Verzeichnis zu sichern.
+Nur ein Snapshot, dessen Baum sich nicht geändert hat, lässt diese Verzeichnisse aus:
+Ein durchgehend gesicherter Eintrag nennt seine Objekte schon.
+Für $k$ neue Objekte in $r$ Verzeichnissen sind das $k + r$ statt $2k$ Sicherungen,
 dazu zwei für jedes Verzeichnis, das dabei neu entsteht,
 und $r$ ist höchstens 256, die Zahl der Verzeichnisse unter \type{objects/b3/}.
 Das erste \type{track} von 10'000 Dateien dauerte so 49 statt 97 Sekunden,
@@ -378,7 +382,9 @@ Was in \type{tmp/} liegen bleibt, entfernt der nächste Befehl, der die Sperre d
 \startinfobox
 {\bf Grenzfälle beim atomaren Ersetzen.}
 \startitemize
-\item Ein Objekt, das schon unversehrt im Speicher liegt, schreibt der Speicher nicht noch einmal.
+\item Ein Objekt, das schon unversehrt im Speicher liegt, schreibt der Speicher nicht noch einmal,
+sichert aber sein Verzeichnis, bevor er die Kennung zurückgibt.
+Fehlt das Verzeichnis inzwischen, schreibt er das Objekt neu.
 Ein neues Objekt macht er vor dem Umbenennen schreibgeschützt.
 \item Die Datei \type{oplog-tip} wird gesichert, ihr Verzeichnis nur nach bestem Bemühen.
 \item Lässt sich das Verzeichnis nicht sichern, liegt die Datei an ihrem Platz,
