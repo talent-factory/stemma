@@ -12,6 +12,8 @@ Er liegt in einer eigenen Bibliothek (\type{stemma-core}).
 Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
 In Phase 1 gibt es eine Oberfläche, die Kommandozeile (\type{stemma-cli})
 mit Befehlen wie \type{init}, \type{commit} und \type{op log}.
+In Phase 2 kommt eine zweite hinzu, die Oberfläche im Terminal (\type{stemma-tui}),
+die \type{diff --tui} der Kommandozeile aufruft.
 Der Hub folgt in Phase~5, ein API-Server mit denselben Operationen wie die CLI
 und ein MCP-Server als Adapter für Agenten in Phase~6.
 

@@ -41,7 +41,10 @@ Candidates, measured on 2026-10-27 in a scratch crate against `deny.toml`:
 ## Open Points
 
 - [ ] Confirmation of the level 2 review of the change that adds the dependency.
-- [ ] Windows: the pager is plain text there for now (PR #154). Whether the interface starts
-      on Windows is decided when it is built.
-- [ ] Whether `stemma-cli` makes `--tui` a cargo feature, so that a build without it keeps the
-      smaller tree.
+- [x] Windows: the pager is plain text there (PR #154), and `--tui` is refused with exit code 1
+      until the console handling is verified (STEMMA-128).
+- [x] `--tui` is not a cargo feature: `stemma-cli` depends on `stemma-tui` unconditionally
+      (STEMMA-128), and the tree grows by the crates that ratatui needs. A feature stays possible
+      if a build without the interface is wanted.
+- [ ] Signals: a signal that ends the command gives the terminal back first (STEMMA-128). A
+      `SIGKILL` cannot be handled, and the terminal then needs `reset`.

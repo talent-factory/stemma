@@ -6,7 +6,7 @@ use std::fs;
 #[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 #[cfg(unix)]
 use std::process::{Child, Command, Stdio};
@@ -493,13 +493,23 @@ fn a_diff_written_to_a_pipe_has_no_colour_and_no_pager() {
 /// the environment, and `LESS` is not inherited. The terminal is returned with the child.
 #[cfg(unix)]
 fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (Child, File) {
-    let pty = nix::pty::openpty(None, None).unwrap();
+    // A terminal of 80 by 24, as a person has one: with no size, the interface would draw nothing.
+    let size = nix::pty::Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let pty = nix::pty::openpty(Some(&size), None).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
         .env_remove("LESS")
         .args(["diff", "--actor", "human alice"])
+        // The input is the terminal too, so that the interface of `--tui` reads its keys there and
+        // not from the controlling terminal of the test run, which may not exist.
+        .stdin(Stdio::from(pty.slave.try_clone().unwrap()))
         .stdout(Stdio::from(pty.slave.try_clone().unwrap()))
         .stderr(Stdio::from(pty.slave));
     setup(&mut command);
@@ -747,6 +757,56 @@ fn a_pager_that_is_not_executable_leaves_the_diff_on_the_terminal() {
 
     assert!(output.contains("+two"), "{output:?}");
     assert!(output.contains("could not be run"), "{output:?}");
+}
+
+/// Runs `diff --tui` on a terminal, presses `q` once the interface shows the files, and returns
+/// what the terminal got together with the exit code.
+#[cfg(unix)]
+fn tui_on_terminal(dir: &Path, extra: &[&str]) -> (String, Option<i32>) {
+    let (mut child, mut master) = spawn_on_terminal(dir, |command| {
+        command.args(extra);
+    });
+    let mut output = read_until(&mut master, "Files");
+    master.write_all(b"q").unwrap();
+    output.push_str(&read_terminal(master));
+    (output, child.wait().unwrap().code())
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_shows_the_files_and_ends_with_q() {
+    let dir = edited_repository();
+    let (output, code) = tui_on_terminal(dir.path(), &["--tui"]);
+    assert_eq!(code, Some(0), "{output:?}");
+    assert!(output.contains("a.txt"), "{output:?}");
+    // The interface left the alternate screen again.
+    assert!(output.contains("\x1b[?1049h"), "{output:?}");
+    assert!(output.contains("\x1b[?1049l"), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_with_exit_code_ends_with_4_when_a_file_differs() {
+    let dir = edited_repository();
+    let (output, code) = tui_on_terminal(dir.path(), &["--tui", "--exit-code"]);
+    assert_eq!(code, Some(4), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_does_not_start_when_no_file_differs() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one\n");
+    track_ok(dir.path(), "a.txt");
+    commit(dir.path(), "first");
+
+    // No key is pressed: a command that started the interface would wait for one.
+    let (mut child, master) = spawn_on_terminal(dir.path(), |command| {
+        command.args(["--tui", "--exit-code"]);
+    });
+    let output = read_terminal(master);
+    assert_eq!(child.wait().unwrap().code(), Some(0), "{output:?}");
+    assert!(!output.contains("\x1b[?1049h"), "{output:?}");
 }
 
 #[test]

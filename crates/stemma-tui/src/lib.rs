@@ -2,8 +2,8 @@
 //! and hunks of a [`Diff`].
 //!
 //! The state of the view is a plain value, [`State`], that changes by [`Input`]; [`render`] draws
-//! it into any ratatui frame, so tests use the `TestBackend` and need no terminal. [`run`] is the
-//! only function that touches the real terminal.
+//! it into any ratatui frame, so tests use the `TestBackend` and need no terminal. [`run`] and
+//! [`restore`] are the only public functions that touch the real terminal.
 
 use std::io;
 
@@ -30,9 +30,9 @@ pub enum Input {
     /// Select the previous hunk of the file, or the last hunk of the previous file before the
     /// first one.
     PreviousHunk,
-    /// Scroll the file down by this many lines.
+    /// Scroll the file down by this many lines, but not past its last line.
     ScrollDown(u16),
-    /// Scroll the file up by this many lines.
+    /// Scroll the file up by this many lines, but not above its first line.
     ScrollUp(u16),
 }
 
@@ -60,11 +60,15 @@ impl Input {
 const PAGE: u16 = 20;
 
 /// Which file and hunk are selected, and how far the file is scrolled.
+///
+/// The indices refer to the [`Diff`] that is passed to [`State::apply`] and to [`render`]; use the
+/// same diff throughout. Another diff cannot make a call fail: an index that is out of range for
+/// it shows no file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct State {
     file: usize,
     hunk: usize,
-    scroll: u16,
+    scroll: usize,
 }
 
 impl State {
@@ -78,12 +82,12 @@ impl State {
         self.hunk
     }
 
-    /// The number of lines that the file is scrolled by.
-    pub fn scroll(&self) -> u16 {
+    /// The number of lines of the selected file that are scrolled off the top.
+    pub fn scroll(&self) -> usize {
         self.scroll
     }
 
-    /// Applies `input`. Returns `false` when the interface is to end, and `true` otherwise.
+    /// Applies `input`. Returns `false` once the user asked to quit, and `true` otherwise.
     pub fn apply(&mut self, input: Input, diff: &Diff) -> bool {
         let files = diff.files().len();
         match input {
@@ -114,8 +118,14 @@ impl State {
                     self.select_hunk(last, diff);
                 }
             }
-            Input::ScrollDown(lines) => self.scroll = self.scroll.saturating_add(lines),
-            Input::ScrollUp(lines) => self.scroll = self.scroll.saturating_sub(lines),
+            Input::ScrollDown(lines) => {
+                let last = diff
+                    .files()
+                    .get(self.file)
+                    .map_or(0, |file| file_lines(file).lines.len().saturating_sub(1));
+                self.scroll = self.scroll.saturating_add(usize::from(lines)).min(last);
+            }
+            Input::ScrollUp(lines) => self.scroll = self.scroll.saturating_sub(usize::from(lines)),
         }
         true
     }
@@ -149,7 +159,7 @@ fn hunk_count(file: Option<&FileDiff>) -> usize {
 /// The lines of one file as the right pane shows them, and where each hunk starts in them.
 struct FileLines {
     lines: Vec<Line<'static>>,
-    hunk_starts: Vec<u16>,
+    hunk_starts: Vec<usize>,
 }
 
 fn file_lines(file: &FileDiff) -> FileLines {
@@ -169,25 +179,23 @@ fn file_lines(file: &FileDiff) -> FileLines {
     };
     let (old_lines, new_lines) = (text.old_lines(), text.new_lines());
     for hunk in text.hunks() {
-        hunk_starts.push(u16::try_from(lines.len()).unwrap_or(u16::MAX));
+        hunk_starts.push(lines.len());
         lines.push(Line::styled(
             format!(
-                "@@ -{},{} +{},{} @@",
-                hunk.old_start + 1,
-                hunk.old_len,
-                hunk.new_start + 1,
-                hunk.new_len
+                "@@ -{} +{} @@",
+                range(hunk.old_start, hunk.old_len),
+                range(hunk.new_start, hunk.new_len)
             ),
             Style::new().fg(Color::Cyan),
         ));
         for edit in &hunk.edits {
             lines.push(match *edit {
-                Edit::Equal { old, .. } => edit_line(' ', &old_lines[old], Style::new()),
+                Edit::Equal { old, .. } => edit_line(' ', old_lines.get(old), Style::new()),
                 Edit::Delete { old } => {
-                    edit_line('-', &old_lines[old], Style::new().fg(Color::Red))
+                    edit_line('-', old_lines.get(old), Style::new().fg(Color::Red))
                 }
                 Edit::Insert { new } => {
-                    edit_line('+', &new_lines[new], Style::new().fg(Color::Green))
+                    edit_line('+', new_lines.get(new), Style::new().fg(Color::Green))
                 }
             });
         }
@@ -195,9 +203,23 @@ fn file_lines(file: &FileDiff) -> FileLines {
     FileLines { lines, hunk_starts }
 }
 
-fn edit_line(mark: char, line: &str, style: Style) -> Line<'static> {
+/// A range of lines as the `@@` line writes it, as `diff` does: the first line counted from one,
+/// and the length unless it is one. An empty range names the line before it, so `start` is
+/// counted from zero.
+fn range(start: usize, len: usize) -> String {
+    match len {
+        0 => format!("{start},0"),
+        1 => format!("{}", start + 1),
+        _ => format!("{},{len}", start + 1),
+    }
+}
+
+/// One line of a hunk with its mark. The core builds the hunks from the very lines it holds, so a
+/// line is always there; a missing one is shown, not a reason to panic in the middle of a frame.
+fn edit_line(mark: char, line: Option<&String>, style: Style) -> Line<'static> {
+    let line = line.map_or("(line missing)", String::as_str);
     let content = line.strip_suffix('\n').unwrap_or(line);
-    // A tab would move the cursor of the terminal behind the back of the buffer of ratatui.
+    // Ratatui drops control characters, so a tab would vanish together with the indentation.
     Line::styled(format!("{mark}{}", content.replace('\t', "    ")), style)
 }
 
@@ -216,13 +238,14 @@ pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     frame.render_stateful_widget(list, files_area, &mut list_state);
 
-    let (title, body) = match diff.files().get(state.file) {
+    let (title, mut body) = match diff.files().get(state.file) {
         Some(file) => (file.path().to_owned(), file_lines(file).lines),
         None => ("No differences".to_owned(), Vec::new()),
     };
-    let text = Paragraph::new(body)
-        .block(Block::new().borders(Borders::ALL).title(title))
-        .scroll((state.scroll, 0));
+    // The lines above the pane are dropped here, not scrolled by the widget, whose offset is a
+    // `u16`: a file of more than 65535 lines can be read to its end.
+    body.drain(..state.scroll.min(body.len()));
+    let text = Paragraph::new(body).block(Block::new().borders(Borders::ALL).title(title));
     frame.render_widget(text, text_area);
 
     frame.render_widget(
@@ -232,16 +255,26 @@ pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
 }
 
 /// Runs the interface on the terminal until the user quits. The terminal is restored on return,
-/// and on a panic.
+/// and on a panic, through the hook that ratatui installs. A signal that ends the process does
+/// not return here; the caller restores the terminal with [`restore`] first.
 ///
 /// # Errors
 ///
-/// Returns the error of the terminal if it cannot be set up, drawn on, or read from.
+/// Returns the error of the terminal if it cannot be set up, drawn on, read from, or restored.
+/// The first error wins.
 pub fn run(diff: &Diff) -> io::Result<()> {
-    let mut terminal = ratatui::try_init()?;
+    // Setting up may have turned on raw mode before it failed.
+    let mut terminal = ratatui::try_init().inspect_err(|_| restore())?;
     let result = event_loop(&mut terminal, diff);
+    let restored = ratatui::try_restore();
+    result.and(restored)
+}
+
+/// Gives the terminal back: leaves the alternate screen and the raw mode. It is for the code that
+/// ends the process while [`run`] is active, as a handler of a signal does; it does nothing
+/// harmful if the interface is not active.
+pub fn restore() {
     ratatui::restore();
-    result
 }
 
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, diff: &Diff) -> io::Result<()> {

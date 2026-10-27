@@ -344,7 +344,8 @@ struct DiffArgs {
     exit_code: bool,
 
     /// Browse the files and hunks in an interface of the terminal instead of printing the diff;
-    /// it needs a terminal on standard output. Press `q` to leave
+    /// it needs a terminal on standard output and is not available on Windows yet. Press `q` to
+    /// leave
     #[arg(long)]
     tui: bool,
 
@@ -440,9 +441,17 @@ enum CliError {
     /// The diff could not be read. The message says which operand failed, or what the snapshot
     /// of the working copy or the store did.
     Diff(DiffError),
-    /// `diff --tui` was asked for, but the output is not a terminal, or the platform has no
-    /// interface yet. Nothing was read or saved.
+    /// `diff --tui` was asked for, but the standard output is not a terminal, or the platform has
+    /// no interface yet. Nothing was read or saved; the exit code is 1.
     TuiUnavailable,
+    /// The terminal interface of `diff --tui` failed: it could not be set up, drawn on, read from,
+    /// or restored.
+    Tui {
+        /// The error of the terminal.
+        source: io::Error,
+        /// The number of the entry of the snapshot that the call made, if one.
+        entry: Option<u64>,
+    },
     /// The diff could not be written to the output.
     DiffOutput {
         /// The error of the output.
@@ -556,6 +565,7 @@ impl CliError {
             | Self::StatusOutput { .. }
             | Self::Diff(_)
             | Self::TuiUnavailable
+            | Self::Tui { .. }
             | Self::DiffOutput { .. }
             | Self::Restore(_)
             | Self::RestoreOutput { .. }
@@ -641,10 +651,23 @@ impl fmt::Display for CliError {
             ),
             Self::Status(error) => error.fmt(f),
             Self::Diff(error) => error.fmt(f),
-            Self::TuiUnavailable => f.write_str(
-                "`diff --tui` needs a terminal on standard output (and is not available on \
-                 Windows yet); use `diff` without `--tui` for scripts",
+            Self::TuiUnavailable if cfg!(unix) => f.write_str(
+                "`diff --tui` needs a terminal on standard output; use `diff` without `--tui` \
+                 for scripts",
             ),
+            Self::TuiUnavailable => f.write_str(
+                "`diff --tui` is not available on this platform yet; use `diff` without `--tui`",
+            ),
+            Self::Tui { source, entry } => {
+                write!(f, "the terminal interface failed: {source}")?;
+                match entry {
+                    Some(entry) => write!(
+                        f,
+                        "; the working copy was saved first as entry {entry} of the operation log"
+                    ),
+                    None => Ok(()),
+                }
+            }
             Self::DiffOutput { source, entry } => {
                 write!(f, "the diff could not be written: {source}")?;
                 match entry {
@@ -1422,7 +1445,8 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// Shows the changes between two sides, named as `op log` names them. The core saves the tracked
 /// files first when a side is the working copy. When the real stdout is a terminal, the text is
 /// coloured and goes through the pager instead of `out`; `out` then takes it only if the pager
-/// cannot run.
+/// cannot run. With `--tui` on a Unix terminal, the terminal interface replaces both: nothing is
+/// written to `out`, and the interface does not start when no file differs.
 fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     // Checked before the diff is read, so that a refused `--tui` does not save the working copy.
     if args.tui && !(cfg!(unix) && io::stdout().is_terminal()) {
@@ -1444,7 +1468,10 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     if args.tui {
         // Without a difference there is nothing to browse, so the interface does not start.
         if differs {
-            stemma_tui::run(&result).map_err(|source| CliError::DiffOutput {
+            TUI_ACTIVE.store(true, Ordering::SeqCst);
+            let ran = stemma_tui::run(&result);
+            TUI_ACTIVE.store(false, Ordering::SeqCst);
+            ran.map_err(|source| CliError::Tui {
                 source,
                 entry: result.saved_entry(),
             })?;
@@ -1564,6 +1591,12 @@ fn paint(colour: bool, code: &'static str) -> &'static str {
 /// (the same as in other tools). The diff has finished its work on the references before the
 /// pager starts. `SIGTERM` and `SIGHUP` are not waited out; `handle_interrupt` ends the pager.
 static PAGING: AtomicBool = AtomicBool::new(false);
+
+/// Set while the terminal interface of `diff --tui` runs. A signal that ends the command then gives
+/// the terminal back first: the interface has turned on raw mode and the alternate screen, and the
+/// end of the process runs no destructor that would turn them off. `Ctrl-C` is not such a signal
+/// here: raw mode delivers it as a key, and the interface ends by itself.
+static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// The process ID of the shell that runs the pager while the pager runs, and 0 otherwise.
 static PAGER: AtomicU32 = AtomicU32::new(0);
@@ -1902,7 +1935,8 @@ fn install_interrupt_handler() {
 /// While the pager runs (`PAGING`), `SIGINT` is ignored here: the terminal sends it to the pager
 /// too, and the command ends, with its own exit code, when the pager does. Any other signal may
 /// have reached this process alone (a `kill` on its process ID), so the pager is stopped first;
-/// a pager that got the signal as well ends all the same.
+/// a pager that got the signal as well ends all the same. While the terminal interface runs
+/// (`TUI_ACTIVE`), the terminal is given back before the process ends.
 fn handle_interrupt(signal: i32) {
     if signal == SIGINT && PAGING.load(Ordering::SeqCst) {
         return;
@@ -1913,6 +1947,9 @@ fn handle_interrupt(signal: i32) {
     let _exit = ExitOnDrop(128 + signal);
     if PAGING.load(Ordering::SeqCst) {
         stop_pager(signal);
+    }
+    if TUI_ACTIVE.load(Ordering::SeqCst) {
+        stemma_tui::restore();
     }
     let left = stemma_core::repository::remove_temp_files_for_exit();
     stemma_core::refs::release_locks_for_exit();
