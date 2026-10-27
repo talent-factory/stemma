@@ -12,6 +12,9 @@ Der Algorithmus sucht eine kürzeste Folge von Einfügungen und Löschungen.
 \item Nachbearbeitung der Grenzen nach dem Verfahren von git: Verschieben von Blöcken
 und Bewertung von Einrückungen. Sie ändert nur die Lage der Grenzen, nicht die Zahl der
 Änderungen.
+Eine Ersetzung, also eine Folge aus Löschungen und Einfügungen, bleibt dabei zusammen,
+und eine reine Löschung oder Einfügung rückt nicht an sie heran. Das ist einfacher als bei git.
+Die Einrückung zählt in Bytes, ein Tabulator gilt also als ein Zeichen, bei git als mehrere.
 \item Gruppierung in Hunks und Darstellung mit Kontextzeilen.
 \item Farbausgabe und Einbindung eines Pagers.
 \item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Stufe 1 nach ADR-004.
