@@ -772,6 +772,8 @@ bekommt der Pager \type{LESS=FRX}. Kann der Pager nicht laufen, etwa weil \type{
 unbekannten Befehl nennt, steht der Diff ungefiltert auf dem Terminal, mit einem Hinweis auf
 stderr. Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers ist kein Fehler.
 Ctrl-C erreicht den Pager; der Befehl wartet, bis der Pager endet.
+Ein Signal, das nur den Befehl trifft, etwa ein \type{kill} auf seine Prozessnummer, wirkt
+erst, wenn der Pager endet.
 Ist die Ausgabe kein Terminal, also eine Pipe oder eine Datei, gibt es weder Farbe noch Pager,
 damit Skripte reinen Text lesen. Unter Windows gibt es zurzeit immer reinen Text.
 
