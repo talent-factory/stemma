@@ -645,6 +645,9 @@ impl FsObjectStore {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.require_root()?;
+                // An earlier call may have unlinked the file and failed to flush; the repeat
+                // must not report the removal as durable before it is.
+                sync_existing_directory(&path)?;
                 return Ok(false);
             }
             Err(error) => return Err(io_error("inspect the object file", &path)(error)),
@@ -668,7 +671,10 @@ impl FsObjectStore {
         }
         match fs::remove_file(&path) {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                sync_existing_directory(&path)?;
+                return Ok(false);
+            }
             Err(error) => return Err(io_error("remove the object file", &path)(error)),
         }
         let fan_out = path
@@ -703,6 +709,9 @@ impl FsObjectStore {
         let id = hash_encoding(kind, body);
         self.require_root()?;
         if self.present(&id)? {
+            // Another writer may have placed the object and not flushed yet; a caller that names
+            // the object in a log entry or a pointer needs its directory entry on disk.
+            sync_existing_directory(&self.object_path(&id))?;
             return Ok(id);
         }
         let (file, temp) = self.write_temp(kind, body)?;
@@ -916,6 +925,7 @@ impl Batch<'_> {
         }
         self.store.require_root()?;
         if self.store.present(&id)? {
+            sync_existing_directory(&self.store.object_path(&id))?;
             return Ok(id);
         }
         let (file, temp) = self.store.write_temp(kind, body)?;
@@ -1207,6 +1217,18 @@ pub(crate) fn sync_directory(dir: &Path) -> Result<(), StoreError> {
     flush_directory(dir).map_err(io_error("flush the directory", dir))
 }
 
+/// Flushes the fan-out directory of the object file at `path`, unless the directory does not
+/// exist: then there is no entry to flush. Any other error is returned.
+fn sync_existing_directory(path: &Path) -> Result<(), StoreError> {
+    let fan_out = path
+        .parent()
+        .expect("the path of an object has a directory");
+    match flush_directory(fan_out) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result.map_err(io_error("flush the directory", fan_out)),
+    }
+}
+
 /// Flushes a directory with the error of the file system as it is (see [`sync_directory`]).
 #[cfg(unix)]
 pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
@@ -1407,6 +1429,75 @@ mod tests {
         assert!(store.remove(&id).unwrap());
         assert!(!store.contains(&id).unwrap());
         assert!(!store.remove(&id).unwrap(), "a second call finds nothing");
+    }
+
+    /// Runs `check` with a fan-out directory that can be searched but not opened, so that the
+    /// lookup of an entry works and the flush of the directory fails (STEMMA-101). Skips where the
+    /// permission of a directory is not enforced.
+    #[cfg(unix)]
+    fn with_unflushable_fan_out(
+        store: &FsObjectStore,
+        id: &ObjectId,
+        check: impl FnOnce(&FsObjectStore),
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = store.object_path(id);
+        let fan_out = path.parent().unwrap();
+        fs::set_permissions(fan_out, fs::Permissions::from_mode(0o100)).unwrap();
+        if File::open(fan_out).is_ok() {
+            fs::set_permissions(fan_out, fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
+            return;
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(store)));
+        fs::set_permissions(fan_out, fs::Permissions::from_mode(0o755)).unwrap();
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_flush_failed(result: Result<impl std::fmt::Debug, StoreError>) {
+        match result {
+            Err(StoreError::Io { operation, .. }) => assert_eq!(operation, "flush the directory"),
+            other => panic!("expected a failed flush, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_flushes_the_directory_when_the_object_is_already_gone() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let id = store.put_blob(&Blob::new("hello")).unwrap().object_id();
+        assert!(store.remove(&id).unwrap());
+        with_unflushable_fan_out(&store, &id, |store| {
+            assert_flush_failed(store.remove(&id));
+        });
+        assert!(!store.remove(&id).unwrap(), "the flush works again");
+    }
+
+    #[test]
+    fn remove_of_an_object_whose_directory_does_not_exist_finds_nothing() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let id = Blob::new("hello").id().object_id();
+        assert!(!store.remove(&id).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn put_raw_flushes_the_directory_when_the_object_is_already_present() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let id = store.put_blob(&blob).unwrap().object_id();
+        with_unflushable_fan_out(&store, &id, |store| {
+            assert_flush_failed(store.put_blob(&blob));
+            let batch = store.batch();
+            assert_flush_failed(batch.put_blob(&blob));
+        });
+        assert_eq!(store.put_blob(&blob).unwrap().object_id(), id);
     }
 
     #[test]
