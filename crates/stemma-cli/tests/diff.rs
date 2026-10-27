@@ -509,6 +509,19 @@ fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (Child, Fi
     (child, File::from(pty.master))
 }
 
+/// Reads what the terminal got until `marker` has appeared.
+#[cfg(unix)]
+fn read_until(master: &mut File, marker: &str) -> String {
+    let mut output = String::new();
+    let mut buffer = [0; 1024];
+    while !output.contains(marker) {
+        let read = master.read(&mut buffer).unwrap();
+        assert_ne!(read, 0, "the terminal closed before {marker}: {output:?}");
+        output.push_str(&String::from_utf8_lossy(&buffer[..read]));
+    }
+    output
+}
+
 /// Reads what the terminal got until the command has gone.
 #[cfg(unix)]
 fn read_terminal(mut master: File) -> String {
@@ -564,7 +577,7 @@ fn a_diff_on_a_terminal_is_coloured_and_shown_by_the_pager() {
     assert!(output.contains("\x1b[32m+two\x1b[m"), "{output:?}");
     assert!(output.contains("\x1b[36m@@ -1 +1 @@\x1b[m"), "{output:?}");
     assert!(output.contains("\x1b[1m--- "), "{output:?}");
-    // The pager ran after the text, and context lines stay plain.
+    // The pager ran after the text.
     assert!(output.find("-one").unwrap() < output.find("PAGER-DONE").unwrap());
 }
 
@@ -658,19 +671,35 @@ fn a_pager_that_quits_early_or_fails_is_not_an_error() {
 fn an_interrupt_waits_for_the_pager_and_does_not_end_the_diff() {
     use nix::sys::signal::{kill, Signal};
     use nix::unistd::Pid;
-    use std::time::Duration;
 
     let dir = edited_repository();
-    let (mut child, master) = spawn_on_terminal(dir.path(), |command| {
-        command.env("PAGER", "sleep 2; cat");
+    let (mut child, mut master) = spawn_on_terminal(dir.path(), |command| {
+        command.env("PAGER", "echo PAGER-READY; sleep 1; cat");
     });
-    // The signal arrives while the pager sleeps; the process ends only when the pager does.
-    std::thread::sleep(Duration::from_millis(700));
+    // The signal arrives when the pager has started; the process ends only when the pager does.
+    let mut output = read_until(&mut master, "PAGER-READY");
     let process = Pid::from_raw(i32::try_from(child.id()).unwrap());
     kill(process, Signal::SIGINT).unwrap();
-    let output = read_terminal(master);
+    output.push_str(&read_terminal(master));
 
     let status = child.wait().unwrap();
     assert!(status.success(), "{status:?} {output:?}");
     assert!(output.contains("-one"), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pager_that_is_not_executable_leaves_the_diff_on_the_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = edited_repository();
+    let pager = dir.path().join("pager");
+    fs::write(&pager, "#!/bin/sh\ncat\n").unwrap();
+    fs::set_permissions(&pager, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let output = diff_on_terminal(dir.path(), |command| {
+        command.env("PAGER", &pager);
+    });
+
+    assert!(output.contains("+two"), "{output:?}");
+    assert!(output.contains("could not be run"), "{output:?}");
 }

@@ -1561,7 +1561,7 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
         .filter(|pager| !pager.is_empty())
         .unwrap_or_else(|| "less".to_owned());
     let less = env::var("LESS").unwrap_or_else(|_| "FRX".to_owned());
-    let _paging = Paging::begin();
+    let paging = Paging::begin();
     let spawned = process::Command::new("sh")
         .arg("-c")
         .arg(&pager)
@@ -1569,6 +1569,8 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
         .stdin(Stdio::piped())
         .spawn();
     let Ok(mut child) = spawned else {
+        // No pager runs, so an interrupt must end the command as usual.
+        drop(paging);
         return out.write_all(text.as_bytes());
     };
     let mut input = child.stdin.take().expect("the input of the pager is piped");
@@ -1579,8 +1581,9 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
     let status = child
         .wait()
         .map_err(|error| io::Error::new(error.kind(), format!("the pager `{pager}`: {error}")))?;
+    drop(paging);
     if matches!(status.code(), Some(126 | 127)) {
-        // Nothing was read: the shell found no command to run. The shell has said so on stderr.
+        // Usually nothing was read: the shell found no command to run. The shell has said so on stderr.
         let _ = writeln!(
             io::stderr(),
             "stemma: the pager `{pager}` could not be run; the diff follows without it"
