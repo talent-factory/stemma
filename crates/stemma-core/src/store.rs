@@ -470,9 +470,10 @@ const REPLACE_DAMAGED: bool = cfg!(unix);
 ///
 /// An object is written to a temporary file below `<root>/tmp/`, flushed to disk, made
 /// read-only, and then renamed to its final path. A reader therefore sees either no object or a
-/// complete one, provided that `tmp` and `objects` are on one file system. On Unix the
-/// directories that were created, and the directory that received the object, are flushed as
-/// well. Elsewhere only the atomicity holds, not the durability of the directory entries.
+/// complete one, provided that `tmp` and `objects` are on one file system. On Unix and Windows
+/// the directories that were created, and the directory that received the object, are flushed as
+/// well. On other targets (WASI, for example) only the atomicity holds, not the durability of the
+/// directory entries.
 #[derive(Debug, Clone)]
 pub struct FsObjectStore {
     root: PathBuf,
@@ -1253,9 +1254,19 @@ fn already_removed(fan_out: &Path) -> Result<bool, StoreError> {
     Ok(false)
 }
 
-/// Flushes a directory with the error of the file system as it is (see [`sync_directory`]).
-#[cfg(unix)]
+/// Flushes a directory with the error of the file system as it is (see [`sync_directory`]). In a
+/// test, a failure can be injected for one directory (see [`fail_flush_of`]).
 pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(error) = injected_flush_failure(dir) {
+        return Err(error);
+    }
+    flush_directory_of_platform(dir)
+}
+
+/// The flush of a directory on Unix.
+#[cfg(unix)]
+fn flush_directory_of_platform(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
@@ -1266,7 +1277,7 @@ pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
 /// right to add a subdirectory is tried first, the right to add a file second. A file system that
 /// cannot flush a directory reports an error, as on Unix.
 #[cfg(windows)]
-pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
+fn flush_directory_of_platform(dir: &Path) -> io::Result<()> {
     use std::os::windows::fs::OpenOptionsExt;
     // The values from `winbase.h` and `winnt.h`; the standard library does not export them. For a
     // directory, `FILE_APPEND_DATA` is the right to add a subdirectory and `FILE_WRITE_DATA` the
@@ -1290,8 +1301,43 @@ pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
 /// No-op on targets that are neither Unix nor Windows (WASI, for example), where the store has no
 /// way to flush a directory: the rename is atomic but not made durable.
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn flush_directory(_dir: &Path) -> io::Result<()> {
+fn flush_directory_of_platform(_dir: &Path) -> io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The directory whose flush fails on this thread, if a test asked for it.
+    static FAILING_FLUSH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// The error that a test injected for `dir`, if any.
+#[cfg(test)]
+fn injected_flush_failure(dir: &Path) -> Option<io::Error> {
+    FAILING_FLUSH.with(|failing| {
+        let failing = failing.borrow();
+        (failing.as_deref() == Some(dir))
+            .then(|| io::Error::new(io::ErrorKind::PermissionDenied, "injected flush failure"))
+    })
+}
+
+/// Makes the flush of `dir` fail on this thread until the guard is dropped. It lets a test reach
+/// the failure of a flush on every platform and for every user, which a directory mode does not.
+#[cfg(test)]
+pub(crate) fn fail_flush_of(dir: &Path) -> FlushFailure {
+    FAILING_FLUSH.with(|failing| *failing.borrow_mut() = Some(dir.to_path_buf()));
+    FlushFailure
+}
+
+/// Ends the injected failure of a flush when dropped, also when a test panics.
+#[cfg(test)]
+pub(crate) struct FlushFailure;
+
+#[cfg(test)]
+impl Drop for FlushFailure {
+    fn drop(&mut self) {
+        FAILING_FLUSH.with(|failing| *failing.borrow_mut() = None);
+    }
 }
 
 #[cfg(test)]
@@ -1455,40 +1501,6 @@ mod tests {
         assert!(!store.remove(&id).unwrap(), "a second call finds nothing");
     }
 
-    /// Gives the permissions of a directory back when dropped, also when a test panics.
-    #[cfg(unix)]
-    struct RestoreMode<'a>(&'a Path);
-
-    #[cfg(unix)]
-    impl Drop for RestoreMode<'_> {
-        fn drop(&mut self) {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
-        }
-    }
-
-    /// Runs `check` with a fan-out directory whose mode is `mode`, which must allow the lookup of
-    /// an entry but not the opening of the directory, so that the flush fails (STEMMA-101). Skips
-    /// where the permission of a directory is not enforced.
-    #[cfg(unix)]
-    fn with_unflushable_fan_out(
-        store: &FsObjectStore,
-        id: &ObjectId,
-        mode: u32,
-        check: impl FnOnce(&FsObjectStore, &Path),
-    ) {
-        use std::os::unix::fs::PermissionsExt;
-        let fan_out = store.fan_out_path(id).unwrap();
-        let _restore = RestoreMode(&fan_out);
-        fs::set_permissions(&fan_out, fs::Permissions::from_mode(mode)).unwrap();
-        if File::open(&fan_out).is_ok() {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
-        check(store, &fan_out);
-    }
-
-    #[cfg(unix)]
     fn assert_flush_failed(result: Result<impl std::fmt::Debug, StoreError>, fan_out: &Path) {
         match result {
             Err(StoreError::Io {
@@ -1504,31 +1516,32 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn remove_flushes_the_directory_when_the_object_is_already_gone() {
         let dir = TempDir::new();
         let store = dir.store();
         let id = store.put_blob(&Blob::new("hello")).unwrap().object_id();
         assert!(store.remove(&id).unwrap());
-        with_unflushable_fan_out(&store, &id, 0o100, |store, fan_out| {
-            assert_flush_failed(store.remove(&id), fan_out);
-        });
+        let fan_out = store.fan_out_path(&id).unwrap();
+        {
+            let _failure = fail_flush_of(&fan_out);
+            assert_flush_failed(store.remove(&id), &fan_out);
+        }
         assert!(!store.remove(&id).unwrap(), "the flush works again");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_removal_whose_flush_failed_is_not_reported_as_done_by_the_repeat() {
         let dir = TempDir::new();
         let store = dir.store();
         let id = store.put_blob(&Blob::new("hello")).unwrap().object_id();
-        // Mode 0o300 lets the file be unlinked and keeps the directory from being opened.
-        with_unflushable_fan_out(&store, &id, 0o300, |store, fan_out| {
-            assert_flush_failed(store.remove(&id), fan_out);
+        let fan_out = store.fan_out_path(&id).unwrap();
+        {
+            let _failure = fail_flush_of(&fan_out);
+            assert_flush_failed(store.remove(&id), &fan_out);
             assert!(!store.object_path(&id).exists(), "the file was unlinked");
-            assert_flush_failed(store.remove(&id), fan_out);
-        });
+            assert_flush_failed(store.remove(&id), &fan_out);
+        }
         assert!(
             !store.remove(&id).unwrap(),
             "the repeat flushes and finishes"
@@ -1554,31 +1567,33 @@ mod tests {
         assert!(flush_existing_directory(&fan_out).unwrap());
     }
 
-    #[cfg(unix)]
     #[test]
     fn put_raw_flushes_the_directory_when_the_object_is_already_present() {
         let dir = TempDir::new();
         let store = dir.store();
         let blob = Blob::new("hello");
         let id = store.put_blob(&blob).unwrap().object_id();
-        with_unflushable_fan_out(&store, &id, 0o100, |store, fan_out| {
-            assert_flush_failed(store.put_blob(&blob), fan_out);
-        });
+        let fan_out = store.fan_out_path(&id).unwrap();
+        {
+            let _failure = fail_flush_of(&fan_out);
+            assert_flush_failed(store.put_blob(&blob), &fan_out);
+        }
         assert_eq!(store.put_blob(&blob).unwrap().object_id(), id);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_batch_flushes_the_directory_of_a_present_object_in_finish() {
         let dir = TempDir::new();
         let store = dir.store();
         let blob = Blob::new("hello");
         let id = store.put_blob(&blob).unwrap().object_id();
-        with_unflushable_fan_out(&store, &id, 0o100, |store, fan_out| {
+        let fan_out = store.fan_out_path(&id).unwrap();
+        {
+            let _failure = fail_flush_of(&fan_out);
             let batch = store.batch();
             assert_eq!(batch.put_blob(&blob).unwrap().object_id(), id);
-            assert_flush_failed(batch.finish(), fan_out);
-        });
+            assert_flush_failed(batch.finish(), &fan_out);
+        }
         let batch = store.batch();
         batch.put_blob(&blob).unwrap();
         batch.finish().unwrap();
