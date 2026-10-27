@@ -771,7 +771,7 @@ gesetzt, dann läuft \type{less}. Die Shell führt den Befehl aus. Ist \type{LES
 bekommt der Pager \type{LESS=FRX}. Kann der Pager nicht laufen, etwa weil \type{PAGER} einen
 unbekannten Befehl nennt, steht der Diff ungefiltert auf dem Terminal, mit einem Hinweis auf
 stderr. Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers ist kein Fehler.
-Ctrl-C beendet den Pager, nicht den Befehl vorzeitig.
+Ctrl-C erreicht den Pager; der Befehl wartet, bis der Pager endet.
 Ist die Ausgabe kein Terminal, also eine Pipe oder eine Datei, gibt es weder Farbe noch Pager,
 damit Skripte reinen Text lesen. Unter Windows gibt es zurzeit immer reinen Text.
 
