@@ -343,7 +343,7 @@ struct DiffArgs {
     #[arg(long = "exit-code")]
     exit_code: bool,
 
-    /// Browse the files and hunks in an interface of the terminal instead of printing the diff;
+    /// Browse the files and hunks in a terminal interface instead of printing the diff;
     /// it needs a terminal on standard output and is not available on Windows yet. Press `q` to
     /// leave
     #[arg(long)]
@@ -1468,9 +1468,20 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     if args.tui {
         // Without a difference there is nothing to browse, so the interface does not start.
         if differs {
+            // The flag first, then the look at `TERMINATING`: the handler sets `TERMINATING` and
+            // then looks at the flag, so one of the two sees the other and the interface never
+            // turns on raw mode behind a handler that has gone on to end the process.
             TUI_ACTIVE.store(true, Ordering::SeqCst);
-            let ran = stemma_tui::run(&result);
+            let ran = if TERMINATING.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                stemma_tui::run(&result, &TUI_STOP)
+            };
             TUI_ACTIVE.store(false, Ordering::SeqCst);
+            // A signal ended the interface; the handler ends the process with its exit code.
+            while TERMINATING.load(Ordering::SeqCst) {
+                std::thread::park();
+            }
             ran.map_err(|source| CliError::Tui {
                 source,
                 entry: result.saved_entry(),
@@ -1592,11 +1603,19 @@ fn paint(colour: bool, code: &'static str) -> &'static str {
 /// pager starts. `SIGTERM` and `SIGHUP` are not waited out; `handle_interrupt` ends the pager.
 static PAGING: AtomicBool = AtomicBool::new(false);
 
-/// Set while the terminal interface of `diff --tui` runs. A signal that ends the command then gives
-/// the terminal back first: the interface has turned on raw mode and the alternate screen, and the
-/// end of the process runs no destructor that would turn them off. `Ctrl-C` is not such a signal
-/// here: raw mode delivers it as a key, and the interface ends by itself.
+/// Set while the terminal interface of `diff --tui` runs, from before it turns on raw mode until
+/// after it has given the terminal back. A signal that ends the command then waits for the
+/// interface to end (`TUI_STOP`) before the process exits, because the end of the process runs no
+/// destructor that would turn raw mode and the alternate screen off. The handler does not touch
+/// the terminal itself: the main thread holds the lock of standard output for the whole command, so
+/// a write from the handler would wait for it for ever. While the interface runs, raw mode
+/// delivers a typed Ctrl-C as a key and the interface ends by itself; a `SIGINT` that arrives all
+/// the same, such as `kill -INT`, takes the path of any other signal.
 static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Asks the interface of `diff --tui` to end. The handler of a signal sets it; the interface
+/// looks at it between two keys.
+static TUI_STOP: AtomicBool = AtomicBool::new(false);
 
 /// The process ID of the shell that runs the pager while the pager runs, and 0 otherwise.
 static PAGER: AtomicU32 = AtomicU32::new(0);
@@ -1936,7 +1955,7 @@ fn install_interrupt_handler() {
 /// too, and the command ends, with its own exit code, when the pager does. Any other signal may
 /// have reached this process alone (a `kill` on its process ID), so the pager is stopped first;
 /// a pager that got the signal as well ends all the same. While the terminal interface runs
-/// (`TUI_ACTIVE`), the terminal is given back before the process ends.
+/// (`TUI_ACTIVE`), it is asked to end, and the process ends once it has given the terminal back.
 fn handle_interrupt(signal: i32) {
     if signal == SIGINT && PAGING.load(Ordering::SeqCst) {
         return;
@@ -1949,7 +1968,7 @@ fn handle_interrupt(signal: i32) {
         stop_pager(signal);
     }
     if TUI_ACTIVE.load(Ordering::SeqCst) {
-        stemma_tui::restore();
+        wait_for_tui();
     }
     let left = stemma_core::repository::remove_temp_files_for_exit();
     stemma_core::refs::release_locks_for_exit();
@@ -1958,6 +1977,19 @@ fn handle_interrupt(signal: i32) {
         for (path, error) in left {
             let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
         }
+    }
+}
+
+/// Asks the interface of `diff --tui` to end, and waits until it has given the terminal back. The
+/// wait is bounded, so that an interface that is stuck cannot keep the command from ending; the
+/// interface looks at the request ten times a second.
+fn wait_for_tui() {
+    TUI_STOP.store(true, Ordering::SeqCst);
+    for _ in 0..200 {
+        if !TUI_ACTIVE.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 

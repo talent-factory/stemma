@@ -202,7 +202,11 @@ fn hunks_and_files_are_walked_in_order() {
     assert_eq!((state.file(), state.hunk(), state.scroll()), (0, 1, 8));
     let screen = screen(&state, &diff);
     assert!(screen.contains("+changed 36"), "{screen}");
-    assert!(!screen.contains("+changed 3\n"), "{screen}");
+    // The first hunk has scrolled out; a row ends in spaces, so `+changed 36` does not match.
+    assert!(
+        !screen.lines().any(|row| row.contains("+changed 3 ")),
+        "{screen}"
+    );
 
     // After the last hunk of `a.txt`, the next hunk is the first of `b.txt`.
     state.apply(Input::NextHunk, &diff);
@@ -239,12 +243,12 @@ fn scrolling_stops_at_the_top_and_at_the_last_line() {
     state.apply(Input::ScrollDown(3), &diff);
     assert_eq!(state.scroll(), 3);
 
-    // Far past the end, the last line stays in view instead of an empty pane.
+    // Far past the end, the last line stays in view instead of an empty pane. The file has two
+    // hunks of 8 and 9 lines, so its last line is line 16.
     state.apply(Input::ScrollDown(u16::MAX), &diff);
-    let last = state.scroll();
-    assert!(last > 8 && last < 40, "{last}");
+    assert_eq!(state.scroll(), 16);
     state.apply(Input::ScrollDown(1), &diff);
-    assert_eq!(state.scroll(), last);
+    assert_eq!(state.scroll(), 16);
     assert!(screen(&state, &diff).contains(" line 39"));
 }
 
@@ -286,6 +290,49 @@ fn a_deleted_and_a_new_file_write_an_empty_range_as_git_does() {
     assert!(added.contains("@@ -0,0 +1 @@"), "{added}");
     // The tab is shown as spaces; ratatui would drop it, and the indentation with it.
     assert!(added.contains("+    indented"), "{added}");
+}
+
+#[test]
+fn a_last_line_without_a_line_end_gets_the_marker_of_diff() {
+    let fixture = Fixture::new();
+    fixture.dir.write("a.txt", "foo");
+    fixture.track(&["a.txt"]);
+    fixture.commit();
+    // Only the line end of the last line changes.
+    fixture.dir.write("a.txt", "foo\n");
+    let diff = fixture.diff();
+
+    let screen = screen(&State::default(), &diff);
+    let rows: Vec<&str> = screen.lines().collect();
+    let marker = rows
+        .iter()
+        .position(|row| row.contains("\\ No newline at end of file"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    // The marker follows the removed line, and the added line follows the marker.
+    assert!(rows[marker - 1].contains("-foo"), "{screen}");
+    assert!(rows[marker + 1].contains("+foo"), "{screen}");
+}
+
+#[test]
+fn control_characters_in_a_file_do_not_reach_the_terminal() {
+    let fixture = Fixture::new();
+    fixture.dir.write("a.txt", "one\n");
+    fixture.track(&["a.txt"]);
+    fixture.commit();
+    fixture.dir.write("a.txt", "two\x1b[2J\r\n");
+    let diff = fixture.diff();
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &State::default(), &diff))
+        .unwrap();
+    let controls = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .any(|cell| cell.symbol().chars().any(char::is_control));
+    assert!(!controls);
 }
 
 #[test]

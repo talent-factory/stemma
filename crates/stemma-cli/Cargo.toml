@@ -27,6 +27,7 @@ signal-hook = "0.3.18"
 ctrlc = "3.5.2"
 
 # Sends a signal to the command under test directly, without spawning `kill`
-# (tests/interrupt.rs, tests/diff.rs), and gives a command a terminal of its own (tests/diff.rs).
+# (tests/interrupt.rs, tests/diff.rs), and gives a command a terminal of its own (tests/diff.rs),
+# whose output the test waits for with a time limit (`poll`).
 [target.'cfg(unix)'.dev-dependencies]
-nix = { version = "0.31.3", features = ["signal", "term"] }
+nix = { version = "0.31.3", features = ["poll", "signal", "term"] }

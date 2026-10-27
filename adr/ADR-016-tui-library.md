@@ -46,5 +46,8 @@ Candidates, measured on 2026-10-27 in a scratch crate against `deny.toml`:
 - [x] `--tui` is not a cargo feature: `stemma-cli` depends on `stemma-tui` unconditionally
       (STEMMA-128), and the tree grows by the crates that ratatui needs. A feature stays possible
       if a build without the interface is wanted.
-- [ ] Signals: a signal that ends the command gives the terminal back first (STEMMA-128). A
-      `SIGKILL` cannot be handled, and the terminal then needs `reset`.
+- [x] Signals: a signal that ends the command asks the interface to end, and the process exits
+      once the interface has given the terminal back (STEMMA-128). The handler does not touch the
+      terminal itself: `main` holds the lock of standard output, so a write from the handler
+      would wait for it for ever. A `SIGKILL` cannot be handled, and the terminal then needs
+      `reset`.
