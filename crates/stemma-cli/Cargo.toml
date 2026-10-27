@@ -12,8 +12,16 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env"] }
-ctrlc = { version = "3.5.2", features = ["termination"] }
 stemma-core = { path = "../stemma-core" }
+
+# Reports which signal came, so that a SIGTERM or SIGHUP can end the command while the pager runs.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["signal"] }
+signal-hook = "0.3.18"
+
+# Windows has only Ctrl-C.
+[target.'cfg(not(unix))'.dependencies]
+ctrlc = "3.5.2"
 
 # Sends SIGINT to the command under test directly, without spawning `kill` (tests/interrupt.rs),
 # and gives a command a terminal of its own (tests/diff.rs).
