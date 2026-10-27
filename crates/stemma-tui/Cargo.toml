@@ -1,0 +1,12 @@
+[package]
+name = "stemma-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Only the `crossterm` backend, as ADR-016 decides; the default features pull in more crates.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+stemma-core = { path = "../stemma-core" }

@@ -1,8 +1,9 @@
 # ADR-016: the library of the terminal interface of `diff --tui`
 
 **Status:** Proposal, chosen by the author on 2026-10-27 in STEMMA-126. A new direct dependency is
-level 2 under ADR-004, so the change that adds it needs two agents and a human maintainer. This
-ADR adds no code and no dependency.
+level 2 under ADR-004, so the change that adds it needs two agents and a human maintainer. The
+change of STEMMA-128 builds the crate `stemma-tui`, adds ratatui and the license `Zlib`, and
+awaits that review; the decisions below stay proposals until it is confirmed.
 
 ## Context
 

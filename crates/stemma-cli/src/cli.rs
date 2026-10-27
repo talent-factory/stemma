@@ -343,6 +343,11 @@ struct DiffArgs {
     #[arg(long = "exit-code")]
     exit_code: bool,
 
+    /// Browse the files and hunks in an interface of the terminal instead of printing the diff;
+    /// it needs a terminal on standard output. Press `q` to leave
+    #[arg(long)]
+    tui: bool,
+
     /// The commits to compare, by identifier: none compares the working copy with its parent,
     /// one compares that commit with the working copy, and two compare the first with the second
     #[arg(value_name = "COMMIT", num_args = 0..=2)]
@@ -435,6 +440,9 @@ enum CliError {
     /// The diff could not be read. The message says which operand failed, or what the snapshot
     /// of the working copy or the store did.
     Diff(DiffError),
+    /// `diff --tui` was asked for, but the output is not a terminal, or the platform has no
+    /// interface yet. Nothing was read or saved.
+    TuiUnavailable,
     /// The diff could not be written to the output.
     DiffOutput {
         /// The error of the output.
@@ -547,6 +555,7 @@ impl CliError {
             | Self::Status(_)
             | Self::StatusOutput { .. }
             | Self::Diff(_)
+            | Self::TuiUnavailable
             | Self::DiffOutput { .. }
             | Self::Restore(_)
             | Self::RestoreOutput { .. }
@@ -632,6 +641,10 @@ impl fmt::Display for CliError {
             ),
             Self::Status(error) => error.fmt(f),
             Self::Diff(error) => error.fmt(f),
+            Self::TuiUnavailable => f.write_str(
+                "`diff --tui` needs a terminal on standard output (and is not available on \
+                 Windows yet); use `diff` without `--tui` for scripts",
+            ),
             Self::DiffOutput { source, entry } => {
                 write!(f, "the diff could not be written: {source}")?;
                 match entry {
@@ -1411,6 +1424,10 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// coloured and goes through the pager instead of `out`; `out` then takes it only if the pager
 /// cannot run.
 fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
+    // Checked before the diff is read, so that a refused `--tui` does not save the working copy.
+    if args.tui && !(cfg!(unix) && io::stdout().is_terminal()) {
+        return Err(CliError::TuiUnavailable);
+    }
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
     let comparison = match args.commits.as_slice() {
@@ -1424,6 +1441,20 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         .diff(&actor, &AllowAll, comparison)
         .map_err(CliError::Diff)?;
     let differs = !result.files().is_empty();
+    if args.tui {
+        // Without a difference there is nothing to browse, so the interface does not start.
+        if differs {
+            stemma_tui::run(&result).map_err(|source| CliError::DiffOutput {
+                source,
+                entry: result.saved_entry(),
+            })?;
+        }
+        return Ok(if args.exit_code && differs {
+            ExitCode::from(4)
+        } else {
+            ExitCode::SUCCESS
+        });
+    }
     // A terminal gets colour and a pager; a pipe or a file gets plain text for scripts. Windows
     // gets plain text for now: the console needs escape processing and a shell for the pager.
     let terminal = cfg!(unix) && io::stdout().is_terminal();

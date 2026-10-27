@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env"] }
 stemma-core = { path = "../stemma-core" }
+stemma-tui = { path = "../stemma-tui" }
 
 # `signal-hook` reports which signal came, so that a SIGTERM or SIGHUP can end the command while
 # the pager runs; `nix` sends the signal on to the pager.

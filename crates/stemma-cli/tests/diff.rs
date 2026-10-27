@@ -748,3 +748,14 @@ fn a_pager_that_is_not_executable_leaves_the_diff_on_the_terminal() {
     assert!(output.contains("+two"), "{output:?}");
     assert!(output.contains("could not be run"), "{output:?}");
 }
+
+#[test]
+fn tui_is_refused_without_a_terminal_and_saves_nothing() {
+    let dir = edited_repository();
+    let before = operations(dir.path());
+    let result = diff(dir.path(), &["--tui"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(result.stderr.contains("--tui"), "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+    assert_eq!(operations(dir.path()), before);
+}
