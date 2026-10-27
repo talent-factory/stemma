@@ -724,7 +724,7 @@ fn a_termination_signal_ends_the_pager_and_the_diff_at_once() {
             let state = Command::new("ps")
                 .args(["-o", "stat=", "-p", &pager.to_string()])
                 .output()
-                .unwrap();
+                .expect("the test needs the `ps` command");
             let state = String::from_utf8_lossy(&state.stdout);
             state.trim().is_empty() || state.trim().starts_with('Z')
         });

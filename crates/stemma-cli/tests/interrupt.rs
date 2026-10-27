@@ -1,7 +1,7 @@
-//! An interrupted command: Ctrl-C removes the lock of the references that the command holds
-//! (ADR-014), and a command that is killed leaves a lock that the next command takes over
-//! (ADR-008), so that the next command runs in both cases. Ctrl-C also removes the temporary file
-//! of a restore that is writing a file (ADR-013).
+//! An interrupted command: Ctrl-C or a termination signal removes the lock of the references
+//! that the command holds (ADR-014), and a command that is killed leaves a lock that the next
+//! command takes over (ADR-008), so that the next command runs in both cases. An interrupt also
+//! removes the temporary file of a restore that is writing a file (ADR-013).
 #![cfg(unix)]
 
 mod common;
@@ -41,11 +41,26 @@ const INTERRUPTS: [(Signal, i32); 3] = [
 #[test]
 fn an_interrupt_during_a_snapshot_removes_the_lock_and_ends_with_128_plus_the_signal() {
     for (signal, code) in INTERRUPTS {
-        interrupt_a_snapshot(signal, code);
+        // An attempt that misses the lock is tried again, so that the test does not pass
+        // without having interrupted a snapshot.
+        let mut missed = Vec::new();
+        let interrupted = (0..3).any(|_| match interrupt_a_snapshot(signal, code) {
+            Ok(()) => true,
+            Err(reason) => {
+                missed.push(reason);
+                false
+            }
+        });
+        assert!(
+            interrupted,
+            "{signal:?}: no attempt interrupted the snapshot while it held the lock: {missed:?}"
+        );
     }
 }
 
-fn interrupt_a_snapshot(signal: Signal, code: i32) {
+/// Interrupts a snapshot while it holds the lock, and checks what it leaves. Returns why it could
+/// not interrupt the snapshot there, which the caller tries again.
+fn interrupt_a_snapshot(signal: Signal, code: i32) -> Result<(), &'static str> {
     let dir = Dir::new();
     let status = stemma(dir.path(), &["init", "--actor", ACTOR])
         .status()
@@ -73,15 +88,13 @@ fn interrupt_a_snapshot(signal: Signal, code: i32) {
     if !lock.exists() {
         let _ = child.kill();
         let _ = child.wait();
-        eprintln!("skipped: the command ended before its lock was seen");
-        return;
+        return Err("the command ended before its lock was seen");
     }
     signal::kill(Pid::from_raw(i32::try_from(child.id()).unwrap()), signal).unwrap();
     let status = child.wait().unwrap();
     if status.success() {
         // The command ended between the check of the lock and the signal.
-        eprintln!("skipped: the command ended before the signal");
-        return;
+        return Err("the command ended before the signal");
     }
     assert_eq!(status.code(), Some(code), "{signal:?} {status:?}");
     assert!(!lock.exists(), "the interrupted command removed its lock");
@@ -89,6 +102,7 @@ fn interrupt_a_snapshot(signal: Signal, code: i32) {
         .status()
         .unwrap();
     assert!(status.success(), "the next command runs");
+    Ok(())
 }
 
 #[test]

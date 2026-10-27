@@ -1537,8 +1537,10 @@ static PAGING: AtomicBool = AtomicBool::new(false);
 /// The process ID of the shell that runs the pager while the pager runs, and 0 otherwise.
 static PAGER: AtomicU32 = AtomicU32::new(0);
 
-/// Set when a termination signal has begun to end the command. The main thread then must not
-/// end the process on its own, or it would race with the handler for the exit code.
+/// Set when a termination signal has begun to end the command. The main thread then does not
+/// end the process on its own once the pager is gone, so that the handler gives the exit code.
+/// A signal that arrives at the very moment the pager ends by itself may still lose this race;
+/// either exit code is defensible then.
 static TERMINATING: AtomicBool = AtomicBool::new(false);
 
 /// Marks the pager as running until it is dropped.
@@ -1589,10 +1591,18 @@ fn write_paged(text: &str, out: &mut dyn Write) -> io::Result<()> {
         .env("LESS", less)
         .stdin(Stdio::piped())
         .spawn();
-    let Ok(mut child) = spawned else {
-        // No pager runs, so an interrupt must end the command as usual.
-        drop(paging);
-        return out.write_all(text.as_bytes());
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            // No pager runs, so an interrupt must end the command as usual.
+            drop(paging);
+            let _ = writeln!(
+                io::stderr(),
+                "stemma: the pager `{pager}` could not be started ({error}); the diff follows \
+                 without it"
+            );
+            return out.write_all(text.as_bytes());
+        }
     };
     paging.attach(child.id());
     let mut input = child.stdin.take().expect("the input of the pager is piped");
@@ -1836,11 +1846,14 @@ fn install_interrupt_handler() {
         Ok(signals) => signals,
         Err(error) => return no_handler_warning(&error),
     };
-    std::thread::spawn(move || {
+    let spawned = std::thread::Builder::new().spawn(move || {
         for signal in signals.forever() {
             handle_interrupt(signal);
         }
     });
+    if let Err(error) = spawned {
+        no_handler_warning(&error);
+    }
 }
 
 /// Windows has no termination signals for this process: the handler covers Ctrl-C only and
@@ -1856,15 +1869,18 @@ fn install_interrupt_handler() {
 /// exits with 128 plus the signal number.
 ///
 /// While the pager runs (`PAGING`), `SIGINT` is ignored here: the terminal sends it to the pager
-/// too, and the command ends, with its own exit code, when the pager does. Any other signal
-/// reached this process alone, so the pager is stopped first.
+/// too, and the command ends, with its own exit code, when the pager does. Any other signal may
+/// have reached this process alone (a `kill` on its process ID), so the pager is stopped first;
+/// a pager that got the signal as well ends all the same.
 fn handle_interrupt(signal: i32) {
+    if signal == SIGINT && PAGING.load(Ordering::SeqCst) {
+        return;
+    }
+    // Before the pager ends, so that the main thread does not end the process meanwhile.
+    TERMINATING.store(true, Ordering::SeqCst);
+    // Whatever happens below, the process ends with the exit code of the signal.
+    let _exit = ExitOnDrop(128 + signal);
     if PAGING.load(Ordering::SeqCst) {
-        if signal == SIGINT {
-            return;
-        }
-        // Before the pager ends, so that the main thread does not end the process meanwhile.
-        TERMINATING.store(true, Ordering::SeqCst);
         stop_pager(signal);
     }
     let left = stemma_core::repository::remove_temp_files_for_exit();
@@ -1875,7 +1891,17 @@ fn handle_interrupt(signal: i32) {
             let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
         }
     }
-    std::process::exit(128 + signal);
+}
+
+/// Ends the process with its code when it is dropped, also during a panic: the handler thread
+/// is the only one that reacts to a signal, and a main thread that waits for it would hang if it
+/// died without ending the process.
+struct ExitOnDrop(i32);
+
+impl Drop for ExitOnDrop {
+    fn drop(&mut self) {
+        std::process::exit(self.0);
+    }
 }
 
 /// Sends `signal` to the shell that runs the pager, so that the pager does not outlive the
