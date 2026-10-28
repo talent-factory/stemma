@@ -24,7 +24,9 @@ der Kern nicht von ihr.
 Die Verwendung im Merge-Pfad, Stufe 2, folgt in Phase 3.
 \item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
 Verschiebungen. Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
-Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken. Eine Markierung der Verschiebung
+Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken
+(Vergleich der Verfahren in \type{docs/research/moved-lines-heuristics.md}).
+Eine Markierung der Verschiebung
 als reine Anzeige, wie \type{--color-moved} in git, lässt sich später ohne Änderung der Hunks
 nachrüsten.
 \item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten 8000 Bytes, wie git. Er zeigt

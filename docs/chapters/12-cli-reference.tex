@@ -24,7 +24,14 @@ die Zeile zeigt den Höchstfall.
 stemma <Befehl> [Argumente] [Optionen]
 stemma --version
 stemma --help
+stemma help [Befehl]
 \stoptyping
+
+\type{stemma help Befehl} zeigt dasselbe wie \type{stemma Befehl --help}; bei einem Befehl mit
+Unterbefehl nennt man beide, etwa \type{stemma help op restore}.
+Ohne Befehl zeigt \type{stemma help} die Übersicht wie \type{stemma --help}.
+Die Hilfe braucht weder einen Akteur noch ein Repository, schreibt auf die Standardausgabe
+und endet mit Exit-Code 0.
 
 {\bf Verzeichnis.} Jeder Befehl nimmt ein Verzeichnis des Repositories mit
 \type{-C} (\type{--repository}) entgegen, standardmässig das aktuelle. Es gibt kein
@@ -52,6 +59,18 @@ Liegt das Verzeichnis in keinem Repository,
 nennt die Meldung \type{-C} und \type{stemma init}; gibt es das Verzeichnis nicht oder ist es
 eine Datei, sagt sie das.
 
+{\bf Git-Checkouts unterhalb der Wurzel.} Ein Verzeichnis mit einem eigenen \type{.git}
+unterhalb der Wurzel, etwa ein Klon oder ein Git-Worktree (ADR-009), gehört für Stemma zum
+Repository der Wurzel. Seine Dateien erscheinen in \type{status} als nicht verfolgt,
+und \type{track .} speichert sie, wenn \type{.stemmaignore} das Verzeichnis nicht ausschliesst.
+Nur die Metadaten \type{.git} selbst fehlen immer (siehe \type{track}).
+Die Warnung der Suche kommt nur, wenn der Befehl in diesem Checkout läuft; in der Wurzel
+oder mit \type{-C} auf die Wurzel bleibt sie aus.
+Sie bleibt auch aus beim \type{.git} der Wurzel selbst, dem Normalfall, und bei einem Checkout
+mit eigenem \type{.stemma}: Dort findet die Suche zuerst dieses Repository, und der Befehl
+arbeitet in ihm, nicht in dem der Wurzel. Das Repository der Wurzel führt die Dateien eines
+solchen Checkouts weiter als gewöhnliche Dateien.
+
 {\bf Akteur.} Jeder Befehl, der ein Repository ändert, braucht einen Akteur (ADR-002).
 Er kommt aus der Option \type{--actor} oder aus der Umgebungsvariablen \type{STEMMA_ACTOR}.
 Die Option geht der Variablen vor. Der Text hat die Form der Akteur-Zeile eines Commits:
@@ -76,6 +95,15 @@ Ein Befehl, der einen Snapshot macht (\type{track}, \type{commit}, \type{status}
 Akteur für alles ein, was er im Verzeichnis speichert.
 Deshalb arbeitet jeder Akteur in einer eigenen Arbeitskopie; zwei Akteure in einem
 Verzeichnis sind kein unterstützter Betrieb (ADR-010). Das Programm prüft es nicht.
+
+Ein Git-Worktree ist keine eigene Arbeitskopie für Stemma. Ohne ein eigenes \type{stemma init}
+öffnet ein Befehl im Worktree das \type{.stemma} der Wurzel, weil die Suche die übergeordneten
+Verzeichnisse absucht; sein Snapshot deckt dann die Dateien der Wurzel ab, im Namen des Akteurs
+des Worktrees, und es arbeiten zwei Akteure in einer Arbeitskopie. Mit einem eigenen
+\type{stemma init} ist der Worktree ein unabhängiges Repository, doch dessen Verlauf geht mit
+dem Worktree verloren: Git überträgt das ignorierte \type{.stemma} nicht in einen Merge,
+und \type{git worktree remove} löscht das Verzeichnis samt \type{.stemma} ohne Meldung.
+Bis Phase 3 ruft ein Akteur \type{stemma} deshalb nicht in einem Git-Worktree auf.
 
 Auch \type{op restore --dry-run} und \type{purge} ohne \type{--apply} verlangen einen Akteur,
 obwohl sie nichts schreiben; sie prüfen ihn, bevor sie das Repository öffnen.
@@ -833,6 +861,10 @@ Kennungen und alle danach Pfade. Ein Pfad, der mit \type{b3:} beginnt, steht als
 {\bf Verhalten.} Ist eine Seite der Working-Copy-Commit, speichert der Befehl zuerst die
 verfolgten Dateien wie ein Snapshot (Operation \type{snapshot}), wie \type{status} es tut.
 Danach vergleicht er die Dateien der beiden Seiten nach ihrem Inhalt; der Modus zählt nicht.
+Das gilt auch für die Art: Der Inhalt eines Links ist sein Ziel, und eine Datei mit demselben
+Text wie dieses Ziel ist von dem Link nicht zu unterscheiden. Ersetzt ein Link eine solche
+Datei, zeigt \type{diff} nichts, und \type{--exit-code} endet mit 0, während \type{status}
+die Änderung als \type{M} meldet.
 Eine Datei, die auf beiden Seiten gleich ist, erscheint nicht.
 Mit Pfaden beschränkt der Befehl nur die Ausgabe: Der Snapshot umfasst weiter alle verfolgten
 Dateien, und \type{--exit-code} betrachtet nur die gewählten Dateien.
@@ -882,7 +914,8 @@ Der Pager ist der Befehl in \type{PAGER}; eine leere oder fehlende Variable gilt
 gesetzt, dann läuft \type{less}. Die Shell führt den Befehl aus. Ist \type{LESS} nicht gesetzt,
 bekommt der Pager \type{LESS=FRX}. Kann der Pager nicht laufen, etwa weil \type{PAGER} einen
 unbekannten Befehl nennt, steht der Diff ungefiltert auf dem Terminal, mit einem Hinweis auf
-stderr. Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers ist kein Fehler.
+der Fehlerausgabe.
+Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers ist kein Fehler.
 Ctrl-C erreicht den Pager; der Befehl wartet, bis der Pager endet,
 und endet dann mit seinem eigenen Exit-Code.
 Ein Signal zum Beenden (\type{SIGTERM} oder \type{SIGHUP}), das nur den Befehl trifft,
@@ -902,6 +935,15 @@ Rahmen der Datei, Kopfzeilen mit \type{diff}, \type{---} und \type{+++} gibt es 
 Hat die letzte Zeile kein Zeilenende, folgt ihr die Zeile
 \type{\ No newline at end of file}, wie im Text des Befehls.
 Ein Tabulator erscheint als vier Leerzeichen.
+Die Pfade stehen in der Liste und im Rahmen der Datei unmaskiert, anders als im Text des Befehls:
+Ein Backslash im Namen erscheint unverändert, im Text verdoppelt.
+Eine Binärdatei zeigt die Oberfläche mit der Zeile \type{Binary file differs}.
+Die unterste Zeile nennt die Tasten:
+
+\starttyping
+q quit · J/K file · n/p hunk · j/k scroll · space/b page
+\stoptyping
+
 Die Oberfläche ist schreibgeschützt. Die Tasten:
 \type{J} und \type{K} (oder Tab und Shift-Tab) wählen die nächste und die vorige Datei,
 \type{n} und \type{p} den nächsten und den vorigen Hunk, über Dateigrenzen hinweg,
@@ -931,7 +973,9 @@ wenn der Snapshot fehlschlägt oder wenn eine Referenz nicht lesbar ist.
 Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt oder wenn die Oberfläche
 von \type{--tui} ausfällt, etwa weil sich das Terminal nicht einrichten lässt.
 Ein Objekt, das der Vergleich braucht und das fehlt oder beschädigt ist, ist ein Schaden
-und endet mit Exit-Code 5; eine gehaltene Sperre beim Snapshot endet mit Exit-Code 6.
+und endet mit Exit-Code 5. Dazu gehört das Elternteil des Working-Copy-Commits, die andere Seite
+des Vergleichs ohne Argument; ein Commit, den ein Argument nennt und den es nicht gibt,
+ist dagegen Exit-Code 1. Eine gehaltene Sperre beim Snapshot endet mit Exit-Code 6.
 Hat der Snapshot den Zeiger bewegt, aber nicht sichern können, endet der Befehl mit
 Exit-Code 3, wie \type{status}; die Ausgabe bleibt dann aus.
 Schliesst der Leser der Ausgabe die Pipe früh, endet der Befehl ohne Fehler; mit
@@ -952,7 +996,8 @@ fällt erst auf, wenn der Snapshot geschrieben ist, weil die Dateien der Arbeits
 dann feststehen. Der Befehl endet dann mit Exit-Code 1, und die Meldung nennt den Eintrag
 des Snapshots. Ein ungültiger Pfad schreibt nichts.
 
-{\bf Beispiele.}
+{\bf Beispiele.} Die Kennungen sind hier gekürzt (\type{b3:4f2a0c…}); der Befehl verlangt
+alle 64 Hexadezimalziffern und nimmt keine Kurzform (Exit-Code 1).
 
 \starttyping
 stemma diff --actor "human daniel"
@@ -1534,7 +1579,7 @@ schreibt, und lässt sich danach wiederholen. So kann kein Befehl ein Objekt nen
 Purge gelöscht hat.
 Liegengebliebene Dateien in \type{.stemma/tmp/} entfernt der Purge, sobald er die Sperre hält.
 Lässt sich eine nicht entfernen, nennt \type{purge --apply} oder \type{--resume} sie in einer
-Warnung auf der Standardfehlerausgabe, denn sie kann das Geheimnis enthalten;
+Warnung auf der Fehlerausgabe, denn sie kann das Geheimnis enthalten;
 der Purge selbst gelingt trotzdem (Exit-Code 0), und die Datei ist von Hand zu entfernen.
 Was ein Purge nicht garantiert (Kopien im Dateisystem, Nachrichten und Pfadnamen),
 steht in ADR-014.
