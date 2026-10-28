@@ -107,7 +107,10 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   constructor and the reader refuse `take-over` with a pointer and any other operation without
   one, so every entry keeps one encoding. The entry is in the chain like any other, and the
   hash of its body covers the line of the operation. With no pointer to judge, `outcomes`
-  counts it as taken; the file `working-copy` shows the owner. A repository of format 5 has it
+  judges the newest such entry by the owner that the file `working-copy` names now: its actor
+  confirms it, another owner refutes it when no writer is at work, and a caller that does not
+  give the owner leaves it unknown. An older one is unknown, as the owner of today comes from a
+  later take-over. A repository of format 5 has it
   (ADR-009), so a program that cannot read it refuses the repository before it reads the log.
   The alternative, a line `owner` with the old and the new actor, was explicit, but it needed
   two lines (an actor has spaces) and changes to the reading of the outcomes and to the

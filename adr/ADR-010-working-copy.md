@@ -196,24 +196,30 @@ art, not a template (ADR-015).
   records the owner in the file `working-copy`: a second line `owner <actor>` after the line of
   the commit, with the actor as the exact string of ADR-002. `init` writes the owner, the actor
   of `init`. A repository of format 4 has no owner; it rises to 5 with its next log entry, and
-  the actor of the command that causes the rise becomes the owner and is named in that entry.
-  A command of another actor that would take a snapshot is refused before it reads the
-  directory. The message names the owner and the option `--take-over`, which asks the
-  authorizer for the operation `take-over` and then makes the actor of the command the owner.
-  The change of the owner has an entry of its own: the operation `take-over`, with no pointer,
-  as the owner is not one (ADR-011). The entry is written first, and then the file names the
-  new owner, in the order of every pointer. The rise from 4 records the owner just before the
-  entry of the rise, as the format is raised just before it: both prepare the repository and
-  move no pointer. A purge raises the format as well, but its entries are no changes and
-  record no owner; the next entry of a change does, and until then any actor may save, as in
-  format 4. An owner who takes over writes nothing. The option is on the commands that
-  take a snapshot (`track`, `commit`, `status`, `diff`, `op restore`); `purge --apply` has
-  none, and a person who has to take over runs `status --take-over` first. Taking over is
-  level 3 (ADR-004): it decides whose changes a snapshot may save. The refusal is an error of
-  the class that the other refusals of a repository state have (exit code 1), so it needs no
-  exit code of its own. Every move of the working-copy commit keeps the owner, `op restore`
-  included: the owner is not a pointer, and a restore does not give the directory back to an
-  earlier actor.
+  the actor of that entry becomes the owner once the entry is written, so the entry names it.
+  The owner is recorded after the entry and never before it, so an entry that fails leaves no
+  owner behind that no entry names; if recording the owner fails, the entry stands and the
+  next entry records it. A purge raises the format as well, but its entries are no changes and
+  record no owner; until a change does, any actor may save, as in format 4.
+  A command of another actor that would take a snapshot is refused before it reads a file
+  (`status` checks before it reads the exclusion file, and the snapshot again under the lock).
+  The message names the owner and, for a human, the option `--take-over`; an agent is told to
+  ask a human. The option is on the commands that take a snapshot (`track`, `commit`,
+  `status`, `diff`, `op restore`); `purge --apply` has none, and a person who has to take over
+  runs `status --take-over` first. The take-over is part of the snapshot of the command
+  (`Repository::taking_over`): it is decided before a file is read (an agent is refused, and
+  the authorizer is asked for the operation `take-over`) and made after the files are read and
+  the tree is written, just before the move. A command whose own checks fail first, such as a
+  path that does not exist or an empty message, takes nothing over; one that fails only after
+  its snapshot, such as a commit with nothing to commit, keeps the take-over, as it keeps its
+  snapshot. The change of the owner has an entry of its own: the operation `take-over`, with no
+  pointer, as the owner is not one (ADR-011). The entry is written first, and then the file
+  names the new owner, in the order of every pointer. An owner who takes over writes nothing.
+  Taking over is level 3 (ADR-004): it decides whose changes a snapshot may save, so only a
+  human may do it, as only a human may purge. The refusal is an error of the class that the
+  other refusals of a repository state have (exit code 1), so it needs no exit code of its
+  own. Every move of the working-copy commit keeps the owner, `op restore` included: the owner
+  is not a pointer, and a restore does not give the directory back to an earlier actor.
 - **The lease of ADR-004 and the rule are independent.** ADR-004 proposes a lease on a branch,
   which a server would enforce: it governs who may move the branch. It does not govern who
   writes into a local directory, and a server cannot see that. The rule above is what covers

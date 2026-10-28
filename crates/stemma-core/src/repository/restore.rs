@@ -419,6 +419,7 @@ impl Repository {
         let locked_before = refs.is_locked().map_err(RestoreError::Refs)?;
         let head = refs.head().map_err(RestoreError::Refs)?;
         let working_copy = refs.working_copy().map_err(RestoreError::Refs)?;
+        let owner = refs.working_copy_owner().map_err(RestoreError::Refs)?;
         let names: BTreeSet<&BranchName> = entries
             .iter()
             .filter_map(Entry::change)
@@ -432,7 +433,8 @@ impl Repository {
         }
         let locked_after = refs.is_locked().map_err(RestoreError::Refs)?;
         let current = Current::new(head, branches, !(locked_before || locked_after))
-            .with_working_copy(Some(working_copy));
+            .with_working_copy(Some(working_copy))
+            .with_owner(owner);
         Ok(outcomes(entries, Some(&current))[position])
     }
 }
@@ -662,6 +664,7 @@ impl fmt::Display for RestoreError {
                 }
             ),
             Self::Refs(error) => write!(f, "could not restore, nothing of it was written: {error}"),
+            Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(
                 f,
                 "could not save the working directory first, so the restore wrote nothing: {error}"

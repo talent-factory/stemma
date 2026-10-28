@@ -18,7 +18,7 @@ use crate::object::{BlobId, CommitId, ObjectId};
 use crate::oplog::{Entry, EntryError, OpLogError, Purge, Record};
 use crate::refs::{Logged, PurgeLock, RefError};
 use crate::repository::{
-    now, raise_format, Repository, SnapshotError, UpdateError, CHAIN_FORMAT_VERSION,
+    now, raise_format, Repository, SnapshotError, UpdateError, FORMAT_VERSION,
 };
 use crate::store::{scratch_left, ObjectStore, StoreError};
 use crate::{Actor, Allowed, Authorizer};
@@ -303,6 +303,7 @@ impl fmt::Display for ApplyPurgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Plan(error) => error.fmt(f),
+            Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(
                 f,
                 "could not save the working directory before the purge, nothing was purged: \
@@ -590,7 +591,7 @@ impl Repository {
         new.sort();
         new.dedup();
         let dir = self.metadata_dir();
-        raise_format(&dir, CHAIN_FORMAT_VERSION).map_err(|error| start(store(error)))?;
+        raise_format(&dir, FORMAT_VERSION).map_err(|error| start(store(error)))?;
         let journal = Journal { plan, last, new };
         journal::write(&dir, &journal).map_err(|error| {
             if error.made() {
@@ -628,7 +629,7 @@ impl Repository {
         let (journal, lock) = self.take_over(actor, authorizer)?;
         // A purge that an older program started left an older format; the entries that the
         // resume writes are in the hash chain, so the format rises first, as for a new purge.
-        raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(stopped(
+        raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(stopped(
             PurgeStep::Journal,
             &[],
             store,

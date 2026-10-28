@@ -48,16 +48,12 @@ fn every_command_that_takes_a_snapshot_refuses_another_actor_and_writes_nothing(
 
         assert_eq!(result.code, 1, "{command:?}: {}", result.stderr);
         assert_eq!(result.stdout, "", "{command:?}");
-        // `op restore` says first that it wrote nothing; the refusal is the same everywhere.
+        // The refusal is the same in every command, without a prefix of its own.
         let refusal = format!(
-            "the working copy belongs to `{ACTOR}`, so `{OTHER}` may not save it; run the \
-             command again with `--take-over` to make `{OTHER}` its owner\n"
+            "stemma: the working copy belongs to `{ACTOR}`, so `{OTHER}` may not save it; run \
+             the command again with `--take-over` to make `{OTHER}` its owner\n"
         );
-        assert!(
-            result.stderr.starts_with("stemma: ") && result.stderr.ends_with(&refusal),
-            "{command:?}: {}",
-            result.stderr
-        );
+        assert_eq!(result.stderr, refusal, "{command:?}");
         assert_eq!(operations(dir.path()), entries, "{command:?}");
     }
     assert_eq!(owner_line(dir.path()), format!("owner {ACTOR}"));
@@ -170,5 +166,73 @@ fn a_repository_of_format_4_rises_to_5_and_the_actor_of_its_next_entry_owns_it()
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
         "stemma-repository 5\n"
+    );
+}
+
+#[test]
+fn an_agent_may_not_take_over_and_nothing_is_written() {
+    let dir = repository();
+    let before = operations(dir.path());
+    let agent = "agent claude model=opus-5-5 session=s1 sponsor=daniel";
+
+    let result = run(dir.path(), &["status", "--actor", agent, "--take-over"]);
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result
+            .stderr
+            .starts_with("stemma: an agent may not take the working copy over"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()), before);
+    assert_eq!(owner_line(dir.path()), format!("owner {ACTOR}"));
+}
+
+#[test]
+fn a_command_that_fails_its_own_checks_does_not_take_over() {
+    let dir = repository();
+    let before = operations(dir.path());
+    let commands: [&[&str]; 3] = [
+        &["op", "restore", "999"],
+        &["track", "missing.txt"],
+        // An empty message; "nothing to commit" is found only after the snapshot.
+        &["commit", "-m", " "],
+    ];
+    for command in commands {
+        let mut args = command.to_vec();
+        args.extend(["--actor", OTHER, "--take-over"]);
+
+        let result = run(dir.path(), &args);
+
+        assert_eq!(result.code, 1, "{command:?}: {}", result.stderr);
+        assert!(
+            !result.stderr.contains("took the working copy over"),
+            "{command:?}"
+        );
+        assert_eq!(operations(dir.path()), before, "{command:?}");
+        assert_eq!(
+            owner_line(dir.path()),
+            format!("owner {ACTOR}"),
+            "{command:?}"
+        );
+    }
+}
+
+#[test]
+fn status_refuses_another_actor_before_it_reads_the_exclusion_file() {
+    let dir = repository();
+    write(dir.path(), ".stemmaignore", "!broken\n");
+
+    let result = run(dir.path(), &["status", "--actor", OTHER]);
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result
+            .stderr
+            .starts_with(&format!("stemma: the working copy belongs to `{ACTOR}`")),
+        "{}",
+        result.stderr
     );
 }

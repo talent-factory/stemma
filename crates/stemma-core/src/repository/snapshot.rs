@@ -23,7 +23,7 @@ use crate::object::{
 use crate::oplog::{Entry, OperationName};
 use crate::refs::{RefError, WriteLock};
 use crate::store::{Batch, ObjectStore, StoreError};
-use crate::{Actor, Allowed, Authorizer};
+use crate::{Actor, ActorRef, Allowed, Authorizer};
 
 /// The operation that the log records for a snapshot.
 const OPERATION: &str = "snapshot";
@@ -64,9 +64,10 @@ impl Repository {
     /// Returns [`SnapshotError::Update`] if the authorizer refuses or the move fails (among others
     /// [`RefError::StaleWorkingCopy`] when another process moved the working-copy commit first: the
     /// snapshot can be repeated), [`SnapshotError::Refs`] if the working-copy commit cannot be
-    /// read at the start or the working copy belongs to another actor ([`RefError::NotOwner`],
-    /// ADR-010: nothing is read then, and [`take_over_working_copy`](Self::take_over_working_copy)
-    /// makes `actor` the owner), [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object
+    /// read at the start, [`SnapshotError::NotOwner`] if the working copy belongs to another actor
+    /// (ADR-010: nothing is read then; see [`taking_over`](Self::taking_over)),
+    /// [`SnapshotError::AgentTakeOver`] and [`SnapshotError::TakeOver`] if a take-over is refused
+    /// or fails, [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object
     /// store lacks an object that the commit needs or fails, [`SnapshotError::Unsupported`] for a
     /// tracked path that is a special file or a link that is not UTF-8, [`SnapshotError::Io`] if a
     /// file cannot be read or is replaced while it is read, and [`SnapshotError::Index`] if the
@@ -120,7 +121,7 @@ impl Repository {
             .authorize(actor, authorizer, operation, "working-copy")
             .map_err(SnapshotError::Update)?;
         let lock = self.lock_writer(&allowed)?;
-        self.replace_locked(&lock, operation, actor, additions)
+        self.replace_locked(&lock, operation, actor, authorizer, additions)
     }
 
     /// Takes the lock of the references for a command that writes, before its first object
@@ -150,7 +151,7 @@ impl Repository {
         let _ = self
             .authorize(actor, authorizer, &operation, "working-copy")
             .map_err(SnapshotError::Update)?;
-        let replaced = self.replace_locked(lock, &operation, actor, |_| {
+        let replaced = self.replace_locked(lock, &operation, actor, authorizer, |_| {
             Ok::<_, SnapshotError>(Vec::new())
         })?;
         match replaced.late {
@@ -160,29 +161,29 @@ impl Repository {
     }
 
     /// The work of [`replace_working_copy`](Self::replace_working_copy) under the lock, after the
-    /// authorizer agreed.
+    /// authorizer agreed to the operation.
+    ///
+    /// The owner is checked before any file is read (ADR-010). A take-over that
+    /// [`taking_over`](Self::taking_over) asked for is decided then too (an agent is refused, and
+    /// the authorizer is asked for `take-over`), and made after the files are read and the tree
+    /// is written: a command whose own checks or reads fail does not take the working copy over.
     fn replace_locked<E: From<SnapshotError>>(
         &self,
         lock: &WriteLock,
         operation: &OperationName,
         actor: &Actor,
+        authorizer: &dyn Authorizer,
         additions: impl FnOnce(&Path) -> Result<Vec<Tracked>, E>,
     ) -> Result<Replaced, E> {
-        // Before any file is read: the changes in the directory are those of the owner (ADR-010).
-        if let Some(owner) = self
-            .refs()
-            .working_copy_owner()
-            .map_err(SnapshotError::Refs)?
-        {
-            if owner != *actor {
-                return Err(SnapshotError::Refs(RefError::NotOwner {
-                    owner: Box::new(owner),
-                    actor: Box::new(actor.clone()),
-                })
-                .into());
-            }
-        }
-        let current = self.refs().working_copy().map_err(SnapshotError::Refs)?;
+        let (current, owner) = self
+            .refs_store()
+            .working_copy_and_owner()
+            .map_err(SnapshotError::Refs)?;
+        let take_over = self.check_owner(actor, owner.as_ref())?;
+        let take_over = match take_over {
+            true => Some(self.ask_take_over(actor, authorizer)?),
+            false => None,
+        };
         let commit = read_commit(self.objects(), current)?;
         let tracked = tracked_files(self.objects(), commit.tree())?;
         let mut known: HashSet<String> = tracked.iter().map(|file| file.path.clone()).collect();
@@ -215,6 +216,9 @@ impl Repository {
         let tree = index
             .write_tree(&objects)
             .map_err(SnapshotError::WriteTree)?;
+        if let Some(operation) = take_over {
+            self.take_over_locked(lock, &operation, actor)?;
+        }
         if tree == commit.tree() {
             // An unchanged tree has all its objects already, unless one was damaged and saved
             // again. The entry that names the working-copy commit was written after its objects
@@ -493,10 +497,25 @@ pub enum SnapshotError {
     /// The authorizer refused, or the move of the working-copy commit failed. See
     /// [`UpdateError`] for what is in the log and whether the pointer moved.
     Update(UpdateError),
-    /// The working-copy commit cannot be read when the snapshot starts, or it belongs to another
-    /// actor ([`RefError::NotOwner`]). A [`RefError`] of the move itself, among them
-    /// [`RefError::StaleWorkingCopy`], is in [`Update`](Self::Update).
+    /// The working-copy commit cannot be read when the snapshot starts. A [`RefError`] of the
+    /// move itself, among them [`RefError::StaleWorkingCopy`], is in [`Update`](Self::Update).
     Refs(RefError),
+    /// The working copy belongs to another actor, so this one may not save it (ADR-010). Nothing
+    /// was read or written. [`Repository::taking_over`] makes the actor the owner instead.
+    NotOwner {
+        /// The owner that the file `working-copy` names. The actors are boxed, as they would
+        /// make every error that carries this one large.
+        owner: Box<Actor>,
+        /// The actor of the command.
+        actor: Box<Actor>,
+    },
+    /// An agent asked to take the working copy over. Taking over is level 3 of ADR-004, so only
+    /// a human may do it. Nothing was read or written.
+    AgentTakeOver,
+    /// The take-over of the working copy was refused or failed. [`UpdateError`] says whether its
+    /// entry was written; the command did not run past it. Boxed, as it would make every
+    /// snapshot error large.
+    TakeOver(Box<UpdateError>),
     /// The object store failed.
     Store(Box<StoreError>),
     /// The object store has no object that the working-copy commit needs.
@@ -603,6 +622,7 @@ impl SnapshotError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Update(error) => error.io_error(),
+            Self::TakeOver(error) => error.io_error(),
             Self::Refs(error) => error.io_error(),
             Self::Store(error) => error.io_error(),
             Self::WriteTree(error) => error.store_error().and_then(StoreError::io_error),
@@ -611,8 +631,20 @@ impl SnapshotError {
             | Self::Tree { .. }
             | Self::Unsupported { .. }
             | Self::Gone { .. }
-            | Self::Index(_) => None,
+            | Self::Index(_)
+            | Self::NotOwner { .. }
+            | Self::AgentTakeOver => None,
         }
+    }
+
+    /// Whether the message names the cause in full, so that an error that carries this one shows
+    /// it without a prefix of its own: a refusal of the owner rule or a failed take-over
+    /// (ADR-010) is not a failure to save or to read, which such a prefix would say.
+    pub fn stands_alone(&self) -> bool {
+        matches!(
+            self,
+            Self::NotOwner { .. } | Self::AgentTakeOver | Self::TakeOver(_)
+        )
     }
 }
 
@@ -620,9 +652,37 @@ impl fmt::Display for SnapshotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not record the snapshot: {error}"),
-            // A refusal, not a failure to read: the message stands on its own.
-            Self::Refs(error @ RefError::NotOwner { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not read the working-copy commit: {error}"),
+            Self::NotOwner { owner, actor } => {
+                write!(
+                    f,
+                    "the working copy belongs to `{owner}`, so `{actor}` may not save it; "
+                )?;
+                // Only a human may take over (ADR-004), so an agent is not told to.
+                match actor.view() {
+                    ActorRef::Agent { .. } => f.write_str(
+                        "an agent may not take it over, so stop and ask a human, for example \
+                         the sponsor of the agent",
+                    ),
+                    _ => write!(
+                        f,
+                        "run the command again with `--take-over` to make `{actor}` its owner"
+                    ),
+                }
+            }
+            Self::AgentTakeOver => f.write_str(
+                "an agent may not take the working copy over, as that decides whose changes a \
+                 snapshot saves; a human has to do it, for example the sponsor of the agent",
+            ),
+            Self::TakeOver(error) => match &**error {
+                UpdateError::NotDurable { entry, source } => write!(
+                    f,
+                    "took the working copy over as entry {} of the operation log, but flushing \
+                     failed: {source}; the command stopped there",
+                    entry.number()
+                ),
+                error => write!(f, "could not take the working copy over: {error}"),
+            },
             Self::Store(error) => write!(f, "the object store failed during the snapshot: {error}"),
             Self::Missing { id, kind } => {
                 write!(f, "the store has no {} {id}", kind.name())

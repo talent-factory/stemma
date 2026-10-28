@@ -521,10 +521,13 @@ Arbeitskopie in Phase 3: Die Datei \type{working-copy} nennt neben dem Commit de
 und \type{init} macht seinen Akteur dazu.
 Ein Snapshot eines anderen Akteurs bricht ab, bevor er eine Datei liest.
 Erst eine ausdrückliche Übernahme (\type{--take-over}) macht den neuen Akteur zum Eigentümer,
-mit einem eigenen Eintrag im Log;
-sie ist Risikostufe 3 nach ADR-004, denn sie entscheidet, wessen Änderungen ein Snapshot speichert.
+mit einem eigenen Eintrag im Log.
+Sie geschieht im Snapshot, nachdem er die Dateien gelesen hat, und nur, wenn der Befehl bis
+dahin gekommen ist.
+Sie ist Risikostufe 3 nach ADR-004, denn sie entscheidet, wessen Änderungen ein Snapshot speichert;
+deshalb darf nur ein Mensch übernehmen.
 Ein Repository aus der Zeit davor hat keinen Eigentümer und bekommt ihn mit seinem nächsten
-Eintrag: Der Akteur dieses Eintrags wird es.
+Eintrag: Der Akteur dieses Eintrags wird es, sobald der Eintrag geschrieben ist.
 
 \startinfobox
 {\bf Grenzfälle des Snapshots.}

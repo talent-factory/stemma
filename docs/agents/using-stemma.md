@@ -35,7 +35,8 @@ a command.
    The working copy belongs to one actor, its owner (ADR-010; the second line of
    `.stemma/working-copy`). A command of another actor that would take a snapshot fails with
    exit code 1 and saves nothing. If that happens, stop and report it: the directory is the
-   working copy of someone else. Do not pass `--take-over` on your own (see below).
+   working copy of someone else. The program refuses `--take-over` from an agent (level 3,
+   ADR-004), so only the human can give the working copy to you.
 2. Read the state: `stemma status --json`. Look at `clean`, `changes`, `untracked`, and
    `leftovers`. A `leftovers` entry is a `.stemma-checkout-...` file of an interrupted restore;
    report it, do not delete it. If a purge is pending (the file `.stemma/purge-pending`),
@@ -102,9 +103,6 @@ not that the command worked.
 
 ## Only on the instruction of the human
 
-- `--take-over` (on `track`, `commit`, `status`, `diff`, `op restore`). It makes you the owner
-  of the working copy, with an entry `take-over` in the log, and from then on the commands of
-  the old owner are refused. It is level 3 (ADR-004).
 - `stemma op restore <N>`. It rewrites the working directory. Run `--dry-run` first. In this
   repository it also changes files that Git owns, so ask first.
 
@@ -113,6 +111,8 @@ not that the command worked.
 - `stemma purge`, not even the plan without `--apply`. The program refuses an agent at every
   step (ADR-002, ADR-014). If a secret is in the history, report it to the human, who runs the
   purge.
+- `--take-over`. The program refuses it from an agent (ADR-004, ADR-010). If the working copy
+  belongs to someone else, report it to the human.
 
 ## Until phase 3: no `stemma` in a Git worktree
 

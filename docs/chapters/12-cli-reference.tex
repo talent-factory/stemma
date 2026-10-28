@@ -106,36 +106,43 @@ den Eigentümer, genau in der Form der Akteur-Zeile.
 \type{init} macht seinen Akteur zum Eigentümer.
 Ein Repository im Format 4 hat keinen Eigentümer;
 es steigt mit seinem nächsten Eintrag auf Format 5,
-und der Akteur dieses Eintrags wird Eigentümer.
+und der Akteur dieses Eintrags wird Eigentümer, sobald der Eintrag steht.
 Nennt ein Befehl, der einen Snapshot macht, einen anderen Akteur als den Eigentümer,
 lehnt er ab, bevor er eine Datei liest, und endet mit Exit-Code 1.
 Er schreibt nichts, auch keinen Eintrag:
 
 \starttyping
-stemma: the working copy belongs to `human daniel`, so `agent claude model=opus-5-5
-session=s1 sponsor=daniel` may not save it; run the command again with `--take-over` to make
-`agent claude model=opus-5-5 session=s1 sponsor=daniel` its owner
+stemma: the working copy belongs to `human daniel`, so `human bob` may not save it; run the
+command again with `--take-over` to make `human bob` its owner
 \stoptyping
 
+Einem Agenten rät die Meldung stattdessen, einen Menschen zu fragen.
+
 Die Option \type{--take-over} von \type{track}, \type{commit}, \type{status}, \type{diff} und
-\type{op restore} übernimmt die Arbeitskopie, bevor der Befehl läuft.
-Sie fragt den Autorisierer nach der Operation \type{take-over} mit dem Ziel
-\type{working-copy}, schreibt deren Eintrag und macht dann den Akteur zum Eigentümer.
+\type{op restore} übernimmt die Arbeitskopie im Snapshot des Befehls.
+Entschieden wird vor der ersten gelesenen Datei: Ein Agent wird abgewiesen, und der Autorisierer
+wird nach der Operation \type{take-over} mit dem Ziel \type{working-copy} gefragt.
+Gemacht wird die Übernahme erst, wenn der Snapshot die Dateien gelesen hat, direkt vor seiner
+Zeigerbewegung. Ein Befehl, dessen eigene Prüfungen vorher scheitern (ein Pfad, den es nicht
+gibt, eine leere Nachricht, ein unbekannter Eintrag), übernimmt also nichts.
+Was ein Befehl erst nach dem Snapshot feststellt, etwa dass nichts zu committen ist,
+lässt die Übernahme stehen.
+Sie schreibt den Eintrag \type{take-over} und macht dann den Akteur zum Eigentümer.
 Der Eintrag nennt keinen Zeiger, nur den Akteur (ADR-011).
-Die Fehlerausgabe nennt ihn, damit die Standardausgabe die des Befehls bleibt:
+Die Fehlerausgabe nennt ihn am Ende des Befehls, auch wenn der Befehl danach scheitert,
+damit die Standardausgabe die des Befehls bleibt:
 
 \starttyping
 stemma: took the working copy over as entry 3
 \stoptyping
 
 Gehört die Arbeitskopie dem Akteur schon, schreibt die Option weder einen Eintrag noch die Zeile.
-Lehnt der Autorisierer ab oder scheitert die Übernahme, läuft der Befehl nicht;
-der Exit-Code folgt der Ursache wie bei den anderen Fehlern.
-Ist die Übernahme gemacht, aber nicht gesichert, endet der Befehl mit Exit-Code 3,
-ohne gelaufen zu sein.
+Lehnt der Autorisierer ab, ist der Akteur ein Agent oder scheitert die Übernahme,
+endet der Befehl dort; der Exit-Code folgt der Ursache wie bei den anderen Fehlern.
+Ist die Übernahme gemacht, aber nicht gesichert, endet er mit Exit-Code 3.
 Die Übernahme ist Risikostufe 3 nach ADR-004: Sie entscheidet, wessen Änderungen ein Snapshot
-speichern darf. \type{purge --apply} hat die Option nicht; wer dort übernehmen muss,
-ruft vorher \type{stemma status --take-over} auf.
+speichern darf, und nur ein Mensch darf sie machen. \type{purge --apply} hat die Option nicht;
+wer dort übernehmen muss, ruft vorher \type{stemma status --take-over} auf.
 Ein Programm, das nur Format 4 kennt, lehnt ein Repository im Format 5 ab, auch für Befehle,
 die nur lesen.
 
@@ -489,7 +496,7 @@ Ein Pfad darf mit \type{./} beginnen und mit \type{/} enden.
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 Die Pfade sind relativ dazu.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
-\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie, bevor der Befehl läuft
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie im Snapshot des Befehls
 (siehe {\bf Eigentümer der Arbeitskopie} oben).
 \stopitemize
 
@@ -634,7 +641,7 @@ ist es ein Aufruffehler (Exit-Code 2). Einen Editor gibt es in Phase 1 nicht.
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
-\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie, bevor der Befehl läuft
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie im Snapshot des Befehls
 (siehe {\bf Eigentümer der Arbeitskopie} oben).
 \item {\bf \type{--json}:} Schreibt ein JSON-Objekt statt der Zeile (siehe unten).
 \stopitemize
@@ -747,7 +754,7 @@ stemma status [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--json]
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben. Der Befehl macht einen Snapshot,
 und der Akteur ist der Akteur dieses Snapshots.
-\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie, bevor der Befehl läuft
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie im Snapshot des Befehls
 (siehe {\bf Eigentümer der Arbeitskopie} oben).
 \item {\bf \type{--json}:} Schreibt ein JSON-Objekt statt des Textes (siehe unten).
 \stopitemize
@@ -893,8 +900,9 @@ stemma diff [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--exit-code] [--tui]
 \item {\bf \type{--actor} AKTEUR:} Siehe oben. Macht der Befehl einen Snapshot,
 ist dieser Akteur der des Snapshots. Der Akteur ist auch bei zwei Kennungen Pflicht, obwohl
 dann kein Snapshot entsteht.
-\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie, bevor der Befehl läuft
-(siehe {\bf Eigentümer der Arbeitskopie} oben), auch bei zwei Kennungen.
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie im Snapshot des Befehls
+(siehe {\bf Eigentümer der Arbeitskopie} oben). Bei zwei Kennungen gibt es keinen Snapshot,
+und die Option ändert nichts.
 \item {\bf \type{--exit-code}:} Endet mit Exit-Code 4, wenn sich mindestens eine Datei
 unterscheidet; sonst mit 0. Ohne diese Option endet er mit 0, auch bei Unterschieden.
 \item {\bf \type{--tui}:} Zeigt den Diff in einer Terminal-Oberfläche, in der man durch
@@ -1122,10 +1130,12 @@ trennen.
 (Im Beispiel sind die Commit-IDs gekürzt; der Befehl gibt sie vollständig aus.)
 
 {\bf Übernahme.} Der Eintrag von \type{take-over} macht seinen Akteur zum Eigentümer der
-Arbeitskopie (ADR-010). Der Eigentümer ist kein Zeiger, also folgt keine eingerückte Zeile,
-und der Eintrag gilt als übernommen; die JSON-Form hat \type{head} und \type{working_copy}
-mit \type{null} und \type{branches} leer. Wer die Arbeitskopie jetzt besitzt, steht in
-\type{.stemma/working-copy}.
+Arbeitskopie (ADR-010). Der Eigentümer ist kein Zeiger, also folgt keine eingerückte Zeile;
+die JSON-Form hat \type{head} und \type{working_copy} mit \type{null} und \type{branches}
+leer. Den Ausgang des neuesten solchen Eintrags liest der Befehl am Eigentümer, den
+\type{.stemma/working-copy} jetzt nennt: Ist es sein Akteur, fand die Übernahme statt,
+sonst nicht (ohne Schreiber am Werk). Ein älterer Eintrag \type{take-over} hat einen
+unbekannten Ausgang (\type{?}), denn der Eigentümer von heute stammt von einem späteren.
 
 \starttyping
 3  2023-11-14T22:15:00Z  human bob  take-over
@@ -1327,7 +1337,7 @@ zeigen, ob der Eintrag stattfand (siehe unten).
 auch keinen Snapshot.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot und der
 Eintrag des Restores tragen diesen Akteur.
-\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie, bevor der Befehl läuft
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie im Snapshot des Befehls
 (siehe {\bf Eigentümer der Arbeitskopie} oben).
 Mit \type{--dry-run} zusammen ist es ein Aufruffehler (Exit-Code 2),
 denn ein Probelauf schreibt nichts.

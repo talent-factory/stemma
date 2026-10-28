@@ -120,8 +120,7 @@ impl Classify for RefError {
             | Self::Conflict { .. }
             | Self::NotFlushed { .. }
             | Self::NoHead { .. }
-            | Self::NoWorkingCopy { .. }
-            | Self::NotOwner { .. } => FailureKind::Other,
+            | Self::NoWorkingCopy { .. } => FailureKind::Other,
         }
     }
 }
@@ -185,9 +184,11 @@ impl Classify for SnapshotError {
     fn kind(&self) -> FailureKind {
         match self {
             Self::Update(error) => error.kind(),
+            Self::TakeOver(error) => error.kind(),
             Self::Refs(error) => error.kind(),
             Self::Store(error) => error.kind(),
             Self::WriteTree(error) => error.kind(),
+            Self::NotOwner { .. } | Self::AgentTakeOver => FailureKind::Other,
             // The working-copy commit names an object that is not there or does not parse.
             Self::Missing { .. } | Self::Commit { .. } | Self::Tree { .. } => FailureKind::Damaged,
             Self::Unsupported { .. } | Self::Gone { .. } | Self::Index(_) | Self::Io { .. } => {

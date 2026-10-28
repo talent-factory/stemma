@@ -118,7 +118,8 @@ impl Repository {
     /// against its parent and what is not tracked (ADR-010).
     ///
     /// The authorizer is asked for `status` on the working copy before anything is read, and
-    /// again for the snapshot. The exclusion file is read and the working directory is walked
+    /// again for the snapshot. A working copy of another actor is refused next, before a file is
+    /// read ([`SnapshotError::NotOwner`], ADR-010). The exclusion file is read and the working directory is walked
     /// **before** the snapshot, so an invalid file, a name that a tree refuses (and no pattern
     /// excludes), or a name that is not UTF-8 stops the call before it writes anything: those are
     /// the inputs where [`track`](Self::track) stops, and here nothing is left behind. The snapshot
@@ -150,6 +151,12 @@ impl Repository {
         let _ = self
             .authorize(actor, authorizer, &operation, "working-copy")
             .map_err(StatusError::Update)?;
+        // The owner first (ADR-010): another actor learns that before any file is read. The
+        // snapshot checks again under the lock; a file that cannot be read is its error to report.
+        if let Ok(owner) = self.refs().working_copy_owner() {
+            self.check_owner(actor, owner.as_ref())
+                .map_err(StatusError::Snapshot)?;
+        }
         // What does not depend on the snapshot is read first, so that its failures leave nothing.
         let rules = IgnoreRules::read(self.path()).map_err(StatusError::Ignore)?;
         let mut found = Found::default();

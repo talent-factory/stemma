@@ -155,7 +155,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
-use crate::refs::{BranchName, BranchNameError, Head, RefError};
+use crate::refs::{BranchName, BranchNameError, Head};
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError};
 
@@ -1858,33 +1858,6 @@ impl OpLogError {
         }
     }
 
-    /// The error of the references that the writer of an entry met when it recorded the owner of
-    /// the working copy before the entry (ADR-010). An error of the file system stays one; any
-    /// other error is carried by its message, as in [`from_store`](Self::from_store).
-    pub(crate) fn from_refs(error: RefError) -> Self {
-        match error {
-            RefError::Io {
-                operation,
-                path,
-                source,
-            } => Self::Io {
-                operation,
-                path,
-                source,
-            },
-            RefError::NotFlushed { path, source } => Self::Io {
-                operation: "flush the directory",
-                path,
-                source,
-            },
-            other => Self::Io {
-                operation: "record the owner of the working copy",
-                path: PathBuf::new(),
-                source: io::Error::other(other.to_string()),
-            },
-        }
-    }
-
     /// Returns the error of the file system for [`OpLogError::Io`] and
     /// [`OpLogError::NotFlushed`]. The chain of [`Error::source`] does not lead to it (see the
     /// crate documentation).
@@ -3011,6 +2984,9 @@ pub struct Current {
     head: Head,
     working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
+    /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
+    /// `Some(None)` for a working copy without an owner.
+    owner: Option<Option<Actor>>,
     settled: bool,
 }
 
@@ -3039,6 +3015,7 @@ impl Current {
             head,
             working_copy: WorkingCopy::Unknown,
             branches: branches.into_iter().collect(),
+            owner: None,
             settled,
         }
     }
@@ -3048,6 +3025,14 @@ impl Current {
     #[must_use]
     pub fn with_working_copy(mut self, working_copy: Option<CommitId>) -> Self {
         self.working_copy = working_copy.map_or(WorkingCopy::Absent, WorkingCopy::At);
+        self
+    }
+
+    /// Adds the owner of the working copy, `None` for a working copy without one (ADR-010).
+    /// Without it, the newest entry of `take-over` stays unknown.
+    #[must_use]
+    pub fn with_owner(mut self, owner: Option<Actor>) -> Self {
+        self.owner = Some(owner);
         self
     }
 }
@@ -3110,9 +3095,13 @@ fn judge<T: PartialEq>(
 /// anything else leaves it unknown, as does a working-copy commit that `current` does not hold
 /// ([`Current::with_working_copy`]), and a `current` that is `None` because the references could
 /// not be read. An entry took effect
-/// if all its pointers did, it did not if one did not, and otherwise it is unknown. The entry of
-/// `take-over` names no pointer and counts as taken: the owner is not a pointer that the log
-/// judges, and the file `working-copy` shows it.
+/// if all its pointers did, it did not if one did not, and otherwise it is unknown.
+///
+/// The entry of `take-over` names no pointer; it is judged by the owner of the working copy
+/// (ADR-010). The newest one took effect if its actor owns the working copy now, and it did not
+/// if another actor does and `current` is settled; a `current` without the owner
+/// ([`Current::with_owner`]) leaves it unknown. An older one is unknown: only another take-over
+/// changes an owner, so the owner now says nothing about it.
 ///
 /// `entries` must ascend and end with the newest entry of the log, because an entry that is the
 /// last of its pointer is compared with `current`; `current` must be read after the entries and
@@ -3148,6 +3137,8 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     // it is evidence for an entry before it: such an entry is unknown (ADR-014). A purge entry
     // moves nothing and is no barrier.
     let mut behind_stub = false;
+    // A take-over after this entry: the owner now is the work of that one.
+    let mut newer_take_over = false;
     for (index, entry) in entries.iter().enumerate().rev() {
         let change = match entry.record() {
             Record::Change(change) if !behind_stub => change,
@@ -3157,6 +3148,19 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
                 continue;
             }
         };
+        if change.operation().as_str() == TAKE_OVER {
+            result[index] = if newer_take_over {
+                Outcome::Unknown
+            } else {
+                match current.and_then(|current| current.owner.as_ref()) {
+                    Some(Some(owner)) if owner == change.actor() => Outcome::Took,
+                    Some(_) if settled => Outcome::NotTaken,
+                    _ => Outcome::Unknown,
+                }
+            };
+            newer_take_over = true;
+            continue;
+        }
         let mut judged = Vec::new();
         if let Some(moved) = change.head() {
             let now = current.map_or(Now::Unknown, |current| Now::Is(&current.head));

@@ -473,15 +473,6 @@ pub enum RefError {
         /// The pointer: `HEAD`, `working-copy`, or the name of a branch.
         pointer: String,
     },
-    /// The working copy belongs to another actor, so this one may not take a snapshot of it
-    /// (ADR-010). Taking it over makes this actor the owner.
-    NotOwner {
-        /// The owner that the file `working-copy` names. Boxed, as the actors would make every
-        /// `RefError` large.
-        owner: Box<Actor>,
-        /// The actor of the command.
-        actor: Box<Actor>,
-    },
 }
 
 /// What is known about the holder of a lock that is in the way (ADR-008).
@@ -660,11 +651,6 @@ impl fmt::Display for RefError {
                 "`{pointer}` is at neither the value before the purge nor the one after it; \
                  another change came first"
             ),
-            Self::NotOwner { owner, actor } => write!(
-                f,
-                "the working copy belongs to `{owner}`, so `{actor}` may not save it; run the \
-                 command again with `--take-over` to make `{actor}` its owner"
-            ),
         }
     }
 }
@@ -705,8 +691,7 @@ impl Error for RefError {
             | Self::NoWorkingCopy { .. }
             | Self::StaleWorkingCopy { .. }
             | Self::PurgePending { .. }
-            | Self::PurgeStale { .. }
-            | Self::NotOwner { .. } => None,
+            | Self::PurgeStale { .. } => None,
         }
     }
 }
@@ -1949,7 +1934,7 @@ impl FsRefStore {
     /// Returns [`RefError::NoWorkingCopy`] if the file is missing, [`RefError::Corrupt`] if it is
     /// not in canonical form, and [`RefError::Io`] if the storage fails.
     pub fn working_copy(&self) -> Result<CommitId, RefError> {
-        self.read_working_copy().map(|(commit, _)| commit)
+        self.working_copy_and_owner().map(|(commit, _)| commit)
     }
 
     /// The owner of the working copy (ADR-010): the actor that the file `working-copy` names on
@@ -1959,11 +1944,16 @@ impl FsRefStore {
     ///
     /// See [`working_copy`](Self::working_copy).
     pub fn working_copy_owner(&self) -> Result<Option<Actor>, RefError> {
-        self.read_working_copy().map(|(_, owner)| owner)
+        self.working_copy_and_owner().map(|(_, owner)| owner)
     }
 
-    /// Reads the file `working-copy`: the commit and the owner.
-    fn read_working_copy(&self) -> Result<(CommitId, Option<Actor>), RefError> {
+    /// Reads the file `working-copy` once: the commit and the owner. See
+    /// [`working_copy`](Self::working_copy) and [`working_copy_owner`](Self::working_copy_owner).
+    ///
+    /// # Errors
+    ///
+    /// See [`working_copy`](Self::working_copy).
+    pub(crate) fn working_copy_and_owner(&self) -> Result<(CommitId, Option<Actor>), RefError> {
         self.require_root()?;
         let path = self.working_copy_path();
         let bytes = self
@@ -1975,7 +1965,7 @@ impl FsRefStore {
     /// Moves the working-copy commit to `new` and keeps the owner that the file names now, which
     /// it reads again: a step before the move can have recorded one ([`Self::adopt_owner`]).
     fn write_working_copy(&self, new: &CommitId) -> Result<(), RefError> {
-        let (_, owner) = self.read_working_copy()?;
+        let (_, owner) = self.working_copy_and_owner()?;
         self.write_replacing(
             &self.working_copy_path(),
             &encode_working_copy(new, owner.as_ref()),
@@ -1985,15 +1975,15 @@ impl FsRefStore {
 
     /// Makes `actor` the owner of the working copy if the file `working-copy` names none, as in a
     /// repository from before format 5 (ADR-010). The writer of an entry calls it under the lock
-    /// of the references, so the actor of the first entry in format 5 becomes the owner. A
-    /// repository without the file has no working copy to own, and is left alone.
+    /// of the references, after the entry, so the actor of the first entry in format 5 becomes
+    /// the owner. A repository without the file has no working copy to own, and is left alone.
     ///
     /// # Errors
     ///
     /// Returns [`RefError::Corrupt`] for a file that is not in canonical form, and
     /// [`RefError::Io`] or [`RefError::NotFlushed`] if the storage fails.
     pub(crate) fn adopt_owner(&self, _lock: &WriteLock, actor: &Actor) -> Result<(), RefError> {
-        let (commit, owner) = match self.read_working_copy() {
+        let (commit, owner) = match self.working_copy_and_owner() {
             Ok(read) => read,
             Err(RefError::NoWorkingCopy { .. }) => return Ok(()),
             Err(error) => return Err(error),
@@ -2024,7 +2014,7 @@ impl FsRefStore {
         owner: &Actor,
         step: impl FnOnce() -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
-        let (_, found) = self.read_working_copy()?;
+        let (_, found) = self.working_copy_and_owner()?;
         if found.as_ref() == Some(owner) {
             return Ok(Logged::Unchanged);
         }
@@ -2033,7 +2023,7 @@ impl FsRefStore {
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
         // The step may have recorded an owner and so rewritten the file: read the commit again.
-        let moved = self.read_working_copy().and_then(|(commit, _)| {
+        let moved = self.working_copy_and_owner().and_then(|(commit, _)| {
             self.write_replacing(
                 &self.working_copy_path(),
                 &encode_working_copy(&commit, Some(owner)),
