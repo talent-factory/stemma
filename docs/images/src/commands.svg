@@ -103,12 +103,13 @@
   <circle cx="580" cy="392" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="392" r="9" fill="#6B46C1"/>
 
-  <!-- diff: reads; with the working-copy commit as one side the snapshot changes pointer and log
-       only if a tracked file changed, and with two commits nothing changes -->
+  <!-- diff: reads the directory; with the working-copy commit as one side the snapshot changes
+       the working-copy pointer and the log only if a tracked file changed, and with two commits
+       nothing changes; it reads no branch and no HEAD -->
   <circle cx="380" cy="436" r="8" fill="none" stroke="#2B6CB0" stroke-width="2"/>
   <circle cx="480" cy="436" r="8" fill="none" stroke="#B45309" stroke-width="2"/>
   <path d="M480,428 A8,8 0 0 0 480,444 Z" fill="#B45309"/>
-  <circle cx="580" cy="436" r="8" fill="none" stroke="#2F7D32" stroke-width="2"/>
+  <text x="580" y="441" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <circle cx="680" cy="436" r="8" fill="none" stroke="#6B46C1" stroke-width="2"/>
   <path d="M680,428 A8,8 0 0 0 680,444 Z" fill="#6B46C1"/>
 

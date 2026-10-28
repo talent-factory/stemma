@@ -66,9 +66,9 @@ $x - y$ zusammen. Sie liegen auf einer Linie parallel zur Hauptdiagonale. Eine L
 $k$ um eins, eine Einfügung senkt es um eins.
 
 \in{Abbildung}[fig:edit-graph] zeigt den Graphen für die Folgen \type{ABCABBA} und
-\type{CBABAC} aus der Arbeit von Myers. Die dünnen Linien sind die Diagonalen. Der dicke Weg ist
-ein kürzestes Skript mit $D = 5$: zwei Löschungen, eine Einfügung, eine Löschung und eine
-Einfügung.
+\type{CBABAC} aus der Arbeit von Myers. Die grauen Diagonalen verbinden gleiche Elemente. Der
+dicke Weg ist ein kürzestes Skript mit $D = 5$: zwei Löschungen, eine Einfügung, eine Löschung
+und eine Einfügung.
 
 \startplacefigure[title={Editiergraph für \type{ABCABBA} und \type{CBABAC} mit der Mittelschlange},
     reference=fig:edit-graph,location=here]
@@ -102,8 +102,9 @@ behandelt jeden Teil genauso. Jeder Teil hat höchstens $\lceil D/2 \rceil$ Schr
 endet die Rekursion nach $O(\log D)$ Ebenen. Gemeinsame Präfixe und Suffixe schneidet es vorher ab.
 
 In \in{Abbildung}[fig:edit-graph] liegt die Mittelschlange von $(3,2)$ bis $(5,4)$ auf der
-Diagonale $k = 1$. Die Vorwärtssuche erreicht $(5,4)$ nach drei Schritten, die Rückwärtssuche vom
-Ende her nach zwei. Zusammen sind das $D = 5$ Schritte.
+Diagonale $k = 1$. Die Vorwärtssuche hat nach drei Änderungen $(3,2)$ erreicht und läuft die
+Schlange bis $(5,4)$ ab. Die Rückwärtssuche vom Ende her erreicht nach zwei Änderungen $(5,4)$
+und läuft sie bis $(3,2)$ ab. Zusammen sind das $D = 5$ Änderungen.
 
 \subsection{Korrektheit}
 
@@ -120,12 +121,14 @@ Ein kürzestes Skript ist nicht eindeutig. Dieselben Änderungen lassen sich oft
 unterbringen, weil die erste Zeile einer Gruppe gleich der unveränderten Zeile hinter ihr sein
 kann. Die Nachbearbeitung wählt unter diesen Lagen die, die sich am besten liest (\type{slide} in
 \type{diff.rs}). Sie ändert nur die Lage der Grenzen. Beide Folgen und die Zahl $D$ der Änderungen
-bleiben, wie sie sind.
+bleiben, wie sie sind. Der Kern bietet sie als \type{diff_lines} an; der Befehl \type{diff} ruft
+sie in Phase 2 noch nicht auf und zeigt das Skript des Myers-Diff.
 
 Eine Gruppe von Einfügungen oder Löschungen gleitet nach oben oder unten, solange die Zeile, die
 sie verlässt, der Zeile gleicht, die sie aufnimmt. \in{Abbildung}[fig:slide] zeigt vier
-eingefügte Zeilen. Der Diff lässt sie bei der schliessenden Klammer der Funktion a beginnen.
-Nach dem Gleiten um zwei Zeilen ist die Gruppe die ganze Funktion b. Unter den möglichen Lagen
+eingefügte Zeilen. Ein kürzestes Skript kann sie bei der schliessenden Klammer der Funktion a
+beginnen lassen (links). Nach dem Gleiten um zwei Zeilen besteht die Gruppe aus der Funktion b
+samt der Leerzeile danach (rechts). Unter den möglichen Lagen
 wählt die Einrückungsregel, die ihre Gewichte aus dem Code von git übernimmt: Sie vergleicht die
 Einrückung der Zeilen an der Grenze und beachtet Leerzeilen davor und danach.
 
@@ -158,11 +161,12 @@ sechs, die Fenster berühren sich nicht, und ein neuer Hunk beginnt.
 
 \section[sec:diff-command]{Der Diff mit dem Working-Copy-Commit}
 
-Der Befehl \type{diff} vergleicht zwei Commits oder einen Commit mit der Arbeitskopie. Ist eine
-Seite der Working-Copy-Commit, hält der Befehl den Stand des Arbeitsverzeichnisses zuerst in einem
-Snapshot fest (ADR-010). Erst dann hat die Arbeitskopie eine feste Kennung, die der Kopf des Diffs
-nennen kann. Der Befehl liest die Arbeitskopie deshalb nicht nur: Er kann den Working-Copy-Commit
-und das Operation Log ändern.
+Der Befehl \type{diff} vergleicht ohne Argument den Working-Copy-Commit mit seinem Elternteil,
+mit einer Kennung diesen Commit mit der Arbeitskopie und mit zwei Kennungen die beiden Commits.
+Ist eine Seite der Working-Copy-Commit, hält der Befehl den Stand des Arbeitsverzeichnisses
+zuerst in einem Snapshot fest (ADR-010). Erst dann hat die Arbeitskopie eine feste Kennung,
+die der Kopf des Diffs nennen kann. Der Befehl liest die Arbeitskopie deshalb nicht nur:
+Er kann den Working-Copy-Commit und das Operation Log ändern.
 
 \in{Abbildung}[fig:diff-flow] zeigt den Ablauf. Die Schritte 2 bis 4 sind der Snapshot aus
 Kapitel 4, und sie entfallen, wenn der Befehl zwei Commits vergleicht. Der Vergleich und die
@@ -175,19 +179,20 @@ Ausgabe lesen nur.
 
 Nach Erfolg steht der Eintrag des Snapshots im Log, wenn sich eine verfolgte Datei geändert hat,
 und die Ausgabe zeigt genau den Stand, den der Snapshot festhielt. Ein Fehler vor dem Snapshot,
-etwa ein ungültiger Pfad, schreibt nichts. Hat der Snapshot den Zeiger bewegt, aber den Eintrag
+etwa ein ungültiger Pfad, schreibt nichts. Hat der Snapshot den Zeiger bewegt, die Bewegung aber
 nicht sichern können, endet der Befehl mit Exit-Code 3, und die Ausgabe bleibt aus.
 Nach einem Absturz im Snapshot gilt, was \in{Abbildung}[fig:oplog-write] zeigt. Der Vergleich
 und die Ausgabe ändern nichts, ein Absturz dort lässt also nichts zurück. Der Befehl lässt sich
 nach Erfolg, nach einem Fehler und nach einem Absturz wiederholen. Nach einem Erfolg findet ein
 zweiter Aufruf den Baum unverändert und schreibt keinen Eintrag.
 
-\in{Abbildung}[fig:diff-timeline] zeigt den Befehl in einer kurzen Sitzung nach dem Muster des
-laufenden Beispiels. Nach dem Commit \quotation{Erste Fassung} ändert jemand \type{README.md} von
-Hand. Das erste \type{diff} macht einen Snapshot und schreibt den Eintrag 4. Das zweite, mit
-\type{--exit-code}, findet den Baum unverändert und schreibt keinen Eintrag; es endet mit
-Exit-Code 4, weil sich die Datei unterscheidet. Nach dem Commit der Änderung vergleicht
-\type{diff} mit zwei Kennungen die beiden Commits und ändert weder Zeiger noch Log.
+\in{Abbildung}[fig:diff-timeline] zeigt den Befehl in einer eigenen kurzen Sitzung mit eigenen
+Kennungen, nach dem Muster des laufenden Beispiels. Nach dem Commit \quotation{Anfang} ändert
+jemand \type{notes.txt} von Hand. Das erste \type{diff} macht einen Snapshot und schreibt den
+Eintrag 4. Das zweite, mit \type{--exit-code}, findet den Baum unverändert und schreibt keinen
+Eintrag; es endet mit Exit-Code 4, weil sich die Datei unterscheidet. Nach dem Commit der
+Änderung vergleicht \type{diff} mit zwei Kennungen die beiden Commits und ändert weder Zeiger
+noch Log.
 
 \startplacefigure[title={Änderungen ansehen als Zeitachse},
     reference=fig:diff-timeline,location=here]
@@ -198,8 +203,8 @@ Exit-Code 4, weil sich die Datei unterscheidet. Nach dem Commit der Änderung ve
 {\bf Grenzfälle von \type{diff}.}
 \startitemize
 \item Ein Pfad, der auf keiner Seite vorkommt, fällt erst nach dem Snapshot auf, weil die Dateien
-der Arbeitskopie erst dann feststehen. Der Befehl endet mit Exit-Code 1, und der Eintrag des
-Snapshots bleibt.
+der Arbeitskopie erst dann feststehen. Der Befehl endet mit Exit-Code 1, und ein Eintrag des
+Snapshots bleibt, falls einer entstand.
 \item Ein ungültiger Pfad, also ein leerer, ein absoluter oder einer mit \type{..},
 schreibt nichts, denn der Befehl prüft ihn vor dem Snapshot.
 \item Mit Pfaden beschränkt der Befehl nur die Ausgabe. Der Snapshot umfasst weiter alle
@@ -216,21 +221,33 @@ hängt nicht von ihr ab, und der Text von \type{diff} bleibt die Bezugsgrösse f
 Tests.
 
 Der Zustand der Ansicht ist ein einfacher Wert aus drei Zahlen: der gewählten Datei, dem
-gewählten Hunk und der Zahl der Zeilen, die oben aus dem Bild gerollt sind. Eine Taste ändert
-diesen Wert und sonst nichts. Die Darstellung ist eine Funktion des Werts und des Diffs, deshalb
-lässt sich die Ansicht ohne Terminal testen. \in{Abbildung}[fig:tui-states] zeigt die Übergänge.
-Das Blättern ändert nur die dritte Zahl. \type{n} und \type{p} gehen deshalb vom zuletzt
-gewählten Hunk aus, auch wenn das Blättern einen anderen ins Bild gebracht hat. An der Dateigrenze
-wählt \type{n} den ersten Hunk der nächsten Datei und \type{p} den letzten der vorigen.
-Die Tasten stehen in der Befehlsreferenz.
+gewählten Hunk und dem Versatz, der Zahl der Zeilen, die oben aus dem Bild gerollt sind. Eine
+Taste ändert diesen Wert und sonst nichts. Die Darstellung ist eine Funktion des Werts und des
+Diffs, deshalb lässt sich die Ansicht ohne Terminal testen. \in{Abbildung}[fig:tui-states] zeigt
+die Übergänge. Das Blättern ändert nur den Versatz. Die Tasten stehen in der Befehlsreferenz.
 
 \startplacefigure[title={Zustände der Oberfläche von \type{diff --tui}},
     reference=fig:tui-states,location=here]
 \externalfigure[images/tui-states.pdf][width=\textwidth]
 \stopplacefigure
 
-Die Oberfläche liest und schreibt nichts im Repository. Sie gibt das Terminal bei einem
-Beenden, einem Fehler und einem Signal zurück; nur ein \type{SIGKILL} lässt sich nicht abfangen.
+Die Oberfläche selbst liest und schreibt nichts im Repository. Der Snapshot geschieht vorher, wie
+bei jedem \type{diff} mit dem Working-Copy-Commit.
+
+\startinfobox
+{\bf Grenzfälle von \type{diff --tui}.}
+\startitemize
+\item \type{n} und \type{p} gehen vom zuletzt gewählten Hunk aus, auch wenn das Blättern einen
+anderen ins Bild gebracht hat.
+\item An der Dateigrenze wählt \type{n} den ersten Hunk der nächsten Datei und \type{p} den
+letzten der vorigen. Am Rand der Folge, etwa bei \type{n} im letzten Hunk der letzten Datei,
+bleibt der Zustand.
+\item Die Oberfläche gibt das Terminal beim Beenden, bei einem Fehler, bei einer Panik und bei
+\type{SIGINT}, \type{SIGTERM} und \type{SIGHUP} zurück. Ein \type{SIGKILL} lässt sich nicht
+abfangen, und bei einem Signal ohne Handler bleibt das Terminal im Raw-Modus; \type{reset} stellt
+es wieder her.
+\stopitemize
+\stopinfobox
 
 \section{Offene Fragen}
 

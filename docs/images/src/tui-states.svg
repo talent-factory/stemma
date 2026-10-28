@@ -24,10 +24,10 @@
   </g>
   <g font-size="12" fill="#0F172A" text-anchor="middle">
     <text x="75" y="129">Hunk 0</text>
-    <text x="165" y="129">Hunk 1</text>
+    <text x="165" y="129">Hunk 1 …</text>
     <text x="255" y="129">Hunk m</text>
     <text x="411" y="129">Hunk 0</text>
-    <text x="501" y="129">Hunk 1</text>
+    <text x="501" y="129">Hunk 1 …</text>
     <text x="591" y="129">Hunk m</text>
   </g>
 
@@ -68,14 +68,14 @@
     <text x="370" y="217">J, Tab: nächste Datei</text>
     <text x="400" y="243">K, Shift-Tab: vorige Datei</text>
   </g>
-  <text x="370" y="262" font-size="11" fill="#64748B" text-anchor="middle">Hunk 0, Scroll 0</text>
+  <text x="370" y="262" font-size="11" fill="#64748B" text-anchor="middle">Hunk 0, Versatz 0</text>
 
   <!-- Explanation -->
   <g font-size="12" fill="#0F172A">
     <text x="30" y="292" font-weight="bold">Zustand und Tasten</text>
-    <text x="30" y="310">Der Zustand ist das Tripel (Datei, Hunk, Scroll); er beginnt bei (0, 0, 0).</text>
+    <text x="30" y="310">Der Zustand ist das Tripel (Datei, Hunk, Versatz); er beginnt bei (0, 0, 0).</text>
     <text x="30" y="326">n nach dem letzten Hunk der Datei wählt Hunk 0 der nächsten, p vor dem ersten den letzten der vorigen.</text>
-    <text x="30" y="342">j, k, Pfeile, Leertaste und b ändern nur den Scroll: Der gewählte Hunk bleibt, und n und p gehen von ihm aus.</text>
+    <text x="30" y="342">j, k, Pfeile, Leertaste und b ändern nur den Versatz: Der gewählte Hunk bleibt, und n und p gehen von ihm aus.</text>
     <text x="30" y="358">Am Rand der Folge, etwa n beim letzten Hunk der letzten Datei oder K in der ersten Datei, bleibt der Zustand.</text>
     <text x="30" y="374">q, Esc und Ctrl-C beenden die Oberfläche; das Terminal wird zurückgegeben.</text>
   </g>

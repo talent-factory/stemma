@@ -123,11 +123,6 @@
   </g>
   <text x="62" y="74" font-size="11" fill="#0F172A" text-anchor="end">(0,0)</text>
   <text x="414" y="384" font-size="11" fill="#0F172A">(7,6)</text>
-  <!-- Labels of the middle snake -->
-  <rect x="322" y="204" width="124" height="34" fill="#FFFFFF"/>
-  <text x="328" y="218" font-size="12" font-weight="bold" fill="#0F172A">Mittelschlange</text>
-  <text x="328" y="232" font-size="11" fill="#0F172A">von (3,2) bis (5,4)</text>
-  <line x1="324" y1="222" x2="270" y2="224" stroke="#0F172A" stroke-width="1"/>
   <!-- Right-hand explanation -->
   <g font-size="12" fill="#0F172A">
     <text x="480" y="96" font-weight="bold">Lesart</text>
@@ -142,11 +137,11 @@
     <text x="480" y="266">eine Einfügung, eine Löschung und</text>
     <text x="480" y="282">eine Einfügung.</text>
     <text x="480" y="318" font-weight="bold">Die Suchen</text>
-    <text x="480" y="336">Die Vorwärtssuche erreicht (5,4)</text>
-    <text x="480" y="352">nach 3 Schritten, die Rückwärts-</text>
-    <text x="480" y="368">suche das Ende nach 2. Sie treffen</text>
-    <text x="480" y="384">sich auf der Diagonale k = 1;</text>
-    <text x="480" y="400">3 + 2 = D.</text>
+    <text x="480" y="336">Die Vorwärtssuche erreicht nach</text>
+    <text x="480" y="352">3 Änderungen (3,2) und läuft die</text>
+    <text x="480" y="368">Schlange bis (5,4) ab. Die Rück-</text>
+    <text x="480" y="384">wärtssuche erreicht vom Ende her</text>
+    <text x="480" y="400">nach 2 Änderungen (5,4); 3 + 2 = D.</text>
   </g>
   <!-- Legend -->
   <g font-size="12" fill="#0F172A">
@@ -155,6 +150,6 @@
     <line x1="290" y1="440" x2="316" y2="440" stroke="#0F172A" stroke-width="3"/>
     <text x="322" y="444">kürzester Weg</text>
     <line x1="430" y1="440" x2="456" y2="440" stroke="#64748B" stroke-opacity="0.35" stroke-width="14" stroke-linecap="round"/>
-    <text x="468" y="444">Mittelschlange</text>
+    <text x="468" y="444">Mittelschlange, (3,2) bis (5,4)</text>
   </g>
 </svg>

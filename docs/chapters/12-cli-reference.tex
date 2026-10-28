@@ -949,7 +949,8 @@ Eine Verschiebung von Zeilen zeigt er als Löschung und Einfügung.
 Eine Option für ein Format für Maschinen gibt es nicht.
 
 {\bf Wiederholung.} Der Befehl lässt sich nach Erfolg und nach einem Fehler gefahrlos
-wiederholen; er ändert nur das Operation Log. Ein Pfad, der auf keiner Seite vorkommt,
+wiederholen; er ändert höchstens den Working-Copy-Commit und das Operation Log. Ein Pfad,
+der auf keiner Seite vorkommt,
 fällt erst auf, wenn der Snapshot geschrieben ist, weil die Dateien der Arbeitskopie erst
 dann feststehen. Der Befehl endet dann mit Exit-Code 1, und die Meldung nennt den Eintrag
 des Snapshots. Ein ungültiger Pfad schreibt nichts.

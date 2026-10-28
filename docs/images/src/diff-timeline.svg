@@ -21,33 +21,33 @@
   <line x1="10" y1="262" x2="690" y2="262"/>
 </g>
 <!-- Rows: the value after the command; bold in the colour of the zone when the command changed it -->
-<text x="20" y="90" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit -m &quot;Erste Fassung&quot;</text>
+<text x="20" y="90" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit -m &quot;Anfang&quot;</text>
 <text x="236" y="90" font-size="12" fill="#6B46C1"><tspan font-weight="bold">3</tspan> <tspan font-family="Courier, monospace">commit</tspan></text>
-<text x="328" y="90" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:8d4b…</text>
-<text x="434" y="90" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:b053…</text>
+<text x="328" y="90" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:367a…</text>
+<text x="434" y="90" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:698e…</text>
 <text x="526" y="90" font-size="12" fill="#64748B">–</text>
 <text x="20" y="130" font-family="Courier, monospace" font-size="12" fill="#0F172A">diff</text>
 <text x="236" y="130" font-size="12" fill="#6B46C1"><tspan font-weight="bold">4</tspan> <tspan font-family="Courier, monospace">snapshot</tspan></text>
-<text x="328" y="130" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:8259…</text>
-<text x="434" y="130" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:b053…</text>
-<text x="526" y="119" font-size="11" fill="#2B6CB0">liest README.md, von Hand</text>
+<text x="328" y="130" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:ed40…</text>
+<text x="434" y="130" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:698e…</text>
+<text x="526" y="119" font-size="11" fill="#2B6CB0">liest notes.txt, von Hand</text>
 <text x="526" y="134" font-size="11" fill="#2B6CB0">geändert</text>
 <text x="20" y="170" font-family="Courier, monospace" font-size="12" fill="#0F172A">diff --exit-code</text>
 <text x="236" y="159" font-size="11" font-style="italic" fill="#64748B">kein Eintrag,</text>
 <text x="236" y="174" font-size="11" font-style="italic" fill="#64748B">Exit-Code 4</text>
-<text x="328" y="170" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:8259…</text>
-<text x="434" y="170" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:b053…</text>
-<text x="526" y="159" font-size="11" fill="#2B6CB0">liest README.md, Baum</text>
+<text x="328" y="170" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:ed40…</text>
+<text x="434" y="170" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:698e…</text>
+<text x="526" y="159" font-size="11" fill="#2B6CB0">liest notes.txt, Baum</text>
 <text x="526" y="174" font-size="11" fill="#2B6CB0">unverändert</text>
 <text x="20" y="210" font-family="Courier, monospace" font-size="12" fill="#0F172A">commit -m &quot;Zweite Zeile&quot;</text>
 <text x="236" y="210" font-size="12" fill="#6B46C1"><tspan font-weight="bold">5</tspan> <tspan font-family="Courier, monospace">commit</tspan></text>
-<text x="328" y="210" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:7eb4…</text>
-<text x="434" y="210" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:3d07…</text>
+<text x="328" y="210" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:0dac…</text>
+<text x="434" y="210" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:1916…</text>
 <text x="526" y="210" font-size="12" fill="#64748B">–</text>
-<text x="20" y="250" font-family="Courier, monospace" font-size="12" fill="#0F172A">diff b3:b053… b3:3d07…</text>
+<text x="20" y="250" font-family="Courier, monospace" font-size="12" fill="#0F172A">diff b3:698e… b3:1916…</text>
 <text x="236" y="250" font-size="11" font-style="italic" fill="#64748B">kein Eintrag</text>
-<text x="328" y="250" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:7eb4…</text>
-<text x="434" y="250" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:3d07…</text>
+<text x="328" y="250" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:0dac…</text>
+<text x="434" y="250" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:1916…</text>
 <text x="526" y="250" font-size="12" fill="#64748B">–</text>
 <!-- Explanation -->
 <g font-size="12" fill="#0F172A">
