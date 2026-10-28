@@ -105,8 +105,8 @@ impl CheckoutPlan {
 /// The files that a checkout removes, to ask whether a path is one of them.
 struct Removed {
     exact: BTreeSet<String>,
-    /// The same paths in lower case, used where the file system ignores the case of names: the
-    /// new tree may name a file `readme` where the old one had `README`.
+    /// The same paths folded (see [`fold`]), used where the file system ignores the case of
+    /// names: the new tree may name a file `readme` where the old one had `README`.
     folded: BTreeSet<String>,
 }
 
@@ -114,13 +114,12 @@ impl Removed {
     fn new(paths: &[String]) -> Self {
         Self {
             exact: paths.iter().cloned().collect(),
-            folded: paths.iter().map(|path| path.to_lowercase()).collect(),
+            folded: paths.iter().map(|path| fold(path)).collect(),
         }
     }
 
     fn contains(&self, path: &str) -> bool {
-        self.exact.contains(path)
-            || (CASE_INSENSITIVE && self.folded.contains(&path.to_lowercase()))
+        self.exact.contains(path) || (CASE_INSENSITIVE && self.folded.contains(&fold(path)))
     }
 }
 
@@ -848,12 +847,22 @@ fn entries_of(files: &Files) -> BTreeSet<String> {
     entries
 }
 
+/// The key under which a file system that ignores case sees a path: the full Unicode case folding
+/// (`ß` and `SS`, `ς` and `σ`), and the canonical decomposition, so that `é` in one code point
+/// and in two are the same name.
+fn fold(path: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    caseless::default_case_fold_str(&path.nfd().collect::<String>())
+        .nfd()
+        .collect()
+}
+
 /// The first two entries that differ only in case, if there are any. A file `A` and a directory
 /// `a` collide as two files do, and so do `A/x` and `a/y`, which share the directory.
 fn case_collision(entries: &BTreeSet<String>) -> Option<(String, String)> {
     let mut seen: HashMap<String, &str> = HashMap::new();
     for path in entries {
-        if let Some(other) = seen.insert(path.to_lowercase(), path) {
+        if let Some(other) = seen.insert(fold(path), path) {
             return Some((path.clone(), other.to_owned()));
         }
     }
@@ -1527,6 +1536,21 @@ mod tests {
             .map(|path| (path.to_owned(), (FileMode::File, Blob::new("").id())))
             .collect();
         assert!(case_collision(&entries_of(&files)).is_some());
+    }
+
+    #[test]
+    fn unicode_folding_and_normalization_make_entries_collide() {
+        assert!(case_collision(&entries(&["straße", "STRASSE"])).is_some());
+        assert!(case_collision(&entries(&["\u{e9}", "e\u{301}"])).is_some());
+        assert!(case_collision(&entries(&["\u{3c3}", "\u{3c2}"])).is_some());
+        assert_eq!(case_collision(&entries(&["e", "\u{e9}"])), None);
+    }
+
+    #[test]
+    fn a_removal_is_found_under_its_folded_name() {
+        let removed = Removed::new(&["Stra\u{df}e".to_owned()]);
+        assert!(removed.contains("Stra\u{df}e"));
+        assert_eq!(removed.contains("STRASSE"), CASE_INSENSITIVE);
     }
 
     #[test]

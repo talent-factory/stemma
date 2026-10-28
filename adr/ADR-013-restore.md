@@ -147,10 +147,11 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] Windows and file systems that ignore case: the functions for Windows names and for case
       collisions are tested on every platform, but the Windows branch of the name check has never
       run end to end, and no test ran on Windows (STEMMA-33).
-- [ ] Names that differ only in Unicode normalization form are not found by the plan, as the
-      crate has no normalization tables. The apply finds them when the second file is written, if
-      the second path is new (the first file is there already), and stops. If the second path is
-      also in the old tree, it replaces the first file without a word.
+- [x] Where names ignore case, the plan folds every path (full Unicode case folding and canonical
+      decomposition) before it compares them, for the collisions of the new tree and for the
+      files that the checkout removes (STEMMA-102). `Straße` and `STRASSE`, and `é` in one code
+      point and in two, name one file. A platform that keeps the normalization form apart (Windows)
+      is refused for a pair that it could hold; the plan errs on the safe side.
 - [ ] A file that appears between the last check and the rename of a write is replaced. The
       window is as short as it can be with `rename`. Closing it needs a rename that fails when the
       target exists (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL`
