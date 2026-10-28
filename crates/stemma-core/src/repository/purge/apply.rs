@@ -216,7 +216,7 @@ pub enum ApplyPurgeError {
     Snapshot(SnapshotError),
     /// The purge could not start under the lock: the lock could not be taken, the log or the
     /// store could not be read, or the format file or the journal could not be written. No
-    /// journal exists; the format can be 3 already.
+    /// journal exists; the format can be 4 already.
     Start(PurgeFailure),
     /// The purge failed after the snapshot that it took first had saved the working directory.
     /// The snapshot stays, as any snapshot does; `source` says what failed, and whether a journal
@@ -1029,7 +1029,7 @@ mod tests {
     /// What every finished purge leaves: no tree in the store names the blob, and the blob, the
     /// old commits, and the old trees are gone; every entry that is kept names only commits that
     /// exist; the entries of the plan are stubs; the numbering has no gap; the pointers have the
-    /// values after the purge; the journal and the lock are gone, and the format is 3.
+    /// values after the purge; the journal and the lock are gone, and the format is 4.
     fn assert_purged(dir: &TempDir, repository: &Repository, purged: &Purged) {
         let store = repository.objects();
         let plan = purged.plan();
