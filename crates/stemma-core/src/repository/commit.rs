@@ -543,7 +543,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
@@ -1440,11 +1440,16 @@ mod tests {
         use std::sync::Mutex;
         struct Recording(Mutex<Vec<(String, String)>>);
         impl Authorizer for Recording {
-            fn authorize(&self, _actor: &Actor, operation: &str, target: &str) -> Decision {
+            fn authorize(
+                &self,
+                _actor: &Actor,
+                operation: &OperationName,
+                target: &str,
+            ) -> Decision {
                 self.0
                     .lock()
                     .unwrap()
-                    .push((operation.to_owned(), target.to_owned()));
+                    .push((operation.to_string(), target.to_owned()));
                 Decision::Allow
             }
         }
@@ -1472,8 +1477,13 @@ mod tests {
     fn a_refusal_for_the_snapshot_comes_as_a_snapshot_error() {
         struct OnlyCommit;
         impl Authorizer for OnlyCommit {
-            fn authorize(&self, _actor: &Actor, operation: &str, _target: &str) -> Decision {
-                if operation == "commit" {
+            fn authorize(
+                &self,
+                _actor: &Actor,
+                operation: &OperationName,
+                _target: &str,
+            ) -> Decision {
+                if operation.as_str() == "commit" {
                     Decision::Allow
                 } else {
                     Decision::Deny

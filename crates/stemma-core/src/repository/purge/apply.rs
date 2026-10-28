@@ -456,6 +456,10 @@ impl Repository {
     /// exists is left alone, a pointer at its new value is skipped, a `purge` entry that is written
     /// is found and not written again, a stub is replaced by itself, and a deleted object is gone.
     ///
+    /// The authorizer is asked for the blob of the journal before the lock is taken. If the journal
+    /// under the lock names another blob, it is asked again, with that blob, while the lock is
+    /// held; it must not block. A command can therefore ask it twice.
+    ///
     /// # Errors
     ///
     /// Returns [`ApplyPurgeError::Plan`] with [`PurgeError::Agent`] or [`PurgeError::Update`] if
@@ -641,7 +645,10 @@ impl Repository {
     }
 
     /// Refuses an agent, reads the journal, asks the authorizer for `purge` with its blob, takes
-    /// the lock over, and reads the journal again under it.
+    /// the lock over, and reads the journal again under it. The journal under the lock is the one
+    /// that is carried out, so if its blob is another one, the authorizer is asked for that blob
+    /// as well; the lock is released on a refusal. `resume_purge` and `abort_purge` both call it.
+    /// The second question runs under the lock, so an authorizer must not block.
     fn take_over(
         &self,
         actor: &Actor,
@@ -656,15 +663,20 @@ impl Repository {
             }),
             Err(error) => Err(ApplyPurgeError::Unreadable(Box::new(error))),
         };
-        let journal = read()?;
-        self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
+        let asked = read()?;
+        self.authorize_purge(actor, authorizer, &asked.plan.blob.to_string())
             .map_err(ApplyPurgeError::Plan)?;
         let lock = self.refs_store().take_over_lock().map_err(stopped(
             PurgeStep::Journal,
             &[],
             PurgeFailure::Refs,
         ))?;
-        Ok((read()?, lock))
+        let journal = read()?;
+        if journal.plan.blob != asked.plan.blob {
+            self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
+                .map_err(ApplyPurgeError::Plan)?;
+        }
+        Ok((journal, lock))
     }
 
     /// The `purge` entries that the purge of the journal has written: those after the last entry
@@ -936,7 +948,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
@@ -1485,6 +1497,103 @@ mod tests {
             );
         }
         assert!(journal_exists(&dir));
+    }
+
+    /// Records what it is asked. During the first call it replaces the blob of the journal by
+    /// `other`, as a second `stemma purge` would between the two reads of `take_over`, and it
+    /// refuses `other`.
+    struct SwapsJournal {
+        metadata: std::path::PathBuf,
+        other: crate::object::BlobId,
+        asked: std::cell::RefCell<Vec<(String, String)>>,
+    }
+
+    impl SwapsJournal {
+        fn new(dir: &TempDir) -> Self {
+            Self {
+                metadata: dir.path().join(".stemma"),
+                other: Blob::new("other secret").id(),
+                asked: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Authorizer for SwapsJournal {
+        fn authorize(&self, _actor: &Actor, operation: &OperationName, target: &str) -> Decision {
+            let first = self.asked.borrow().is_empty();
+            self.asked
+                .borrow_mut()
+                .push((operation.to_string(), target.to_owned()));
+            if first {
+                let mut journal = journal::read(&self.metadata).unwrap().unwrap();
+                journal.plan.blob = self.other;
+                fs::write(journal::path(&self.metadata), journal.encode()).unwrap();
+            }
+            if !first && target == self.other.to_string() {
+                Decision::Deny
+            } else {
+                Decision::Allow
+            }
+        }
+    }
+
+    #[test]
+    fn a_journal_that_changes_before_the_lock_is_authorized_again_by_resume_and_abort() {
+        for abort in [false, true] {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            history(&dir, &repository);
+            stop_at(&repository, Stop::Journal);
+            let before = ids(&repository);
+            let authorizer = SwapsJournal::new(&dir);
+
+            let error = if abort {
+                repository
+                    .abort_purge(&actor(), &authorizer)
+                    .map(|_| ())
+                    .unwrap_err()
+            } else {
+                repository
+                    .resume_purge(&actor(), &authorizer)
+                    .map(|_| ())
+                    .unwrap_err()
+            };
+
+            assert!(
+                matches!(&error, ApplyPurgeError::Plan(PurgeError::Update(
+                    UpdateError::Denied { target, .. }
+                )) if *target == authorizer.other.to_string()),
+                "{error:?}"
+            );
+            assert_eq!(
+                *authorizer.asked.borrow(),
+                [
+                    ("purge".to_owned(), secret().to_string()),
+                    ("purge".to_owned(), authorizer.other.to_string()),
+                ]
+            );
+            assert!(!lock_exists(&dir), "the lock is released on a refusal");
+            assert!(journal_exists(&dir), "the journal stays");
+            assert_eq!(ids(&repository), before);
+        }
+    }
+
+    #[test]
+    fn a_journal_that_does_not_change_is_authorized_once_with_the_operation_and_the_blob() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        let mut authorizer = SwapsJournal::new(&dir);
+        // The first call writes the blob that the journal already has.
+        authorizer.other = Blob::new(SECRET).id();
+
+        repository.resume_purge(&actor(), &authorizer).unwrap();
+
+        assert_eq!(
+            *authorizer.asked.borrow(),
+            [("purge".to_owned(), secret().to_string())]
+        );
     }
 
     #[test]
