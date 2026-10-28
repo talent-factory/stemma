@@ -904,10 +904,13 @@ impl Repository {
                 });
             }
         }
+        // The objects are flushed together, so that the directories above them are flushed once
+        // and not once per object (ADR-007).
+        let batch = self.objects().batch();
         for object in planner.new_objects(&plan.rewrites) {
-            object.put(self.objects()).map_err(store)?;
+            object.put(&batch).map_err(store)?;
         }
-        Ok(())
+        batch.finish().map_err(store)
     }
 }
 
