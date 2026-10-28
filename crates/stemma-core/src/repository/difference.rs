@@ -6,14 +6,16 @@
 //! the working copy, and with two operands the two commits. A side that is the working copy is
 //! first saved as a snapshot, as [`Repository::status`] does, so that the diff shows the files as
 //! they are now. The lines of a text file are compared as stored, with their line ends, by the
-//! shortest edit script of [`crate::diff`]. A binary file is named without its lines.
+//! shortest edit script of [`crate::diff`], with the boundaries of the changes placed by the indent
+//! heuristic and the deletions of a group before its insertions. A binary file is named without
+//! its lines.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
 use super::{Repository, SnapshotError, UpdateError};
-use crate::diff::{diff, hunks, is_binary, Hunk};
+use crate::diff::{diff_byte_lines, hunks, is_binary, Hunk};
 use crate::object::{Commit, CommitId, EntryMode, Kind, ObjectId, Tree, TreeId};
 use crate::refs::RefError;
 use crate::store::{ObjectStore, RawObject, StoreError};
@@ -411,7 +413,7 @@ impl Repository {
                 // line ends or of a byte that is not UTF-8 shows. Only the display decodes them.
                 let old_lines = split_lines(&old_bytes);
                 let new_lines = split_lines(&new_bytes);
-                let edits = diff(&old_lines, &new_lines);
+                let edits = diff_byte_lines(&old_lines, &new_lines);
                 Content::Text(TextDiff::new(
                     decode_lines(&old_lines),
                     decode_lines(&new_lines),

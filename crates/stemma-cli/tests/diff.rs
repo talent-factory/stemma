@@ -1296,3 +1296,43 @@ fn the_usage_error_for_too_many_commits_comes_before_the_actor_and_the_repositor
         result.stderr
     );
 }
+
+#[test]
+fn a_group_of_inserted_lines_takes_the_place_the_indent_heuristic_chooses() {
+    let dir = repository_with_edit("a.txt", b"{\n\n", b"{\nx\n\n{\n\n{\n");
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let body: Vec<&str> = result
+        .stdout
+        .lines()
+        .skip_while(|l| !l.starts_with("@@"))
+        .collect();
+    assert_eq!(
+        body[1..],
+        ["+{", "+x", "+", " {", " ", "+{"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn the_deletions_of_a_group_come_before_its_insertions() {
+    let dir = repository_with_edit("a.txt", b"a\nx\nb\n", b"a\ny\nz\nb\n");
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let body: Vec<&str> = result
+        .stdout
+        .lines()
+        .skip_while(|l| !l.starts_with("@@"))
+        .collect();
+    assert_eq!(
+        body[1..],
+        [" a", "-x", "+y", "+z", " b"],
+        "{}",
+        result.stdout
+    );
+}

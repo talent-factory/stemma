@@ -4,7 +4,7 @@
 //! that forks while another thread holds a file lock keeps the lock alive for a moment, which
 //! would make the lock tests of the library fail at random.
 
-use stemma_core::diff::{diff, diff_lines, Edit};
+use stemma_core::diff::{diff, diff_byte_lines, diff_lines, Edit};
 
 /// Per line of each side, whether the script changes it.
 fn changed_flags(edits: &[Edit], old_len: usize, new_len: usize) -> (Vec<bool>, Vec<bool>) {
@@ -98,6 +98,14 @@ fn compare_with_git(
         };
         std::fs::write(&old_path, text(&old)).unwrap();
         std::fs::write(&new_path, text(&new)).unwrap();
+        // The command compares bytes. Over ASCII lines both functions give the same script.
+        let old_bytes: Vec<&[u8]> = old.iter().map(|line| line.as_bytes()).collect();
+        let new_bytes: Vec<&[u8]> = new.iter().map(|line| line.as_bytes()).collect();
+        assert_eq!(
+            diff_byte_lines(&old_bytes, &new_bytes),
+            diff_lines(&old, &new),
+            "{old:?} against {new:?}"
+        );
         let sizes = (old.len(), new.len());
         let plain = changed_flags(&diff(&old, &new), sizes.0, sizes.1);
         if plain != git_flags(&old_path, &new_path, false, sizes) {
