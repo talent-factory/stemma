@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 400" font-family="Helvetica, Arial, sans-serif">
+<title>Übergänge der Auswahl in der Oberfläche von diff --tui</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="850" height="400" fill="#FFFFFF"/>
+<!-- Rows: three consecutive files; columns: first, any, and last hunk -->
+<g font-size="13" font-weight="bold" fill="#0F172A" text-anchor="start">
+  <text x="30" y="90">Datei f−1</text>
+  <text x="30" y="200">Datei f</text>
+  <text x="30" y="310">Datei f+1</text>
+</g>
+<g stroke="#64748B" stroke-width="1" fill="#FFFFFF">
+  <rect x="150" y="65" width="130" height="40" rx="4"/>
+  <rect x="360" y="65" width="130" height="40" rx="4"/>
+  <rect x="570" y="65" width="130" height="40" rx="4"/>
+  <rect x="150" y="175" width="130" height="40" rx="4"/>
+  <rect x="360" y="175" width="130" height="40" rx="4"/>
+  <rect x="570" y="175" width="130" height="40" rx="4"/>
+  <rect x="150" y="285" width="130" height="40" rx="4"/>
+  <rect x="360" y="285" width="130" height="40" rx="4"/>
+  <rect x="570" y="285" width="130" height="40" rx="4"/>
+</g>
+<g font-size="12" fill="#0F172A" text-anchor="middle">
+  <text x="215" y="90">Hunk 0</text>
+  <text x="425" y="90">Hunk h</text>
+  <text x="635" y="90">letzter Hunk</text>
+  <text x="215" y="200">Hunk 0</text>
+  <text x="425" y="200">Hunk h</text>
+  <text x="635" y="200">letzter Hunk</text>
+  <text x="215" y="310">Hunk 0</text>
+  <text x="425" y="310">Hunk h</text>
+  <text x="635" y="310">letzter Hunk</text>
+</g>
+<!-- n and p inside a file -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="280" y1="77" x2="358" y2="77"/>
+  <line x1="490" y1="77" x2="568" y2="77"/>
+  <line x1="358" y1="94" x2="282" y2="94"/>
+  <line x1="568" y1="94" x2="492" y2="94"/>
+  <line x1="280" y1="187" x2="358" y2="187"/>
+  <line x1="490" y1="187" x2="568" y2="187"/>
+  <line x1="358" y1="204" x2="282" y2="204"/>
+  <line x1="568" y1="204" x2="492" y2="204"/>
+  <line x1="280" y1="297" x2="358" y2="297"/>
+  <line x1="490" y1="297" x2="568" y2="297"/>
+  <line x1="358" y1="314" x2="282" y2="314"/>
+  <line x1="568" y1="314" x2="492" y2="314"/>
+</g>
+<g font-size="12" font-family="Courier, monospace" fill="#0F172A" text-anchor="middle">
+  <text x="319" y="72">n</text>
+  <text x="529" y="72">n</text>
+  <text x="319" y="110">p</text>
+  <text x="529" y="110">p</text>
+  <text x="319" y="182">n</text>
+  <text x="529" y="182">n</text>
+  <text x="319" y="220">p</text>
+  <text x="529" y="220">p</text>
+  <text x="319" y="292">n</text>
+  <text x="529" y="292">n</text>
+  <text x="319" y="330">p</text>
+  <text x="529" y="330">p</text>
+</g>
+<!-- n at the last hunk and p at the first hunk cross to the next or the previous file -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="680" y1="105" x2="270" y2="173"/>
+  <line x1="160" y1="175" x2="590" y2="107"/>
+  <line x1="680" y1="215" x2="270" y2="283"/>
+  <line x1="160" y1="285" x2="590" y2="217"/>
+</g>
+<g font-size="12" font-family="Courier, monospace" fill="#0F172A" text-anchor="middle">
+  <text x="662" y="128">n</text>
+  <text x="176" y="160">p</text>
+  <text x="662" y="238">n</text>
+  <text x="176" y="270">p</text>
+</g>
+<!-- J and K from any hunk to the first hunk of the neighbouring file -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="770" y1="105" x2="770" y2="173"/>
+  <line x1="790" y1="173" x2="790" y2="105"/>
+  <line x1="770" y1="215" x2="770" y2="283"/>
+  <line x1="790" y1="283" x2="790" y2="215"/>
+</g>
+<g font-size="12" font-family="Courier, monospace" fill="#0F172A" text-anchor="middle">
+  <text x="780" y="145">J</text>
+  <text x="780" y="255">J</text>
+  <text x="810" y="145">K</text>
+  <text x="810" y="255">K</text>
+</g>
+<g font-size="12" fill="#64748B" text-anchor="middle">
+  <text x="780" y="345">J, K: Hunk 0</text>
+  <text x="780" y="360">der Nachbardatei</text>
+</g>
+<g font-size="12" fill="#0F172A" text-anchor="middle">
+  <text x="425" y="368">Blättern (j, k, Leertaste, b) ändert nur den Bildlauf s und lässt f und h stehen.</text>
+  <text x="425" y="386">q, Esc und Ctrl-C beenden die Oberfläche aus jedem Zustand.</text>
+</g>
+</svg>

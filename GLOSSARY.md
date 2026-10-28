@@ -242,3 +242,15 @@ A value that is a function of a commit and its ancestors, such as a blame or an 
 kept in the cache `.stemma/derived/` outside the object model. It can be deleted and computed
 again, and a purge removes it (ADR-017). (abgeleitete Daten)
 _Avoid_: Index (for the cache as a whole), metadata
+
+## Diff
+
+**Hunk**:
+A group of changes of an edit script together with the unchanged lines around it. Changes whose
+context lines overlap or touch share one hunk. (Hunk)
+_Avoid_: Chunk, block
+
+**Change group**:
+A maximal run of changed lines on one side of a diff. The slide step moves a group along the
+unchanged lines that equal its edge lines. (Änderungsgruppe)
+_Avoid_: Change block
