@@ -119,9 +119,10 @@ macht er zuerst einen Snapshot der verfolgten Dateien (ADR-010), wie \type{statu
 Der Snapshot schreibt einen Eintrag nur, wenn sich eine verfolgte Datei geändert hat.
 Vergleicht der Aufruf zwei Commits, liest er nur Objekte und schreibt gar nichts.
 Einen Akteur verlangt er in beiden Fällen, auch wenn nichts zu schreiben ist.
-Die folgenden Abläufe setzen die Sitzung aus Kapitel 4 fort.
-Die Ausgaben stammen aus einem echten Lauf; die IDs sind gekürzt und stammen aus derselben
-Sitzung wie dort.
+Die folgenden Abläufe greifen Stellen der Sitzung aus Kapitel 4 auf.
+Die Ausgaben stammen aus einem echten Lauf. Die Zeit gehört zum Commit, ein neuer Lauf
+erzeugt also andere Hashes; die Beispiele zeigen deshalb die gekürzten IDs der Sitzung aus
+Kapitel 4. Ein Aufruf braucht die volle Kennung.
 Die Synopsis, die Exit-Codes und die Fehler jeder Option stehen in der Befehlsreferenz.
 
 \subsection{Änderungen vor dem Commit ansehen}
@@ -152,7 +153,8 @@ nichts mehr: Die Änderung ist schon im Working-Copy-Commit.
 
 Eine neue Datei erscheint erst, wenn \type{track} sie aufgenommen hat, denn der Diff
 vergleicht nur verfolgte Dateien. Nennt man ihren Pfad vorher, endet der Befehl mit einem Fehler
-und nennt \type{track} als Abhilfe.
+und nennt \type{track} als Abhilfe. Der Fehler fällt erst nach dem Snapshot auf, der Eintrag
+steht dann schon im Log, und die Meldung nennt ihn.
 
 \subsection{Zwei Commits vergleichen}
 
@@ -239,14 +241,17 @@ Für Skripte und Agenten gilt deshalb der Text ohne \type{--tui}.
 Auf einem Terminal färbt der Befehl die Ausgabe und gibt sie an einen Pager weiter.
 Geht die Ausgabe in eine Pipe oder eine Datei, ist sie reiner Text ohne Farbe und ohne Pager.
 Damit liest ein Skript denselben Text, den die Beispiele dieses Kapitels zeigen.
-Die Ausgabe ändert nichts am Repository. Ein Pager, der früher endet, ist kein Fehler.
+Farbe und Pager ändern nichts am Repository; es gilt, was für die Seiten des Aufrufs gilt.
+Ein Pager, der früher endet, ist kein Fehler.
 Welche Variablen den Pager wählen, steht in der Befehlsreferenz.
 
 \subsection{Binärdateien}
 
 Eine Datei mit einem NUL-Byte in den ersten 8000 Bytes gilt als binär.
 Der Diff zeigt dann keinen Inhalt, sondern eine Zeile mit beiden Seiten.
-Die Sitzung hat dazu \type{blob.bin} verfolgt, committet und ein Byte darin geändert:
+Das Beispiel stammt aus einem eigenen kleinen Repository, nicht aus der Sitzung:
+Es verfolgt und committet \type{blob.bin} und ändert danach ein Byte darin.
+Seine IDs sind die des Laufs.
 
 \starttyping
 $ stemma diff
@@ -254,8 +259,8 @@ diff blob.bin
 Binary files b3:c76d…402f blob.bin and working-copy b3:39f0…cdc7 blob.bin differ
 \stoptyping
 
-Die Zeile ist hier der Breite wegen umbrochen. Mit \type{--exit-code} endet der Befehl auch bei
-Binärdateien mit 4. Der Snapshot ist wie bei Text: ein Eintrag \type{snapshot}, weil sich eine
+Mit \type{--exit-code} endet der Befehl auch bei Binärdateien mit 4.
+Der Snapshot ist wie bei Text: ein Eintrag \type{snapshot}, weil sich eine
 verfolgte Datei geändert hat. Ist nur eine der beiden Fassungen binär, gilt die ganze Datei als
 binär.
 
@@ -278,7 +283,7 @@ und der nur bei einer geänderten verfolgten Datei.
 \startxcell \type{diff}, Datei geändert \stopxcell
 \startxcell unverändert \stopxcell
 \startxcell neuer Snapshot \stopxcell
-\startxcell Working-Copy-Zeiger bewegt \stopxcell
+\startxcell Zeiger des Working-Copy-Commits bewegt \stopxcell
 \startxcell ein Eintrag \type{snapshot} \stopxcell
 \stopxrow
 \startxrow
