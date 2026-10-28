@@ -61,10 +61,12 @@ eine Datei, sagt sie das.
 
 {\bf Git-Checkouts unterhalb der Wurzel.} Ein Verzeichnis mit einem eigenen \type{.git}
 unterhalb der Wurzel, etwa ein Klon oder ein Git-Worktree (ADR-009), gehört für Stemma zum
-Repository der Wurzel. Seine Dateien erscheinen in \type{status} als nicht verfolgt,
-und \type{track .} speichert sie, wenn \type{.stemmaignore} das Verzeichnis nicht ausschliesst.
+Repository der Wurzel. Schliesst \type{.stemmaignore} das Verzeichnis nicht aus,
+erscheinen seine Dateien in \type{status} als nicht verfolgt,
+und \type{track .} speichert sie.
 Nur die Metadaten \type{.git} selbst fehlen immer (siehe \type{track}).
-Die Warnung der Suche kommt nur, wenn der Befehl in diesem Checkout läuft; in der Wurzel
+Die Warnung der Suche (siehe {\bf Ausgabekanäle}) kommt nur,
+wenn der Befehl in diesem Checkout läuft; in der Wurzel
 oder mit \type{-C} auf die Wurzel bleibt sie aus.
 Sie bleibt auch aus beim \type{.git} der Wurzel selbst, dem Normalfall, und bei einem Checkout
 mit eigenem \type{.stemma}: Dort findet die Suche zuerst dieses Repository, und der Befehl
@@ -101,8 +103,9 @@ Ein Git-Worktree ist keine eigene Arbeitskopie für Stemma. Ohne ein eigenes \ty
 Verzeichnisse absucht; sein Snapshot deckt dann die Dateien der Wurzel ab, im Namen des Akteurs
 des Worktrees, und es arbeiten zwei Akteure in einer Arbeitskopie. Mit einem eigenen
 \type{stemma init} ist der Worktree ein unabhängiges Repository, doch dessen Verlauf geht mit
-dem Worktree verloren: Git überträgt das ignorierte \type{.stemma} nicht in einen Merge,
-und \type{git worktree remove} löscht das Verzeichnis samt \type{.stemma} ohne Meldung.
+dem Worktree verloren: Git überträgt ein ignoriertes \type{.stemma} nicht in einen Merge,
+und \type{git worktree remove} löscht bei einem sauberen Worktree das Verzeichnis samt
+\type{.stemma} ohne \type{--force} und ohne Meldung.
 Bis Phase 3 ruft ein Akteur \type{stemma} deshalb nicht in einem Git-Worktree auf.
 
 Auch \type{op restore --dry-run} und \type{purge} ohne \type{--apply} verlangen einen Akteur,
@@ -118,7 +121,8 @@ Die Suche nach dem Repository warnt unter anderem in zwei Fällen (ADR-009):
 wenn der Befehl durch einen Link in ein Repository gelangt,
 und wenn das Verzeichnis in einem Git-Checkout unterhalb der Wurzel liegt,
 etwa in einem Git-Worktree.
-Der Befehl arbeitet dann im Repository der Wurzel.
+Der Befehl arbeitet dann im Repository der Wurzel;
+hat der Checkout ein eigenes \type{.stemma}, arbeitet er in diesem und warnt nicht.
 Fehler der Argumente meldet die Bibliothek der Kommandozeile mit \type{error:} auf der
 Fehlerausgabe (Exit-Code 2). \type{--help} (\type{-h}) und \type{--version} (\type{-V})
 schreiben auf die Standardausgabe und enden mit Exit-Code 0.
