@@ -77,9 +77,10 @@ Facts that bound the design:
   until actors can be proved (ADR-002: the text of an actor proves nothing about who runs the
   command, ADR-003): an agent that names itself `human` is not stopped. A human sponsor can run
   the purge for the agent.
-- **The purge deletes the objects that its rewrite replaced, and nothing else** *(confirmed)*. The
-  delete set is the old versions of the rewritten commits, their trees that changed, and the blob.
-  An object is deleted only if no kept root reaches it any more (the branches, HEAD, the
+- **The purge deletes the objects that its rewrite replaced, and nothing else** *(confirmed)*;
+  the one addition is the cache of derived data (step 8, ADR-017). The delete set is the old
+  versions of the rewritten commits, their trees that changed, and the blob. An object is deleted
+  only if no kept root reaches it any more (the branches, HEAD, the
   working-copy commit, and the entries that remain). Everything else stays, also an object that
   only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
@@ -181,7 +182,11 @@ lock may be held.
    pointer is at its old or at its new value, and `--resume` finishes it.
 7. Replace the entries that name a rewritten commit by stubs (a temporary file in `tmp/` and a
    rename, never a name inside `oplog/`).
-8. Delete the delete set, then remove the journal.
+8. Delete the delete set and the derived data (`.stemma/derived/`, ADR-017), then remove the
+   journal. Deleting an object flushes its directory, and deleting one that is gone flushes it
+   too: an earlier run may have unlinked the file and failed to flush, and the journal must not go
+   before the removal is durable (STEMMA-101). `--resume` repeats the deletion of `derived/`;
+   `--abort` leaves it alone, because before the `purge` entry nothing has been removed.
 
 **Resume.** `stemma purge --resume` reads the journal and repeats the steps from step 5. A crash
 leaves `refs.lock` behind (ADR-011), and the lock would stop the resume. While the journal exists,
@@ -202,10 +207,10 @@ set, a crash after step 7 does not leave the blob behind as an object that "was 
 unreachable".
 
 **Abort.** `stemma purge --abort` removes the journal and the objects that step 5 wrote, as long
-as the `purge` entry is not written; the format stays where the purge raised it.
-Once the entry is written, the purge
-can only go forward: that is the point of no return, and a purge that cannot finish (a missing
-object, an unreadable log) is left for a person to repair.
+as the `purge` entry is not written; the format stays where the purge raised it. It removes the
+objects as step 8 does, so the journal goes only after their removal is durable (STEMMA-101).
+Once the entry is written, the purge can only go forward: that is the point of no return, and a
+purge that cannot finish (a missing object, an unreadable log) is left for a person to repair.
 
 ## Consequences
 

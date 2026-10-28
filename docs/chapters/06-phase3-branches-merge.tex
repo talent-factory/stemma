@@ -20,4 +20,9 @@ Kapitel 2 beschreibt das Vorbild Jujutsu; die Entscheidung ist offen.
 \item Konfliktmodell: Daten im Commit oder klassische Markierung?
 \item Rebase: Ja oder nein in Phase 3?
 \item Verhalten bei einem Branch, der in einem anderen Worktree ausgecheckt ist.
+\item Abgeleitete Daten, etwa Indizes für \type{log} oder später Blame, auch schon für den
+Diff aus Phase 2. ADR-017 legt einen Cache unter \type{.stemma/derived/} fest, der nie zum
+Objektmodell gehört. Er wird bei der ersten Abfrage aus den Werten der Eltern gefüllt, ein
+Löschen kostet nur Zeit, und ein Purge entfernt ihn. Offen bleiben die erste Art, die
+gespeichert wird, und die Bereinigung alter Einträge.
 \stopitemize

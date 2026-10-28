@@ -6,7 +6,7 @@ use std::fmt::{self, Display, Write};
 use stemma_core::oplog::{Change, Entry, Moved, Outcome, Purge, Record};
 use stemma_core::refs::Head;
 
-/// The `schema` of every JSON object the program writes (ADR-017). One number covers all of them:
+/// The `schema` of every JSON object the program writes (ADR-018). One number covers all of them:
 /// removing, renaming, or retyping a field of any object raises it.
 pub const JSON_SCHEMA: u32 = 1;
 

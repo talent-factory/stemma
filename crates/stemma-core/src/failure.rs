@@ -1,4 +1,4 @@
-//! What a caller can do about a failure (ADR-017).
+//! What a caller can do about a failure (ADR-018).
 //!
 //! The errors of the crate wrap each other, and `Display` prints the wrapped message, so
 //! [`std::error::Error::source`] leaves the wrapped error out. A caller that wants to know whether
@@ -67,7 +67,7 @@ impl Classify for RefError {
             Self::Corrupt { .. } => FailureKind::Damaged,
             Self::Store(error) => error.kind(),
             // A branch or the working-copy commit that moved is the caller's stale view, not a
-            // held lock: the caller reads again and decides (ADR-017 keeps "a moved branch" at 1).
+            // held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at 1).
             // `StaleWorkingCopy` is the same case for the working-copy commit.
             Self::Stale { .. } | Self::StaleWorkingCopy { .. } => FailureKind::Other,
             // A pointer that a purge moves is at neither of its journal values. A person has to

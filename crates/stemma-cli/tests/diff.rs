@@ -6,10 +6,12 @@ use std::fs;
 #[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 #[cfg(unix)]
 use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
 
@@ -489,35 +491,105 @@ fn a_diff_written_to_a_pipe_has_no_colour_and_no_pager() {
     assert!(result.stdout.contains("-one\n+two\n"), "{}", result.stdout);
 }
 
+/// How long a test waits for the terminal before it fails, so that a command that does not do what
+/// the test expects makes the test fail and does not hang it.
+#[cfg(unix)]
+const TERMINAL_WAIT: Duration = Duration::from_secs(20);
+
+/// A command that runs on a terminal. It is killed and waited for when the test ends, also when an
+/// assertion fails first, so that no command is left running.
+#[cfg(unix)]
+struct OnTerminal(Child);
+
+#[cfg(unix)]
+impl std::ops::Deref for OnTerminal {
+    type Target = Child;
+
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+#[cfg(unix)]
+impl std::ops::DerefMut for OnTerminal {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+#[cfg(unix)]
+impl Drop for OnTerminal {
+    fn drop(&mut self) {
+        // The command may have ended already, which is the usual case.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Waits until the terminal has something to read, and tells whether it has before `deadline`. A
+/// terminal that the command has left counts as readable: the read then says so.
+#[cfg(unix)]
+fn wait_readable(master: &File, deadline: Instant) -> bool {
+    use nix::errno::Errno;
+    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+    use std::os::fd::AsFd;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let timeout = PollTimeout::try_from(left).unwrap_or(PollTimeout::MAX);
+        let mut fds = [PollFd::new(master.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, timeout) {
+            Ok(ready) => return ready > 0,
+            Err(Errno::EINTR) => {}
+            Err(error) => panic!("poll on the terminal: {error}"),
+        }
+    }
+}
+
 /// Starts `diff` with its output and its errors on a terminal, as a person sees it. `setup` sets
 /// the environment, and `LESS` is not inherited. The terminal is returned with the child.
 #[cfg(unix)]
-fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (Child, File) {
-    let pty = nix::pty::openpty(None, None).unwrap();
+fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (OnTerminal, File) {
+    // A terminal of 80 by 24, as a person has one: with no size, the interface would draw nothing.
+    let size = nix::pty::Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let pty = nix::pty::openpty(Some(&size), None).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
         .env_remove("LESS")
         .args(["diff", "--actor", "human alice"])
+        // The input is the terminal too, so that the interface of `--tui` reads its keys there and
+        // not from the controlling terminal of the test run, which may not exist.
+        .stdin(Stdio::from(pty.slave.try_clone().unwrap()))
         .stdout(Stdio::from(pty.slave.try_clone().unwrap()))
         .stderr(Stdio::from(pty.slave));
     setup(&mut command);
     let child = command.spawn().unwrap();
     // The command holds the terminal until it is dropped, and the read ends when it is gone.
     drop(command);
-    (child, File::from(pty.master))
+    (OnTerminal(child), File::from(pty.master))
 }
 
 /// Reads what the terminal got until `marker` has appeared.
 #[cfg(unix)]
 fn read_until(master: &mut File, marker: &str) -> String {
+    let deadline = Instant::now() + TERMINAL_WAIT;
     let mut output = String::new();
     let mut buffer = [0; 1024];
     while !output.contains(marker) {
-        let read = master.read(&mut buffer).unwrap();
-        assert_ne!(read, 0, "the terminal closed before {marker}: {output:?}");
-        output.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        assert!(
+            wait_readable(master, deadline),
+            "no {marker} on the terminal within {TERMINAL_WAIT:?}: {output:?}"
+        );
+        match master.read(&mut buffer) {
+            Ok(read) if read > 0 => output.push_str(&String::from_utf8_lossy(&buffer[..read])),
+            other => panic!("the terminal closed before {marker} ({other:?}): {output:?}"),
+        }
     }
     output
 }
@@ -525,13 +597,18 @@ fn read_until(master: &mut File, marker: &str) -> String {
 /// Reads what the terminal got until the command has gone.
 #[cfg(unix)]
 fn read_terminal(mut master: File) -> String {
+    let deadline = Instant::now() + TERMINAL_WAIT;
     let mut output = String::new();
     let mut buffer = [0; 1024];
-    while let Ok(read) = master.read(&mut buffer) {
-        if read == 0 {
-            break;
+    loop {
+        assert!(
+            wait_readable(&master, deadline),
+            "the command did not end within {TERMINAL_WAIT:?}: {output:?}"
+        );
+        match master.read(&mut buffer) {
+            Ok(read) if read > 0 => output.push_str(&String::from_utf8_lossy(&buffer[..read])),
+            _ => break,
         }
-        output.push_str(&String::from_utf8_lossy(&buffer[..read]));
     }
     // A terminal ends a line with CR LF.
     output.replace("\r\n", "\n")
@@ -747,4 +824,119 @@ fn a_pager_that_is_not_executable_leaves_the_diff_on_the_terminal() {
 
     assert!(output.contains("+two"), "{output:?}");
     assert!(output.contains("could not be run"), "{output:?}");
+}
+
+/// Runs `diff --tui` on a terminal, ends it with `end` once the interface shows the files, and
+/// returns what the terminal got together with the exit code. `end` is a key, or a signal.
+#[cfg(unix)]
+fn tui_on_terminal(dir: &Path, extra: &[&str], end: End) -> (String, Option<i32>) {
+    let (mut child, mut master) = spawn_on_terminal(dir, |command| {
+        command.args(extra);
+    });
+    // The interface has turned on raw mode when it has drawn its first frame.
+    let mut output = read_until(&mut master, "Files");
+    match end {
+        End::Key(key) => master.write_all(key).unwrap(),
+        End::Signal(signal) => {
+            let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+            nix::sys::signal::kill(pid, signal).unwrap();
+        }
+    }
+    output.push_str(&read_terminal(master));
+    (output, child.wait().unwrap().code())
+}
+
+/// How a test ends the interface.
+#[cfg(unix)]
+enum End {
+    Key(&'static [u8]),
+    Signal(nix::sys::signal::Signal),
+}
+
+/// Asserts that the interface entered the alternate screen first and left it again, and that
+/// nothing but the interface was written before, and the cursor is back.
+#[cfg(unix)]
+fn assert_terminal_given_back(output: &str) {
+    let entered = output.find("\x1b[?1049h");
+    let left = output.find("\x1b[?1049l");
+    assert_eq!(entered, Some(0), "{output:?}");
+    assert!(left > entered, "{output:?}");
+    // The cursor, which the interface hides while it draws, is shown again.
+    assert!(output.contains("\x1b[?25h"), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_shows_the_diff_and_ends_with_q() {
+    let dir = edited_repository();
+    let (output, code) = tui_on_terminal(dir.path(), &["--tui"], End::Key(b"q"));
+    assert_eq!(code, Some(0), "{output:?}");
+    // The file list and the lines of the file reached the terminal.
+    assert!(output.contains("a.txt"), "{output:?}");
+    assert!(output.contains("-one"), "{output:?}");
+    assert!(output.contains("+two"), "{output:?}");
+    assert_terminal_given_back(&output);
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_ends_with_ctrl_c_as_a_key_and_not_as_a_signal() {
+    let dir = edited_repository();
+    // Raw mode delivers the typed Ctrl-C to the interface: an exit code of 130 would mean that a
+    // signal ended the command.
+    let (output, code) = tui_on_terminal(dir.path(), &["--tui"], End::Key(b"\x03"));
+    assert_eq!(code, Some(0), "{output:?}");
+    assert_terminal_given_back(&output);
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_gives_the_terminal_back_when_a_signal_ends_the_command() {
+    use nix::sys::signal::Signal;
+    for (signal, code) in [
+        (Signal::SIGTERM, 143),
+        (Signal::SIGHUP, 129),
+        (Signal::SIGINT, 130),
+    ] {
+        let dir = edited_repository();
+        let (output, exit) = tui_on_terminal(dir.path(), &["--tui"], End::Signal(signal));
+        assert_eq!(exit, Some(code), "{signal:?}: {output:?}");
+        assert_terminal_given_back(&output);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_with_exit_code_ends_with_4_when_a_file_differs() {
+    let dir = edited_repository();
+    let (output, code) = tui_on_terminal(dir.path(), &["--tui", "--exit-code"], End::Key(b"q"));
+    assert_eq!(code, Some(4), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_does_not_start_when_no_file_differs() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one\n");
+    track_ok(dir.path(), "a.txt");
+    commit(dir.path(), "first");
+
+    // No key is pressed: a command that started the interface would wait for one.
+    let (mut child, master) = spawn_on_terminal(dir.path(), |command| {
+        command.args(["--tui", "--exit-code"]);
+    });
+    let output = read_terminal(master);
+    assert_eq!(child.wait().unwrap().code(), Some(0), "{output:?}");
+    assert!(!output.contains("\x1b[?1049h"), "{output:?}");
+}
+
+#[test]
+fn tui_is_refused_without_a_terminal_and_saves_nothing() {
+    let dir = edited_repository();
+    let before = operations(dir.path());
+    let result = diff(dir.path(), &["--tui"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(result.stderr.contains("--tui"), "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+    assert_eq!(operations(dir.path()), before);
 }

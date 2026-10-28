@@ -27,7 +27,7 @@
 //! An `op restore` writes its result before an error that follows a restore that was made, as
 //! `commit` does.
 //!
-//! Two more codes split code 1 (ADR-017, [`FailureKind`]). Code 5 is damage: the log, a
+//! Two more codes split code 1 (ADR-018, [`FailureKind`]). Code 5 is damage: the log, a
 //! reference file, or an object is not as it must be, or the chain does not match an anchor; a
 //! retry does not help. Code 6 is a held lock, or a log whose writer lost every number race; a
 //! later call can succeed. Code 4 is not among them: `diff --exit-code` ends with it when a file
@@ -259,7 +259,7 @@ struct OpLogArgs {
     #[arg(short = 'n', long, value_name = "N", default_value = "20")]
     limit: NonZeroUsize,
 
-    /// Write one JSON object per line instead of text (the schema of ADR-017)
+    /// Write one JSON object per line instead of text (the schema of ADR-018)
     #[arg(long)]
     json: bool,
 }
@@ -310,7 +310,7 @@ struct CommitArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 
-    /// Write one JSON object instead of text (the schema of ADR-017)
+    /// Write one JSON object instead of text (the schema of ADR-018)
     #[arg(long)]
     json: bool,
 }
@@ -332,7 +332,7 @@ struct StatusArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
 
-    /// Write one JSON object instead of text (the schema of ADR-017)
+    /// Write one JSON object instead of text (the schema of ADR-018)
     #[arg(long)]
     json: bool,
 }
@@ -358,6 +358,12 @@ struct DiffArgs {
     /// failures
     #[arg(long = "exit-code")]
     exit_code: bool,
+
+    /// Browse the files and hunks in a terminal interface instead of printing the diff;
+    /// it needs a terminal on standard output and is not available on Windows yet. Press `q` to
+    /// leave
+    #[arg(long)]
+    tui: bool,
 
     /// The commits to compare, by identifier: none compares the working copy with its parent,
     /// one compares that commit with the working copy, and two compare the first with the second
@@ -451,6 +457,17 @@ enum CliError {
     /// The diff could not be read. The message says which operand failed, or what the snapshot
     /// of the working copy or the store did.
     Diff(DiffError),
+    /// `diff --tui` was asked for, but the standard output is not a terminal, or the platform has
+    /// no interface yet. Nothing was read or saved; the exit code is 1.
+    TuiUnavailable,
+    /// The terminal interface of `diff --tui` failed: it could not be set up, drawn on, read from,
+    /// or restored.
+    Tui {
+        /// The error of the terminal.
+        source: io::Error,
+        /// The number of the entry of the snapshot that the call made, if one.
+        entry: Option<u64>,
+    },
     /// The diff could not be written to the output.
     DiffOutput {
         /// The error of the output.
@@ -525,7 +542,7 @@ enum CliError {
     },
 }
 
-/// The exit code of a failure of the given kind (ADR-017): 6 if a lock is held, 5 if the repository
+/// The exit code of a failure of the given kind (ADR-018): 6 if a lock is held, 5 if the repository
 /// is damaged, 1 otherwise. Code 4 is taken by `diff --exit-code`.
 fn by_kind(kind: FailureKind) -> ExitCode {
     match kind {
@@ -584,6 +601,8 @@ impl CliError {
             | Self::Init(_)
             | Self::Open(_)
             | Self::StatusOutput { .. }
+            | Self::TuiUnavailable
+            | Self::Tui { .. }
             | Self::DiffOutput { .. }
             | Self::RestoreOutput { .. }
             | Self::PurgeOutput(_)
@@ -661,6 +680,23 @@ impl fmt::Display for CliError {
             ),
             Self::Status(error) => error.fmt(f),
             Self::Diff(error) => error.fmt(f),
+            Self::TuiUnavailable if cfg!(unix) => f.write_str(
+                "`diff --tui` needs a terminal on standard output; use `diff` without `--tui` \
+                 for scripts",
+            ),
+            Self::TuiUnavailable => f.write_str(
+                "`diff --tui` is not available on this platform yet; use `diff` without `--tui`",
+            ),
+            Self::Tui { source, entry } => {
+                write!(f, "the terminal interface failed: {source}")?;
+                match entry {
+                    Some(entry) => write!(
+                        f,
+                        "; the working copy was saved first as entry {entry} of the operation log"
+                    ),
+                    None => Ok(()),
+                }
+            }
             Self::DiffOutput { source, entry } => {
                 write!(f, "the diff could not be written: {source}")?;
                 match entry {
@@ -1399,7 +1435,7 @@ fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError>
     finish_commit_as(result, false, out)
 }
 
-/// Writes what `commit` did, as text or as the JSON object of ADR-017. If a directory could not
+/// Writes what `commit` did, as text or as the JSON object of ADR-018. If a directory could not
 /// be flushed, the result is written first, so that a script can read the commit ID from the
 /// output before it sees the error. A closed pipe ends the output quietly.
 fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
@@ -1448,8 +1484,13 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// Shows the changes between two sides, named as `op log` names them. The core saves the tracked
 /// files first when a side is the working copy. When the real stdout is a terminal, the text is
 /// coloured and goes through the pager instead of `out`; `out` then takes it only if the pager
-/// cannot run.
+/// cannot run. With `--tui` on a Unix terminal, the terminal interface replaces both: nothing is
+/// written to `out`, and the interface does not start when no file differs.
 fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
+    // Checked before the diff is read, so that a refused `--tui` does not save the working copy.
+    if args.tui && !(cfg!(unix) && io::stdout().is_terminal()) {
+        return Err(CliError::TuiUnavailable);
+    }
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
     let comparison = match args.commits.as_slice() {
@@ -1463,6 +1504,34 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         .diff(&actor, &AllowAll, comparison)
         .map_err(CliError::Diff)?;
     let differs = !result.files().is_empty();
+    if args.tui {
+        // Without a difference there is nothing to browse, so the interface does not start.
+        if differs {
+            // The flag first, then the look at `TERMINATING`: the handler sets `TERMINATING` and
+            // then looks at the flag, so one of the two sees the other and the interface never
+            // turns on raw mode behind a handler that has gone on to end the process.
+            TUI_ACTIVE.store(true, Ordering::SeqCst);
+            let ran = if TERMINATING.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                stemma_tui::run(&result, &TUI_STOP)
+            };
+            TUI_ACTIVE.store(false, Ordering::SeqCst);
+            // A signal ended the interface; the handler ends the process with its exit code.
+            while TERMINATING.load(Ordering::SeqCst) {
+                std::thread::park();
+            }
+            ran.map_err(|source| CliError::Tui {
+                source,
+                entry: result.saved_entry(),
+            })?;
+        }
+        return Ok(if args.exit_code && differs {
+            ExitCode::from(4)
+        } else {
+            ExitCode::SUCCESS
+        });
+    }
     // A terminal gets colour and a pager; a pipe or a file gets plain text for scripts. Windows
     // gets plain text for now: the console needs escape processing and a shell for the pager.
     let terminal = cfg!(unix) && io::stdout().is_terminal();
@@ -1572,6 +1641,20 @@ fn paint(colour: bool, code: &'static str) -> &'static str {
 /// (the same as in other tools). The diff has finished its work on the references before the
 /// pager starts. `SIGTERM` and `SIGHUP` are not waited out; `handle_interrupt` ends the pager.
 static PAGING: AtomicBool = AtomicBool::new(false);
+
+/// Set while the terminal interface of `diff --tui` runs, from before it turns on raw mode until
+/// after it has given the terminal back. A signal that ends the command then waits for the
+/// interface to end (`TUI_STOP`) before the process exits, because the end of the process runs no
+/// destructor that would turn raw mode and the alternate screen off. The handler does not touch
+/// the terminal itself: the main thread holds the lock of standard output for the whole command, so
+/// a write from the handler would wait for it for ever. While the interface runs, raw mode
+/// delivers a typed Ctrl-C as a key and the interface ends by itself; a `SIGINT` that arrives all
+/// the same, such as `kill -INT`, takes the path of any other signal.
+static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Asks the interface of `diff --tui` to end. The handler of a signal sets it; the interface
+/// looks at it between two keys.
+static TUI_STOP: AtomicBool = AtomicBool::new(false);
 
 /// The process ID of the shell that runs the pager while the pager runs, and 0 otherwise.
 static PAGER: AtomicU32 = AtomicU32::new(0);
@@ -1704,7 +1787,7 @@ fn finish_status(status: Status, out: &mut dyn Write) -> Result<(), CliError> {
     finish_status_as(status, false, out)
 }
 
-/// Writes the status, as text or as the JSON object of ADR-017. If the snapshot could not be
+/// Writes the status, as text or as the JSON object of ADR-018. If the snapshot could not be
 /// flushed, the status is written first and the error comes after it. A closed pipe ends the
 /// output quietly, as for `op log`, and the error of flushing stays.
 fn finish_status_as(status: Status, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
@@ -1795,7 +1878,7 @@ fn escape_path(path: &str) -> String {
         .join("/")
 }
 
-/// The status as one JSON object and a newline (`schema`, ADR-017): `clean`, `changes` (a list of `kind`
+/// The status as one JSON object and a newline (`schema`, ADR-018): `clean`, `changes` (a list of `kind`
 /// and `path`), `untracked`, and `leftovers`. A path is a plain JSON string, not escaped by
 /// [`escape_path`].
 fn status_json(status: &Status) -> String {
@@ -1828,7 +1911,7 @@ fn status_json(status: &Status) -> String {
     )
 }
 
-/// The commit as one JSON object and a newline (`schema`, ADR-017): `commit`, `branch`, and `resumed`.
+/// The commit as one JSON object and a newline (`schema`, ADR-018): `commit`, `branch`, and `resumed`.
 fn commit_json(result: &Committed) -> String {
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"commit\":{},\"branch\":{},\"resumed\":{}}}\n",
@@ -1963,7 +2046,8 @@ fn install_interrupt_handler() {
 /// While the pager runs (`PAGING`), `SIGINT` is ignored here: the terminal sends it to the pager
 /// too, and the command ends, with its own exit code, when the pager does. Any other signal may
 /// have reached this process alone (a `kill` on its process ID), so the pager is stopped first;
-/// a pager that got the signal as well ends all the same.
+/// a pager that got the signal as well ends all the same. While the terminal interface runs
+/// (`TUI_ACTIVE`), it is asked to end, and the process ends once it has given the terminal back.
 fn handle_interrupt(signal: i32) {
     if signal == SIGINT && PAGING.load(Ordering::SeqCst) {
         return;
@@ -1975,6 +2059,9 @@ fn handle_interrupt(signal: i32) {
     if PAGING.load(Ordering::SeqCst) {
         stop_pager(signal);
     }
+    if TUI_ACTIVE.load(Ordering::SeqCst) {
+        wait_for_tui();
+    }
     let left = stemma_core::repository::remove_temp_files_for_exit();
     stemma_core::refs::release_locks_for_exit();
     if !left.is_empty() {
@@ -1982,6 +2069,19 @@ fn handle_interrupt(signal: i32) {
         for (path, error) in left {
             let _ = writeln!(stderr, "stemma: {}", temp_left_message(&path, &error));
         }
+    }
+}
+
+/// Asks the interface of `diff --tui` to end, and waits until it has given the terminal back. The
+/// wait is bounded, so that an interface that is stuck cannot keep the command from ending; the
+/// interface looks at the request ten times a second.
+fn wait_for_tui() {
+    TUI_STOP.store(true, Ordering::SeqCst);
+    for _ in 0..200 {
+        if !TUI_ACTIVE.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 

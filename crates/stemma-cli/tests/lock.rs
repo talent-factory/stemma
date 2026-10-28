@@ -1,4 +1,4 @@
-//! A held lock ends every writer with code 6, and nothing is changed (ADR-017). `commit` and
+//! A held lock ends every writer with code 6, and nothing is changed (ADR-018). `commit` and
 //! `status` have their own tests with `--json`; this file covers the other commands.
 
 mod common;

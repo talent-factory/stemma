@@ -25,8 +25,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   `oplog/` and `oplog-tip` (ADR-011),
   `refs/heads/`, `refs.lock` (while a command writes), and `refs.lock.guard` (the guard of the
   lock, which stays; ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
-  it stopped, ADR-014), and `tmp/` (the temporary files of the object store, the references, the
-  log, and the purge).
+  it stopped, ADR-014), `derived/` (the cache of derived data, optional, ADR-017), and `tmp/`
+  (the temporary files of the object store, the references, the log, and the purge).
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a

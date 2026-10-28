@@ -1,4 +1,4 @@
-# ADR-017: the machine-readable contract of the command output
+# ADR-018: the machine-readable contract of the command output
 
 **Status:** Proposal, decided by the author on 2026-10-27 in STEMMA-98. A change of an exit code
 that scripts rely on is level 2 under ADR-004, so the change that implements it needs two agents

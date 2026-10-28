@@ -157,7 +157,7 @@ pub fn write_stub_entry(dir: &Path, number: u64, body: &str) {
 }
 
 /// Takes the references lock as a command of another host does (ADR-008): the core does not take
-/// over such a lock, so every writer ends with code 6 (ADR-017). The format of the lock file is
+/// over such a lock, so every writer ends with code 6 (ADR-018). The format of the lock file is
 /// not part of the public interface of the core, so the tests write it here and nowhere else.
 pub fn hold_the_lock(dir: &Path) {
     fs::write(

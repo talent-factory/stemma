@@ -17,6 +17,9 @@ und eine reine Löschung oder Einfügung rückt nicht an sie heran. Das ist einf
 Die Einrückung zählt in Bytes, ein Tabulator gilt also als ein Zeichen, bei git als mehrere.
 \item Gruppierung in Hunks und Darstellung mit Kontextzeilen.
 \item Farbausgabe und Einbindung eines Pagers.
+\item Eine schreibgeschützte Oberfläche im Terminal, \type{diff --tui}, zum Blättern durch die
+Dateien und Hunks (ADR-016). Sie liegt in der Crate \type{stemma-tui} und hängt vom Kern ab,
+der Kern nicht von ihr.
 \item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Stufe 1 nach ADR-004.
 Die Verwendung im Merge-Pfad, Stufe 2, folgt in Phase 3.
 \item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
@@ -107,5 +110,5 @@ Die folgenden Fragen sind vertagt und nicht entschieden. Sie gehören zu später
 \item Grössengrenze für sehr grosse Dateien. In Phase 2 ist das eine bekannte Einschränkung.
 \item Markierung verschobener Zeilen als Anzeige, in einer Phase nach 2.
 \item Eine JSON-Form für \type{diff} und die übrigen Befehle ohne \type{--json},
-mit der Schnittstelle der Phase 6 (ADR-017).
+mit der Schnittstelle der Phase 6 (ADR-018).
 \stopitemize
