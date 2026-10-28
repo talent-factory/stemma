@@ -204,7 +204,7 @@ impl Repository {
                         vec![(name.clone(), Moved::from_to(tip, Some(named_id)))],
                     )
                     .map_err(OpLogError::Entry)?;
-                    self.append(&change)
+                    self.append(lock, &change)
                 },
             )
             .map_err(UpdateError::Refs)?;
@@ -836,6 +836,10 @@ mod tests {
         assert_eq!(repository.refs().working_copy().unwrap(), working_copy);
         assert_eq!(repository.refs().branch(&main()).unwrap(), None);
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+        assert!(
+            !dir.path().join(".stemma/refs.lock").exists(),
+            "a refusal takes no lock"
+        );
     }
 
     #[test]

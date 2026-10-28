@@ -251,7 +251,7 @@ impl Repository {
                     })?;
                     // Through the repository, which moves it to the format of the chain first.
                     let entry = self
-                        .append(&change)
+                        .append(&lock, &change)
                         .map_err(|error| RestoreError::Update(UpdateError::Log(error)))?;
                     if let Some(checkout) = &plan.checkout {
                         self.apply_checkout(checkout).map_err(|source| {
@@ -1023,6 +1023,10 @@ mod tests {
         );
         assert_eq!(numbers(&repository), before);
         assert_eq!(read(&dir, "a.txt"), "unsaved");
+        assert!(
+            !dir.path().join(".stemma/refs.lock").exists(),
+            "a refusal takes no lock"
+        );
     }
 
     #[test]

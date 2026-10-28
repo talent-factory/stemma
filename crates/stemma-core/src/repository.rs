@@ -48,9 +48,9 @@ pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};
-use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName};
+use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge};
 use crate::refs::{
-    encode_branch, BranchName, FsRefStore, Head, Logged, RefError, RefStore, WriteLock,
+    encode_branch, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError, RefStore, WriteLock,
 };
 use crate::store::{
     create_dirs_synced as create_store_dirs, create_temp, flush_directory,
@@ -541,9 +541,23 @@ impl Repository {
     /// Returns [`OpLogError::Io`] if the format file cannot be raised and flushed, and what
     /// [`FsOpLog::append`] returns. No entry is written then, and the format file holds the old
     /// version, unless that could not be put back either (see [`raise_format`]).
-    pub(crate) fn append(&self, change: &Change) -> Result<Entry, OpLogError> {
+    pub(crate) fn append(&self, _lock: &WriteLock, change: &Change) -> Result<Entry, OpLogError> {
         raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(OpLogError::from_store)?;
         self.oplog.append(change)
+    }
+
+    /// Writes the entries of a purge, as [`FsOpLog::append_purge`] does. The purge holds the lock
+    /// of the references from its plan to its end, which this value proves.
+    ///
+    /// # Errors
+    ///
+    /// See [`FsOpLog::append_purge`].
+    pub(crate) fn append_purge(
+        &self,
+        _lock: &PurgeLock,
+        purge: Purge,
+    ) -> Result<Vec<Entry>, OpLogError> {
+        self.oplog.append_purge(purge)
     }
 
     /// Moves a branch to `new`, or creates it, if it is still at `expected` (`None` for a branch
@@ -595,7 +609,7 @@ impl Repository {
                         vec![(name.clone(), Moved::from_to(expected, Some(new)))],
                     )
                     .map_err(OpLogError::Entry)?;
-                    self.append(&change)
+                    self.append(&lock, &change)
                 })?;
         outcome.into_result()
     }
@@ -635,7 +649,7 @@ impl Repository {
                     vec![],
                 )
                 .map_err(OpLogError::Entry)?;
-                self.append(&change)
+                self.append(&lock, &change)
             })?;
         outcome.into_result()
     }
@@ -689,7 +703,7 @@ impl Repository {
                         vec![],
                     )
                     .map_err(OpLogError::Entry)?;
-                    self.append(&change)
+                    self.append(lock, &change)
                 })?;
         outcome.into_result()
     }
@@ -1883,6 +1897,10 @@ mod tests {
             .update_working_copy(&operation("snapshot"), old, new, &actor(), &DenyAll)
             .unwrap_err();
         assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert!(
+            !dir.path().join(".stemma/refs.lock").exists(),
+            "a refusal takes no lock"
+        );
         assert_eq!(repository.refs().working_copy().unwrap(), old);
         assert_eq!(repository.oplog().numbers().unwrap(), [1]);
     }
@@ -3320,6 +3338,10 @@ mod tests {
         assert_eq!(
             repository.refs().head().unwrap(),
             Head::Branch(branch("main"))
+        );
+        assert!(
+            !dir.path().join(".stemma/refs.lock").exists(),
+            "a refusal takes no lock"
         );
     }
 

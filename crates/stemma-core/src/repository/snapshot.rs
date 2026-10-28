@@ -1051,6 +1051,10 @@ mod tests {
             .objects()
             .contains(&Blob::new(b"changed".to_vec()).id().object_id())
             .unwrap());
+        assert!(
+            !dir.path().join(".stemma/refs.lock").exists(),
+            "a refusal takes no lock"
+        );
     }
 
     #[test]

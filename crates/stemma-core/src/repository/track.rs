@@ -936,6 +936,10 @@ mod tests {
         assert_eq!(repository.oplog().numbers().unwrap(), numbers);
         let blob = crate::object::Blob::new(b"one".to_vec()).id().object_id();
         assert!(!repository.objects().contains(&blob).unwrap());
+        assert!(
+            !dir.path().join(".stemma/refs.lock").exists(),
+            "a refusal takes no lock"
+        );
     }
 
     #[test]

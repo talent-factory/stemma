@@ -772,7 +772,7 @@ impl Repository {
                     Purge::new(now(), actor.clone(), commits, &missing).map_err(|error| {
                         EntryStep::Failed(Vec::new(), Box::new(PurgeFailure::Entry(error)))
                     })?;
-                entries = self.oplog().append_purge(purge).map_err(|error| {
+                entries = self.append_purge(&lock, purge).map_err(|error| {
                     // An entry that is in the log although the call failed is written.
                     let made = match &error {
                         OpLogError::NotFlushed { entry, .. } => vec![entry.number()],
@@ -1229,6 +1229,10 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(ids(&repository), before);
+        assert!(
+            !dir.path().join(".stemma/refs.lock").exists(),
+            "a refusal takes no lock"
+        );
     }
 
     #[test]

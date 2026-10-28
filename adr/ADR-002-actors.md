@@ -23,10 +23,12 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   repository for `init`. A write path of `Repository` that never asks the authorizer has no
   `Allowed` to pass, so it does not compile. The proof does not say which operation was allowed,
   and it is bound to no target and no repository: it is the check that the question was asked,
-  and the call that asks stays responsible for writing what it asked for. Two things are not
-  covered by the type. The operation log is written only inside the lock of a `Repository`
-  operation (`FsOpLog::append` is crate-private), which is a convention. And
-  `Repository::apply_checkout` writes the working directory without an actor.
+  and the call that asks stays responsible for writing what it asked for. Two things
+  are not covered by the type. The operation log is written through `Repository::append` and
+  `Repository::append_purge`, which take the lock of the references; `FsOpLog::append` itself
+  stays visible to the whole crate, because Rust cannot restrict an item to a sibling module, so a
+  caller inside the crate could still skip the lock. And `Repository::apply_checkout` writes the
+  working directory without an actor.
 - The CLI, API, and MCP server call the same core *(confirmed)*. Phase 1 has the CLI; the API
   comes with the hub (Phase 5), the MCP server with the agent interfaces (Phase 6).
 - **Roles belong to the policy model, not to the core code** *(confirmed)*, with one exception:

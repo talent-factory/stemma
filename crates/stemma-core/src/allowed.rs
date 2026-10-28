@@ -20,6 +20,19 @@ use crate::{Actor, Authorizer, Decision};
 /// let _forged = stemma_core::Allowed(());
 /// ```
 ///
+/// Without a proof, a write through the public trait does not compile either: the call below
+/// lacks the argument (E0061).
+///
+/// ```compile_fail,E0061
+/// use stemma_core::refs::{BranchName, FsRefStore, Head, RefStore};
+/// use stemma_core::store::FsObjectStore;
+///
+/// let refs = FsRefStore::new("refs");
+/// let objects = FsObjectStore::new("objects");
+/// let head = Head::Branch(BranchName::new("main").unwrap());
+/// refs.set_head(&head, &objects);
+/// ```
+///
 /// The proof says that some operation was asked and allowed. It is bound to no operation, no target,
 /// and no repository: the call that asks stays responsible for writing what it asked for.
 #[derive(Debug)]
