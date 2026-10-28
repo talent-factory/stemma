@@ -357,6 +357,8 @@ impl Repository {
     /// finds. The search goes along the directories of the path of `start` with its links
     /// resolved, so a repository above it is found under its real path, and
     /// [`Discovered::through_link`] says whether that path left the path as it was given.
+    /// [`Discovered::nested_git`] names, as a path with its links resolved, the nearest Git
+    /// checkout between the start and the root, if there is one.
     ///
     /// A `.stemma` that the search finds must be one that the user who runs the command can
     /// trust. Otherwise a user could put a `.stemma` into a directory that others share, such as
@@ -1333,9 +1335,14 @@ pub struct Discovered {
     pub through_link: bool,
 }
 
-/// Whether `dir` holds a `.git`, a file (Git worktree) or a directory (clone), of any kind.
+/// Whether `dir` may hold a `.git`: a file (Git worktree), a directory (clone), or a link, which
+/// is not followed. Only a clear `NotFound` says no; any other error is read as "present", so
+/// that an entry that cannot be inspected still raises the advisory warning.
 fn holds_git_entry(dir: &Path) -> bool {
-    fs::symlink_metadata(dir.join(".git")).is_ok()
+    !matches!(
+        fs::symlink_metadata(dir.join(".git")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound
+    )
 }
 
 /// Whether a directory of `start`, as the shell reads its path, is `root` once resolved: the
@@ -2629,6 +2636,42 @@ mod tests {
         assert_eq!(found.subdirectory, "task/src");
         // At the root, there is no search and no checkout.
         assert_eq!(Repository::discover(dir.path()).unwrap().nested_git, None);
+    }
+
+    #[test]
+    fn discover_names_the_nearest_of_two_nested_git_checkouts() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let outer = dir.path().join("vendor");
+        let inner = outer.join("lib");
+        fs::create_dir_all(inner.join("src")).unwrap();
+        fs::write(outer.join(".git"), "gitdir: x\n").unwrap();
+        fs::create_dir(inner.join(".git")).unwrap();
+        let real_inner = fs::canonicalize(&inner).unwrap();
+        // The nearest wins, from the checkout itself and from below it.
+        for start in [inner.clone(), inner.join("src")] {
+            let found = Repository::discover(start).unwrap();
+            assert_eq!(found.nested_git, Some(real_inner.clone()));
+        }
+        // Without the inner one, the outer is the nearest.
+        fs::remove_dir(inner.join(".git")).unwrap();
+        let found = Repository::discover(&inner).unwrap();
+        assert_eq!(found.nested_git, Some(fs::canonicalize(&outer).unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_names_a_git_checkout_by_its_real_path_when_started_through_a_link() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let task = dir.path().join("task");
+        fs::create_dir(&task).unwrap();
+        fs::write(task.join(".git"), "gitdir: x\n").unwrap();
+        let elsewhere = TempDir::new();
+        std::os::unix::fs::symlink(&task, elsewhere.path().join("link")).unwrap();
+        let found = Repository::discover(elsewhere.path().join("link")).unwrap();
+        assert_eq!(found.nested_git, Some(fs::canonicalize(&task).unwrap()));
+        assert!(found.through_link);
     }
 
     #[cfg(unix)]

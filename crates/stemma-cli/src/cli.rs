@@ -1375,8 +1375,10 @@ fn open(dir: &Path) -> Result<Repository, CliError> {
     discover(dir).map(|found| found.repository)
 }
 
-/// Finds the repository as [`open`] does, and warns if the search reached it through a link:
-/// a command in a link to a directory of another repository works in that one.
+/// Finds the repository as [`open`] does, and warns if the search reached it through a link or
+/// from inside a Git checkout below the root: a command in a link to a directory of another
+/// repository works in that one, and a command in a Git worktree works in the repository above
+/// it.
 fn discover(dir: &Path) -> Result<Discovered, CliError> {
     let found = Repository::discover(dir).map_err(CliError::Open)?;
     if found.through_link {
@@ -1390,7 +1392,8 @@ fn discover(dir: &Path) -> Result<Discovered, CliError> {
     }
     if let Some(checkout) = &found.nested_git {
         // The files of the checkout are paths of the root, and a `track` or `commit` would write
-        // them into its history (STEMMA-132).
+        // them into its history unless `.stemmaignore` excludes the directory. Dropped on
+        // purpose when it cannot be written, as above.
         let _ = writeln!(
             io::stderr(),
             "stemma: warning: `{}` lies in the Git checkout `{}` inside the repository at `{}`; \

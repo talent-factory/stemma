@@ -285,8 +285,26 @@ fn a_command_in_a_git_checkout_below_the_root_warns_where_it_works() {
             "{}",
             result.stderr
         );
+        // Once, and not on the standard output.
+        assert_eq!(
+            result.stderr.matches("lies in the Git checkout").count(),
+            1,
+            "{}",
+            result.stderr
+        );
+        assert!(!result.stdout.contains("warning"), "{}", result.stdout);
     }
-    // The root itself, and a plain subdirectory, are quiet.
+    // A command that writes warns too, and still runs.
+    write(&worktree, "a.txt", "one");
+    let result = track(&worktree, &["a.txt"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("lies in the Git checkout"),
+        "{}",
+        result.stderr
+    );
+    // The `.git` of the root itself is the normal case, and a plain subdirectory is quiet.
+    fs::create_dir(dir.path().join(".git")).unwrap();
     fs::create_dir(dir.path().join("plain")).unwrap();
     for start in [dir.path(), &dir.path().join("plain")] {
         let result = run(start, &["status", "--actor", ACTOR]);
