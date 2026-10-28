@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 400" font-family="Helvetica, Arial, sans-serif">
+  <title>Zustände der Oberfläche von diff --tui</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0F172A"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="700" height="400" fill="#FFFFFF"/>
+
+  <!-- Two neighbouring files; each holds its hunks -->
+  <rect x="30" y="50" width="304" height="140" rx="10" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
+  <rect x="366" y="50" width="304" height="140" rx="10" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
+  <text x="44" y="74" font-size="13" font-weight="bold" fill="#0F172A">Datei i</text>
+  <text x="380" y="74" font-size="13" font-weight="bold" fill="#0F172A">Datei i + 1</text>
+
+  <!-- Hunks as states -->
+  <g fill="#FFFFFF" stroke="#64748B" stroke-width="1.5">
+    <rect x="40" y="104" width="70" height="40" rx="5"/>
+    <rect x="130" y="104" width="70" height="40" rx="5"/>
+    <rect x="220" y="104" width="70" height="40" rx="5"/>
+    <rect x="376" y="104" width="70" height="40" rx="5"/>
+    <rect x="466" y="104" width="70" height="40" rx="5"/>
+    <rect x="556" y="104" width="70" height="40" rx="5"/>
+  </g>
+  <g font-size="12" fill="#0F172A" text-anchor="middle">
+    <text x="75" y="129">Hunk 0</text>
+    <text x="165" y="129">Hunk 1</text>
+    <text x="255" y="129">Hunk m</text>
+    <text x="411" y="129">Hunk 0</text>
+    <text x="501" y="129">Hunk 1</text>
+    <text x="591" y="129">Hunk m</text>
+  </g>
+
+  <!-- n: next hunk (upper arrows), p: previous hunk (lower arrows) -->
+  <g stroke="#0F172A" stroke-width="1.5" marker-end="url(#arrow)">
+    <line x1="110" y1="118" x2="129" y2="118"/>
+    <line x1="200" y1="118" x2="219" y2="118"/>
+    <line x1="290" y1="118" x2="375" y2="118"/>
+    <line x1="446" y1="118" x2="465" y2="118"/>
+    <line x1="536" y1="118" x2="555" y2="118"/>
+    <line x1="129" y1="132" x2="111" y2="132"/>
+    <line x1="219" y1="132" x2="201" y2="132"/>
+    <line x1="375" y1="132" x2="291" y2="132"/>
+    <line x1="465" y1="132" x2="447" y2="132"/>
+    <line x1="555" y1="132" x2="537" y2="132"/>
+  </g>
+  <g font-size="10" font-weight="bold" fill="#0F172A" text-anchor="middle">
+    <text x="120" y="114">n</text>
+    <text x="210" y="114">n</text>
+    <text x="312" y="114">n</text>
+    <text x="456" y="114">n</text>
+    <text x="546" y="114">n</text>
+    <text x="120" y="146">p</text>
+    <text x="210" y="146">p</text>
+    <text x="312" y="146">p</text>
+    <text x="456" y="146">p</text>
+    <text x="546" y="146">p</text>
+  </g>
+  <text x="182" y="172" font-size="11" fill="#64748B" text-anchor="middle">Hunk wählen und zur Zeile @@ rollen</text>
+  <text x="518" y="172" font-size="11" fill="#64748B" text-anchor="middle">Hunk wählen und zur Zeile @@ rollen</text>
+
+  <!-- J and K: next and previous file -->
+  <g fill="none" stroke="#0F172A" stroke-width="1.5" marker-end="url(#arrow)">
+    <path d="M240,191 V222 H500 V192"/>
+    <path d="M540,191 V248 H260 V192"/>
+  </g>
+  <g font-size="11" font-weight="bold" fill="#0F172A" text-anchor="middle">
+    <text x="370" y="217">J, Tab: nächste Datei</text>
+    <text x="400" y="243">K, Shift-Tab: vorige Datei</text>
+  </g>
+  <text x="370" y="262" font-size="11" fill="#64748B" text-anchor="middle">Hunk 0, Scroll 0</text>
+
+  <!-- Explanation -->
+  <g font-size="12" fill="#0F172A">
+    <text x="30" y="292" font-weight="bold">Zustand und Tasten</text>
+    <text x="30" y="310">Der Zustand ist das Tripel (Datei, Hunk, Scroll); er beginnt bei (0, 0, 0).</text>
+    <text x="30" y="326">n nach dem letzten Hunk der Datei wählt Hunk 0 der nächsten, p vor dem ersten den letzten der vorigen.</text>
+    <text x="30" y="342">j, k, Pfeile, Leertaste und b ändern nur den Scroll: Der gewählte Hunk bleibt, und n und p gehen von ihm aus.</text>
+    <text x="30" y="358">Am Rand der Folge, etwa n beim letzten Hunk der letzten Datei oder K in der ersten Datei, bleibt der Zustand.</text>
+    <text x="30" y="374">q, Esc und Ctrl-C beenden die Oberfläche; das Terminal wird zurückgegeben.</text>
+  </g>
+</svg>

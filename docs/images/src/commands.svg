@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 458" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 502" font-family="Helvetica, Arial, sans-serif">
   <title>Welcher Befehl berührt welche Zone</title>
-  <rect x="0" y="0" width="740" height="458" fill="#FFFFFF"/>
+  <rect x="0" y="0" width="740" height="502" fill="#FFFFFF"/>
 
   <!-- Zone headers: one colour per zone, dark enough for print -->
   <g font-size="12" font-weight="bold" text-anchor="middle">
@@ -26,6 +26,7 @@
     <line x1="20" y1="326" x2="730" y2="326"/>
     <line x1="20" y1="370" x2="730" y2="370"/>
     <line x1="20" y1="414" x2="730" y2="414"/>
+    <line x1="20" y1="458" x2="730" y2="458"/>
   </g>
 
   <!-- Commands -->
@@ -38,6 +39,7 @@
     <text x="20" y="301" font-family="Courier, monospace" font-size="15" font-weight="bold">op verify</text>
     <text x="20" y="345" font-family="Courier, monospace" font-size="15" font-weight="bold">op restore</text>
     <text x="20" y="389" font-family="Courier, monospace" font-size="15" font-weight="bold">purge --apply</text>
+    <text x="20" y="433" font-family="Courier, monospace" font-size="15" font-weight="bold">diff</text>
   </g>
   <g fill="#0F172A" font-size="12">
     <text x="20" y="97">legt das Repository an</text>
@@ -48,6 +50,7 @@
     <text x="20" y="317">prüft die Hash-Kette und nennt einen Anker</text>
     <text x="20" y="361">setzt die Werte vor einem Eintrag zurück</text>
     <text x="20" y="405">entfernt ein Geheimnis aus Verlauf und Log</text>
+    <text x="20" y="449">zeigt Änderungen zwischen Commits oder zur Arbeitskopie</text>
   </g>
 
   <!-- init: changes working-copy commit, HEAD, log -->
@@ -100,16 +103,25 @@
   <circle cx="580" cy="392" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="392" r="9" fill="#6B46C1"/>
 
+  <!-- diff: reads; with the working-copy commit as one side the snapshot changes pointer and log
+       only if a tracked file changed, and with two commits nothing changes -->
+  <circle cx="380" cy="436" r="8" fill="none" stroke="#2B6CB0" stroke-width="2"/>
+  <circle cx="480" cy="436" r="8" fill="none" stroke="#B45309" stroke-width="2"/>
+  <path d="M480,428 A8,8 0 0 0 480,444 Z" fill="#B45309"/>
+  <circle cx="580" cy="436" r="8" fill="none" stroke="#2F7D32" stroke-width="2"/>
+  <circle cx="680" cy="436" r="8" fill="none" stroke="#6B46C1" stroke-width="2"/>
+  <path d="M680,428 A8,8 0 0 0 680,444 Z" fill="#6B46C1"/>
+
   <!-- Legend -->
   <g fill="#0F172A" font-size="12">
-    <circle cx="28" cy="437" r="8" fill="#0F172A"/>
-    <text x="44" y="441">ändert</text>
-    <circle cx="116" cy="437" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <text x="132" y="441">liest nur</text>
-    <circle cx="220" cy="437" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <path d="M220,430 A7,7 0 0 0 220,444 Z" fill="#0F172A"/>
-    <text x="236" y="441">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
-    <text x="568" y="441" font-size="14" fill="#64748B">–</text>
-    <text x="584" y="441">unberührt</text>
+    <circle cx="28" cy="481" r="8" fill="#0F172A"/>
+    <text x="44" y="485">ändert</text>
+    <circle cx="116" cy="481" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <text x="132" y="485">liest nur</text>
+    <circle cx="220" cy="481" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <path d="M220,474 A7,7 0 0 0 220,488 Z" fill="#0F172A"/>
+    <text x="236" y="485">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
+    <text x="568" y="485" font-size="14" fill="#64748B">–</text>
+    <text x="584" y="485">unberührt</text>
   </g>
 </svg>

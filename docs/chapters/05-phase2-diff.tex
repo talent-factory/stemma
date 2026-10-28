@@ -65,6 +65,16 @@ die keine Diagonale sind. Die Diagonale $k = x - y$ fasst die Punkte mit derselb
 $x - y$ zusammen. Sie liegen auf einer Linie parallel zur Hauptdiagonale. Eine Löschung erhöht
 $k$ um eins, eine Einfügung senkt es um eins.
 
+\in{Abbildung}[fig:edit-graph] zeigt den Graphen für die Folgen \type{ABCABBA} und
+\type{CBABAC} aus der Arbeit von Myers. Die dünnen Linien sind die Diagonalen. Der dicke Weg ist
+ein kürzestes Skript mit $D = 5$: zwei Löschungen, eine Einfügung, eine Löschung und eine
+Einfügung.
+
+\startplacefigure[title={Editiergraph für \type{ABCABBA} und \type{CBABAC} mit der Mittelschlange},
+    reference=fig:edit-graph,location=here]
+\externalfigure[images/edit-graph.pdf][width=\textwidth]
+\stopplacefigure
+
 \subsection{Invariante}
 
 Die Suche läuft vorwärts vom Anfang und rückwärts vom Ende zugleich. Nach der Runde $d$ kennt
@@ -91,6 +101,10 @@ einem kürzesten Skript. Das Verfahren zerlegt die Aufgabe an dieser Schlange in
 behandelt jeden Teil genauso. Jeder Teil hat höchstens $\lceil D/2 \rceil$ Schritte, deshalb
 endet die Rekursion nach $O(\log D)$ Ebenen. Gemeinsame Präfixe und Suffixe schneidet es vorher ab.
 
+In \in{Abbildung}[fig:edit-graph] liegt die Mittelschlange von $(3,2)$ bis $(5,4)$ auf der
+Diagonale $k = 1$. Die Vorwärtssuche erreicht $(5,4)$ nach drei Schritten, die Rückwärtssuche vom
+Ende her nach zwei. Zusammen sind das $D = 5$ Schritte.
+
 \subsection{Korrektheit}
 
 Die Schlange liegt auf einem kürzesten Skript, und die Summe der Schritte der beiden Teile ist
@@ -99,6 +113,26 @@ Ein gemeinsames Element am Rand liegt ebenfalls auf einem kürzesten Skript, des
 Abschneiden nichts verloren \cite[myers1986ond]. Die Teile liegen in der Reihenfolge der Schlange
 aneinander. Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die
 Reihenfolge.
+
+\section[sec:slide]{Nachbearbeitung der Grenzen}
+
+Ein kürzestes Skript ist nicht eindeutig. Dieselben Änderungen lassen sich oft an mehreren Stellen
+unterbringen, weil die erste Zeile einer Gruppe gleich der unveränderten Zeile hinter ihr sein
+kann. Die Nachbearbeitung wählt unter diesen Lagen die, die sich am besten liest (\type{slide} in
+\type{diff.rs}). Sie ändert nur die Lage der Grenzen. Beide Folgen und die Zahl $D$ der Änderungen
+bleiben, wie sie sind.
+
+Eine Gruppe von Einfügungen oder Löschungen gleitet nach oben oder unten, solange die Zeile, die
+sie verlässt, der Zeile gleicht, die sie aufnimmt. \in{Abbildung}[fig:slide] zeigt vier
+eingefügte Zeilen. Der Diff lässt sie bei der schliessenden Klammer der Funktion a beginnen.
+Nach dem Gleiten um zwei Zeilen ist die Gruppe die ganze Funktion b. Unter den möglichen Lagen
+wählt die Einrückungsregel, die ihre Gewichte aus dem Code von git übernimmt: Sie vergleicht die
+Einrückung der Zeilen an der Grenze und beachtet Leerzeilen davor und danach.
+
+\startplacefigure[title={Eine Gruppe vor und nach der Nachbearbeitung der Grenzen},
+    reference=fig:slide,location=here]
+\externalfigure[images/slide.pdf][width=\textwidth]
+\stopplacefigure
 
 \section[sec:hunks]{Hunks und Kontextzeilen}
 
@@ -111,6 +145,92 @@ zwischen ihnen liegen. Dann überlappen oder berühren sich ihre Kontextfenster.
 bilden Ketten, sodass ein Hunk auch Änderungen umfassen kann, die weiter auseinanderliegen.
 Ein Hunk speichert nur die Schritte des Skripts und die Positionen seiner Zeilen auf beiden
 Seiten. Die Zeilen selbst bleiben in den Folgen.
+
+\in{Abbildung}[fig:hunks] zeigt ein Skript mit drei Änderungen und $c = 3$. Zwischen den ersten
+beiden liegen fünf unveränderte Schritte, und $5 \le 2c = 6$ gilt: Ihre Fenster überlappen, sie
+bilden einen Hunk. Zwischen der zweiten und der dritten liegen sieben Schritte. Das sind mehr als
+sechs, die Fenster berühren sich nicht, und ein neuer Hunk beginnt.
+
+\startplacefigure[title={Gruppierung eines Skripts in Hunks mit $c = 3$},
+    reference=fig:hunks,location=here]
+\externalfigure[images/hunks.pdf][width=\textwidth]
+\stopplacefigure
+
+\section[sec:diff-command]{Der Diff mit dem Working-Copy-Commit}
+
+Der Befehl \type{diff} vergleicht zwei Commits oder einen Commit mit der Arbeitskopie. Ist eine
+Seite der Working-Copy-Commit, hält der Befehl den Stand des Arbeitsverzeichnisses zuerst in einem
+Snapshot fest (ADR-010). Erst dann hat die Arbeitskopie eine feste Kennung, die der Kopf des Diffs
+nennen kann. Der Befehl liest die Arbeitskopie deshalb nicht nur: Er kann den Working-Copy-Commit
+und das Operation Log ändern.
+
+\in{Abbildung}[fig:diff-flow] zeigt den Ablauf. Die Schritte 2 bis 4 sind der Snapshot aus
+Kapitel 4, und sie entfallen, wenn der Befehl zwei Commits vergleicht. Der Vergleich und die
+Ausgabe lesen nur.
+
+\startplacefigure[title={Ablauf von \type{diff} mit dem Working-Copy-Commit und Absturzpunkten},
+    reference=fig:diff-flow,location=here]
+\externalfigure[images/diff-flow.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+Nach Erfolg steht der Eintrag des Snapshots im Log, wenn sich eine verfolgte Datei geändert hat,
+und die Ausgabe zeigt genau den Stand, den der Snapshot festhielt. Ein Fehler vor dem Snapshot,
+etwa ein ungültiger Pfad, schreibt nichts. Hat der Snapshot den Zeiger bewegt, aber den Eintrag
+nicht sichern können, endet der Befehl mit Exit-Code 3, und die Ausgabe bleibt aus.
+Nach einem Absturz im Snapshot gilt, was \in{Abbildung}[fig:oplog-write] zeigt. Der Vergleich
+und die Ausgabe ändern nichts, ein Absturz dort lässt also nichts zurück. Der Befehl lässt sich
+nach Erfolg, nach einem Fehler und nach einem Absturz wiederholen. Nach einem Erfolg findet ein
+zweiter Aufruf den Baum unverändert und schreibt keinen Eintrag.
+
+\in{Abbildung}[fig:diff-timeline] zeigt den Befehl in einer kurzen Sitzung nach dem Muster des
+laufenden Beispiels. Nach dem Commit \quotation{Erste Fassung} ändert jemand \type{README.md} von
+Hand. Das erste \type{diff} macht einen Snapshot und schreibt den Eintrag 4. Das zweite, mit
+\type{--exit-code}, findet den Baum unverändert und schreibt keinen Eintrag; es endet mit
+Exit-Code 4, weil sich die Datei unterscheidet. Nach dem Commit der Änderung vergleicht
+\type{diff} mit zwei Kennungen die beiden Commits und ändert weder Zeiger noch Log.
+
+\startplacefigure[title={Änderungen ansehen als Zeitachse},
+    reference=fig:diff-timeline,location=here]
+\externalfigure[images/diff-timeline.pdf][width=\textwidth]
+\stopplacefigure
+
+\startinfobox
+{\bf Grenzfälle von \type{diff}.}
+\startitemize
+\item Ein Pfad, der auf keiner Seite vorkommt, fällt erst nach dem Snapshot auf, weil die Dateien
+der Arbeitskopie erst dann feststehen. Der Befehl endet mit Exit-Code 1, und der Eintrag des
+Snapshots bleibt.
+\item Ein ungültiger Pfad, also ein leerer, ein absoluter oder einer mit \type{..},
+schreibt nichts, denn der Befehl prüft ihn vor dem Snapshot.
+\item Mit Pfaden beschränkt der Befehl nur die Ausgabe. Der Snapshot umfasst weiter alle
+verfolgten Dateien.
+\stopitemize
+\stopinfobox
+
+\section[sec:tui]{Die Oberfläche im Terminal}
+
+\type{diff --tui} zeigt denselben Diff in einer schreibgeschützten Oberfläche: links die Dateien,
+rechts die Zeilen der gewählten Datei (ADR-016). Die Crate \type{stemma-tui} bekommt den fertigen
+Diff von der Kommandozeile und ruft den Kern nicht auf; sie braucht nur seine Typen. Der Kern
+hängt nicht von ihr ab, und der Text von \type{diff} bleibt die Bezugsgrösse für Skripte und
+Tests.
+
+Der Zustand der Ansicht ist ein einfacher Wert aus drei Zahlen: der gewählten Datei, dem
+gewählten Hunk und der Zahl der Zeilen, die oben aus dem Bild gerollt sind. Eine Taste ändert
+diesen Wert und sonst nichts. Die Darstellung ist eine Funktion des Werts und des Diffs, deshalb
+lässt sich die Ansicht ohne Terminal testen. \in{Abbildung}[fig:tui-states] zeigt die Übergänge.
+Das Blättern ändert nur die dritte Zahl. \type{n} und \type{p} gehen deshalb vom zuletzt
+gewählten Hunk aus, auch wenn das Blättern einen anderen ins Bild gebracht hat. An der Dateigrenze
+wählt \type{n} den ersten Hunk der nächsten Datei und \type{p} den letzten der vorigen.
+Die Tasten stehen in der Befehlsreferenz.
+
+\startplacefigure[title={Zustände der Oberfläche von \type{diff --tui}},
+    reference=fig:tui-states,location=here]
+\externalfigure[images/tui-states.pdf][width=\textwidth]
+\stopplacefigure
+
+Die Oberfläche liest und schreibt nichts im Repository. Sie gibt das Terminal bei einem
+Beenden, einem Fehler und einem Signal zurück; nur ein \type{SIGKILL} lässt sich nicht abfangen.
 
 \section{Offene Fragen}
 
