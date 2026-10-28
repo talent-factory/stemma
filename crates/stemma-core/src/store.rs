@@ -617,7 +617,7 @@ impl FsObjectStore {
             .and_then(|length| u64::try_from(length).ok().map(|body| (length, body)))
             .filter(|(length, body)| {
                 kind.header(*length) == format!("{header}\0")
-                    && metadata.len() == (nul as u64 + 1 + body)
+                    && (nul as u64 + 1).checked_add(*body) == Some(metadata.len())
             });
         if expected.is_none() {
             let found = metadata.len().saturating_sub(nul as u64 + 1);
@@ -1878,6 +1878,24 @@ mod tests {
             );
             fs::remove_file(&path).unwrap();
         }
+    }
+
+    #[test]
+    fn kind_of_reports_a_declared_length_that_overflows_as_corrupt() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let absent = id_of(b"absent");
+        let path = store.object_path(&absent);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let content = format!("blob {}\0", u64::MAX);
+        fs::write(&path, content).unwrap();
+        assert!(matches!(
+            store.kind_of(&absent),
+            Err(StoreError::Corrupt {
+                reason: CorruptReason::HeaderMismatch { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
