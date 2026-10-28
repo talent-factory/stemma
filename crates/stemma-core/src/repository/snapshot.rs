@@ -695,7 +695,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
@@ -1430,11 +1430,16 @@ mod tests {
         use std::sync::Mutex;
         struct Record(Mutex<Vec<(String, String)>>);
         impl Authorizer for Record {
-            fn authorize(&self, _actor: &Actor, operation: &str, target: &str) -> Decision {
+            fn authorize(
+                &self,
+                _actor: &Actor,
+                operation: &OperationName,
+                target: &str,
+            ) -> Decision {
                 self.0
                     .lock()
                     .unwrap()
-                    .push((operation.to_owned(), target.to_owned()));
+                    .push((operation.to_string(), target.to_owned()));
                 Decision::Deny
             }
         }

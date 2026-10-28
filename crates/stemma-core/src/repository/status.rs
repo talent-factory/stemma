@@ -461,7 +461,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
@@ -892,7 +892,7 @@ mod tests {
 
         assert!(
             matches!(&error, StatusError::Update(UpdateError::Denied { operation, .. })
-                if operation == "status"),
+                if operation.as_str() == "status"),
             "{error}"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);
@@ -1140,8 +1140,13 @@ mod tests {
     fn a_refusal_for_the_snapshot_only_comes_after_the_reads_and_writes_nothing() {
         struct OnlySnapshotDenied;
         impl Authorizer for OnlySnapshotDenied {
-            fn authorize(&self, _actor: &Actor, operation: &str, _target: &str) -> Decision {
-                if operation == "snapshot" {
+            fn authorize(
+                &self,
+                _actor: &Actor,
+                operation: &OperationName,
+                _target: &str,
+            ) -> Decision {
+                if operation.as_str() == "snapshot" {
                     Decision::Deny
                 } else {
                     Decision::Allow

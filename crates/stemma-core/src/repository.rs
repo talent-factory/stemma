@@ -272,7 +272,12 @@ impl Repository {
     ) -> Result<Self, InitError> {
         let path = path.as_ref();
         let target = path.join(METADATA_DIR);
-        if authorizer.authorize(actor, "init", &path.display().to_string()) == Decision::Deny {
+        if authorizer.authorize(
+            actor,
+            &OperationName::new("init").expect("`init` is a valid operation name"),
+            &path.display().to_string(),
+        ) == Decision::Deny
+        {
             return Err(InitError::Denied {
                 path: path.to_path_buf(),
             });
@@ -696,7 +701,7 @@ impl Repository {
         operation: &OperationName,
         target: &str,
     ) -> Result<(), UpdateError> {
-        match authorizer.authorize(actor, operation.as_str(), target) {
+        match authorizer.authorize(actor, operation, target) {
             Decision::Allow => Ok(()),
             Decision::Deny => Err(UpdateError::Denied {
                 operation: operation.to_string(),
@@ -1638,7 +1643,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
@@ -2045,10 +2050,17 @@ mod tests {
     fn init_asks_the_authorizer_with_the_actor_the_operation_and_the_directory() {
         struct Recorder(RefCell<Vec<(String, String, String)>>);
         impl Authorizer for Recorder {
-            fn authorize(&self, actor: &Actor, operation: &str, target: &str) -> Decision {
-                self.0
-                    .borrow_mut()
-                    .push((format!("{actor:?}"), operation.into(), target.into()));
+            fn authorize(
+                &self,
+                actor: &Actor,
+                operation: &OperationName,
+                target: &str,
+            ) -> Decision {
+                self.0.borrow_mut().push((
+                    format!("{actor:?}"),
+                    operation.to_string(),
+                    target.into(),
+                ));
                 Decision::Allow
             }
         }
@@ -3259,7 +3271,7 @@ mod tests {
             .update_branch(&op("commit"), &branch("main"), None, a, &actor(), &DenyAll)
             .unwrap_err();
         assert!(
-            matches!(&error, UpdateError::Denied { operation, target } if operation == "commit" && target == "main"),
+            matches!(&error, UpdateError::Denied { operation, target } if operation.as_str() == "commit" && target == "main"),
             "{error}"
         );
         assert_eq!(error.to_string(), "not allowed to commit `main`");

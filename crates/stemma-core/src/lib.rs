@@ -47,9 +47,12 @@ pub mod store;
 mod testutil;
 pub mod verify;
 
+use oplog::OperationName;
+
 pub use actor::{Actor, ActorError, ActorField, ActorMalformed, ActorParseError, ActorRef};
 
-/// Result of an authorization check.
+/// Result of an authorization check. A decision that nobody reads is a bug, so ignoring it is a warning.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -60,14 +63,14 @@ pub enum Decision {
 /// repository, or plans a change, calls it; the commands that only read the log have no actor
 /// and do not. Objects stored directly through `Repository::objects()` are not authorized.
 pub trait Authorizer {
-    fn authorize(&self, actor: &Actor, operation: &str, target: &str) -> Decision;
+    fn authorize(&self, actor: &Actor, operation: &OperationName, target: &str) -> Decision;
 }
 
 /// Phase 1: everything is allowed. The call is mandatory nonetheless.
 pub struct AllowAll;
 
 impl Authorizer for AllowAll {
-    fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+    fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
         Decision::Allow
     }
 }
@@ -81,11 +84,11 @@ mod tests {
         let human = Actor::human("daniel").unwrap();
         let agent = Actor::agent("agent-1", "claude-haiku-5-5", "s1", "daniel").unwrap();
         assert_eq!(
-            AllowAll.authorize(&human, "commit", "main"),
+            AllowAll.authorize(&human, &OperationName::new("commit").unwrap(), "main"),
             Decision::Allow
         );
         assert_eq!(
-            AllowAll.authorize(&agent, "commit", "feature/x"),
+            AllowAll.authorize(&agent, &OperationName::new("commit").unwrap(), "feature/x"),
             Decision::Allow
         );
     }

@@ -641,7 +641,9 @@ impl Repository {
     }
 
     /// Refuses an agent, reads the journal, asks the authorizer for `purge` with its blob, takes
-    /// the lock over, and reads the journal again under it.
+    /// the lock over, and reads the journal again under it. The journal under the lock is the one
+    /// that is carried out, so if its blob is another one, the authorizer is asked for that blob
+    /// as well; the lock is released on a refusal.
     fn take_over(
         &self,
         actor: &Actor,
@@ -656,15 +658,20 @@ impl Repository {
             }),
             Err(error) => Err(ApplyPurgeError::Unreadable(Box::new(error))),
         };
-        let journal = read()?;
-        self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
+        let asked = read()?;
+        self.authorize_purge(actor, authorizer, &asked.plan.blob.to_string())
             .map_err(ApplyPurgeError::Plan)?;
         let lock = self.refs_store().take_over_lock().map_err(stopped(
             PurgeStep::Journal,
             &[],
             PurgeFailure::Refs,
         ))?;
-        Ok((read()?, lock))
+        let journal = read()?;
+        if journal.plan.blob != asked.plan.blob {
+            self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
+                .map_err(ApplyPurgeError::Plan)?;
+        }
+        Ok((journal, lock))
     }
 
     /// The `purge` entries that the purge of the journal has written: those after the last entry
@@ -936,7 +943,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
