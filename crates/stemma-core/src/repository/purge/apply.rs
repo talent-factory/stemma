@@ -21,7 +21,7 @@ use crate::repository::{
     now, raise_format, Repository, SnapshotError, UpdateError, CHAIN_FORMAT_VERSION,
 };
 use crate::store::{scratch_left, ObjectStore, StoreError};
-use crate::{Actor, Authorizer};
+use crate::{Actor, Allowed, Authorizer};
 
 /// What a purge did, or what `--resume` finished.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -527,7 +527,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
         stop: Option<Stop>,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
-        let blob = self
+        let (blob, allowed) = self
             .check_purge(blob, actor, authorizer)
             .map_err(ApplyPurgeError::Plan)?;
         let pending = |error| match error {
@@ -544,7 +544,7 @@ impl Repository {
                 }
                 other => ApplyPurgeError::Snapshot(other),
             })?;
-        let purged = self.start_purge(blob, actor, stop, pending);
+        let purged = self.start_purge(blob, actor, &allowed, stop, pending);
         match (purged, snapshot) {
             (Ok(purged), snapshot) => Ok(purged.map(|purged| Purged { snapshot, ..purged })),
             (Err(error), Some(snapshot)) => Err(ApplyPurgeError::AfterSnapshot {
@@ -560,10 +560,11 @@ impl Repository {
         &self,
         blob: BlobId,
         actor: &Actor,
+        allowed: &Allowed,
         stop: Option<Stop>,
         pending: impl Fn(RefError) -> ApplyPurgeError,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
-        let lock = self.refs_store().lock_purge().map_err(pending)?;
+        let lock = self.refs_store().lock_purge(allowed).map_err(pending)?;
         let left = scratch_left(&self.metadata_dir());
         let (plan, planner) = self.plan_blob(blob).map_err(ApplyPurgeError::Plan)?;
         let paths = planner.paths();
@@ -664,16 +665,20 @@ impl Repository {
             Err(error) => Err(ApplyPurgeError::Unreadable(Box::new(error))),
         };
         let asked = read()?;
-        self.authorize_purge(actor, authorizer, &asked.plan.blob.to_string())
+        let allowed = self
+            .authorize_purge(actor, authorizer, &asked.plan.blob.to_string())
             .map_err(ApplyPurgeError::Plan)?;
-        let lock = self.refs_store().take_over_lock().map_err(stopped(
+        let lock = self.refs_store().take_over_lock(&allowed).map_err(stopped(
             PurgeStep::Journal,
             &[],
             PurgeFailure::Refs,
         ))?;
         let journal = read()?;
         if journal.plan.blob != asked.plan.blob {
-            self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
+            // The lock is held already: this asks the authorizer again for the blob that the
+            // journal names, and the proof is not needed.
+            let _ = self
+                .authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
                 .map_err(ApplyPurgeError::Plan)?;
         }
         Ok((journal, lock))
@@ -768,7 +773,7 @@ impl Repository {
                     Purge::new(now(), actor.clone(), commits, &missing).map_err(|error| {
                         EntryStep::Failed(Vec::new(), Box::new(PurgeFailure::Entry(error)))
                     })?;
-                entries = self.oplog().append_purge(purge).map_err(|error| {
+                entries = self.append_purge(&lock, purge).map_err(|error| {
                     // An entry that is in the log although the call failed is written.
                     let made = match &error {
                         OpLogError::NotFlushed { entry, .. } => vec![entry.number()],
@@ -1220,6 +1225,7 @@ mod tests {
         let repository = repository(&dir);
         history(&dir, &repository);
         let before = ids(&repository);
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository
             .apply_purge(secret(), &actor(), &DenyAll)
             .unwrap_err();
@@ -1228,6 +1234,11 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(ids(&repository), before);
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
+        );
     }
 
     #[test]
@@ -1300,6 +1311,31 @@ mod tests {
         assert_purged(&dir, &repository, &purged);
         assert_eq!(format(&dir), "stemma-repository 4\n");
         assert!(repository.oplog().verify().is_ok());
+    }
+
+    #[test]
+    fn a_refusal_of_the_authorizer_leaves_a_pending_purge_as_it_was() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        let lock = dir.path().join(".stemma/refs.lock");
+        let held = fs::read(&lock).ok();
+        assert!(held.is_some(), "the stopped purge left its lock");
+        let error = repository.resume_purge(&actor(), &DenyAll).unwrap_err();
+        assert!(
+            matches!(error, ApplyPurgeError::Plan(PurgeError::Update(_))),
+            "{error:?}"
+        );
+        let error = repository.abort_purge(&actor(), &DenyAll).unwrap_err();
+        assert!(
+            matches!(error, ApplyPurgeError::Plan(PurgeError::Update(_))),
+            "{error:?}"
+        );
+        // The lock was not taken over and the journal is still there: an allowed resume finishes.
+        assert_eq!(fs::read(&lock).ok(), held);
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_purged(&dir, &repository, &purged);
     }
 
     #[test]

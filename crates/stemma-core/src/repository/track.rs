@@ -920,6 +920,7 @@ mod tests {
         write(&dir, "a.txt", "one");
         let before = repository.refs().working_copy().unwrap();
         let numbers = repository.oplog().numbers().unwrap();
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository
             .track(&["a.txt".to_owned()], &actor(), &DenyAll)
             .unwrap_err();
@@ -936,6 +937,11 @@ mod tests {
         assert_eq!(repository.oplog().numbers().unwrap(), numbers);
         let blob = crate::object::Blob::new(b"one".to_vec()).id().object_id();
         assert!(!repository.objects().contains(&blob).unwrap());
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
+        );
     }
 
     #[test]
@@ -1345,7 +1351,13 @@ mod tests {
             .track(&["a.txt".to_owned()], &actor(), &DenyAll)
             .unwrap_err();
 
-        assert!(matches!(error, TrackError::Snapshot(_)), "{error}");
+        assert!(
+            matches!(
+                error,
+                TrackError::Snapshot(SnapshotError::Update(UpdateError::Denied { .. }))
+            ),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]

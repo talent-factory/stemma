@@ -145,7 +145,9 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Status, StatusError> {
         let operation = OperationName::new(OPERATION).expect("`status` is a valid operation name");
-        self.authorize(actor, authorizer, &operation, "working-copy")
+        // Only the question counts here: the writes come through `snapshot`, which asks again.
+        let _ = self
+            .authorize(actor, authorizer, &operation, "working-copy")
             .map_err(StatusError::Update)?;
         // What does not depend on the snapshot is read first, so that its failures leave nothing.
         let rules = IgnoreRules::read(self.path()).map_err(StatusError::Ignore)?;

@@ -62,6 +62,21 @@ denn ein Purge lässt sich nicht rückgängig machen (ADR-002, ADR-014).
 Die Frage ist trotzdem Pflicht,
 damit spätere Regeln ohne Umbau des Kerns eingeführt werden können.
 
+Der Compiler erzwingt die Frage.
+Die Antwort des Authorizers ist ein Wert (\type{Allowed}),
+den nur ein \type{Allow} erzeugen kann.
+Wer einen Zeiger setzen will, braucht zuerst die Sperre der Referenzen,
+und diese Sperre verlangt den Wert als Argument.
+Ein solcher Schreibpfad, der den Authorizer nie fragt, hat keinen Wert zu übergeben
+und lässt sich nicht übersetzen.
+Der Wert sagt nicht, welche Operation erlaubt wurde;
+er belegt nur, dass gefragt wurde.
+Zwei Wege deckt der Typ nicht ab:
+Die Einträge des Operationslogs schreibt nur der Kern unter dieser Sperre,
+aber das ist eine Vereinbarung, die der Compiler nicht prüft,
+und das Arbeitsverzeichnis schreibt \type{apply_checkout} ohne Akteur.
+Objekte, die jemand direkt im Objektspeicher ablegt, fragt der Kern ebenfalls nicht (ADR-002).
+
 \section{Ort der Berechtigungen}
 
 Ab Phase~5 sollen Rollen und Policies auf dem Hub liegen und dort durchgesetzt werden.

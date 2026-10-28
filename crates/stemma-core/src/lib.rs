@@ -28,6 +28,7 @@
 //! that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
+mod allowed;
 pub mod change;
 pub mod diff;
 pub mod failure;
@@ -50,6 +51,7 @@ pub mod verify;
 use oplog::OperationName;
 
 pub use actor::{Actor, ActorError, ActorField, ActorMalformed, ActorParseError, ActorRef};
+pub use allowed::Allowed;
 
 /// Result of an authorization check. Dropping a decision unread is a bug, so `#[must_use]`
 /// makes it a warning.

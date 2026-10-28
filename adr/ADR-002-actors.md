@@ -15,6 +15,20 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   read the log (`op log`, `op verify`) have no actor and call no hook; who may read a repository
   is the question of ADR-003, for the hub of Phase 5. Objects stored directly through
   `Repository::objects()` are not authorized; no command does that (ADR-007, ADR-009).
+- **A write cannot start without the answer of the authorizer** *(confirmed)*. The answer is a
+  value, `Allowed`, which only a `Decision::Allow` can make: its field is private to the module
+  that holds it, so no other code can forge it. The functions that open a write take it as an
+  argument: the three locks of the references (`lock_writer`, `lock_purge`, `take_over_lock`), the
+  mutators of the `RefStore` trait (`set_head`, `update_branch`), and the installation of a new
+  repository for `init`. A write path of `Repository` that opens its write through these functions
+  and never asks the authorizer has no `Allowed` to pass, so it does not compile. The proof does not say which operation was allowed,
+  and it is bound to no target and no repository: it is the check that the question was asked,
+  and the call that asks stays responsible for writing what it asked for. Two things
+  are not covered by the type. The operation log is written through `Repository::append` and
+  `Repository::append_purge`, which take the lock of the references; `FsOpLog::append` itself
+  stays visible to the whole crate, because Rust cannot restrict an item to a sibling module, so a
+  caller inside the crate could still skip the lock. And `Repository::apply_checkout` writes the
+  working directory without an actor.
 - The CLI, API, and MCP server call the same core *(confirmed)*. Phase 1 has the CLI; the API
   comes with the hub (Phase 5), the MCP server with the agent interfaces (Phase 6).
 - **Roles belong to the policy model, not to the core code** *(confirmed)*, with one exception:
@@ -35,9 +49,9 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   checked beyond the actor rules, so it proves nothing about who runs the command (ADR-003 and
   ADR-004 propose what would).
 
-Implementation: `crates/stemma-core/src/actor.rs` (actors), `crates/stemma-cli/src/cli.rs` (the
-actor of the command line), and `crates/stemma-core/src/lib.rs`
-(authorization hook).
+Implementation: `crates/stemma-core/src/actor.rs` (actors), `crates/stemma-core/src/allowed.rs`
+(the proof), `crates/stemma-cli/src/cli.rs` (the actor of the command line), and
+`crates/stemma-core/src/lib.rs` (authorization hook).
 
 ## Open
 
