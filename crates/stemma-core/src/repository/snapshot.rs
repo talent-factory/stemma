@@ -144,7 +144,7 @@ impl Repository {
     ) -> Result<Option<Entry>, SnapshotError> {
         let operation =
             OperationName::new(OPERATION).expect("`snapshot` is a valid operation name");
-        // The caller holds the lock already, so the proof has nothing left to open.
+        // The caller holds the lock already, so only the question is asked again.
         let _ = self
             .authorize(actor, authorizer, &operation, "working-copy")
             .map_err(SnapshotError::Update)?;
@@ -1040,6 +1040,7 @@ mod tests {
         write(&dir, "a.txt", "changed");
         let before = repository.refs().working_copy().unwrap();
         let numbers = repository.oplog().numbers().unwrap();
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository.snapshot(&actor(), &DenyAll).unwrap_err();
         assert!(
             matches!(error, SnapshotError::Update(UpdateError::Denied { .. })),
@@ -1051,9 +1052,10 @@ mod tests {
             .objects()
             .contains(&Blob::new(b"changed".to_vec()).id().object_id())
             .unwrap());
-        assert!(
-            !dir.path().join(".stemma/refs.lock").exists(),
-            "a refusal takes no lock"
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
         );
     }
 

@@ -824,6 +824,7 @@ mod tests {
         let working_copy = repository.refs().working_copy().unwrap();
         let entries = repository.oplog().entries().unwrap().len();
 
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository
             .commit("Add a", &other_actor(), &DenyAll)
             .unwrap_err();
@@ -836,9 +837,10 @@ mod tests {
         assert_eq!(repository.refs().working_copy().unwrap(), working_copy);
         assert_eq!(repository.refs().branch(&main()).unwrap(), None);
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);
-        assert!(
-            !dir.path().join(".stemma/refs.lock").exists(),
-            "a refusal takes no lock"
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
         );
     }
 

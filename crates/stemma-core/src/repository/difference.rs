@@ -556,3 +556,40 @@ fn decode_lines(lines: &[&[u8]]) -> Vec<String> {
         .map(|line| String::from_utf8_lossy(line).into_owned())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::oplog::OperationName;
+    use crate::repository::{InitOptions, UpdateError};
+    use crate::testutil::TempDir;
+    use crate::{AllowAll, Decision};
+
+    struct DenyAll;
+
+    impl Authorizer for DenyAll {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
+            Decision::Deny
+        }
+    }
+
+    #[test]
+    fn a_refusal_of_the_snapshot_stops_the_diff() {
+        let dir = TempDir::new();
+        let actor = Actor::human("daniel").unwrap();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor, &AllowAll).unwrap();
+        let numbers = repository.oplog().numbers().unwrap();
+        let error = repository
+            .diff(&actor, &DenyAll, Comparison::WithParent)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                DiffError::Snapshot(SnapshotError::Update(UpdateError::Denied { .. }))
+            ),
+            "{error}"
+        );
+        assert_eq!(repository.oplog().numbers().unwrap(), numbers);
+    }
+}

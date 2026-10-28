@@ -4,7 +4,8 @@
 //! to the [`Authorizer`]. [`Allowed`] is the answer in the type system: it can only be made from
 //! [`Decision::Allow`], inside this module, and the functions that open a write (the locks of the
 //! references, and the installation of a new repository) take it as an argument. A write path that
-//! never asks the authorizer has no [`Allowed`] to pass, so it does not compile.
+//! opens its write through them and never asks the authorizer has no [`Allowed`] to pass, so it
+//! does not compile. What the type does not cover is listed in ADR-002.
 
 use crate::oplog::OperationName;
 use crate::{Actor, Authorizer, Decision};
@@ -16,12 +17,12 @@ use crate::{Actor, Authorizer, Decision};
 /// public trait [`RefStore`](crate::refs::RefStore) take it, and a caller outside the crate cannot
 /// forge one:
 ///
-/// ```compile_fail,E0603
+/// ```compile_fail,E0423
 /// let _forged = stemma_core::Allowed(());
 /// ```
 ///
-/// Without a proof, a write through the public trait does not compile either: the call below
-/// lacks the argument (E0061).
+/// Without a proof, a write through the public trait does not compile either: the calls below
+/// lack the argument (E0061).
 ///
 /// ```compile_fail,E0061
 /// use stemma_core::refs::{BranchName, FsRefStore, Head, RefStore};
@@ -31,6 +32,20 @@ use crate::{Actor, Authorizer, Decision};
 /// let objects = FsObjectStore::new("objects");
 /// let head = Head::Branch(BranchName::new("main").unwrap());
 /// refs.set_head(&head, &objects);
+/// ```
+///
+/// ```compile_fail,E0061
+/// use stemma_core::object::CommitId;
+/// use stemma_core::refs::{BranchName, FsRefStore, RefStore};
+/// use stemma_core::store::FsObjectStore;
+///
+/// let refs = FsRefStore::new("refs");
+/// let objects = FsObjectStore::new("objects");
+/// let main = BranchName::new("main").unwrap();
+/// let commit: CommitId = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65"
+///     .parse()
+///     .unwrap();
+/// refs.update_branch(&main, None, commit, &objects);
 /// ```
 ///
 /// The proof says that some operation was asked and allowed. It is bound to no operation, no target,

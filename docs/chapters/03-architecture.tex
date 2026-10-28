@@ -67,10 +67,15 @@ Die Antwort des Authorizers ist ein Wert (\type{Allowed}),
 den nur ein \type{Allow} erzeugen kann.
 Wer einen Zeiger setzen will, braucht zuerst die Sperre der Referenzen,
 und diese Sperre verlangt den Wert als Argument.
-Ein Schreibpfad, der den Authorizer nie fragt, hat keinen Wert zu übergeben
+Ein solcher Schreibpfad, der den Authorizer nie fragt, hat keinen Wert zu übergeben
 und lässt sich nicht übersetzen.
 Der Wert sagt nicht, welche Operation erlaubt wurde;
-er belegt nur, dass gefragt wurde (ADR-002).
+er belegt nur, dass gefragt wurde.
+Zwei Wege deckt der Typ nicht ab:
+Die Einträge des Operationslogs schreibt nur der Kern unter dieser Sperre,
+aber das ist eine Vereinbarung, die der Compiler nicht prüft,
+und das Arbeitsverzeichnis schreibt \type{apply_checkout} ohne Akteur.
+Objekte, die jemand direkt im Objektspeicher ablegt, fragt der Kern ebenfalls nicht (ADR-002).
 
 \section{Ort der Berechtigungen}
 

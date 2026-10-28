@@ -526,8 +526,9 @@ impl Repository {
         &self.refs
     }
 
-    /// The operation log of this repository. It can be read; entries are added only by
-    /// [`update_branch`](Self::update_branch) and [`set_head`](Self::set_head), and by `init`.
+    /// The operation log of this repository. It can be read; the operations that change the
+    /// repository add the entries, through `append` and `append_purge`, which take the lock of the
+    /// references, and `init` writes the first one.
     pub fn oplog(&self) -> &FsOpLog {
         &self.oplog
     }
@@ -1893,13 +1894,15 @@ mod tests {
         let repository = init(dir.path()).unwrap();
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository
             .update_working_copy(&operation("snapshot"), old, new, &actor(), &DenyAll)
             .unwrap_err();
         assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
-        assert!(
-            !dir.path().join(".stemma/refs.lock").exists(),
-            "a refusal takes no lock"
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
         );
         assert_eq!(repository.refs().working_copy().unwrap(), old);
         assert_eq!(repository.oplog().numbers().unwrap(), [1]);
@@ -3316,6 +3319,7 @@ mod tests {
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
         let before = numbers(&repository);
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository
             .update_branch(&op("commit"), &branch("main"), None, a, &actor(), &DenyAll)
             .unwrap_err();
@@ -3339,9 +3343,10 @@ mod tests {
             repository.refs().head().unwrap(),
             Head::Branch(branch("main"))
         );
-        assert!(
-            !dir.path().join(".stemma/refs.lock").exists(),
-            "a refusal takes no lock"
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
         );
     }
 

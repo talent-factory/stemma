@@ -20,8 +20,8 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   that holds it, so no other code can forge it. The functions that open a write take it as an
   argument: the three locks of the references (`lock_writer`, `lock_purge`, `take_over_lock`), the
   mutators of the `RefStore` trait (`set_head`, `update_branch`), and the installation of a new
-  repository for `init`. A write path of `Repository` that never asks the authorizer has no
-  `Allowed` to pass, so it does not compile. The proof does not say which operation was allowed,
+  repository for `init`. A write path of `Repository` that opens its write through these functions
+  and never asks the authorizer has no `Allowed` to pass, so it does not compile. The proof does not say which operation was allowed,
   and it is bound to no target and no repository: it is the check that the question was asked,
   and the call that asks stays responsible for writing what it asked for. Two things
   are not covered by the type. The operation log is written through `Repository::append` and

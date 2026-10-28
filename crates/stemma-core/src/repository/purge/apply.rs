@@ -675,7 +675,8 @@ impl Repository {
         ))?;
         let journal = read()?;
         if journal.plan.blob != asked.plan.blob {
-            // The lock is held already, so this second proof only gates the journal.
+            // The lock is held already: this asks the authorizer again for the blob that the
+            // journal names, and the proof is not needed.
             let _ = self
                 .authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
                 .map_err(ApplyPurgeError::Plan)?;
@@ -1221,6 +1222,7 @@ mod tests {
         let repository = repository(&dir);
         history(&dir, &repository);
         let before = ids(&repository);
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository
             .apply_purge(secret(), &actor(), &DenyAll)
             .unwrap_err();
@@ -1229,9 +1231,10 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(ids(&repository), before);
-        assert!(
-            !dir.path().join(".stemma/refs.lock").exists(),
-            "a refusal takes no lock"
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
         );
     }
 
@@ -1315,6 +1318,7 @@ mod tests {
         stop_at(&repository, Stop::Journal);
         let lock = dir.path().join(".stemma/refs.lock");
         let held = fs::read(&lock).ok();
+        assert!(held.is_some(), "the stopped purge left its lock");
         let error = repository.resume_purge(&actor(), &DenyAll).unwrap_err();
         assert!(
             matches!(error, ApplyPurgeError::Plan(PurgeError::Update(_))),

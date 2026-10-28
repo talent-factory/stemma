@@ -1014,6 +1014,7 @@ mod tests {
         let (snapshot, _) = two_commits(&dir, &repository);
         write(&dir, "a.txt", "unsaved");
         let before = numbers(&repository);
+        fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
         let error = repository
             .restore(snapshot, false, &actor(), &DenyAll)
             .unwrap_err();
@@ -1023,9 +1024,10 @@ mod tests {
         );
         assert_eq!(numbers(&repository), before);
         assert_eq!(read(&dir, "a.txt"), "unsaved");
-        assert!(
-            !dir.path().join(".stemma/refs.lock").exists(),
-            "a refusal takes no lock"
+        assert_eq!(
+            fs::read(dir.path().join(".stemma/refs.lock")).unwrap(),
+            b"other",
+            "a refusal leaves a foreign lock alone"
         );
     }
 
