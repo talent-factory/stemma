@@ -431,7 +431,8 @@ enum CliError {
     Track(TrackError),
     /// A path that `track` refused because it is not spelled as on disk, in a command that runs
     /// below the root: the hint of the core is relative to the root, and the paths of the call are
-    /// relative to the directory, so the message names both.
+    /// relative to the directory, so the message names both. The second hint is added only if the
+    /// path of the core lies below the directory; made by [`below_the_root`].
     TrackSpelling {
         /// The refusal of the core, a [`TrackError::Spelling`] with a hint.
         error: Box<TrackError>,
@@ -699,7 +700,12 @@ impl fmt::Display for CliError {
                         on_disk: Some(on_disk),
                         ..
                     } => match on_disk.strip_prefix(&format!("{subdirectory}/")) {
-                        Some(here) => write!(f, "; from `{subdirectory}`, write `{here}`"),
+                        Some(here) => write!(
+                            f,
+                            "; from `{}`, write `{}`",
+                            escape_path(subdirectory),
+                            escape_path(here)
+                        ),
                         None => Ok(()),
                     },
                     _ => Ok(()),
@@ -1475,15 +1481,22 @@ fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
         .map(|path| normalize_path_in(&subdirectory, path))
         .collect();
     let result = repository.track(&paths, &actor, &AllowAll);
-    finish_track(result, out).map_err(|error| match error {
+    finish_track(result, out).map_err(|error| below_the_root(error, &subdirectory))
+}
+
+/// The failure of a `track` that ran in `subdirectory` of the root: a refusal for the spelling of a
+/// path becomes [`CliError::TrackSpelling`], so that its message names the path from there too.
+/// Any other failure, and every failure at the root, stays as it is.
+fn below_the_root(error: CliError, subdirectory: &str) -> CliError {
+    match error {
         CliError::Track(error @ TrackError::Spelling { .. }) if !subdirectory.is_empty() => {
             CliError::TrackSpelling {
                 error: Box::new(error),
-                subdirectory,
+                subdirectory: subdirectory.to_owned(),
             }
         }
         other => other,
-    })
+    }
 }
 
 /// Writes what `track` did. If the files are tracked but a directory could not be flushed, the
@@ -3531,6 +3544,50 @@ mod tests {
         assert!(error.to_string().contains("a.txt"), "{error}");
         assert_eq!(error.exit_code(), ExitCode::from(3));
         assert!(!error.to_string().contains("flushing"), "{error}");
+    }
+
+    #[test]
+    fn only_a_spelling_refusal_below_the_root_gets_the_second_hint() {
+        let spelling = || {
+            CliError::Track(TrackError::Spelling {
+                path: "src/foo.txt".to_owned(),
+                on_disk: Some("src/Foo.txt".to_owned()),
+            })
+        };
+        assert!(matches!(
+            below_the_root(spelling(), "src"),
+            CliError::TrackSpelling { .. }
+        ));
+        // At the root there is nothing to translate, and another failure stays as it is.
+        assert!(matches!(
+            below_the_root(spelling(), ""),
+            CliError::Track(TrackError::Spelling { .. })
+        ));
+        let other = CliError::Track(TrackError::NotFound {
+            path: "src/x".to_owned(),
+        });
+        assert!(matches!(
+            below_the_root(other, "src"),
+            CliError::Track(TrackError::NotFound { .. })
+        ));
+        // A hint without a spelling (`on_disk` is `None`) adds nothing to the core message.
+        let error = below_the_root(
+            CliError::Track(TrackError::Spelling {
+                path: "src/foo.txt".to_owned(),
+                on_disk: None,
+            }),
+            "src",
+        );
+        assert!(!error.to_string().contains("write `"), "{error}");
+        // Names are written escaped, as in the other output.
+        let error = CliError::TrackSpelling {
+            error: Box::new(TrackError::Spelling {
+                path: "s\nrc/foo".to_owned(),
+                on_disk: Some("s\nrc/Foo".to_owned()),
+            }),
+            subdirectory: "s\nrc".to_owned(),
+        };
+        assert!(!error.to_string().contains('\n'), "{error}");
     }
 
     #[test]

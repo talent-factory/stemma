@@ -6234,8 +6234,8 @@ mod tests {
         log.append(&change("main", Some(A), B)).unwrap();
         assert!(log.verify().is_err());
 
-        // The tip names the entry before the last, and that entry is damaged: the writer would
-        // chain the new entry behind something it cannot compare, so it stops.
+        // The tip names the entry before the last, and that entry is damaged: the writer cannot
+        // compare the tip with the entry it names, so it stops.
         let dir = TempDir::new();
         let (log, entries) = chained(&dir);
         log.write_tip(&entries[2]).unwrap();
