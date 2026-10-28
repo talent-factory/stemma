@@ -148,6 +148,8 @@ Accepted, each as a whole file:
 | `docs/**/draft-?.md\n` | `docs/draft-1.md`, `docs/a/b/draft-x.md` |
 | `# secrets\n.env\n` | every name `.env` |
 | `# secrets\r\n.env\r\n` | the same as the file above |
+| `# secrets\n\n.env\n\n` | the same; the empty lines are skipped and counted |
+| `\n` | nothing |
 | (no bytes) | nothing |
 
 Rejected, with the line:
@@ -171,7 +173,8 @@ Rejected, with the line:
 - A `track .` no longer takes secrets and build output once the file exists. Until then, and for
   files that are tracked already, nothing changes (ADR-010).
 - A person who copies a `.gitignore` finds most lines work, with its empty lines and comments,
-  and the lines that do not (negation, classes, escapes) fail at the first command with their line number and not by being ignored.
+  and the lines that do not (negation, classes, escapes) fail at the first command with their
+  line number and not by being ignored.
 - The reader is a pure function on bytes, so it has golden vectors like the other readers, and a
   fuzzing target costs little.
 

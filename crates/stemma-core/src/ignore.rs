@@ -2,15 +2,15 @@
 //!
 //! The file lists paths that are never tracked, not even by `stemma track`. (`stemma status`,
 //! STEMMA-4, will not report them as untracked.) [`IgnoreRules::parse`] reads the bytes of the file
-//! and accepts only the canonical form, as the readers of the index, trees, and the log do;
-//! [`IgnoreRules::matching`] says whether a path is excluded. [`IgnoreRules::read`] reads the file
-//! of a working directory.
+//! and is as strict as the readers of the index, trees, and the log, except that it allows empty
+//! lines and comments; [`IgnoreRules::matching`] says whether a path is excluded.
+//! [`IgnoreRules::read`] reads the file of a working directory.
 //!
-//! A line is empty (it is skipped), a comment (it starts with `#`) or a pattern: parts separated by `/`, each part a name
-//! with the wildcards `*` (any run of characters inside one name) and `?` (one character), or the
-//! whole part `**` (any number of directories, also none, so `foo/**` excludes `foo` too). A
-//! leading `/` or a `/` between parts anchors the pattern at the root; otherwise it matches a name
-//! at any depth. A trailing `/` matches only a directory. There is no negation, escape, or
+//! A line is empty (it is skipped), a comment (it starts with `#`) or a pattern: parts separated
+//! by `/`, each part a name with the wildcards `*` (any run of characters inside one name) and
+//! `?` (one character), or the whole part `**` (any number of directories, also none, so
+//! `foo/**` excludes `foo` too). A leading `/` or a `/` between parts anchors the pattern at
+//! the root; otherwise it matches a name at any depth. A trailing `/` matches only a directory. There is no negation, escape, or
 //! character class: the characters `\`, `[`, `]` and a leading `!` are rejected, so that they stay
 //! free for a later version.
 //!
@@ -89,7 +89,8 @@ impl IgnoreRules {
         Self::default()
     }
 
-    /// Reads and checks the bytes of an exclusion file.
+    /// Reads and checks the bytes of an exclusion file. An empty line is skipped but counted, so
+    /// the lines after it keep their numbers.
     ///
     /// The lines are checked in order, so the error names the first line that the reader refuses;
     /// a last line without a newline is reported after the lines before it. A problem of the whole
@@ -726,6 +727,7 @@ mod tests {
             (b"a\n\n\na\n", 4, "repeats line 1"),
             (b"\r\n\r\nb\n", 3, "line end differs"),
             (b"a\n\n \n", 3, "space at the start or end"),
+            (b"\na\r\n", 2, "line end differs"),
         ];
         for &(bytes, line, reason) in cases {
             let error = IgnoreRules::parse(bytes).unwrap_err().to_string();

@@ -443,7 +443,7 @@ fn an_exclusion_file_with_windows_line_ends_excludes_the_same_paths() {
 #[test]
 fn a_path_that_is_named_and_excluded_fails_with_the_line_and_changes_nothing() {
     let dir = repository();
-    write(dir.path(), ".stemmaignore", "# logs\n*.log\n");
+    write(dir.path(), ".stemmaignore", "# logs\n\n*.log\n");
     write(dir.path(), "d/x.log", "log");
     let entries = operations(dir.path()).len();
 
@@ -454,7 +454,7 @@ fn a_path_that_is_named_and_excluded_fails_with_the_line_and_changes_nothing() {
     assert!(
         result.stderr.starts_with("stemma: ")
             && result.stderr.contains(
-                "`d/x.log` is excluded by line 2 of .stemmaignore, so `track` leaves it out"
+                "`d/x.log` is excluded by line 3 of .stemmaignore, so `track` leaves it out"
             ),
         "{}",
         result.stderr
