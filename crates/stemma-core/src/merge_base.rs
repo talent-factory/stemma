@@ -22,8 +22,8 @@ use crate::store::{ObjectStore, ReadError, StoreError};
 /// Returns the best common ancestors of two commits, sorted by ID.
 ///
 /// A commit counts as an ancestor of itself. The result is empty if the two commits share no
-/// ancestor, has one commit for a linear history or a simple fork, and has the older of the two
-/// commits itself if one of them is an ancestor of the other. No commit of the result is an
+/// ancestor, has one commit for a linear history or a simple fork, and has the ancestor itself if
+/// one of the two commits is an ancestor of the other. No commit of the result is an
 /// ancestor of another one, and `merge_bases(store, a, b)` equals `merge_bases(store, b, a)`.
 ///
 /// # Errors
@@ -38,8 +38,8 @@ pub fn merge_bases(
     let mut walk = Walk::new(store);
     let from_a = walk.ancestors(&[a])?;
     let from_b = walk.ancestors(&[b])?;
-    // Sorted before the walk below, so that the error of a damaged history does not depend on the
-    // order of a hash set.
+    // Sorted for the result, which the function promises in the order of the IDs. The walks below
+    // read the parents that the walks above remembered and cannot fail on a damaged history.
     let mut candidates: Vec<CommitId> = from_a.intersection(&from_b).copied().collect();
     candidates.sort();
 
@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     use crate::change::sample_change;
     use crate::object::{Blob, BlobId, Commit, ObjectId, Tree, TreeId};
-    use crate::properties::{cases, seed, Rng};
+    use crate::properties::{cases, seed, Rng, DEFAULT_CASES, DEFAULT_SEED};
     use crate::store::{sealed, RawObject};
     use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
     use crate::Actor;
@@ -423,7 +423,9 @@ mod tests {
         const COMMITS: usize = 40;
         let histories = (cases() / 400).max(1);
         // How often the generator produced the interesting results, so that the test cannot pass
-        // on trivial histories only.
+        // on trivial histories only. Checked for the default seed and at least the default number
+        // of cases, which contain such pairs; another seed may not, and the fixed tests above
+        // cover both results anyway.
         let (mut none, mut several) = (0, 0);
         for round in 0..histories {
             let mut rng = Rng::new(seed(), 0x6D62 + round as u64);
@@ -467,7 +469,10 @@ mod tests {
                 // Symmetry.
                 assert_eq!(merge_bases(&store, ids[b], ids[a]).unwrap(), found);
                 // The result is an antichain: no base is an ancestor of another one.
-                let bases = reference_bases(&shape, a, b);
+                let bases: Vec<usize> = found
+                    .iter()
+                    .map(|id| ids.iter().position(|other| other == id).unwrap())
+                    .collect();
                 for &x in &bases {
                     for &y in &bases {
                         assert!(
@@ -477,7 +482,7 @@ mod tests {
                         );
                     }
                 }
-                // The older commit is the base if one side is an ancestor of the other.
+                // The ancestor is the base if one side is an ancestor of the other.
                 if reference_ancestors(&shape, a).contains(&b) {
                     assert_eq!(found, vec![ids[b]]);
                 }
@@ -486,7 +491,9 @@ mod tests {
                 }
             }
         }
-        assert!(none > 0, "no generated pair without a common ancestor");
-        assert!(several > 0, "no generated pair with several bases");
+        if seed() == DEFAULT_SEED && cases() >= DEFAULT_CASES {
+            assert!(none > 0, "no generated pair without a common ancestor");
+            assert!(several > 0, "no generated pair with several bases");
+        }
     }
 }

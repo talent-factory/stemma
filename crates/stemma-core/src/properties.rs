@@ -38,11 +38,11 @@ use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
 use crate::{Actor, ActorParseError};
 
 /// The seed when `STEMMA_PROPERTY_SEED` is not set.
-const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
+pub(crate) const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 
 /// How many generated values or inputs each property checks when `STEMMA_PROPERTY_CASES` is not
 /// set.
-const DEFAULT_CASES: usize = 4_000;
+pub(crate) const DEFAULT_CASES: usize = 4_000;
 
 pub(crate) fn seed() -> u64 {
     std::env::var("STEMMA_PROPERTY_SEED")
