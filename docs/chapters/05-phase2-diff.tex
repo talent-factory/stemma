@@ -144,6 +144,7 @@ die Lage der Grenzen. Beide Folgen und die Zahl $D$ der Änderungen
 bleiben, wie sie sind.
 Der Kern bietet sie als \type{diff_lines} für Text und als \type{diff_byte_lines}
 für Zeilen aus Bytes an; der Befehl \type{diff} ruft die zweite auf.
+Innerhalb einer Gruppe von Änderungen stehen die Löschungen vor den Einfügungen.
 
 Eine Gruppe von Einfügungen oder Löschungen gleitet nach oben oder unten, solange die Zeile, die
 sie verlässt, der Zeile gleicht, die sie aufnimmt. \in{Abbildung}[fig:slide] zeigt vier
@@ -855,8 +856,6 @@ Der Diff schreibt sonst nichts, ein erneuter Aufruf ist deshalb jederzeit sicher
 Die folgenden Fragen sind offen.
 
 \startitemize
-\item Das Verschieben der Grenzen (\in{Abschnitt}[sec:slide]) an den Befehl \type{diff} anbinden.
-Der Kern bietet es an, der Befehl ruft es nicht auf.
 \item Grössengrenze für sehr grosse Dateien. In Phase 2 ist das eine bekannte Einschränkung.
 \item Eine Option oder Variable für die Farbe, etwa \type{NO_COLOR}, und die Wahl des Pagers
 über die Einstellungen von git.

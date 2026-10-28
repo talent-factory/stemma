@@ -59,9 +59,10 @@ fn line_indent(line: &&str) -> Option<usize> {
 }
 
 /// Returns the edit script for two sequences of lines kept as bytes, with the boundaries of the
-/// change groups moved by the indent heuristic, as [`diff_lines`] does for text.
+/// change groups moved by the indent heuristic of [`diff_lines`].
 ///
-/// Whitespace is the ASCII whitespace. A byte that is not UTF-8 takes part in the comparison like
+/// Whitespace is the ASCII whitespace, so a vertical tab and a Unicode space such as the no-break
+/// space do not count, unlike in [`diff_lines`]. A byte that is not UTF-8 takes part in the comparison like
 /// any other byte. Within a group of changes the script lists the deletions before the insertions.
 pub fn diff_byte_lines(old: &[&[u8]], new: &[&[u8]]) -> Vec<Edit> {
     slide(old, new, &diff(old, new), byte_line_indent)
@@ -207,7 +208,7 @@ fn middle_snake<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize, usize, usize) 
 /// A group of changes slides up or down along the unchanged lines that equal its own first or last
 /// line. Sliding keeps the number of changes. Among the positions a group can take, the indent
 /// heuristic chooses the one that reads best. `indent` gives the indentation of a line, or `None`
-/// for a blank line. [`diff_lines`] calls it; [`diff`] itself does not.
+/// for a blank line. [`diff_lines`] and [`diff_byte_lines`] call it; [`diff`] itself does not.
 ///
 /// A replacement, a run of changes with both deletions and insertions, stays where the diff put
 /// it. Its two sides already line up, and sliding one side would split the replacement. A pure
@@ -1309,15 +1310,34 @@ mod tests {
 
     #[test]
     fn byte_lines_list_deletions_before_insertions() {
-        let edits = diff_byte_lines(&[b"a\n", b"x\n"], &[b"a\n", b"y\n"]);
+        let old: [&[u8]; 3] = [b"a\n", b"x\n", b"b\n"];
+        let new: [&[u8]; 4] = [b"a\n", b"y\n", b"z\n", b"b\n"];
+        let raw = diff(&old, &new);
         assert_eq!(
-            edits,
+            raw[1],
+            Edit::Insert { new: 1 },
+            "the plain script inserts first"
+        );
+        assert_eq!(
+            diff_byte_lines(&old, &new),
             [
                 Edit::Equal { old: 0, new: 0 },
                 Edit::Delete { old: 1 },
                 Edit::Insert { new: 1 },
+                Edit::Insert { new: 2 },
+                Edit::Equal { old: 2, new: 3 },
             ]
         );
+    }
+
+    #[test]
+    fn byte_lines_count_only_ascii_whitespace_as_indent() {
+        assert_eq!(byte_line_indent(&&b"  x\n"[..]), Some(2));
+        assert_eq!(byte_line_indent(&&b" \r\n"[..]), None);
+        // Vertical tab and the no-break space are whitespace for `str::trim`, not for bytes.
+        assert_eq!(byte_line_indent(&&b"\x0bx\n"[..]), Some(0));
+        assert_eq!(byte_line_indent(&"\u{a0}x\n".as_bytes()), Some(0));
+        assert_eq!(line_indent(&"\u{a0}x\n"), Some(2));
     }
 
     #[test]
