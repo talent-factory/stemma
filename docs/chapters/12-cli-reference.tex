@@ -906,9 +906,9 @@ ehe er etwas liest oder speichert; Skripte nehmen \type{diff} ohne \type{--tui}.
 in keinem Repository liegt, wenn ein Argument keine Kennung eines Commits im Repository ist
 (auch die eines Baums oder einer Datei gilt als unbekannt),
 wenn ein Pfad leer oder absolut ist oder einen Teil \type{..} behält (der Befehl prüft das,
-ehe er etwas speichert), wenn ein Pfad auf keiner der beiden
-Seiten vorkommt (ein Tippfehler, aber auch eine Datei, die nicht verfolgt wird oder die
-\type{.stemmaignore} ausschliesst; ein Pfad ohne Unterschied darunter ist dagegen ein leerer Diff),
+ehe er etwas speichert), wenn ein Pfad auf keiner der beiden Seiten vorkommt
+(ein Tippfehler, aber auch eine Datei, die nicht verfolgt wird oder die \type{.stemmaignore}
+ausschliesst; ein Pfad ohne Unterschied darunter ist dagegen ein leerer Diff),
 wenn der Snapshot fehlschlägt oder wenn eine Referenz nicht lesbar ist.
 Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt oder wenn die Oberfläche
 von \type{--tui} ausfällt, etwa weil sich das Terminal nicht einrichten lässt.
@@ -927,6 +927,12 @@ unterscheidet, und sonst mit 0. Git nimmt dafür 1; hier bleibt 1 den Fehlern vo
 Branch an; er löst nur Kennungen auf. Ein Pfad ist ein Name, kein Muster.
 Eine Verschiebung von Zeilen zeigt er als Löschung und Einfügung.
 Eine Option für ein Format für Maschinen gibt es nicht.
+
+{\bf Wiederholung.} Der Befehl lässt sich nach Erfolg und nach einem Fehler gefahrlos
+wiederholen; er ändert nur das Operation Log. Ein Pfad, der auf keiner Seite vorkommt,
+fällt erst auf, wenn der Snapshot geschrieben ist, weil die Dateien der Arbeitskopie erst
+dann feststehen. Der Befehl endet dann mit Exit-Code 1, und die Meldung nennt den Eintrag
+des Snapshots. Ein ungültiger Pfad schreibt nichts.
 
 {\bf Beispiele.}
 
