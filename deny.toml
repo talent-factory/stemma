@@ -9,8 +9,14 @@ yanked = "deny"
 [licenses]
 # The licenses that a dependency may carry. A dependency with a choice of licenses passes when
 # one of them is listed here.
-allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
 confidence-threshold = 0.93
+
+# Only `foldhash` (through `hashbrown`, `lru`, and `kasuari`) carries the Zlib license, so the
+# exception names the crate instead of allowing the license for the whole tree.
+[[licenses.exceptions]]
+crate = "foldhash"
+allow = ["Zlib"]
 
 [licenses.private]
 # The crates of the workspace are not published (`publish = false`), so their own license is not
