@@ -34,8 +34,10 @@ Candidates, measured on 2026-10-27 in a scratch crate against `deny.toml`:
 - **The view is testable without a terminal** *(confirmed)*. The state of the interface (selected
   file, selected hunk, scroll position) is a plain value that changes by key events, and the
   rendering goes to the `TestBackend` of ratatui in tests. Scripts use `diff` without `--tui`.
-- **`Zlib` joins the licenses of `deny.toml`** *(confirmed)*, in the change that adds the
-  dependency. It is permissive and compatible with `MIT OR Apache-2.0`.
+- **`Zlib` is allowed for `foldhash` only** *(confirmed)*, through a `[[licenses.exceptions]]`
+  entry in `deny.toml` (STEMMA-138). The change that added the dependency had put `Zlib` into
+  the `allow` list of the whole tree. The license is permissive and compatible with
+  `MIT OR Apache-2.0`.
 
 ## Open Points
 
@@ -77,8 +79,8 @@ this ADR. The reports of both agents are summarised in a comment on STEMMA-130.
 - **`nix` as a development dependency** gains the feature `poll` for the tests with a
   pseudo-terminal. `term` and `signal` were there before. The features do not reach a release
   build.
-- **`Zlib`** is needed by `foldhash 0.2.0` only. A `[[licenses.exceptions]]` entry for that crate
-  would be narrower; it is optional and tracked in STEMMA-138.
+- **`Zlib`** is needed by `foldhash 0.2.0` only. STEMMA-138 replaced the tree-wide `allow` entry
+  with a `[[licenses.exceptions]]` entry for that crate.
 - **Not checked.** The Windows tree (`crossterm_winapi`, `winapi`)
   is in the lockfile but not built; `--tui` is refused there (see the open points). The build
   on Linux and with the toolchain 1.89 was not run, and the owners of `ratatui` and `crossterm`
