@@ -253,7 +253,7 @@ An unchanged line that a hunk shows before or after a change. The diff uses thre
 
 **Side of a diff**:
 One of the two compared versions, the old and the new. A side is a commit, or the
-Working-Copy-Commit as it stands after a snapshot. (Seite eines Diffs)
+working-copy commit as it stands after a snapshot. (Seite eines Diffs)
 
 **Pager**:
 The program named in `PAGER` that shows the coloured output of `diff` page by page on a terminal.

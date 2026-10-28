@@ -37,15 +37,19 @@ ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
 Ein Pfad wählt eine Datei oder ein Verzeichnis samt allem darunter; Globs und eine Sprache für
 Pfadmuster folgen später. Der Pfad gilt relativ zum Arbeitsverzeichnis und wird wie bei
 \type{track} umgeformt; er darf das Repository nicht verlassen. Eine Kennung beginnt immer mit
-\type{b3:}, auch grossgeschrieben, darum lassen sich Kennung und Pfad unterscheiden; ein Pfad,
-der so beginnt, steht hinter \type{--}. Steht hinter \type{--} kein Pfad, gilt die Regel ohne
-\type{--}. Ein Pfad, der auf keiner der beiden Seiten vorkommt, ist ein Fehler und kein
-leerer Diff, damit ein Tippfehler auffällt. Das gilt auch für eine Datei, die nicht verfolgt
-wird oder die \type{.stemmaignore} ausschliesst, denn sie steht in keinem Commit. Der Snapshot
+\type{b3:}, darum lassen sich Kennung und Pfad unterscheiden; ein Pfad, der so beginnt,
+steht hinter \type{--}. Auch ein Argument mit \type{B3:} gilt als Kennung und wird als ungültige
+Kennung abgelehnt, nicht als fehlender Pfad gemeldet.
+Steht hinter \type{--} kein Pfad, gilt die Regel ohne \type{--}.
+Ein Pfad, der auf keiner der beiden Seiten vorkommt, ist ein Fehler und kein leerer Diff,
+damit ein Tippfehler auffällt. Das gilt auch für eine Datei,
+die nicht verfolgt wird oder die \type{.stemmaignore} ausschliesst,
+denn sie steht in keinem Commit. Der Snapshot
 umfasst weiter alle verfolgten Dateien; nur die Ausgabe ist beschränkt, und
 \type{--exit-code} betrachtet nur die gewählten Dateien.
-\item Ist eine Seite der Working-Copy-Commit, speichert der Diff zuerst einen Snapshot und
-schreibt einen Eintrag ins Operation Log (ADR-010). Er braucht darum einen Akteur und kann
+\item Ist eine Seite der Working-Copy-Commit, speichert der Diff zuerst einen Snapshot;
+hat sich eine verfolgte Datei geändert, schreibt er dazu einen Eintrag ins Operation Log
+(ADR-010). Er braucht darum einen Akteur und kann
 dieselben Fehler melden wie \type{status}. Mit zwei Kennungen schreibt er nichts.
 \item Der Diff liest beide Seiten bei jedem Aufruf neu und legt nichts unter
 \type{.stemma/derived/} ab (ADR-017). Ein Cache folgt erst mit einer Abfrage, die ihn braucht.
@@ -88,7 +92,8 @@ liest deshalb auf den Diagonalen $\pm 1$ den Wert null, und die Suche setzt im P
 
 Die Suchen besuchen zusammen höchstens $O(D)$ Runden mit je $O(D)$ Diagonalen. Auf einer
 Diagonale steigt $x$ über die Runden nur an und sinkt nie. Das Folgen gleicher Elemente kostet
-deshalb auf jeder Diagonale zusammen höchstens $N$ Schritte, auf allen $O(D)$ Diagonalen also
+deshalb auf jeder Diagonale zusammen höchstens $\min(N, M)$ Schritte,
+auf allen $O(D)$ Diagonalen also
 $O(N\,D)$. Die Runden selbst kosten $O(D^2)$. Wegen $D \le N+M$ ist die Laufzeit damit
 $O((N+M)\,D)$ \cite[myers1986ond]. Der Speicher ist $O(N+M)$: Die Suche hält zwei Felder der Länge
 $2(N+M)+3$, und jeder Aufruf gibt sie wieder frei, bevor er die Teile rekursiv behandelt.
@@ -127,7 +132,7 @@ Seiten. Die Zeilen selbst bleiben in den Folgen.
 
 \section{Offene Fragen}
 
-Die folgenden Fragen sind offen und gehören zu späteren Phasen.
+Die folgenden Fragen sind offen.
 
 \startitemize
 \item Grössengrenze für sehr grosse Dateien. Eine Datei wird heute ganz gelesen und verglichen;

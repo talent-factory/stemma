@@ -4,7 +4,7 @@
   <!-- Spine; a filled marker is a completed phase -->
   <line x1="40" y1="40" x2="40" y2="320" stroke="#0F172A" stroke-width="2"/>
 
-  <!-- Phase markers, all drawn alike -->
+  <!-- Phase markers; a completed phase is filled -->
   <g fill="#FFFFFF" stroke="#0F172A" stroke-width="2">
     <circle cx="40" cy="40" r="16" fill="#0F172A"/>
     <circle cx="40" cy="96" r="16" fill="#0F172A"/>
@@ -15,7 +15,7 @@
   </g>
   <g text-anchor="middle" font-size="15" font-weight="bold" fill="#0F172A">
     <text x="40" y="45" fill="#FFFFFF">1</text>
-    <text x="40" y="101">2</text>
+    <text x="40" y="101" fill="#FFFFFF">2</text>
     <text x="40" y="157">3</text>
     <text x="40" y="213">4</text>
     <text x="40" y="269">5</text>

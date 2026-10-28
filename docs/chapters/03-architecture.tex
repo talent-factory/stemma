@@ -12,9 +12,9 @@ Er liegt in einer eigenen Bibliothek (\type{stemma-core}).
 Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
 In Phase 1 gibt es eine Oberfläche, die Kommandozeile (\type{stemma-cli})
 mit Befehlen wie \type{init}, \type{commit} und \type{op log}.
-In Phase 2 kommt die Anzeige im Terminal hinzu (\type{stemma-tui}). Sie ruft den Kern nicht
+In Phase 2 kommt die Terminal-Oberfläche (TUI) hinzu (\type{stemma-tui}). Sie ruft den Kern nicht
 selbst auf: Die Kommandozeile liest den Diff aus dem Kern und übergibt ihn bei \type{diff --tui}
-zur Anzeige.
+an die Terminal-Oberfläche.
 Der Hub folgt in Phase~5, ein API-Server mit denselben Operationen wie die CLI
 und ein MCP-Server als Adapter für Agenten in Phase~6.
 
@@ -56,7 +56,9 @@ Das gilt auch für einen Plan wie \type{purge} ohne \type{--apply},
 denn er liest, was die Änderung berühren würde.
 Die Befehle, die nur das Log lesen (\type{op log}, \type{op verify}),
 haben keinen Akteur und fragen nicht.
-Der Diff fragt, weil er mit dem Working-Copy-Commit einen Snapshot der Arbeitskopie speichert.
+Der Diff fragt nur, wenn eine Seite der Working-Copy-Commit ist,
+weil er dann einen Snapshot der Arbeitskopie speichert.
+Mit zwei Kennungen fragt er nicht, verlangt aber trotzdem einen Akteur.
 In Phase 1 erlaubt die Prüfung alles.
 Nur einen Purge verweigert der Kern einem Agenten schon vorher, fest im Code,
 denn ein Purge lässt sich nicht rückgängig machen (ADR-002, ADR-014).
