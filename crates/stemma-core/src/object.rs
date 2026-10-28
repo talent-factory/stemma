@@ -222,6 +222,8 @@ pub enum Kind {
     Tree,
     /// A snapshot with history ([`Commit`]).
     Commit,
+    /// A snapshot with history and an open conflict, whose trees are a list ([`Commit2`]).
+    Commit2,
 }
 
 impl Kind {
@@ -232,6 +234,7 @@ impl Kind {
             Self::Blob => "blob",
             Self::Tree => "tree",
             Self::Commit => "commit",
+            Self::Commit2 => "commit2",
         }
     }
 
@@ -241,6 +244,7 @@ impl Kind {
             "blob" => Some(Self::Blob),
             "tree" => Some(Self::Tree),
             "commit" => Some(Self::Commit),
+            "commit2" => Some(Self::Commit2),
             _ => None,
         }
     }
@@ -930,11 +934,8 @@ impl Commit {
         timestamp: i64,
         message: impl Into<String>,
     ) -> Result<Self, CommitError> {
-        let mut seen = HashSet::with_capacity(parents.len());
-        for parent in &parents {
-            if !seen.insert(*parent) {
-                return Err(CommitError::DuplicateParent(*parent));
-            }
+        if let Some(parent) = first_duplicate(&parents) {
+            return Err(CommitError::DuplicateParent(parent));
         }
         Ok(Self {
             tree,
@@ -1023,16 +1024,14 @@ impl Commit {
     /// form, the seconds are a decimal integer without a plus sign or leading zeros, and the
     /// actor line is the [`Display`](std::fmt::Display) form of [`Actor`].
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = format!("tree {}\n", self.tree);
-        for parent in &self.parents {
-            out.push_str(&format!("parent {parent}\n"));
-        }
-        out.push_str(&format!("change {}\n", self.change));
-        out.push_str(&format!("author {}\n", self.author));
-        out.push_str(&format!("time {}\n", self.timestamp));
-        out.push('\n');
-        out.push_str(&self.message);
-        out.into_bytes()
+        encode_commit(
+            std::slice::from_ref(&self.tree),
+            &self.parents,
+            self.change,
+            &self.author,
+            self.timestamp,
+            &self.message,
+        )
     }
 
     /// Returns the object ID of this commit.
@@ -1099,6 +1098,8 @@ pub enum CommitParseError {
     /// [`Commit::try_new`] is already checked while the headers are read, so this does not occur today;
     /// it is here for a rule that is added later.
     Commit(CommitError),
+    /// The headers are well formed, but the `commit2` is rejected as a whole.
+    Commit2(Commit2Error),
 }
 
 impl fmt::Display for CommitParseError {
@@ -1123,6 +1124,7 @@ impl fmt::Display for CommitParseError {
                 write!(f, "line {line}: duplicate parent {id}")
             }
             Self::Commit(source) => write!(f, "{source}"),
+            Self::Commit2(source) => write!(f, "{source}"),
         }
     }
 }
@@ -1137,6 +1139,7 @@ impl Error for CommitParseError {
             Self::InvalidTime { reason, .. } => reason.source(),
             Self::InvalidAuthor { source, .. } => source.source(),
             Self::Commit(source) => source.source(),
+            Self::Commit2(source) => source.source(),
             _ => None,
         }
     }
@@ -1270,64 +1273,287 @@ impl Commit {
     /// line by line and the first problem is reported, a repeated parent at the line of its second
     /// occurrence.
     pub fn parse(bytes: &[u8]) -> Result<Self, CommitParseError> {
-        let text = std::str::from_utf8(bytes).map_err(|error| CommitParseError::NotUtf8 {
-            valid_up_to: error.valid_up_to(),
-        })?;
-        let mut rest = text;
-        let mut line = 1;
-        let malformed = |line, reason| CommitParseError::Malformed { line, reason };
-
-        let tree = next_line(&mut rest, line, CommitMalformed::ExpectedTree)?
-            .strip_prefix("tree ")
-            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedTree))?;
-        let tree = TreeId::new(header_id(tree, line)?);
-
-        let mut parents = Vec::new();
-        let mut seen = HashSet::new();
-        let change = loop {
-            line += 1;
-            let header = next_line(&mut rest, line, CommitMalformed::ExpectedChange)?;
-            match header.strip_prefix("parent ") {
-                Some(id) => {
-                    let id = CommitId::new(header_id(id, line)?);
-                    if !seen.insert(id) {
-                        return Err(CommitParseError::DuplicateParent { line, id });
-                    }
-                    parents.push(id);
-                }
-                None => break header,
-            }
+        let parts = parse_parts(bytes, false)?;
+        let [tree] = parts.trees[..] else {
+            unreachable!("a commit has exactly one tree line")
         };
-        let change = change
-            .strip_prefix("change ")
-            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedChange))?;
-        let change = ChangeId::from_str(change)
-            .map_err(|source| CommitParseError::InvalidChangeId { line, source })?;
+        Commit::try_new(
+            tree,
+            parts.parents,
+            parts.change,
+            parts.author,
+            parts.timestamp,
+            parts.message,
+        )
+        .map_err(CommitParseError::Commit)
+    }
+}
 
-        line += 1;
-        let author = next_line(&mut rest, line, CommitMalformed::ExpectedAuthor)?
-            .strip_prefix("author ")
-            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedAuthor))?;
-        let author = Actor::from_str(author)
-            .map_err(|source| CommitParseError::InvalidAuthor { line, source })?;
+/// Returns the first parent that is listed a second time.
+fn first_duplicate(parents: &[CommitId]) -> Option<CommitId> {
+    let mut seen = HashSet::with_capacity(parents.len());
+    parents.iter().copied().find(|parent| !seen.insert(*parent))
+}
 
-        line += 1;
-        let seconds = next_line(&mut rest, line, CommitMalformed::ExpectedTime)?
-            .strip_prefix("time ")
-            .ok_or_else(|| malformed(line, CommitMalformed::ExpectedTime))?;
-        let timestamp = parse_seconds(seconds)
-            .map_err(|reason| CommitParseError::InvalidTime { line, reason })?;
+/// Writes the body of a `commit` (one tree) or of a `commit2` (a list of trees): a `tree` line for
+/// each tree, a `parent` line for each parent, the lines `change`, `author`, and `time`, an empty
+/// line, and the message.
+fn encode_commit(
+    trees: &[TreeId],
+    parents: &[CommitId],
+    change: ChangeId,
+    author: &Actor,
+    timestamp: i64,
+    message: &str,
+) -> Vec<u8> {
+    let mut out = String::new();
+    for tree in trees {
+        out.push_str(&format!("tree {tree}\n"));
+    }
+    for parent in parents {
+        out.push_str(&format!("parent {parent}\n"));
+    }
+    out.push_str(&format!("change {change}\n"));
+    out.push_str(&format!("author {author}\n"));
+    out.push_str(&format!("time {timestamp}\n"));
+    out.push('\n');
+    out.push_str(message);
+    out.into_bytes()
+}
 
+/// The fields that the headers of a `commit` and of a `commit2` have in common.
+struct Parts {
+    trees: Vec<TreeId>,
+    parents: Vec<CommitId>,
+    change: ChangeId,
+    author: Actor,
+    timestamp: i64,
+    message: String,
+}
+
+/// Reads the headers, the empty line, and the message of a commit. With `several_trees`, any
+/// number of `tree` lines may stand at the front (a `commit2`, whose count the caller checks);
+/// without it there is exactly one (a `commit`), and a second one is not the header `change`.
+fn parse_parts(bytes: &[u8], several_trees: bool) -> Result<Parts, CommitParseError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| CommitParseError::NotUtf8 {
+        valid_up_to: error.valid_up_to(),
+    })?;
+    let mut rest = text;
+    let mut line = 1;
+    let malformed = |line, reason| CommitParseError::Malformed { line, reason };
+
+    let tree = next_line(&mut rest, line, CommitMalformed::ExpectedTree)?
+        .strip_prefix("tree ")
+        .ok_or_else(|| malformed(line, CommitMalformed::ExpectedTree))?;
+    let mut trees = vec![TreeId::new(header_id(tree, line)?)];
+
+    let mut parents = Vec::new();
+    let mut seen = HashSet::new();
+    let change = loop {
         line += 1;
-        match rest.split_once('\n') {
-            Some(("", message)) => rest = message,
-            // A last line without a newline is cut off, as in a header, and is not a line that
-            // should have been empty.
-            None if !rest.is_empty() => return Err(malformed(line, CommitMalformed::CutOff)),
-            _ => return Err(malformed(line, CommitMalformed::ExpectedEmptyLine)),
+        let header = next_line(&mut rest, line, CommitMalformed::ExpectedChange)?;
+        if several_trees && parents.is_empty() {
+            if let Some(id) = header.strip_prefix("tree ") {
+                trees.push(TreeId::new(header_id(id, line)?));
+                continue;
+            }
         }
-        Commit::try_new(tree, parents, change, author, timestamp, rest)
-            .map_err(CommitParseError::Commit)
+        match header.strip_prefix("parent ") {
+            Some(id) => {
+                let id = CommitId::new(header_id(id, line)?);
+                if !seen.insert(id) {
+                    return Err(CommitParseError::DuplicateParent { line, id });
+                }
+                parents.push(id);
+            }
+            None => break header,
+        }
+    };
+    let change = change
+        .strip_prefix("change ")
+        .ok_or_else(|| malformed(line, CommitMalformed::ExpectedChange))?;
+    let change = ChangeId::from_str(change)
+        .map_err(|source| CommitParseError::InvalidChangeId { line, source })?;
+
+    line += 1;
+    let author = next_line(&mut rest, line, CommitMalformed::ExpectedAuthor)?
+        .strip_prefix("author ")
+        .ok_or_else(|| malformed(line, CommitMalformed::ExpectedAuthor))?;
+    let author = Actor::from_str(author)
+        .map_err(|source| CommitParseError::InvalidAuthor { line, source })?;
+
+    line += 1;
+    let seconds = next_line(&mut rest, line, CommitMalformed::ExpectedTime)?
+        .strip_prefix("time ")
+        .ok_or_else(|| malformed(line, CommitMalformed::ExpectedTime))?;
+    let timestamp =
+        parse_seconds(seconds).map_err(|reason| CommitParseError::InvalidTime { line, reason })?;
+
+    line += 1;
+    match rest.split_once('\n') {
+        Some(("", message)) => rest = message,
+        // A last line without a newline is cut off, as in a header, and is not a line that
+        // should have been empty.
+        None if !rest.is_empty() => return Err(malformed(line, CommitMalformed::CutOff)),
+        _ => return Err(malformed(line, CommitMalformed::ExpectedEmptyLine)),
+    }
+    Ok(Parts {
+        trees,
+        parents,
+        change,
+        author,
+        timestamp,
+        message: rest.to_owned(),
+    })
+}
+
+/// Why [`Commit2::try_new`] rejects a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Commit2Error {
+    /// The list of trees does not have an odd length of at least three. A `commit2` holds the
+    /// trees of a conflict as add, remove, add, and so on, so its length is `2n + 1` with `n >= 1`.
+    /// A single tree is a `commit`, so that the same state has no second encoding.
+    TreeCount(usize),
+    /// A parent is listed twice.
+    DuplicateParent(CommitId),
+}
+
+impl fmt::Display for Commit2Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TreeCount(count) => write!(
+                f,
+                "a commit2 lists an odd number of at least three trees, not {count}"
+            ),
+            Self::DuplicateParent(id) => write!(f, "duplicate parent {id}"),
+        }
+    }
+}
+
+impl Error for Commit2Error {}
+
+/// A snapshot with an open conflict: the same as a [`Commit`], except that it names a list of
+/// trees instead of one.
+///
+/// The trees are read as add, remove, add, remove, ..., add: the first tree is a side, and each
+/// following pair is a base that is taken away and a side that is put in. The list has an odd
+/// length of at least three; a state with one tree is a [`Commit`], so that it has one encoding
+/// and one ID. The kind name is `commit2` (ADR-005, "Format version"), so a `commit` keeps its ID.
+/// Every other field is the same as in a `Commit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit2 {
+    trees: Vec<TreeId>,
+    parents: Vec<CommitId>,
+    change: ChangeId,
+    author: Actor,
+    timestamp: i64,
+    message: String,
+}
+
+impl Commit2 {
+    /// Creates a `commit2`. The trees are kept in the given order, and the order is part of the
+    /// ID, as the order of the parents is. The same tree may stand more than once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Commit2Error::TreeCount`] if the list does not have an odd length of at least
+    /// three, and [`Commit2Error::DuplicateParent`] if a parent is listed twice.
+    pub fn try_new(
+        trees: Vec<TreeId>,
+        parents: Vec<CommitId>,
+        change: ChangeId,
+        author: Actor,
+        timestamp: i64,
+        message: impl Into<String>,
+    ) -> Result<Self, Commit2Error> {
+        if trees.len() < 3 || trees.len().is_multiple_of(2) {
+            return Err(Commit2Error::TreeCount(trees.len()));
+        }
+        if let Some(parent) = first_duplicate(&parents) {
+            return Err(Commit2Error::DuplicateParent(parent));
+        }
+        Ok(Self {
+            trees,
+            parents,
+            change,
+            author,
+            timestamp,
+            message: message.into(),
+        })
+    }
+
+    /// Returns the trees in the order given at creation.
+    pub fn trees(&self) -> &[TreeId] {
+        &self.trees
+    }
+
+    /// Returns the parents in the order given at creation.
+    pub fn parents(&self) -> &[CommitId] {
+        &self.parents
+    }
+
+    /// Returns the change ID.
+    pub fn change(&self) -> ChangeId {
+        self.change
+    }
+
+    /// Returns the author.
+    pub fn author(&self) -> &Actor {
+        &self.author
+    }
+
+    /// Returns the claimed time in seconds since the Unix epoch (UTC).
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+
+    /// Returns the message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns the canonical encoding: that of a [`Commit`], except that the first header is a
+    /// run of `tree <id>` lines, one for each tree, in the order of the list.
+    pub fn encode(&self) -> Vec<u8> {
+        encode_commit(
+            &self.trees,
+            &self.parents,
+            self.change,
+            &self.author,
+            self.timestamp,
+            &self.message,
+        )
+    }
+
+    /// Returns the object ID of this commit. The kind `commit2` is part of the hashed header, so
+    /// it differs from that of a `commit` with the same body.
+    pub fn id(&self) -> CommitId {
+        CommitId(hash_encoding(Kind::Commit2, &self.encode()))
+    }
+
+    /// Reads the body of a `commit2`, as [`encode`](Self::encode) writes it. The reader is strict
+    /// in the same way as [`Commit::parse`], and `parse(bytes).encode() == bytes` for every
+    /// accepted input. The `tree` lines come first, then the parents and the other headers in the
+    /// order of a commit; a `tree` line after a `parent` line is not the header `change`.
+    ///
+    /// # Errors
+    ///
+    /// Returns every error of [`Commit::parse`], and [`CommitParseError::Commit2`] with
+    /// [`Commit2Error::TreeCount`] if the number of `tree` lines is even or below three. That
+    /// check comes after the headers are read, so the first problem in the lines is reported
+    /// before it.
+    pub fn parse(bytes: &[u8]) -> Result<Self, CommitParseError> {
+        let parts = parse_parts(bytes, true)?;
+        Commit2::try_new(
+            parts.trees,
+            parts.parents,
+            parts.change,
+            parts.author,
+            parts.timestamp,
+            parts.message,
+        )
+        .map_err(CommitParseError::Commit2)
     }
 }
 
@@ -1987,6 +2213,241 @@ mod tests {
         assert_eq!(commit.id().to_string(), MERGE_COMMIT_ID);
     }
 
+    // Commits with a list of trees (`commit2`). The IDs were computed in a throwaway program that
+    // hashes `<kind> <length>\0<body>` with `blake3::hash` and does not use this module.
+    const COMMIT2_THREE_ID: &str =
+        "b3:94379ce3628a5d88f752a1cf79fc77e95640f98996dfe4ad06f1683283c01481";
+    const COMMIT2_FIVE_ID: &str =
+        "b3:dd24e28bf1a5ff1066751671b7d56e59fd89907eeb19b7e6a9f95108b3a5b5e8";
+    /// The body of `COMMIT2_THREE_ID` hashed under the kind `commit`.
+    const COMMIT2_THREE_BODY_AS_COMMIT_ID: &str =
+        "b3:0a3581a2820b6c39efccf0c86e339dbbde60879c30e5e0b5c982c1a7130d0f8c";
+
+    fn three_trees() -> Vec<TreeId> {
+        vec![
+            tree_id_of(TREE_ID),
+            tree_id_of(EMPTY_TREE_ID),
+            tree_id_of(ALL_MODES_TREE_ID),
+        ]
+    }
+
+    fn commit2_of(trees: Vec<TreeId>, parents: Vec<CommitId>, message: &str) -> Commit2 {
+        Commit2::try_new(trees, parents, sample_change(), human(), TIME, message)
+            .expect("valid commit2")
+    }
+
+    #[test]
+    fn commit2_with_three_trees_matches_golden_vectors() {
+        let commit = commit2_of(three_trees(), vec![commit_id(EMPTY_ID)], "conflict");
+        let expected = format!(
+            "tree {TREE_ID}\ntree {EMPTY_TREE_ID}\ntree {ALL_MODES_TREE_ID}\nparent {EMPTY_ID}\nchange {CHANGE}\nauthor human daniel\ntime 1700000000\n\nconflict"
+        );
+        assert_eq!(commit.encode(), expected.as_bytes());
+        assert_eq!(commit.id().to_string(), COMMIT2_THREE_ID);
+    }
+
+    #[test]
+    fn commit2_with_five_trees_matches_golden_vectors() {
+        let mut trees = three_trees();
+        trees.push(tree_id_of(EMPTY_TREE_ID));
+        trees.push(tree_id_of(TREE_ID));
+        let commit = commit2_of(trees, vec![], "five");
+        let expected = format!(
+            "tree {TREE_ID}\ntree {EMPTY_TREE_ID}\ntree {ALL_MODES_TREE_ID}\ntree {EMPTY_TREE_ID}\ntree {TREE_ID}\nchange {CHANGE}\nauthor human daniel\ntime 1700000000\n\nfive"
+        );
+        assert_eq!(commit.encode(), expected.as_bytes());
+        assert_eq!(commit.id().to_string(), COMMIT2_FIVE_ID);
+    }
+
+    #[test]
+    fn the_kind_name_is_part_of_the_id_of_a_commit2() {
+        assert_eq!(Kind::Commit2.name(), "commit2");
+        assert_eq!(Kind::from_name("commit2"), Some(Kind::Commit2));
+        assert_eq!(Kind::from_name("commit3"), None);
+        assert_eq!(Kind::from_name("Commit2"), None);
+        // The same bytes under the kind `commit` are another object.
+        let commit = commit2_of(three_trees(), vec![commit_id(EMPTY_ID)], "conflict");
+        let as_commit = hash_encoding(Kind::Commit, &commit.encode());
+        assert_eq!(as_commit.to_string(), COMMIT2_THREE_BODY_AS_COMMIT_ID);
+        assert_ne!(as_commit, commit.id().object_id());
+    }
+
+    #[test]
+    fn a_commit_keeps_its_id_and_a_commit2_does_not_replace_it() {
+        // The golden vectors of the plain commits are asserted above and are unchanged; the
+        // reader of a `commit` still takes exactly one tree.
+        let commit2 = commit2_of(three_trees(), vec![], "x");
+        let error = Commit::parse(&commit2.encode()).unwrap_err();
+        assert_eq!(
+            error,
+            CommitParseError::Malformed {
+                line: 2,
+                reason: CommitMalformed::ExpectedChange
+            }
+        );
+    }
+
+    #[test]
+    fn commit2_takes_an_odd_number_of_at_least_three_trees() {
+        let tree = tree_id_of(TREE_ID);
+        for count in [0, 1, 2, 4, 6] {
+            let result = Commit2::try_new(
+                vec![tree; count],
+                vec![],
+                sample_change(),
+                human(),
+                TIME,
+                "m",
+            );
+            assert_eq!(result, Err(Commit2Error::TreeCount(count)), "{count}");
+        }
+        for count in [3, 5, 7] {
+            let commit = Commit2::try_new(
+                vec![tree; count],
+                vec![],
+                sample_change(),
+                human(),
+                TIME,
+                "m",
+            )
+            .expect("an odd number of trees");
+            assert_eq!(commit.trees().len(), count);
+        }
+    }
+
+    #[test]
+    fn commit2_rejects_duplicate_parents_and_keeps_the_order_of_trees_and_parents() {
+        let parent = commit_id(EMPTY_ID);
+        assert_eq!(
+            Commit2::try_new(
+                three_trees(),
+                vec![parent, parent],
+                sample_change(),
+                human(),
+                TIME,
+                "m",
+            ),
+            Err(Commit2Error::DuplicateParent(parent))
+        );
+        let commit = commit2_of(three_trees(), vec![commit_id(HELLO_ID), parent], "m");
+        assert_eq!(commit.trees(), three_trees());
+        assert_eq!(commit.parents(), [commit_id(HELLO_ID), parent]);
+        let mut swapped = three_trees();
+        swapped.swap(1, 2);
+        assert_ne!(
+            commit2_of(swapped, vec![], "m").id(),
+            commit2_of(three_trees(), vec![], "m").id(),
+            "the order of the trees is part of the ID"
+        );
+    }
+
+    #[test]
+    fn commit2_exposes_its_fields() {
+        let commit = commit2_of(three_trees(), vec![commit_id(EMPTY_ID)], "conflict");
+        assert_eq!(commit.change(), sample_change());
+        assert_eq!(commit.author(), &human());
+        assert_eq!(commit.timestamp(), TIME);
+        assert_eq!(commit.message(), "conflict");
+    }
+
+    #[test]
+    fn a_commit2_is_read_back_from_its_encoding() {
+        let mut five = three_trees();
+        five.extend([tree_id_of(EMPTY_TREE_ID), tree_id_of(TREE_ID)]);
+        for commit in [
+            commit2_of(three_trees(), vec![], ""),
+            commit2_of(three_trees(), vec![commit_id(EMPTY_ID)], "conflict"),
+            commit2_of(
+                five,
+                vec![commit_id(HELLO_ID), commit_id(EMPTY_ID)],
+                "a\n\nb",
+            ),
+            // The same tree may stand more than once.
+            commit2_of(vec![tree_id_of(TREE_ID); 3], vec![], "same"),
+        ] {
+            let again = Commit2::parse(&commit.encode()).expect("canonical");
+            assert_eq!(again, commit);
+            assert_eq!(again.id(), commit.id());
+        }
+    }
+
+    #[test]
+    fn a_commit2_reader_rejects_the_forms_that_a_writer_would_not_write() {
+        let t = TREE_ID;
+        let author = "human daniel";
+        let with = |lines: &str| format!("{lines}change {CHANGE}\nauthor {author}\ntime 1\n\nm");
+        let malformed = |line, reason| CommitParseError::Malformed { line, reason };
+        let cases: Vec<(String, CommitParseError)> = vec![
+            // One tree is a `commit`, not a `commit2`.
+            (
+                with(&format!("tree {t}\n")),
+                CommitParseError::Commit2(Commit2Error::TreeCount(1)),
+            ),
+            // An even number of trees.
+            (
+                with(&format!("tree {t}\ntree {t}\n")),
+                CommitParseError::Commit2(Commit2Error::TreeCount(2)),
+            ),
+            (
+                with(&format!("tree {t}\ntree {t}\ntree {t}\ntree {t}\n")),
+                CommitParseError::Commit2(Commit2Error::TreeCount(4)),
+            ),
+            // A tree after a parent.
+            (
+                with(&format!(
+                    "tree {t}\ntree {t}\nparent {HELLO_ID}\ntree {t}\n"
+                )),
+                malformed(4, CommitMalformed::ExpectedChange),
+            ),
+            // The first line has to be a tree.
+            (
+                with(&format!(
+                    "parent {HELLO_ID}\ntree {t}\ntree {t}\ntree {t}\n"
+                )),
+                malformed(1, CommitMalformed::ExpectedTree),
+            ),
+            // A tree line that is not in canonical form.
+            (
+                with(&format!("tree {t}\ntree {}\ntree {t}\n", t.to_uppercase())),
+                CommitParseError::InvalidObjectId {
+                    line: 2,
+                    source: t.to_uppercase().parse::<ObjectId>().unwrap_err(),
+                },
+            ),
+            // A repeated parent.
+            (
+                with(&format!(
+                    "tree {t}\ntree {t}\ntree {t}\nparent {HELLO_ID}\nparent {HELLO_ID}\n"
+                )),
+                CommitParseError::DuplicateParent {
+                    line: 5,
+                    id: commit_id(HELLO_ID),
+                },
+            ),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(Commit2::parse(text.as_bytes()), Err(expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_commit2_reader_accepts_no_second_spelling() {
+        let commit = commit2_of(three_trees(), vec![commit_id(EMPTY_ID)], "conflict");
+        let golden = commit.encode();
+        let accepted = accepted_changes_encode_back(&golden, |bytes| {
+            Commit2::parse(bytes).ok().map(|commit| commit.encode())
+        });
+        assert!(!accepted.is_empty(), "the check reached no valid commit2");
+        // The helper reaches valid commits by changing a number, an ID, and the author.
+        assert!(accepted.contains(&with_replaced(
+            &golden,
+            "time 1700000000",
+            "time 1700000009"
+        )));
+        assert!(accepted.contains(&with_replaced(&golden, "parent b3:4a", "parent b3:9a")));
+        assert!(accepted.contains(&with_replaced(&golden, "tree b3:06", "tree b3:96")));
+    }
+
     #[test]
     fn timestamp_is_part_of_the_id_and_written_as_a_plain_decimal() {
         let at = |time: i64| {
@@ -2268,12 +2729,13 @@ mod tests {
             (Kind::Blob, "blob"),
             (Kind::Tree, "tree"),
             (Kind::Commit, "commit"),
+            (Kind::Commit2, "commit2"),
         ] {
             assert_eq!(kind.name(), name);
             assert_eq!(Kind::from_name(name), Some(kind));
         }
         for unknown in [
-            "", "Blob", "BLOB", "blob ", " blob", "blob\0", "commit2", "tag",
+            "", "Blob", "BLOB", "blob ", " blob", "blob\0", "commit3", "Commit2", "commit 2", "tag",
         ] {
             assert_eq!(Kind::from_name(unknown), None, "{unknown:?}");
         }

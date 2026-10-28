@@ -134,17 +134,37 @@ them.
   of a commit (see "Change ID") is the one exception, made while no repository held a commit; it
   is part of version 1 and not a second version. The hash algorithm
   is versioned separately by the ID prefix (ADR-001).
+- **Commit with a list of trees, `commit2`** *(confirmed)*. A commit that records an open
+  conflict (ADR-010, phase 3) names a list of trees instead of one: add, remove, add, and so on,
+  an odd number of at least three. It is a new object kind with the name `commit2`, by the rule
+  of "Format version", and not a change of `commit`, so that every stored commit keeps its ID. The
+  body is that of a commit, except that the first header is a run of `tree <id>` lines, one for
+  each tree, in the order of the list; `parent`, `change`, `author`, `time`, the empty line, and
+  the message follow unchanged. A state with one tree is always a `commit`, so that it has one
+  encoding and one ID. The strict reader of `commit2` rejects an even number of `tree` lines, a
+  single `tree` line, a `tree` line after the first `parent` line, and everything that
+  `Commit::parse` rejects. The same tree may stand more than once, since the sides of a conflict
+  may agree. The kind name is hashed with the body, so the bytes of a `commit2` are another
+  object under the kind `commit`. `Commit::parse` still rejects more than one `tree` line.
+  The type is `Commit2`, separate from `Commit`; no command writes it yet. What a conflict
+  means, and how it is resolved, stays with phase 3 (STEMMA-19). The purge (ADR-014) does not
+  follow a `commit2` yet and reports one that it finds in the store as an error, instead of
+  skipping a tree that may hold the blob. `Commit2::id` returns a `CommitId`, so that a
+  conflict can stand where a commit stands, but the store, the reads of a snapshot and a
+  difference, and `verify` still read a `CommitId` as the kind `commit`. Until phase 3 decides
+  how a `CommitId` resolves to either kind, a `commit2` cannot be a parent that verifies, nor
+  the target of a branch or of the working copy (STEMMA-179).
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
   repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
   other non-canonical form. Otherwise one logical object could have several encodings and several
   IDs. The commit headers are, in this order, `tree`, `parent` (zero or more), `change`, `author`,
-  `time`. The index reader (see below), `Tree::parse`, and `Commit::parse` apply the rule, and the
-  actor line of a commit is read by `Actor::from_str`. A test feeds changed copies of a canonical
-  encoding to each of these three readers (every byte deleted, replaced, or inserted from a set of
-  troublesome bytes, and every line deleted, repeated, or swapped) and checks that whatever a reader
-  accepts encodes back to exactly the bytes it was given, so that no object has a second spelling
-  and a second ID. It cannot find a second spelling that needs a change of several places at once;
-  those are covered by tests of the rejected forms.
+  `time`. The index reader (see below), `Tree::parse`, `Commit::parse`, and `Commit2::parse` apply
+  the rule, and the actor line of a commit is read by `Actor::from_str`. A test feeds changed
+  copies of a canonical encoding to each of these readers (every byte deleted, replaced, or
+  inserted from a set of troublesome bytes, and every line deleted, repeated, or swapped) and
+  checks that whatever a reader accepts encodes back to exactly the bytes it was given, so that no
+  object has a second spelling and a second ID. It cannot find a second spelling that needs a
+  change of several places at once; those are covered by tests of the rejected forms.
 - **Index file** *(confirmed as a cache format)*. The working copy is a commit (ADR-010), so
   Phase 1 keeps no index file, and `Index` is a model of the tree in memory. The format below
   applies when the index is persisted, for example as a cache of the working copy, and is then a
@@ -224,7 +244,8 @@ them.
       operation log is local (see the decision above), a rewrite keeps the author and the time, and
       who rewrote it is answered by the local log and the ref updates of a hub. Revisit if
       repositories are exchanged peer to peer without a hub (ADR-003, open). Then `committer` and a
-      second time are added as one change under a new kind name (`commit2`), because the committer
+      second time are added as one change under a new kind name (`commit3`, as `commit2` is the
+      commit with a list of trees, see "Commit with a list of trees"), because the committer
       is a second actor.
 - [x] Decide whether the operation log is exchanged with the history. Decided: it is not (see the
       decision above).

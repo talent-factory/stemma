@@ -533,6 +533,9 @@ impl<'a> Planner<'a> {
                     self.tree(TreeId::new(id)).map_err(leftover)?;
                 }
                 Kind::Commit => self.commit(CommitId::new(id)).map_err(leftover)?,
+                // A `commit2` names a list of trees, and the plan cannot follow it yet. It is an
+                // error and not skipped, as one of its trees may hold the blob.
+                kind => return Err(leftover(PurgeError::UnsupportedKind { id, kind })),
             }
         }
         Ok(())
@@ -685,6 +688,14 @@ pub enum PurgeError {
         /// Why it cannot be planned.
         source: Box<PurgeError>,
     },
+    /// An object of a kind that the plan cannot follow yet is in the store. The scan does not
+    /// skip it, as it may reach the blob.
+    UnsupportedKind {
+        /// The object.
+        id: ObjectId,
+        /// Its kind.
+        kind: Kind,
+    },
     /// The plan would replace more entries of the log than the journal of a purge lists
     /// (2^24), so that the purge could not be resumed or aborted after a crash.
     TooManyEntries {
@@ -748,6 +759,11 @@ impl PurgeError {
                  {} that its journal can list",
                 journal::MAX_STUBS
             ),
+            Self::UnsupportedKind { id, kind } => write!(
+                f,
+                "{id} is a {} object, which a purge cannot follow yet",
+                kind.name()
+            ),
             Self::Unsound { id } => write!(
                 f,
                 "the plan would keep {id} reachable although it holds the blob or is deleted; \
@@ -784,6 +800,7 @@ impl Error for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
+            | Self::UnsupportedKind { .. }
             | Self::Unsound { .. } => None,
         }
     }
@@ -1522,6 +1539,51 @@ mod tests {
             }
             other => panic!("expected a leftover, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_leftover_commit2_stops_the_plan_and_is_named() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let store = repository.objects();
+        let tree = read_commit(store, first).unwrap().tree();
+        let conflict = crate::object::Commit2::try_new(
+            vec![tree; 3],
+            vec![first],
+            crate::change::ChangeId::generate().unwrap(),
+            actor(),
+            8,
+            "conflict",
+        )
+        .unwrap();
+        let conflict = store.put_raw(Kind::Commit2, &conflict.encode()).unwrap();
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        match &error {
+            PurgeError::Leftover { id, source } => {
+                assert_eq!(*id, conflict);
+                assert!(
+                    matches!(
+                        **source,
+                        PurgeError::UnsupportedKind { id, kind: Kind::Commit2 } if id == conflict
+                    ),
+                    "{source:?}"
+                );
+                assert!(
+                    source.to_string().ends_with(&format!(
+                        "{conflict} is a commit2 object, which a purge cannot follow yet"
+                    )),
+                    "{source}"
+                );
+            }
+            other => panic!("expected a leftover, got {other:?}"),
+        }
+        assert_eq!(
+            crate::failure::Classify::kind(&error),
+            crate::failure::FailureKind::Damaged
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::object::{Commit, EntryMode, ObjectId, Tree};
+use crate::object::{Commit, Commit2, CommitId, EntryMode, ObjectId, Tree};
 use crate::oplog::Pointer;
 use crate::store::{ObjectStore, StoreError};
 
@@ -191,6 +191,12 @@ impl Tree {
 pub enum CommitReference {
     /// The tree of the commit.
     Tree,
+    /// A tree of the list of a [`Commit2`].
+    ListedTree {
+        /// The position in the list of trees, counted from 0 as in [`Commit2::trees`]. The
+        /// `Display` form counts from 1: index 0 is "tree 1".
+        index: usize,
+    },
     /// A parent.
     Parent {
         /// The position in the list of parents, counted from 0 as in
@@ -203,6 +209,7 @@ impl fmt::Display for CommitReference {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tree => f.write_str("the tree"),
+            Self::ListedTree { index } => write!(f, "tree {}", index + 1),
             Self::Parent { index } => write!(f, "parent {}", index + 1),
         }
     }
@@ -220,23 +227,57 @@ impl Commit {
     /// [`VerifyError::Store`] if the object has another kind, is damaged, or the storage
     /// fails.
     pub fn verify(&self, store: &dyn ObjectStore) -> Result<(), CommitVerifyError> {
-        let tree = ObjectId::from(self.tree());
-        let references = std::iter::once((CommitReference::Tree, tree)).chain(
-            self.parents().iter().enumerate().map(|(index, parent)| {
-                (CommitReference::Parent { index }, ObjectId::from(*parent))
-            }),
-        );
-        for (reference, id) in references {
-            let found = match reference {
-                CommitReference::Tree => store.resolve_tree(&id).map(|found| found.is_some()),
-                CommitReference::Parent { .. } => {
-                    store.resolve_commit(&id).map(|found| found.is_some())
-                }
-            };
-            VerifyError::check(|| reference, id, found)?;
-        }
-        Ok(())
+        let tree = std::iter::once((CommitReference::Tree, ObjectId::from(self.tree())));
+        verify_references(store, tree.chain(parent_references(self.parents())))
     }
+}
+
+impl Commit2 {
+    /// Checks that every tree of the list is a tree and every parent is a commit that the store
+    /// has, as [`Commit::verify`] does for one tree. The trees are checked in the order of the
+    /// list, before the parents.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first problem as [`Commit::verify`] does, with [`CommitReference::ListedTree`]
+    /// as the place of a tree.
+    pub fn verify(&self, store: &dyn ObjectStore) -> Result<(), CommitVerifyError> {
+        let trees =
+            self.trees().iter().enumerate().map(|(index, tree)| {
+                (CommitReference::ListedTree { index }, ObjectId::from(*tree))
+            });
+        verify_references(store, trees.chain(parent_references(self.parents())))
+    }
+}
+
+/// The parents of a commit with their places, in order.
+fn parent_references(
+    parents: &[CommitId],
+) -> impl Iterator<Item = (CommitReference, ObjectId)> + '_ {
+    parents
+        .iter()
+        .enumerate()
+        .map(|(index, parent)| (CommitReference::Parent { index }, ObjectId::from(*parent)))
+}
+
+/// Checks each reference of a commit in the given order and returns the first problem. A tree is
+/// resolved as a tree and a parent as a commit.
+fn verify_references(
+    store: &dyn ObjectStore,
+    references: impl Iterator<Item = (CommitReference, ObjectId)>,
+) -> Result<(), CommitVerifyError> {
+    for (reference, id) in references {
+        let found = match reference {
+            CommitReference::Tree | CommitReference::ListedTree { .. } => {
+                store.resolve_tree(&id).map(|found| found.is_some())
+            }
+            CommitReference::Parent { .. } => {
+                store.resolve_commit(&id).map(|found| found.is_some())
+            }
+        };
+        VerifyError::check(|| reference, id, found)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -623,6 +664,74 @@ mod tests {
                 }
                 other => panic!("unexpected error: {other}"),
             }
+        }
+    }
+
+    #[test]
+    fn a_commit2_verifies_every_tree_of_its_list_and_names_the_position() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = empty_tree(&store);
+        let parent = store.put_commit(&commit(tree, vec![])).unwrap();
+        let commit2 = |trees: Vec<TreeId>, parents: Vec<CommitId>| {
+            Commit2::try_new(
+                trees,
+                parents,
+                sample_change(),
+                Actor::human("daniel").unwrap(),
+                0,
+                "m",
+            )
+            .unwrap()
+        };
+        assert!(commit2(vec![tree; 3], vec![parent]).verify(&store).is_ok());
+        // The first tree that is absent is named, in the order of the list.
+        let absent = absent_tree();
+        match commit2(vec![tree, tree, absent, tree, absent], vec![])
+            .verify(&store)
+            .unwrap_err()
+        {
+            CommitVerifyError::Missing { at, id } => {
+                assert_eq!(at, CommitReference::ListedTree { index: 2 });
+                assert_eq!(at.to_string(), "tree 3");
+                assert_eq!(id, ObjectId::from(absent));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        // A tree of the list that is a commit is a store error with its position.
+        let parent_as_tree = TreeId::new(ObjectId::from(parent));
+        match commit2(vec![tree, parent_as_tree, tree], vec![])
+            .verify(&store)
+            .unwrap_err()
+        {
+            CommitVerifyError::Store { at, source } => {
+                assert_eq!(at, CommitReference::ListedTree { index: 1 });
+                assert!(
+                    matches!(*source, StoreError::KindMismatch { .. }),
+                    "{source}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        // The trees are checked before the parents.
+        let absent_parent = commit(absent, vec![]).id();
+        match commit2(vec![tree, tree, absent], vec![absent_parent])
+            .verify(&store)
+            .unwrap_err()
+        {
+            CommitVerifyError::Missing { at, .. } => {
+                assert_eq!(at, CommitReference::ListedTree { index: 2 });
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        match commit2(vec![tree; 3], vec![parent, absent_parent])
+            .verify(&store)
+            .unwrap_err()
+        {
+            CommitVerifyError::Missing { at, .. } => {
+                assert_eq!(at, CommitReference::Parent { index: 1 });
+            }
+            other => panic!("unexpected error: {other}"),
         }
     }
 

@@ -88,7 +88,9 @@ Facts that bound the design:
   the blob, for the commits of such trees, and for the commits after them. One that no kept root
   reaches (the leftover of a crash before its entry) is deleted with them and not rewritten, so
   that no tree is left that names a missing blob and no commit that names a deleted parent. A
-  leftover that holds no secret and follows no such commit stays. The plan checks at the end
+  leftover that holds no secret and follows no such commit stays. The plan cannot follow a
+  `commit2` (ADR-005) yet: one that it finds in the store stops the plan and is reported as
+  damage, as one of its trees may name the blob. The plan checks at the end
   that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
   The scratch files of `tmp/` are removed when the purge takes the lock (ADR-011); see the
   limits.

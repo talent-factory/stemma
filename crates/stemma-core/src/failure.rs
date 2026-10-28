@@ -319,6 +319,9 @@ impl Classify for PurgeError {
             Self::Read(error) => error.kind(),
             Self::Store(error) | Self::BlobUnreadable { source: error, .. } => error.kind(),
             Self::Leftover { source, .. } => source.kind(),
+            // No command writes a `commit2` yet, so one in the store is reported as damage, as an
+            // unknown kind was before.
+            Self::UnsupportedKind { .. } => FailureKind::Damaged,
             Self::Agent
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }

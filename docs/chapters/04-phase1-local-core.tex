@@ -134,7 +134,7 @@ und begründet, warum die Garantien gelten.
 
 \subsection{Inhaltsadressierung}
 
-Ein Objekt besteht aus einer Art, \type{blob}, \type{tree} oder \type{commit},
+Ein Objekt besteht aus einer Art, \type{blob}, \type{tree}, \type{commit} oder \type{commit2},
 und einem Rumpf aus Bytes. Seine ID ist der BLAKE3-Hash über einen Kopf und den Rumpf
 \cite[oconnor2020blake3], mit dem Algorithmus als Präfix (ADR-001):
 
@@ -175,6 +175,17 @@ Gleiche IDs bedeuten deshalb gleiche Teilgraphen, so dass ein Vergleich zwei gle
 überspringen kann, ohne sie zu lesen.
 Eine Änderung an einer Datei ändert dagegen die ID jedes Baums darüber und die des Commits,
 so dass die ID eines Commits den ganzen Stand festlegt.
+
+Ein Commit mit einem offenen Konflikt nennt statt eines Baums eine Liste von Bäumen
+(\type{Commit2}). Die Liste wechselt zwischen Hinzufügen und Wegnehmen ab: Der erste Baum ist eine
+Seite, jedes folgende Paar eine Basis, die weggenommen, und eine Seite, die hinzugefügt wird.
+Ihre Länge ist deshalb ungerade und mindestens drei. Der Rumpf gleicht dem eines Commits, nur
+steht am Anfang je Baum eine Zeile \type{tree <ID>} in der Reihenfolge der Liste. Ein Stand mit
+einem einzigen Baum ist immer ein \type{commit}, damit er nur eine Kodierung und eine ID hat.
+Die neue Art heisst \type{commit2}, weil eine geänderte Kodierung von \type{commit} die ID jedes
+gespeicherten Commits ändern würde (ADR-005). Weil die Art zum gehashten Kopf gehört, ergeben
+dieselben Bytes als \type{commit} ein anderes Objekt. In Phase 1 schreibt noch kein Befehl
+ein solches Objekt; was ein Konflikt bedeutet und wie er aufgelöst wird, beschreibt Phase 3.
 
 Zum Graphen gehören weitere Invarianten.
 {\em Jedes Objekt hat genau eine Kodierung.}
@@ -2338,6 +2349,10 @@ weil jeder Stub den Hash des Rumpfs behält, den er ersetzt (\in{Abschnitt}[sec:
 und die Meldung nennt ihn, denn ein Commit darf keinen Elter zweimal nennen.
 \item Ein beschädigter Baum oder Commit hält den Plan an, denn er könnte den Blob nennen.
 Ein Rest, dessen Elter fehlt, hält ihn ebenfalls an, und die Meldung nennt den Rest.
+\item Einem Commit mit einer Liste von Bäumen (\type{commit2}) kann der Plan noch nicht folgen.
+Findet er einen im Speicher, hält er an und meldet ihn als Schaden, statt ihn zu überspringen,
+denn einer seiner Bäume könnte den Blob nennen.
+In Phase~1 schreibt kein Befehl ein solches Objekt.
 \item Ein Objekt, das zwischen dem Auflisten des Speichers und dem Lesen seines Kopfs verschwindet,
 nennt nichts mehr und wird übersprungen.
 Verschwindet es erst danach, hält der Plan an.
@@ -2418,12 +2433,12 @@ Schritt, denn das eine nützt ohne das andere nichts.
 \section[sec:strict-readers]{Wie die strengen Leser geprüft werden}
 
 Jeder Leser einer Datei des Repositories ist streng: Er nimmt nur an, was der Schreiber
-geschrieben hätte (ADR-005). Das gilt für Bäume, Commits, die Zeile des Akteurs, den Index,
-die Einträge des Operation Log in beiden Kodierungen und das Journal eines Purge. Daraus folgt
-eine Regel, die sich an jeder beliebigen Eingabe prüfen lässt: Entweder lehnt der Leser sie ab,
-oder das Kodieren dessen, was er gelesen hat, ergibt genau die Eingabe. Eine Ablehnung hat eine
-Meldung, und ihre Kette von Ursachen endet; nur der Leser des Journals meldet bloss, dass es
-beschädigt ist.
+geschrieben hätte (ADR-005). Das gilt für Bäume, Commits, Commits mit einer Liste von Bäumen
+(\type{commit2}), die Zeile des Akteurs, den Index, die Einträge des Operation Log in beiden
+Kodierungen und das Journal eines Purge. Daraus folgt eine Regel, die sich an jeder beliebigen
+Eingabe prüfen lässt: Entweder lehnt der Leser sie ab, oder das Kodieren dessen, was er gelesen
+hat, ergibt genau die Eingabe. Eine Ablehnung hat eine Meldung, und ihre Kette von Ursachen endet;
+nur der Leser des Journals meldet bloss, dass es beschädigt ist.
 Eine zweite Schreibweise derselben Sache gibt es dann nicht, und damit auch keine zweite ID.
 
 Mehrere Arten von Tests prüfen diese Regel. Die Golden Vectors legen die Bytes einzelner Objekte
@@ -2436,8 +2451,9 @@ Eingaben prüfen. Golden Vectors und Property-Tests laufen in \type{just ci}.
 
 Der Generator sieht aber nicht, welche Zweige eines Lesers er erreicht. Das tut ein Fuzzer,
 der der Abdeckung folgt: \type{cargo fuzz} mit libFuzzer verändert die Eingaben so, dass sie
-neue Zweige erreichen. Im Verzeichnis \type{fuzz/} gibt es dafür sechs Ziele, eines je Leser:
-\type{tree}, \type{commit}, \type{actor}, \type{index}, \type{entry} und \type{journal}.
+neue Zweige erreichen. Im Verzeichnis \type{fuzz/} gibt es dafür sieben Ziele, eines je Leser:
+\type{tree}, \type{commit}, \type{commit2}, \type{actor}, \type{index}, \type{entry} und
+\type{journal}.
 Die Leser von HEAD und einer Branch-Datei lesen nur eine Zeile; für sie genügen die
 Property-Tests. Die Ziele beginnen bei gültigen Kodierungen in \type{fuzz/seeds/}.
 libFuzzer braucht die Nightly-Version von Rust, deshalb gehört das Fuzzing nicht zu

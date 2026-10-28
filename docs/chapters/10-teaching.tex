@@ -503,7 +503,8 @@ Der Workflow auf dem Server läuft nur, wenn der Mensch ihn von Hand startet (AD
 
 Die strengen Leser der Formate (ADR-005) prüfen zwei Verfahren mit erzeugten Eingaben.
 Eigenschaftsbasierte Tests (\type{properties.rs}) laufen in \type{just ci}.
-Sie erzeugen Bäume, Commits, Indexe, Akteure, Einträge des Logs und Zeiger,
+Sie erzeugen Bäume, Commits (auch mit einer Liste von Bäumen), Indexe, Akteure,
+Einträge des Logs und Zeiger,
 und sie prüfen, dass jeder Leser genau das annimmt, was der Kodierer schreibt,
 und bei keiner Eingabe abbricht.
 Ein Fuzzer geht weiter: \type{just fuzz} erzeugt für einen der Leser zufällige Eingaben,
