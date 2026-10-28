@@ -1,8 +1,9 @@
 # ADR-017: Derived data
 
 **Status:** Accepted. Decisions marked *(confirmed)* agreed with the author on
-2026-10-27 (STEMMA-18). Nothing here is implemented. The first slice that needs derived data (the
-diff work of phase 2, or `log` of phase 3) turns it into code. The ADR amends ADR-009 (the layout
+2026-10-27 (STEMMA-18). Nothing here is implemented. Phase 2 shipped without a cache: the diff
+reads both sides anew on every call and writes nothing under `.stemma/derived/`. The first slice
+that needs derived data, `log` of phase 3, turns it into code. The ADR amends ADR-009 (the layout
 names `derived/`) and ADR-014 (step 8 of the purge deletes it). The open items below are questions
 for later slices; none of them changes a decision above.
 
@@ -11,9 +12,10 @@ for later slices; none of them changes a decision above.
 ADR-015 adopts one idea of Scion: blame, path history, and indexes of the log are derived data.
 They are defined recursively from the values for the parents of a commit, they can change without
 touching a stored object, and they are never the source of truth. ADR-015 leaves open where such
-data lives, when it is computed, and how it becomes invalid. The diff work (phase 2) and `log`
-(phase 3) need an answer, because both walk the history and must not walk it again for every
-call.
+data lives, when it is computed, and how it becomes invalid. `log` (phase 3) needs an answer,
+because it walks the history and must not walk it again for every call. The diff of phase 2 was
+expected to need one as well, but it reads both sides anew on every call and has no use for a
+cache.
 
 Four facts of the existing design bound the answer:
 
