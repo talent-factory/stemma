@@ -14,6 +14,12 @@ Der Kurs AISE, AI Assisted Software Engineering, findet Akteure mit Sponsor und 
 jedes Commits, das Operation Log und das Restore als Rückweg nach dem Fehler eines Agenten
 und Operationen, die nur ein Mensch ausführen darf; ab Phase~4 kommen Branch-Regeln,
 Freigaben und Risikostufen dazu.
+Die Agentenfunktionen von Phase~2 beantworten je ein Problem der Arbeit mit Agenten.
+\type{diff --exit-code} gibt einem Skript die Antwort \quotation{gibt es Änderungen?}
+ohne das Parsen von Text.
+Reiner Text in einer Pipe hält Farbcodes und Pager aus der Eingabe eines Agenten.
+Die Oberfläche im Terminal dient dem Menschen, der die Arbeit eines Agenten prüft.
+Der Diff selbst ist eine reine Anzeige und liegt auf Risikostufe 1 nach ADR-004.
 Wie Stemma selbst mit Agenten entsteht, beschreibt \in{Abschnitt}[sec:agents]
 als Fallstudie für diesen Kurs.
 
@@ -158,9 +164,44 @@ Zeiger zu finden \stopxcell
 \startxcell Abschnitt 1.3, Durchlaufen einer Folge, und 3.4, Hashtabelle \stopxcell
 \stopxrow
 \startxrow
-\startxcell Kürzeste Folge von Einfügungen und Löschungen, Myers-Diff in $O((N+M)\,D)$ \stopxcell
+\startxcell Kürzeste Folge von Einfügungen und Löschungen, Myers-Diff in $O((N+M)\,D)$
+mit Speicher $O(N+M)$ \stopxcell
 \startxcell \type{diff} (\type{diff.rs}) \stopxcell
 \startxcell Nicht im Buch von Sedgewick und Wayne; \in{Abschnitt}[sec:myers] \stopxcell
+\stopxrow
+\startxrow
+\startxcell Mittelschlange: Vorwärts- und Rückwärtssuche treffen sich auf einer Diagonale,
+die Aufgabe zerfällt dort in zwei Teile, Rekursion über $O(\log D)$ Ebenen \stopxcell
+\startxcell \type{middle_snake} (\type{diff.rs}) \stopxcell
+\startxcell Nicht im Buch; Myers \cite[myers1986ond]; Teile und herrsche beim Sortieren in
+Abschnitt 2.2 \stopxcell
+\stopxrow
+\startxrow
+\startxcell Verschieben der Grenzen eines Änderungsblocks entlang gleicher Zeilen, mit Bewertung
+der Einrückung; die Zahl der Änderungen bleibt gleich \stopxcell
+\startxcell \type{slide} (\type{diff.rs}) \stopxcell
+\startxcell Nicht im Buch; Heuristik von Git, hier vereinfacht
+(\in{Abschnitt}[sec:slide]) \stopxcell
+\stopxrow
+\startxrow
+\startxcell Gruppieren in Hunks: zwei lineare Durchläufe über das Skript, überlappende oder
+sich berührende Fenster aus Kontextzeilen verschmelzen, Präfixsummen für die Positionen
+\stopxcell
+\startxcell \type{hunks} (\type{diff.rs}) \stopxcell
+\startxcell Nicht im Buch; Verschmelzen von Intervallen, verwandt mit dem Mischen in
+Abschnitt 2.2 \stopxcell
+\stopxrow
+\startxrow
+\startxcell Erkennung von Binärdateien: lineare Suche nach einem NUL-Byte in den ersten
+8000 Bytes, also mit fester Obergrenze \stopxcell
+\startxcell \type{is_binary} (\type{diff.rs}) \stopxcell
+\startxcell Nicht im Buch; Heuristik von Git \stopxcell
+\stopxrow
+\startxrow
+\startxcell Zustand der Oberfläche als reiner Wert, der sich durch Tastenereignisse ändert;
+das Rendern ist eine Funktion von Zustand und Diff \stopxcell
+\startxcell \type{State::apply} und \type{render} (\type{lib.rs} in \type{stemma-tui}) \stopxcell
+\startxcell Nicht im Buch; endlicher Automat \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
@@ -292,6 +333,41 @@ und prüfen Sie den Pull Request gegen \type{docs/agents/book-style.md}:
 den Aufbau des Abschnitts, die Begriffe der Tabelle und die Muster, die der Text meiden soll.
 Welche Regeln liessen sich maschinell prüfen, so wie \type{just doc-lines} die Länge der Zeilen,
 und welche verlangen das Urteil einer Person?
+\stopitemize
+
+\subsection{Phase 2}
+
+\startitemize[n]
+\item (DUA) Zeigen Sie, dass die Suche des Myers-Diffs $O((N+M)\,D)$ Zeit braucht
+(\in{Abschnitt}[sec:myers]).
+Begründen Sie, warum $x$ auf einer Diagonale über die Runden nie sinkt
+und was das für die Kosten des Folgens gleicher Elemente heisst.
+Geben Sie zwei Folgen der Länge $N$ an, für die $D$ gleich $2N$ ist, und zwei, für die $D$ gleich
+null ist, und vergleichen Sie die Laufzeit mit der dynamischen Programmierung für die längste
+gemeinsame Teilfolge, die $O(N \cdot M)$ braucht.
+\item (DUA) \type{slide} verschiebt die Grenze eines Änderungsblocks (\in{Abschnitt}[sec:hunks]).
+Zeigen Sie, dass die Zahl der Änderungen dabei gleich bleibt und dass das Ergebnis weiter ein
+Skript von der alten in die neue Folge ist.
+Warum darf ein Block nur über Zeilen gleiten, die seiner ersten oder letzten Zeile gleichen?
+Konstruieren Sie eine Eingabe, bei der zwei Blöcke beim Gleiten zusammenstiessen,
+und nennen Sie die Regel von Stemma, die das verhindert.
+\item (DUA) Beweisen Sie die Kettenregel der Hunks: Zwischen zwei benachbarten Änderungen liegen
+genau dann höchstens $2c$ unveränderte Zeilen, wenn ihre Fenster aus je $c$ Kontextzeilen sich
+überlappen oder berühren. Folgern Sie, dass ein Hunk Änderungen umfassen kann, die weiter als
+$2c$ Zeilen auseinanderliegen, und dass \type{hunks} keine Zeile in zwei Hunks ausgibt.
+Wie viele Hunks hat ein Skript mit $k$ Änderungen höchstens?
+\item (AISE) Ein Agent soll in einem Skript entscheiden, ob es etwas zu committen gibt.
+Begründen Sie, warum er dazu \type{diff --exit-code} auswertet und nicht den Text der Ausgabe,
+und warum er jeden Exit-Code ausser 0 und 4 als Fehler behandeln muss
+(1, 2, 3, 5 und 6; siehe Befehlsreferenz).
+Was geschieht im Skript, wenn es nur auf 1 prüft?
+Beachten Sie besonders den Exit-Code 3, bei dem der Snapshot schon angelegt ist.
+\item (AISE) Die Erkennung von Binärdateien sucht ein NUL-Byte in den ersten 8000 Bytes.
+Nennen Sie je eine Datei, die sie falsch als Text, und eine, die sie falsch als binär einstuft
+(denken Sie an eine Datei, deren erstes NUL erst später steht, und an UTF-16).
+Welchen Schaden kann die falsche Einstufung anrichten, wenn ein Agent den Diff liest
+und danach entscheidet?
+Warum erreicht ein falsch eingestufter Diff den Merge-Pfad nicht (Stufe 1 nach ADR-004)?
 \stopitemize
 
 \section[sec:agents]{Wie Stemma mit Agenten entsteht}
@@ -438,6 +514,39 @@ eine Datei des Repositories schreibt das nicht vor.
 Nach jeder Phase prüft ein Agent nach \type{docs/agents/book-review.md}
 das Kapitel der Phase, die berührten Teile der Kapitel 1 bis 3,
 die Befehlsreferenz und die Kapitel 10 und 11.
+
+\subsection{Abhängigkeiten, Stufen und Oberflächen}
+
+Bei den Stufen der Prüfung nach ADR-004 gilt:
+Eine neue direkte Abhängigkeit zur Laufzeit gehört zur Stufe 2 und verlangt die Prüfung
+vor dem Merge.
+Die Oberfläche von \type{diff --tui} führte \type{ratatui} ein (ADR-016).
+Der Pull Request ging jedoch zuerst auf \type{main}, und die Prüfung folgte danach.
+Zwei unabhängige Agenten prüften je einen Teil, die Lieferkette mit der Sicherheit
+und die Wartung mit dem Umfang und der Architektur.
+Der Mensch bestätigte die Entscheidungen und nahm das ADR an;
+die Prüfung steht als eigener Abschnitt im ADR.
+Eine Prüfung der Stufe 2, die erst nach dem Merge läuft, stellt nur noch fest.
+Ein Agent, der eine neue Abhängigkeit einführt, beantragt sie deshalb im Pull Request selbst.
+
+Für die Abhängigkeiten gibt es \type{just deps}.
+Der Befehl führt \type{cargo audit} und \type{cargo deny check} über den Baum aus
+(\type{deny.toml}) und ist bei jeder neuen oder geänderten Abhängigkeit von Hand auszuführen.
+Es gehört nicht zu \type{just ci}, weil es die Datenbank der Sicherheitshinweise aus dem Netz holt.
+Die Messung im ADR zeigt, dass die Lockdatei von 48 auf 123 Einträge wuchs,
+mehr als die Probe in einem Testprojekt vorhergesagt hatte.
+Ein Agent, der eine Abhängigkeit vorschlägt, belegt ihre Kosten deshalb am echten Baum.
+
+Bei Oberflächen kommt eine Schwierigkeit dazu.
+Eine Oberfläche, die ein Terminal braucht, lässt sich schwer prüfen.
+Stemma trennt deshalb den Zustand vom Terminal: \type{State} ist ein einfacher Wert,
+der sich durch Tastenereignisse ändert, und das Rendern geht in den Tests in den \type{TestBackend}
+von \type{ratatui}.
+Die Tests der Ansicht brauchen kein Terminal und laufen in \type{just ci}.
+Die Oberfläche dient dem Menschen, der die Arbeit eines Agenten prüft.
+Ein Skript nimmt \type{diff} ohne \type{--tui}, dessen Text die Referenz bleibt;
+ist die Ausgabe kein Terminal, endet \type{--tui} mit Exit-Code 1,
+statt auf eine Taste zu warten, die nie kommt.
 
 \subsection{Das Buch neben dem Code}
 

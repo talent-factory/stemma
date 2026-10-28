@@ -161,6 +161,8 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Option | Schalter, Flag | A named argument of a command, such as `--actor` |
 | abgeleitete Daten | Metadaten, Index (für den ganzen Cache) | A value computed from a commit and its ancestors and kept in `.stemma/derived/`; never part of the object model (ADR-017) |
 | Sitzung | | A work session, such as the running example; `Session` only for the field of an agent |
+| Hunk | Chunk, Block | A group of changes of a diff with the unchanged lines around it (Chapter 5) |
+| Änderungsgruppe | Änderungsblock | A maximal run of changed lines on one side of a diff (Chapter 5) |
 
 ## Figures
 

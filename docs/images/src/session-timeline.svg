@@ -44,7 +44,7 @@
 <text x="328" y="170" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:e6a3…</text>
 <text x="434" y="170" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32">b3:2037…</text>
 <text x="526" y="170" font-size="12" fill="#64748B">–</text>
-<text x="20" y="210" font-family="Courier, monospace" font-size="12" fill="#0F172A">status</text>
+<text x="20" y="210" font-family="Courier, monospace" font-size="12" fill="#0F172A">diff</text>
 <text x="236" y="210" font-size="12" fill="#6B46C1"><tspan font-weight="bold">4</tspan> <tspan font-family="Courier, monospace">snapshot</tspan></text>
 <text x="328" y="210" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#B45309">b3:7694…</text>
 <text x="434" y="210" font-family="Courier, monospace" font-size="12" fill="#64748B">b3:2037…</text>

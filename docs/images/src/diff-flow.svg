@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 572" font-family="Helvetica, Arial, sans-serif">
+<title>Ablauf von diff mit dem Working-Copy-Commit und Absturzpunkten</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="700" height="572" fill="#FFFFFF"/>
+<!-- Steps: the bar on the left carries the colour of the zone that the step reads or writes -->
+<g stroke="#64748B" stroke-width="1" fill="#FFFFFF">
+  <rect x="20" y="20" width="250" height="46" rx="4"/>
+  <rect x="20" y="96" width="250" height="46" rx="4"/>
+  <rect x="20" y="172" width="250" height="46" rx="4"/>
+  <rect x="20" y="248" width="250" height="46" rx="4"/>
+  <rect x="20" y="324" width="250" height="46" rx="4"/>
+  <rect x="20" y="400" width="250" height="46" rx="4"/>
+</g>
+<g>
+  <rect x="20" y="20" width="8" height="46" fill="#64748B"/>
+  <rect x="20" y="96" width="8" height="46" fill="#2B6CB0"/>
+  <rect x="20" y="172" width="8" height="46" fill="#6B46C1"/>
+  <rect x="20" y="248" width="8" height="46" fill="#B45309"/>
+  <rect x="20" y="324" width="8" height="46" fill="#64748B"/>
+  <rect x="20" y="400" width="8" height="46" fill="#64748B"/>
+</g>
+<g font-size="13" font-weight="bold" fill="#0F172A">
+  <text x="40" y="39">1  Argumente prüfen</text>
+  <text x="40" y="115" fill="#2B6CB0">2  Verzeichnis lesen</text>
+  <text x="40" y="191" fill="#6B46C1">3  Eintrag schreiben</text>
+  <text x="40" y="267" fill="#B45309">4  Zeiger bewegen</text>
+  <text x="40" y="343">5  Seiten vergleichen</text>
+  <text x="40" y="419">6  Ausgabe</text>
+</g>
+<g font-size="11.5" fill="#64748B">
+  <text x="56" y="57">Kennungen auflösen, Pfade umformen</text>
+  <text x="56" y="133">verfolgte Dateien, Objekte speichern</text>
+  <text x="56" y="209"><tspan font-family="Courier, monospace">snapshot</tspan>, gesichert vor dem Zeiger</text>
+  <text x="56" y="285">Working-Copy-Commit auf den Snapshot</text>
+  <text x="56" y="361">nach Inhalt, Myers-Diff, Hunks bilden</text>
+  <text x="56" y="437">Text, Pager oder <tspan font-family="Courier, monospace">--tui</tspan></text>
+</g>
+<!-- Arrows between the steps -->
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="145" y1="66" x2="145" y2="94"/>
+  <line x1="145" y1="142" x2="145" y2="170"/>
+  <line x1="145" y1="218" x2="145" y2="246"/>
+  <line x1="145" y1="294" x2="145" y2="322"/>
+  <line x1="145" y1="370" x2="145" y2="398"/>
+</g>
+<!-- The failed flush after the pointer move belongs to step 4 -->
+<path d="M270,280 H296 V350" fill="none" stroke="#64748B" stroke-width="1.2" marker-end="url(#arrow)"/>
+<!-- Crash points: what remains after a crash or an error at this point -->
+<g stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4">
+  <line x1="20" y1="81" x2="292" y2="81"/>
+  <line x1="20" y1="157" x2="292" y2="157"/>
+  <line x1="20" y1="233" x2="292" y2="233"/>
+  <line x1="20" y1="309" x2="292" y2="309"/>
+</g>
+<g font-size="12.5" font-weight="bold" fill="#B91C1C">
+  <text x="302" y="77">Fehler: nichts geschrieben</text>
+  <text x="302" y="153">Absturz: kein Eintrag</text>
+  <text x="302" y="229">Absturz: Eintrag steht</text>
+  <text x="302" y="305">Absturz: Zeiger bewegt</text>
+  <text x="302" y="362">Bewegung nicht gesichert: Exit-Code 3</text>
+</g>
+<g font-size="12" fill="#0F172A">
+  <text x="302" y="94">Ein ungültiger Pfad endet mit Exit-Code 1,</text>
+  <text x="302" y="109">bevor der Befehl etwas speichert.</text>
+  <text x="302" y="170">Der Zeiger ist unverändert, neue Objekte</text>
+  <text x="302" y="185">bleiben ohne Zeiger liegen.</text>
+  <text x="302" y="246">Der Zeiger hat den alten Wert. Das Log nennt</text>
+  <text x="302" y="261">den Ausgang unbekannt, bis der nächste Befehl</text>
+  <text x="302" y="276">die Sperre übernimmt.</text>
+  <text x="302" y="322">Der Eintrag stimmt. Vergleich und Ausgabe lesen</text>
+  <text x="302" y="337">nur, ein Absturz dort lässt nichts liegen.</text>
+  <text x="302" y="378">Der Zeiger ist bewegt, die Bewegung nicht gesichert.</text>
+  <text x="302" y="393">Die Ausgabe bleibt aus; ein neuer Aufruf ist</text>
+  <text x="302" y="408">unbedenklich, sichert die Bewegung aber nicht.</text>
+</g>
+<!-- Last row: the end of the output -->
+<text x="302" y="436" font-size="12" font-weight="bold" fill="#0F172A">Ende</text>
+<text x="302" y="452" font-size="12" fill="#0F172A">Schliesst der Leser der Ausgabe die Pipe früh,</text>
+<text x="302" y="467" font-size="12" fill="#0F172A">endet der Befehl ohne Fehlermeldung;</text>
+<text x="302" y="482" font-size="12" fill="#0F172A">der Exit-Code bleibt der des Vergleichs.</text>
+<!-- Notes -->
+<g font-size="11.5" fill="#64748B">
+  <text x="20" y="506">Die Schritte 2 bis 4 sind der Snapshot (Kapitel 4). Vergleicht der Befehl zwei Commits,</text>
+  <text x="20" y="521">ist keine Seite der Working-Copy-Commit, und die Schritte 2 bis 4 entfallen: Der Befehl ändert dann nichts.</text>
+  <text x="20" y="536">Nach einem Absturz in den Schritten 2 bis 4 bleibt <tspan font-family="Courier, monospace">refs.lock</tspan> liegen; der nächste Befehl</text>
+  <text x="20" y="551">auf demselben Rechner übernimmt sie.</text>
+</g>
+</svg>

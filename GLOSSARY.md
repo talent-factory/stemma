@@ -243,13 +243,20 @@ kept in the cache `.stemma/derived/` outside the object model. It can be deleted
 again, and a purge removes it (ADR-017). (abgeleitete Daten)
 _Avoid_: Index (for the cache as a whole), metadata
 
+## Diff
+
 **Hunk**:
-A group of changes in a diff with the unchanged lines before and after it. Two changes fall into
-one hunk when at most twice the number of context lines lies between them. (Hunk)
-_Avoid_: block, section of the diff output
+A group of changes of an edit script together with the unchanged lines around it. Changes whose
+context lines overlap or touch share one hunk. (Hunk)
+_Avoid_: Chunk, block
 
 **Context line**:
 An unchanged line that a hunk shows before or after a change. The diff uses three. (Kontextzeile)
+
+**Change group**:
+A maximal run of changed lines on one side of a diff. The slide step moves a group along the
+unchanged lines that equal its edge lines. (Änderungsgruppe)
+_Avoid_: Change block
 
 **Side of a diff**:
 One of the two compared versions, the old and the new. A side is a commit, or the

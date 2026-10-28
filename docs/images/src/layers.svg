@@ -1,32 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 360" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 388" font-family="Helvetica, Arial, sans-serif">
   <title>Schichtenmodell von Stemma</title>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0,0 L10,5 L0,10 z" fill="#0F172A"/>
     </marker>
+    <marker id="arrow-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+    </marker>
   </defs>
 
   <!-- Oberflaechen -->
   <g stroke-width="1.5">
-    <rect x="30" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
-    <rect x="250" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#64748B" stroke-dasharray="6 4"/>
-    <rect x="470" y="20" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#64748B" stroke-dasharray="6 4"/>
+    <rect x="30" y="20" width="140" height="64" rx="8" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
+    <rect x="196" y="20" width="140" height="64" rx="8" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
+    <rect x="362" y="20" width="140" height="64" rx="8" fill="#FFFFFF" stroke="#64748B" stroke-dasharray="6 4"/>
+    <rect x="528" y="20" width="140" height="64" rx="8" fill="#FFFFFF" stroke="#64748B" stroke-dasharray="6 4"/>
   </g>
   <g text-anchor="middle">
-    <text x="130" y="48" font-size="15" font-weight="bold" fill="#0F172A">stemma-cli</text>
-    <text x="130" y="68" font-size="12" fill="#64748B">Kommandozeile</text>
-    <text x="350" y="48" font-size="15" font-weight="bold" fill="#0F172A">API-Server</text>
-    <text x="350" y="68" font-size="12" fill="#64748B">dieselben Operationen wie die CLI</text>
-    <text x="570" y="48" font-size="15" font-weight="bold" fill="#0F172A">MCP-Server</text>
-    <text x="570" y="68" font-size="12" fill="#64748B">Adapter für Agenten</text>
+    <text x="100" y="48" font-size="15" font-weight="bold" fill="#0F172A">stemma-cli</text>
+    <text x="100" y="68" font-size="12" fill="#64748B">Kommandozeile</text>
+    <text x="266" y="48" font-size="15" font-weight="bold" fill="#0F172A">stemma-tui</text>
+    <text x="266" y="68" font-size="12" fill="#64748B">Anzeige im Terminal</text>
+    <text x="432" y="48" font-size="15" font-weight="bold" fill="#0F172A">API-Server</text>
+    <text x="432" y="68" font-size="11" fill="#64748B">Operationen wie die CLI</text>
+    <text x="598" y="48" font-size="15" font-weight="bold" fill="#0F172A">MCP-Server</text>
+    <text x="598" y="68" font-size="12" fill="#64748B">Adapter für Agenten</text>
   </g>
 
-  <!-- Aufrufe -->
+  <!-- Aufrufe des Kerns -->
   <g stroke="#0F172A" stroke-width="2" marker-end="url(#arrow)">
-    <line x1="130" y1="84" x2="130" y2="128"/>
-    <line x1="350" y1="84" x2="350" y2="128" stroke-dasharray="6 4"/>
-    <line x1="570" y1="84" x2="570" y2="128" stroke-dasharray="6 4"/>
+    <line x1="100" y1="84" x2="100" y2="128"/>
+    <line x1="432" y1="84" x2="432" y2="128" stroke-dasharray="6 4"/>
+    <line x1="598" y1="84" x2="598" y2="128" stroke-dasharray="6 4"/>
   </g>
+
+  <!-- Die Kommandozeile uebergibt den Diff an die Anzeige; die Anzeige ruft den Kern nicht auf -->
+  <line x1="170" y1="52" x2="195" y2="52" stroke="#64748B" stroke-width="2" marker-end="url(#arrow-grey)"/>
 
   <!-- Kern -->
   <rect x="30" y="132" width="640" height="190" rx="12" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
@@ -34,20 +43,21 @@
   <text x="650" y="160" font-size="12" fill="#64748B" text-anchor="end">enthält die gesamte Logik</text>
 
   <g stroke-width="1.5" fill="#FFFFFF">
-    <rect x="50" y="176" width="112" height="56" rx="6" stroke="#0F172A"/>
-    <rect x="172" y="176" width="112" height="56" rx="6" stroke="#0F172A"/>
-    <rect x="294" y="176" width="112" height="56" rx="6" stroke="#0F172A"/>
-    <rect x="416" y="176" width="112" height="56" rx="6" stroke="#0F172A"/>
-    <rect x="538" y="176" width="112" height="56" rx="6" stroke="#64748B" stroke-dasharray="6 4"/>
+    <rect x="50" y="176" width="141" height="56" rx="6" stroke="#0F172A"/>
+    <rect x="203" y="176" width="141" height="56" rx="6" stroke="#0F172A"/>
+    <rect x="356" y="176" width="141" height="56" rx="6" stroke="#0F172A"/>
+    <rect x="509" y="176" width="66" height="56" rx="6" stroke="#0F172A"/>
+    <rect x="584" y="176" width="66" height="56" rx="6" stroke="#64748B" stroke-dasharray="6 4"/>
   </g>
-  <g text-anchor="middle" font-size="13" font-weight="bold" fill="#0F172A">
-    <text x="106" y="208">Objektspeicher</text>
-    <text x="228" y="208">Referenzen</text>
-    <text x="350" y="208">Index</text>
-    <text x="472" y="208">Diff</text>
-    <text x="594" y="202">Merge</text>
+  <g text-anchor="middle" font-size="14" font-weight="bold" fill="#0F172A">
+    <text x="120" y="208">Objektspeicher</text>
+    <text x="273" y="208">Referenzen</text>
+    <text x="426" y="208">Index</text>
+    <text x="542" y="208">Diff</text>
+    <text x="617" y="202">Merge</text>
   </g>
-  <text x="594" y="220" text-anchor="middle" font-size="11" fill="#64748B">ab Phase 3</text>
+  <text x="542" y="224" text-anchor="middle" font-size="11" fill="#64748B">Phase 2</text>
+  <text x="617" y="220" text-anchor="middle" font-size="11" fill="#64748B">ab Phase 3</text>
 
   <!-- Autorisierung -->
   <rect x="50" y="250" width="600" height="56" rx="6" fill="#0F172A"/>
@@ -60,5 +70,9 @@
     <text x="60" y="348">vorhanden</text>
     <rect x="140" y="338" width="22" height="12" rx="3" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5" stroke-dasharray="4 3"/>
     <text x="170" y="348">folgt in einer späteren Phase</text>
+    <line x1="30" y1="368" x2="52" y2="368" stroke="#0F172A" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="60" y="372">ruft den Kern auf</text>
+    <line x1="200" y1="368" x2="222" y2="368" stroke="#64748B" stroke-width="2" marker-end="url(#arrow-grey)"/>
+    <text x="230" y="372">übergibt den Diff; die Anzeige ruft den Kern nicht auf</text>
   </g>
 </svg>

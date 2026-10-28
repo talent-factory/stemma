@@ -15,21 +15,24 @@ und Bewertung von Einrückungen. Sie ändert nur die Lage der Grenzen, nicht die
 Eine Ersetzung, also eine Folge aus Löschungen und Einfügungen, bleibt dabei zusammen,
 und eine reine Löschung oder Einfügung rückt nicht an sie heran. Das ist einfacher als bei git.
 Die Einrückung zählt in Bytes, ein Tabulator gilt also als ein Zeichen, bei git als mehrere.
-\item Gruppierung in Hunks und Darstellung mit Kontextzeilen.
-\item Farbausgabe und Einbindung eines Pagers.
+Der Befehl \type{diff} ruft die Nachbearbeitung in Phase 2 noch nicht auf
+(\in{Abschnitt}[sec:slide]).
+\item Gruppierung in Hunks und Darstellung mit Kontextzeilen (\in{Abschnitt}[sec:hunks]).
+\item Farbausgabe und Einbindung eines Pagers (\in{Abschnitt}[sec:pager]).
 \item Eine schreibgeschützte Terminal-Oberfläche (TUI), \type{diff --tui}, zum Blättern durch
-die Dateien und Hunks (ADR-016). Sie liegt in der Crate \type{stemma-tui} und hängt vom Kern ab,
-der Kern nicht von ihr.
+die Dateien und Hunks (ADR-016, \in{Abschnitt}[sec:tui]). Sie liegt in der Crate
+\type{stemma-tui} und hängt vom Kern ab, der Kern nicht von ihr.
 \item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Risikostufe 1 nach ADR-004.
 Die Verwendung im Merge-Pfad, Risikostufe 2, folgt in Phase 3.
 \item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
 Verschiebungen. Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
-Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken. Eine Markierung der Verschiebung
-als reine Anzeige, wie \type{--color-moved} in git, lässt sich später ohne Änderung der Hunks
-nachrüsten.
+Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken
+(Vergleich der Verfahren in \type{docs/research/moved-lines-heuristics.md}).
+Eine Markierung der Verschiebung als reine Anzeige, wie \type{--color-moved} in git,
+lässt sich später ohne Änderung der Hunks nachrüsten.
 \item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten 8000 Bytes, wie git. Er zeigt
-dann eine Zusammenfassungszeile wie \quotation{Binary files differ} statt des Inhalts.
-Eine Grössengrenze gibt es in Phase 2 nicht.
+dann eine Zusammenfassungszeile wie \quotation{Binary files differ} statt des Inhalts
+(\in{Abschnitt}[sec:binary]). Eine Grössengrenze gibt es in Phase 2 nicht.
 \item Die Seiten des Diffs werden über ihre Kennungen benannt, wie \type{op log} sie
 anzeigt. Die Arbeitskopie erscheint als \type{working-copy} mit ihrer Snapshot-Kennung,
 ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
@@ -78,6 +81,16 @@ die keine Diagonale sind. Die Diagonale $k = x - y$ fasst die Punkte mit derselb
 $x - y$ zusammen. Sie liegen auf einer Linie parallel zur Hauptdiagonale. Eine Löschung erhöht
 $k$ um eins, eine Einfügung senkt es um eins.
 
+\in{Abbildung}[fig:edit-graph] zeigt den Graphen für die Folgen \type{ABCABBA} und
+\type{CBABAC} aus der Arbeit von Myers. Die grauen Diagonalen verbinden gleiche Elemente. Der
+dicke Weg ist ein kürzestes Skript mit $D = 5$: zwei Löschungen, eine Einfügung, eine Löschung
+und eine Einfügung.
+
+\startplacefigure[title={Editiergraph für \type{ABCABBA} und \type{CBABAC} mit der Mittelschlange},
+    reference=fig:edit-graph,location=here]
+\externalfigure[images/edit-graph.pdf][width=\textwidth]
+\stopplacefigure
+
 \subsection{Invariante}
 
 Die Suche läuft vorwärts vom Anfang und rückwärts vom Ende zugleich. Nach der Runde $d$ kennt
@@ -107,6 +120,11 @@ Das Verfahren zerlegt die Aufgabe an dieser Schlange in zwei Teile und
 behandelt jeden Teil genauso. Jeder Teil hat höchstens $\lceil D/2 \rceil$ Schritte, deshalb
 endet die Rekursion nach $O(\log D)$ Ebenen. Gemeinsame Präfixe und Suffixe schneidet es vorher ab.
 
+In \in{Abbildung}[fig:edit-graph] liegt die Mittelschlange von $(3,2)$ bis $(5,4)$ auf der
+Diagonale $k = 1$. Die Vorwärtssuche hat nach drei Änderungen $(3,2)$ erreicht und läuft die
+Schlange bis $(5,4)$ ab. Die Rückwärtssuche vom Ende her erreicht nach zwei Änderungen $(5,4)$
+und läuft sie bis $(3,2)$ ab. Zusammen sind das $D = 5$ Änderungen.
+
 \subsection{Korrektheit}
 
 Die Schlange liegt auf einem kürzesten Skript, und die Summe der Schritte der beiden Teile ist
@@ -117,28 +135,732 @@ Abschneiden nichts verloren \cite[myers1986ond]. Die Teile liegen in der Reihenf
 aneinander. Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die
 Reihenfolge.
 
+\section[sec:slide]{Nachbearbeitung der Grenzen}
+
+Ein kürzestes Skript ist nicht eindeutig. Dieselben Änderungen lassen sich oft an mehreren Stellen
+unterbringen, weil die erste Zeile einer Änderungsgruppe gleich der unveränderten Zeile hinter ihr
+sein kann. Die Nachbearbeitung wählt unter diesen Lagen die, die sich am besten liest
+(\type{slide} in \type{diff.rs}). Sie folgt dem Verfahren von git \cite[git-xdiff]. Sie ändert nur
+die Lage der Grenzen. Beide Folgen und die Zahl $D$ der Änderungen
+bleiben, wie sie sind. Der Kern bietet sie als \type{diff_lines} an; der Befehl \type{diff} ruft
+sie in Phase 2 noch nicht auf und zeigt das Skript des Myers-Diff.
+
+Eine Gruppe von Einfügungen oder Löschungen gleitet nach oben oder unten, solange die Zeile, die
+sie verlässt, der Zeile gleicht, die sie aufnimmt. \in{Abbildung}[fig:slide] zeigt vier
+eingefügte Zeilen. Ein kürzestes Skript kann sie bei der schliessenden Klammer der Funktion a
+beginnen lassen (links). Nach dem Gleiten um zwei Zeilen besteht die Gruppe aus der Funktion b
+samt der Leerzeile danach (rechts). Unter den möglichen Lagen
+wählt die Einrückungsregel, die ihre Gewichte aus dem Code von git übernimmt: Sie vergleicht die
+Einrückung der Zeilen an der Grenze und beachtet Leerzeilen davor und danach.
+
+\startplacefigure[title={Eine Gruppe vor und nach der Nachbearbeitung der Grenzen},
+    reference=fig:slide,location=here]
+\externalfigure[images/slide.pdf][width=\textwidth]
+\stopplacefigure
+
+\subsection{Definition}
+
+Eine Änderungsgruppe ist eine maximale Folge geänderter Zeilen einer Seite. Eine Zeile der alten
+Seite ist geändert, wenn das Skript sie löscht, eine der neuen, wenn es sie einfügt. Eine Gruppe
+bestehe aus den Zeilen $s$ bis $e-1$ und habe die Länge $g = e - s$. Sie rückt um einen Schritt
+nach unten, wenn die Zeile $s$ gleich der Zeile $e$ ist: Dann ist die Zeile $s$ unverändert,
+die Zeile $e$ geändert, und die Gruppe belegt die Zeilen $s+1$ bis $e$. Ein Schritt nach oben ist
+erlaubt, wenn die Zeile $s-1$ gleich der Zeile $e-1$ ist. Die Lagen einer Gruppe sind alle, die
+durch solche Schritte erreichbar sind, ohne eine andere geänderte Zeile zu überschreiten. Mit $u$
+Schritten nach oben und $d$ Schritten nach unten sind das die Anfangspositionen von $s-u$ bis
+$s+d$.
+
+Jede Lage hat zwei Schnittstellen, vor der ersten und hinter der letzten Zeile der Gruppe.
+Für jede liest das Verfahren die Einrückung der Zeile an der Schnittstelle, die Leerzeilen davor
+und danach und die Einrückung der nächsten Zeile mit Inhalt auf beiden Seiten, höchstens 20
+Leerzeilen weit. Eine Zeile aus Leerraum gilt als leer. Daraus entstehen zwei Zahlen, eine
+Strafe $p$ und die wirksame Einrückung $w$, jeweils als Summe über beide Schnittstellen.
+Leerzeilen an der Schnittstelle senken die Strafe, der Dateianfang erhöht sie um 1 und das
+Dateiende um 21. Das Dateiende zählt zugleich als Leerzeile; seine Strafe sinkt dadurch netto
+um 3, und seine wirksame Einrückung ist $-1$.
+Springt die Einrückung an der Schnittstelle zurück, kostet das je nach Fall 17 bis 24 Punkte.
+Die Gewichte sind die von git. Zwei Lagen $A$ und $B$ vergleicht der Ausdruck
+$60 \cdot \mathrm{sgn}(w_A - w_B) + (p_A - p_B)$; ist er negativ, ist $A$ besser. Die flachere
+Einrückung gibt also einen Vorsprung von 60 Punkten, den eine grosse Differenz der Strafen
+aufwiegen kann. Bei Gleichstand gewinnt die spätere Lage, also die weiter unten.
+
+Das Verfahren prüft nicht alle Lagen. Das Fenster reicht von der untersten Lage höchstens $g+1$
+Schritte nach oben, wie bei git, und nie weiter als 100. Eine Lage, in der die Gruppe an eine
+andere geänderte Zeile grenzte, überspringt es, damit zwei Gruppen nicht verschmelzen.
+
+\subsection{Invariante}
+
+Die beiden Seiten werden getrennt behandelt, und für jede Seite gilt nach jedem Schritt:
+Die Gruppe hat weiter $g$ geänderte Zeilen, und die unveränderten Zeilen der Seite ergeben, der
+Reihe nach gelesen, dieselbe Folge von Werten wie vorher. Eine Gruppe, die zu einer Ersetzung
+gehört, rückt gar nicht. Eine Ersetzung ist eine Folge von Änderungen, die Löschungen und
+Einfügungen enthält. Ihre beiden Seiten liegen schon gegeneinander, und das Schieben einer Seite
+würde sie auseinanderreissen. Eine reine Löschung oder Einfügung rückt auch nicht an eine
+Ersetzung heran.
+
+Die Prüfung, ob die Zeile $s$ der Zeile $e$ gleicht, hält die Invariante. Ohne sie würde ein
+Schritt einen Wert aus der Folge der unveränderten Zeilen durch einen anderen ersetzen.
+
+\subsection{Komplexität}
+
+Seien $N$ und $M$ die Längen der beiden Folgen. Die Schritte nach unten und oben vergleichen
+Zeilen. Jede Folge unveränderter Zeilen zwischen zwei Gruppen durchläuft das höchstens zweimal,
+einmal von der Gruppe darüber nach unten und einmal von der darunter nach oben. Das sind
+$O(N+M)$ Vergleiche. Eine Gruppe der Länge $g$ bewertet höchstens $\min(g+1, 100) + 1$ Lagen, und
+jede Bewertung liest höchstens 20 Zeilen auf jeder Seite der beiden Schnittstellen. Die Summe der
+Längen aller Gruppen ist höchstens $N+M$, also kostet die Bewertung $O(N+M)$ mit dem Faktor 20
+als Konstante. Das Markieren der Ersetzungen und der Aufbau des Skripts aus den Marken sind je
+ein Durchlauf. Die Laufzeit ist $O(N+M)$ und der Speicher $O(N+M)$ für eine Marke je Zeile.
+
+\subsection{Korrektheit}
+
+Ein Schritt nach unten macht die Zeile $s$ unverändert und die Zeile $e$ geändert. In der Folge
+der unveränderten Zeilen der Seite tritt die Zeile $s$ an die Stelle, an der vorher die Zeile $e$
+stand. Beide sind gleich, also bleibt die Folge der Werte dieselbe. Ein Schritt nach oben ist das
+Spiegelbild. Eine Kette solcher Schritte erhält die Folge damit ebenfalls.
+
+Der Aufbau des Skripts paart die $i$-te unveränderte Zeile der alten Seite mit der $i$-ten der
+neuen. Beide Seiten haben gleich viele unveränderte Zeilen, und ihre Wertefolgen waren vor dem
+Schieben gleich, weil das Skript sie paarte. Sie sind es auch danach, denn jede Seite hat ihre
+Folge behalten. Die Paare sind also gleich, und das Ergebnis ist ein gültiges Skript. Die Zahl
+der Änderungen ist die der geänderten Zeilen beider Seiten, und die hat sich nicht geändert. Das
+Skript ist damit weiter kürzest.
+
+Dass die Wahl der Lage mit git übereinstimmt, beweist dieses Argument nicht. Wo der Myers-Diff
+und der von git verschiedene Skripte wählen, weichen auch die Ergebnisse ab. Ein Test in
+\type{tests/diff_against_git.rs} vergleicht auf zufälligen Dateien beide Ergebnisse und findet
+keinen Unterschied, wo die einfachen Diffs übereinstimmen.
+
+\startinfobox
+{\bf Grenzfälle beim Verschieben.}
+\startitemize
+\item Eine Ersetzung bleibt stehen. Das ist einfacher als bei git, das die Gruppen beider Seiten
+im Einzelnen aufeinander abstimmt.
+\item Die Einrückung zählt in Bytes, ein Tabulator also als eines, bei git als mehrere.
+Rückt eine Datei mit Tabulatoren ein, kann das Ergebnis von dem von git abweichen.
+\item Das Dateiende zählt wie eine Leerzeile und hat die wirksame Einrückung $-1$. Es zieht eine
+Gruppe am Ende eher nach unten als nach oben; ob sie rutscht, entscheiden die Einrückungen.
+\item Ein Skript ohne Änderung hat keine Gruppe, und das Ergebnis ist das Skript selbst.
+\item Zwei Gruppen derselben Seite bleiben getrennt, auch wenn eine von ihnen zur anderen hin
+rutschen könnte.
+\stopitemize
+\stopinfobox
+
 \section[sec:hunks]{Hunks und Kontextzeilen}
 
-Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk ist eine Gruppe von Änderungen mit den
-unveränderten Zeilen davor und danach. Jede Änderung bekommt so viele Kontextzeilen vor und nach
-sich, wie die Anzeige verlangt. Die Anzahl $c$ ist in Phase 2 fest drei, wie bei git; die
-Funktion \type{hunks} nimmt sie als Argument.
+Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk fasst benachbarte Änderungen mit den
+unveränderten Zeilen davor und danach zusammen. Jede Änderung bekommt so viele Kontextzeilen auf
+beiden Seiten, wie die Anzeige verlangt. Die Anzahl $c$ setzt der Aufruf; der Befehl \type{diff}
+nimmt drei. Die Zerlegung folgt dem Unified-Format von diff und git. Eine eigene Quelle nennt das
+Buch nicht, denn sie ist ein Durchlauf über das Skript. Der Code steht in \type{diff.rs} als
+\type{hunks}.
 
 Zwei benachbarte Änderungen landen im selben Hunk, wenn höchstens $2c$ unveränderte Zeilen
 zwischen ihnen liegen. Dann überlappen oder berühren sich ihre Kontextfenster. Solche Nachbarn
 bilden Ketten, sodass ein Hunk auch Änderungen umfassen kann, die weiter auseinanderliegen.
-Ein Hunk speichert nur die Schritte des Skripts und die Positionen seiner Zeilen auf beiden
-Seiten. Die Zeilen selbst bleiben in den Folgen.
+
+\in{Abbildung}[fig:hunks] zeigt ein Skript mit drei Änderungen und $c = 3$. Zwischen den ersten
+beiden liegen fünf unveränderte Schritte, und $5 \le 2c = 6$ gilt: Ihre Fenster überlappen, sie
+bilden einen Hunk. Zwischen der zweiten und der dritten liegen sieben Schritte. Das sind mehr als
+sechs, die Fenster berühren sich nicht, und ein neuer Hunk beginnt.
+
+\startplacefigure[title={Gruppierung eines Skripts in Hunks mit $c = 3$},
+    reference=fig:hunks,location=here]
+\externalfigure[images/hunks.pdf][width=\textwidth]
+\stopplacefigure
+
+\subsection{Definition}
+
+Das Skript habe $m$ Schritte, die mit null nummeriert sind. Ein Schritt ist eine Änderung, wenn er
+eine Zeile löscht oder einfügt. Zu jeder Änderung $i$ gehört das Fenster der Schritte von $i-c$
+bis $i+c$; am Anfang und am Ende des Skripts wird es abgeschnitten. Fenster, die sich überlappen
+oder berühren, verschmilzt das Verfahren. Jedes verschmolzene Fenster ist ein Hunk. Die Fenster
+zweier benachbarter Änderungen $i < j$ verschmelzen genau dann, wenn $j - i - 1 \le 2c$ gilt.
+
+Ein Hunk speichert die Schritte des Skripts und die Positionen seiner Zeilen: den Anfang und die
+Länge je Seite. Der Anfang auf einer Seite ist die Zahl der Zeilen dieser Seite, die die Schritte
+davor verbrauchen, und die Länge die Zahl der Zeilen, die die Schritte des Hunks verbrauchen. Die
+Zeilen selbst bleiben in den Folgen.
+
+\subsection{Invariante}
+
+Die Hunks folgen der Reihenfolge des Skripts und überlappen sich nicht. Jede Änderung liegt in
+genau einem Hunk, und jeder Schritt eines Hunks liegt höchstens $c$ Schritte von einer Änderung
+desselben Hunks entfernt. Zwischen zwei aufeinanderfolgenden Hunks liegt mindestens ein Schritt,
+der zu keinem gehört, denn Fenster, die sich berühren, hat das Verfahren verschmolzen. Anfang und
+Länge eines Hunks zählen auf jeder Seite die Zeilen, die die Schritte davor und die Schritte des
+Hunks verbrauchen.
+
+\subsection{Komplexität}
+
+Sei $m$ die Zahl der Schritte, höchstens $N+M$. Das Verfahren durchläuft das Skript einmal, um die
+Fenster zu bilden, ein zweites Mal, um die verbrauchten Zeilen je Position zu zählen, und kopiert
+die Schritte der Hunks. Jeder Schritt gehört zu höchstens einem Hunk. Laufzeit und Speicher sind
+daher $O(m)$, unabhängig von $c$.
+
+\subsection{Korrektheit}
+
+Jede Änderung liegt in ihrem eigenen Fenster, und Verschmelzen verliert keinen Schritt. Also liegt
+jede Änderung in einem Hunk. Ein Schritt in einem verschmolzenen Fenster liegt im Fenster einer
+Änderung und ist darum höchstens $c$ Schritte von ihr entfernt. Zwei Fenster verschmilzt das
+Verfahren, sobald der Anfang des späteren nicht hinter dem Ende des früheren liegt. Bleiben sie
+getrennt, liegt dazwischen mindestens ein Schritt. Die Zählung der Zeilen folgt dem Skript, das
+jede Zeile beider Folgen genau einmal verbraucht (\in{Abschnitt}[sec:myers]). Der Anfang und die
+Länge eines Hunks stimmen daher mit den Positionen in den Folgen überein.
+
+\startinfobox
+{\bf Grenzfälle der Hunks.}
+\startitemize
+\item Ohne Änderung im Skript gibt es keinen Hunk. Zwei gleiche Dateien erscheinen im Befehl gar
+nicht. Eine neue oder gelöschte leere Datei erscheint mit ihrem Kopf, aber ohne Hunk.
+\item Bei $c = 0$ bilden benachbarte Änderungen ohne unveränderte Zeile dazwischen einen Hunk,
+denn ihre Fenster berühren sich. Der Befehl \type{diff} nimmt immer drei Zeilen Kontext.
+\item Am Anfang und am Ende des Skripts hat ein Hunk weniger Kontextzeilen.
+\item Auf der Seite, die eine neue oder gelöschte Datei nicht hat, ist die Länge des Hunks null.
+Die Zeile \type{@@} nennt dann die Zeile davor; die Kommandozeilenreferenz beschreibt das.
+\item Der Hunk kennt die Zeilen nicht, nur ihre Positionen. Die Anzeige liest sie aus den Folgen.
+\stopitemize
+\stopinfobox
+
+\section[sec:diff-command]{Der Diff mit dem Working-Copy-Commit}
+
+Der Befehl \type{diff} vergleicht ohne Argument den Working-Copy-Commit mit seinem Elternteil,
+mit einer Kennung diesen Commit mit der Arbeitskopie und mit zwei Kennungen die beiden Commits.
+Ist eine Seite der Working-Copy-Commit, hält der Befehl den Stand des Arbeitsverzeichnisses
+zuerst in einem Snapshot fest (ADR-010). Erst dann hat die Arbeitskopie eine feste Kennung,
+die der Kopf des Diffs nennen kann. Der Befehl liest die Arbeitskopie deshalb nicht nur:
+Er kann den Working-Copy-Commit und das Operation Log ändern.
+
+\in{Abbildung}[fig:diff-flow] zeigt den Ablauf. Die Schritte 2 bis 4 sind der Snapshot aus
+Kapitel 4, und sie entfallen, wenn der Befehl zwei Commits vergleicht. Der Vergleich und die
+Ausgabe lesen nur.
+
+\startplacefigure[title={Ablauf von \type{diff} mit dem Working-Copy-Commit und Absturzpunkten},
+    reference=fig:diff-flow,location=here]
+\externalfigure[images/diff-flow.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+Nach Erfolg steht der Eintrag des Snapshots im Log, wenn sich eine verfolgte Datei geändert hat,
+und die Ausgabe zeigt genau den Stand, den der Snapshot festhielt. Ein Fehler vor dem Snapshot,
+etwa ein ungültiger Pfad, schreibt nichts. Hat der Snapshot den Zeiger bewegt, die Bewegung aber
+nicht sichern können, endet der Befehl mit Exit-Code 3, und die Ausgabe bleibt aus.
+Nach einem Absturz im Snapshot gilt, was \in{Abbildung}[fig:oplog-write] zeigt. Der Vergleich
+und die Ausgabe ändern nichts, ein Absturz dort lässt also nichts zurück. Der Befehl lässt sich
+nach Erfolg, nach einem Fehler und nach einem Absturz wiederholen. Nach einem Erfolg findet ein
+zweiter Aufruf den Baum unverändert und schreibt keinen Eintrag.
+
+\in{Abbildung}[fig:diff-timeline] zeigt den Befehl in einer eigenen kurzen Sitzung mit eigenen
+Kennungen, nach dem Muster des laufenden Beispiels. Nach dem Commit \quotation{Anfang} ändert
+jemand \type{notes.txt} von Hand. Das erste \type{diff} macht einen Snapshot und schreibt den
+Eintrag 4. Das zweite, mit \type{--exit-code}, findet den Baum unverändert und schreibt keinen
+Eintrag; es endet mit Exit-Code 4, weil sich die Datei unterscheidet. Nach dem Commit der
+Änderung vergleicht \type{diff} mit zwei Kennungen die beiden Commits und ändert weder Zeiger
+noch Log.
+
+\startplacefigure[title={Änderungen ansehen als Zeitachse},
+    reference=fig:diff-timeline,location=here]
+\externalfigure[images/diff-timeline.pdf][width=\textwidth]
+\stopplacefigure
+
+\startinfobox
+{\bf Grenzfälle von \type{diff}.}
+\startitemize
+\item Ein Pfad, der auf keiner Seite vorkommt, fällt erst nach dem Snapshot auf, weil die Dateien
+der Arbeitskopie erst dann feststehen. Der Befehl endet mit Exit-Code 1, und ein Eintrag des
+Snapshots bleibt, falls einer entstand.
+\item Ein ungültiger Pfad, also ein leerer, ein absoluter oder einer mit \type{..},
+schreibt nichts, denn der Befehl prüft ihn vor dem Snapshot.
+\item Mit Pfaden beschränkt der Befehl nur die Ausgabe. Der Snapshot umfasst weiter alle
+verfolgten Dateien.
+\stopitemize
+\stopinfobox
+
+\section[sec:binary]{Binärdateien}
+
+Ein Zeilenvergleich einer Binärdatei ist sinnlos und kann sehr gross werden. Der Diff erkennt
+darum eine Binärdatei und zeigt statt der Zeilen nur, dass sie sich unterscheidet. Die Erkennung
+folgt git: Ein NUL-Byte unter den ersten 8000 Bytes macht die Datei binär. Der Code steht in
+\type{diff.rs} als \type{is_binary}. Der Kern wendet sie beim Vergleich der Seiten an
+(\type{repository/difference.rs}).
+
+\startitemize[n]
+\item Für jede Datei, die sich unterscheidet, liest der Kern die Inhalte beider Seiten. Eine
+Seite, auf der die Datei fehlt, gilt als leer.
+\item Ist eine der beiden Fassungen binär, ist die ganze Datei binär. Der Kern vergleicht dann
+keine Zeilen und bildet keine Hunks.
+\item Sonst vergleicht der Kern die Zeilen und bildet die Hunks.
+\item Die Anzeige schreibt für eine binäre Datei die Zeile \type{Binary files ... and ... differ}
+mit den beiden Seiten wie im Kopf. Die Oberfläche zeigt \type{Binary file differs}.
+\stopitemize
+
+\subsection{Definition und Komplexität}
+
+Sei $c = (c_0, \dots, c_{L-1})$ der Inhalt einer Datei der Länge $L$. Die Datei ist binär, genau
+dann wenn es ein $i < \min(L, 8000)$ mit $c_i = 0$ gibt. Die Prüfung liest höchstens 8000 Bytes
+und braucht daher konstante Zeit und konstanten Speicher. Das Lesen des Inhalts, das ihr
+vorausgeht, kostet $O(L)$.
+
+\subsection{Garantien}
+
+Die Prüfung ist eine reine Funktion des Inhalts. Der Kern entscheidet einmal, und die Textausgabe
+und die Oberfläche übernehmen das Ergebnis. Dieselbe Datei erscheint also in beiden gleich. Die
+Prüfung ändert nichts im Repository.
+
+\startinfobox
+{\bf Grenzfälle der Erkennung.}
+\startitemize
+\item Die Erkennung ist eine Heuristik wie in git. Eine Textdatei in UTF-16 enthält NUL-Bytes und
+gilt als binär. Eine Binärdatei ohne NUL-Byte in den ersten 8000 Bytes gilt als Text.
+\item Steht das erste NUL-Byte erst ab dem 8001. Byte, ist die Datei Text.
+\item Eine leere Datei ist keine Binärdatei.
+\item Wird aus einer Textdatei eine Binärdatei oder umgekehrt, gilt die ganze Datei als binär.
+\item Eine neue oder gelöschte Binärdatei erscheint mit \type{/dev/null} auf der Seite,
+auf der sie fehlt.
+\item Eine Grössengrenze gibt es nicht. Der Kern liest eine grosse Datei ganz, ehe er sie prüft.
+\stopitemize
+\stopinfobox
+
+\section[sec:pager]{Farbe und Pager}
+
+Der Text des Befehls \type{diff} ist die Referenz für Skripte und Tests. Auf einem Terminal soll er
+auch bequem zu lesen sein. Darum färbt der Befehl die Zeilen wie git und gibt den Text an einen
+Pager weiter, wenn die Standardausgabe ein Terminal ist (\in{Abbildung}[fig:diff-output]). Der
+Code steht in \type{cli.rs} als \type{diff_text} und \type{write_paged}.
+
+\startplacefigure[title={Wege der Ausgabe von \type{diff}},
+    reference=fig:diff-output,location=here]
+\externalfigure[images/diff-output.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+\startitemize[n]
+\item Der Kern berechnet den Diff. Ist eine Seite der Working-Copy-Commit, speichert er vorher
+die verfolgten Dateien als Snapshot (\in{Abschnitt}[sec:diff-command]). Danach ändert er nichts
+mehr.
+\item Der Befehl baut den Text. Mit Farbe sind die Zeilen \type{diff}, \type{---} und
+\type{+++} fett, die Zeilen \type{@@} cyan, entfernte Zeilen rot und eingefügte grün. Die Farbe
+endet vor dem Zeilenende, damit sie nicht in die nächste Zeile läuft.
+\item Auf einem Terminal unter Unix startet er eine Shell, die den Befehl aus \type{PAGER}
+ausführt, ersatzweise \type{less}. Ist \type{LESS} nicht gesetzt, bekommt der Pager
+\type{LESS=FRX}. Der Befehl schreibt den Text in den Eingang des Pagers und wartet, bis der Pager
+endet.
+\item Sonst schreibt er den Text ohne Farbe auf die Standardausgabe.
+\stopitemize
+
+\subsection{Garantien}
+
+Der Text ohne Farbe ist der Text mit Farbe ohne die Escape-Folgen. Ein Skript, das eine Pipe liest,
+bekommt also immer reinen Text, ohne Farbe und ohne Pager. Der Diff geht nicht verloren: Lässt
+sich der Pager nicht starten, oder meldet die Shell den Exit-Code 126 oder 127 (ein Befehl, der
+nicht ausführbar ist oder fehlt), schreibt der Befehl den Text ungefiltert, also mit Farbe, auf die
+Standardausgabe und einen Hinweis auf stderr. Ein Pager, der früher endet, oder ein anderer
+Exit-Code des Pagers ist kein Fehler, und eine geschlossene Pipe beendet die Ausgabe leise.
+Der Exit-Code des Befehls ist das Ergebnis des Diffs, also 0 oder mit \type{--exit-code} bei
+Unterschieden 4, nie der des Pagers. Ausnahmen sind ein Fehler beim Schreiben (1) und ein Signal,
+das den Befehl beendet (130, 143 oder 129).
+
+Ein Absturz in diesem Ablauf hinterlässt nichts, das zu reparieren wäre. Der Snapshot ist
+gespeichert, ehe der Pager startet, und der Rest schreibt nur auf das Terminal. Der Befehl lässt
+sich danach gefahrlos wiederholen.
+
+Das Verhalten bei Signalen folgt aus einer Eigenschaft des Terminals. Ctrl-C geht an alle Prozesse
+im Vordergrund, also an den Pager und an den Befehl. Endet der Befehl zuerst, übernimmt die Shell
+das Terminal, während der Pager es noch liest, und beide streiten um die Eingabe. Der Befehl
+wartet darum, bis der Pager endet, und endet erst dann mit seinem eigenen Exit-Code. Ein Signal
+zum Beenden, das nur den Befehl trifft, etwa ein \type{kill} auf seine Prozessnummer, sendet er
+an die Shell des Pagers, und er endet mit 143, bei \type{SIGHUP} mit 129.
+
+\startinfobox
+{\bf Grenzfälle von Farbe und Pager.}
+\startitemize
+\item Der Pager ist der Befehl in \type{PAGER}. Eine leere oder fehlende Variable gilt als nicht
+gesetzt. \type{GIT_PAGER} und die Einstellung \type{core.pager} von git beachtet der Befehl nicht.
+\item Der Buchstabe \type{R} in \type{LESS=FRX} reicht die Farben durch, \type{F} beendet
+\type{less} bei einer einzigen Seite, und \type{X} lässt den Bildschirm des Terminals stehen.
+\item Ist \type{PAGER} eine längere Befehlszeile, bleibt die Shell bestehen. Trifft ein
+\type{SIGTERM} nur den Befehl, endet die Shell, aber ihre Befehle laufen weiter,
+bis das Terminal schliesst.
+\item Unter Windows gibt es in Phase 2 immer reinen Text, denn die Konsole braucht eine
+Verarbeitung der Escape-Folgen und eine Shell für den Pager.
+\item Eine Option oder Variable, die die Farbe erzwingt oder abschaltet, gibt es in Phase 2
+nicht.
+\stopitemize
+\stopinfobox
+
+\section[sec:tui]{Die Oberfläche im Terminal}
+
+\type{diff --tui} zeigt denselben Diff in einer schreibgeschützten Oberfläche: links die Dateien,
+rechts die Zeilen der gewählten Datei, unten eine Zeile mit den Tasten. Die Bibliothek ist ratatui
+mit dem Backend crossterm (ADR-016). Die Crate \type{stemma-tui} bekommt den fertigen Diff von der
+Kommandozeile und ruft den Kern nicht auf; sie braucht nur seine Typen. Der Kern hängt nicht von
+ihr ab, und der Text von \type{diff} bleibt die Bezugsgrösse für Skripte und Tests.
+Der Zustand ist ein einfacher Wert, der sich durch Eingaben ändert, und die
+Darstellung zeichnet ihn in einen beliebigen Bildschirm. Tests brauchen daher kein Terminal. Nur
+die Schleife der Oberfläche (\type{run}) berührt das echte Terminal.
+
+\subsection{Definition}
+
+Der Zustand $S = (f, h, s)$ besteht aus der Nummer der gewählten Datei $f$, der Nummer des
+gewählten Hunks $h$ in dieser Datei und der Zahl $s$ der Zeilen der Datei, die oben aus dem Bild
+gerollt sind (im Code \type{State}). Der Diff $D$ ist fest und wird bei jedem Aufruf mitgegeben.
+Er hat $F$ Dateien. Die Datei $f$ hat $H(f)$ Hunks. $H(f) = 0$ gilt für eine binäre Datei und für
+eine neue oder gelöschte leere Datei. Das rechte Feld hat $L(f)$ Zeilen. Bei einer Textdatei sind
+das die Zeile \type{@@} jedes Hunks, dahinter seine Zeilen mit der Marke für Kontext, Löschung
+oder Einfügung und gegebenenfalls die Zeile \type{\ No newline at end of file}. Eine binäre
+Datei hat eine Zeile mit der Meldung, eine leere Datei keine. Mit $\mathrm{start}(f, h)$ sei der
+Index der Zeile \type{@@} des Hunks $h$ in diesem Feld bezeichnet, und $\mathrm{start}(f, 0) = 0$
+für eine Datei ohne Hunk.
+
+Eine Eingabe (im Code \type{Input}) ist eine der Tasten aus \in{Tabelle}[tab:tui-transitions].
+Die Funktion $\mathrm{apply}$ bildet einen Zustand und eine Eingabe auf den nächsten Zustand ab.
+Sie liefert zugleich, ob die Oberfläche weiterläuft: Nur das Beenden liefert \type{false}.
+
+\startplacetable[title={Übergänge des Zustands $(f, h, s)$},
+  reference=tab:tui-transitions,location=here]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Eingabe} \stopxcell
+\startxcell {\bf Tasten} \stopxcell
+\startxcell {\bf Bedingung} \stopxcell
+\startxcell {\bf Neuer Zustand} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Beenden \stopxcell
+\startxcell \type{q}, Esc, Ctrl-C \stopxcell
+\startxcell immer \stopxcell
+\startxcell unverändert, die Oberfläche endet \stopxcell
+\stopxrow
+\startxrow
+\startxcell Nächste Datei \stopxcell
+\startxcell \type{J}, Tab \stopxcell
+\startxcell $f + 1 < F$ \stopxcell
+\startxcell $(f+1,\ 0,\ 0)$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Vorige Datei \stopxcell
+\startxcell \type{K}, Shift-Tab \stopxcell
+\startxcell $f > 0$ \stopxcell
+\startxcell $(f-1,\ 0,\ 0)$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Nächster Hunk \stopxcell
+\startxcell \type{n} \stopxcell
+\startxcell $h + 1 < H(f)$ \stopxcell
+\startxcell $(f,\ h+1,\ \mathrm{start}(f, h+1))$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell \stopxcell
+\startxcell \stopxcell
+\startxcell $h + 1 \ge H(f)$ und $f + 1 < F$ \stopxcell
+\startxcell $(f+1,\ 0,\ 0)$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Voriger Hunk \stopxcell
+\startxcell \type{p} \stopxcell
+\startxcell $h > 0$ \stopxcell
+\startxcell $(f,\ h-1,\ \mathrm{start}(f, h-1))$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell \stopxcell
+\startxcell \stopxcell
+\startxcell $h = 0$ und $f > 0$ \stopxcell
+\startxcell $(f-1,\ h',\ \mathrm{start}(f-1, h'))$ mit $h' = \max(H(f-1) - 1, 0)$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Abwärts blättern um $k$ \stopxcell
+\startxcell \type{j}, Pfeil ab ($k = 1$); Leertaste, Bild ab ($k = 20$) \stopxcell
+\startxcell immer \stopxcell
+\startxcell $(f,\ h,\ \min(s + k,\ \max(L(f) - 1, 0)))$ \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Aufwärts blättern um $k$ \stopxcell
+\startxcell \type{k}, Pfeil auf ($k = 1$); \type{b}, Bild auf ($k = 20$) \stopxcell
+\startxcell immer \stopxcell
+\startxcell $(f,\ h,\ \max(s - k,\ 0))$ \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Trifft keine Bedingung einer Zeile zu, etwa \type{J} auf der letzten Datei, bleibt der Zustand
+unverändert. Der Ausgangszustand ist $(0, 0, 0)$. Der Ablauf ist in \in{Abbildung}[fig:tui-states]
+gezeichnet.
+
+\startplacefigure[title={Zustände der Oberfläche von \type{diff --tui}},
+    reference=fig:tui-states,location=here]
+\externalfigure[images/tui-states.pdf][width=\textwidth]
+\stopplacefigure
+
+\subsection{Invariante}
+
+Für jeden Zustand, den die Übergänge aus dem Ausgangszustand erreichen, gilt: $f < F$
+(oder $f = 0$ bei einem leeren Diff), $h < \max(H(f), 1)$ und $s \le \max(L(f) - 1, 0)$.
+Die Datei wechselt nur mit den Tasten für Dateien und Hunks, und jeder Wechsel setzt $h$ und $s$
+neu. Blättern ändert $f$ und $h$ nicht. Darum gehen \type{n} und \type{p} vom zuletzt gewählten
+Hunk aus und nicht von dem, den das Blättern ins Bild gebracht hat.
+
+\subsection{Komplexität}
+
+Sei $\ell$ die Zahl der Zeilen der gewählten Datei im rechten Feld. Abwärts blättern und einen
+Hunk wählen bauen die Zeilen der Datei neu auf und kosten $O(\ell)$. Aufwärts blättern und die
+Wahl einer Datei kosten $O(1)$. Das Zeichnen kostet $O(\ell + F)$: Es baut die Zeilen auf,
+verwirft die oben gerollten und listet alle $F$ Dateien. Die Oberfläche speichert nur den
+Zustand $(f, h, s)$, keine Kopie des Diffs.
+
+\subsection{Korrektheit}
+
+Die Invarianten folgen aus der Tabelle. Jede Zeile hält die Schranken ein: Der Wechsel zur
+nächsten Datei prüft $f + 1 < F$, der zum nächsten Hunk $h + 1 < H(f)$,
+und $\mathrm{start}$ liefert den Index einer Zeile des Feldes. Blättern nach unten begrenzt $s$
+durch die letzte Zeile, nach oben durch null. Die Funktion $\mathrm{apply}$ ist total: Jede
+Eingabe hat ein Ergebnis, und kein Zustand lässt sie scheitern. Ein Zustand, der zu einem anderen
+Diff gehört, zeigt ein leeres Feld, löst aber keinen Fehler aus. Weil $\mathrm{apply}$ nur den
+Zustand und den Diff liest, prüfen die Tests sie ohne Terminal.
+
+\subsection{Garantien}
+
+Die Oberfläche liest nur. Der Befehl hat den Snapshot vor dem Start gemacht, wie bei der
+Textausgabe, und danach schreibt er nichts mehr ins Repository. Die Oberfläche gibt das Terminal
+bei jedem Ende zurück: beim Beenden, bei einem Fehler und bei einer Panik, für die ratatui einen
+Haken setzt. Gelingt die Rückgabe nach einem Fehler nicht, nennt die Meldung beide Fehler.
+Ein Handler für Signale läuft auf einem anderen Thread und fasst das Terminal nicht an. Er setzt
+eine Marke, die die Oberfläche zehnmal in der Sekunde liest, solange keine Taste kommt. Die
+Oberfläche beendet sich dann und gibt das Terminal zurück, und erst danach endet der Befehl mit
+dem Exit-Code des Signals. Der Handler wartet darauf höchstens zwei Sekunden.
+
+\startinfobox
+{\bf Grenzfälle der Oberfläche.}
+\startitemize
+\item Ohne Unterschiede startet die Oberfläche nicht, und der Befehl endet ohne Ausgabe.
+\item Ist die Standardausgabe kein Terminal oder läuft der Befehl unter Windows, endet er mit
+Exit-Code 1, ehe er etwas liest oder speichert.
+\item Ein Tabulator erscheint als vier Leerzeichen, nicht ausgerichtet auf Tabulatorstopps, denn
+ratatui verwirft Steuerzeichen. Ein Wagenrücklauf (CR) vor dem Zeilenende erscheint nicht.
+\item Eine Zeile ohne Zeilenende erhält die Zeile \type{\ No newline at end of file}.
+\item Eine binäre Datei zeigt die Meldung \type{Binary file differs}, und sie hat keinen Hunk.
+Eine leere neue oder gelöschte Datei zeigt ein leeres Feld.
+\item Ein \type{SIGKILL} lässt sich nicht abfangen, und bei einem Signal ohne Handler bleibt das
+Terminal im Raw-Modus. \type{reset} stellt es wieder her.
+\item Ctrl-C kommt im Raw-Modus als Taste an und wirkt wie \type{q}: Der Befehl endet mit 0, mit
+\type{--exit-code} und Unterschieden mit 4, nicht mit 130.
+\stopitemize
+\stopinfobox
+
+\section[sec:diff-workflows]{Änderungen ansehen: die Arbeitsabläufe}
+
+Der Diff ist ein lesender Befehl mit einer Ausnahme: Ist eine Seite der Working-Copy-Commit,
+macht er zuerst einen Snapshot der verfolgten Dateien (ADR-010), wie \type{status}.
+Der Snapshot schreibt einen Eintrag nur, wenn sich eine verfolgte Datei geändert hat.
+Vergleicht der Aufruf zwei Commits, liest er nur Objekte und schreibt gar nichts.
+Einen Akteur verlangt er in beiden Fällen, auch wenn nichts zu schreiben ist.
+Die folgenden Abläufe greifen Stellen der Sitzung aus Kapitel 4 auf.
+Die Ausgaben stammen aus einem echten Lauf. Die Zeit gehört zum Commit, ein neuer Lauf
+erzeugt also andere Hashes; die Beispiele zeigen deshalb die gekürzten IDs der Sitzung aus
+Kapitel 4. Ein Aufruf braucht die volle Kennung.
+Die Synopsis, die Exit-Codes und die Fehler jeder Option stehen in der Befehlsreferenz.
+
+\subsection{Änderungen vor dem Commit ansehen}
+
+Wer \type{README.md} geändert hat, will vor dem Commit lesen, was er festhält.
+Der Ablauf ist der des zweiten Commits in Kapitel 4:
+
+\starttyping
+$ echo "Hallo Welt" > README.md
+$ stemma diff
+diff README.md
+--- b3:2037…df79 README.md
++++ working-copy b3:7694…d054 README.md
+@@ -1 +1 @@
+-Hallo
++Hallo Welt
+\stoptyping
+
+Die linke Seite ist der Elternteil des Working-Copy-Commits, der Commit \quotation{Erste Fassung};
+die rechte Seite ist der Working-Copy-Commit selbst, genannt mit der ID seines Snapshots.
+Das Arbeitsverzeichnis bleibt unberührt, der Befehl schreibt keine Datei hinein.
+Der Snapshot speichert die geänderte \type{README.md} und bewegt den Zeiger des
+Working-Copy-Commits von \type{b3:e6a3…} auf \type{b3:7694…}; \type{op log} zeigt dazu den
+Eintrag 4, \type{snapshot}. Der Branch \type{main} bleibt stehen.
+Ein zweiter Aufruf liest denselben Stand, findet nichts zu speichern und schreibt keinen Eintrag.
+Deshalb schreiben auch das folgende \type{status} und der Snapshot im \type{commit}
+nichts mehr: Die Änderung ist schon im Working-Copy-Commit.
+
+Eine neue Datei erscheint erst, wenn \type{track} sie aufgenommen hat, denn der Diff
+vergleicht nur verfolgte Dateien. Nennt man ihren Pfad vorher, endet der Befehl mit einem Fehler
+und nennt \type{track} als Abhilfe. Der Fehler fällt erst nach dem Snapshot auf, der Eintrag
+steht dann schon im Log, und die Meldung nennt ihn.
+
+\subsection{Zwei Commits vergleichen}
+
+Nach dem zweiten Commit ist der Working-Copy-Commit leer, ein Diff ohne Argumente also auch.
+Was die beiden Commits der Sitzung unterscheidet, zeigt der Aufruf mit beiden Kennungen:
+
+\starttyping
+$ stemma diff b3:2037…df79 b3:9d8a…4c77
+diff README.md
+--- b3:2037…df79 README.md
++++ b3:9d8a…4c77 README.md
+@@ -1 +1 @@
+-Hallo
++Hallo Welt
+\stoptyping
+
+Beide Seiten sind Commits, deshalb gibt es keinen Snapshot.
+Das Arbeitsverzeichnis, der Working-Copy-Commit, die Zeiger und das Log bleiben, wie sie sind;
+der Befehl kann jederzeit wiederholt werden.
+Mit nur einer Kennung vergleicht der Befehl diesen Commit mit dem Working-Copy-Commit und macht
+dann doch einen Snapshot.
+Der Befehl nimmt nur Kennungen an, wie \type{op log} sie schreibt; Namen wie \type{main}
+löst er nicht auf.
+
+\subsection{Auf einen Pfad beschränken}
+
+Ein Pfad am Ende des Aufrufs wählt eine Datei oder ein Verzeichnis samt allem darunter:
+
+\starttyping
+$ stemma diff b3:2037…df79 b3:9d8a…4c77 src
+$ echo $?
+0
+$ stemma diff b3:2037…df79 b3:9d8a…4c77 nope.txt
+stemma: `nope.txt` is not a file or directory on either side of the diff (…)
+$ echo $?
+1
+\stoptyping
+
+Unter \type{src} hat sich zwischen den Commits nichts geändert, der Diff ist leer, und der Befehl
+endet mit 0. Der Pfad \type{nope.txt} kommt auf keiner Seite vor.
+Das ist ein Fehler und kein leerer Diff, damit ein Tippfehler auffällt (Exit-Code 1).
+Die Meldung ist hier gekürzt; sie nennt auch \type{track} als Abhilfe für eine Datei,
+die nicht verfolgt wird.
+Der Pfad beschränkt allein die Ausgabe. Mit dem Working-Copy-Commit als Seite speichert der
+Snapshot weiter alle verfolgten Dateien, und das Log sieht keinen Unterschied zum Aufruf ohne Pfad.
+
+\subsection{Den Diff in einem Skript prüfen}
+
+Ein Skript will wissen, ob sich etwas geändert hat, und nicht den Text lesen.
+Dafür gibt es \type{--exit-code}:
+
+\starttyping
+$ stemma diff --exit-code
+$ echo $?
+0
+$ stemma diff --exit-code b3:2037…df79 b3:9d8a…4c77 > /dev/null
+$ echo $?
+4
+\stoptyping
+
+Der erste Aufruf vergleicht den leeren Working-Copy-Commit mit seinem Elternteil und endet mit 0.
+Der zweite findet einen Unterschied und endet mit 4.
+Die 4 ist kein Fehler: Git nimmt dafür 1, doch hier steht 1 für Fehler, die ein Skript von einem
+Unterschied trennen muss (ADR-018). Mit Pfaden zählen nur die gewählten Dateien.
+Die Option selbst schreibt nichts. Ein Snapshot entsteht nur, wenn eine Seite des Aufrufs der
+Working-Copy-Commit ist.
+
+\subsection{Die Oberfläche im Terminal}
+
+Mit \type{--tui} blättert man durch die Dateien und Hunks, statt den Text zu lesen.
+Die Oberfläche ist schreibgeschützt (ADR-016). Auf einem Terminal macht sie denselben Snapshot
+wie der Text, danach schreibt sie nichts. Ohne Terminal auf der Standardausgabe endet der Befehl
+mit Exit-Code 1, bevor er etwas liest oder speichert:
+
+\starttyping
+$ stemma diff --tui | cat
+stemma: `diff --tui` needs a terminal on standard output; use `diff` without `--tui` for scripts
+\stoptyping
+
+Für Skripte und Agenten gilt deshalb der Text ohne \type{--tui}.
+
+\subsection{Farbe und Pager gegenüber einer Pipe}
+
+Auf einem Terminal färbt der Befehl die Ausgabe und gibt sie an einen Pager weiter.
+Geht die Ausgabe in eine Pipe oder eine Datei, ist sie reiner Text ohne Farbe und ohne Pager.
+Damit liest ein Skript denselben Text, den die Beispiele dieses Kapitels zeigen.
+Farbe und Pager schreiben nichts ins Repository. Ein Pager, der früher endet, ist kein Fehler.
+Welche Variablen den Pager wählen, steht in der Befehlsreferenz.
+
+\subsection{Binärdateien}
+
+Eine Datei mit einem NUL-Byte in den ersten 8000 Bytes gilt als binär.
+Der Diff zeigt dann keinen Inhalt, sondern eine Zeile mit beiden Seiten.
+Das Beispiel stammt aus einem eigenen kleinen Repository, nicht aus der Sitzung:
+Es verfolgt und committet \type{blob.bin} und ändert danach ein Byte darin.
+Seine IDs sind die des Laufs.
+
+\starttyping
+$ stemma diff
+diff blob.bin
+Binary files b3:c76d…402f blob.bin and working-copy b3:39f0…cdc7 blob.bin differ
+\stoptyping
+
+Mit \type{--exit-code} endet der Befehl auch bei Binärdateien mit 4.
+Der Snapshot schreibt wie bei Text einen Eintrag \type{snapshot}, weil sich eine verfolgte Datei
+geändert hat. Ist nur eine der beiden Fassungen binär, gilt die ganze Datei als binär.
+
+\subsection{Was jeder Ablauf ändert}
+
+\in{Tabelle}[tab:diff-effects] fasst zusammen, was die Abläufe in den vier Bereichen ändern.
+Das Arbeitsverzeichnis ändert nie ein Diff. Ein Eintrag entsteht nur durch den Snapshot,
+und der nur bei einer geänderten verfolgten Datei.
+
+\startplacetable[title={Was ein Diff ändert},reference=tab:diff-effects]
+\startxtable[frame=off]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Aufruf} \stopxcell
+\startxcell {\bf Arbeitsverzeichnis} \stopxcell
+\startxcell {\bf Working-Copy-Commit} \stopxcell
+\startxcell {\bf Zeiger} \stopxcell
+\startxcell {\bf Operation Log} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff}, Datei geändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell neuer Snapshot \stopxcell
+\startxcell Zeiger des Working-Copy-Commits bewegt \stopxcell
+\startxcell ein Eintrag \type{snapshot} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff}, nichts geändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell kein Eintrag \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff} mit zwei Commits \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell kein Eintrag \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff} mit Pfad \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell wie ohne Pfad \stopxcell
+\startxcell wie ohne Pfad \stopxcell
+\startxcell wie ohne Pfad \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{diff --tui} ohne Terminal \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell kein Eintrag \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Nach einem Absturz im Snapshot gilt, was Kapitel 4 für den Snapshot sagt.
+Der Diff schreibt sonst nichts, ein erneuter Aufruf ist deshalb jederzeit sicher.
 
 \section{Offene Fragen}
 
 Die folgenden Fragen sind offen.
 
 \startitemize
-\item Grössengrenze für sehr grosse Dateien. Eine Datei wird heute ganz gelesen und verglichen;
-eine Phase ist dafür noch nicht festgelegt.
-\item Markierung verschobener Zeilen als reine Anzeige; auch dafür ist noch keine Phase
-festgelegt.
+\item Das Verschieben der Grenzen (\in{Abschnitt}[sec:slide]) an den Befehl \type{diff} anbinden.
+Der Kern bietet es an, der Befehl ruft es nicht auf.
+\item Grössengrenze für sehr grosse Dateien. In Phase 2 ist das eine bekannte Einschränkung.
+\item Eine Option oder Variable für die Farbe, etwa \type{NO_COLOR}, und die Wahl des Pagers
+über die Einstellungen von git.
+\item Markierung verschobener Zeilen als Anzeige, in einer Phase nach 2.
 \item Eine JSON-Form für \type{diff} und die übrigen Befehle ohne \type{--json},
 mit der Schnittstelle der Phase 6 (ADR-018).
 \stopitemize
