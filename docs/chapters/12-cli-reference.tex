@@ -520,6 +520,10 @@ oder gemischten Zeilenenden, oder ist sie ein Link oder ein Verzeichnis,
 endet der Befehl mit Exit-Code 1 und verfolgt nichts.
 Die Meldung nennt die Zeile und sagt, dass nichts verfolgt wurde.
 Dasselbe gilt, wenn die Datei sich während des Lesens ändert; dann hilft ein neuer Aufruf.
+Hat das Verzeichnis eine Datei unter anderer Schreibweise, etwa \type{.StemmaIgnore},
+endet der Befehl ebenfalls mit Exit-Code 1: Gelesen wird nur \type{.stemmaignore}.
+Die Meldung nennt die Datei; sie benennt man um, oder man fügt sie in \type{.stemmaignore} ein
+und entfernt sie, wenn beide Namen vorkommen.
 Ein Snapshot und \type{commit} lesen die Datei nie, eine ungültige Datei blockiert sie also nicht.
 
 {\bf Grenzen.} Ohne \type{.stemmaignore} nimmt, wer \type{.} nennt, jede Datei des Verzeichnisses

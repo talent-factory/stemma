@@ -634,6 +634,11 @@ Die Datei wird bei jedem Aufruf von \type{track} und \type{status} aus dem Verze
 nicht aus dem Baum.
 Ist sie ungültig, ein Link oder keine gewöhnliche Datei, oder ändert sie sich beim Lesen,
 bricht der Aufruf ab, bevor etwas verfolgt wird.
+Dasselbe gilt, wenn das Verzeichnis eine Datei unter anderer Schreibweise hat, etwa
+\type{.StemmaIgnore}: Gelesen wird nur der genaue Name.
+Ein Dateisystem, das Gross- und Kleinschreibung nicht unterscheidet, würde die Datei sonst
+anwenden, während ein Klon auf einem anderen System sie nicht fände
+und die Dateien verfolgte, die sie ausschliesst.
 Ein Snapshot und \type{commit} lesen sie nie.
 Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Muster aus.
 

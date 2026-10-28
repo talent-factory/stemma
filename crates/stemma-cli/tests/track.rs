@@ -619,6 +619,27 @@ fn a_directory_as_the_exclusion_file_stops_the_command() {
 }
 
 #[test]
+fn an_exclusion_file_under_another_spelling_stops_the_command_and_names_it() {
+    let dir = repository();
+    write(dir.path(), ".StemmaIgnore", ".env\n");
+    write(dir.path(), "a.txt", "a");
+    let entries = operations(dir.path()).len();
+
+    let result = track(dir.path(), &["a.txt"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(
+        result.stderr.starts_with("stemma: ")
+            && result.stderr.contains(".StemmaIgnore")
+            && result.stderr.contains("nothing was tracked"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
 fn a_relative_directory_below_the_root_is_found_without_a_warning() {
     let dir = repository();
     fs::create_dir(dir.path().join("sub")).unwrap();

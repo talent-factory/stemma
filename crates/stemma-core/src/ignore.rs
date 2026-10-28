@@ -18,6 +18,9 @@
 //! normalizes Unicode: a pattern `.ENV` does not exclude `.env`, and a pattern in NFC does not
 //! exclude a name that the file system keeps in NFD. `track` makes a path spell its names as on
 //! disk, but the patterns are the person's text (open item of ADR-012).
+//!
+//! The file itself is read only under its exact name: [`IgnoreRules::read`] refuses a directory
+//! that has a file under another spelling of the name in ASCII case, such as `.StemmaIgnore`.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -170,6 +173,13 @@ impl IgnoreRules {
     /// patterns. The file is read from the directory and not from a tree, so an edit takes effect
     /// at once.
     ///
+    /// The file is read only under its exact name: a file system that ignores case would open
+    /// `.StemmaIgnore` as this file, and a clone on another system would not find it, so the
+    /// rules would differ between the two. The directory is listed first, and a name that differs
+    /// only in the case of its ASCII letters is an error and not an exclusion file, also if the
+    /// exact name exists as well. The listing and the inspection are two steps: a file that is
+    /// renamed in between is not noticed, but the file that is read is always the exact name.
+    ///
     /// The path is inspected without following a link, then opened, and the open file is checked
     /// to be the one that was inspected (same device and inode on Unix) and a regular file, so
     /// that a file replaced in between is an error and not a read through a link. The bytes that
@@ -180,11 +190,18 @@ impl IgnoreRules {
     /// # Errors
     ///
     /// Returns [`IgnoreError::NotAFile`] if the name is a link, a directory, or anything but a
-    /// regular file, [`IgnoreError::Changed`] if it was replaced, removed, or written while it was
-    /// read, [`IgnoreError::Io`] if it cannot be inspected, opened, or read, and
+    /// regular file, [`IgnoreError::Misspelled`] if the directory has the file under another
+    /// spelling of the name, [`IgnoreError::Changed`] if it was replaced, removed, or written
+    /// while it was read, [`IgnoreError::Io`] if it cannot be inspected, opened, or read, and
     /// [`IgnoreError::Invalid`] if the reader refuses it.
     pub fn read(root: &Path) -> Result<Self, IgnoreError> {
         let path = root.join(FILE_NAME);
+        if let Some((found, exact_exists)) = misspelled_file(root)? {
+            return Err(IgnoreError::Misspelled {
+                path: root.join(found),
+                exact_exists,
+            });
+        }
         let before = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::empty()),
@@ -258,6 +275,33 @@ impl IgnoreRules {
     pub fn is_empty(&self) -> bool {
         self.patterns.is_empty()
     }
+}
+
+/// The name in `root` that is another spelling of the exclusion file's name (it differs only in
+/// the case of its ASCII letters), if there is one, and whether the exact name is listed as well.
+/// A missing directory has none. The whole directory is listed, so the answer does not depend on
+/// the order of the entries.
+fn misspelled_file(root: &Path) -> Result<Option<(String, bool)>, IgnoreError> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(IgnoreError::io("list", root, source)),
+    };
+    let mut other = None;
+    let mut exact_exists = false;
+    for entry in entries {
+        let name = entry
+            .map_err(|source| IgnoreError::io("list", root, source))?
+            .file_name();
+        // A name that is not UTF-8 cannot be a spelling of an ASCII name.
+        let Some(name) = name.to_str() else { continue };
+        if name == FILE_NAME {
+            exact_exists = true;
+        } else if name.eq_ignore_ascii_case(FILE_NAME) && other.is_none() {
+            other = Some(name.to_owned());
+        }
+    }
+    Ok(other.map(|name| (name, exact_exists)))
 }
 
 /// Reads the bytes of an open file whose length is `expected`. At most one byte more than the
@@ -593,6 +637,15 @@ pub enum IgnoreError {
         /// What it is, for the message.
         found: &'static str,
     },
+    /// The directory has a file under another spelling of the name, such as `.StemmaIgnore`.
+    /// The exclusion file is read only as `.stemmaignore`, also if that file exists as well.
+    Misspelled {
+        /// The path of the file with the other spelling, as the directory has it.
+        path: PathBuf,
+        /// Whether the directory has `.stemmaignore` too. That is possible on a file system that
+        /// tells the cases apart, and renaming the other file would then overwrite it.
+        exact_exists: bool,
+    },
     /// The file was replaced, removed, or written while it was read. Run the command again.
     Changed {
         /// The path of the exclusion file.
@@ -636,6 +689,25 @@ impl fmt::Display for IgnoreError {
             Self::NotAFile { path, found } => write!(
                 f,
                 "`{}` is {found}, not a regular file; an exclusion file has to be a regular file",
+                path.display()
+            ),
+            Self::Misspelled {
+                path,
+                exact_exists: false,
+            } => write!(
+                f,
+                "`{}` is not spelled `{FILE_NAME}`; rename it, because a file system that tells \
+                 the cases apart would not read it as the exclusion file",
+                path.display()
+            ),
+            Self::Misspelled {
+                path,
+                exact_exists: true,
+            } => write!(
+                f,
+                "`{}` is a second spelling of `{FILE_NAME}`, which exists as well; merge it \
+                 into `{FILE_NAME}` and remove it, because a file system that ignores case \
+                 cannot hold both",
                 path.display()
             ),
             Self::Changed { path } => write!(
@@ -1105,6 +1177,74 @@ mod tests {
         std::fs::write(dir.path().join(FILE_NAME), b"\xff").unwrap();
         let error = IgnoreRules::read(dir.path()).unwrap_err();
         assert_eq!(error.to_string(), ".stemmaignore: the file is not UTF-8");
+    }
+
+    #[test]
+    fn the_file_under_another_spelling_is_refused_and_not_read() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join(".StemmaIgnore"), ".env\n").unwrap();
+        let error = IgnoreRules::read(dir.path()).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                IgnoreError::Misspelled { path, exact_exists: false }
+                    if path == &dir.path().join(".StemmaIgnore")
+            ),
+            "{error}"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains(".StemmaIgnore") && text.contains("rename it"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_case_variant_does_not_matter() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join(FILE_NAME), "*.log\n").unwrap();
+        for name in [
+            ".stemmaignore2",
+            "stemmaignore",
+            ".stemmaignore.bak",
+            ".stemma",
+        ] {
+            std::fs::write(dir.path().join(name), "x").unwrap();
+        }
+        assert!(IgnoreRules::read(dir.path())
+            .unwrap()
+            .is_ignored("a.log", false));
+    }
+
+    #[test]
+    fn a_missing_directory_has_no_rules() {
+        let dir = TempDir::new();
+        assert!(IgnoreRules::read(&dir.path().join("gone"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_second_spelling_next_to_the_exact_file_is_refused_with_other_advice() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join(FILE_NAME), "*.log\n").unwrap();
+        std::fs::write(dir.path().join(".StemmaIgnore"), ".env\n").unwrap();
+        // A file system that ignores case holds one file here, and then there is nothing to refuse.
+        if std::fs::read_dir(dir.path()).unwrap().count() < 2 {
+            return;
+        }
+        let error = IgnoreRules::read(dir.path()).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                IgnoreError::Misspelled {
+                    exact_exists: true,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("merge it"), "{error}");
     }
 
     #[test]
