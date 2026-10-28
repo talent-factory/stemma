@@ -148,7 +148,7 @@ Der Snapshot speichert die geänderte \type{README.md} und bewegt den Zeiger des
 Working-Copy-Commits von \type{b3:e6a3…} auf \type{b3:7694…}; \type{op log} zeigt dazu den
 Eintrag 4, \type{snapshot}. Der Branch \type{main} bleibt stehen.
 Ein zweiter Aufruf liest denselben Stand, findet nichts zu speichern und schreibt keinen Eintrag.
-Aus demselben Grund schreiben das \type{status} danach und der Snapshot im \type{commit}
+Deshalb schreiben auch das folgende \type{status} und der Snapshot im \type{commit}
 nichts mehr: Die Änderung ist schon im Working-Copy-Commit.
 
 Eine neue Datei erscheint erst, wenn \type{track} sie aufgenommen hat, denn der Diff
@@ -219,8 +219,8 @@ Der erste Aufruf vergleicht den leeren Working-Copy-Commit mit seinem Elternteil
 Der zweite findet einen Unterschied und endet mit 4.
 Die 4 ist kein Fehler: Git nimmt dafür 1, doch hier steht 1 für Fehler, die ein Skript von einem
 Unterschied trennen muss (ADR-018). Mit Pfaden zählen nur die gewählten Dateien.
-Auf Arbeitsverzeichnis, Zeiger und Log wirkt die Option nicht; es gilt, was für die Seiten
-des Aufrufs gilt, also ein Snapshot beim Working-Copy-Commit und sonst nichts.
+Die Option selbst schreibt nichts. Ein Snapshot entsteht nur, wenn eine Seite des Aufrufs der
+Working-Copy-Commit ist.
 
 \subsection{Die Oberfläche im Terminal}
 
@@ -241,8 +241,7 @@ Für Skripte und Agenten gilt deshalb der Text ohne \type{--tui}.
 Auf einem Terminal färbt der Befehl die Ausgabe und gibt sie an einen Pager weiter.
 Geht die Ausgabe in eine Pipe oder eine Datei, ist sie reiner Text ohne Farbe und ohne Pager.
 Damit liest ein Skript denselben Text, den die Beispiele dieses Kapitels zeigen.
-Farbe und Pager ändern nichts am Repository; es gilt, was für die Seiten des Aufrufs gilt.
-Ein Pager, der früher endet, ist kein Fehler.
+Farbe und Pager schreiben nichts ins Repository. Ein Pager, der früher endet, ist kein Fehler.
 Welche Variablen den Pager wählen, steht in der Befehlsreferenz.
 
 \subsection{Binärdateien}
@@ -260,9 +259,8 @@ Binary files b3:c76d…402f blob.bin and working-copy b3:39f0…cdc7 blob.bin di
 \stoptyping
 
 Mit \type{--exit-code} endet der Befehl auch bei Binärdateien mit 4.
-Der Snapshot ist wie bei Text: ein Eintrag \type{snapshot}, weil sich eine
-verfolgte Datei geändert hat. Ist nur eine der beiden Fassungen binär, gilt die ganze Datei als
-binär.
+Der Snapshot schreibt wie bei Text einen Eintrag \type{snapshot}, weil sich eine verfolgte Datei
+geändert hat. Ist nur eine der beiden Fassungen binär, gilt die ganze Datei als binär.
 
 \subsection{Was jeder Ablauf ändert}
 
