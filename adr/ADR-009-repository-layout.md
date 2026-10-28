@@ -94,6 +94,12 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   `.stemma` above `start` must not be at the root of a volume, where every user may create
   directories (`AtVolumeRoot`); one at `start` is opened there, as `-C` reaches the root of a
   volume only when it names it, and the message gives that call.
+  The search also reports the nearest directory from the start up to, but not including, the
+  root that holds a `.git`, a file in a Git worktree or a directory in a nested clone
+  (`nested_git`, STEMMA-132). Such a command works in the repository of the root, and the files
+  of the checkout would appear there as untracked paths. The command line warns, as for a link,
+  and does not refuse: the warning does not change the exit code. The `.git` of the root itself
+  is the normal case and says nothing.
   Every command but `init` uses the search, and the paths of `track`
   are relative to the directory of `-C`, as in Git: a `..` at their start leads up to the root
   and not beyond, and any other `..` is refused as before, since it may follow a link. Neither

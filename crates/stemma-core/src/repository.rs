@@ -405,6 +405,7 @@ impl Repository {
                 return opened.map(|repository| Discovered {
                     repository,
                     subdirectory: String::new(),
+                    nested_git: None,
                     // `-C ..` from a link opens the directory above its target.
                     through_link: fs::canonicalize(start)
                         .is_ok_and(|real| !lies_below(start, &real)),
@@ -426,11 +427,19 @@ impl Repository {
                 path: start.to_path_buf(),
             });
         }
+        // The nearest directory on the way up, from the start to just below the root, that holds
+        // a `.git` (a file in a Git worktree, a directory in a nested clone).
+        let mut nested_git = holds_git_entry(&real).then(|| real.clone());
         for root in real.ancestors().skip(1) {
             let metadata_dir = root.join(METADATA_DIR);
             match fs::symlink_metadata(&metadata_dir) {
                 Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    if nested_git.is_none() && holds_git_entry(root) {
+                        nested_git = Some(root.to_path_buf());
+                    }
+                    continue;
+                }
                 Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
             }
             trusted(&metadata_dir)?;
@@ -446,6 +455,7 @@ impl Repository {
             return Ok(Discovered {
                 repository,
                 subdirectory: parts.join("/"),
+                nested_git,
                 through_link: !lies_below(start, root),
             });
         }
@@ -1308,6 +1318,12 @@ pub struct Discovered {
     /// parts, as a path of [`Repository::track`] has it: empty if the search started at the
     /// root.
     pub subdirectory: String,
+    /// The nearest directory between the start and the root, the start included and the root
+    /// not, that holds a `.git`: the start lies in a Git worktree or a nested clone inside the
+    /// repository (STEMMA-132). The command then works in the repository of the root, and the
+    /// files of that checkout appear there as paths of the root. `None` if there is none, and
+    /// always if the repository is at the start.
+    pub nested_git: Option<PathBuf>,
     /// Whether the search reached the repository through a link: no directory of the path of
     /// the start, as the shell reads it, is the root. A command that runs in a link to a
     /// directory of another repository then works in that one, which a person may not expect.
@@ -1315,6 +1331,11 @@ pub struct Discovered {
     /// and a link to the root itself does not count (see the search in
     /// [`Repository::discover`]).
     pub through_link: bool,
+}
+
+/// Whether `dir` holds a `.git`, a file (Git worktree) or a directory (clone), of any kind.
+fn holds_git_entry(dir: &Path) -> bool {
+    fs::symlink_metadata(dir.join(".git")).is_ok()
 }
 
 /// Whether a directory of `start`, as the shell reads its path, is `root` once resolved: the
@@ -2587,6 +2608,27 @@ mod tests {
             found.through_link,
             "the shell reads `deep/link/..` as `deep`"
         );
+    }
+
+    #[test]
+    fn discover_names_the_nearest_git_checkout_below_the_root() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        // The `.git` of the root itself is the normal case and says nothing.
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        let task = dir.path().join("task");
+        fs::create_dir_all(task.join("src")).unwrap();
+        let found = Repository::discover(&task).unwrap();
+        assert_eq!(found.nested_git, None);
+        fs::write(task.join(".git"), "gitdir: x\n").unwrap();
+        let real = fs::canonicalize(&task).unwrap();
+        let found = Repository::discover(&task).unwrap();
+        assert_eq!(found.nested_git, Some(real.clone()));
+        let found = Repository::discover(task.join("src")).unwrap();
+        assert_eq!(found.nested_git, Some(real));
+        assert_eq!(found.subdirectory, "task/src");
+        // At the root, there is no search and no checkout.
+        assert_eq!(Repository::discover(dir.path()).unwrap().nested_git, None);
     }
 
     #[cfg(unix)]

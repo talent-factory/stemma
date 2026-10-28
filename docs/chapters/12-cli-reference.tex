@@ -84,6 +84,9 @@ nicht mit Exit-Code 2.
 {\bf Ausgabekanäle.} Das Ergebnis eines Befehls steht auf der Standardausgabe, sonst nichts.
 Fehler stehen auf der Fehlerausgabe mit dem Präfix \type{stemma:}, Warnungen mit
 \type{stemma: warning:}; eine Warnung ändert den Exit-Code nicht.
+Eine Warnung gibt es, wenn der Befehl durch einen Link in ein Repository gelangt
+und wenn das Verzeichnis in einem Git-Checkout unterhalb der Wurzel liegt,
+etwa in einem Git-Worktree (ADR-009): Der Befehl arbeitet dann im Repository der Wurzel.
 Fehler der Argumente meldet die Bibliothek der Kommandozeile mit \type{error:} auf der
 Fehlerausgabe (Exit-Code 2). \type{--help} (\type{-h}) und \type{--version} (\type{-V})
 schreiben auf die Standardausgabe und enden mit Exit-Code 0.

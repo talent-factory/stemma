@@ -1388,6 +1388,18 @@ fn discover(dir: &Path) -> Result<Discovered, CliError> {
             found.repository.path().display()
         );
     }
+    if let Some(checkout) = &found.nested_git {
+        // The files of the checkout are paths of the root, and a `track` or `commit` would write
+        // them into its history (STEMMA-132).
+        let _ = writeln!(
+            io::stderr(),
+            "stemma: warning: `{}` lies in the Git checkout `{}` inside the repository at `{}`; \
+             the command works in that repository",
+            dir.display(),
+            checkout.display(),
+            found.repository.path().display()
+        );
+    }
     Ok(found)
 }
 
