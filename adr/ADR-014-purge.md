@@ -1,7 +1,7 @@
 # ADR-014: Removing a secret from the history and the operation log
 
 **Status:** Accepted and implemented: the plan (STEMMA-46), the stub with the `purge` entry in
-the log (STEMMA-47), the purge itself with the journal, resume, abort, and format 3
+the log (STEMMA-47), the purge itself with the journal, resume, abort, and format 4
 (STEMMA-48), and the lock that a writer takes before its first object (STEMMA-49, agreed with
 the author on 2026-10-22). The hash that a stub keeps came with the hash chain of the log
 (STEMMA-41, ADR-011, agreed on 2026-10-22). The decisions marked *(confirmed)* were
