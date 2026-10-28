@@ -45,7 +45,7 @@ art, not a template (ADR-015).
   reports a failure instead, because two changes that share an ID would be joined, and it refuses
   a source that returns only zeros. A rewrite takes the ID of the commit it replaces, a new change
   gets a new one, and **a merge commit gets a new change ID** *(confirmed)*: it joins two changes
-  and continues neither. `Commit::new` takes the ID as an input and does not decide which case
+  and continues neither. `Commit::try_new` takes the ID as an input and does not decide which case
   applies. A short form for people can be derived from the long one later, for display only.
 - **Untracked files are not saved until they are confirmed** *(confirmed)*. A file that is not in
   the tree of the working-copy commit is *untracked*. A snapshot saves a tracked file that
@@ -207,7 +207,7 @@ art, not a template (ADR-015).
 
 - [x] `Commit::rewrite`, which takes the parents and the change ID from the commit it replaces
       (STEMMA-3).
-- [ ] A struct of named parts instead of six positional arguments of `Commit::new`.
+- [ ] A struct of named parts instead of six positional arguments of `Commit::try_new`.
 - [x] A branch that someone moved to an older version of the working-copy commit that has a
       message, or a working-copy commit that `op restore` put back, looked like a `commit` that
       stopped, and the next `commit` finished it. The log decides it now (STEMMA-76).

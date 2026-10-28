@@ -111,7 +111,7 @@ them.
 - **Change ID** *(confirmed)*. A commit carries one change ID as the header `change <id>`, between
   the parents and the author. It names the change that the commit is a state of and stays the same
   through every rewrite (ADR-010), so a review or a rebase can follow it. It is random, not derived
-  from the content, so `Commit::new` takes it as an input and "the same inputs give the same ID"
+  from the content, so `Commit::try_new` takes it as an input and "the same inputs give the same ID"
   still holds. The form is `ch:` and 32 lowercase hexadecimal digits (128 bits); the prefix keeps it
   apart from an object ID (`b3:`). The rules of the strict reader apply: uppercase digits, another
   length, and a missing prefix are rejected. **This changes the format of `commit` in place**, which
@@ -255,7 +255,7 @@ them.
 - [x] Validate `Actor` in its own type, so that other consumers, such as the authorization
       hook, never see an actor that a commit would reject. Done: `Actor` has private fields and
       is built by `Actor::human` and `Actor::agent`, which check every field and return an
-      `ActorError`. `Actor::view` gives an `ActorRef` to match on. `Commit::new` no longer
+      `ActorError`. `Actor::view` gives an `ActorRef` to match on. `Commit::try_new` no longer
       checks the author, and `CommitError::InvalidActorField` is gone. No encoding and no ID
       changes.
 - [x] Readers for trees and commits, with the strict reading rule above. Done: `Tree::parse` and

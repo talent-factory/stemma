@@ -272,7 +272,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **Only `Repository` writes the log and moves a pointer** *(confirmed)*.
   `Repository::update_branch` and `set_head` order "check, write the entry, flush, move" under the
   lock, `Repository::refs()` returns a view for reading, and `Repository::oplog()` can read the
-  log. `FsOpLog::append` and `Entry::new` are visible inside the crate only, so through
+  log. `FsOpLog::append` and `Entry::try_new` are visible inside the crate only, so through
   `Repository` no caller can move a pointer past the log, add an entry past the authorizer, invent
   an entry that was never in the log, or pair the references of one repository with the objects of
   another. This is a convention of the API and not a boundary: the files are plain files, and code
@@ -403,8 +403,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       2 microseconds for each entry, 17 ms more at 10,000 entries than at 1,000, so it does not
       matter. The tip file does not replace the listing; the writer still takes the largest number
       from the directory.
-- [ ] `Moved` can be built with an old and a new value that are equal, and `Change::new` rejects
-      that; a fallible `Moved::new` would keep the rule in one place. `Change::new` takes two
+- [ ] `Moved` can be built with an old and a new value that are equal, and `Change::try_new` rejects
+      that; a fallible `Moved::new` would keep the rule in one place. `Change::try_new` takes two
       adjacent optional pointers, which gets harder to read with every new kind of pointer; a
       struct of pointers, a context of operation, actor and authorizer, and a general `apply` that
       moves any set of pointers in one entry are open. `commit` has a function for its two

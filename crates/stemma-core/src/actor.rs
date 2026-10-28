@@ -38,6 +38,7 @@ enum Repr {
 /// The fields of this type are public, so a value of it is not known to be valid. Only the result
 /// of [`Actor::view`] is: do not take an `ActorRef` as proof that an actor was checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ActorRef<'a> {
     /// A human.
     Human {

@@ -57,6 +57,7 @@ pub use allowed::Allowed;
 /// makes it a warning.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Decision {
     Allow,
     Deny,
@@ -91,11 +92,15 @@ mod tests {
         let human = Actor::human("daniel").unwrap();
         let agent = Actor::agent("agent-1", "claude-haiku-5-5", "s1", "daniel").unwrap();
         assert_eq!(
-            AllowAll.authorize(&human, &OperationName::new("commit").unwrap(), "main"),
+            AllowAll.authorize(&human, &OperationName::try_new("commit").unwrap(), "main"),
             Decision::Allow
         );
         assert_eq!(
-            AllowAll.authorize(&agent, &OperationName::new("commit").unwrap(), "feature/x"),
+            AllowAll.authorize(
+                &agent,
+                &OperationName::try_new("commit").unwrap(),
+                "feature/x"
+            ),
             Decision::Allow
         );
     }

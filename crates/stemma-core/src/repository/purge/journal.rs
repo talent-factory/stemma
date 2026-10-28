@@ -147,7 +147,7 @@ impl Journal {
                     let (name, rest) = rest.split_once(' ')?;
                     let (old, new) = pair(rest)?;
                     plan.branches
-                        .push((BranchName::new(name).ok()?, moved(old, new)));
+                        .push((BranchName::try_new(name).ok()?, moved(old, new)));
                 }
                 "stubs" if rest == "-" => {}
                 "stubs" => add_stubs(&mut plan.entries, rest, last)?,
@@ -460,7 +460,7 @@ mod tests {
                 )),
                 working_copy: Some(Moved::from_to(Some(commit("b")), Some(commit("d")))),
                 branches: vec![(
-                    BranchName::new("main").unwrap(),
+                    BranchName::try_new("main").unwrap(),
                     Moved::from_to(Some(commit("a")), Some(commit("c"))),
                 )],
                 entries: vec![3, 4, 5, 7],

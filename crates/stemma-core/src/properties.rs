@@ -303,7 +303,7 @@ fn random_tree(rng: &mut Rng) -> Tree {
             continue;
         }
         let entry = if rng.one_in(3) {
-            let inner = Tree::new(vec![TreeEntry::file(
+            let inner = Tree::try_new(vec![TreeEntry::file(
                 "x",
                 random_mode(rng),
                 random_blob(rng),
@@ -318,7 +318,7 @@ fn random_tree(rng: &mut Rng) -> Tree {
             entries.push(entry);
         }
     }
-    Tree::new(entries).expect("names are distinct")
+    Tree::try_new(entries).expect("names are distinct")
 }
 
 /// A visible-ASCII field, which may contain `=`.
@@ -358,7 +358,7 @@ const BRANCH_NAMES: &[&str] = &[
 const OPERATION_NAMES: &[&str] = &["init", "snapshot", "commit", "op-9", "a", "checkout"];
 
 pub(crate) fn random_branch(rng: &mut Rng) -> BranchName {
-    BranchName::new(*rng.pick(BRANCH_NAMES)).expect("valid branch name")
+    BranchName::try_new(*rng.pick(BRANCH_NAMES)).expect("valid branch name")
 }
 
 fn random_commit_value(rng: &mut Rng) -> Option<CommitId> {
@@ -430,8 +430,8 @@ fn random_change_entry(rng: &mut Rng) -> Entry {
     if head.is_none() && working_copy.is_none() && branches.is_empty() {
         branches.push((random_branch(rng), random_moved(rng, random_commit_value)));
     }
-    let operation = OperationName::new(*rng.pick(OPERATION_NAMES)).expect("valid operation");
-    let change = Change::new(
+    let operation = OperationName::try_new(*rng.pick(OPERATION_NAMES)).expect("valid operation");
+    let change = Change::try_new(
         time,
         random_actor(rng),
         operation,
@@ -440,7 +440,7 @@ fn random_change_entry(rng: &mut Rng) -> Entry {
         branches,
     )
     .expect("a random change is valid");
-    Entry::new(number, change).expect("a random number is valid")
+    Entry::try_new(number, change).expect("a random number is valid")
 }
 
 /// The entry of a purge. The stubs come in any order, with repeats, and only those below the
@@ -458,7 +458,7 @@ fn random_purge_entry(rng: &mut Rng) -> Entry {
         })
         .filter(|stub| (1..number).contains(stub))
         .collect();
-    let purge = Purge::new(time, random_actor(rng), commits, &stubs).expect("a valid purge");
+    let purge = Purge::try_new(time, random_actor(rng), commits, &stubs).expect("a valid purge");
     Entry::of(number, Record::Purge(purge)).expect("the stubs are before the purge")
 }
 
@@ -474,7 +474,7 @@ fn random_commit(rng: &mut Rng) -> Commit {
     let tree: TreeId = random_tree(rng).id();
     let mut parents: Vec<CommitId> = Vec::new();
     for n in 0..rng.below(4) {
-        let parent = Commit::new(
+        let parent = Commit::try_new(
             tree,
             vec![],
             sample_change(),
@@ -497,7 +497,7 @@ fn random_commit(rng: &mut Rng) -> Commit {
         }
         message
     };
-    Commit::new(
+    Commit::try_new(
         tree,
         parents,
         random_change(rng),
@@ -520,7 +520,7 @@ fn random_branch_name(rng: &mut Rng) -> BranchName {
             .map(|_| *rng.pick(PARTS))
             .collect::<Vec<_>>()
             .join("/");
-        if let Ok(name) = BranchName::new(name) {
+        if let Ok(name) = BranchName::try_new(name) {
             return name;
         }
     }
@@ -1260,11 +1260,11 @@ fn every_error_that_wraps_another_prints_the_cause_once_and_goes_on_below_it() {
     let working = dir.store();
     let blob = working.put_blob(&Blob::new("hello")).unwrap();
     let id = ObjectId::from(blob);
-    let empty = working.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+    let empty = working.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
     let mut index = Index::new();
     index.insert("a", FileMode::File, blob).unwrap();
-    let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
-    let commit = Commit::new(
+    let tree = Tree::try_new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
+    let commit = Commit::try_new(
         empty,
         vec![],
         sample_change(),
@@ -1322,11 +1322,11 @@ fn the_error_of_the_file_system_is_reached_through_every_wrapper() {
     let dir = TempDir::new();
     let working = dir.store();
     let blob = working.put_blob(&Blob::new("hello")).unwrap();
-    let empty = working.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+    let empty = working.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
     let mut index = Index::new();
     index.insert("a", FileMode::File, blob).unwrap();
-    let tree = Tree::new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
-    let commit = Commit::new(
+    let tree = Tree::try_new(vec![TreeEntry::file("a", FileMode::File, blob).unwrap()]).unwrap();
+    let commit = Commit::try_new(
         empty,
         vec![],
         sample_change(),

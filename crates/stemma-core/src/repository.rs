@@ -208,7 +208,7 @@ impl InitOptions {
 impl Default for InitOptions {
     /// The initial branch is `main`.
     fn default() -> Self {
-        Self::new(BranchName::new("main").expect("`main` is a valid branch name"))
+        Self::new(BranchName::try_new("main").expect("`main` is a valid branch name"))
     }
 }
 
@@ -275,7 +275,7 @@ impl Repository {
         let Some(allowed) = Allowed::ask(
             authorizer,
             actor,
-            &OperationName::new("init").expect("`init` is a valid operation name"),
+            &OperationName::try_new("init").expect("`init` is a valid operation name"),
             &path.display().to_string(),
         ) else {
             return Err(InitError::Denied {
@@ -601,7 +601,7 @@ impl Repository {
         let outcome =
             self.refs
                 .update_branch_after(&lock, name, expected, new, &self.objects, || {
-                    let change = Change::new(
+                    let change = Change::try_new(
                         now(),
                         actor.clone(),
                         operation.clone(),
@@ -641,7 +641,7 @@ impl Repository {
         let outcome = self
             .refs
             .set_head_after(&lock, head, &self.objects, |old| {
-                let change = Change::new(
+                let change = Change::try_new(
                     now(),
                     actor.clone(),
                     operation.clone(),
@@ -695,7 +695,7 @@ impl Repository {
         let outcome =
             self.refs
                 .update_working_copy_after(lock, expected, new, &self.objects, || {
-                    let change = Change::new(
+                    let change = Change::try_new(
                         now(),
                         actor.clone(),
                         operation.clone(),
@@ -1115,10 +1115,10 @@ fn move_into_place(staging: &Path, target: &Path) -> Result<(), InitError> {
 fn first_working_copy(dir: &Path, actor: &Actor) -> Result<CommitId, InitError> {
     let store = FsObjectStore::new(dir);
     let tree = store
-        .put_tree(&Tree::new(Vec::new()).expect("an empty tree is valid"))
+        .put_tree(&Tree::try_new(Vec::new()).expect("an empty tree is valid"))
         .map_err(|error| InitError::Store(Box::new(error)))?;
     let change = ChangeId::generate().map_err(InitError::ChangeId)?;
-    let commit = Commit::new(tree, Vec::new(), change, actor.clone(), now(), "")
+    let commit = Commit::try_new(tree, Vec::new(), change, actor.clone(), now(), "")
         .expect("a commit without parents has no duplicate parent");
     store
         .put_commit(&commit)
@@ -1143,8 +1143,8 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
     // The first entry of the log: HEAD and the working-copy commit come into being. It is written
     // before the pointers, as for every pointer (ADR-011); the directory is renamed as a whole, so
     // all appear together.
-    let init = OperationName::new("init").expect("`init` is a valid operation name");
-    let change = Change::new(
+    let init = OperationName::try_new("init").expect("`init` is a valid operation name");
+    let change = Change::try_new(
         now(),
         actor.clone(),
         init,
@@ -1333,6 +1333,7 @@ impl Error for InitError {
 
 /// A repository that [`Repository::discover`] found, and where the search started in it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Discovered {
     /// The repository.
     pub repository: Repository,
@@ -1769,7 +1770,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let commit = Commit::parse(raw.body()).unwrap();
-        assert_eq!(commit.tree(), Tree::new(Vec::new()).unwrap().id());
+        assert_eq!(commit.tree(), Tree::try_new(Vec::new()).unwrap().id());
         assert!(commit.parents().is_empty());
         assert_eq!(commit.author(), &actor());
         assert_eq!(commit.message(), "");
@@ -1798,8 +1799,8 @@ mod tests {
     /// A commit on top of the working-copy commit with the empty tree, to move the pointer to.
     fn next_commit(repository: &Repository, message: &str) -> CommitId {
         let current = repository.refs().working_copy().unwrap();
-        let commit = Commit::new(
-            Tree::new(Vec::new()).unwrap().id(),
+        let commit = Commit::try_new(
+            Tree::try_new(Vec::new()).unwrap().id(),
             vec![current],
             ChangeId::generate().unwrap(),
             actor(),
@@ -1811,7 +1812,7 @@ mod tests {
     }
 
     fn operation(name: &str) -> OperationName {
-        OperationName::new(name).unwrap()
+        OperationName::try_new(name).unwrap()
     }
 
     #[test]
@@ -1940,7 +1941,7 @@ mod tests {
     fn head_points_to_a_branch_that_does_not_exist_yet() {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
-        let main = BranchName::new("main").unwrap();
+        let main = BranchName::try_new("main").unwrap();
         assert_eq!(
             repository.refs().head().unwrap(),
             Head::Branch(main.clone())
@@ -1953,7 +1954,7 @@ mod tests {
     #[test]
     fn init_uses_the_initial_branch() {
         let dir = TempDir::new();
-        let options = InitOptions::new(BranchName::new("trunk/main").unwrap());
+        let options = InitOptions::new(BranchName::try_new("trunk/main").unwrap());
         let repository = Repository::init(dir.path(), &options, &actor(), &AllowAll).unwrap();
         assert_eq!(
             fs::read(dir.path().join(".stemma").join("HEAD")).unwrap(),
@@ -1961,7 +1962,7 @@ mod tests {
         );
         assert_eq!(
             repository.refs().head().unwrap(),
-            Head::Branch(BranchName::new("trunk/main").unwrap())
+            Head::Branch(BranchName::try_new("trunk/main").unwrap())
         );
         assert_eq!(options.initial_branch().as_str(), "trunk/main");
     }
@@ -2862,8 +2863,8 @@ mod tests {
 
         let entry = repository
             .set_head(
-                &OperationName::new("checkout").unwrap(),
-                &Head::Branch(BranchName::new("other").unwrap()),
+                &OperationName::try_new("checkout").unwrap(),
+                &Head::Branch(BranchName::try_new("other").unwrap()),
                 &actor(),
                 &AllowAll,
             )
@@ -3135,20 +3136,20 @@ mod tests {
     use crate::refs::Logged;
 
     fn op(name: &str) -> OperationName {
-        OperationName::new(name).unwrap()
+        OperationName::try_new(name).unwrap()
     }
 
     fn branch(name: &str) -> BranchName {
-        BranchName::new(name).unwrap()
+        BranchName::try_new(name).unwrap()
     }
 
     /// Stores a commit with no parents and returns its ID.
     fn store_commit(repository: &Repository, message: &str) -> CommitId {
         let tree = repository
             .objects()
-            .put_tree(&Tree::new(vec![]).unwrap())
+            .put_tree(&Tree::try_new(vec![]).unwrap())
             .unwrap();
-        let commit = Commit::new(tree, vec![], sample_change(), actor(), 1, message).unwrap();
+        let commit = Commit::try_new(tree, vec![], sample_change(), actor(), 1, message).unwrap();
         repository.objects().put_commit(&commit).unwrap()
     }
 
@@ -3475,9 +3476,9 @@ mod tests {
     #[test]
     fn the_outcomes_of_a_step_that_ran_become_errors_that_carry_the_entry() {
         let entry = || {
-            Entry::new(
+            Entry::try_new(
                 9,
-                Change::new(
+                Change::try_new(
                     1,
                     actor(),
                     op("commit"),
@@ -3873,7 +3874,7 @@ mod tests {
 
     #[test]
     fn the_constants_that_init_relies_on_are_valid() {
-        assert_eq!(OperationName::new("init").unwrap().as_str(), "init");
+        assert_eq!(OperationName::try_new("init").unwrap().as_str(), "init");
         assert_eq!(InitOptions::default().initial_branch().as_str(), "main");
     }
 

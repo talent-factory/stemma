@@ -7,7 +7,7 @@
 //! random and not derived from the content of the commit. A new one is made by
 //! [`ChangeId::generate`]. A rewrite of one change takes over the ID of the commit it replaces. A
 //! merge commit is not a rewrite of either parent: it joins two changes and continues neither, so
-//! it gets a new ID (ADR-010). `Commit::new` does not decide which case applies; the caller passes
+//! it gets a new ID (ADR-010). `Commit::try_new` does not decide which case applies; the caller passes
 //! the ID, and a reader gets it back from the commit.
 //!
 //! The textual form is `ch:` followed by 32 lowercase hexadecimal digits (128 bits). The prefix

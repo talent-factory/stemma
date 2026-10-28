@@ -417,6 +417,7 @@ impl EntryMode {
 /// File mode of a file entry, in a tree or in the index. A directory is not a file, so there is
 /// no directory mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FileMode {
     /// A regular file.
     File,
@@ -639,7 +640,7 @@ impl Tree {
     ///
     /// Returns [`TreeError::DuplicateName`] if two entries share a name. Names were already
     /// validated by [`TreeEntry::file`] and [`TreeEntry::directory`].
-    pub fn new(mut entries: Vec<TreeEntry>) -> Result<Self, TreeError> {
+    pub fn try_new(mut entries: Vec<TreeEntry>) -> Result<Self, TreeError> {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         if let Some(pair) = entries.windows(2).find(|pair| pair[0].name == pair[1].name) {
             return Err(TreeError::DuplicateName(pair[0].name.clone()));
@@ -861,10 +862,10 @@ impl Tree {
             }
             entries.push(entry);
         }
-        // The order was checked above, so `Tree::new` cannot reject the entries here. It is called
+        // The order was checked above, so `Tree::try_new` cannot reject the entries here. It is called
         // so that the invariants of a tree are established in one place; a rule that it gains later
         // applies to a tree that is read as well, and is reported at the last entry.
-        Tree::new(entries).map_err(|source| TreeParseError::Entry {
+        Tree::try_new(entries).map_err(|source| TreeParseError::Entry {
             line: last_line,
             source,
         })
@@ -921,7 +922,7 @@ impl Commit {
     /// Returns [`CommitError::DuplicateParent`] if a parent is listed twice. The author needs no
     /// check here, because an [`Actor`] is valid by construction. The message is not validated: it
     /// comes last in the encoding and cannot interfere with the headers.
-    pub fn new(
+    pub fn try_new(
         tree: TreeId,
         parents: Vec<CommitId>,
         change: ChangeId,
@@ -975,7 +976,7 @@ impl Commit {
     /// Returns [`CommitError::DuplicateParent`] if a parent is listed twice, which happens when two
     /// parents differed only in what the rewrite removed.
     pub fn reparent(&self, tree: TreeId, parents: Vec<CommitId>) -> Result<Self, CommitError> {
-        Self::new(
+        Self::try_new(
             tree,
             parents,
             self.change,
@@ -1095,7 +1096,7 @@ pub enum CommitParseError {
         id: CommitId,
     },
     /// The headers are well formed, but the commit is rejected as a whole. Every rule of
-    /// [`Commit::new`] is already checked while the headers are read, so this does not occur today;
+    /// [`Commit::try_new`] is already checked while the headers are read, so this does not occur today;
     /// it is here for a rule that is added later.
     Commit(CommitError),
 }
@@ -1325,7 +1326,7 @@ impl Commit {
             None if !rest.is_empty() => return Err(malformed(line, CommitMalformed::CutOff)),
             _ => return Err(malformed(line, CommitMalformed::ExpectedEmptyLine)),
         }
-        Commit::new(tree, parents, change, author, timestamp, rest)
+        Commit::try_new(tree, parents, change, author, timestamp, rest)
             .map_err(CommitParseError::Commit)
     }
 }
@@ -1386,7 +1387,7 @@ mod tests {
     }
 
     fn sample_tree() -> Tree {
-        Tree::new(vec![
+        Tree::try_new(vec![
             entry("b.sh", EntryMode::Executable, id(EMPTY_ID)),
             entry("a.txt", EntryMode::File, id(HELLO_ID)),
         ])
@@ -1394,11 +1395,11 @@ mod tests {
     }
 
     fn empty_tree_id() -> TreeId {
-        Tree::new(vec![]).expect("empty tree is valid").id()
+        Tree::try_new(vec![]).expect("empty tree is valid").id()
     }
 
     fn commit(parents: Vec<CommitId>, author: Actor, message: &str) -> Commit {
-        Commit::new(
+        Commit::try_new(
             empty_tree_id(),
             parents,
             sample_change(),
@@ -1416,7 +1417,7 @@ mod tests {
         let parent =
             commit_id("b3:3333333333333333333333333333333333333333333333333333333333333333");
         let change = ChangeId::generate().unwrap();
-        let old = Commit::new(
+        let old = Commit::try_new(
             tree_id_of("b3:1111111111111111111111111111111111111111111111111111111111111111"),
             vec![parent],
             change,
@@ -1446,7 +1447,7 @@ mod tests {
         let two = commit_id("b3:4444444444444444444444444444444444444444444444444444444444444444");
         let change = ChangeId::generate().unwrap();
         let author = Actor::human("daniel").unwrap();
-        let old = Commit::new(
+        let old = Commit::try_new(
             tree_id_of("b3:1111111111111111111111111111111111111111111111111111111111111111"),
             vec![one],
             change,
@@ -1600,14 +1601,14 @@ mod tests {
 
     #[test]
     fn empty_tree_encodes_to_nothing_and_matches_its_golden_id() {
-        let tree = Tree::new(vec![]).expect("empty tree is valid");
+        let tree = Tree::try_new(vec![]).expect("empty tree is valid");
         assert!(tree.encode().is_empty());
         assert_eq!(tree.id().to_string(), EMPTY_TREE_ID);
     }
 
     #[test]
     fn tree_with_all_four_modes_matches_its_golden_vector() {
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             entry("d-run", EntryMode::Executable, id(EMPTY_ID)),
             entry("c-link", EntryMode::Symlink, id(HELLO_ID)),
             entry("b-file", EntryMode::File, id(HELLO_ID)),
@@ -1626,15 +1627,15 @@ mod tests {
     fn tree_id_does_not_depend_on_entry_order() {
         let a = entry("a.txt", EntryMode::File, id(HELLO_ID));
         let b = entry("b.txt", EntryMode::Executable, id(HELLO_ID));
-        let forward = Tree::new(vec![a.clone(), b.clone()]).expect("valid tree");
-        let backward = Tree::new(vec![b, a]).expect("valid tree");
+        let forward = Tree::try_new(vec![a.clone(), b.clone()]).expect("valid tree");
+        let backward = Tree::try_new(vec![b, a]).expect("valid tree");
         assert_eq!(forward.id(), backward.id());
         assert_eq!(forward.entries(), backward.entries());
     }
 
     #[test]
     fn tree_sorts_by_utf8_byte_order() {
-        let tree = Tree::new(
+        let tree = Tree::try_new(
             ["a.txt", "a-b", "a", "B", "é"]
                 .map(|name| entry(name, EntryMode::File, id(HELLO_ID)))
                 .to_vec(),
@@ -1646,8 +1647,8 @@ mod tests {
 
     #[test]
     fn names_are_encoded_as_raw_utf8_bytes() {
-        let tree =
-            Tree::new(vec![entry("\u{e9}", EntryMode::File, id(HELLO_ID))]).expect("valid tree");
+        let tree = Tree::try_new(vec![entry("\u{e9}", EntryMode::File, id(HELLO_ID))])
+            .expect("valid tree");
         let expected = [
             b"100644 ".as_slice(),
             &[0xc3, 0xa9],
@@ -1660,7 +1661,7 @@ mod tests {
     #[test]
     fn directories_sort_like_files_not_as_if_they_ended_in_a_slash() {
         // Git sorts the directory `a` as `a/`, after `a-b` and `a.txt`. Stemma does not.
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             entry("a.txt", EntryMode::File, id(HELLO_ID)),
             entry("a-b", EntryMode::File, id(HELLO_ID)),
             entry("a", EntryMode::Directory, id(TREE_ID)),
@@ -1674,7 +1675,7 @@ mod tests {
     fn tree_order_is_utf8_byte_order_not_utf16() {
         // U+FF5E is EF BD 9E in UTF-8 and U+1F600 is F0 9F 98 80, so U+FF5E sorts first. In
         // UTF-16 the order would be reversed (D83D DE00 before FF5E).
-        let tree = Tree::new(
+        let tree = Tree::try_new(
             ["\u{1f600}", "\u{ff5e}"]
                 .map(|name| entry(name, EntryMode::File, id(HELLO_ID)))
                 .to_vec(),
@@ -1687,7 +1688,7 @@ mod tests {
     #[test]
     fn tree_id_depends_on_mode_and_target() {
         let build = |mode, target| {
-            Tree::new(vec![entry("f", mode, target)])
+            Tree::try_new(vec![entry("f", mode, target)])
                 .expect("valid tree")
                 .id()
         };
@@ -1904,7 +1905,7 @@ mod tests {
 
     #[test]
     fn tree_rejects_duplicate_names_even_when_not_adjacent_in_the_input() {
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             entry("same", EntryMode::File, id(HELLO_ID)),
             entry("other", EntryMode::File, id(HELLO_ID)),
             entry("same", EntryMode::Executable, id(EMPTY_ID)),
@@ -1914,7 +1915,7 @@ mod tests {
 
     #[test]
     fn names_differing_only_in_case_or_normalization_are_distinct() {
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             entry("README", EntryMode::File, id(HELLO_ID)),
             entry("readme", EntryMode::File, id(HELLO_ID)),
             entry("\u{e9}", EntryMode::File, id(HELLO_ID)),
@@ -1934,7 +1935,7 @@ mod tests {
 
     #[test]
     fn human_commit_encoding_and_id_match_golden_vectors() {
-        let commit = Commit::new(
+        let commit = Commit::try_new(
             tree_id_of(TREE_ID),
             vec![commit_id(EMPTY_ID)],
             sample_change(),
@@ -1952,7 +1953,7 @@ mod tests {
 
     #[test]
     fn agent_commit_encoding_and_id_match_golden_vectors() {
-        let commit = Commit::new(
+        let commit = Commit::try_new(
             tree_id_of(TREE_ID),
             vec![],
             sample_change(),
@@ -1970,7 +1971,7 @@ mod tests {
 
     #[test]
     fn merge_commit_encoding_and_id_match_golden_vectors() {
-        let commit = Commit::new(
+        let commit = Commit::try_new(
             tree_id_of(TREE_ID),
             vec![commit_id(HELLO_ID), commit_id(EMPTY_ID)],
             sample_change(),
@@ -1989,7 +1990,7 @@ mod tests {
     #[test]
     fn timestamp_is_part_of_the_id_and_written_as_a_plain_decimal() {
         let at = |time: i64| {
-            Commit::new(empty_tree_id(), vec![], sample_change(), human(), time, "m")
+            Commit::try_new(empty_tree_id(), vec![], sample_change(), human(), time, "m")
                 .expect("valid commit")
         };
         assert_ne!(at(1).id(), at(2).id());
@@ -2011,7 +2012,8 @@ mod tests {
     fn the_change_id_is_part_of_the_commit_and_of_its_id() {
         let other = ChangeId::from_bytes([7; 16]);
         let make = |change: ChangeId| {
-            Commit::new(empty_tree_id(), vec![], change, human(), TIME, "m").expect("valid commit")
+            Commit::try_new(empty_tree_id(), vec![], change, human(), TIME, "m")
+                .expect("valid commit")
         };
         let (first, second) = (make(sample_change()), make(other));
         assert_eq!(first.change(), sample_change());
@@ -2020,7 +2022,7 @@ mod tests {
         // differ in the tree is one change, and two change IDs for the same content are two.
         assert_ne!(first.id(), second.id());
         assert_eq!(first.id(), make(sample_change()).id());
-        let rewritten = Commit::new(
+        let rewritten = Commit::try_new(
             tree_id_of(TREE_ID),
             vec![first.id()],
             first.change(),
@@ -2037,8 +2039,8 @@ mod tests {
     fn a_change_id_is_read_back_whatever_its_value() {
         for bytes in [[0u8; 16], [0xff; 16], [0x5a; 16]] {
             let change = ChangeId::from_bytes(bytes);
-            let commit =
-                Commit::new(empty_tree_id(), vec![], change, human(), TIME, "m").expect("valid");
+            let commit = Commit::try_new(empty_tree_id(), vec![], change, human(), TIME, "m")
+                .expect("valid");
             let read = Commit::parse(&commit.encode()).expect("canonical");
             assert_eq!(read.change(), change);
             assert_eq!(read, commit);
@@ -2115,7 +2117,7 @@ mod tests {
     #[test]
     fn commit_rejects_duplicate_parents() {
         let p = commit_id(HELLO_ID);
-        let result = Commit::new(
+        let result = Commit::try_new(
             empty_tree_id(),
             vec![p, commit_id(EMPTY_ID), p],
             sample_change(),
@@ -2133,7 +2135,7 @@ mod tests {
     #[test]
     fn commit_exposes_its_fields() {
         let tree = empty_tree_id();
-        let c = Commit::new(
+        let c = Commit::try_new(
             tree,
             vec![commit_id(HELLO_ID)],
             sample_change(),
@@ -2408,7 +2410,7 @@ mod tests {
     }
 
     fn all_modes_tree() -> Tree {
-        Tree::new(vec![
+        Tree::try_new(vec![
             entry("a-dir", EntryMode::Directory, id(TREE_ID)),
             entry("b file", EntryMode::File, id(HELLO_ID)),
             entry("c-link", EntryMode::Symlink, id(HELLO_ID)),
@@ -2426,7 +2428,11 @@ mod tests {
 
     #[test]
     fn a_tree_is_read_back_from_its_encoding() {
-        for tree in [Tree::new(vec![]).unwrap(), sample_tree(), all_modes_tree()] {
+        for tree in [
+            Tree::try_new(vec![]).unwrap(),
+            sample_tree(),
+            all_modes_tree(),
+        ] {
             assert_eq!(Tree::parse(&tree.encode()), Ok(tree));
         }
     }
@@ -2542,7 +2548,11 @@ mod tests {
 
     #[test]
     fn a_tree_reader_accepts_no_second_spelling() {
-        for tree in [Tree::new(vec![]).unwrap(), sample_tree(), all_modes_tree()] {
+        for tree in [
+            Tree::try_new(vec![]).unwrap(),
+            sample_tree(),
+            all_modes_tree(),
+        ] {
             let golden = tree.encode();
             let accepted = accepted_changes_encode_back(&golden, |bytes| {
                 Tree::parse(bytes).ok().map(|tree| tree.encode())
@@ -2592,7 +2602,7 @@ mod tests {
 
     fn all_commits() -> Vec<Commit> {
         let message = |text: &str, parents: Vec<CommitId>, author: Actor, time: i64| {
-            Commit::new(
+            Commit::try_new(
                 tree_id_of(TREE_ID),
                 parents,
                 sample_change(),

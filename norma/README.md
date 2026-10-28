@@ -39,6 +39,18 @@ skip it themselves, for example `google-prefer-expect-over-unwrap-rust` and the 
 `just norma` ends with a non-zero code (1 with the `xargs` of macOS) if a rule of severity
 `warning` or `error` was violated. A finding of severity `info` or `hint` alone gives 0.
 
+## Findings that stay on purpose
+
+norma has no way yet to mark an exception at the line of code. These findings are known and stay
+in the output of `just norma`:
+
+| Finding | Where | Why it stays |
+| ------- | ----- | ------------ |
+| `google-non-exhaustive-pub-enum-rust` | `Edit`, `Head`, `FailureKind`, `Outcome`, `Record` | The command line matches them without a fallback arm: the exit code of each `FailureKind`, the output of each `Outcome` and `Record`. A new variant must stop the build there, not fall into a `_` arm. The crates are not published, so no outside code breaks. `Edit` and `Head` are closed by their meaning. |
+| `rust-no-string-error-variant` | `IndexParseError::UnsupportedVersion`, `EntryParseError::UnsupportedVersion`, `TreeError::DuplicateName` | The payload is the text as it was found (a version header, a name) and is shown unchanged in the message. A type for it would only wrap the same `String`. |
+| `google-ignore-mutex-poison-rust` | `HELD` in `refs.rs`, `PENDING` in `checkout.rs` | The lists are read by the interrupt handler. A poisoned lock must not stop the clean-up, and every change to a list is one call. The code says so. |
+| `rust-no-panicking-*` | `unreachable!` with a reason | The reason states an invariant. |
+
 ## Keeping the packs current
 
 This directory is a copy. When norma changes a rule that we use, copy the change here. Do not edit

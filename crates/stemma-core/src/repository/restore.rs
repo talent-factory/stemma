@@ -233,12 +233,13 @@ impl Repository {
         let snapshot = snapshot.map(Box::new);
         #[cfg(test)]
         super::snapshot::pause::reached(super::snapshot::pause::Stage::Moves);
-        let operation = OperationName::new(OPERATION).expect("`restore` is a valid operation name");
+        let operation =
+            OperationName::try_new(OPERATION).expect("`restore` is a valid operation name");
         let logged =
             self.refs_store()
                 .restore_after(&lock, &prepared.targets(), self.objects(), |moves| {
                     let plan = self.make_plan(number, moves)?;
-                    let change = Change::new(
+                    let change = Change::try_new(
                         now(),
                         actor.clone(),
                         operation.clone(),
@@ -318,7 +319,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Prepared, RestoreError> {
-        let operation = OperationName::new(OPERATION).expect("`restore` is a valid operation name");
+        let operation =
+            OperationName::try_new(OPERATION).expect("`restore` is a valid operation name");
         let allowed = self
             .authorize(actor, authorizer, &operation, &format!("entry {number}"))
             .map_err(RestoreError::Update)?;
@@ -795,7 +797,7 @@ mod tests {
     }
 
     fn main() -> BranchName {
-        BranchName::new("main").unwrap()
+        BranchName::try_new("main").unwrap()
     }
 
     fn numbers(repository: &Repository) -> Vec<u64> {
@@ -1092,8 +1094,8 @@ mod tests {
         let (_, _) = two_commits(&dir, &repository);
         let tip = repository.refs().branch(&main()).unwrap().unwrap();
         let first = read_commit(repository.objects(), tip).unwrap().parents()[0];
-        let nested = BranchName::new("feature/deep/x").unwrap();
-        let operation = OperationName::new("branch").unwrap();
+        let nested = BranchName::try_new("feature/deep/x").unwrap();
+        let operation = OperationName::try_new("branch").unwrap();
         let entry = repository
             .update_branch(&operation, &nested, None, tip, &actor(), &AllowAll)
             .unwrap()
@@ -1147,7 +1149,7 @@ mod tests {
     }
 
     fn op(name: &str) -> OperationName {
-        OperationName::new(name).unwrap()
+        OperationName::try_new(name).unwrap()
     }
 
     /// The tip of `main` and its parent, after `two_commits`.
@@ -1268,14 +1270,17 @@ mod tests {
         let repository = repository(&dir);
         two_commits(&dir, &repository);
         let (tip, first) = tip_and_first(&repository);
-        let (x, y) = (BranchName::new("x").unwrap(), BranchName::new("y").unwrap());
+        let (x, y) = (
+            BranchName::try_new("x").unwrap(),
+            BranchName::try_new("y").unwrap(),
+        );
         for name in [&x, &y] {
             repository
                 .update_branch(&op("branch"), name, None, tip, &actor(), &AllowAll)
                 .unwrap();
         }
         // One entry that claims to have moved `x` from `first` and to have created `y`.
-        let change = Change::new(
+        let change = Change::try_new(
             now(),
             actor(),
             op("branch"),
@@ -1307,8 +1312,8 @@ mod tests {
         let repository = repository(&dir);
         two_commits(&dir, &repository);
         let (tip, _) = tip_and_first(&repository);
-        let a = BranchName::new("feature/a").unwrap();
-        let b = BranchName::new("feature/b").unwrap();
+        let a = BranchName::try_new("feature/a").unwrap();
+        let b = BranchName::try_new("feature/b").unwrap();
         let created = repository
             .update_branch(&op("branch"), &a, None, tip, &actor(), &AllowAll)
             .unwrap()
@@ -1369,13 +1374,13 @@ mod tests {
         let repository = repository(&dir);
         two_commits(&dir, &repository);
         let (tip, first) = tip_and_first(&repository);
-        let below = BranchName::new("a/b").unwrap();
+        let below = BranchName::try_new("a/b").unwrap();
         repository
             .update_branch(&op("branch"), &below, None, tip, &actor(), &AllowAll)
             .unwrap();
         // An entry that claims to have moved `a` from `first`; `a` is a directory now.
-        let a = BranchName::new("a").unwrap();
-        let change = Change::new(
+        let a = BranchName::try_new("a").unwrap();
+        let change = Change::try_new(
             now(),
             actor(),
             op("branch"),
@@ -1474,7 +1479,7 @@ mod tests {
         // whose tree has `new.rs`; the branch is the first pointer that the restore moves.
         let (tip, first) = tip_and_first(repository);
         let current = repository.refs().working_copy().unwrap();
-        let change = Change::new(
+        let change = Change::try_new(
             now(),
             actor(),
             op("branch"),
@@ -1586,7 +1591,7 @@ mod tests {
             .unwrap();
         let (tip, first) = tip_and_first(&repository);
         let current = repository.refs().working_copy().unwrap();
-        let change = Change::new(
+        let change = Change::try_new(
             now(),
             actor(),
             op("branch"),
@@ -1777,7 +1782,7 @@ mod tests {
         let (snapshot, commit) = two_commits(&dir, &repository);
         let log = repository.oplog();
         let purge = log
-            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[commit]).unwrap())
+            .append_purge(crate::oplog::Purge::try_new(1, actor(), 1, &[commit]).unwrap())
             .unwrap()[0]
             .number();
         log.replace_with_stub(commit).unwrap();
@@ -1808,7 +1813,7 @@ mod tests {
         let (snapshot, _) = two_commits(&dir, &repository);
         repository
             .oplog()
-            .append_purge(crate::oplog::Purge::new(1, actor(), 1, &[snapshot]).unwrap())
+            .append_purge(crate::oplog::Purge::try_new(1, actor(), 1, &[snapshot]).unwrap())
             .unwrap();
         let count = numbers(&repository).len();
         assert!(matches!(

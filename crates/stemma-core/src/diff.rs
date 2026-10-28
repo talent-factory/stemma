@@ -515,6 +515,7 @@ fn rebuild(changed_old: &[bool], changed_new: &[bool]) -> Vec<Edit> {
 /// and after the changes included. The positions give the first line and the number of lines of
 /// the hunk on both sides, counted from zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Hunk {
     /// The zero-based index of the first line of the hunk in the old sequence.
     pub old_start: usize,

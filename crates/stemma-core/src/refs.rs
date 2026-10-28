@@ -168,7 +168,7 @@ impl BranchName {
     /// # Errors
     ///
     /// Returns [`BranchNameError`] with the first rule that the name violates.
-    pub fn new(name: impl Into<String>) -> Result<Self, BranchNameError> {
+    pub fn try_new(name: impl Into<String>) -> Result<Self, BranchNameError> {
         let name = name.into();
         match branch_name_problem(&name) {
             Some(problem) => Err(BranchNameError { name, problem }),
@@ -192,7 +192,7 @@ impl FromStr for BranchName {
     type Err = BranchNameError;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        Self::new(name)
+        Self::try_new(name)
     }
 }
 
@@ -314,14 +314,14 @@ impl Head {
     ///
     /// Returns [`RefParseError`] for input that is not UTF-8, has no newline at its end or more
     /// than one line, is not `<kind> <value>`, has a kind other than `branch` and `commit`, a
-    /// branch name that [`BranchName::new`] rejects, or an object ID that is not canonical.
+    /// branch name that [`BranchName::try_new`] rejects, or an object ID that is not canonical.
     pub fn parse(bytes: &[u8]) -> Result<Self, RefParseError> {
         let line = single_line(bytes)?;
         let (kind, value) = line
             .split_once(' ')
             .ok_or(RefParseError::Malformed(RefMalformed::HeadShape))?;
         match kind {
-            "branch" => BranchName::new(value)
+            "branch" => BranchName::try_new(value)
                 .map(Self::Branch)
                 .map_err(RefParseError::InvalidBranchName),
             "commit" => ObjectId::from_str(value)
@@ -2506,12 +2506,13 @@ impl RefStore for FsRefStore {
                 };
                 // A directory holds the start of branch names, so its name follows the same rule:
                 // one that does not is damage, and it is not skipped with all that is below it.
-                let name = BranchName::new(join_name(&prefix, &file_name)).map_err(|error| {
-                    RefError::Corrupt {
-                        path: path.clone(),
-                        source: RefParseError::InvalidBranchName(error),
-                    }
-                })?;
+                let name =
+                    BranchName::try_new(join_name(&prefix, &file_name)).map_err(|error| {
+                        RefError::Corrupt {
+                            path: path.clone(),
+                            source: RefParseError::InvalidBranchName(error),
+                        }
+                    })?;
                 if kind.is_dir() {
                     pending.push((path, name.as_str().to_owned()));
                     continue;
@@ -2577,13 +2578,13 @@ mod tests {
     const ID_A: &str = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65";
 
     fn name(text: &str) -> BranchName {
-        BranchName::new(text).unwrap()
+        BranchName::try_new(text).unwrap()
     }
 
     /// A commit in the store; the message makes it different from the others.
     fn commit(objects: &FsObjectStore, message: &str) -> CommitId {
-        let tree = objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
-        let commit = Commit::new(
+        let tree = objects.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
+        let commit = Commit::try_new(
             tree,
             vec![],
             sample_change(),
@@ -2622,11 +2623,11 @@ mod tests {
             "a/b/c/d/e",
             "UPPER",
         ] {
-            assert_eq!(BranchName::new(text).unwrap().as_str(), text, "{text}");
+            assert_eq!(BranchName::try_new(text).unwrap().as_str(), text, "{text}");
             assert_eq!(text.parse::<BranchName>().unwrap().to_string(), text);
         }
         let longest = "a".repeat(MAX_BRANCH_NAME_LEN);
-        assert!(BranchName::new(longest).is_ok());
+        assert!(BranchName::try_new(longest).is_ok());
     }
 
     #[test]
@@ -2668,7 +2669,7 @@ mod tests {
             ("/ ".into(), BranchNameProblem::EmptyComponent),
         ];
         for (text, problem) in cases {
-            let error = BranchName::new(text.clone()).unwrap_err();
+            let error = BranchName::try_new(text.clone()).unwrap_err();
             assert_eq!(error.problem, problem, "{text:?}");
             assert_eq!(error.name, text);
         }
@@ -2702,7 +2703,7 @@ mod tests {
         ] {
             assert_eq!(problem.to_string(), message);
         }
-        let error = BranchName::new("a\nb c").unwrap_err();
+        let error = BranchName::try_new("a\nb c").unwrap_err();
         assert_eq!(
             error.to_string(),
             "invalid branch name `a\\nb c`: the character `\\n` is not allowed; use letters, \
@@ -2939,8 +2940,8 @@ mod tests {
     fn a_commit_that_the_store_does_not_have_or_that_is_not_a_commit_is_refused() {
         let (dir, objects, refs) = setup();
         let main = name("main");
-        let absent = Commit::new(
-            objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap(),
+        let absent = Commit::try_new(
+            objects.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap(),
             vec![],
             sample_change(),
             Actor::human("daniel").unwrap(),
@@ -4898,7 +4899,7 @@ mod tests {
         let (dir, objects, refs) = setup();
         let kept = commit(&objects, "kept");
         let removed = commit(&objects, "removed");
-        let tree = objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let tree = objects.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
         fs::remove_file(objects.object_path(&removed.object_id())).unwrap();
         write_reference(&dir, "HEAD", &format!("commit {removed}\n"));
         write_reference(&dir, "working-copy", &format!("{tree}\n"));
@@ -4993,8 +4994,8 @@ mod tests {
     fn the_check_does_not_follow_the_tree_or_the_parents() {
         let (dir, objects, refs) = setup();
         let parent = commit(&objects, "parent");
-        let tree = objects.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
-        let child = Commit::new(
+        let tree = objects.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
+        let child = Commit::try_new(
             tree,
             vec![parent],
             sample_change(),

@@ -249,7 +249,7 @@ mod tests {
     use crate::Actor;
 
     fn commit(tree: TreeId, parents: Vec<CommitId>) -> Commit {
-        Commit::new(
+        Commit::try_new(
             tree,
             parents,
             sample_change(),
@@ -261,7 +261,7 @@ mod tests {
     }
 
     fn empty_tree(store: &FsObjectStore) -> TreeId {
-        store.put_tree(&Tree::new(vec![]).unwrap()).unwrap()
+        store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap()
     }
 
     fn absent_blob() -> BlobId {
@@ -269,7 +269,7 @@ mod tests {
     }
 
     fn absent_tree() -> TreeId {
-        Tree::new(vec![
+        Tree::try_new(vec![
             TreeEntry::file("x", FileMode::File, absent_blob()).unwrap()
         ])
         .unwrap()
@@ -377,7 +377,7 @@ mod tests {
         let store = dir.store();
         let blob = store.put_blob(&Blob::new("hello")).unwrap();
         let sub = empty_tree(&store);
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             TreeEntry::file("a", FileMode::File, blob).unwrap(),
             TreeEntry::file("b", FileMode::Executable, blob).unwrap(),
             TreeEntry::file("c", FileMode::Symlink, blob).unwrap(),
@@ -385,14 +385,14 @@ mod tests {
         ])
         .unwrap();
         assert!(tree.verify(&store).is_ok());
-        assert!(Tree::new(vec![]).unwrap().verify(&store).is_ok());
+        assert!(Tree::try_new(vec![]).unwrap().verify(&store).is_ok());
     }
 
     #[test]
     fn a_tree_entry_with_no_object_is_missing_for_a_file_and_for_a_directory() {
         let dir = TempDir::new();
         let store = dir.store();
-        let file = Tree::new(vec![
+        let file = Tree::try_new(vec![
             TreeEntry::file("f", FileMode::File, absent_blob()).unwrap()
         ])
         .unwrap();
@@ -403,7 +403,8 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
-        let directory = Tree::new(vec![TreeEntry::directory("d", absent_tree()).unwrap()]).unwrap();
+        let directory =
+            Tree::try_new(vec![TreeEntry::directory("d", absent_tree()).unwrap()]).unwrap();
         match directory.verify(&store).unwrap_err() {
             TreeVerifyError::Missing { at: name, id } => {
                 assert_eq!(name.as_str(), "d");
@@ -433,7 +434,11 @@ mod tests {
                 "d",
             ),
         ] {
-            match Tree::new(vec![entry]).unwrap().verify(&store).unwrap_err() {
+            match Tree::try_new(vec![entry])
+                .unwrap()
+                .verify(&store)
+                .unwrap_err()
+            {
                 TreeVerifyError::Store { at: found, source } => {
                     assert_eq!(found.as_str(), name);
                     assert!(
@@ -452,7 +457,8 @@ mod tests {
         let store = dir.store();
         let blob = store.put_blob(&Blob::new("hello")).unwrap();
         overwrite(&store.object_path(&ObjectId::from(blob)), b"blob 5\0other");
-        let tree = Tree::new(vec![TreeEntry::file("f", FileMode::File, blob).unwrap()]).unwrap();
+        let tree =
+            Tree::try_new(vec![TreeEntry::file("f", FileMode::File, blob).unwrap()]).unwrap();
         match tree.verify(&store).unwrap_err() {
             TreeVerifyError::Store { source, .. } => {
                 assert!(matches!(*source, StoreError::Corrupt { .. }), "{source}");
@@ -468,7 +474,7 @@ mod tests {
         let sub = empty_tree(&store);
         let wrong = BlobId::new(ObjectId::from(sub));
         let entries = |first: TreeEntry, second: TreeEntry| {
-            Tree::new(vec![second, first]).unwrap().verify(&store)
+            Tree::try_new(vec![second, first]).unwrap().verify(&store)
         };
         // `a` is missing and `b` has the wrong kind, and the reverse.
         let missing = |name| TreeEntry::file(name, FileMode::File, absent_blob()).unwrap();
@@ -487,7 +493,7 @@ mod tests {
     fn tree_verify_errors_escape_the_name_and_carry_their_cause() {
         let dir = TempDir::new();
         let store = dir.store();
-        let tree = Tree::new(vec![TreeEntry::file(
+        let tree = Tree::try_new(vec![TreeEntry::file(
             "say\"hi",
             FileMode::File,
             absent_blob(),
@@ -504,7 +510,7 @@ mod tests {
         assert!(error.source().is_none());
         let sub = empty_tree(&store);
         let wrong = BlobId::new(ObjectId::from(sub));
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             TreeEntry::file("say\"hi", FileMode::File, wrong).unwrap()
         ])
         .unwrap();
@@ -525,7 +531,7 @@ mod tests {
         let sub = empty_tree(&store);
         let good = |name| TreeEntry::file(name, FileMode::File, blob).unwrap();
         let verify = |last: TreeEntry| {
-            Tree::new(vec![
+            Tree::try_new(vec![
                 good("a"),
                 TreeEntry::directory("b", sub).unwrap(),
                 last,

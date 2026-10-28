@@ -84,7 +84,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Tracking, TrackError> {
-        let operation = OperationName::new(OPERATION).expect("`track` is a valid operation name");
+        let operation =
+            OperationName::try_new(OPERATION).expect("`track` is a valid operation name");
         let replaced = self.replace_working_copy(&operation, actor, authorizer, |root| {
             // The authorizer agreed already. With no paths the call is a snapshot, which never
             // reads the file (ADR-012). Otherwise a file that cannot be read is an error and not
@@ -1126,7 +1127,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         write(&dir, "kept.txt", "x");
-        let operation = OperationName::new("track").unwrap();
+        let operation = OperationName::try_new("track").unwrap();
         let before = repository.refs().working_copy().unwrap();
         let add = |paths: &'static [(&'static str, bool)]| {
             repository.replace_working_copy(&operation, &actor(), &AllowAll, move |_| {
@@ -1161,7 +1162,7 @@ mod tests {
         write(&dir, "a.txt", "x");
         track(&repository, &["a.txt"]).unwrap();
         write(&dir, "b.txt", "y");
-        let operation = OperationName::new("track").unwrap();
+        let operation = OperationName::try_new("track").unwrap();
         let tracking = repository
             .replace_working_copy(&operation, &actor(), &AllowAll, |_| {
                 Ok::<_, TrackError>(
