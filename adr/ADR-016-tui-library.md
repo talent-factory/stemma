@@ -1,9 +1,8 @@
 # ADR-016: the library of the terminal interface of `diff --tui`
 
-**Status:** Accepted on 2026-10-28 (STEMMA-130). The library was chosen by the author on
-2026-10-27 in STEMMA-126. A new direct dependency is level 2 under ADR-004; the review of the
-change of STEMMA-128 (PR #158), which builds the crate `stemma-tui` and adds ratatui and the
-license `Zlib`, is recorded in the section "Level 2 review" below.
+**Status:** Accepted. The decisions marked *(confirmed)* were confirmed by the human maintainer on
+2026-10-28 after the level 2 review of STEMMA-130, which is recorded in the section "Level 2
+review" below. The library was chosen by the author on 2026-10-27 in STEMMA-126.
 
 ## Context
 
@@ -20,8 +19,7 @@ Candidates, measured on 2026-10-27 in a scratch crate against `deny.toml`:
   (84 with the default features). `cargo audit` reports no advisory, and `cargo deny` reports no
   advisory, ban, or source problem. It warns about two versions of `syn`. It fails the license
   check on one crate, `foldhash 0.2.0` (`Zlib`, a permissive license), which `hashbrown` pulls in
-  through `lru` and
-  `kasuari`.
+  through `lru` and `kasuari`.
 - **No library.** Raw mode and ANSI sequences through `rustix`, which `stemma-core` already uses
   on Unix. This adds almost no crates, but the project would own layout, scrolling, resizing, and
   input, and `rustix` does not cover Windows.
@@ -55,30 +53,33 @@ Candidates, measured on 2026-10-27 in a scratch crate against `deny.toml`:
 
 ## Level 2 review
 
-Two independent agents reviewed the merged change (PR #158, commit 2779004) on 2026-10-28, one
-for the supply chain and security, one for maintenance, footprint, and architecture. Both found
-no blocker and approved with the conditions listed here. The human maintainer confirmed the
-decisions and accepted this ADR.
+ADR-004 asks for the review before the merge. PR #158 (commit 2779004, STEMMA-128) was merged on
+2026-10-27 first, so this review is a check after the fact. Two independent agents did it on
+2026-10-28, one for the supply chain and security, one for maintenance, footprint, and
+architecture. Neither found a blocker. The human maintainer confirmed the decisions and accepted
+this ADR.
 
-- **Checked, no finding.** `cargo audit` (123 crates, 1381 advisories) and `cargo deny check`
-  report no advisory, ban, license, or source problem. All crates come from crates.io.
-  `ratatui` has no `unsafe` code and no build script. `crossterm` has `unsafe` only in the FFI
-  calls of the terminal paths. `stemma-core` has no dependency on a terminal library, and
-  `stemma-tui` is testable with the `TestBackend`.
-- **Size of the tree.** The measurement in the scratch crate (38 to 75) is lower than in the
-  workspace. `stemma-cli` grows by 49 crates on macOS (32 to 81) and by 55 over all targets
-  (44 to 99); the lockfile grows by 75 entries (48 to 123). Part of the growth comes from
-  `terminal_size`, not from ratatui.
+- **Checked, no finding.** At the time of the review, `cargo audit` (123 crates, 1381
+  advisories) and `cargo deny check` report no advisory, ban, license, or source problem. All
+  crates come from crates.io. `ratatui` has no `unsafe` code and no build script. `crossterm`
+  has `unsafe` only in the platform and FFI code of the terminal paths. `stemma-core` has no
+  dependency on a terminal library, and `stemma-tui` is testable with the `TestBackend`.
+- **Size of the tree.** The measurement in the scratch crate (38 to 75) was lower than the
+  real growth. The exact figure is the lockfile: 48 entries before PR #158, 123 now (+75). The
+  tree of `stemma-cli` on macOS grows by about 50 crates (32 to 81 or more, depending on how
+  versions and build dependencies are counted).
 - **`terminal_size` 0.4.4** joins through the `clap` feature `wrap_help`, which wraps the help
-  text at the width of the terminal. It is not a direct dependency but a new runtime crate of
-  `stemma-cli`; it is MIT OR Apache-2.0 and uses `rustix`, which is in the tree already. The
-  maintainer decided to keep it. The alternative `term_width = 100` needs no crate but does not
-  follow the terminal.
+  text at the width of the terminal. It is not a direct dependency but one new runtime crate of
+  `stemma-cli` that comes from `clap`, not from ratatui; it is MIT OR Apache-2.0, and its own
+  dependencies (`rustix`, `libc`, `windows-sys`) were in the tree already. The maintainer
+  decided to keep it. The alternative `term_width = 100` needs no crate but does not follow the
+  terminal.
 - **`nix` as a development dependency** gains the feature `poll` for the tests with a
   pseudo-terminal. `term` and `signal` were there before. The features do not reach a release
   build.
 - **`Zlib`** is needed by `foldhash 0.2.0` only. A `[[licenses.exceptions]]` entry for that crate
-  would be narrower; it is optional.
-- **Not checked.** The Windows tree (`crossterm_winapi`, `winapi`) is in the lockfile but not
-  built; `--tui` is refused there (see the open points). Also not checked: the build on Linux and
-  with the toolchain 1.89, and the owners of `ratatui` and `crossterm` on crates.io.
+  would be narrower; it is optional and not part of this change.
+- **Not checked, accepted as a residual risk.** The Windows tree (`crossterm_winapi`, `winapi`)
+  is in the lockfile but not built; `--tui` is refused there (see the open points). The build
+  on Linux and with the toolchain 1.89 was not run, and the owners of `ratatui` and `crossterm`
+  on crates.io were not looked up.
