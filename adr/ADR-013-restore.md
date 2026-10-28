@@ -158,8 +158,12 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       foldings (`ß`, ligatures) apart; the plan errs on the safe side. The files that the
       checkout removes are matched with a narrower key on Windows (the upper case of each
       character, as NTFS maps it), because a hit there says that an existing file is the old one,
-      and a key that is too wide would pass a plan that the apply cannot finish. Windows has not
-      run end to end (STEMMA-33), so that part is open until it does.
+      and a key that is too wide would pass a plan that the apply cannot finish. The Unicode
+      tables of Rust are newer than the upcase table of NTFS, so a character can match in the
+      key that NTFS keeps apart. The apply then stops with `ChangedSincePlan` after the removals,
+      as the write refuses a target that exists and is not planned for replacement; no
+      untracked file is replaced, and a second run finishes. Windows has not run end to end
+      (STEMMA-33), so that part is open until it does.
 - [ ] A file that appears between the last check and the rename of a write is replaced. The
       window is as short as it can be with `rename`. Closing it needs a rename that fails when the
       target exists (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL`
