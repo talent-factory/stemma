@@ -73,6 +73,11 @@ _Avoid_: Arbeitskopie-Commit, WC commit, draft commit
 Recording the tracked files of the working directory into the working-copy commit. (Snapshot)
 _Avoid_: Schnappschuss, autosave
 
+**Worktree**:
+An additional working directory of a repository, with its own HEAD, working-copy commit, and
+owner. The working directory of the repository itself is the main worktree. (Worktree)
+_Avoid_: Workspace, second checkout
+
 **Tracked file**:
 A file that the tree of the working-copy commit lists, and that a snapshot therefore saves.
 (verfolgte Datei)
