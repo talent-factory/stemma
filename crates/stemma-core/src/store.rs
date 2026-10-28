@@ -1889,13 +1889,16 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let content = format!("blob {}\0", u64::MAX);
         fs::write(&path, content).unwrap();
-        assert!(matches!(
-            store.kind_of(&absent),
-            Err(StoreError::Corrupt {
-                reason: CorruptReason::HeaderMismatch { .. },
-                ..
-            })
-        ));
+        match store.kind_of(&absent) {
+            Err(StoreError::Corrupt { reason, .. }) => assert_eq!(
+                reason,
+                CorruptReason::HeaderMismatch {
+                    found: format!("blob {}", u64::MAX),
+                    expected: "blob 0".to_owned(),
+                }
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
