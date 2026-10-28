@@ -454,7 +454,7 @@ fn make_the_outcome_unknown(dir: &Path) {
     };
     fs::write(
         dir.join(".stemma").join("working-copy"),
-        format!("{parent}\n"),
+        format!("{parent}\nowner {ACTOR}\n"),
     )
     .unwrap();
 }
@@ -519,14 +519,16 @@ fn the_actor_comes_from_the_environment_and_the_flag_wins() {
     let number = snapshot.to_string();
     let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
-        .env("STEMMA_ACTOR", "human erika")
+        .env("STEMMA_ACTOR", ACTOR)
         .args(["op", "restore", &number])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let repository = Repository::open(dir.path()).unwrap();
     let last = repository.oplog().entries().unwrap().pop().unwrap();
-    assert_eq!(last.change().unwrap().actor().to_string(), "human erika");
+    assert_eq!(last.change().unwrap().actor().to_string(), ACTOR);
+
+    // The variable names an actor that does not own the working copy, so only the flag succeeds.
 
     let again = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
@@ -536,7 +538,7 @@ fn the_actor_comes_from_the_environment_and_the_flag_wins() {
             "restore",
             &last.number().to_string(),
             "--actor",
-            "human max",
+            ACTOR,
         ])
         .output()
         .unwrap();
@@ -548,7 +550,7 @@ fn the_actor_comes_from_the_environment_and_the_flag_wins() {
         .unwrap()
         .pop()
         .unwrap();
-    assert_eq!(last.change().unwrap().actor().to_string(), "human max");
+    assert_eq!(last.change().unwrap().actor().to_string(), ACTOR);
 }
 
 #[test]

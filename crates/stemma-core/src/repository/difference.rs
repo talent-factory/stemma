@@ -239,6 +239,8 @@ pub enum DiffError {
 impl fmt::Display for DiffError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // A refusal, not a failure to save: the message stands on its own.
+            Self::Snapshot(error @ SnapshotError::Refs(RefError::NotOwner { .. })) => error.fmt(f),
             Self::Snapshot(error) => write!(f, "the working copy could not be saved: {error}"),
             Self::Refs(error) => write!(f, "the references could not be read: {error}"),
             Self::Store(error) => write!(f, "an object could not be read from the store: {error}"),

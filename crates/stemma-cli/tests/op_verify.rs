@@ -230,7 +230,7 @@ fn a_log_from_before_the_chain_has_no_anchor_until_op_restore_starts_the_chain()
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 4\n"
+        "stemma-repository 5\n"
     );
     let result = run(dir.path(), &["op", "verify"]);
     assert_eq!(result.code, 0, "{}", result.stderr);

@@ -120,7 +120,8 @@ impl Classify for RefError {
             | Self::Conflict { .. }
             | Self::NotFlushed { .. }
             | Self::NoHead { .. }
-            | Self::NoWorkingCopy { .. } => FailureKind::Other,
+            | Self::NoWorkingCopy { .. }
+            | Self::NotOwner { .. } => FailureKind::Other,
         }
     }
 }

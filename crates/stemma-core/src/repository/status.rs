@@ -473,10 +473,6 @@ mod tests {
         Actor::human("daniel").unwrap()
     }
 
-    fn other() -> Actor {
-        Actor::human("alice").unwrap()
-    }
-
     fn repository(dir: &TempDir) -> Repository {
         Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap()
     }
@@ -498,7 +494,7 @@ mod tests {
     }
 
     fn status(repository: &Repository) -> Status {
-        repository.status(&other(), &AllowAll).unwrap()
+        repository.status(&actor(), &AllowAll).unwrap()
     }
 
     fn kinds(status: &Status) -> Vec<(char, &str)> {
@@ -837,7 +833,7 @@ mod tests {
         let repository = repository(&dir);
         write(&dir, ".stemmaignore", "!broken\n");
 
-        let error = repository.status(&other(), &AllowAll).unwrap_err();
+        let error = repository.status(&actor(), &AllowAll).unwrap_err();
 
         assert!(matches!(&error, StatusError::Ignore(_)), "{error}");
         assert!(error.to_string().contains("line 1: negation"), "{error}");
@@ -849,7 +845,7 @@ mod tests {
         let repository = repository(&dir);
         write(&dir, "d/a\u{200B}b.txt", "x");
 
-        let error = repository.status(&other(), &AllowAll).unwrap_err();
+        let error = repository.status(&actor(), &AllowAll).unwrap_err();
         assert!(
             matches!(&error, StatusError::Walk(TrackError::InvalidName { .. })),
             "{error}"
@@ -874,7 +870,7 @@ mod tests {
 
         let snapshot = first.snapshot.expect("the changed file is saved");
         assert!(snapshot.late.is_none());
-        assert_eq!(snapshot.entry.change().unwrap().actor(), &other());
+        assert_eq!(snapshot.entry.change().unwrap().actor(), &actor());
         assert_eq!(
             snapshot.entry.change().unwrap().operation().as_str(),
             "snapshot"
@@ -891,7 +887,7 @@ mod tests {
         write(&dir, ".stemmaignore", "!broken\n");
         let entries = repository.oplog().entries().unwrap().len();
 
-        let error = repository.status(&other(), &DenyAll).unwrap_err();
+        let error = repository.status(&actor(), &DenyAll).unwrap_err();
 
         assert!(
             matches!(&error, StatusError::Update(UpdateError::Denied { operation, .. })
@@ -1164,7 +1160,7 @@ mod tests {
         let entries = repository.oplog().entries().unwrap().len();
 
         let error = repository
-            .status(&other(), &OnlySnapshotDenied)
+            .status(&actor(), &OnlySnapshotDenied)
             .unwrap_err();
 
         assert!(
@@ -1188,7 +1184,7 @@ mod tests {
         write(&dir, ".stemmaignore", "!broken\n");
         let entries = repository.oplog().entries().unwrap().len();
 
-        let error = repository.status(&other(), &AllowAll).unwrap_err();
+        let error = repository.status(&actor(), &AllowAll).unwrap_err();
 
         assert!(matches!(&error, StatusError::Ignore(_)), "{error}");
         assert!(
@@ -1201,7 +1197,7 @@ mod tests {
 
         write(&dir, ".stemmaignore", "*.log\n");
         write(&dir, "d/a\u{200B}b.txt", "x");
-        let error = repository.status(&other(), &AllowAll).unwrap_err();
+        let error = repository.status(&actor(), &AllowAll).unwrap_err();
         assert!(matches!(&error, StatusError::Walk(_)), "{error}");
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);
     }
@@ -1221,7 +1217,7 @@ mod tests {
         let metadata = repository.metadata_dir();
         fs::set_permissions(&metadata, fs::Permissions::from_mode(0o300)).unwrap();
         let probe = fs::read_dir(&metadata).is_err();
-        let result = repository.status(&other(), &AllowAll);
+        let result = repository.status(&actor(), &AllowAll);
         fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(
             probe,
@@ -1258,7 +1254,7 @@ mod tests {
         fs::remove_file(find(&dir.path().join(".stemma/objects"), &hex[hex.len() - 8..]).unwrap())
             .unwrap();
 
-        let error = repository.status(&other(), &AllowAll).unwrap_err();
+        let error = repository.status(&actor(), &AllowAll).unwrap_err();
 
         assert!(
             matches!(&error, StatusError::Read { saved: Some(_), .. }),
@@ -1296,7 +1292,7 @@ mod tests {
         let metadata = repository.metadata_dir();
         fs::set_permissions(&metadata, fs::Permissions::from_mode(0o300)).unwrap();
         let works = fs::read_dir(&metadata).is_ok();
-        let result = repository.status(&other(), &AllowAll);
+        let result = repository.status(&actor(), &AllowAll);
         fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(
             !works,

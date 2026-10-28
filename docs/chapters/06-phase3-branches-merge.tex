@@ -12,6 +12,10 @@ Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und 
 \item Konflikte als Daten im Commit oder als Markierung in der Arbeitskopie.
 Kapitel 2 beschreibt das Vorbild Jujutsu; die Entscheidung ist offen.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
+\item Eigentümer der Arbeitskopie (Format 5, ADR-010): Ein Snapshot speichert nur die
+Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich
+mit \type{--take-over} (Risikostufe 3). Umgesetzt; Kapitel 4 beschreibt die Regel,
+der Anhang die Befehle. Die zweite Arbeitskopie baut darauf auf.
 \stopitemize
 
 \section{Offene Fragen}

@@ -104,9 +104,12 @@ fn the_limit_spares_an_entry_it_does_not_show() {
 fn the_json_form_is_one_object_per_line() {
     let dir = repository();
     // The entry starts from the working-copy commit that `init` made.
+    // The first line names the commit; the second names the owner (ADR-010).
     let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
         .unwrap()
-        .trim()
+        .lines()
+        .next()
+        .unwrap()
         .to_owned();
     write_entry(
         dir.path(),
@@ -546,9 +549,12 @@ fn a_new_repository_has_no_marker_and_a_missing_working_copy_file_leaves_it_unkn
 #[test]
 fn a_stub_and_a_purge_are_shown_without_ids() {
     let dir = repository();
+    // The first line names the commit; the second names the owner (ADR-010).
     let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
         .unwrap()
-        .trim()
+        .lines()
+        .next()
+        .unwrap()
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     snapshot(dir.path(), 3, A, B);
@@ -581,9 +587,12 @@ fn a_stub_and_a_purge_are_shown_without_ids() {
 #[test]
 fn a_purge_with_several_ranges_lists_each() {
     let dir = repository();
+    // The first line names the commit; the second names the owner (ADR-010).
     let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
         .unwrap()
-        .trim()
+        .lines()
+        .next()
+        .unwrap()
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     snapshot(dir.path(), 3, A, B);
@@ -612,9 +621,12 @@ fn a_purge_with_several_ranges_lists_each() {
 #[test]
 fn a_stub_that_no_purge_lists_is_reported() {
     let dir = repository();
+    // The first line names the commit; the second names the owner (ADR-010).
     let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
         .unwrap()
-        .trim()
+        .lines()
+        .next()
+        .unwrap()
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     write_stub_entry(dir.path(), 2, "stub\n");
@@ -632,9 +644,12 @@ fn a_stub_that_no_purge_lists_is_reported() {
 #[test]
 fn a_window_that_leaves_out_the_stubs_shows_the_purge_alone_and_a_pending_entry_is_marked() {
     let dir = repository();
+    // The first line names the commit; the second names the owner (ADR-010).
     let first = fs::read_to_string(dir.path().join(".stemma/working-copy"))
         .unwrap()
-        .trim()
+        .lines()
+        .next()
+        .unwrap()
         .to_owned();
     snapshot(dir.path(), 2, &first, A);
     snapshot(dir.path(), 3, A, B);

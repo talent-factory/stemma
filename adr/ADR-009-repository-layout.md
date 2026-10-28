@@ -31,12 +31,16 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 4, the version of the hash chain of the log (ADR-011), and
-  `open` reads versions 2 to 4: a repository made before the purge existed (2) or before the
-  chain (3) rises to 4 with its next entry or purge (ADR-014, ADR-011). A version never sinks,
-  with one exception: if the directory cannot be flushed after the rise, the old content is put
-  back, so that the next entry or purge raises the version again and flushes it. Nothing has been
-  written in the new version at that point, because the entry or purge stops at the error.
+  supports: `init` writes version 5, the version of the owner of a working copy (ADR-010), and
+  `open` reads versions 2 to 5: a repository made before the purge existed (2), before the
+  chain (3), or before the owner (4) rises to 5 with its next entry or purge (ADR-014, ADR-011,
+  ADR-010). Version 4 is the version of the hash chain of the log (ADR-011). From version 5
+  on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that
+  raises the version records none, and the next entry of a change does (ADR-010). A version
+  never sinks, with one exception: if the directory cannot be flushed after the rise, the old
+  content is put back, so that the next entry or purge raises the version again and flushes it.
+  Nothing has been written in the new version at that point, because the entry or purge stops
+  at the error.
   The version stays text, so a number larger than any integer is an unsupported version and not
   a damaged file. The file is read up to 64 bytes. The hash function needs no
   entry, because every ID carries its algorithm (ADR-001). `open` checks nothing but `format`

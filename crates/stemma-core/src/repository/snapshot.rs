@@ -64,7 +64,9 @@ impl Repository {
     /// Returns [`SnapshotError::Update`] if the authorizer refuses or the move fails (among others
     /// [`RefError::StaleWorkingCopy`] when another process moved the working-copy commit first: the
     /// snapshot can be repeated), [`SnapshotError::Refs`] if the working-copy commit cannot be
-    /// read at the start, [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object
+    /// read at the start or the working copy belongs to another actor ([`RefError::NotOwner`],
+    /// ADR-010: nothing is read then, and [`take_over_working_copy`](Self::take_over_working_copy)
+    /// makes `actor` the owner), [`SnapshotError::Missing`] and [`SnapshotError::Store`] if the object
     /// store lacks an object that the commit needs or fails, [`SnapshotError::Unsupported`] for a
     /// tracked path that is a special file or a link that is not UTF-8, [`SnapshotError::Io`] if a
     /// file cannot be read or is replaced while it is read, and [`SnapshotError::Index`] if the
@@ -166,6 +168,20 @@ impl Repository {
         actor: &Actor,
         additions: impl FnOnce(&Path) -> Result<Vec<Tracked>, E>,
     ) -> Result<Replaced, E> {
+        // Before any file is read: the changes in the directory are those of the owner (ADR-010).
+        if let Some(owner) = self
+            .refs()
+            .working_copy_owner()
+            .map_err(SnapshotError::Refs)?
+        {
+            if owner != *actor {
+                return Err(SnapshotError::Refs(RefError::NotOwner {
+                    owner: Box::new(owner),
+                    actor: Box::new(actor.clone()),
+                })
+                .into());
+            }
+        }
         let current = self.refs().working_copy().map_err(SnapshotError::Refs)?;
         let commit = read_commit(self.objects(), current)?;
         let tracked = tracked_files(self.objects(), commit.tree())?;
@@ -477,8 +493,9 @@ pub enum SnapshotError {
     /// The authorizer refused, or the move of the working-copy commit failed. See
     /// [`UpdateError`] for what is in the log and whether the pointer moved.
     Update(UpdateError),
-    /// The working-copy commit cannot be read when the snapshot starts. A [`RefError`] of the
-    /// move itself, among them [`RefError::StaleWorkingCopy`], is in [`Update`](Self::Update).
+    /// The working-copy commit cannot be read when the snapshot starts, or it belongs to another
+    /// actor ([`RefError::NotOwner`]). A [`RefError`] of the move itself, among them
+    /// [`RefError::StaleWorkingCopy`], is in [`Update`](Self::Update).
     Refs(RefError),
     /// The object store failed.
     Store(Box<StoreError>),
@@ -603,6 +620,8 @@ impl fmt::Display for SnapshotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not record the snapshot: {error}"),
+            // A refusal, not a failure to read: the message stands on its own.
+            Self::Refs(error @ RefError::NotOwner { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not read the working-copy commit: {error}"),
             Self::Store(error) => write!(f, "the object store failed during the snapshot: {error}"),
             Self::Missing { id, kind } => {
@@ -707,10 +726,6 @@ mod tests {
         Actor::human("daniel").unwrap()
     }
 
-    fn other_actor() -> Actor {
-        Actor::human("alice").unwrap()
-    }
-
     fn repository(dir: &TempDir) -> Repository {
         Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap()
     }
@@ -776,7 +791,7 @@ mod tests {
     }
 
     fn snapshot(repository: &Repository) -> Option<Entry> {
-        repository.snapshot(&other_actor(), &AllowAll).unwrap()
+        repository.snapshot(&actor(), &AllowAll).unwrap()
     }
 
     #[test]
@@ -887,10 +902,10 @@ mod tests {
         assert_eq!(after.parents(), before.parents());
         assert_eq!(after.change(), before.change());
         assert_eq!(after.message(), "work");
-        assert_eq!(after.author(), &other_actor());
+        assert_eq!(after.author(), &actor());
         // The entry names both commits, so the log keeps the one that was replaced.
         assert_eq!(entry.change().unwrap().operation().as_str(), "snapshot");
-        assert_eq!(entry.change().unwrap().actor(), &other_actor());
+        assert_eq!(entry.change().unwrap().actor(), &actor());
         let moved = entry.change().unwrap().working_copy().unwrap();
         assert_eq!((moved.before(), moved.after()), (Some(&old), Some(&new)));
         assert!(repository.objects().contains(&old.object_id()).unwrap());
@@ -1482,7 +1497,7 @@ mod tests {
         write(&dir, "a.txt", "changed");
         let results: Vec<_> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..6)
-                .map(|_| scope.spawn(|| repository.snapshot(&other_actor(), &AllowAll)))
+                .map(|_| scope.spawn(|| repository.snapshot(&actor(), &AllowAll)))
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });

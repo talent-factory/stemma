@@ -32,6 +32,10 @@ a command.
    ```
 
    An agent never acts as `human ...`.
+   The working copy belongs to one actor, its owner (ADR-010; the second line of
+   `.stemma/working-copy`). A command of another actor that would take a snapshot fails with
+   exit code 1 and saves nothing. If that happens, stop and report it: the directory is the
+   working copy of someone else. Do not pass `--take-over` on your own (see below).
 2. Read the state: `stemma status --json`. Look at `clean`, `changes`, `untracked`, and
    `leftovers`. A `leftovers` entry is a `.stemma-checkout-...` file of an interrupted restore;
    report it, do not delete it. If a purge is pending (the file `.stemma/purge-pending`),
@@ -98,6 +102,9 @@ not that the command worked.
 
 ## Only on the instruction of the human
 
+- `--take-over` (on `track`, `commit`, `status`, `diff`, `op restore`). It makes you the owner
+  of the working copy, with an entry `take-over` in the log, and from then on the commands of
+  the old owner are refused. It is level 3 (ADR-004).
 - `stemma op restore <N>`. It rewrites the working directory. Run `--dry-run` first. In this
   repository it also changes files that Git owns, so ask first.
 
@@ -112,8 +119,9 @@ not that the command worked.
 An actor needs its own working copy (ADR-010), and the per-agent branch in its own workspace
 that the design foresees does not exist yet. Until it does, the rule is administrative:
 
-- **One agent per directory.** Two agents in one directory is not supported, and the program
-  does not check it. A held lock only shows up as exit code 6.
+- **One agent per directory.** Two actors in one directory are not supported. Since format 5
+  the program refuses a snapshot of an actor who does not own the working copy (exit code 1),
+  so a second agent finds out at its first command; a held lock still shows up as exit code 6.
 - **In a Git worktree, do not call `stemma`.** Two things speak against it, both tested on a copy
   of the layout (a root with `.stemma` and a worktree at `.worktrees/task`):
   - Without a `stemma init` of its own, a command in the worktree opens the `.stemma` of the

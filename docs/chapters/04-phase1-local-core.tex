@@ -515,8 +515,16 @@ kann der Befehl des einen die Änderung des anderen speichern,
 und das Log nennt dann nicht den Akteur, der die Änderung gemacht hat.
 Deshalb gilt die Regel: Jeder Akteur arbeitet in einer eigenen Arbeitskopie (ADR-010).
 Zwei Akteure in einem Verzeichnis sind kein unterstützter Betrieb.
-Der Kern erzwingt das noch nicht, bis dahin gilt die Regel als Konvention;
-die Durchsetzung kommt mit der zweiten Arbeitskopie (Worktree, Phase 3).
+Lange galt die Regel nur als Konvention.
+Seit Format 5 des Repositories hält der Kern sie durch, als Vorarbeit für die zweite
+Arbeitskopie in Phase 3: Die Datei \type{working-copy} nennt neben dem Commit den Eigentümer,
+und \type{init} macht seinen Akteur dazu.
+Ein Snapshot eines anderen Akteurs bricht ab, bevor er eine Datei liest.
+Erst eine ausdrückliche Übernahme (\type{--take-over}) macht den neuen Akteur zum Eigentümer,
+mit einem eigenen Eintrag im Log;
+sie ist Risikostufe 3 nach ADR-004, denn sie entscheidet, wessen Änderungen ein Snapshot speichert.
+Ein Repository aus der Zeit davor hat keinen Eigentümer und bekommt ihn mit seinem nächsten
+Eintrag: Der Akteur dieses Eintrags wird es.
 
 \startinfobox
 {\bf Grenzfälle des Snapshots.}

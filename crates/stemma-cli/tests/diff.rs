@@ -28,7 +28,7 @@ fn commit(dir: &Path, message: &str) -> String {
 }
 
 fn diff(dir: &Path, operands: &[&str]) -> Run {
-    let mut args = vec!["diff", "--actor", "human alice"];
+    let mut args = vec!["diff", "--actor", "human daniel"];
     args.extend_from_slice(operands);
     run(dir, &args)
 }
@@ -481,9 +481,13 @@ fn a_missing_object_after_the_snapshot_is_damage_and_names_its_entry() {
 #[test]
 fn a_diff_written_to_a_pipe_has_no_colour_and_no_pager() {
     let dir = edited_repository();
-    let result = stemma(dir.path(), &["diff", "--actor", "human alice"], |command| {
-        command.env("PAGER", "echo PAGER-RAN");
-    });
+    let result = stemma(
+        dir.path(),
+        &["diff", "--actor", "human daniel"],
+        |command| {
+            command.env("PAGER", "echo PAGER-RAN");
+        },
+    );
 
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(!result.stdout.contains('\x1b'), "{:?}", result.stdout);
@@ -562,7 +566,7 @@ fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (OnTermina
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
         .env_remove("LESS")
-        .args(["diff", "--actor", "human alice"])
+        .args(["diff", "--actor", "human daniel"])
         // The input is the terminal too, so that the interface of `--tui` reads its keys there and
         // not from the controlling terminal of the test run, which may not exist.
         .stdin(Stdio::from(pty.slave.try_clone().unwrap()))

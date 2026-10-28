@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 4" and a newline; 2 or 3 before the chain (ADR-011)
+//! ├── format          "stemma-repository 5" and a newline; 2 to 4 before the owner (ADR-010)
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
@@ -48,9 +48,10 @@ pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::object::{Commit, CommitId, Tree, METADATA_DIR};
-use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge};
+use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge, TAKE_OVER};
 use crate::refs::{
-    encode_branch, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError, RefStore, WriteLock,
+    encode_working_copy, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError, RefStore,
+    WriteLock,
 };
 use crate::store::{
     create_dirs_synced as create_store_dirs, create_temp, flush_directory,
@@ -60,9 +61,9 @@ use crate::store::{
 use crate::verify::RefVerifyError;
 use crate::{Actor, Allowed, Authorizer};
 
-/// The version of the repository format that `init` writes: the operation log with the hash
-/// chain (ADR-011, STEMMA-41).
-const FORMAT_VERSION: u32 = 4;
+/// The version of the repository format that `init` writes: the owner of the working copy
+/// (ADR-010, STEMMA-162).
+const FORMAT_VERSION: u32 = 5;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -70,13 +71,16 @@ const FORMAT_VERSION: u32 = 4;
 /// only version 2 refuses a log that it cannot read and does not write past a journal it does not
 /// know. Version 4 adds the hash chain: entries of version 3 and the tip file of version 2. A
 /// repository moves to it before its first entry in the chain, for the same reason: a program
-/// that knows only version 3 would write entries outside the chain after it.
-const READ_VERSIONS: [u32; 3] = [2, 3, 4];
+/// that knows only version 3 would write entries outside the chain after it. Version 5 adds the
+/// owner to the file `working-copy`: a repository moves to it with its next entry, and the actor
+/// of the command that causes the rise becomes the owner, so that a program that knows only
+/// version 4 refuses a file that it cannot read.
+const READ_VERSIONS: [u32; 4] = [2, 3, 4, 5];
 
 /// The version of the repository format that a purge and every new entry of the log move a
 /// repository to (ADR-011, ADR-014). It is the highest that this code reads, so neither lowers a
 /// version.
-const CHAIN_FORMAT_VERSION: u32 = 4;
+const CHAIN_FORMAT_VERSION: u32 = 5;
 const _: () = assert!(CHAIN_FORMAT_VERSION == READ_VERSIONS[READ_VERSIONS.len() - 1]);
 const _: () = assert!(CHAIN_FORMAT_VERSION == FORMAT_VERSION);
 
@@ -534,16 +538,24 @@ impl Repository {
     }
 
     /// Writes the entry of a change, as [`FsOpLog::append`] does, after it moved the repository
-    /// to the format of the hash chain. A repository of version 2 or 3 moves to version 4 with
-    /// its first new entry, which starts the chain; the caller holds the lock of the references.
+    /// to the current format. A repository of version 2 or 3 moves to version 4 with its first
+    /// new entry, which starts the chain; the caller holds the lock of the references. A
+    /// repository of version 4 moves to version 5, and the actor of the change becomes the owner
+    /// of the working copy if the file `working-copy` names none yet (ADR-010), so the entry that
+    /// follows names the actor that the rise made the owner. The owner is recorded before the
+    /// entry, as the format is: both prepare the repository for the entry and move no pointer.
     ///
     /// # Errors
     ///
-    /// Returns [`OpLogError::Io`] if the format file cannot be raised and flushed, and what
-    /// [`FsOpLog::append`] returns. No entry is written then, and the format file holds the old
-    /// version, unless that could not be put back either (see [`raise_format`]).
-    pub(crate) fn append(&self, _lock: &WriteLock, change: &Change) -> Result<Entry, OpLogError> {
+    /// Returns [`OpLogError::Io`] if the format file cannot be raised and flushed or the owner
+    /// cannot be recorded, and what [`FsOpLog::append`] returns. No entry is written then, and
+    /// the format file holds the old version, unless that could not be put back either (see
+    /// [`raise_format`]).
+    pub(crate) fn append(&self, lock: &WriteLock, change: &Change) -> Result<Entry, OpLogError> {
         raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(OpLogError::from_store)?;
+        self.refs
+            .adopt_owner(lock, change.actor())
+            .map_err(OpLogError::from_refs)?;
         self.oplog.append(change)
     }
 
@@ -709,6 +721,40 @@ impl Repository {
         outcome.into_result()
     }
 
+    /// Makes `actor` the owner of the working copy (ADR-010), so that its commands may take a
+    /// snapshot again. The authorizer is asked for the operation `take-over` with the target
+    /// `working-copy`. The order is that of [`update_working_copy`](Self::update_working_copy),
+    /// under the same lock: the entry of the operation `take-over`, which names no pointer and
+    /// has `actor` as its actor, is written and flushed, and only then does the file
+    /// `working-copy` name the new owner. Taking over is level 3 of ADR-004: it decides whose
+    /// changes a snapshot may save.
+    ///
+    /// Returns the entry, or `None` if `actor` owns the working copy already.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for a file
+    /// `working-copy` that cannot be read or a lock that is held, and [`UpdateError::Log`],
+    /// [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
+    /// [`update_branch`](Self::update_branch).
+    pub fn take_over_working_copy(
+        &self,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Option<Entry>, UpdateError> {
+        let operation =
+            OperationName::try_new(TAKE_OVER).expect("`take-over` is a valid operation name");
+        let allowed = self.authorize(actor, authorizer, &operation, "working-copy")?;
+        let lock = self.refs.lock_writer(&allowed)?;
+        let outcome = self.refs.set_owner_after(&lock, actor, || {
+            let change =
+                Change::try_new(now(), actor.clone(), operation.clone(), None, None, vec![])
+                    .map_err(OpLogError::Entry)?;
+            self.append(&lock, &change)
+        })?;
+        outcome.into_result()
+    }
+
     /// Asks the authorizer, and returns the proof that it allowed some operation, which the locks of
     /// the references require.
     fn authorize(
@@ -777,6 +823,15 @@ impl RefsView<'_> {
     /// See [`FsRefStore::working_copy`].
     pub fn working_copy(&self) -> Result<CommitId, RefError> {
         self.refs.working_copy()
+    }
+
+    /// The owner of the working copy (ADR-010). See [`FsRefStore::working_copy_owner`].
+    ///
+    /// # Errors
+    ///
+    /// See [`FsRefStore::working_copy_owner`].
+    pub fn working_copy_owner(&self) -> Result<Option<Actor>, RefError> {
+        self.refs.working_copy_owner()
     }
 
     /// The commit that HEAD leads to. See [`RefStore::resolve_head`].
@@ -1160,7 +1215,10 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
         Err(OpLogError::NotFlushed { .. }) => {}
         Err(error) => return Err(InitError::Log(error)),
     }
-    write_new(&dir.join("working-copy"), &encode_branch(&working_copy))?;
+    write_new(
+        &dir.join("working-copy"),
+        &encode_working_copy(&working_copy, Some(actor)),
+    )?;
     write_new(&dir.join("HEAD"), &head.encode())?;
     for flushed in [&refs, &heads, &oplog, dir] {
         flush_directory(flushed).map_err(InitError::io("flush the directory", flushed))?;
@@ -1718,7 +1776,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 4\n"
+            b"stemma-repository 5\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -1762,7 +1820,7 @@ mod tests {
         let id = a.refs().working_copy().unwrap();
         assert_eq!(
             fs::read(a.metadata_dir().join("working-copy")).unwrap(),
-            format!("{id}\n").into_bytes()
+            format!("{id}\nowner human daniel\n").into_bytes()
         );
         let raw = a
             .objects()
@@ -2824,7 +2882,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "5",
+            "6",
             "99",
             "4294967295",
             "4294967296",
@@ -2873,9 +2931,220 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 4\n"
+            "stemma-repository 5\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
+    }
+
+    // The owner of the working copy (ADR-010)
+
+    fn alice() -> Actor {
+        Actor::human("alice").unwrap()
+    }
+
+    /// Turns a new repository into one of format 4: no owner in `working-copy`.
+    fn make_format_4(dir: &Path, repository: &Repository) {
+        let id = repository.refs().working_copy().unwrap();
+        fs::write(
+            dir.join(METADATA_DIR).join("working-copy"),
+            format!("{id}\n"),
+        )
+        .unwrap();
+        set_format(dir, "stemma-repository 4\n");
+    }
+
+    #[test]
+    fn init_makes_its_actor_the_owner() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        assert_eq!(
+            repository.refs().working_copy_owner().unwrap(),
+            Some(actor())
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
+            "stemma-repository 5\n"
+        );
+    }
+
+    #[test]
+    fn a_repository_of_version_4_rises_with_its_next_entry_and_its_actor_becomes_the_owner() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        make_format_4(dir.path(), &repository);
+        let repository = Repository::open(dir.path()).unwrap();
+        assert_eq!(repository.refs().working_copy_owner().unwrap(), None);
+        // Without an owner, any actor may save the working copy; nothing changed, so no entry
+        // is written and the repository stays at 4.
+        assert_eq!(repository.snapshot(&alice(), &AllowAll).unwrap(), None);
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
+            "stemma-repository 4\n"
+        );
+
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let entry = repository
+            .track(&["a.txt".to_owned()], &alice(), &AllowAll)
+            .unwrap()
+            .entry
+            .unwrap();
+
+        assert_eq!(entry.change().unwrap().actor(), &alice());
+        assert_eq!(
+            repository.refs().working_copy_owner().unwrap(),
+            Some(alice())
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
+            "stemma-repository 5\n"
+        );
+        // The move of the working-copy commit kept the owner.
+        let id = repository.refs().working_copy().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".stemma/working-copy")).unwrap(),
+            format!("{id}\nowner human alice\n")
+        );
+    }
+
+    #[test]
+    fn a_snapshot_of_another_actor_is_refused_and_writes_nothing() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+
+        let error = repository
+            .track(&["a.txt".to_owned()], &alice(), &AllowAll)
+            .unwrap_err();
+
+        let crate::repository::TrackError::Snapshot(SnapshotError::Refs(RefError::NotOwner {
+            owner,
+            actor: refused,
+        })) = &error
+        else {
+            panic!("refused as not the owner: {error:?}");
+        };
+        assert_eq!((&**owner, &**refused), (&actor(), &alice()));
+        let message = error.to_string();
+        assert!(message.contains("`human daniel`"), "{message}");
+        assert!(message.contains("--take-over"), "{message}");
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        assert_eq!(
+            repository.refs().working_copy_owner().unwrap(),
+            Some(actor())
+        );
+    }
+
+    #[test]
+    fn taking_over_writes_an_entry_without_a_pointer_and_makes_the_actor_the_owner() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let commit = repository.refs().working_copy().unwrap();
+
+        let entry = repository
+            .take_over_working_copy(&alice(), &AllowAll)
+            .unwrap()
+            .unwrap();
+
+        let change = entry.change().unwrap();
+        assert_eq!(change.operation().as_str(), "take-over");
+        assert_eq!(change.actor(), &alice());
+        assert_eq!(change.head(), None);
+        assert_eq!(change.working_copy(), None);
+        assert!(change.branches().is_empty());
+        assert_eq!(repository.oplog().read(entry.number()).unwrap(), entry);
+        assert!(repository.oplog().verify().is_ok());
+        assert_eq!(
+            repository.refs().working_copy_owner().unwrap(),
+            Some(alice())
+        );
+        assert_eq!(repository.refs().working_copy().unwrap(), commit);
+        // The new owner may save the working copy, and the old one may not any more.
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let tracked = repository
+            .track(&["a.txt".to_owned()], &alice(), &AllowAll)
+            .unwrap();
+        assert_eq!(tracked.entry.unwrap().change().unwrap().actor(), &alice());
+        assert!(matches!(
+            repository.snapshot(&actor(), &AllowAll),
+            Err(SnapshotError::Refs(RefError::NotOwner { .. }))
+        ));
+        // Taking over what one owns already changes nothing.
+        let entries = repository.oplog().entries().unwrap().len();
+        assert_eq!(
+            repository
+                .take_over_working_copy(&alice(), &AllowAll)
+                .unwrap(),
+            None
+        );
+        assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+    }
+
+    #[test]
+    fn taking_over_asks_the_authorizer_for_take_over_and_a_refusal_changes_nothing() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        struct Recorder(RefCell<Vec<(Actor, String, String)>>);
+        impl Authorizer for Recorder {
+            fn authorize(
+                &self,
+                actor: &Actor,
+                operation: &OperationName,
+                target: &str,
+            ) -> Decision {
+                self.0
+                    .borrow_mut()
+                    .push((actor.clone(), operation.to_string(), target.into()));
+                Decision::Allow
+            }
+        }
+        let recorder = Recorder(RefCell::new(Vec::new()));
+
+        repository
+            .take_over_working_copy(&alice(), &recorder)
+            .unwrap();
+        assert_eq!(
+            recorder.0.into_inner(),
+            [(alice(), "take-over".to_owned(), "working-copy".to_owned())]
+        );
+
+        let entries = repository.oplog().entries().unwrap().len();
+        let error = repository
+            .take_over_working_copy(&actor(), &DenyAll)
+            .unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Denied { operation, target }
+                if operation == "take-over" && target == "working-copy"),
+            "{error:?}"
+        );
+        assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+        assert_eq!(
+            repository.refs().working_copy_owner().unwrap(),
+            Some(alice())
+        );
+    }
+
+    #[test]
+    fn taking_over_a_working_copy_of_format_4_raises_the_format() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        make_format_4(dir.path(), &repository);
+        let repository = Repository::open(dir.path()).unwrap();
+
+        let entry = repository
+            .take_over_working_copy(&alice(), &AllowAll)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(entry.change().unwrap().actor(), &alice());
+        assert_eq!(
+            repository.refs().working_copy_owner().unwrap(),
+            Some(alice())
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
+            "stemma-repository 5\n"
+        );
     }
 
     #[test]
@@ -2885,12 +3154,14 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 4\n");
+        assert_eq!(read(), "stemma-repository 5\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
         raise_format(&meta, 4).unwrap();
         assert_eq!(read(), "stemma-repository 4\n");
+        raise_format(&meta, 5).unwrap();
+        assert_eq!(read(), "stemma-repository 5\n");
     }
 
     #[test]
@@ -2931,12 +3202,12 @@ mod tests {
     }
 
     #[test]
-    fn open_reads_versions_2_and_3_and_init_writes_version_4() {
+    fn open_reads_versions_2_to_4_and_init_writes_version_5() {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 4\n");
-        for version in ["2", "3"] {
+        assert_eq!(format, "stemma-repository 5\n");
+        for version in ["2", "3", "4"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
         }
@@ -3107,14 +3378,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 4",
+                "stemma-repository 5",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
                     found: "7".to_string(),
                 },
-                "version 7, but this code supports versions 2 to 4",
+                "version 7, but this code supports versions 2 to 5",
             ),
         ];
         for (error, text) in cases {

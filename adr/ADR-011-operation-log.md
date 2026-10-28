@@ -100,6 +100,18 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **Only a change writes an entry** *(confirmed)*. A snapshot of an unchanged directory creates no
   commit and no entry, so a command that only reads does not grow the log. `init` writes the first
   entry (operation `init`, HEAD from nothing to the initial branch).
+- **The change of the owner is an entry without a pointer** *(confirmed; STEMMA-162)*. The
+  operation `take-over` makes its actor the owner of the working copy (ADR-010). The owner is
+  not a pointer, so its entry has no line after the operation, and the actor of the entry is
+  the new owner. It is the only change that may name no pointer, and it may name none: the
+  constructor and the reader refuse `take-over` with a pointer and any other operation without
+  one, so every entry keeps one encoding. The entry is in the chain like any other, and the
+  hash of its body covers the line of the operation. With no pointer to judge, `outcomes`
+  counts it as taken; the file `working-copy` shows the owner. A repository of format 5 has it
+  (ADR-009), so a program that cannot read it refuses the repository before it reads the log.
+  The alternative, a line `owner` with the old and the new actor, was explicit, but it needed
+  two lines (an actor has spaces) and changes to the reading of the outcomes and to the
+  restore, for a value that no restore puts back.
 - **Nothing is deleted** *(confirmed)*. No operation removes an entry, except the purge that
   replaces entries by stubs (ADR-014) and, later, a retention that does the same, and no garbage
   collection runs in phase 1 (ADR-007). Removing a secret replaces the entries that name it by a
