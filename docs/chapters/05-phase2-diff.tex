@@ -104,13 +104,14 @@ Reihenfolge.
 
 \section[sec:slide]{Grenzen von Änderungsgruppen verschieben}
 
-Ein kürzestes Skript ist nicht eindeutig. Steht am Rand einer Gruppe von Änderungen eine Zeile,
-die sich wiederholt, etwa eine schliessende Klammer, kann die Gruppe um diese Zeile nach oben
-oder unten rutschen, ohne dass sich die Zahl der Änderungen ändert. Myers wählt eine dieser Lagen
-nach der Reihenfolge seiner Suche, nicht danach, was ein Mensch gut liest. Die Nachbearbeitung
-wählt unter den gleichwertigen Lagen die, deren Grenze am besten zur Einrückung des Textes passt.
-Sie folgt dem Verfahren von git (\type{xdiffi.c}); der Code steht in \type{diff.rs} als
-\type{slide}, und \type{diff_lines} ruft sie mit der Einrückung von Textzeilen auf.
+Ein kürzestes Skript ist nicht eindeutig. Steht am Rand einer Änderungsgruppe, also einer
+zusammenhängenden Folge geänderter Zeilen, eine Zeile, die sich wiederholt, etwa eine
+schliessende Klammer, kann die Gruppe um diese Zeile nach oben oder unten rutschen, ohne dass sich
+die Zahl der Änderungen ändert. Myers wählt eine dieser Lagen nach der Reihenfolge seiner Suche,
+nicht danach, was ein Mensch gut liest. Die Nachbearbeitung wählt unter den gleichwertigen Lagen
+die, deren Grenze am besten zur Einrückung des Textes passt. Sie folgt dem Verfahren von git
+\cite[git-xdiff]. Für Textzeilen bewertet sie die Einrückung (\type{slide} und \type{diff_lines}
+in \type{diff.rs}).
 
 Der Befehl \type{diff} ruft sie in Phase 2 noch nicht auf. Er gruppiert das Skript des
 Myers-Diffs unverändert in Hunks (\in{Abschnitt}[sec:hunks]). Der Kern bietet die Nachbearbeitung
@@ -119,11 +120,12 @@ Das Anbinden an den Befehl ist eine offene Frage.
 
 \subsection{Definition}
 
-Eine Gruppe ist eine maximale Folge geänderter Zeilen einer Seite. Eine Zeile der alten Seite ist
-geändert, wenn das Skript sie löscht, eine der neuen, wenn es sie einfügt. Die Gruppe bestehe aus
-den Zeilen $s$ bis $e-1$ und habe die Länge $g = e - s$. Sie rückt um einen Schritt nach unten,
-wenn die Zeile $s$ gleich der Zeile $e$ ist: Dann ist die Zeile $s$ unverändert, die Zeile $e$
-geändert, und die Gruppe belegt die Zeilen $s+1$ bis $e$. Ein Schritt nach oben ist erlaubt, wenn
+Eine Änderungsgruppe ist eine maximale Folge geänderter Zeilen einer Seite. Eine Zeile der alten
+Seite ist geändert, wenn das Skript sie löscht, eine der neuen, wenn es sie einfügt. Eine Gruppe
+bestehe aus den Zeilen $s$ bis $e-1$ und habe die Länge $g = e - s$. Sie rückt um einen Schritt
+nach unten, wenn die Zeile $s$ gleich der Zeile $e$ ist: Dann ist die Zeile $s$ unverändert,
+die Zeile $e$ geändert, und die Gruppe belegt die Zeilen $s+1$ bis $e$.
+Ein Schritt nach oben ist erlaubt, wenn
 die Zeile $s-1$ gleich der Zeile $e-1$ ist. Die Lagen einer Gruppe sind alle, die durch solche
 Schritte erreichbar sind, ohne eine andere geänderte Zeile zu überschreiten. Mit $u$ Schritten
 nach oben und $d$ Schritten nach unten sind das die Anfangspositionen von $s-u$ bis $s+d$.
@@ -132,18 +134,19 @@ Jede Lage hat zwei Schnittstellen, vor der ersten und hinter der letzten Zeile d
 Für jede liest das Verfahren die Einrückung der Zeile an der Schnittstelle, die Leerzeilen davor
 und danach und die Einrückung der nächsten Zeile mit Inhalt auf beiden Seiten, höchstens 20
 Leerzeilen weit. Eine Zeile aus Leerraum gilt als leer. Daraus entstehen zwei Zahlen, eine
-Strafe $p$ und die wirksame Einrückung $e$, jeweils als Summe über beide Schnittstellen.
-Leerzeilen an der Schnittstelle senken die Strafe, das Dateiende erhöht sie um 21 und der
-Dateianfang um 1.
+Strafe $p$ und die wirksame Einrückung $w$, jeweils als Summe über beide Schnittstellen.
+Leerzeilen an der Schnittstelle senken die Strafe, der Dateianfang erhöht sie um 1 und das
+Dateiende um 21. Das Dateiende zählt zugleich als Leerzeile; seine Strafe sinkt dadurch netto
+um 3, und seine wirksame Einrückung ist $-1$.
 Springt die Einrückung an der Schnittstelle zurück, kostet das je nach Fall 17 bis 24 Punkte.
 Die Gewichte sind die von git. Zwei Lagen $A$ und $B$ vergleicht der Ausdruck
-$60 \cdot \mathrm{sgn}(e_A - e_B) + (p_A - p_B)$; ist er negativ, ist $A$ besser. Die flachere
+$60 \cdot \mathrm{sgn}(w_A - w_B) + (p_A - p_B)$; ist er negativ, ist $A$ besser. Die flachere
 Einrückung gibt also einen Vorsprung von 60 Punkten, den eine grosse Differenz der Strafen
 aufwiegen kann. Bei Gleichstand gewinnt die spätere Lage, also die weiter unten.
 
-Das Verfahren prüft nicht alle Lagen. Es beginnt bei der untersten und geht höchstens $g+1$
-Lagen nach oben, wie git, und höchstens 100. Eine Lage, in der die Gruppe an eine andere
-geänderte Zeile grenzte, überspringt es, damit zwei Gruppen nicht verschmelzen.
+Das Verfahren prüft nicht alle Lagen. Das Fenster reicht von der untersten Lage höchstens $g+1$
+Schritte nach oben, wie bei git, und nie weiter als 100. Eine Lage, in der die Gruppe an eine
+andere geänderte Zeile grenzte, überspringt es, damit zwei Gruppen nicht verschmelzen.
 
 \subsection{Invariante}
 
@@ -195,8 +198,8 @@ keinen Unterschied, wo die einfachen Diffs übereinstimmen.
 im Einzelnen aufeinander abstimmt.
 \item Die Einrückung zählt in Bytes, ein Tabulator also als eines, bei git als mehrere.
 Rückt eine Datei mit Tabulatoren ein, kann das Ergebnis von dem von git abweichen.
-\item Das Dateiende zählt wie eine Leerzeile, hat aber eine hohe Strafe. Eine Gruppe am Ende
-rutscht deshalb nach oben, wenn sich ihre Randzeile weiter oben wiederholt.
+\item Das Dateiende zählt wie eine Leerzeile und hat die wirksame Einrückung $-1$. Es zieht eine
+Gruppe am Ende eher nach unten als nach oben; ob sie rutscht, entscheiden die Einrückungen.
 \item Ein Skript ohne Änderung hat keine Gruppe, und das Ergebnis ist das Skript selbst.
 \item Zwei Gruppen derselben Seite bleiben getrennt, auch wenn eine von ihnen zur anderen hin
 rutschen könnte.
@@ -205,10 +208,12 @@ rutschen könnte.
 
 \section[sec:hunks]{Hunks und Kontextzeilen}
 
-Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk ist eine Gruppe von Änderungen mit den
-unveränderten Zeilen davor und danach. Jede Änderung bekommt so viele Kontextzeilen auf beiden
-Seiten, wie die Anzeige verlangt. Die Anzahl $c$ setzt der Aufruf; der Befehl \type{diff} nimmt
-drei. Der Code steht in \type{diff.rs} als \type{hunks}.
+Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk fasst benachbarte Änderungen mit den
+unveränderten Zeilen davor und danach zusammen. Jede Änderung bekommt so viele Kontextzeilen auf
+beiden Seiten, wie die Anzeige verlangt. Die Anzahl $c$ setzt der Aufruf; der Befehl \type{diff}
+nimmt drei. Die Zerlegung folgt dem Unified-Format von diff und git. Eine eigene Quelle nennt das
+Buch nicht, denn sie ist ein Durchlauf über das Skript. Der Code steht in \type{diff.rs} als
+\type{hunks}.
 
 \subsection{Definition}
 
@@ -230,9 +235,9 @@ Zeilen selbst bleiben in den Folgen.
 Die Hunks folgen der Reihenfolge des Skripts und überlappen sich nicht. Jede Änderung liegt in
 genau einem Hunk, und jeder Schritt eines Hunks liegt höchstens $c$ Schritte von einer Änderung
 desselben Hunks entfernt. Zwischen zwei aufeinanderfolgenden Hunks liegt mindestens ein Schritt,
-der zu keinem gehört, denn Fenster, die sich berühren, hat das Verfahren verschmolzen. Die
-Länge eines Hunks auf einer Seite zählt die Zeilen dieser Seite, die seine Schritte verbrauchen.
-Sein Anfang ist die Zahl der Zeilen dieser Seite vor seinem ersten Schritt.
+der zu keinem gehört, denn Fenster, die sich berühren, hat das Verfahren verschmolzen. Anfang und
+Länge eines Hunks zählen auf jeder Seite die Zeilen, die die Schritte davor und die Schritte des
+Hunks verbrauchen.
 
 \subsection{Komplexität}
 
@@ -255,7 +260,7 @@ Länge eines Hunks stimmen daher mit den Positionen in den Folgen überein.
 {\bf Grenzfälle der Hunks.}
 \startitemize
 \item Ohne Änderung im Skript gibt es keinen Hunk. Zwei gleiche Dateien erscheinen im Befehl gar
-nicht.
+nicht. Eine neue oder gelöschte leere Datei erscheint mit ihrem Kopf, aber ohne Hunk.
 \item Bei $c = 0$ bilden benachbarte Änderungen ohne unveränderte Zeile dazwischen einen Hunk,
 denn ihre Fenster berühren sich. Der Befehl \type{diff} nimmt immer drei Zeilen Kontext.
 \item Am Anfang und am Ende des Skripts hat ein Hunk weniger Kontextzeilen.
@@ -270,8 +275,8 @@ Die Zeile \type{@@} nennt dann die Zeile davor; die Kommandozeilenreferenz besch
 Ein Zeilenvergleich einer Binärdatei ist sinnlos und kann sehr gross werden. Der Diff erkennt
 darum eine Binärdatei und zeigt statt der Zeilen nur, dass sie sich unterscheidet. Die Erkennung
 folgt git: Ein NUL-Byte unter den ersten 8000 Bytes macht die Datei binär. Der Code steht in
-\type{diff.rs} als \type{is_binary}; der Vergleich der Seiten ruft sie in
-\type{repository/difference.rs} auf.
+\type{diff.rs} als \type{is_binary}. Der Kern wendet sie beim Vergleich der Seiten an
+(\type{repository/difference.rs}).
 
 \startitemize[n]
 \item Für jede Datei, die sich unterscheidet, liest der Kern die Inhalte beider Seiten. Eine
@@ -340,11 +345,12 @@ endet.
 Der Text ohne Farbe ist der Text mit Farbe ohne die Escape-Folgen. Ein Skript, das eine Pipe liest,
 bekommt also immer reinen Text, ohne Farbe und ohne Pager. Der Diff geht nicht verloren: Lässt
 sich der Pager nicht starten, oder meldet die Shell den Exit-Code 126 oder 127 (ein Befehl, der
-nicht ausführbar ist oder fehlt), schreibt der Befehl den Text ungefiltert auf die Standardausgabe
-und einen Hinweis auf stderr. Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers
-ist kein Fehler, und eine geschlossene Pipe beendet die Ausgabe leise. Der Exit-Code des Befehls
-ist das Ergebnis des Diffs, also 0 oder mit \type{--exit-code} bei Unterschieden 4, nie der des
-Pagers.
+nicht ausführbar ist oder fehlt), schreibt der Befehl den Text ungefiltert, also mit Farbe, auf die
+Standardausgabe und einen Hinweis auf stderr. Ein Pager, der früher endet, oder ein anderer
+Exit-Code des Pagers ist kein Fehler, und eine geschlossene Pipe beendet die Ausgabe leise.
+Der Exit-Code des Befehls ist das Ergebnis des Diffs, also 0 oder mit \type{--exit-code} bei
+Unterschieden 4, nie der des Pagers. Ausnahmen sind ein Fehler beim Schreiben (1) und ein Signal,
+das den Befehl beendet (130, 143 oder 129).
 
 Ein Absturz in diesem Ablauf hinterlässt nichts, das zu reparieren wäre. Der Snapshot ist
 gespeichert, ehe der Pager startet, und der Rest schreibt nur auf das Terminal. Der Befehl lässt
@@ -362,8 +368,8 @@ an die Shell des Pagers, und er endet mit 143, bei \type{SIGHUP} mit 129.
 \startitemize
 \item Der Pager ist der Befehl in \type{PAGER}. Eine leere oder fehlende Variable gilt als nicht
 gesetzt. \type{GIT_PAGER} und die Einstellung \type{core.pager} von git beachtet der Befehl nicht.
-\item Das Flag \type{R} in \type{LESS=FRX} reicht die Farben durch, \type{F} beendet \type{less}
-bei einer einzigen Seite, und \type{X} lässt den Bildschirm des Terminals stehen.
+\item Der Buchstabe \type{R} in \type{LESS=FRX} reicht die Farben durch, \type{F} beendet
+\type{less} bei einer einzigen Seite, und \type{X} lässt den Bildschirm des Terminals stehen.
 \item Ist \type{PAGER} eine längere Befehlszeile, bleibt die Shell bestehen. Trifft ein
 \type{SIGTERM} nur den Befehl, endet die Shell, aber ihre Befehle laufen weiter,
 bis das Terminal schliesst.
@@ -381,18 +387,20 @@ rechts die Zeilen der gewählten Datei, unten eine Zeile mit den Tasten. Die Bib
 mit dem Backend crossterm (ADR-016). Die Oberfläche liegt in der Crate \type{stemma-tui}, die vom
 Kern abhängt. Der Zustand ist ein einfacher Wert, der sich durch Eingaben ändert, und die
 Darstellung zeichnet ihn in einen beliebigen Bildschirm. Tests brauchen daher kein Terminal. Nur
-\type{run} berührt das echte Terminal.
+die Schleife der Oberfläche (\type{run}) berührt das echte Terminal.
 
 \subsection{Definition}
 
 Der Zustand $S = (f, h, s)$ besteht aus der Nummer der gewählten Datei $f$, der Nummer des
 gewählten Hunks $h$ in dieser Datei und der Zahl $s$ der Zeilen der Datei, die oben aus dem Bild
 gerollt sind (im Code \type{State}). Der Diff $D$ ist fest und wird bei jedem Aufruf mitgegeben.
-Er hat $F$ Dateien. Die Datei $f$ hat $H(f)$ Hunks, und $H(f) = 0$ gilt für eine binäre Datei.
-Das rechte Feld zeigt für sie eine Meldung. Es hat $L(f)$ Zeilen: die Zeile \type{@@} jedes Hunks,
-dahinter seine Zeilen mit der Marke für Kontext, Löschung oder Einfügung und gegebenenfalls die
-Zeile \type{\ No newline at end of file}. Mit $\mathrm{start}(f, h)$ sei der Index der Zeile
-\type{@@} des Hunks $h$ in diesem Feld bezeichnet.
+Er hat $F$ Dateien. Die Datei $f$ hat $H(f)$ Hunks. $H(f) = 0$ gilt für eine binäre Datei und für
+eine neue oder gelöschte leere Datei. Das rechte Feld hat $L(f)$ Zeilen. Bei einer Textdatei sind
+das die Zeile \type{@@} jedes Hunks, dahinter seine Zeilen mit der Marke für Kontext, Löschung
+oder Einfügung und gegebenenfalls die Zeile \type{\ No newline at end of file}. Eine binäre
+Datei hat eine Zeile mit der Meldung, eine leere Datei keine. Mit $\mathrm{start}(f, h)$ sei der
+Index der Zeile \type{@@} des Hunks $h$ in diesem Feld bezeichnet, und $\mathrm{start}(f, 0) = 0$
+für eine Datei ohne Hunk.
 
 Eine Eingabe (im Code \type{Input}) ist eine der Tasten aus \in{Tabelle}[tab:tui-transitions].
 Die Funktion $\mathrm{apply}$ bildet einen Zustand und eine Eingabe auf den nächsten Zustand ab.
@@ -483,16 +491,17 @@ Hunk aus und nicht von dem, den das Blättern ins Bild gebracht hat.
 
 \subsection{Komplexität}
 
-Sei $\ell$ die Zahl der Zeilen der gewählten Datei im rechten Feld. Eine Eingabe, die blättert
-oder einen Hunk wählt, baut die Zeilen der Datei neu auf und kostet $O(\ell)$. Das Zeichnen kostet
-ebenfalls $O(\ell)$, denn es baut die Zeilen auf und verwirft die oben gerollten. Die Oberfläche
-speichert nur den Zustand $(f, h, s)$, keine Kopie des Diffs.
+Sei $\ell$ die Zahl der Zeilen der gewählten Datei im rechten Feld. Abwärts blättern und einen
+Hunk wählen bauen die Zeilen der Datei neu auf und kosten $O(\ell)$. Aufwärts blättern und die
+Wahl einer Datei kosten $O(1)$. Das Zeichnen kostet $O(\ell + F)$: Es baut die Zeilen auf,
+verwirft die oben gerollten und listet alle $F$ Dateien. Die Oberfläche speichert nur den
+Zustand $(f, h, s)$, keine Kopie des Diffs.
 
 \subsection{Korrektheit}
 
 Die Invarianten folgen aus der Tabelle. Jede Zeile hält die Schranken ein: Der Wechsel zur
 nächsten Datei prüft $f + 1 < F$, der zum nächsten Hunk $h + 1 < H(f)$,
-und \type{start} liefert den Index einer Zeile des Feldes. Blättern nach unten begrenzt $s$
+und $\mathrm{start}$ liefert den Index einer Zeile des Feldes. Blättern nach unten begrenzt $s$
 durch die letzte Zeile, nach oben durch null. Die Funktion $\mathrm{apply}$ ist total: Jede
 Eingabe hat ein Ergebnis, und kein Zustand lässt sie scheitern. Ein Zustand, der zu einem anderen
 Diff gehört, zeigt ein leeres Feld, löst aber keinen Fehler aus. Weil $\mathrm{apply}$ nur den
@@ -505,9 +514,9 @@ Textausgabe, und danach schreibt er nichts mehr ins Repository. Die Oberfläche 
 bei jedem Ende zurück: beim Beenden, bei einem Fehler und bei einer Panik, für die ratatui einen
 Haken setzt. Gelingt die Rückgabe nach einem Fehler nicht, nennt die Meldung beide Fehler.
 Ein Handler für Signale läuft auf einem anderen Thread und fasst das Terminal nicht an. Er setzt
-eine Marke, die die Oberfläche zehnmal in der Sekunde liest. Die Oberfläche beendet sich dann und
-gibt das Terminal zurück, und erst danach endet der Befehl mit dem Exit-Code des Signals.
-Ein \type{SIGKILL} lässt sich nicht abfangen, und das Terminal braucht dann \type{reset}.
+eine Marke, die die Oberfläche zehnmal in der Sekunde liest, solange keine Taste kommt. Die
+Oberfläche beendet sich dann und gibt das Terminal zurück, und erst danach endet der Befehl mit
+dem Exit-Code des Signals. Der Handler wartet darauf höchstens zwei Sekunden.
 
 \startinfobox
 {\bf Grenzfälle der Oberfläche.}
@@ -519,6 +528,8 @@ Exit-Code 1, ehe er etwas liest oder speichert.
 ratatui verwirft Steuerzeichen. Ein Wagenrücklauf (CR) vor dem Zeilenende erscheint nicht.
 \item Eine Zeile ohne Zeilenende erhält die Zeile \type{\ No newline at end of file}.
 \item Eine binäre Datei zeigt die Meldung \type{Binary file differs}, und sie hat keinen Hunk.
+Eine leere neue oder gelöschte Datei zeigt ein leeres Feld.
+\item Ein \type{SIGKILL} lässt sich nicht abfangen. Das Terminal braucht dann \type{reset}.
 \item Ctrl-C kommt im Raw-Modus als Taste an und wirkt wie \type{q}: Der Befehl endet mit 0, mit
 \type{--exit-code} und Unterschieden mit 4, nicht mit 130.
 \stopitemize
