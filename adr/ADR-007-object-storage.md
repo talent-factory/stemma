@@ -57,6 +57,15 @@ server will later keep objects elsewhere (API-first). The implementation is
   that is not a regular file blocks the path and is reported as `Corrupt`. When two writers race,
   the second rename replaces the file with one of identical content, which no reader can tell
   apart. After an error an object may or may not be stored; storing it again is safe.
+  The flush covers the directories above the fan-out directory up to `objects/` as well
+  (STEMMA-131): a call that created `objects/<alg>/` and failed to flush it leaves a retry that
+  finds the directory and creates nothing, so the retry flushes the chain itself. `init` has
+  flushed the entry of `objects/` in the root. A batch adds the same directories to its set, which
+  flushes each one once. When a rename fails and the object reads back correctly, another writer
+  has stored it and the call succeeds; if the read fails too, the error of the rename is reported
+  and the error of the read is dropped. A caller that does not hold the lock of the references
+  may find an object present and see a purge remove it before it names it; every writer that names
+  objects holds that lock (ADR-014), so the store does not guard against it.
 - **Objects of a snapshot are flushed together** *(confirmed, STEMMA-40)*. A snapshot (ADR-010)
   writes its new blobs, trees, and commit as a batch: each object goes to its own file in `tmp/`
   without a flush, and before the log entry and the move of the pointer name any of them, every

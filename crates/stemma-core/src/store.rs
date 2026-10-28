@@ -738,14 +738,27 @@ impl FsObjectStore {
             // directory (the flush can fail after the rename); a caller that names the object in
             // a log entry or a pointer needs its directory entry on disk. If the directory has
             // vanished since, the object is not there after all and is written again.
-            if flush_existing_directory(&self.fan_out_path(&id)?)? {
+            let fan_out = self.fan_out_path(&id)?;
+            if flush_existing_directory(&fan_out)? {
+                self.sync_ancestors(&fan_out)?;
                 return Ok(id);
             }
         }
         let (file, temp) = self.write_temp(kind, body)?;
         let fan_out = self.place(&id, file, temp)?;
         sync_directory(&fan_out)?;
+        self.sync_ancestors(&fan_out)?;
         Ok(id)
+    }
+
+    /// Flushes every directory from the parent of `fan_out` up to `objects/`, which hold the entries
+    /// of the directories above the fan-out directory. A call that created them may have failed
+    /// to flush them, and a retry finds them existing and flushes nothing (see
+    /// [`create_dirs_synced`]), so the flush of an object repeats it.
+    fn sync_ancestors(&self, fan_out: &Path) -> Result<(), StoreError> {
+        ancestors_below_root(&self.root, fan_out)
+            .into_iter()
+            .try_for_each(|dir| sync_directory(&dir))
     }
 
     /// Starts a [`Batch`]: objects that are flushed together when it is finished.
@@ -812,7 +825,9 @@ impl FsObjectStore {
             Ok(()) => temp.disarm(),
             Err(error) => {
                 // Another writer may have stored the object in the meantime. Only an object that
-                // reads back correctly counts; the temporary file is removed on drop.
+                // reads back correctly counts; the temporary file is removed on drop. Any error of
+                // the read is dropped on purpose: the failed rename is the error to report, and
+                // an object that cannot be read back is no stored object.
                 return match self.get(id) {
                     Ok(Some(_)) => Ok(fan_out),
                     _ => Err(StoreError::Io {
@@ -1012,8 +1027,13 @@ impl Batch<'_> {
                 .map_err(io_error("open the temporary file", &temp.path))?;
             directories.insert(self.store.place(&id, file, temp)?);
         }
+        let ancestors: Vec<PathBuf> = directories
+            .iter()
+            .flat_map(|directory| ancestors_below_root(&self.store.root, directory))
+            .collect();
+        directories.extend(ancestors);
         let mut first_error = None;
-        for directory in &directories {
+        for directory in directories.iter().rev() {
             if let Err(error) = sync_directory(directory) {
                 first_error.get_or_insert(error);
             }
@@ -1272,6 +1292,19 @@ pub(crate) fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreErr
         sync_directory(created)?;
     }
     Ok(())
+}
+
+/// The directories above `dir`, from its parent up to the one below `root`; `root` itself is left
+/// out, because `init` flushes its entries. Empty if `dir` is not below `root`.
+fn ancestors_below_root(root: &Path, dir: &Path) -> Vec<PathBuf> {
+    if !dir.starts_with(root) {
+        return Vec::new();
+    }
+    dir.ancestors()
+        .skip(1)
+        .take_while(|ancestor| *ancestor != root)
+        .map(Path::to_path_buf)
+        .collect()
 }
 
 /// Flushes a directory so that a rename or a new entry in it survives a crash.
@@ -1668,6 +1701,43 @@ mod tests {
     }
 
     #[test]
+    fn put_raw_flushes_the_parents_of_the_directory_of_a_present_object() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let id = store.put_blob(&blob).unwrap().object_id();
+        let fan_out = store.fan_out_path(&id).unwrap();
+        let since = flush_count();
+        store.put_blob(&blob).unwrap();
+        let flushed = flushed_since(since);
+        for parent in ancestors_below_root(&store.root, &fan_out) {
+            assert!(
+                flushed.contains(&parent),
+                "{} not flushed",
+                parent.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_retry_flushes_the_parents_that_a_failed_call_created() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let id = blob.id().object_id();
+        let fan_out = store.fan_out_path(&id).unwrap();
+        let parent = fan_out.parent().unwrap().to_path_buf();
+        {
+            let _failure = fail_flush_of(&parent);
+            assert!(store.put_blob(&blob).is_err());
+        }
+        // The directories exist now, so `create_dirs_synced` flushes nothing.
+        let since = flush_count();
+        store.put_blob(&blob).unwrap();
+        assert!(flushed_since(since).contains(&parent));
+    }
+
+    #[test]
     fn a_batch_flushes_the_directory_of_a_present_object_in_finish() {
         let dir = TempDir::new();
         let store = dir.store();
@@ -1772,8 +1842,8 @@ mod tests {
         batch.finish().unwrap();
         assert_eq!(
             flush_count() - before,
-            1,
-            "once, however often it was found"
+            3,
+            "the directory and its two parents once, however often it was found"
         );
     }
 
