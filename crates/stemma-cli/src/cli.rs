@@ -68,7 +68,8 @@ use std::process::{self, ExitCode, Stdio};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use clap::{Args, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::diff::Edit;
@@ -369,10 +370,17 @@ struct DiffArgs {
     #[arg(long)]
     tui: bool,
 
-    /// The commits to compare, by identifier: none compares the working copy with its parent,
-    /// one compares that commit with the working copy, and two compare the first with the second
-    #[arg(value_name = "COMMIT", num_args = 0..=2)]
-    commits: Vec<String>,
+    /// The commits to compare, by identifier (`b3:` and 64 hexadecimal digits), then the files
+    /// and directories to show. No commit compares the working copy with its parent, one compares
+    /// that commit with the working copy, and two compare the first with the second. No path shows
+    /// every file that differs; a directory shows everything below it. An operand that does not
+    /// start with `b3:` is a path; a path that does needs `--` before it
+    #[arg(value_name = "COMMIT]... [--] [PATH")]
+    operands: Vec<String>,
+
+    /// The paths that follow `--`
+    #[arg(last = true, hide = true)]
+    after_separator: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1528,16 +1536,32 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         return Err(CliError::TuiUnavailable);
     }
     let actor = actor(args.actor)?;
-    let repository = open(&args.repository)?;
-    let comparison = match args.commits.as_slice() {
+    let Discovered {
+        repository,
+        subdirectory,
+        ..
+    } = discover(&args.repository)?;
+    let (commits, paths) = split_operands(&args.operands, &args.after_separator);
+    let comparison = match commits {
         [] => Comparison::WithParent,
         [commit] => Comparison::WithWorkingCopy(commit.as_str()),
         [first, second] => Comparison::Commits(first.as_str(), second.as_str()),
-        // The argument parser accepts at most two commits.
-        _ => unreachable!("the diff takes at most two commits"),
+        // The parser cannot count the commits, because it does not know them from the paths.
+        _ => Cli::command()
+            .find_subcommand_mut("diff")
+            .expect("the diff command exists")
+            .error(
+                ErrorKind::TooManyValues,
+                "the diff takes at most two commits; a path that starts with `b3:` follows `--`",
+            )
+            .exit(),
     };
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|path| normalize_path_in(&subdirectory, path))
+        .collect();
     let result = repository
-        .diff(&actor, &AllowAll, comparison)
+        .diff_paths(&actor, &AllowAll, comparison, &paths)
         .map_err(CliError::Diff)?;
     let differs = !result.files().is_empty();
     if args.tui {
@@ -1594,6 +1618,25 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// Splits the operands of `diff` into the commits and the paths. Behind `--`, every operand before
+/// it is a commit, even one that does not look like it, so that the core names it; and every
+/// operand after it is a path, even one that looks like an identifier. Without `--`, the commits
+/// are the leading operands that start with `b3:`, and the rest are paths. More than two commits
+/// are refused by the caller, so a third `b3:` operand is never taken for a path.
+fn split_operands<'a>(
+    operands: &'a [String],
+    after_separator: &'a [String],
+) -> (&'a [String], &'a [String]) {
+    if !after_separator.is_empty() {
+        return (operands, after_separator);
+    }
+    let commits = operands
+        .iter()
+        .take_while(|operand| operand.starts_with("b3:"))
+        .count();
+    operands.split_at(commits)
 }
 
 /// The text of a diff: each file that differs, with its line `diff` and a header that names the
