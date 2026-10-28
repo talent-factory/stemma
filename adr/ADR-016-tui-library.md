@@ -79,7 +79,7 @@ this ADR.
   build.
 - **`Zlib`** is needed by `foldhash 0.2.0` only. A `[[licenses.exceptions]]` entry for that crate
   would be narrower; it is optional and not part of this change.
-- **Not checked, accepted as a residual risk.** The Windows tree (`crossterm_winapi`, `winapi`)
+- **Not checked.** The Windows tree (`crossterm_winapi`, `winapi`)
   is in the lockfile but not built; `--tui` is refused there (see the open points). The build
   on Linux and with the toolchain 1.89 was not run, and the owners of `ratatui` and `crossterm`
   on crates.io were not looked up.
