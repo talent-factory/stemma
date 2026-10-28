@@ -830,7 +830,7 @@ mod tests {
 
         assert!(
             matches!(&error, CommitError::Update(UpdateError::Denied { operation, target })
-                if operation.as_str() == "commit" && target == "main"),
+                if operation == "commit" && target == "main"),
             "{error}"
         );
         assert_eq!(repository.refs().working_copy().unwrap(), working_copy);

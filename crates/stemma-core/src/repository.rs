@@ -3271,7 +3271,7 @@ mod tests {
             .update_branch(&op("commit"), &branch("main"), None, a, &actor(), &DenyAll)
             .unwrap_err();
         assert!(
-            matches!(&error, UpdateError::Denied { operation, target } if operation.as_str() == "commit" && target == "main"),
+            matches!(&error, UpdateError::Denied { operation, target } if operation == "commit" && target == "main"),
             "{error}"
         );
         assert_eq!(error.to_string(), "not allowed to commit `main`");

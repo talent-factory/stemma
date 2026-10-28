@@ -1215,7 +1215,8 @@ impl FsRefStore {
     /// (ADR-014), unless a running process holds its guard, so that a purge that still runs keeps
     /// it, or the file names another host. A command that cannot take the guard itself replaces
     /// only a file of another form, as a purge without a guard leaves it, and not one that a
-    /// holder of the guard wrote. The caller checks the journal before and after. With the lock
+    /// holder of the guard wrote. The caller checks the journal before and after, and asks the authorizer again if the journal
+    /// under the lock names another blob (`Repository::take_over`). With the lock
     /// held, the scratch in `tmp/` is removed, as by [`lock`](Self::lock).
     ///
     /// # Errors

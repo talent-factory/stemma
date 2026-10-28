@@ -1793,6 +1793,14 @@ ersetzt es nur eine Datei in der alten Form, wie sie ein solcher Purge zurückl�
 \stopitemize
 \stopinfobox
 
+Auch beim Fortsetzen und beim Abbrechen prüft der Kern die Berechtigung (\type{authorize}),
+und zwar bevor er die Sperre übernimmt, für den Blob aus dem Journal.
+Unter der Sperre liest er das Journal noch einmal,
+denn ausgeführt wird das Journal, das unter der Sperre steht.
+Nennt es einen anderen Blob, fragt der Kern die Berechtigung für diesen Blob noch einmal.
+Bei einer Ablehnung gibt er die Sperre wieder frei und lässt das Journal unberührt.
+Die zweite Frage läuft unter gehaltener Sperre; eine Prüfung darf deshalb nicht blockieren.
+
 Jeder Befehl, der schreibt, nimmt die Sperre der Referenzen,
 bevor er sein erstes Objekt schreibt, und hält sie bis zu seiner letzten Zeigerbewegung.
 Sonst findet ein Befehl, der vor dem Journal geprüft hat

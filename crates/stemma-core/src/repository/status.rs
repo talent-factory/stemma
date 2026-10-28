@@ -892,7 +892,7 @@ mod tests {
 
         assert!(
             matches!(&error, StatusError::Update(UpdateError::Denied { operation, .. })
-                if operation.as_str() == "status"),
+                if operation == "status"),
             "{error}"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);

@@ -51,7 +51,8 @@ use oplog::OperationName;
 
 pub use actor::{Actor, ActorError, ActorField, ActorMalformed, ActorParseError, ActorRef};
 
-/// Result of an authorization check. A decision that nobody reads is a bug, so ignoring it is a warning.
+/// Result of an authorization check. Dropping a decision unread is a bug, so `#[must_use]`
+/// makes it a warning.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -62,6 +63,10 @@ pub enum Decision {
 /// Authorization hook (ADR-002). Every operation of [`repository::Repository`] that changes the
 /// repository, or plans a change, calls it; the commands that only read the log have no actor
 /// and do not. Objects stored directly through `Repository::objects()` are not authorized.
+///
+/// `operation` is the name that the operation log records (`init`, `snapshot`, `commit`,
+/// `purge`, ...). `target` is what the operation acts on: a branch name, `HEAD`, `working-copy`,
+/// the directory for `init`, the blob for `purge`, or `entry N` for `restore`.
 pub trait Authorizer {
     fn authorize(&self, actor: &Actor, operation: &OperationName, target: &str) -> Decision;
 }
