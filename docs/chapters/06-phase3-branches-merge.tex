@@ -8,7 +8,10 @@ Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und 
 
 \startitemize
 \item Befehle \type{branch}, \type{checkout} und \type{log}.
-\item Drei-Wege-Merge über den gemeinsamen Vorfahren.
+\item Drei-Wege-Merge über den besten gemeinsamen Vorfahren.
+Die Funktion \type{merge_bases} liefert alle besten gemeinsamen Vorfahren zweier
+Commits; nach einem Criss-Cross-Merge sind es mehrere, und der Merge muss sie zusammenführen.
+Sie liest kein Commit-Datum, sondern geht die ganze Vorfahrenmenge beider Seiten durch.
 \item Konflikte als Daten im Commit oder als Markierung in der Arbeitskopie.
 Kapitel 2 beschreibt das Vorbild Jujutsu; die Entscheidung ist offen.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
@@ -25,4 +28,6 @@ ADR-017 legt einen Cache unter \type{.stemma/derived/} fest, der nie zum
 Objektmodell gehört. Er wird bei der ersten Abfrage aus den Werten der Eltern gefüllt, ein
 Löschen kostet nur Zeit, und ein Purge entfernt ihn. Offen bleiben die erste Art, die
 gespeichert wird, und die Bereinigung alter Einträge.
+Ein Kandidat ist eine Generationsnummer, die die Suche nach der Merge-Basis früh beenden
+würde; sie kommt erst, wenn eine Messung sie verlangt.
 \stopitemize
