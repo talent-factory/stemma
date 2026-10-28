@@ -17,6 +17,8 @@ switched on again by a later import into another database.
 | `style-use-before-other-items-rust` | removed | Same convention as above. |
 | `rust-no-panicking-match-arm` | `error` to `warning` | An `unreachable!` with a reason states an invariant. A bare `panic!` is still reported. |
 | `rust-no-panicking-let-else` | `error` to `warning` | Same reason. |
+| `rust-no-single-field-struct` | removed | A named field documents its purpose (`Tree { entries }`, `FsObjectStore { root }`), and an options type such as `InitOptions` is meant to grow. The advice to use a tuple newtype does not fit these types. |
+| `rust-no-public-struct-fields` | `warning` to `info` | Result types such as `FileChange` and `Hunk` are passive data with public fields on purpose. A rule that cannot tell them from a type with an invariant is a hint, not a warning. |
 | `rust-no-string-error-variant` | rewritten in norma | The match is the variant, not the whole enum, and `Vec<String>` no longer matches. |
 
 A changed rule carries a comment `Local change (Stemma)` in front of its `id`.
