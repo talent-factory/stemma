@@ -1322,8 +1322,9 @@ hatte der Befehl einen Snapshot gemacht, ist es Exit-Code 3, und die Meldung nen
 
 {\bf Grenzen.} Die Version nimmt eine Eintragsnummer und keinen Zeitpunkt; ein
 \type{undo} für den letzten Eintrag gibt es nicht.
-Namen, die sich nur in der Unicode-Normalisierung unterscheiden, erkennt das Schreiben
-der Dateien erst, wenn die zweite Datei an der Reihe ist, und nur, wenn sie neu ist;
+Namen, die sich nur in der Gross- und Kleinschreibung oder in der Unicode-Form
+unterscheiden (\type{README} und \type{readme}), erkennt die Planung dort, wo das Dateisystem
+sie gleichsetzt (macOS, Windows); auf Windows lehnt sie auch Paare ab, die NTFS halten könnte.
 Windows ist nicht getestet (ADR-013).
 
 {\bf Beispiele.}
