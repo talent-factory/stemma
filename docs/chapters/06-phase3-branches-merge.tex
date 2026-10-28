@@ -8,10 +8,11 @@ Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und 
 
 \startitemize
 \item Befehle \type{branch}, \type{checkout} und \type{log}.
-\item Drei-Wege-Merge über den besten gemeinsamen Vorfahren.
-Die Funktion \type{merge_bases} liefert alle besten gemeinsamen Vorfahren zweier
-Commits; nach einem Criss-Cross-Merge sind es mehrere, und der Merge muss sie zusammenführen.
-Sie liest kein Commit-Datum, sondern geht die ganze Vorfahrenmenge beider Seiten durch.
+\item Drei-Wege-Merge über die Merge-Basis, den besten gemeinsamen Vorfahren der beiden Seiten.
+Die Funktion \type{merge_bases} liefert alle Merge-Basen zweier Commits.
+Nach einem Criss-Cross-Merge, bei dem sich zwei Seiten gegenseitig einmischen,
+sind es mehrere, und der Merge muss sie zusammenführen.
+Die Funktion liest kein Commit-Datum, sondern geht die ganze Vorfahrenmenge beider Seiten durch.
 \item Konflikte als Daten im Commit oder als Markierung in der Arbeitskopie.
 Kapitel 2 beschreibt das Vorbild Jujutsu; die Entscheidung ist offen.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.

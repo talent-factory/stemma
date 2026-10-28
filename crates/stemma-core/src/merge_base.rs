@@ -38,13 +38,15 @@ pub fn merge_bases(
     let mut walk = Walk::new(store);
     let from_a = walk.ancestors(&[a])?;
     let from_b = walk.ancestors(&[b])?;
-    // Sorted for the result, which the function promises in the order of the IDs. The walks below
-    // read the parents that the walks above remembered and cannot fail on a damaged history.
+    // Sorted for the result, which the function promises in the order of the IDs.
     let mut candidates: Vec<CommitId> = from_a.intersection(&from_b).copied().collect();
     candidates.sort();
 
     // A candidate that is an ancestor of another one is not a best ancestor. The proper ancestors
-    // of all candidates are the ancestors of their parents, found in one walk.
+    // of all candidates are the ancestors of their parents, found in one walk. Every candidate and
+    // all of its ancestors are in `from_a`, so every lookup here is a hit in the memory of the walk
+    // and cannot fail on a damaged history. The `?` stays, so that a later change that breaks this
+    // fails loudly.
     let mut parents = Vec::new();
     for candidate in &candidates {
         parents.extend_from_slice(&walk.parents(*candidate, None)?);

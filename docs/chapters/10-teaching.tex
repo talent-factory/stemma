@@ -204,6 +204,14 @@ das Rendern ist eine Funktion von Zustand und Diff \stopxcell
 \startxcell \type{State::apply} und \type{render} (\type{lib.rs} in \type{stemma-tui}) \stopxcell
 \startxcell Nicht im Buch; endlicher Automat \stopxcell
 \stopxrow
+\startxrow
+\startxcell Merge-Basis: die Vorfahrenmengen beider Commits, je mit einer Tiefensuche mit Stapel,
+dann die Schnittmenge, aus der alle Kandidaten fallen, die Vorfahr eines anderen sind;
+jeder Commit wird einmal gelesen \stopxcell
+\startxcell \type{merge_bases}, \type{Walk::ancestors} (\type{merge_base.rs}) \stopxcell
+\startxcell Abschnitt 4.2, Erreichbarkeit in gerichteten Graphen;
+Abschnitt 3.4, Hashtabellen \stopxcell
+\stopxrow
 \stopxtable
 \stopplacetable
 
@@ -225,8 +233,9 @@ den Begriff des Merkle-Graphen kennt das Buch nicht.
 Den Commit-Graphen durchläuft schon der Purge in Phase~1:
 Er schreibt jeden Commit, der den Blob erreicht, nach seinen Eltern um,
 mit einem eigenen Stapel statt Rekursion (Abschnitt 4.2, Tiefensuche und topologische Ordnung).
-Die Suche nach dem gemeinsamen Vorfahren folgt in Phase~3
-(Abschnitt 4.1 und 4.2, Breitensuche und Tiefensuche).
+Die Suche nach der Merge-Basis (\type{merge_bases}, \type{merge_base.rs}) durchläuft den
+Commit-Graphen ebenso, einmal von jedem der beiden Commits aus
+(Abschnitt 4.2, Erreichbarkeit in gerichteten Graphen).
 
 Die Hash-Kette des Operation Log verbindet jeden Eintrag mit dem Hash seines Vorgängers
 (ADR-011); auch sie steht nicht im Buch.
