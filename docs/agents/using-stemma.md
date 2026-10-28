@@ -16,9 +16,12 @@ It describes the state of phase 2. Branches and workspaces per agent come with p
 
 ## The rule behind all of it
 
-Every command that changes the working copy, and `status` and `diff`, first saves the tracked
-files as a snapshot (ADR-010). There is no file watcher and no background process. A state that
-no command has seen is not saved. So the way to keep an intermediate state is to run a command.
+`track`, `commit`, `status`, `op restore`, and `purge --apply` first save the tracked files as a
+snapshot (ADR-010), and so does `diff` when one side is the working copy. The snapshot covers
+tracked files only, and it writes a log entry only if a tracked file changed. There is no file
+watcher and no background process. A state that no command has seen is not saved, and a command
+that fails before its snapshot saves nothing. So the way to keep an intermediate state is to run
+a command.
 
 ## Setup (once per session)
 
@@ -28,51 +31,67 @@ no command has seen is not saved. So the way to keep an intermediate state is to
    export STEMMA_ACTOR="agent <id> model=<model> session=<session> sponsor=<name>"
    ```
 
-   An agent never acts as `human ...`. An agent may not run `purge` at all.
+   An agent never acts as `human ...`.
 2. Read the state: `stemma status --json`. Look at `clean`, `changes`, `untracked`, and
    `leftovers`. A `leftovers` entry is a `.stemma-checkout-...` file of an interrupted restore;
-   report it, do not delete it.
-3. Note the number of the newest log entry: `stemma op log -n 1 --json`. It is the point to
-   go back to if the task fails (`op restore`, see below).
+   report it, do not delete it. If a purge is pending (the file `.stemma/purge-pending`),
+   `track`, `commit`, `status`, and `op restore` fail with exit code 1: stop and report it.
+3. Note the number `N` of the newest log entry: `stemma op log -n 1 --json`; the field is
+   `number`. `op restore` puts back the state *before* the entry it names, so the first entry
+   that the task writes, `N+1`, is the point to go back to (`op restore N+1`, see below).
 4. Optional: `stemma op verify` checks the whole log. It needs no actor. Keep the line
-   `anchor N:hash` outside the repository, for example in the hand-over text, so that a later
-   `op verify --anchor N:hash` can show that the log was not rewritten.
+   `anchor <number>:<hash>` (if there is one) outside the repository, for example in the
+   hand-over text, so that a later `op verify --anchor <number>:<hash>` can show that the log
+   was not rewritten. The hash starts with `b3:` itself.
 
 ## While working
 
 - A new file is not saved until it is tracked: `stemma track <path>...`. This is deliberate, so
-  that a file never enters the history by accident.
+  that a file never enters the history by accident. Name the files; `track .` takes everything
+  that `.stemmaignore` does not exclude, secrets included, and only a human can purge them.
 - After each finished step, and after any risky change such as a large rewrite or a deletion, run
   `stemma status --json`. It is the cheapest way to save the state.
 - Before a commit, read your own change: `stemma diff`. With no argument it compares the
   working-copy commit with its parent. `stemma diff --exit-code` ends with 4 if a file differs;
-  that is not an error. `diff` has no JSON form yet, so read it as text.
+  that is not an error. `diff` has no JSON form yet, so read it as text. Do not use `--tui`:
+  it needs a terminal and ends with exit code 1 without one.
 - Commit a logical unit with `stemma commit -m "<message>" --json`. The message needs a
   character that is not white space.
 
 ## At the end
 
 1. `stemma status --json`. Expected: `clean` is `true`. Explain or track what `untracked` lists.
-2. `stemma commit -m "<message>" --json` if something is still open. "Nothing to commit" ends
-   with exit code 1; a loop that commits treats it as a normal result, not as a failure.
-3. For the hand-over, name the first and the last log entry of the session
-   (`stemma op log -n <N> --json`) and the `anchor` line of `stemma op verify`.
+2. If `changes` is not empty, `stemma commit -m "<message>" --json`. If it is empty there is
+   nothing to commit, and `commit` would end with exit code 1, the same code as a missing actor
+   or a moved branch. Skip the call; do not read the message to tell the cases apart.
+3. For the hand-over, name the first entry that the task wrote (`N+1`), the last one
+   (`stemma op log -n <count> --json`), and the `anchor` line of `stemma op verify`.
 
 ## Exit codes (ADR-018)
 
 Read the exit code, not the text of a message. Only `--json`, the `anchor` line and the exit
-codes are a contract.
+codes are a contract. The message of a failure helps a person find the cause; do not match on it.
 
 | Code | Meaning | What the agent does |
 | ---- | ------- | ------------------- |
 | 0 | Done | Continue. |
-| 1 | Failed (no actor, nothing to commit, moved branch, no repository, ...) | Read the message; fix the cause. |
+| 1 | Failed (no actor, nothing to commit, moved branch, no repository, ...) | Fix the cause; a person can read the message. |
 | 2 | Wrong arguments | Fix the call. |
-| 3 | A result exists but is incomplete or not durable | Do not repeat blindly. The section of the command in the reference says what to do. |
+| 3 | A result exists but is incomplete or not durable | Do not repeat blindly; see below. |
 | 4 | Only `diff --exit-code`: a file differs | Not an error. |
 | 5 | The command found damage | Do not repeat. Stop and call the human. |
-| 6 | A lock is held | Wait, try a few times, then report. |
+| 6 | A lock is held | Wait, try a few times, then report. A lock of another machine or in an older form is never taken over, so it stays: report it. |
 | 129, 130, 143 | Interrupted | A repeat is safe, except after an interrupted `purge --apply`. |
+
+Exit code 3, by case (the table `tab:exit3` of the reference has all of them):
+
+- `commit`, and the snapshot before it moved a pointer but could not save it: the commit is not
+  made, so repeat the call.
+- `commit`, and only the branch moved: call `commit` again. It finishes the first commit and
+  does not use the new message; `resumed` is `true` in the JSON.
+- `op restore` that says `Half made`: repeat the call.
+- A result that is made, but the output could not be written or a directory is not saved:
+  do not repeat.
 
 With `--json`, a failure writes no JSON. An object before a non-zero code says what was made,
 not that the command worked.
@@ -81,7 +100,12 @@ not that the command worked.
 
 - `stemma op restore <N>`. It rewrites the working directory. Run `--dry-run` first. In this
   repository it also changes files that Git owns, so ask first.
-- `stemma purge` of any kind. It is for humans only (ADR-002, ADR-014).
+
+## Never
+
+- `stemma purge`, not even the plan without `--apply`. The program refuses an agent at every
+  step (ADR-002, ADR-014). If a secret is in the history, report it to the human, who runs the
+  purge.
 
 ## Until phase 3: no `stemma` in a Git worktree
 
@@ -93,17 +117,23 @@ that the design foresees does not exist yet. Until it does, the rule is administ
 - **In a Git worktree, do not call `stemma`.** Two things speak against it, both tested on a copy
   of the layout (a root with `.stemma` and a worktree at `.worktrees/task`):
   - Without a `stemma init` of its own, a command in the worktree opens the `.stemma` of the
-    root, because it searches the parent directories. The files of the worktree then appear as
-    untracked paths such as `.worktrees/task/a.txt`, and a `track` or `commit` would write them
-    into the history of the root.
+    root, because it searches the parent directories. Its snapshot then covers the files of the
+    root, under the actor of the worktree: two actors in one working copy. In a repository whose
+    `.stemmaignore` lacks the directory of the worktree, the files of the worktree also appear
+    as untracked paths such as `.worktrees/task/a.txt`, and a `track` or `commit` would write
+    them into the history of the root.
   - With a `stemma init` of its own, the worktree is an independent repository, but its history
-    is lost with it. Git does not carry the ignored `.stemma/` into a merge, Stemma has no merge
-    before phase 3, and `git worktree remove` deletes the directory with the `.stemma` in it,
-    without `--force` and without a message. Only the content of the files survives, through
-    the Git merge.
+    is lost with it. Git does not carry the ignored `.stemma/` into a merge, and Stemma has no
+    merge before phase 3. `git worktree remove` deletes the directory with the `.stemma` in it,
+    and on a clean worktree, which is the normal state after the merge, it does so without
+    `--force` and without a message. Only the content of the files survives, through the Git
+    merge.
 - Never call `stemma` with `-C` pointing at the root from a worktree.
-- `.worktrees/` is in `.stemmaignore` of this repository, so that `track .` in the root does not
-  sweep up the files of the worktrees.
+- Commands for examples of the book (`docs/agents/book-review.md`) run in the checkout of the
+  root or in a scratch repository, not in the worktree of the review.
+- `.worktrees/` and `.claude/` are in `.stemmaignore` of this repository, so that `track .` in
+  the root does not sweep up the files of the worktrees (Claude Code creates its worktrees under
+  `.claude/worktrees/`).
 
 Whether a command should warn in a worktree, and how a workspace keeps its history after the
 merge, is decided in phase 3 (STEMMA-132).
