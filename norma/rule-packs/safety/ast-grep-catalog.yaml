@@ -1,0 +1,27 @@
+# norma/rule-packs/safety/ast-grep-catalog.yaml
+#
+# Rule pack: rules from the official ast-grep catalog (https://ast-grep.github.io/catalog).
+# Each rule names its source in the comment above its id.
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
+id: redundant-unsafe-function-rust
+message: Unsafe function without an unsafe block inside
+note: |
+  Consider whether this function needs to be marked unsafe, or if the
+  unsafe operations inside it should be wrapped in an explicit unsafe
+  block instead.
+severity: warning
+language: Rust
+rule:
+  all:
+    - kind: function_item
+    - has:
+        kind: function_modifiers
+        regex: "^unsafe"
+    - not:
+        has:
+          kind: unsafe_block
+          stopBy: end
+# Source: https://ast-grep.github.io/catalog/rust/redundant-unsafe-function

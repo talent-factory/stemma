@@ -1,0 +1,244 @@
+# norma/rule-packs/rust-api-guidelines/rust.yaml
+#
+# Rules derived from the Rust API Guidelines
+# (https://rust-lang.github.io/api-guidelines/), (c) The Rust Project
+# Developers, licensed under MIT OR Apache-2.0
+# (https://github.com/rust-lang/api-guidelines). Paraphrased, not copied;
+# each rule's id and `note` carry the guideline's C-xxx checklist id.
+#
+# AUDIENCE: these guidelines target LIBRARY crates with a public API.
+# In an application or binary crate most of these hits are noise, and the
+# guidelines themselves say they are not a mandate. Severities are low.
+#
+# Only guidelines that ast-grep can decide syntactically AND that no
+# default-on rustc/Clippy lint covers are included. Most of the checklist
+# needs type information or is already linted (`non_camel_case_types`,
+# `wrong_self_convention`, `ptr_arg`, `result_unit_err`,
+#
+# Overlaps with other packs, built once elsewhere:
+#   - C-STRUCT-PRIVATE (pub struct with pub fields)
+#       -> google-rust-style: google-non-exhaustive-pub-struct-rust
+#   - C-CONV (as_/to_/into_ vs. self kind): Clippy `wrong_self_convention`
+#     (only this pack's `_mut`-suffix gap is built)
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
+id: api-c-case-acronym-rust
+language: Rust
+severity: hint
+message: >-
+  Acronym written in capitals inside a type name. Treat acronyms as
+  one word: `Uuid`, `HttpResponse`, not `UUID` or `HTTPResponse`.
+note: >-
+  Rust API Guidelines C-CASE (acronyms count as one word). Narrow on
+  purpose: flags struct/enum/trait/variant names that mix lower case with
+  a run of three or more capitals, and ignores all-caps names (Clippy
+  `upper_case_acronyms` covers those) and names with underscores. The
+  standard library itself has exceptions (`BTreeMap`), which this regex
+  does not hit.
+rule:
+  any:
+    - kind: type_identifier
+      inside:
+        any:
+          - kind: struct_item
+          - kind: enum_item
+          - kind: trait_item
+    - kind: identifier
+      inside: { kind: enum_variant }
+  regex: '[A-Z]{3,}'
+  all:
+    - regex: '[a-z]'
+    - not: { regex: '_' }
+---
+id: api-c-conv-mut-suffix-rust
+language: Rust
+severity: info
+message: >-
+  Name conversion methods with `_mut` right after the prefix:
+  `as_mut_slice`, not `as_slice_mut`.
+note: >-
+  Rust API Guidelines C-CONV. Clippy `wrong_self_convention` does not
+  check the `_mut` position (verified with exported-API checking turned
+  off). Matches function names `as_*_mut`, `to_*_mut`, `into_*_mut`.
+rule:
+  kind: function_item
+  has: { field: name, regex: '^(as|to|into)_.+_mut$' }
+---
+id: api-c-getter-rust
+language: Rust
+severity: hint
+message: >-
+  Getter named `get_*`. Name the getter after the field instead
+  (`name()`, not `get_name()`).
+note: >-
+  Rust API Guidelines C-GETTER (also the build point for the Google
+  guide's getter naming). Only flags inherent-impl methods that take
+  `&self`, no other parameter, and return a value; `get`, `get_mut` and
+  trait impls are not flagged. The guideline allows an exception when
+  there is a single obvious thing to get (`Cell::get`).
+rule:
+  kind: function_item
+  inside:
+    kind: declaration_list
+    inside:
+      kind: impl_item
+      not: { has: { field: trait, regex: '(?s).+' } }
+  all:
+    - has: { field: name, regex: '^get_', not: { regex: '^get_mut$' } }
+    - has: { field: return_type, regex: '.' }
+    - has:
+        field: parameters
+        has: { kind: self_parameter, regex: '^&self$' }
+        not: { has: { kind: parameter } }
+---
+id: api-c-conv-traits-tryinto-rust
+language: Rust
+severity: warning
+message: >-
+  Implement `TryFrom<T>` instead of `TryInto<U>`. `TryInto` is then
+  available through the blanket impl.
+note: >-
+  Rust API Guidelines C-CONV-TRAITS. No rustc or Clippy lint flags a
+  direct `TryInto` impl (`from_over_into` only covers `Into`).
+rule:
+  kind: impl_item
+  has: { field: trait, regex: '^(\w+::)*TryInto\b' }
+---
+id: api-c-good-err-description-rust
+language: Rust
+severity: warning
+message: >-
+  Do not implement the deprecated `Error::description`. Implement
+  `Display` and, if needed, `source` instead.
+note: >-
+  Rust API Guidelines C-GOOD-ERR. Neither rustc nor Clippy reports an
+  implementation of `description`.
+rule:
+  kind: function_item
+  has: { field: name, regex: '^description$' }
+  inside:
+    kind: declaration_list
+    inside:
+      kind: impl_item
+      has: { field: trait, regex: '^(\w+::)*Error$' }
+---
+id: api-c-feature-placeholder-words-rust
+language: Rust
+severity: hint
+message: >-
+  Cargo feature name starts with a placeholder word (`use-`, `with-`,
+  `no-`). Name the feature after what it enables (`std`, `serde`).
+note: >-
+  Rust API Guidelines C-FEATURE. Source side only: checks
+  `feature = "..."` in `#[cfg]`/`#[cfg_attr]` attributes and `cfg!`.
+  The `[features]` table in Cargo.toml is out of reach for ast-grep
+  (Clippy `redundant_feature_names` and `negative_feature_names` are in
+  the opt-in cargo group).
+rule:
+  any:
+    - kind: attribute_item
+    - kind: inner_attribute_item
+    - kind: macro_invocation
+      has: { field: macro, regex: '^cfg$' }
+  regex: '\bfeature\s*=\s*"(use|with|no)[-_]'
+---
+id: api-c-deref-review-rust
+language: Rust
+severity: hint
+message: >-
+  `Deref`/`DerefMut` implementation. Reserve these traits for smart
+  pointers; do not use them to emulate inheritance or to forward
+  methods.
+note: >-
+  Rust API Guidelines C-DEREF. Whether the type is a smart pointer is a
+  human judgement, so this is a review prompt. Clippy has no lint for
+  the misuse.
+rule:
+  kind: impl_item
+  has: { field: trait, regex: '^(\w+::)*Deref(Mut)?$' }
+---
+id: api-c-custom-type-bool-params-rust
+language: Rust
+severity: info
+message: >-
+  Public function with two or more `bool` parameters. Call sites like
+  `f(true, false)` do not explain themselves; use enums or an options
+  type.
+note: >-
+  Rust API Guidelines C-CUSTOM-TYPE (also the build point for the Google
+  guide's enum-over-bool advice). Boundary case: Clippy
+  `fn_params_excessive_bools` is pedantic (off by default, threshold 3),
+  so it does not count as coverage. Only plain `pub fn` (also methods) is
+  checked, not `pub(crate)`.
+rule:
+  kind: function_item
+  all:
+    - has: { kind: visibility_modifier, regex: ^pub$ }
+    - has:
+        field: parameters
+        has:
+          kind: parameter
+          has: { field: type, regex: '^bool$' }
+          follows:
+            kind: parameter
+            has: { field: type, regex: '^bool$' }
+            stopBy: end
+---
+id: api-c-dtor-fail-rust
+language: Rust
+severity: warning
+message: >-
+  Possible panic inside `Drop::drop`. Destructors must not fail; a
+  panic during unwinding aborts the process.
+note: >-
+  Rust API Guidelines C-DTOR-FAIL. Flags `.unwrap()`, `.expect(..)` and
+  the panicking macros (`panic!`, `assert*!`, `debug_assert*!`,
+  `unreachable!`, `todo!`, `unimplemented!`) lexically inside an
+  `impl Drop`. Panics hidden in called functions are not found. Clippy
+  does not cover this.
+rule:
+  any:
+    - pattern: $OPT.unwrap()
+    - pattern: $OPT.expect($MSG)
+    - kind: macro_invocation
+      has: { field: macro, regex: '^(debug_)?(panic|assert|assert_eq|assert_ne|unreachable|todo|unimplemented)$' }
+  inside:
+    stopBy: end
+    kind: impl_item
+    has: { field: trait, regex: '^(\w+::)*Drop$' }
+---
+id: api-c-struct-bounds-rust
+language: Rust
+severity: info
+message: >-
+  Derivable trait bound on a data structure's generic parameter. Put
+  such bounds on the impls that need them, not on the struct or enum.
+note: >-
+  Rust API Guidelines C-STRUCT-BOUNDS. Checks the guideline's list:
+  Clone, PartialEq, PartialOrd, Debug, Display, Default, Error,
+  Serialize, Deserialize, DeserializeOwned, both inline and in `where`
+  clauses. The guideline's exceptions (associated types, `?Sized`, bounds
+  needed by `Drop`) are rare and not modelled, so `?Sized + Display` is
+  flagged for the `Display` part.
+rule:
+  any:
+    - kind: struct_item
+    - kind: enum_item
+  all:
+    - any:
+        - has:
+            field: type_parameters
+            has:
+              kind: type_parameter
+              has:
+                field: bounds
+                has: { regex: '^(\w+::)*(Clone|PartialEq|PartialOrd|Debug|Display|Default|Error|Serialize|Deserialize|DeserializeOwned)(<.*>)?$' }
+        - has:
+            kind: where_clause
+            has:
+              kind: where_predicate
+              has:
+                field: bounds
+                has: { regex: '^(\w+::)*(Clone|PartialEq|PartialOrd|Debug|Display|Default|Error|Serialize|Deserialize|DeserializeOwned)(<.*>)?$' }

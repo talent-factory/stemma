@@ -1,0 +1,115 @@
+# norma/rule-packs/security/rust.yaml
+#
+# Curated, generalized subset of coderabbitai/ast-grep-essentials
+# (Apache-2.0, https://github.com/coderabbitai/ast-grep-essentials).
+# Upstream's 8 Rust security rules are almost entirely sqlx/reqwest/
+# openssl builder-chain checks with heavy import-tracing boilerplate;
+# collapsed here into 3 library-agnostic checks. Import-tracing/aliasing
+# guards were dropped for simplicity -- see each rule's note.
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
+id: hardcoded-secret-in-call-rust
+language: Rust
+severity: warning
+message: >-
+  A secret is hard-coded in the application. Secrets stored in source
+  code, such as credentials, identifiers, and other types of sensitive
+  data, can be leaked and used by internal or external malicious actors.
+  Retrieve them from an environment variable or a secure vault/HSM
+  instead.
+note: >-
+  [CWE-798] Use of Hard-coded Credentials.
+  Generalizes upstream's hardcoded-password-rust (sqlx
+  MySqlConnectOptions/PgConnectOptions builder-chain tracing),
+  tokio-postgres-hardcoded-password-rust, and
+  secrets-reqwest-hardcoded-auth-rust into one library-agnostic check:
+  any `.password(...)`/`.basic_auth(_, Some(...))`/`.bearer_auth(...)`
+  call with a non-empty string literal. Broader than the originals (no
+  builder-type/import verification) -- may flag test fixtures; exclude
+  test paths via your pre-commit `exclude:` glob if noisy.
+  [REFERENCES] https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures
+rule:
+  kind: call_expression
+  any:
+    - all:
+        - has:
+            kind: field_expression
+            has: { field: field, kind: field_identifier, regex: ^password$ }
+        - has:
+            kind: arguments
+            has: { kind: string_literal, has: { kind: string_content } }
+    - all:
+        - has:
+            kind: field_expression
+            has: { field: field, kind: field_identifier, regex: ^bearer_auth$ }
+        - has:
+            kind: arguments
+            has: { kind: string_literal, has: { kind: string_content } }
+    - all:
+        - has:
+            kind: field_expression
+            has: { field: field, kind: field_identifier, regex: ^basic_auth$ }
+        - has:
+            kind: arguments
+            has:
+              kind: call_expression
+              all:
+                - has: { kind: identifier, regex: ^Some$ }
+                - has:
+                    kind: arguments
+                    has: { kind: string_literal, has: { kind: string_content } }
+---
+id: empty-password-accepted-rust
+language: Rust
+severity: warning
+message: >-
+  The application creates a connection with an empty password. This can
+  lead to unauthorized access. Enforce authentication by using
+  environment variables to securely provide credentials or retrieving
+  them from a secure vault/HSM.
+note: >-
+  [CWE-287] Improper Authentication.
+  Generalizes upstream's empty-password-rust, postgres-empty-password-
+  rust, and tokio-postgres-empty-password-rust (each a sqlx
+  MySqlConnectOptions/PgConnectOptions builder-chain trace) into one
+  library-agnostic check: any `.password("")` call with a literal empty
+  string.
+  [REFERENCES] https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html
+rule:
+  kind: call_expression
+  all:
+    - has:
+        kind: field_expression
+        has: { field: field, kind: field_identifier, regex: ^password$ }
+    - has:
+        kind: arguments
+        has:
+          kind: string_literal
+          not: { has: { kind: string_content } }
+---
+# Sources:
+#   https://github.com/coderabbitai/ast-grep-essentials/blob/main/rules/rust/security/reqwest-accept-invalid-rust.yml
+#   https://github.com/coderabbitai/ast-grep-essentials/blob/main/rules/rust/security/ssl-verify-none-rust.yml
+# License: Apache-2.0
+# Adapted: merged both into one rule; dropped the openssl
+# import-aliasing guard (ssl-verify-none-rust originally traced several
+# `use openssl::...` import spellings to resolve SSL_VERIFY_NONE's alias).
+id: insecure-tls-verification-disabled-rust
+language: Rust
+severity: warning
+message: >-
+  TLS certificate/hostname verification has been explicitly disabled.
+  This allows man-in-the-middle attacks and should never ship to
+  production.
+note: >-
+  [CWE-295] Improper Certificate Validation.
+  [REFERENCES] https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html#method.danger_accept_invalid_certs
+rule:
+  kind: call_expression
+  any:
+    - pattern: $BUILDER.danger_accept_invalid_hostnames(true)
+    - pattern: $BUILDER.danger_accept_invalid_certs(true)
+    - pattern: $BUILDER.set_verify(SSL_VERIFY_NONE)
+    - pattern: $BUILDER.set_verify(openssl::ssl::SSL_VERIFY_NONE)
