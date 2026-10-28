@@ -11,9 +11,9 @@ the command line reference says only that `op log --json` and the line `anchor N
 `op verify` are meant for programs, and that the rest is "not yet decided".
 
 The exit codes are partly fixed already: 0 (done), 1 (failed), 2 (wrong arguments), 3 (made, but
-not finished), 4 (`diff --exit-code`: a file differs), and 129, 130, 143 (signals). Code 1 is
-still overloaded. A held lock (retry later),
-nothing to commit, no repository, a missing actor, a moved branch, and corruption all end with 1.
+not finished), 4 (`diff --exit-code`: a file differs), and 129, 130, 143 (signals).
+Code 1 is still overloaded. A held lock (retry later), nothing to commit, no repository, a
+missing actor, a moved branch, and corruption all end with 1.
 A caller can tell them apart only by the text of the message, which is written for people.
 
 ## Decision
@@ -22,11 +22,11 @@ A caller can tell them apart only by the text of the message, which is written f
   `anchor N:hash`, and the exit codes. Everything else is for people and may change in any
   release: the text lines (`tracked <path>`, `Committed <id> on <branch>`, the status letters, the
   restore and purge lines), the messages after `stemma:`, and the order of the sections.
-- **JSON carries a version**. Every JSON object has the field `schema`, a whole
-  number that starts at 1. One number covers all objects, so a removed, renamed, or retyped field
-  of any object raises it for all. Adding a field does not change it; a caller ignores fields it does not
-  know. Removing a field, renaming it, or changing its type raises `schema`, and the command line
-  reference names the change. `op log --json` gets the field in the same change.
+- **JSON carries a version**. Every JSON object has the field `schema`, a whole number that
+  starts at 1. One number covers all objects, so a removed, renamed, or retyped field of any
+  object raises it for all. Adding a field does not change it; a caller ignores fields it does
+  not know. The command line reference names a change of `schema`. `op log --json` gets the
+  field in the same change.
 - **Two exit codes split code 1**, and 0, 2, 3, 4, and the signal codes keep their meaning. Code 4
   stays with `diff --exit-code`, where a script reads it as "a file differs"; a lock therefore
   takes 6.
@@ -42,6 +42,8 @@ A caller can tell them apart only by the text of the message, which is written f
     actor, a moved branch, and the errors of `init`. A caller that needs to tell these apart
     reads `--json` or the message.
   - Code 3 takes precedence: a command that moved a pointer ends with 3 whatever the cause was.
+    So does a `purge` whose journal stays, also when the journal cannot be read: the journal
+    keeps every writer out until `purge --resume` or `--abort` has run.
   - A failure is classified by `stemma-core::failure`, which lists every variant of every error
     and has no fallback arm, so a new error cannot end with 1 unnoticed.
 - **`--json` for `status` and `commit`**, the two commands that agents read most.
@@ -58,9 +60,9 @@ A caller can tell them apart only by the text of the message, which is written f
 
 ## Consequences
 
-- The reference states the contract in the sections "Aufruf und gemeinsame Regeln" and
-  "Maschinenlesbare Ausgabe", and the sections of the commands name the codes 5 and 6 where they
-  can occur.
+- The reference states the contract in the section "Aufruf und gemeinsame Regeln" and its
+  paragraph "Maschinenlesbare Ausgabe", and the sections of the commands name the codes 5 and 6
+  where they can occur.
 - The text form can change without notice. Tests of the text keep their value as a check of what
   people read, but a script must not parse it.
 - Code 5 and code 6 are new values. A script that treated every value other than 0 as a failure

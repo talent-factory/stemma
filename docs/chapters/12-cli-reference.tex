@@ -109,7 +109,7 @@ Die übrigen Befehle haben keine JSON-Form; sie folgt mit den Schnittstellen der
 
 \startitemize
 \item {\bf 0:} Der Befehl ist gelungen.
-\item {\bf 1:} Der Befehl ist gescheitert, aus einem anderen Grund als bei 4 und 5.
+\item {\bf 1:} Der Befehl ist gescheitert, aus einem anderen Grund als bei 5 und 6.
 Die Meldung auf der Fehlerausgabe hat das Präfix \type{stemma:}.
 Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
 einen Eintrag für eine Zeigerbewegung,
@@ -571,9 +571,9 @@ ein Schaden am Log, an den Referenzen oder an einem Objekt beendet ihn mit Exit-
 
 Hat ein anderer Prozess einen Zeiger zuerst bewegt, meldet der Befehl das,
 und der Aufruf lässt sich wiederholen. Scheitert die Zeigerbewegung, nachdem der Eintrag im Log
-steht, endet der Befehl mit Exit-Code 1, hat nichts verschoben und hinterlässt einen Eintrag für
-eine Zeigerbewegung, die nicht stattfand. Liegt das Verzeichnis in keinem Repository,
-nennt die Meldung \type{-C}.
+steht, endet der Befehl mit Exit-Code 1 (bei einer gehaltenen Sperre mit 6), hat nichts
+verschoben und hinterlässt einen Eintrag für eine Zeigerbewegung, die nicht stattfand.
+Liegt das Verzeichnis in keinem Repository, nennt die Meldung \type{-C}.
 
 Mit Exit-Code 3 endet der Befehl, wenn der Commit gemacht ist,
 aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
@@ -983,7 +983,7 @@ fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten oder geänd
 Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug, das ist \type{op verify}.
 Hat das Log nur seine neuesten Einträge verloren, bleibt es lückenlos;
 die Datei \type{oplog-tip} mit der Nummer des letzten Eintrags verrät den Verlust (ADR-011), und
-der Befehl bricht mit Exit-Code 1 ab. Ein Eintrag wird geschrieben, bevor sich der Zeiger bewegt
+der Befehl bricht mit Exit-Code 5 ab. Ein Eintrag wird geschrieben, bevor sich der Zeiger bewegt
 (ADR-011). Brach der Vorgang dazwischen ab, steht der Eintrag im Log, obwohl die Zeigerbewegung nie
 stattfand. Der Befehl liest das Ergebnis aus der Kette der Einträge desselben Zeigers:
 Ein späterer Eintrag, dessen alter Wert der neue Wert dieses Eintrags ist, bestätigt die
@@ -1191,7 +1191,8 @@ In diesen Fällen hat das Restore nichts geschrieben; hatte der Befehl vorher ei
 gemacht, nennt die Meldung ihn.
 
 Scheitert das Schreiben der Dateien, nachdem der Eintrag im Log steht, ist das ebenfalls
-Exit-Code 1: Der Eintrag nennt ein Restore, das nicht stattfand (\type{op log} markiert ihn
+Exit-Code 1 (bei einer gehaltenen Sperre 6):
+Der Eintrag nennt ein Restore, das nicht stattfand (\type{op log} markiert ihn
 mit \type{!}), kein Zeiger hat sich bewegt, und die schon geschriebenen Dateien bleiben;
 der nächste Snapshot sichert sie als Änderung des Akteurs.
 Dasselbe gilt, wenn nach den Dateien schon der erste Zeiger scheitert: Die Dateien haben
@@ -1367,13 +1368,15 @@ Undid the purge of blob b3:f60c…; removed 2 new objects
 Danach zeigt \type{op log} den Eintrag \type{purge} mit der Zahl der Commits und den Stubs,
 und die ersetzten Einträge als \type{(purged)}; \type{op restore} lehnt beide ab.
 
-{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, ungültig oder ein
+{\bf Fehler.} Die Ursache bestimmt den Code: Ein Schaden (Log, Referenz oder Objekt) endet mit
+Exit-Code 5, eine gehaltene Sperre mit Exit-Code 6, jeder andere Grund mit Exit-Code 1.
+Mit Exit-Code 1 endet der Befehl, wenn der Akteur fehlt, ungültig oder ein
 Agent ist, wenn das Verzeichnis kein Repository ist, wenn der Objektspeicher keinen Blob mit
-der ID hat (auch wenn die ID einen Commit oder einen Baum nennt) oder die Datei des Blobs
-beschädigt ist, wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
-und wenn ein Objekt im Speicher beschädigt ist: Dann ist nicht bekannt, ob es den Blob nennt.
-Ist die Ursache ein Schaden, endet der Befehl mit Exit-Code 5 statt 1, bei einer gehaltenen
-Sperre mit Exit-Code 6.
+der ID hat (auch wenn die ID einen Commit oder einen Baum nennt)
+und wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
+ohne dass die Datei beschädigt ist.
+Ist die Datei des Blobs oder ein Objekt im Speicher beschädigt, ist das ein Schaden:
+Dann ist nicht bekannt, ob es den Blob nennt.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.
 Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung eines Agenten
 mit \type{could not plan the purge, nothing was written}.
@@ -1423,7 +1426,7 @@ das Verzeichnis bleibt, wie es ist, und ein späteres \type{track .} nimmt das G
 auf, wenn \type{.stemmaignore} es nicht nennt. Deshalb nennt \type{--apply} die Pfade; eine
 dauerhafte Liste der entfernten Blobs, die \type{track} prüft, gibt es noch nicht (ADR-014).
 Ein Befehl, der vor dem Purge begann, hält die Sperre schon, bevor er sein erstes Objekt
-schreibt; der Purge bricht dann mit Exit-Code 1 ab, bevor er das Format hebt oder das Journal
+schreibt; der Purge bricht dann mit Exit-Code 6 ab, bevor er das Format hebt oder das Journal
 schreibt, und lässt sich danach wiederholen. So kann kein Befehl ein Objekt nennen, das der
 Purge gelöscht hat.
 Liegengebliebene Dateien in \type{.stemma/tmp/} entfernt der Purge, sobald er die Sperre hält.

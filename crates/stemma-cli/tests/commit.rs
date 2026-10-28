@@ -12,7 +12,9 @@ use stemma_core::refs::BranchName;
 use stemma_core::repository::Repository;
 use stemma_core::store::ObjectStore;
 
-use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
+use common::{
+    hold_the_lock, operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR,
+};
 
 fn commit(dir: &Path, message: &str) -> Run {
     run(dir, &["commit", "-m", message, "--actor", "human alice"])
@@ -443,16 +445,6 @@ fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
     assert!(operations(dir.path())[0].contains("\"operation\":\"commit\""));
     let repository = Repository::open(dir.path()).unwrap();
     assert!(repository.refs().branch(&main_branch()).unwrap().is_some());
-}
-
-/// Takes the references lock as a command of another host does (ADR-008): the core does not take
-/// over such a lock, and its file format is not part of the public interface.
-fn hold_the_lock(dir: &Path) {
-    fs::write(
-        dir.join(".stemma").join("refs.lock"),
-        "stemma-lock 1\nhost other-host\npid 4711\ntoken 1-0-left\n",
-    )
-    .unwrap();
 }
 
 /// A lock that a command of another host holds is not taken over (ADR-008). The commit ends with

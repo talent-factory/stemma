@@ -292,6 +292,8 @@ impl ApplyPurgeError {
         match self {
             Self::AfterSnapshot { source, .. } => source.made(),
             Self::NotDurable { .. } => true,
+            // A journal that stays keeps every writer out, so it is code 3 whatever the cause, also
+            // when the journal cannot be read (ADR-017: code 3 takes precedence over 5 and 6).
             other => other.pending(),
         }
     }

@@ -7,7 +7,9 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
-use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
+use common::{
+    hold_the_lock, operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR,
+};
 
 fn commit(dir: &Path, message: &str) {
     let result = run(dir, &["commit", "-m", message, "--actor", ACTOR]);
@@ -446,11 +448,7 @@ fn a_held_lock_is_code_6_and_writes_nothing() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track_ok(dir.path(), "a.txt");
-    fs::write(
-        dir.path().join(".stemma").join("refs.lock"),
-        "stemma-lock 1\nhost other-host\npid 4711\ntoken 1-0-left\n",
-    )
-    .unwrap();
+    hold_the_lock(dir.path());
     write(dir.path(), "a.txt", "two");
     let entries = operations(dir.path()).len();
 

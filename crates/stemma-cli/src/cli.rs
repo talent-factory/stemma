@@ -259,7 +259,7 @@ struct OpLogArgs {
     #[arg(short = 'n', long, value_name = "N", default_value = "20")]
     limit: NonZeroUsize,
 
-    /// Write one JSON object per line instead of text
+    /// Write one JSON object per line instead of text (the schema of ADR-017)
     #[arg(long)]
     json: bool,
 }
@@ -538,6 +538,9 @@ fn by_kind(kind: FailureKind) -> ExitCode {
 impl CliError {
     /// The exit code of the error (see the module documentation).
     fn exit_code(&self) -> ExitCode {
+        // The order of the arms matters: the arms for code 3 come first, so that a command that
+        // made something ends with 3 whatever the cause was, and the arms that call `by_kind`
+        // come after them.
         match self {
             Self::Init(InitError::NotDurable { .. })
             | Self::Track(TrackError::NotDurable { .. })

@@ -17,14 +17,14 @@ use crate::repository::{
     RestoreError, SnapshotError, StatusError, TrackError, UpdateError,
 };
 use crate::store::StoreError;
+use crate::verify::VerifyError;
 
 /// The kind of a failure, as far as a caller acts on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     /// Another writer holds a lock, or won every race the writer tried. A later call can
-    /// succeed. The failure itself changes nothing, but the call may have left the traces that
-    /// ADR-017 names for exit code 1: an entry for a move that did not happen, or the entry of
-    /// the snapshot that came first.
+    /// succeed. The failure itself changes nothing, but the call may have left an entry for a move
+    /// that did not happen, or the entry of the snapshot that came first.
     Locked,
     /// The repository is damaged: the log has a gap or a wrong number, the chain does not hold, or
     /// a file or object is not in canonical form. A retry does not help.
@@ -43,7 +43,19 @@ impl Classify for StoreError {
     fn kind(&self) -> FailureKind {
         match self {
             Self::Corrupt { .. } => FailureKind::Damaged,
+            // Like `RefError::MissingCommit`, the variant also stands for an object that the caller
+            // named with the wrong kind, which is an argument error.
             Self::Io { .. } | Self::KindMismatch { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl<L> Classify for VerifyError<L> {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // An object that a tree, commit or index names is not in the store.
+            Self::Missing { .. } => FailureKind::Damaged,
+            Self::Store { source, .. } => source.kind(),
         }
     }
 }
@@ -56,14 +68,18 @@ impl Classify for RefError {
             Self::Store(error) => error.kind(),
             // A branch or the working-copy commit that moved is the caller's stale view, not a
             // held lock: the caller reads again and decides (ADR-017 keeps "a moved branch" at 1).
-            Self::Stale { .. }
-            | Self::StaleWorkingCopy { .. }
-            | Self::PurgeStale { .. }
-            | Self::PurgePending { .. }
+            // `StaleWorkingCopy` is the same case for the working-copy commit.
+            Self::Stale { .. } | Self::StaleWorkingCopy { .. } => FailureKind::Other,
+            // A pointer that a purge moves is at neither of its journal values. A person has to
+            // look at it, but the variant also stands for a plain race after a lock removed by
+            // hand, so it is not called damage here; `purge --resume` says what to do.
+            Self::PurgeStale { .. } => FailureKind::Other,
+            // The variant cannot tell a commit that the caller named (an argument error) from one
+            // that the log or a pointer names (damage), so it stays 1 in both.
+            Self::MissingCommit(_) | Self::NotACommit { .. } => FailureKind::Other,
+            Self::PurgePending { .. }
             | Self::Io { .. }
             | Self::Conflict { .. }
-            | Self::MissingCommit(_)
-            | Self::NotACommit { .. }
             | Self::NotFlushed { .. }
             | Self::NoHead { .. }
             | Self::NoWorkingCopy { .. } => FailureKind::Other,
@@ -120,7 +136,8 @@ impl Classify for WriteTreeError {
     fn kind(&self) -> FailureKind {
         match self {
             Self::Store(error) => error.kind(),
-            Self::Verify(_) | Self::Tree(_) => FailureKind::Other,
+            Self::Verify(error) => error.kind(),
+            Self::Tree(_) => FailureKind::Other,
         }
     }
 }
@@ -335,6 +352,24 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn an_object_that_the_index_names_and_the_store_lacks_is_damage() {
+        let missing: WriteTreeError = WriteTreeError::Verify(VerifyError::Missing {
+            at: crate::verify::EntryPath("a.txt".to_owned()),
+            id: id(),
+        });
+        assert_eq!(missing.kind(), FailureKind::Damaged);
+        let io: VerifyError<()> = VerifyError::Store {
+            at: (),
+            source: Box::new(StoreError::Io {
+                operation: "read the object file",
+                path: path(),
+                source: std::io::Error::other("disk"),
+            }),
+        };
+        assert_eq!(io.kind(), FailureKind::Other);
     }
 
     #[test]
