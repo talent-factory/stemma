@@ -7,7 +7,10 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
-use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
+use common::{
+    entry_count, hold_the_lock, operations, repository, run, stemma, track_ok, write, Dir, Run,
+    ACTOR,
+};
 
 fn commit(dir: &Path, message: &str) {
     let result = run(dir, &["commit", "-m", message, "--actor", ACTOR]);
@@ -341,16 +344,6 @@ fn an_argument_that_status_does_not_take_is_a_usage_error_and_saves_nothing() {
 }
 
 #[test]
-fn there_is_no_json_form() {
-    let dir = repository();
-
-    let result = run(dir.path(), &["status", "--actor", "human alice", "--json"]);
-
-    assert_eq!(result.code, 2, "{}", result.stderr);
-    assert_eq!(result.stdout, "");
-}
-
-#[test]
 fn the_help_names_the_command_and_its_flags() {
     let dir = repository();
 
@@ -424,22 +417,56 @@ fn a_name_that_a_tree_refuses_is_left_out_when_a_pattern_excludes_it() {
 }
 
 #[test]
-fn a_file_that_is_corrupt_in_the_repository_fails_without_a_trace() {
+fn a_file_that_is_corrupt_in_the_repository_is_damage_with_code_5_and_no_trace() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
-    let entries = operations(dir.path()).len();
+    let entries = entry_count(dir.path());
 
     let result = status(dir.path());
 
-    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.code, 5, "{}", result.stdout);
     assert_eq!(result.stdout, "");
     assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
+    assert_eq!(entry_count(dir.path()), entries);
+}
+
+#[test]
+fn damage_with_json_writes_no_json() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
+
+    let result = run(dir.path(), &["status", "--actor", "human alice", "--json"]);
+
+    assert_eq!(result.code, 5, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+}
+
+/// A lock of another host is not taken over (ADR-008): code 6, and nothing is written.
+#[test]
+fn a_held_lock_is_code_6_and_writes_nothing() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    hold_the_lock(dir.path());
+    write(dir.path(), "a.txt", "two");
+    let entries = operations(dir.path()).len();
+
+    for args in [
+        &["status", "--actor", "human alice"][..],
+        &["status", "--actor", "human alice", "--json"][..],
+    ] {
+        let result = run(dir.path(), args);
+
+        assert_eq!(result.code, 6, "{}", result.stderr);
+        assert_eq!(result.stdout, "");
+    }
     assert_eq!(operations(dir.path()).len(), entries);
 }
 
 #[test]
-fn a_failure_of_reading_after_the_snapshot_is_code_1_with_the_entry_named_and_no_second_snapshot() {
+fn a_missing_object_after_the_snapshot_is_damage_with_the_entry_named_and_no_second_snapshot() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track_ok(dir.path(), "a.txt");
@@ -459,7 +486,7 @@ fn a_failure_of_reading_after_the_snapshot_is_code_1_with_the_entry_named_and_no
 
     let first = status(dir.path());
 
-    assert_eq!(first.code, 1, "{}", first.stdout);
+    assert_eq!(first.code, 5, "{}", first.stdout);
     assert_eq!(first.stdout, "");
     let log = operations(dir.path());
     assert_eq!(log.len(), entries + 1, "{log:?}");
@@ -470,7 +497,7 @@ fn a_failure_of_reading_after_the_snapshot_is_code_1_with_the_entry_named_and_no
         first.stderr
     );
     let again = status(dir.path());
-    assert_eq!(again.code, 1);
+    assert_eq!(again.code, 5);
     assert_eq!(
         operations(dir.path()).len(),
         entries + 1,
@@ -633,5 +660,37 @@ fn a_leftover_of_an_interrupted_restore_is_listed_in_its_own_section() {
         operations(dir.path()).len(),
         entries,
         "no snapshot: nothing changed"
+    );
+}
+
+#[test]
+fn json_of_a_clean_working_copy() {
+    let dir = repository();
+
+    let result = run(dir.path(), &["status", "--actor", ACTOR, "--json"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "{\"schema\":1,\"clean\":true,\"changes\":[],\"untracked\":[],\"leftovers\":[]}\n"
+    );
+}
+
+#[test]
+fn json_lists_changes_and_untracked_files_with_plain_paths() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    commit(dir.path(), "Add a");
+    write(dir.path(), "a.txt", "two");
+    write(dir.path(), "new \"name\".txt", "x");
+
+    let result = run(dir.path(), &["status", "--actor", ACTOR, "--json"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        "{\"schema\":1,\"clean\":false,\"changes\":[{\"kind\":\"M\",\"path\":\"a.txt\"}],\
+         \"untracked\":[\"new \\\"name\\\".txt\"],\"leftovers\":[]}\n"
     );
 }

@@ -91,7 +91,7 @@ fn a_changed_entry_breaks_the_chain_and_is_named() {
     fs::write(entry_file(dir.path(), 2), changed).unwrap();
 
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert_eq!(result.stdout, "");
     assert!(
         result
@@ -126,7 +126,7 @@ fn a_log_whose_chain_was_computed_again_is_found_only_by_the_anchor() {
     assert_eq!(result.code, 0, "{}", result.stderr);
 
     let result = run(dir.path(), &["op", "verify", "--anchor", &kept]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr
@@ -146,7 +146,7 @@ fn an_anchor_beyond_the_log_or_in_the_wrong_form_is_refused() {
         dir.path(),
         &["op", "verify", "--anchor", &format!("99:{hash}")],
     );
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr
@@ -215,7 +215,7 @@ fn a_log_from_before_the_chain_has_no_anchor_until_op_restore_starts_the_chain()
     );
     // The entry of an anchor from before is now from before the chain, with no hash.
     let result = run(dir.path(), &["op", "verify", "--anchor", &kept]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result.stderr.contains("written before the hash chain"),
         "{}",
@@ -262,7 +262,7 @@ fn a_tip_file_more_than_one_entry_behind_is_reported() {
     )
     .unwrap();
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert_eq!(result.stdout, "");
     assert!(
         result.stderr.contains(&format!(
@@ -279,7 +279,7 @@ fn a_missing_tip_file_is_reported() {
     let dir = repository();
     fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert_eq!(result.stdout, "");
     assert!(result.stderr.contains("no tip file"), "{}", result.stderr);
     // `op log` reads the log all the same.
@@ -288,20 +288,21 @@ fn a_missing_tip_file_is_reported() {
 }
 
 #[test]
-fn op_log_warns_when_it_cannot_check_the_link_of_its_oldest_entry() {
+fn op_log_ends_with_code_5_when_the_entry_before_its_window_is_damaged() {
     let dir = repository();
     let last = last(dir.path());
     fs::write(entry_file(dir.path(), last - 1), "damaged").unwrap();
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.code, 5, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
     assert!(
         result.stderr.starts_with(&format!(
-            "stemma: warning: the link of the oldest shown entry to entry {} was not checked",
+            "stemma: the link of the oldest shown entry to entry {} cannot be checked",
             last - 1
         )),
         "{}",
         result.stderr
     );
     let result = run(dir.path(), &["op", "verify"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
 }

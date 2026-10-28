@@ -3,6 +3,8 @@
 mod common;
 
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use common::{entry_file, previous, repository, run, write_stub_entry, Dir};
@@ -88,13 +90,14 @@ fn the_newest_entry_comes_first_and_the_limit_cuts_the_old_ones() {
 
 #[test]
 fn the_limit_spares_an_entry_it_does_not_show() {
-    // The old entry is damaged, but the limit does not read it.
+    // The oldest entry is damaged, but the limit reads only the shown entry and the one before it.
     let dir = repository();
     snapshot(dir.path(), 2, "-", A);
+    snapshot(dir.path(), 3, A, B);
     fs::write(dir.path().join(".stemma/oplog/000000000001"), "damaged").unwrap();
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(result.stdout.starts_with("2  "), "{}", result.stdout);
+    assert!(result.stdout.starts_with("3  "), "{}", result.stdout);
 }
 
 #[test]
@@ -120,7 +123,7 @@ fn the_json_form_is_one_object_per_line() {
     assert_eq!(
         lines[0],
         format!(
-            "{{\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
+            "{{\"schema\":1,\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
              \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
@@ -128,7 +131,7 @@ fn the_json_form_is_one_object_per_line() {
         )
     );
     assert!(
-        lines[1].starts_with("{\"number\":1,")
+        lines[1].starts_with("{\"schema\":1,\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
             && lines[1].ends_with("\"branches\":[],\"purge_pending\":false,\"took_effect\":true}"),
         "{}",
@@ -151,7 +154,7 @@ fn a_gap_is_reported_and_nothing_is_listed() {
     let dir = repository();
     snapshot(dir.path(), 3, A, B);
     let result = run(dir.path(), &["op", "log"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr
@@ -170,7 +173,7 @@ fn an_empty_log_is_reported_and_nothing_is_listed() {
     fs::remove_file(dir.path().join(".stemma/oplog-tip")).unwrap();
     for args in [&["op", "log"][..], &["op", "log", "--json"][..]] {
         let result = run(dir.path(), args);
-        assert_eq!(result.code, 1);
+        assert_eq!(result.code, 5);
         assert!(
             result
                 .stderr
@@ -188,7 +191,7 @@ fn a_lost_last_entry_is_reported_by_the_tip_file_and_nothing_is_listed() {
     fs::remove_file(dir.path().join(".stemma/oplog/000000000001")).unwrap();
     for args in [&["op", "log"][..], &["op", "log", "--json"][..]] {
         let result = run(dir.path(), args);
-        assert_eq!(result.code, 1);
+        assert_eq!(result.code, 5);
         assert!(
             result.stderr.starts_with(
                 "stemma: the operation log ends at entry 0, but the tip file names entry 1"
@@ -206,7 +209,7 @@ fn a_damaged_entry_is_reported_and_nothing_is_listed() {
     snapshot(dir.path(), 2, "-", A);
     write_entry(dir.path(), 3, "time 1\nactor human daniel\n");
     let result = run(dir.path(), &["op", "log"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result.stderr.starts_with("stemma: the entry `") && result.stderr.contains("000000000003"),
         "{}",
@@ -452,13 +455,17 @@ fn the_limit_does_not_change_the_outcome_of_a_shown_entry() {
     assert_eq!(flags(dir.path(), &["-n", "2"]), ["true", "false"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn references_that_cannot_be_read_give_a_warning_and_the_outcome_of_the_chain() {
     let dir = repository();
     branch_move(dir.path(), 2, "-", A);
     branch_move(dir.path(), 3, A, B);
-    // A file of a branch that is not in canonical form.
-    fs::write(dir.path().join(".stemma/refs/heads/main"), "damaged").unwrap();
+    // A branch file that cannot be read: the storage fails, which is not damage (code 5 is for a
+    // file that is not in canonical form).
+    let branch = dir.path().join(".stemma/refs/heads/main");
+    fs::write(&branch, A).unwrap();
+    fs::set_permissions(&branch, fs::Permissions::from_mode(0o000)).unwrap();
     let result = run(dir.path(), &["op", "log", "--json"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
@@ -562,12 +569,12 @@ fn a_stub_and_a_purge_are_shown_without_ids() {
     let lines: Vec<&str> = result.stdout.lines().collect();
     assert_eq!(
         lines[0],
-        "{\"number\":4,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
+        "{\"schema\":1,\"number\":4,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
          \"operation\":\"purge\",\"commits\":2,\"stubs\":[[2,3]]}"
     );
     assert_eq!(
         lines[1],
-        "{\"number\":3,\"kind\":\"stub\",\"time\":1700000000,\"actor\":\"human daniel\"}"
+        "{\"schema\":1,\"number\":3,\"kind\":\"stub\",\"time\":1700000000,\"actor\":\"human daniel\"}"
     );
 }
 
@@ -597,7 +604,7 @@ fn a_purge_with_several_ranges_lists_each() {
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(
         result.stdout,
-        "{\"number\":6,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
+        "{\"schema\":1,\"number\":6,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
          \"operation\":\"purge\",\"commits\":3,\"stubs\":[[2,3],[5,5]]}\n"
     );
 }
@@ -612,7 +619,7 @@ fn a_stub_that_no_purge_lists_is_reported() {
     snapshot(dir.path(), 2, &first, A);
     write_stub_entry(dir.path(), 2, "stub\n");
     let result = run(dir.path(), &["op", "log"]);
-    assert_eq!(result.code, 1);
+    assert_eq!(result.code, 5);
     assert!(
         result
             .stderr
@@ -679,7 +686,11 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
     let result = run(dir.path(), &["op", "log", "--json"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     let lines: Vec<&str> = result.stdout.lines().collect();
-    assert!(lines[0].starts_with("{\"number\":5,"), "{}", result.stdout);
+    assert!(
+        lines[0].starts_with("{\"schema\":1,\"number\":5,"),
+        "{}",
+        result.stdout
+    );
     assert!(
         lines[0].ends_with("\"took_effect\":true}"),
         "{}",
@@ -687,7 +698,7 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
     );
     for (line, number) in [(3, 2), (4, 1)] {
         assert!(
-            lines[line].starts_with(&format!("{{\"number\":{number},")),
+            lines[line].starts_with(&format!("{{\"schema\":1,\"number\":{number},")),
             "{}",
             result.stdout
         );
@@ -695,6 +706,25 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
             lines[line].ends_with("\"took_effect\":null}"),
             "{}",
             result.stdout
+        );
+    }
+}
+
+#[test]
+fn a_corrupt_reference_is_damage_and_nothing_is_listed() {
+    for args in [vec!["op", "log"], vec!["op", "log", "--json"]] {
+        let dir = repository();
+        snapshot(dir.path(), 2, "-", A);
+        fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
+
+        let result = run(dir.path(), &args);
+
+        assert_eq!(result.code, 5, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "", "{args:?}");
+        assert!(
+            result.stderr.contains("could not read the references"),
+            "{}",
+            result.stderr
         );
     }
 }

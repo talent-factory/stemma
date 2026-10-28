@@ -1,7 +1,8 @@
 //! Arguments, the actor, and the commands.
 //!
 //! Exit codes: 0 for success, 1 for a command that fails, 2 for arguments that are wrong (the code
-//! of the argument parser), and 3 for a command that has done its work but could not finish: the
+//! of the argument parser), 4 for `diff --exit-code` when a file differs, 5 for damage, 6 for a
+//! held lock (both below), and 3 for a command that has done its work but could not finish: the
 //! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`, and
 //! `op restore`) writing the result failed after the work was made, or a `commit` moved one of
 //! its two pointers and not the other. A script must not remove or repeat what such a command
@@ -27,8 +28,18 @@
 //! An `op restore` writes its result before an error that follows a restore that was made, as
 //! `commit` does.
 //!
-//! Code 1 can leave two traces. A write that fails after its entry is in the operation log
-//! (`track`, `commit`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
+//! Two more codes split code 1 (ADR-018, [`FailureKind`]). Code 5 is damage: the log, a
+//! reference file, or an object is not as it must be, or the chain does not match an anchor; a
+//! retry does not help. Code 6 is a held lock, or a log whose writer lost every number race; a
+//! later call can succeed. Code 4 is not among them: `diff --exit-code` ends with it when a file
+//! differs. Code 3 takes precedence when a result exists but is incomplete or not durable (a
+//! pointer moved only partly, a flush failed, the output that alone names the result could not be
+//! written), whatever the cause was; a snapshot that came first and was followed by another
+//! failure keeps the code of that failure. Most errors of `init` and of opening a repository stay
+//! at 1.
+//!
+//! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
+//! log (`track`, `commit`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
@@ -59,8 +70,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::op_log;
+use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::diff::Edit;
+use stemma_core::failure::{Classify, FailureKind};
 use stemma_core::object::{ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
@@ -251,7 +263,7 @@ struct OpLogArgs {
     #[arg(short = 'n', long, value_name = "N", default_value = "20")]
     limit: NonZeroUsize,
 
-    /// Write one JSON object per line instead of text
+    /// Write one JSON object per line instead of text (the schema of ADR-018)
     #[arg(long)]
     json: bool,
 }
@@ -301,6 +313,10 @@ struct CommitArgs {
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
+
+    /// Write one JSON object instead of text (the schema of ADR-018)
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -319,6 +335,10 @@ struct StatusArgs {
     /// environment sets STEMMA_ACTOR. The snapshot that the command takes is made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<String>,
+
+    /// Write one JSON object instead of text (the schema of ADR-018)
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -488,6 +508,17 @@ enum CliError {
     },
     /// The operation log cannot be read.
     OpLog(OpLogError),
+    /// `op log` found damage in the entry before the oldest shown one, so the link of the shown
+    /// entry to it cannot be checked. Other reasons only give a warning.
+    OpLogUnchecked {
+        /// The number of the entry that cannot be read.
+        number: u64,
+        /// What is wrong with it.
+        reason: String,
+    },
+    /// `op log` found damage in the references that decide the outcome of the entries. Other
+    /// reasons only give a warning.
+    OpLogRefs(RefError),
     /// The entry that an anchor names is not in the log.
     AnchorMissing {
         /// The number of the entry.
@@ -526,9 +557,22 @@ enum CliError {
     },
 }
 
+/// The exit code of a failure of the given kind (ADR-018): 6 if a lock is held, 5 if the repository
+/// is damaged, 1 otherwise. Code 4 is taken by `diff --exit-code`.
+fn by_kind(kind: FailureKind) -> ExitCode {
+    match kind {
+        FailureKind::Locked => ExitCode::from(6),
+        FailureKind::Damaged => ExitCode::from(5),
+        FailureKind::Other => ExitCode::FAILURE,
+    }
+}
+
 impl CliError {
     /// The exit code of the error (see the module documentation).
     fn exit_code(&self) -> ExitCode {
+        // The order of the arms matters: the arms for code 3 come first, so that a result that is
+        // incomplete or not durable ends with 3 whatever the cause was, and the arms that call
+        // `by_kind` come after them.
         match self {
             Self::Init(InitError::NotDurable { .. })
             | Self::Track(TrackError::NotDurable { .. })
@@ -554,30 +598,32 @@ impl CliError {
             {
                 ExitCode::from(3)
             }
+            Self::Init(error) => by_kind(error.kind()),
+            Self::Open(error) => by_kind(error.kind()),
+            Self::Track(error) => by_kind(error.kind()),
+            Self::Commit(error) => by_kind(error.kind()),
+            Self::Status(error) => by_kind(error.kind()),
+            Self::Diff(error) => by_kind(error.kind()),
+            Self::Restore(error) => by_kind(error.kind()),
+            Self::OpLog(error) => by_kind(error.kind()),
+            Self::OpLogUnchecked { .. } => by_kind(FailureKind::Damaged),
+            Self::OpLogRefs(error) => by_kind(error.kind()),
+            Self::Purge(error) => by_kind(error.kind()),
+            Self::ApplyPurge(error) => by_kind(error.kind()),
+            Self::AnchorMissing { .. }
+            | Self::AnchorUnchained { .. }
+            | Self::AnchorMismatch { .. }
+            | Self::EmptyLog => ExitCode::from(5),
             Self::MissingActor
             | Self::EmptyActor
             | Self::Actor(_)
-            | Self::Init(_)
-            | Self::Open(_)
-            | Self::Track(_)
-            | Self::Commit(_)
-            | Self::Status(_)
             | Self::StatusOutput { .. }
-            | Self::Diff(_)
             | Self::TuiUnavailable
             | Self::Tui { .. }
             | Self::DiffOutput { .. }
-            | Self::Restore(_)
             | Self::RestoreOutput { .. }
-            | Self::Purge(_)
             | Self::PurgeOutput(_)
-            | Self::ApplyPurge(_)
-            | Self::OpLog(_)
-            | Self::AnchorMissing { .. }
-            | Self::AnchorUnchained { .. }
-            | Self::AnchorMismatch { .. }
             | Self::VerifyOutput(_)
-            | Self::EmptyLog
             | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
@@ -737,6 +783,16 @@ impl fmt::Display for CliError {
                 write!(f, "{made}, but the result could not be written: {source}")
             }
             Self::OpLog(error) => error.fmt(f),
+            Self::OpLogUnchecked { number, reason } => write!(
+                f,
+                "the link of the oldest shown entry to entry {number} cannot be checked, as the \
+                 entry is damaged: {reason}; `stemma op verify` checks the whole log"
+            ),
+            Self::OpLogRefs(error) => write!(
+                f,
+                "could not read the references, so the outcome of the newest entries is not \
+                 known: {error}"
+            ),
             Self::AnchorMissing { number } => write!(
                 f,
                 "the anchor names entry {number}, but the log has no such entry: the entry was \
@@ -1152,6 +1208,12 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     // after it, so it is shown too, and `tail` checks the stubs.
     let window = log.window(args.limit.get()).map_err(CliError::OpLog)?;
     if let Some((number, error)) = window.unchecked() {
+        if error.kind() == FailureKind::Damaged {
+            return Err(CliError::OpLogUnchecked {
+                number,
+                reason: error.to_string(),
+            });
+        }
         // A warning that cannot be written is dropped on purpose, as in `main`.
         let _ = writeln!(
             io::stderr(),
@@ -1203,6 +1265,9 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
                     current
                 }
             })
+        }
+        Err(error) if error.kind() == FailureKind::Damaged => {
+            return Err(CliError::OpLogRefs(error));
         }
         Err(error) => {
             // A warning that cannot be written is dropped on purpose, as in `main`.
@@ -1397,14 +1462,24 @@ fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
              used, and what changed since the stop is not in that commit"
         );
     }
-    finish_commit(result, out)
+    finish_commit_as(result, args.json, out)
 }
 
-/// Writes what `commit` did. If a directory could not be flushed, the result is written first, so
-/// that a script can read the commit ID from the output before it sees the error. A closed pipe
-/// ends the output quietly.
+/// The text form of [`finish_commit_as`], for tests.
+#[cfg(test)]
 fn finish_commit(result: Committed, out: &mut dyn Write) -> Result<(), CliError> {
-    let text = commit_text(&result);
+    finish_commit_as(result, false, out)
+}
+
+/// Writes what `commit` did, as text or as the JSON object of ADR-018. If a directory could not
+/// be flushed, the result is written first, so that a script can read the commit ID from the
+/// output before it sees the error. A closed pipe ends the output quietly.
+fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let text = if json {
+        commit_json(&result)
+    } else {
+        commit_text(&result)
+    };
     let committed = format!("{} on {}", result.commit, result.branch);
     let late = result.late;
     match out.write_all(text.as_bytes()) {
@@ -1439,7 +1514,7 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let result = repository
         .status(&actor, &AllowAll)
         .map_err(CliError::Status)?;
-    finish_status(result, out)
+    finish_status_as(result, args.json, out)
 }
 
 /// Shows the changes between two sides, named as `op log` names them. The core saves the tracked
@@ -1742,11 +1817,21 @@ fn push_line(text: &mut String, style: &str, mark: char, line: &str) {
     text.push_str(line_end);
 }
 
-/// Writes the status. If the snapshot could not be flushed, the status is written first and the
-/// error comes after it. A closed pipe ends the output quietly, as for `op log`, and the error of
-/// flushing stays.
+/// The text form of [`finish_status_as`], for tests.
+#[cfg(test)]
 fn finish_status(status: Status, out: &mut dyn Write) -> Result<(), CliError> {
-    let text = status_text(&status);
+    finish_status_as(status, false, out)
+}
+
+/// Writes the status, as text or as the JSON object of ADR-018. If the snapshot could not be
+/// flushed, the status is written first and the error comes after it. A closed pipe ends the
+/// output quietly, as for `op log`, and the error of flushing stays.
+fn finish_status_as(status: Status, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let text = if json {
+        status_json(&status)
+    } else {
+        status_text(&status)
+    };
     let entry = status.snapshot.as_ref().map(|saved| saved.entry.number());
     let late = status.snapshot.and_then(|saved| saved.late);
     match out.write_all(text.as_bytes()) {
@@ -1827,6 +1912,50 @@ fn escape_path(path: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// The status as one JSON object and a newline (`schema`, ADR-018): `clean`, `changes` (a list of
+/// `kind` and `path`), `untracked`, and `leftovers`. A path is a plain JSON string, not escaped by
+/// [`escape_path`].
+fn status_json(status: &Status) -> String {
+    let paths = |paths: &[String]| {
+        paths
+            .iter()
+            .map(|path| op_log::quote(path))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let changes = status
+        .changes
+        .iter()
+        .map(|change| {
+            format!(
+                "{{\"kind\":\"{}\",\"path\":{}}}",
+                change.kind.letter(),
+                op_log::quote(&change.path)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let clean =
+        status.changes.is_empty() && status.untracked.is_empty() && status.leftovers.is_empty();
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"clean\":{clean},\"changes\":[{changes}],\"untracked\":[{}],\
+         \"leftovers\":[{}]}}\n",
+        paths(&status.untracked),
+        paths(&status.leftovers)
+    )
+}
+
+/// The commit as one JSON object and a newline (`schema`, ADR-018): `commit`, `branch`, and
+/// `resumed`.
+fn commit_json(result: &Committed) -> String {
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"commit\":{},\"branch\":{},\"resumed\":{}}}\n",
+        op_log::quote(&result.commit.to_string()),
+        op_log::quote(&result.branch.to_string()),
+        result.resumed
+    )
 }
 
 /// The one line that reports the commit: `Committed` for a new commit, `Finished the commit` if
@@ -2100,7 +2229,7 @@ mod tests {
     }
 
     #[test]
-    fn a_purge_that_leaves_its_journal_ends_with_code_3_and_one_that_did_not_start_with_code_1() {
+    fn a_purge_that_leaves_its_journal_ends_with_code_3_and_one_that_did_not_start_by_its_kind() {
         use stemma_core::repository::{PurgeFailure, PurgeStep};
         let path = PathBuf::from(".stemma/purge-pending");
         let code = |error: ApplyPurgeError| CliError::ApplyPurge(error).exit_code();
@@ -2157,7 +2286,7 @@ mod tests {
                     holder: stemma_core::refs::LockHolder::Unknown,
                 }
             ))),
-            ExitCode::FAILURE
+            ExitCode::from(6)
         );
     }
 
@@ -2196,15 +2325,18 @@ mod tests {
             }),
             ExitCode::from(3)
         );
+        assert_eq!(
+            code(RestoreError::NoSuchEntry { number: 9 }),
+            ExitCode::FAILURE
+        );
         for error in [
             RestoreError::MoveFailed {
                 entry: entry.clone(),
                 source: locked(),
             },
-            RestoreError::NoSuchEntry { number: 9 },
             RestoreError::Refs(locked()),
         ] {
-            assert_eq!(code(error), ExitCode::FAILURE);
+            assert_eq!(code(error), ExitCode::from(6), "a held lock is retryable");
         }
         assert_eq!(
             code(RestoreError::SnapshotNotDurable {
@@ -2498,6 +2630,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// With `--json`, the object comes first and the error of the flush follows (ADR-018): the
+    /// standard output holds exactly one complete object, and the code is 3.
+    #[test]
+    fn a_commit_with_json_that_is_not_durable_writes_one_object_and_ends_with_code_3() {
+        let (dir, mut result, _) = committed("commit-late-json");
+        result.late = Some(not_durable());
+        let expected = commit_json(&result);
+        let mut out = Vec::new();
+
+        let error = finish_commit_as(result, true, &mut out).unwrap_err();
+
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
+        assert!(expected.ends_with("}\n"), "{expected}");
+        assert_eq!(expected.lines().count(), 1, "{expected}");
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_status_with_json_that_is_not_durable_writes_one_object_and_ends_with_code_3() {
+        let (dir, status) = a_status_not_durable("status-late-json");
+        let expected = status_json(&status);
+        let mut out = Vec::new();
+
+        let error = finish_status_as(status, true, &mut out).unwrap_err();
+
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
+        assert!(expected.ends_with("}\n"), "{expected}");
+        assert_eq!(expected.lines().count(), 1, "{expected}");
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_closed_pipe_ends_a_commit_quietly_but_keeps_the_late_error() {
         let (dir, result, _) = committed("commit-pipe");
@@ -2746,7 +2911,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_of_reading_after_a_snapshot_is_code_1_and_names_its_entry() {
+    fn a_failure_of_reading_after_a_snapshot_is_damage_and_names_its_entry() {
         let (dir, _) = repository_with_entry("status-read");
         let repository = Repository::open(&dir).unwrap();
         let actor: Actor = "human daniel".parse().unwrap();
@@ -2772,7 +2937,7 @@ mod tests {
 
         let error = CliError::Status(repository.status(&actor, &AllowAll).unwrap_err());
 
-        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert_eq!(error.exit_code(), ExitCode::from(5));
         assert!(
             error.to_string().contains("saved before as entry"),
             "{error}"
@@ -2834,17 +2999,18 @@ mod tests {
             }),
             StatusError::Ignore(stemma_core::ignore::IgnoreError::Changed { path: dir.clone() }),
             StatusError::Walk(TrackError::InvalidName { path: "x".into() }),
-            StatusError::Refs {
-                source: RefError::Locked {
-                    path: dir.clone(),
-                    holder: stemma_core::refs::LockHolder::Unknown,
-                },
-                saved: None,
-            },
         ] {
             let error = CliError::Status(error);
             assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
         }
+        let locked = CliError::Status(StatusError::Refs {
+            source: RefError::Locked {
+                path: dir.clone(),
+                holder: stemma_core::refs::LockHolder::Unknown,
+            },
+            saved: None,
+        });
+        assert_eq!(locked.exit_code(), ExitCode::from(6), "{locked}");
         let walk = CliError::Status(StatusError::Walk(TrackError::InvalidName {
             path: "x".into(),
         }));
@@ -2878,6 +3044,52 @@ mod tests {
             operand: "b3:x".to_owned(),
         });
         assert_eq!(unknown.exit_code(), ExitCode::from(1));
+    }
+
+    /// Code 3 comes before the kinds: a snapshot that moved the working copy and could not flush it
+    /// ends with 3 also when the cause alone would be a held lock (6).
+    #[test]
+    fn code_3_takes_precedence_over_a_lock_in_every_command_that_has_it() {
+        let (dir, entry) = repository_with_entry("precedence");
+        let locked = || RefError::Locked {
+            path: dir.clone(),
+            holder: stemma_core::refs::LockHolder::Unknown,
+        };
+        let not_durable = || UpdateError::NotDurable {
+            entry: Box::new(entry.clone()),
+            source: locked(),
+        };
+        let snapshot = || SnapshotError::Update(not_durable());
+        for error in [
+            CliError::Diff(DiffError::Snapshot(snapshot())),
+            CliError::Track(TrackError::NotDurable {
+                added: Vec::new(),
+                error: Box::new(not_durable()),
+            }),
+            CliError::ApplyPurge(ApplyPurgeError::Snapshot(snapshot())),
+        ] {
+            assert_eq!(error.exit_code(), ExitCode::from(3), "{error}");
+        }
+        // The same causes without the flush are only a lock: code 6.
+        let error = CliError::Diff(DiffError::Snapshot(SnapshotError::Update(
+            UpdateError::Refs(locked()),
+        )));
+        assert_eq!(error.exit_code(), ExitCode::from(6), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_failures_of_open_and_init_have_the_code_of_their_kind() {
+        let path = PathBuf::from("/x");
+        let damaged = CliError::Open(OpenError::MalformedFormat { path: path.clone() });
+        assert_eq!(damaged.exit_code(), ExitCode::from(5), "{damaged}");
+        for error in [
+            CliError::Open(OpenError::NotARepository { path: path.clone() }),
+            CliError::Open(OpenError::MissingFormat { path: path.clone() }),
+            CliError::Init(InitError::AlreadyExists { path }),
+        ] {
+            assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
+        }
     }
 
     #[test]
@@ -2917,16 +3129,21 @@ mod tests {
                 parents: Vec::new(),
                 tip: None,
             },
-            CommitError::Update(UpdateError::MoveFailed {
-                entry: Box::new(entry.clone()),
-                source: RefError::Locked {
-                    path: dir.clone(),
-                    holder: stemma_core::refs::LockHolder::Unknown,
-                },
-            }),
         ] {
             assert_eq!(CliError::Commit(error).exit_code(), ExitCode::FAILURE);
         }
+        let locked = CommitError::Update(UpdateError::MoveFailed {
+            entry: Box::new(entry.clone()),
+            source: RefError::Locked {
+                path: dir.clone(),
+                holder: stemma_core::refs::LockHolder::Unknown,
+            },
+        });
+        assert_eq!(
+            CliError::Commit(locked).exit_code(),
+            ExitCode::from(6),
+            "a held lock is retryable"
+        );
         // A pointer moved: code 3, and the text says what to do.
         let partly = CliError::Commit(CommitError::Update(UpdateError::PartlyMoved {
             entry: Box::new(entry.clone()),
@@ -3169,8 +3386,6 @@ mod tests {
             CliError::Open(OpenError::NotARepository {
                 path: PathBuf::from("."),
             }),
-            CliError::OpLog(OpLogError::Gap { missing: 2 }),
-            CliError::EmptyLog,
             CliError::Write {
                 entry: 1,
                 source: io_error(),
@@ -3186,6 +3401,13 @@ mod tests {
         ];
         for error in failed {
             assert_eq!(error.exit_code(), ExitCode::FAILURE, "{error}");
+        }
+        for error in [
+            CliError::OpLog(OpLogError::Gap { missing: 2 }),
+            CliError::EmptyLog,
+            CliError::AnchorUnchained { number: 2 },
+        ] {
+            assert_eq!(error.exit_code(), ExitCode::from(5), "damage: {error}");
         }
         let made = [
             CliError::Init(InitError::NotDurable {

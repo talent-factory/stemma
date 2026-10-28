@@ -572,6 +572,8 @@ Die Kommandozeile bringt das, was eine Person tippt (\type{./a.txt}, \type{dir/}
 in diese Form;
 ein leeres Argument lässt sie unverändert, damit der Kern es ablehnt (\type{normalize_path}).
 Synopsis und Exit-Codes stehen in der Befehlsreferenz.
+Welche Ausgaben ein Skript lesen darf, legt ADR-018 fest: die JSON-Form, die Zeile \type{anchor}
+und die Exit-Codes, nicht der Text der Zeilen.
 
 Der Kern baut den neuen Baum aus den verfolgten Dateien und den Dateien an den Pfaden
 und ersetzt den Working-Copy-Commit wie ein Snapshot (\type{Repository::track}).
@@ -944,7 +946,7 @@ Dafür sorgt die Sperre der Referenzen, die Datei \type{.stemma/refs.lock} (ADR-
 Ein Befehl, der schreibt, hält sie von seinem ersten Objekt bis zu seiner letzten Zeigerbewegung,
 ein Purge von seinem Plan bis zu seinem Ende.
 Ein zweiter Befehl, der in dieser Zeit schreiben will, wartet nicht:
-Er bricht sofort mit Exit-Code 1 ab,
+Er bricht sofort mit Exit-Code 6 ab,
 und die Meldung nennt den Prozess, der die Sperre hält, wenn sie ihn kennt.
 Eine einzige Sperre für alle Zeiger ist grob,
 aber ein Befehl hält sie meist nur kurz, und die Regel bleibt einfach.
@@ -1979,7 +1981,7 @@ wenn noch ein Zeiger zurück muss \stopxcell
 \startinfobox
 {\bf Wenn \type{status} die Sperre nicht übernimmt.}
 \startitemize
-\item Nennt \type{refs.lock} einen anderen Rechner, bricht \type{status} mit Exit-Code 1 ab,
+\item Nennt \type{refs.lock} einen anderen Rechner, bricht \type{status} mit Exit-Code 6 ab,
 und die Meldung nennt den Rechner und den Prozess.
 Läuft dort kein Befehl mehr, ist die Datei von Hand zu entfernen;
 läuft einer, wartet man auf sein Ende.
@@ -2107,7 +2109,7 @@ the log was changed and its chain computed again since the anchor was taken
 \stoptyping
 
 Wie oben steht jede umbrochene Meldung in der Ausgabe auf einer Zeile.
-Der Befehl endet mit Exit-Code 1 und gibt keinen neuen Anker aus.
+Der Befehl endet mit Exit-Code 5 und gibt keinen neuen Anker aus.
 Die Meldung nennt den Eintrag des Ankers, nicht den geänderten,
 denn der Anker zeigt nur, dass sich unter den Einträgen 1 bis 9 etwas geändert hat.
 Welcher Eintrag es war, zeigt erst ein Vergleich mit einer Sicherung von \type{.stemma}.
@@ -2131,7 +2133,7 @@ oder das Log nach $n$ abschneiden, und der Anker hält trotzdem.
 Dagegen helfen erst Signaturen der Akteure (ADR-004) oder ein Hub, der den letzten Eintrag
 bestätigt (Phase 5).
 \item Nennt der Anker einen Eintrag, den das Log nicht hat,
-oder einen Eintrag aus der Zeit vor der Kette, lehnt der Befehl ebenfalls mit Exit-Code 1 ab.
+oder einen Eintrag aus der Zeit vor der Kette, lehnt der Befehl ebenfalls mit Exit-Code 5 ab.
 Die Meldung nennt als zweite Ursache einen Anker eines anderen Repositories.
 \item Der Anker deckt nur das Log.
 Bewegt ein Agent einen Zeiger ausserhalb des Logs,

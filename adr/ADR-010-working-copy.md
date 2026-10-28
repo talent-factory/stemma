@@ -131,7 +131,9 @@ art, not a template (ADR-015).
     moved the pointer and could not flush it is a result with a flush error, as for `commit`,
     and the command ends with code 3 after it has written the status (`stemma status`). A
     failure of reading after a snapshot, and an output that cannot be written, end with code 1
-    and name the entry of the snapshot; code 1 is the code of a command that only reads.
+    and name the entry of the snapshot; code 1 is the code of a command that only reads. ADR-018
+    refines this: a failure of reading that finds damage (a missing or corrupt object) ends with
+    code 5, and a held lock with code 6.
   - The references are read one after the other and not under a lock, so a process that moves a
     pointer in between can make HEAD and the working-copy commit come from two states.
   - `op log` still takes no snapshot, because the snapshot would change the log it is about to

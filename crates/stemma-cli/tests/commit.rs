@@ -12,7 +12,9 @@ use stemma_core::refs::BranchName;
 use stemma_core::repository::Repository;
 use stemma_core::store::ObjectStore;
 
-use common::{operations, repository, run, stemma, track_ok, write, Dir, Run};
+use common::{
+    hold_the_lock, operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR,
+};
 
 fn commit(dir: &Path, message: &str) -> Run {
     run(dir, &["commit", "-m", message, "--actor", "human alice"])
@@ -448,4 +450,68 @@ fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
     assert!(operations(dir.path())[0].contains("\"operation\":\"commit\""));
     let repository = Repository::open(dir.path()).unwrap();
     assert!(repository.refs().branch(&main_branch()).unwrap().is_some());
+}
+
+/// A lock that a command of another host holds is not taken over (ADR-008). The commit ends with
+/// code 6, so that a script knows that it can try again later (ADR-018), and it changes nothing.
+#[test]
+fn a_held_lock_ends_with_code_6_and_changes_nothing() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    let entries = operations(dir.path()).len();
+    hold_the_lock(dir.path());
+
+    let result = run(dir.path(), &["commit", "-m", "Add a", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 6, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+    assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
+    assert_eq!(operations(dir.path()).len(), entries);
+    let repository = Repository::open(dir.path()).unwrap();
+    assert!(repository.refs().branch(&main_branch()).unwrap().is_none());
+}
+
+/// With `--json` a failure writes nothing to the standard output (ADR-018).
+#[test]
+fn a_held_lock_with_json_writes_no_json() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    hold_the_lock(dir.path());
+
+    let result = run(
+        dir.path(),
+        &["commit", "-m", "Add a", "--actor", ACTOR, "--json"],
+    );
+
+    assert_eq!(result.code, 6, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
+}
+
+#[test]
+fn json_names_the_commit_and_the_branch() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+
+    let result = run(
+        dir.path(),
+        &["commit", "-m", "Add a", "--actor", ACTOR, "--json"],
+    );
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stdout.starts_with("{\"schema\":1,\"commit\":\"b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result
+            .stdout
+            .ends_with("\",\"branch\":\"main\",\"resumed\":false}\n"),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(result.stdout.lines().count(), 1);
 }

@@ -6,6 +6,10 @@ use std::fmt::{self, Display, Write};
 use stemma_core::oplog::{Change, Entry, Moved, Outcome, Purge, Record};
 use stemma_core::refs::Head;
 
+/// The `schema` of every JSON object the program writes (ADR-018). One number covers all of them:
+/// removing, renaming, or retyping a field of any object raises it.
+pub const JSON_SCHEMA: u32 = 1;
+
 /// The value of a pointer as the log writes it: `-` if it does not exist.
 pub(crate) fn value<T: Display>(value: Option<&T>) -> String {
     value.map_or_else(|| "-".to_owned(), ToString::to_string)
@@ -132,7 +136,7 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
 }
 
 /// A string as a JSON string literal.
-fn quote(text: &str) -> String {
+pub fn quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for c in text.chars() {
@@ -167,7 +171,7 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// operation did not change them, and `branches` is a list, empty if no branch changed. A pointer
 /// that did not exist or does not exist any more has `null` as its old or new value.
 ///
-/// Every line starts with `number` and `kind`: `change`, `stub`, or `purge`. A stub has only
+/// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, or `purge`. A stub has only
 /// `time` and `actor` besides; a purge has `time`, `actor`, `operation`, `commits`, and `stubs`, a
 /// list of ranges `[start, end]` (ADR-014). The fields above are those of a change, which has
 /// `purge_pending` before `took_effect` as well: `true` if a purge lists it and has not replaced
@@ -176,7 +180,7 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
     match entry.record() {
         Record::Change(change) => change_json(entry, change, outcome, pending),
         Record::Stub(_) => format!(
-            "{{\"number\":{},\"kind\":\"stub\",\"time\":{},\"actor\":{}}}",
+            "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"stub\",\"time\":{},\"actor\":{}}}",
             entry.number(),
             entry.time(),
             quote(&entry.actor().to_string())
@@ -192,7 +196,7 @@ fn purge_json(entry: &Entry, purge: &Purge) -> String {
         .map(|(start, end)| format!("[{start},{end}]"))
         .collect();
     format!(
-        "{{\"number\":{},\"kind\":\"purge\",\"time\":{},\"actor\":{},\"operation\":\"purge\",\
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"purge\",\"time\":{},\"actor\":{},\"operation\":\"purge\",\
          \"commits\":{},\"stubs\":[{}]}}",
         entry.number(),
         entry.time(),
@@ -234,7 +238,7 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
         })
         .collect();
     format!(
-        "{{\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
          \"head\":{head},\
          \"working_copy\":{working_copy},\"branches\":[{}],\"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",
