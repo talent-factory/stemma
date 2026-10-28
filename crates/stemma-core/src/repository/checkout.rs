@@ -33,7 +33,8 @@ use crate::store::{
 };
 
 /// Whether the file systems of the platform usually ignore the case of names (macOS and Windows).
-/// Two paths of the new tree that differ only in case then name one file.
+/// Paths with the same [`fold`] key are then treated as one file, among the entries of the new
+/// tree and against the files that the checkout removes.
 const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
 
 /// The files of a tree, by path.
@@ -105,7 +106,7 @@ impl CheckoutPlan {
 /// The files that a checkout removes, to ask whether a path is one of them.
 struct Removed {
     exact: BTreeSet<String>,
-    /// The same paths folded (see [`fold`]), used where the file system ignores the case of
+    /// The same paths under [`removal_key`], used where the file system ignores the case of
     /// names: the new tree may name a file `readme` where the old one had `README`.
     folded: BTreeSet<String>,
 }
@@ -114,12 +115,12 @@ impl Removed {
     fn new(paths: &[String]) -> Self {
         Self {
             exact: paths.iter().cloned().collect(),
-            folded: paths.iter().map(|path| fold(path)).collect(),
+            folded: paths.iter().map(|path| removal_key(path)).collect(),
         }
     }
 
     fn contains(&self, path: &str) -> bool {
-        self.exact.contains(path) || (CASE_INSENSITIVE && self.folded.contains(&fold(path)))
+        self.exact.contains(path) || (CASE_INSENSITIVE && self.folded.contains(&removal_key(path)))
     }
 }
 
@@ -144,7 +145,7 @@ impl Repository {
     /// or `.git` or an alias of one (see `is_metadata_name`), [`CheckoutError::Name`] for a name
     /// that the layer knows Windows cannot hold (only on Windows), [`CheckoutError::Excluded`] for
     /// a new path that `.stemmaignore` excludes, [`CheckoutError::CaseCollision`] for two paths
-    /// that name one file where the case of names is ignored, [`CheckoutError::ThroughLink`] for a
+    /// that name one file where the case of names is ignored (after Unicode folding), [`CheckoutError::ThroughLink`] for a
     /// path below a link, [`CheckoutError::InTheWay`] for a file or a directory that is not
     /// tracked, and [`CheckoutError::Snapshot`] for a tree or a blob that the store lacks or that
     /// is damaged, and for a file that cannot be inspected. [`CheckoutError::Ignore`] is the error
@@ -847,9 +848,12 @@ fn entries_of(files: &Files) -> BTreeSet<String> {
     entries
 }
 
-/// The key under which a file system that ignores case sees a path: the full Unicode case folding
-/// (`ß` and `SS`, `ς` and `σ`), and the canonical decomposition, so that `é` in one code point
-/// and in two are the same name.
+/// A conservative key for the paths of the new tree: the union of what the supported platforms
+/// treat as one name, so no single file system sees exactly this key. It is the full Unicode case
+/// folding (`ß` and `SS`, `ς` and `σ`) of the canonical decomposition, so that `é` in one code
+/// point and in two are the same name. The decomposition runs again after the folding, as the
+/// folding can produce characters that are not decomposed. A pair that only the key equates is
+/// refused although a platform (NTFS) could hold it; the plan errs on the safe side.
 fn fold(path: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     caseless::default_case_fold_str(&path.nfd().collect::<String>())
@@ -857,8 +861,35 @@ fn fold(path: &str) -> String {
         .collect()
 }
 
-/// The first two entries that differ only in case, if there are any. A file `A` and a directory
-/// `a` collide as two files do, and so do `A/x` and `a/y`, which share the directory.
+/// The key for the files that the checkout removes. A hit there means that an existing file is
+/// the one the old tree had, so the key must not be wider than what the file system equates. On
+/// Windows it is the upper case of each character that has a single upper-case character, as
+/// the upcase table of NTFS maps it: `é` in one code point and in two, and `ß` and `SS`, stay
+/// apart. Elsewhere it is [`fold`], which APFS matches.
+fn removal_key(path: &str) -> String {
+    if cfg!(windows) {
+        simple_upper(path)
+    } else {
+        fold(path)
+    }
+}
+
+/// The path with every character replaced by its upper case, if that is one character.
+fn simple_upper(path: &str) -> String {
+    path.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(single), None) => single,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
+/// The first two entries with the same [`fold`] key, that is, entries that differ only in case or
+/// in Unicode form. A file `A` and a
+/// directory `a` collide as two files do, and so do `A/x` and `a/y`, which share the directory.
 fn case_collision(entries: &BTreeSet<String>) -> Option<(String, String)> {
     let mut seen: HashMap<String, &str> = HashMap::new();
     for path in entries {
@@ -930,7 +961,8 @@ pub enum CheckoutError {
         /// The line of the pattern.
         line: NonZeroUsize,
     },
-    /// Two entries of the new tree name one file on a file system that ignores case.
+    /// Two entries of the new tree name one file on a file system that ignores case, after Unicode
+    /// case folding and canonical decomposition.
     CaseCollision {
         /// The path.
         path: String,
@@ -1019,7 +1051,7 @@ impl fmt::Display for CheckoutError {
             ),
             Self::CaseCollision { path, other } => write!(
                 f,
-                "`{}` and `{}` differ only in case, and this system treats them as one file",
+                "`{}` and `{}` differ only in case or Unicode form, and this system treats them as one file",
                 path.escape_debug(),
                 other.escape_debug()
             ),
@@ -1547,10 +1579,62 @@ mod tests {
     }
 
     #[test]
-    fn a_removal_is_found_under_its_folded_name() {
-        let removed = Removed::new(&["Stra\u{df}e".to_owned()]);
+    fn the_fold_keeps_apart_what_no_platform_equates() {
+        assert_eq!(fold("Stra\u{df}e"), fold("STRASSE"));
+        assert_eq!(fold("\u{1e9e}"), fold("ss"));
+        assert_eq!(fold("a\u{323}\u{307}"), fold("a\u{307}\u{323}"));
+        assert_eq!(fold("\u{212b}"), fold("\u{e5}"));
+        assert_ne!(fold("i"), fold("\u{130}"));
+        assert_ne!(fold("\u{131}"), fold("I"));
+    }
+
+    #[test]
+    fn directory_parts_are_folded_too() {
+        for pair in [
+            ["Stra\u{df}e/x", "STRASSE/y"],
+            ["\u{e9}/x", "e\u{301}/y"],
+            ["STRASSE", "stra\u{df}e/y"],
+        ] {
+            let files: Files = pair
+                .into_iter()
+                .map(|path| (path.to_owned(), (FileMode::File, Blob::new("").id())))
+                .collect();
+            assert!(case_collision(&entries_of(&files)).is_some(), "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn a_removal_is_found_under_its_key() {
+        let paths = ["Stra\u{df}e".to_owned()];
+        let removed = Removed::new(&paths);
         assert!(removed.contains("Stra\u{df}e"));
-        assert_eq!(removed.contains("STRASSE"), CASE_INSENSITIVE);
+        assert!(removed.folded.contains(&removal_key("Stra\u{df}e")));
+        assert_eq!(
+            removed.contains("STRASSE"),
+            CASE_INSENSITIVE && !cfg!(windows)
+        );
+        assert_eq!(removed.contains("STRA\u{df}E"), CASE_INSENSITIVE);
+    }
+
+    #[test]
+    fn the_removal_key_of_windows_is_not_wider_than_ntfs() {
+        assert_eq!(simple_upper("readme"), simple_upper("README"));
+        assert_ne!(simple_upper("Stra\u{df}e"), simple_upper("STRASSE"));
+        assert_ne!(simple_upper("\u{e9}"), simple_upper("e\u{301}"));
+    }
+
+    #[test]
+    fn a_name_in_another_unicode_form_replaces_the_old_one() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        checkout(
+            &dir,
+            &repository,
+            &[plain("Stra\u{df}e", "1"), plain("old", "0")],
+            &[plain("STRASSE/x", "2"), plain("old", "0")],
+        )
+        .unwrap();
+        assert_eq!(read(&dir, "STRASSE/x"), "2");
     }
 
     #[test]

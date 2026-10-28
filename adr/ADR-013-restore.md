@@ -60,7 +60,8 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
     restore finishes the job (see below).
   - It keeps the duties of ADR-005: it rejects the names that are dangerous on Windows, it
     detects names that collide on a file system that ignores case, and it never writes through a
-    link. Names that collide only in Unicode normalization form are an open item below.
+    link. Names that collide in case or in Unicode form are found by the plan (see the checked
+    item below).
 - **The order is: entry, directory, pointers** *(confirmed)*. Under the lock of the references the
   restore checks, writes the entry, flushes it, brings the directory to the target tree, and
   moves the pointers last (ADR-011). A stop after the entry leaves the old state, and the entry
@@ -147,11 +148,18 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] Windows and file systems that ignore case: the functions for Windows names and for case
       collisions are tested on every platform, but the Windows branch of the name check has never
       run end to end, and no test ran on Windows (STEMMA-33).
-- [x] Where names ignore case, the plan folds every path (full Unicode case folding and canonical
-      decomposition) before it compares them, for the collisions of the new tree and for the
-      files that the checkout removes (STEMMA-102). `Straße` and `STRASSE`, and `é` in one code
-      point and in two, name one file. A platform that keeps the normalization form apart (Windows)
-      is refused for a pair that it could hold; the plan errs on the safe side.
+- [x] Where names ignore case, the plan folds every path of the new tree (full Unicode case
+      folding of the canonical decomposition) before it compares them (STEMMA-102). This needs
+      the crates `caseless` and `unicode-normalization`, the dependency that ADR-012 asked for.
+      The key is deliberately wider than any one file system: it is the union of what the
+      supported platforms treat as one name. On macOS (APFS) it is exact: `Straße` and `STRASSE`,
+      and `é` in one code point and in two, name one file. On Windows (NTFS) it refuses pairs
+      that the file system could hold, as NTFS keeps the normalization form and multi-character
+      foldings (`ß`, ligatures) apart; the plan errs on the safe side. The files that the
+      checkout removes are matched with a narrower key on Windows (the upper case of each
+      character, as NTFS maps it), because a hit there says that an existing file is the old one,
+      and a key that is too wide would pass a plan that the apply cannot finish. Windows has not
+      run end to end (STEMMA-33), so that part is open until it does.
 - [ ] A file that appears between the last check and the rename of a write is replaced. The
       window is as short as it can be with `rename`. Closing it needs a rename that fails when the
       target exists (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL`
