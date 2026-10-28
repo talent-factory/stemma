@@ -20,7 +20,7 @@ use crate::oplog::{
     Pointer, Record,
 };
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
-use crate::{Actor, Authorizer};
+use crate::{Actor, Allowed, Authorizer};
 
 /// The operation that the log records for a restore.
 const OPERATION: &str = "restore";
@@ -114,6 +114,8 @@ struct Prepared {
     branches: Vec<(BranchName, Option<CommitId>)>,
     /// The plan, or `None` if every pointer has its old value already.
     plan: Option<RestorePlan>,
+    /// The proof that the authorizer allowed the restore, for the lock.
+    allowed: Allowed,
 }
 
 impl Prepared {
@@ -217,7 +219,7 @@ impl Repository {
         // would take the lock of this call for one of an unfinished command.
         let lock = self
             .refs_store()
-            .lock_writer()
+            .lock_writer(&prepared.allowed)
             .map_err(RestoreError::Refs)?;
         let (snapshot, mut snapshot_late) = match self.snapshot_locked(&lock, actor, authorizer) {
             Ok(entry) => (entry, None),
@@ -317,7 +319,8 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Prepared, RestoreError> {
         let operation = OperationName::new(OPERATION).expect("`restore` is a valid operation name");
-        self.authorize(actor, authorizer, &operation, &format!("entry {number}"))
+        let allowed = self
+            .authorize(actor, authorizer, &operation, &format!("entry {number}"))
             .map_err(RestoreError::Update)?;
         let entries = self.oplog().entries().map_err(RestoreError::Log)?;
         let Some(position) = entries.iter().position(|entry| entry.number() == number) else {
@@ -358,6 +361,7 @@ impl Repository {
             working_copy,
             branches,
             plan: None,
+            allowed,
         };
         let (moves, _) = self
             .refs_store()

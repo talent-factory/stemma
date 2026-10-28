@@ -21,7 +21,7 @@ use crate::repository::{
     now, raise_format, Repository, SnapshotError, UpdateError, CHAIN_FORMAT_VERSION,
 };
 use crate::store::{scratch_left, ObjectStore, StoreError};
-use crate::{Actor, Authorizer};
+use crate::{Actor, Allowed, Authorizer};
 
 /// What a purge did, or what `--resume` finished.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -527,7 +527,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
         stop: Option<Stop>,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
-        let blob = self
+        let (blob, allowed) = self
             .check_purge(blob, actor, authorizer)
             .map_err(ApplyPurgeError::Plan)?;
         let pending = |error| match error {
@@ -544,7 +544,7 @@ impl Repository {
                 }
                 other => ApplyPurgeError::Snapshot(other),
             })?;
-        let purged = self.start_purge(blob, actor, stop, pending);
+        let purged = self.start_purge(blob, actor, &allowed, stop, pending);
         match (purged, snapshot) {
             (Ok(purged), snapshot) => Ok(purged.map(|purged| Purged { snapshot, ..purged })),
             (Err(error), Some(snapshot)) => Err(ApplyPurgeError::AfterSnapshot {
@@ -560,10 +560,11 @@ impl Repository {
         &self,
         blob: BlobId,
         actor: &Actor,
+        allowed: &Allowed,
         stop: Option<Stop>,
         pending: impl Fn(RefError) -> ApplyPurgeError,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
-        let lock = self.refs_store().lock_purge().map_err(pending)?;
+        let lock = self.refs_store().lock_purge(allowed).map_err(pending)?;
         let left = scratch_left(&self.metadata_dir());
         let (plan, planner) = self.plan_blob(blob).map_err(ApplyPurgeError::Plan)?;
         let paths = planner.paths();
@@ -664,9 +665,10 @@ impl Repository {
             Err(error) => Err(ApplyPurgeError::Unreadable(Box::new(error))),
         };
         let asked = read()?;
-        self.authorize_purge(actor, authorizer, &asked.plan.blob.to_string())
+        let allowed = self
+            .authorize_purge(actor, authorizer, &asked.plan.blob.to_string())
             .map_err(ApplyPurgeError::Plan)?;
-        let lock = self.refs_store().take_over_lock().map_err(stopped(
+        let lock = self.refs_store().take_over_lock(&allowed).map_err(stopped(
             PurgeStep::Journal,
             &[],
             PurgeFailure::Refs,

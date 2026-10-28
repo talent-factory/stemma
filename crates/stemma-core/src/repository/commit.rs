@@ -108,12 +108,12 @@ impl Repository {
             Head::Branch(name) => name,
             Head::Detached(commit) => return Err(CommitError::DetachedHead(commit)),
         };
-        self.authorize(actor, authorizer, &operation, name.as_str())?;
+        let allowed = self.authorize(actor, authorizer, &operation, name.as_str())?;
         // One lock from the first object of the snapshot to the last move, so that no purge
         // comes in between and deletes an object that the commit names (ADR-014).
         let lock = self
             .refs_store()
-            .lock_writer()
+            .lock_writer(&allowed)
             .map_err(|error| CommitError::Update(UpdateError::Refs(error)))?;
         let saved = self.snapshot_locked(&lock, actor, authorizer)?;
         #[cfg(test)]
@@ -871,7 +871,10 @@ mod tests {
         let entries = repository.oplog().entries().unwrap().len();
         // The moves use the working-copy commit that the caller saw before the first commit.
         let stale = repository.refs.update_branch_and_working_copy_after(
-            &repository.refs.lock_writer().unwrap(),
+            &repository
+                .refs
+                .lock_writer(&crate::Allowed::granted())
+                .unwrap(),
             &BranchMove {
                 name: &main(),
                 expected: Some(first.commit),
@@ -950,7 +953,10 @@ mod tests {
     ) -> Result<Logged<Entry, OpLogError>, RefError> {
         let operation = OperationName::new("commit").unwrap();
         repository.refs.update_branch_and_working_copy_after(
-            &repository.refs.lock_writer().unwrap(),
+            &repository
+                .refs
+                .lock_writer(&crate::Allowed::granted())
+                .unwrap(),
             &BranchMove {
                 name: &main(),
                 expected: None,
@@ -1148,7 +1154,10 @@ mod tests {
         ));
         repository
             .move_working_copy(
-                &repository.refs.lock_writer().unwrap(),
+                &repository
+                    .refs
+                    .lock_writer(&crate::Allowed::granted())
+                    .unwrap(),
                 &OperationName::new("restore").unwrap(),
                 pending.next,
                 pending.working,

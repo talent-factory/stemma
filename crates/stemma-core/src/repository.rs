@@ -58,7 +58,7 @@ use crate::store::{
     StoreError, INIT_STAGING_PREFIX,
 };
 use crate::verify::RefVerifyError;
-use crate::{Actor, Authorizer, Decision};
+use crate::{Actor, Allowed, Authorizer};
 
 /// The version of the repository format that `init` writes: the operation log with the hash
 /// chain (ADR-011, STEMMA-41).
@@ -272,16 +272,16 @@ impl Repository {
     ) -> Result<Self, InitError> {
         let path = path.as_ref();
         let target = path.join(METADATA_DIR);
-        if authorizer.authorize(
+        let Some(allowed) = Allowed::ask(
+            authorizer,
             actor,
             &OperationName::new("init").expect("`init` is a valid operation name"),
             &path.display().to_string(),
-        ) == Decision::Deny
-        {
+        ) else {
             return Err(InitError::Denied {
                 path: path.to_path_buf(),
             });
-        }
+        };
         create_dirs_synced(path)?;
         if exists(&target).map_err(InitError::io("inspect", &target))? {
             return Err(InitError::AlreadyExists { path: target });
@@ -289,7 +289,7 @@ impl Repository {
         let staging = create_staging(path, &mut || {
             format!("{INIT_STAGING_PREFIX}{}", unique_temp_name())
         })?;
-        install(&staging, &target, options, actor)?;
+        install(&staging, &target, options, actor, &allowed)?;
         flush_directory(path).map_err(|source| InitError::NotDurable {
             path: path.to_path_buf(),
             source,
@@ -581,8 +581,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
-        self.authorize(actor, authorizer, operation, name.as_str())?;
-        let lock = self.refs.lock_writer()?;
+        let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
+        let lock = self.refs.lock_writer(&allowed)?;
         let outcome =
             self.refs
                 .update_branch_after(&lock, name, expected, new, &self.objects, || {
@@ -621,8 +621,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
-        self.authorize(actor, authorizer, operation, "HEAD")?;
-        let lock = self.refs.lock_writer()?;
+        let allowed = self.authorize(actor, authorizer, operation, "HEAD")?;
+        let lock = self.refs.lock_writer(&allowed)?;
         let outcome = self
             .refs
             .set_head_after(&lock, head, &self.objects, |old| {
@@ -662,8 +662,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
-        self.authorize(actor, authorizer, operation, "working-copy")?;
-        let lock = self.refs.lock_writer()?;
+        let allowed = self.authorize(actor, authorizer, operation, "working-copy")?;
+        let lock = self.refs.lock_writer(&allowed)?;
         self.move_working_copy(&lock, operation, expected, new, actor)
     }
 
@@ -694,20 +694,19 @@ impl Repository {
         outcome.into_result()
     }
 
+    /// Asks the authorizer, and returns the proof that it allowed `operation`, which the locks of
+    /// the references require.
     fn authorize(
         &self,
         actor: &Actor,
         authorizer: &dyn Authorizer,
         operation: &OperationName,
         target: &str,
-    ) -> Result<(), UpdateError> {
-        match authorizer.authorize(actor, operation, target) {
-            Decision::Allow => Ok(()),
-            Decision::Deny => Err(UpdateError::Denied {
-                operation: operation.to_string(),
-                target: target.to_owned(),
-            }),
-        }
+    ) -> Result<Allowed, UpdateError> {
+        Allowed::ask(authorizer, actor, operation, target).ok_or_else(|| UpdateError::Denied {
+            operation: operation.to_string(),
+            target: target.to_owned(),
+        })
     }
 }
 
@@ -1053,6 +1052,7 @@ fn install(
     target: &Path,
     options: &InitOptions,
     actor: &Actor,
+    _allowed: &Allowed,
 ) -> Result<(), InitError> {
     let result = fill(staging, options, actor).and_then(|()| move_into_place(staging, target));
     match result {
@@ -1639,6 +1639,7 @@ mod tests {
     use crate::store::ObjectStore;
     use crate::testutil::TempDir;
     use crate::AllowAll;
+    use crate::Decision;
 
     struct DenyAll;
 
@@ -2129,7 +2130,14 @@ mod tests {
         // `fill` writes a file that must not exist yet, so it fails at the first step.
         fs::write(staging.join("format"), b"x").unwrap();
         let target = dir.path().join(".stemma");
-        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
+        let error = install(
+            &staging,
+            &target,
+            &InitOptions::default(),
+            &actor(),
+            &Allowed::granted(),
+        )
+        .unwrap_err();
         assert!(
             matches!(error, InitError::Io { operation, .. } if operation == "write the file"),
             "{error}"
@@ -2146,7 +2154,14 @@ mod tests {
         let target = dir.path().join(".stemma");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("marker"), b"keep").unwrap();
-        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
+        let error = install(
+            &staging,
+            &target,
+            &InitOptions::default(),
+            &actor(),
+            &Allowed::granted(),
+        )
+        .unwrap_err();
         assert!(matches!(error, InitError::AlreadyExists { .. }), "{error}");
         assert!(!staging.exists());
         assert_eq!(fs::read(target.join("marker")).unwrap(), b"keep");
@@ -2159,7 +2174,14 @@ mod tests {
         fs::create_dir(&staging).unwrap();
         let target = dir.path().join(".stemma");
         fs::write(&target, b"keep").unwrap();
-        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
+        let error = install(
+            &staging,
+            &target,
+            &InitOptions::default(),
+            &actor(),
+            &Allowed::granted(),
+        )
+        .unwrap_err();
         assert!(matches!(error, InitError::AlreadyExists { .. }), "{error}");
         assert!(!staging.exists());
         assert_eq!(fs::read(&target).unwrap(), b"keep");
@@ -2171,7 +2193,14 @@ mod tests {
         let staging = dir.path().join("staging");
         fs::create_dir(&staging).unwrap();
         let target = dir.path().join("missing").join(".stemma");
-        let error = install(&staging, &target, &InitOptions::default(), &actor()).unwrap_err();
+        let error = install(
+            &staging,
+            &target,
+            &InitOptions::default(),
+            &actor(),
+            &Allowed::granted(),
+        )
+        .unwrap_err();
         assert!(
             matches!(error, InitError::Io { operation, .. } if operation.starts_with("move")),
             "{error}"
@@ -2199,6 +2228,7 @@ mod tests {
             &dir.path().join(".stemma"),
             &InitOptions::default(),
             &actor(),
+            &Allowed::granted(),
         )
         .unwrap_err();
         fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2338,6 +2368,7 @@ mod tests {
             &dir.path().join(".stemma"),
             &InitOptions::default(),
             &actor(),
+            &Allowed::granted(),
         )
         .unwrap_err();
         assert!(!matches!(error, InitError::Leftover { .. }), "{error}");
@@ -3795,6 +3826,7 @@ mod tests {
             &dir.path().join(".stemma"),
             &InitOptions::default(),
             &actor(),
+            &Allowed::granted(),
         )
         .unwrap_err();
         assert!(!staging.exists());

@@ -23,7 +23,7 @@ use crate::object::{
 use crate::oplog::{Entry, OperationName};
 use crate::refs::{RefError, WriteLock};
 use crate::store::{Batch, ObjectStore, StoreError};
-use crate::{Actor, Authorizer};
+use crate::{Actor, Allowed, Authorizer};
 
 /// The operation that the log records for a snapshot.
 const OPERATION: &str = "snapshot";
@@ -114,18 +114,19 @@ impl Repository {
         authorizer: &dyn Authorizer,
         additions: impl FnOnce(&Path) -> Result<Vec<Tracked>, E>,
     ) -> Result<Replaced, E> {
-        self.authorize(actor, authorizer, operation, "working-copy")
+        let allowed = self
+            .authorize(actor, authorizer, operation, "working-copy")
             .map_err(SnapshotError::Update)?;
-        let lock = self.lock_writer()?;
+        let lock = self.lock_writer(&allowed)?;
         self.replace_locked(&lock, operation, actor, additions)
     }
 
     /// Takes the lock of the references for a command that writes, before its first object
     /// (ADR-014). The lock refuses while the journal of a purge exists, and a purge cannot start
     /// while it is held, so no purge deletes an object that the command saves and names.
-    pub(super) fn lock_writer(&self) -> Result<WriteLock, SnapshotError> {
+    pub(super) fn lock_writer(&self, allowed: &Allowed) -> Result<WriteLock, SnapshotError> {
         self.refs_store()
-            .lock_writer()
+            .lock_writer(allowed)
             .map_err(|error| SnapshotError::Update(UpdateError::Refs(error)))
     }
 

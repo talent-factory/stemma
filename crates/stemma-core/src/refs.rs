@@ -36,6 +36,7 @@ use crate::store::{
     ObjectStore, StoreError,
 };
 use crate::verify::{RefVerifyError, VerifyError};
+use crate::Allowed;
 
 /// The longest branch name in bytes. A file name is limited by the file system, which is 255 bytes
 /// for the usual ones, and this stays below that. The path of a branch has the directory of the
@@ -1204,7 +1205,7 @@ impl FsRefStore {
     ///
     /// Returns [`RefError::Locked`] or [`RefError::PurgePending`], and [`RefError::Io`] if the
     /// lock file cannot be made.
-    pub(crate) fn lock_writer(&self) -> Result<WriteLock, RefError> {
+    pub(crate) fn lock_writer(&self, _allowed: &Allowed) -> Result<WriteLock, RefError> {
         self.require_root()?;
         self.lock().map(|lock| WriteLock { _lock: lock })
     }
@@ -1216,7 +1217,7 @@ impl FsRefStore {
     ///
     /// Returns [`RefError::Locked`] or [`RefError::PurgePending`], and [`RefError::Io`] if the
     /// lock file cannot be made.
-    pub(crate) fn lock_purge(&self) -> Result<PurgeLock, RefError> {
+    pub(crate) fn lock_purge(&self, _allowed: &Allowed) -> Result<PurgeLock, RefError> {
         self.require_root()?;
         self.lock().map(|lock| PurgeLock { _lock: lock })
     }
@@ -1236,7 +1237,7 @@ impl FsRefStore {
     /// [`RefError::Locked`] if a running process holds the guard, if the file names another host,
     /// if this command cannot take the guard and the file has the form of a guarded lock, or if
     /// another process took the lock in between.
-    pub(crate) fn take_over_lock(&self) -> Result<PurgeLock, RefError> {
+    pub(crate) fn take_over_lock(&self, _allowed: &Allowed) -> Result<PurgeLock, RefError> {
         self.require_root()?;
         let lock = self.acquire(Takeover::Any)?;
         remove_scratch(&self.root);
@@ -3082,7 +3083,7 @@ mod tests {
         // and leaves the file of the first alone.
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        let writer = refs.lock_writer().unwrap();
+        let writer = refs.lock_writer(&Allowed::granted()).unwrap();
         let live = dir.path().join("tmp").join("1-0-live");
         fs::write(&live, b"in progress").unwrap();
         let other = FsRefStore::new(dir.path());
@@ -3109,7 +3110,7 @@ mod tests {
         let stale = dir.path().join("tmp").join("1-0-stale");
         fs::create_dir_all(stale.parent().unwrap()).unwrap();
         fs::write(&stale, b"secret").unwrap();
-        let lock = refs.take_over_lock().unwrap();
+        let lock = refs.take_over_lock(&Allowed::granted()).unwrap();
         assert!(!stale.exists());
         drop(lock);
     }
@@ -3784,7 +3785,7 @@ mod tests {
         );
         // `--resume` and `--abort` of a purge do not take a lock whose guard is held either.
         assert!(matches!(
-            refs.take_over_lock(),
+            refs.take_over_lock(&Allowed::granted()),
             Err(RefError::Locked {
                 holder: LockHolder::Running { .. },
                 ..
@@ -3849,7 +3850,7 @@ mod tests {
         // Another spelling of the same directory finds the lock as well, and the guard is not
         // opened a second time.
         let other = FsRefStore::new(dir.path().join("."));
-        let result = other.take_over_lock().map(drop);
+        let result = other.take_over_lock(&Allowed::granted()).map(drop);
         assert!(
             matches!(
                 result,
@@ -3937,7 +3938,7 @@ mod tests {
             assert_eq!(fs::read_to_string(&lock).unwrap(), content);
         }
         // `--resume` and `--abort` take any lock whose guard is free: the one the purge left.
-        let taken = refs.take_over_lock().unwrap();
+        let taken = refs.take_over_lock(&Allowed::granted()).unwrap();
         assert_eq!(
             LockFile::read(&lock).unwrap().map(|lock| lock.process),
             Some(pid)
@@ -3978,7 +3979,7 @@ mod tests {
             )
         );
         assert!(matches!(
-            refs.take_over_lock(),
+            refs.take_over_lock(&Allowed::granted()),
             Err(RefError::Locked {
                 holder: LockHolder::Elsewhere { .. },
                 ..
@@ -4022,12 +4023,12 @@ mod tests {
         let guarded = stale_lock(4_000_000);
         fs::write(&lock, &guarded).unwrap();
         let change = refs.update_branch(&name("main"), None, id, &objects);
-        let resume = refs.take_over_lock().map(drop);
+        let resume = refs.take_over_lock(&Allowed::granted()).map(drop);
         let guarded_after = fs::read_to_string(&lock);
         fs::write(&lock, b"4711-0-0123456789abcdef").unwrap();
         let older = refs.update_branch(&name("main"), None, id, &objects);
         let older_after = fs::read_to_string(&lock);
-        let older_resume = refs.take_over_lock().map(drop);
+        let older_resume = refs.take_over_lock(&Allowed::granted()).map(drop);
         let older_resumed = lock.exists();
         fs::set_permissions(&guard, fs::Permissions::from_mode(0o644)).unwrap();
 
@@ -4107,7 +4108,7 @@ mod tests {
         // after a crash before the purge wrote it, the next change takes the lock over.
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.lock_purge().unwrap().leak();
+        refs.lock_purge(&Allowed::granted()).unwrap().leak();
         let lock = dir.path().join("refs.lock");
         assert_eq!(
             LockFile::read(&lock).unwrap().map(|lock| lock.process),
@@ -4437,13 +4438,13 @@ mod tests {
         let (dir, _objects, refs) = setup();
         let path = dir.path().join("refs.lock");
         let listed = |path: &Path| held_locks().iter().any(|(held, _)| held == path);
-        let lock = refs.lock_writer().unwrap();
+        let lock = refs.lock_writer(&Allowed::granted()).unwrap();
         assert!(listed(&path));
         drop(lock);
         assert!(!listed(&path));
         assert!(!path.exists());
         // An interruption removes the file of a lock that the process holds.
-        let lock = refs.lock_writer().unwrap();
+        let lock = refs.lock_writer(&Allowed::granted()).unwrap();
         let mut own: Vec<_> = held_locks()
             .iter()
             .filter(|(held, _)| held == &path)
@@ -4476,7 +4477,7 @@ mod tests {
 
     /// The lock of a writer, for a step that needs it.
     fn writer(refs: &FsRefStore) -> WriteLock {
-        refs.lock_writer().unwrap()
+        refs.lock_writer(&Allowed::granted()).unwrap()
     }
 
     /// A step that records that it ran and returns its number.
@@ -4597,7 +4598,7 @@ mod tests {
         assert!(!lock_file.exists());
         // A lock that another writer holds is not taken, and its file is not removed.
         fs::write(&lock_file, b"other").unwrap();
-        let held = refs.lock_writer().map(|_| ());
+        let held = refs.lock_writer(&Allowed::granted()).map(|_| ());
         assert!(matches!(held, Err(RefError::Locked { .. })));
         assert_eq!(fs::read(&lock_file).unwrap(), b"other");
     }

@@ -30,7 +30,7 @@ use crate::object::{
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
 use crate::refs::{BranchName, Head, RefError};
 use crate::store::{FsObjectStore, ObjectStore, StoreError};
-use crate::{Actor, ActorRef, Authorizer};
+use crate::{Actor, ActorRef, Allowed, Authorizer};
 
 /// The operation that the authorizer is asked for.
 const OPERATION: &str = "purge";
@@ -134,21 +134,22 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<PurgePlan, PurgeError> {
-        let blob = self.check_purge(blob, actor, authorizer)?;
+        let (blob, _) = self.check_purge(blob, actor, authorizer)?;
         self.plan_blob(blob).map(|(plan, _)| plan)
     }
 
-    /// Refuses an agent, asks the authorizer, and finds the blob: what comes before a plan.
+    /// Refuses an agent, asks the authorizer, and finds the blob: what comes before a plan. The
+    /// proof of the authorizer goes with the blob, for a purge that goes on to write.
     fn check_purge(
         &self,
         blob: ObjectId,
         actor: &Actor,
         authorizer: &dyn Authorizer,
-    ) -> Result<BlobId, PurgeError> {
+    ) -> Result<(BlobId, Allowed), PurgeError> {
         refuse_agent(actor)?;
-        self.authorize_purge(actor, authorizer, &blob.to_string())?;
+        let allowed = self.authorize_purge(actor, authorizer, &blob.to_string())?;
         match self.objects().resolve_blob(&blob) {
-            Ok(Some(found)) => Ok(found),
+            Ok(Some(found)) => Ok((found, allowed)),
             Ok(None) => Err(PurgeError::NoSuchBlob {
                 id: blob,
                 found: None,
@@ -170,7 +171,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
         target: &str,
-    ) -> Result<(), PurgeError> {
+    ) -> Result<Allowed, PurgeError> {
         let operation = OperationName::new(OPERATION).expect("`purge` is a valid operation name");
         self.authorize(actor, authorizer, &operation, target)
             .map_err(PurgeError::Update)
