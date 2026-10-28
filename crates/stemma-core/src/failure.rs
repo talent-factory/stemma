@@ -323,6 +323,7 @@ impl Classify for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
+            | Self::UnsupportedKind { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }
     }

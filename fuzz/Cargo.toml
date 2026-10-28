@@ -32,6 +32,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "commit2"
+path = "fuzz_targets/commit2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "actor"
 path = "fuzz_targets/actor.rs"
 test = false

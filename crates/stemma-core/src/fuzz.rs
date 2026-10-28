@@ -16,7 +16,7 @@
 use std::error::Error;
 
 use crate::index::Index;
-use crate::object::{Commit, Tree};
+use crate::object::{Commit, Commit2, Tree};
 use crate::oplog::Entry;
 use crate::Actor;
 
@@ -31,6 +31,14 @@ pub fn tree(input: &[u8]) {
 /// A commit (`Commit::parse`).
 pub fn commit(input: &[u8]) {
     match Commit::parse(input) {
+        Ok(commit) => assert_eq!(commit.encode(), input, "a second spelling was accepted"),
+        Err(error) => check_rejection(&error),
+    }
+}
+
+/// A commit with a list of trees (`Commit2::parse`).
+pub fn commit2(input: &[u8]) {
+    match Commit2::parse(input) {
         Ok(commit) => assert_eq!(commit.encode(), input, "a second spelling was accepted"),
         Err(error) => check_rejection(&error),
     }
@@ -118,12 +126,15 @@ pub(crate) mod tests {
     fn every_seed_is_read_and_the_checks_hold_for_it_and_its_prefixes() {
         type Check = fn(&[u8]);
         type Accepts = fn(&[u8]) -> bool;
-        let targets: [(&str, Check, Accepts); 5] = [
+        let targets: [(&str, Check, Accepts); 6] = [
             ("tree", super::tree, |b| {
                 crate::object::Tree::parse(b).is_ok()
             }),
             ("commit", super::commit, |b| {
                 crate::object::Commit::parse(b).is_ok()
+            }),
+            ("commit2", super::commit2, |b| {
+                crate::object::Commit2::parse(b).is_ok()
             }),
             ("actor", super::actor, |b| {
                 std::str::from_utf8(b).is_ok_and(|s| s.parse::<crate::Actor>().is_ok())

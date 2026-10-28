@@ -26,7 +26,7 @@ use std::io;
 use crate::change::{sample_change, ChangeId};
 use crate::index::{FileMode, Index, IndexParseError};
 use crate::object::{
-    Blob, BlobId, Commit, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
+    Blob, BlobId, Commit, Commit2, CommitId, CommitParseError, ObjectId, Tree, TreeEntry, TreeId,
     TreeParseError,
 };
 use crate::oplog::{
@@ -508,6 +508,23 @@ fn random_commit(rng: &mut Rng) -> Commit {
     .expect("distinct parents")
 }
 
+/// A `commit2` with three, five, or seven trees, and the other fields of a random commit.
+fn random_commit2(rng: &mut Rng) -> Commit2 {
+    let base = random_commit(rng);
+    let trees = (0..3 + 2 * rng.below(3))
+        .map(|_| random_tree(rng).id())
+        .collect();
+    Commit2::try_new(
+        trees,
+        base.parents().to_vec(),
+        base.change(),
+        base.author().clone(),
+        base.timestamp(),
+        base.message(),
+    )
+    .expect("an odd number of trees and distinct parents")
+}
+
 /// A branch name made of a few parts, some of them invalid; the names that the rule rejects are
 /// dropped.
 fn random_branch_name(rng: &mut Rng) -> BranchName {
@@ -866,7 +883,9 @@ fn entry_line(error: &EntryParseError) -> Option<usize> {
 
 fn commit_line(error: &CommitParseError) -> Option<usize> {
     match error {
-        CommitParseError::NotUtf8 { .. } | CommitParseError::Commit(_) => None,
+        CommitParseError::NotUtf8 { .. }
+        | CommitParseError::Commit(_)
+        | CommitParseError::Commit2(_) => None,
         CommitParseError::Malformed { line, .. }
         | CommitParseError::InvalidObjectId { line, .. }
         | CommitParseError::InvalidChangeId { line, .. }
@@ -1012,6 +1031,54 @@ fn the_commit_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
             Err(error) => {
                 tally.rejected += 1;
                 // A missing header is reported at the line where it was expected: the one after the end.
+                check_rejection(
+                    &error,
+                    commit_line(&error),
+                    line_count(&input) + 1,
+                    &input,
+                    &context,
+                );
+            }
+        }
+    }
+    assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+}
+
+#[test]
+fn every_commit2_the_code_can_build_is_read_back() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 30));
+    for case in 0..cases() {
+        let context = format!("seed {seed}, case {case}");
+        let commit = random_commit2(&mut rng);
+        let bytes = commit.encode();
+        let again =
+            Commit2::parse(&bytes).unwrap_or_else(|e| panic!("{context}: {e} for {commit:?}"));
+        assert_eq!(again, commit, "{context}");
+        assert_eq!(again.encode(), bytes, "{context}");
+        assert_eq!(again.id(), commit.id(), "{context}");
+    }
+}
+
+#[test]
+fn the_commit2_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 31));
+    let valid: Vec<Vec<u8>> = (0..64).map(|_| random_commit2(&mut rng).encode()).collect();
+    let mut tally = Tally::default();
+    for case in 0..cases() * 5 {
+        let context = format!("seed {seed}, case {case}");
+        let input = arbitrary_input(&mut rng, &valid);
+        match Commit2::parse(&input) {
+            Ok(commit) => {
+                tally.accepted += 1;
+                assert_eq!(
+                    commit.encode(),
+                    input,
+                    "{context}: a second spelling was accepted: {:?}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+            Err(error) => {
+                tally.rejected += 1;
                 check_rejection(
                     &error,
                     commit_line(&error),
