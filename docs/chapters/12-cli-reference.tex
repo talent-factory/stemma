@@ -457,7 +457,11 @@ und ein Pfad, dessen Schreibweise nicht der auf dem Datenträger entspricht
 \type{A.txt}, und der Baum hielte die Datei zweimal), beenden den Befehl mit Exit-Code 1, bevor sich
 etwas ändert, ebenso ein offener Purge. Dasselbe gilt für eine Spezialdatei (Gerät, Socket, Pipe)
 oder einen Namen ohne UTF-8 unter einem genannten Verzeichnis und für einen Namen, den ein Baum
-ablehnt: Der Befehl nennt den Pfad und ändert nichts. Namen, die auf \type{.stemma} hinauslaufen,
+ablehnt: Der Befehl nennt den Pfad und ändert nichts.
+Unterscheidet sich der Name nur in Gross- und Kleinschreibung, nennt er die richtige Schreibweise
+relativ zur Wurzel; läuft er in einem Unterverzeichnis und liegt der Pfad darunter,
+nennt er sie zusätzlich so, wie sie von dort zu schreiben ist.
+Namen, die auf \type{.stemma} hinauslaufen,
 überspringt er unter einem Verzeichnis ohne Meldung; ein genannter Pfad mit so einem Namen ist
 dagegen ein Fehler. Dasselbe gilt für \type{.git}, die Metadaten von Git:
 Sie fehlen immer, auch ohne Muster, und ein genannter Pfad mit einem Teil \type{.git} ist ein
@@ -1161,6 +1165,9 @@ Wer \type{.stemma} schreiben kann, kann alle späteren Hashes und die Datei \typ
 neu berechnen, und \type{op verify} ohne Anker meldet dann nichts. Nur ein Anker, der
 ausserhalb des Repositories liegt, zeigt eine solche Änderung. Die Einträge vor der Kette
 deckt sie nicht ab.
+Nennt die Datei \type{oplog-tip} den Eintrag vor dem letzten, was \type{op verify} noch
+hinnimmt, so deckt sie den letzten Eintrag nicht, und der Anker nennt ihn trotzdem.
+Der Anker hängt allein an der Kette.
 
 {\bf Beispiele.}
 
