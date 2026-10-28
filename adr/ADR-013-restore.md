@@ -101,8 +101,9 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   like every command that changes a repository (ADR-002). The authorizer is asked for the
   operation `restore` first, with the entry as the target; the snapshot that follows asks its
   own question, `snapshot`, as it does for every command.
-  The risk level of ADR-004 is not decided here: moving a branch back is a branch move, and the
-  level follows the one that ADR-004 gives to those.
+  The risk level of the restore is 2 (ADR-004, decided in STEMMA-160): it moves refs and writes
+  files in the working copy, so a change to it needs two agents and a human maintainer.
+  Only the purge, which removes history, is level 3.
 
 ## Consequences
 
@@ -126,7 +127,7 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
       other entries moved it afterwards. Whether the command should warn, and show the entries
       in between, is open.
 - [ ] A restore of an entry whose old value is a commit with a conflict (phase 3).
-- [ ] The risk level of a restore in ADR-004.
+- [x] The risk level of a restore in ADR-004: level 2 (STEMMA-161).
 - [ ] A dry run does not take the snapshot, so a change that is not saved yet is not in its plan.
       The real run can find a conflict that the dry run did not, and replaces a file with such a
       change (it is in the snapshot). The plan does not say which files have unsaved changes.
