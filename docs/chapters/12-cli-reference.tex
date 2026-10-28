@@ -1247,10 +1247,12 @@ Scheitert das Schreiben der Dateien, nachdem der Eintrag im Log steht, ist das e
 Exit-Code 1 (bei einer gehaltenen Sperre 6):
 Der Eintrag nennt ein Restore, das nicht stattfand (\type{op log} markiert ihn
 mit \type{!}), kein Zeiger hat sich bewegt, und die schon geschriebenen Dateien bleiben;
-der nächste Snapshot sichert sie als Änderung des Akteurs.
+ein Snapshot sichert davon nur die Dateien, die der Working-Copy-Commit verfolgt,
+und übersieht jede Datei, die nur das Ziel hat.
 Dasselbe gilt, wenn nach den Dateien schon der erste Zeiger scheitert: Die Dateien haben
 den Stand des Ziels, der Working-Copy-Commit zeigt noch auf den bisherigen.
-In beiden Fällen holt derselbe Aufruf noch einmal das Restore nach.
+In beiden Fällen holt derselbe Aufruf noch einmal das Restore nach,
+und zwar vor jedem anderen Befehl, der einen Snapshot macht.
 Er sichert die geschriebenen Dateien zuerst in einem Snapshot (die Ausgabe nennt ihn),
 lässt Dateien, die schon den Inhalt und den Modus des Ziels haben, wie sie sind
 und bewegt die Zeiger.
