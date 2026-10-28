@@ -1,6 +1,7 @@
 # Build output and tools
 target/
 .claude/
+.worktrees/
 .headroom/
 .serena/
 .vscode/

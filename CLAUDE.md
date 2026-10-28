@@ -52,6 +52,15 @@ Source files under `docs/` (ConTeXt chapters, Markdown) are read by humans and c
 - `just doc-lines` (part of `just ci`) checks the length and the trailing whitespace of the lines that differ from `main`.
 - Apply the rule to every line you write or change. When a passage is touched anyway, bring its paragraph into line; do not reformat whole files that a slice does not touch.
 
+## Stemma in this repository
+
+Git stays the single source of truth; `stemma` runs next to it as the example of the book. Call
+`stemma` only when the human asks for it. The commands to call at the start, in between, and at
+the end of a task, the exit codes, and the rule for Git worktrees are in
+`docs/agents/using-stemma.md`. Do not call `stemma` in a Git worktree until phase 3: it would
+open the `.stemma` of the root, or, with a `stemma init` of its own, lose its history when the
+worktree is removed.
+
 ## Agent skills
 
 ### Issue tracker
