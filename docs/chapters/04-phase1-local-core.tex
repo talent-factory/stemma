@@ -2349,6 +2349,10 @@ weil jeder Stub den Hash des Rumpfs behält, den er ersetzt (\in{Abschnitt}[sec:
 und die Meldung nennt ihn, denn ein Commit darf keinen Elter zweimal nennen.
 \item Ein beschädigter Baum oder Commit hält den Plan an, denn er könnte den Blob nennen.
 Ein Rest, dessen Elter fehlt, hält ihn ebenfalls an, und die Meldung nennt den Rest.
+\item Einem Commit mit einer Liste von Bäumen (\type{commit2}) kann der Plan noch nicht folgen.
+Findet er einen im Speicher, hält er an und meldet ihn als Schaden, statt ihn zu überspringen,
+denn einer seiner Bäume könnte den Blob nennen.
+In Phase~1 schreibt kein Befehl ein solches Objekt.
 \item Ein Objekt, das zwischen dem Auflisten des Speichers und dem Lesen seines Kopfs verschwindet,
 nennt nichts mehr und wird übersprungen.
 Verschwindet es erst danach, hält der Plan an.

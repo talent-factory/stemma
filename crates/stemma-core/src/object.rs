@@ -934,11 +934,8 @@ impl Commit {
         timestamp: i64,
         message: impl Into<String>,
     ) -> Result<Self, CommitError> {
-        let mut seen = HashSet::with_capacity(parents.len());
-        for parent in &parents {
-            if !seen.insert(*parent) {
-                return Err(CommitError::DuplicateParent(*parent));
-            }
+        if let Some(parent) = first_duplicate(&parents) {
+            return Err(CommitError::DuplicateParent(parent));
         }
         Ok(Self {
             tree,
@@ -1027,16 +1024,14 @@ impl Commit {
     /// form, the seconds are a decimal integer without a plus sign or leading zeros, and the
     /// actor line is the [`Display`](std::fmt::Display) form of [`Actor`].
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = format!("tree {}\n", self.tree);
-        for parent in &self.parents {
-            out.push_str(&format!("parent {parent}\n"));
-        }
-        out.push_str(&format!("change {}\n", self.change));
-        out.push_str(&format!("author {}\n", self.author));
-        out.push_str(&format!("time {}\n", self.timestamp));
-        out.push('\n');
-        out.push_str(&self.message);
-        out.into_bytes()
+        encode_commit(
+            std::slice::from_ref(&self.tree),
+            &self.parents,
+            self.change,
+            &self.author,
+            self.timestamp,
+            &self.message,
+        )
     }
 
     /// Returns the object ID of this commit.
@@ -1294,6 +1289,38 @@ impl Commit {
     }
 }
 
+/// Returns the first parent that is listed a second time.
+fn first_duplicate(parents: &[CommitId]) -> Option<CommitId> {
+    let mut seen = HashSet::with_capacity(parents.len());
+    parents.iter().copied().find(|parent| !seen.insert(*parent))
+}
+
+/// Writes the body of a `commit` (one tree) or of a `commit2` (a list of trees): a `tree` line for
+/// each tree, a `parent` line for each parent, the lines `change`, `author`, and `time`, an empty
+/// line, and the message.
+fn encode_commit(
+    trees: &[TreeId],
+    parents: &[CommitId],
+    change: ChangeId,
+    author: &Actor,
+    timestamp: i64,
+    message: &str,
+) -> Vec<u8> {
+    let mut out = String::new();
+    for tree in trees {
+        out.push_str(&format!("tree {tree}\n"));
+    }
+    for parent in parents {
+        out.push_str(&format!("parent {parent}\n"));
+    }
+    out.push_str(&format!("change {change}\n"));
+    out.push_str(&format!("author {author}\n"));
+    out.push_str(&format!("time {timestamp}\n"));
+    out.push('\n');
+    out.push_str(message);
+    out.into_bytes()
+}
+
 /// The fields that the headers of a `commit` and of a `commit2` have in common.
 struct Parts {
     trees: Vec<TreeId>,
@@ -1443,11 +1470,8 @@ impl Commit2 {
         if trees.len() < 3 || trees.len().is_multiple_of(2) {
             return Err(Commit2Error::TreeCount(trees.len()));
         }
-        let mut seen = HashSet::with_capacity(parents.len());
-        for parent in &parents {
-            if !seen.insert(*parent) {
-                return Err(Commit2Error::DuplicateParent(*parent));
-            }
+        if let Some(parent) = first_duplicate(&parents) {
+            return Err(Commit2Error::DuplicateParent(parent));
         }
         Ok(Self {
             trees,
@@ -1492,19 +1516,14 @@ impl Commit2 {
     /// Returns the canonical encoding: that of a [`Commit`], except that the first header is a
     /// run of `tree <id>` lines, one for each tree, in the order of the list.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = String::new();
-        for tree in &self.trees {
-            out.push_str(&format!("tree {tree}\n"));
-        }
-        for parent in &self.parents {
-            out.push_str(&format!("parent {parent}\n"));
-        }
-        out.push_str(&format!("change {}\n", self.change));
-        out.push_str(&format!("author {}\n", self.author));
-        out.push_str(&format!("time {}\n", self.timestamp));
-        out.push('\n');
-        out.push_str(&self.message);
-        out.into_bytes()
+        encode_commit(
+            &self.trees,
+            &self.parents,
+            self.change,
+            &self.author,
+            self.timestamp,
+            &self.message,
+        )
     }
 
     /// Returns the object ID of this commit. The kind `commit2` is part of the hashed header, so

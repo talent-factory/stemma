@@ -149,7 +149,11 @@ them.
   The type is `Commit2`, separate from `Commit`; no command writes it yet. What a conflict
   means, and how it is resolved, stays with phase 3 (STEMMA-19). The purge (ADR-014) does not
   follow a `commit2` yet and reports one that it finds in the store as an error, instead of
-  skipping a tree that may hold the blob.
+  skipping a tree that may hold the blob. `Commit2::id` returns a `CommitId`, so that a
+  conflict can stand where a commit stands, but the store, the reads of a snapshot and a
+  difference, and `verify` still read a `CommitId` as the kind `commit`. Until phase 3 decides
+  how a `CommitId` resolves to either kind, a `commit2` cannot be a parent that verifies, nor
+  the target of a branch or of the working copy (STEMMA-179).
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
   repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
   other non-canonical form. Otherwise one logical object could have several encodings and several

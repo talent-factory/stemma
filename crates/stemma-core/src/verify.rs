@@ -20,7 +20,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::object::{Commit, Commit2, EntryMode, ObjectId, Tree};
+use crate::object::{Commit, Commit2, CommitId, EntryMode, ObjectId, Tree};
 use crate::oplog::Pointer;
 use crate::store::{ObjectStore, StoreError};
 
@@ -227,24 +227,8 @@ impl Commit {
     /// [`VerifyError::Store`] if the object has another kind, is damaged, or the storage
     /// fails.
     pub fn verify(&self, store: &dyn ObjectStore) -> Result<(), CommitVerifyError> {
-        let tree = ObjectId::from(self.tree());
-        let references = std::iter::once((CommitReference::Tree, tree)).chain(
-            self.parents().iter().enumerate().map(|(index, parent)| {
-                (CommitReference::Parent { index }, ObjectId::from(*parent))
-            }),
-        );
-        for (reference, id) in references {
-            let found = match reference {
-                CommitReference::Tree | CommitReference::ListedTree { .. } => {
-                    store.resolve_tree(&id).map(|found| found.is_some())
-                }
-                CommitReference::Parent { .. } => {
-                    store.resolve_commit(&id).map(|found| found.is_some())
-                }
-            };
-            VerifyError::check(|| reference, id, found)?;
-        }
-        Ok(())
+        let tree = std::iter::once((CommitReference::Tree, ObjectId::from(self.tree())));
+        verify_references(store, tree.chain(parent_references(self.parents())))
     }
 }
 
@@ -262,21 +246,38 @@ impl Commit2 {
             self.trees().iter().enumerate().map(|(index, tree)| {
                 (CommitReference::ListedTree { index }, ObjectId::from(*tree))
             });
-        let parents =
-            self.parents().iter().enumerate().map(|(index, parent)| {
-                (CommitReference::Parent { index }, ObjectId::from(*parent))
-            });
-        for (reference, id) in trees.chain(parents) {
-            let found = match reference {
-                CommitReference::Parent { .. } => {
-                    store.resolve_commit(&id).map(|found| found.is_some())
-                }
-                _ => store.resolve_tree(&id).map(|found| found.is_some()),
-            };
-            VerifyError::check(|| reference, id, found)?;
-        }
-        Ok(())
+        verify_references(store, trees.chain(parent_references(self.parents())))
     }
+}
+
+/// The parents of a commit with their places, in order.
+fn parent_references(
+    parents: &[CommitId],
+) -> impl Iterator<Item = (CommitReference, ObjectId)> + '_ {
+    parents
+        .iter()
+        .enumerate()
+        .map(|(index, parent)| (CommitReference::Parent { index }, ObjectId::from(*parent)))
+}
+
+/// Checks each reference of a commit in the given order and returns the first problem. A tree is
+/// resolved as a tree and a parent as a commit.
+fn verify_references(
+    store: &dyn ObjectStore,
+    references: impl Iterator<Item = (CommitReference, ObjectId)>,
+) -> Result<(), CommitVerifyError> {
+    for (reference, id) in references {
+        let found = match reference {
+            CommitReference::Tree | CommitReference::ListedTree { .. } => {
+                store.resolve_tree(&id).map(|found| found.is_some())
+            }
+            CommitReference::Parent { .. } => {
+                store.resolve_commit(&id).map(|found| found.is_some())
+            }
+        };
+        VerifyError::check(|| reference, id, found)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

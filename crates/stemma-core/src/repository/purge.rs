@@ -1580,6 +1580,10 @@ mod tests {
             }
             other => panic!("expected a leftover, got {other:?}"),
         }
+        assert_eq!(
+            crate::failure::Classify::kind(&error),
+            crate::failure::FailureKind::Damaged
+        );
     }
 
     #[test]
