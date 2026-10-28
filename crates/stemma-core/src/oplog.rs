@@ -6224,6 +6224,30 @@ mod tests {
     }
 
     #[test]
+    fn a_writer_compares_the_tip_only_with_an_entry_next_to_the_end() {
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        // The tip names entry 2 of 4, and entry 2 is damaged. A damage away from the end does not
+        // stop a writer (as a gap does not), and `verify` reports the tip and the damage.
+        log.write_tip(&entries[1]).unwrap();
+        fs::write(entry_file(&dir, 2), b"damaged").unwrap();
+        log.append(&change("main", Some(A), B)).unwrap();
+        assert!(log.verify().is_err());
+
+        // The tip names the entry before the last, and that entry is damaged: the writer cannot
+        // compare the tip with the entry it names, so it stops.
+        let dir = TempDir::new();
+        let (log, entries) = chained(&dir);
+        log.write_tip(&entries[2]).unwrap();
+        fs::write(entry_file(&dir, 3), b"damaged").unwrap();
+        let error = log.append(&change("main", Some(A), B)).unwrap_err();
+        assert!(
+            matches!(error, OpLogError::Predecessor { number: 3, .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn verify_accepts_a_log_from_before_the_chain_without_a_tip() {
         let dir = TempDir::new();
         let log = log_in(&dir);

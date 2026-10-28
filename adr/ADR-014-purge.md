@@ -1,7 +1,7 @@
 # ADR-014: Removing a secret from the history and the operation log
 
 **Status:** Accepted and implemented: the plan (STEMMA-46), the stub with the `purge` entry in
-the log (STEMMA-47), the purge itself with the journal, resume, abort, and format 3
+the log (STEMMA-47), the purge itself with the journal, resume, abort, and format 4
 (STEMMA-48), and the lock that a writer takes before its first object (STEMMA-49, agreed with
 the author on 2026-10-22). The hash that a stub keeps came with the hash chain of the log
 (STEMMA-41, ADR-011, agreed on 2026-10-22). The decisions marked *(confirmed)* were
@@ -69,9 +69,9 @@ Facts that bound the design:
   instead of calling it corrupt.
 - **Only a human may purge, and the call is authorized** *(confirmed)*. A purge removes history,
   which is level 3 of ADR-004 (a human owner). The core calls
-  `authorize(actor, "purge", target)` like every operation that changes a repository (ADR-002)
-  and **in addition refuses an
-  actor that is an agent**, whatever the authorizer says: phase 1 allows everything, and an agent
+  `authorize` for the operation `purge`, with the blob as target, like every operation that
+  changes a repository (ADR-002), and **in addition refuses an actor that is an agent**,
+  whatever the authorizer says: phase 1 allows everything, and an agent
   must not remove history on its own. This is a rule about the kind of actor and not a role, and
   it is an explicit exception to ADR-002, which leaves roles to the policy model. It is advisory
   until actors can be proved (ADR-002: the text of an actor proves nothing about who runs the
@@ -201,6 +201,11 @@ repeated: a new object that exists is a no-op (ADR-007), a pointer that already 
 is skipped, a stub is replaced by itself, and a deleted object is gone. The `purge` entry is
 found, not written again: it is the entry with an operation `purge` and a number above the one
 that the journal recorded.
+`--resume` and `--abort` refuse an agent first, then ask the authorizer for `purge` with the blob
+of the journal, and only then take the lock over. They read the journal again under the lock,
+because the journal that is carried out is the one under the lock; if it names another blob,
+the authorizer is asked again with that blob, and a refusal releases the lock and leaves the
+journal. The second question runs while the lock is held, so an authorizer must not block.
 A pointer that is at neither its old nor its new value (a foreign change after the lock was
 removed by hand) makes `--resume` refuse and name the pointer. Because the journal holds the delete
 set, a crash after step 7 does not leave the blob behind as an object that "was already

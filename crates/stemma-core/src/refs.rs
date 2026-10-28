@@ -709,8 +709,9 @@ pub trait RefStore: crate::store::sealed::Sealed {
     fn set_head(&self, head: &Head, objects: &dyn ObjectStore) -> Result<(), RefError>;
 
     /// Returns the commit of a branch, or `None` if there is no branch with exactly this name.
-    /// That includes a name that is held by another entry, such as `Main` for `main`; creating
-    /// the branch fails with [`RefError::Conflict`].
+    /// That includes a name that is held by another entry, such as the branch `Main` for `main`;
+    /// creating the branch fails with [`RefError::Conflict`]. A directory without any branch in
+    /// it, which a change that stopped leaves behind, holds no name: the next change clears it.
     ///
     /// # Errors
     ///
@@ -741,7 +742,8 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// [`RefError::NotACommit`] if it is another object, [`RefError::Store`] and
     /// [`RefError::Io`] if the store or the storage fails, [`RefError::Locked`] if another change
     /// is in progress, [`RefError::Conflict`] if the name is held by another entry (checked before
-    /// `expected`, because such a name has no branch to be at any commit), [`RefError::Stale`] if
+    /// `expected`, because such a name has no branch to be at any commit; a directory without any
+    /// branch in it is cleared and holds nothing), [`RefError::Stale`] if
     /// the branch is not at `expected`, and [`RefError::Corrupt`] as for
     /// [`branch`](Self::branch). Nothing is changed in any of these cases, except for
     /// [`RefError::NotFlushed`]: the change was made, and the directory could not be flushed.
@@ -1163,20 +1165,29 @@ impl FsRefStore {
 
     /// Takes the lock for a change of the references. The journal of a purge is checked under
     /// the lock, so a change that was waiting for it does not slip in while a purge runs, and a
-    /// lock that a purge holds or left behind is reported as the purge (ADR-014).
+    /// lock that a purge holds or left behind is reported as the purge (ADR-014). A lock that this
+    /// process holds already stays [`LockHolder::ThisProcess`]: that is a mistake of the caller,
+    /// whatever else is pending.
     /// If no journal exists, the scratch in `tmp/` that no writer owns any more is then removed
     /// ([`remove_scratch`], ADR-011); a change that a journal refuses leaves it to the resume or
     /// the abort.
     fn lock(&self) -> Result<Lock, RefError> {
         let lock = match self.acquire(Takeover::Stale) {
             Err(locked @ RefError::Locked { .. }) => {
-                return Err(if self.purge_pending()? {
+                let this_process = matches!(
+                    &locked,
+                    RefError::Locked {
+                        holder: LockHolder::ThisProcess,
+                        ..
+                    }
+                );
+                return Err(if !this_process && self.purge_pending()? {
                     RefError::PurgePending {
                         path: self.journal_path(),
                     }
                 } else {
                     locked
-                })
+                });
             }
             other => other?,
         };
@@ -1215,7 +1226,8 @@ impl FsRefStore {
     /// (ADR-014), unless a running process holds its guard, so that a purge that still runs keeps
     /// it, or the file names another host. A command that cannot take the guard itself replaces
     /// only a file of another form, as a purge without a guard leaves it, and not one that a
-    /// holder of the guard wrote. The caller checks the journal before and after. With the lock
+    /// holder of the guard wrote. The caller checks the journal before and after, and asks the authorizer again if the journal
+    /// under the lock names another blob (`Repository::take_over`). With the lock
     /// held, the scratch in `tmp/` is removed, as by [`lock`](Self::lock).
     ///
     /// # Errors
@@ -1484,7 +1496,8 @@ impl FsRefStore {
     /// Finds out what the name is in the file system, comparing every component **exactly**. On a
     /// file system that ignores case, `main` would open the file of `Main`; the listing of each
     /// directory shows the case that is stored, so such a name is found to be in conflict and not
-    /// to be the other branch.
+    /// to be the other branch. A variant that is a directory without any file below it is a
+    /// leftover, as for an exact name, and is reported as [`Lookup::EmptyDirectory`].
     fn lookup(&self, name: &BranchName) -> Result<Lookup, RefError> {
         if !self.heads_exist()? {
             return Ok(Lookup::Absent);
@@ -1507,13 +1520,29 @@ impl FsRefStore {
                 if found == *component {
                     exact = true;
                 } else if found.eq_ignore_ascii_case(component) && variant.is_none() {
-                    variant = Some(join_name(&relative, &found));
+                    variant = Some(found);
                 }
             }
             if !exact {
-                return Ok(variant.map_or(Lookup::Absent, |with| {
-                    Lookup::Conflict(with, ConflictKind::CaseVariant)
-                }));
+                let Some(found) = variant else {
+                    return Ok(Lookup::Absent);
+                };
+                // A directory that differs in case and holds no branch is a leftover like any
+                // other, and a change clears it: on a file system that ignores case it would
+                // hold the place of the name.
+                let there = dir.join(&found);
+                return match fs::symlink_metadata(&there) {
+                    Ok(metadata) if metadata.is_dir() && !has_files_below(&there)? => {
+                        Ok(Lookup::EmptyDirectory(there))
+                    }
+                    Ok(_) => Ok(Lookup::Conflict(
+                        join_name(&relative, &found),
+                        ConflictKind::CaseVariant,
+                    )),
+                    // Gone since the listing: a change removed it, and nothing holds the name.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Lookup::Absent),
+                    Err(error) => Err(io_error("inspect the branch", &there)(error)),
+                };
             }
             let here = dir.join(component);
             let current = join_name(&relative, component);
@@ -1589,7 +1618,8 @@ enum Lookup {
     /// it is what a change leaves behind that stopped. A change removes it.
     EmptyDirectory(PathBuf),
     /// The name cannot be a branch: another branch, or a directory of branches, is in the way, or
-    /// a name that differs only in case. Carries that name and what it is.
+    /// a branch, or a directory that holds one, whose name differs only in case. Carries that name
+    /// and what it is.
     Conflict(String, ConflictKind),
 }
 
@@ -1604,6 +1634,10 @@ struct Current {
 
 /// Whether a file, or anything but a directory, is below the directory at any depth. A caller
 /// that finds `false` may remove the directory with all that is in it, so every doubt is `true`.
+/// An entry whose name starts with a dot is not counted, as in the listing of the branches: no
+/// branch name starts with a dot, and file managers leave such files, like `.DS_Store`. A caller
+/// that removes the directory removes these too, and a directory with a dot name with all that is
+/// in it.
 /// The directory itself may be gone: a lookup without the lock may race with a change that deletes
 /// the last branch below it, and nothing is below it then. A directory below it that was listed
 /// and cannot be opened, or an entry whose kind cannot be inspected because it is gone, counts as
@@ -1616,6 +1650,9 @@ fn has_files_below(dir: &Path) -> Result<bool, RefError> {
     while let Some((dir, entries)) = pending.pop() {
         for entry in entries {
             let entry = entry.map_err(io_error("list the branches in", &dir))?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let path = entry.path();
             let kind = match entry.file_type() {
                 Ok(kind) => kind,
@@ -1876,7 +1913,8 @@ impl FsRefStore {
     /// runs. A pointer that fails is therefore read again after its commit was looked up: one that
     /// has moved is checked at its new commit, and one that is gone is no failure. A change that
     /// moves a pointer and removes its old commit meanwhile, as a purge does (ADR-014), thus
-    /// reports nothing, and each failure holds at the time of the second read.
+    /// reports nothing, and each failure holds at the time of the second read. If the second read
+    /// itself fails, its error is returned, as for the first read.
     ///
     /// # Errors
     ///
@@ -1903,6 +1941,9 @@ impl FsRefStore {
             if Self::check_commit(&pointer, commit, objects).is_ok() {
                 continue;
             }
+            // An error of reading wins over the failures found so far, as it does for the first
+            // read: a report that mixes a read that failed with commits that are missing would
+            // name a cause that may no longer hold.
             let Some(now) = self.commit_of(&pointer)? else {
                 continue;
             };
@@ -2059,8 +2100,9 @@ impl FsRefStore {
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
     /// does not have, [`RefError::Conflict`] for a name that is in the way of a branch that is to
-    /// exist afterwards (a branch that is to be deleted is not blocked), and the errors of
-    /// reading the pointers.
+    /// exist afterwards (a branch that is to be deleted is not blocked, and neither is a name that
+    /// only branches deleted by the same restore hold: they are deleted first, see
+    /// `apply_moves`), and the errors of reading the pointers.
     pub(crate) fn plan_restore(
         &self,
         targets: &RestoreTargets<'_>,
@@ -2092,15 +2134,28 @@ impl FsRefStore {
                 moves.working_copy = Some((current, target));
             }
         }
-        for (name, target) in targets.branches {
-            let current = self.current(name)?;
-            if let Some((with, kind)) = current.in_the_way {
+        let mut currents = Vec::with_capacity(targets.branches.len());
+        for (name, _) in targets.branches {
+            currents.push(self.current(name)?);
+        }
+        // The branches that this restore deletes: they are no obstacle for the ones it creates
+        // (`a` is deleted and `a/b` created, or the other way round), because the deletions come
+        // first (see `apply_moves`).
+        let deleted: Vec<&BranchName> = targets
+            .branches
+            .iter()
+            .zip(&currents)
+            .filter(|((_, target), current)| target.is_none() && current.commit.is_some())
+            .map(|((name, _), _)| name)
+            .collect();
+        for ((name, target), current) in targets.branches.iter().zip(currents) {
+            if let Some((with, kind)) = &current.in_the_way {
                 // A branch that is to be deleted is not in the way of itself.
-                if target.is_some() {
+                if target.is_some() && !self.cleared_by(with, *kind, &deleted)? {
                     return Err(RefError::Conflict {
                         name: name.clone(),
-                        with,
-                        kind,
+                        with: with.clone(),
+                        kind: *kind,
                     });
                 }
             }
@@ -2112,6 +2167,29 @@ impl FsRefStore {
         Ok((moves, empty_directories))
     }
 
+    /// Whether what is in the way of a branch is gone once the branches `deleted` are deleted: a
+    /// branch that holds the place of a directory in the name, or every branch below a directory
+    /// that holds the name. A name that differs only in case is never cleared, also when the
+    /// variant is deleted by the restore: that is a refusal on purpose, and the safe side.
+    fn cleared_by(
+        &self,
+        with: &str,
+        kind: ConflictKind,
+        deleted: &[&BranchName],
+    ) -> Result<bool, RefError> {
+        Ok(match kind {
+            ConflictKind::Branch => deleted.iter().any(|name| name.as_str() == with),
+            ConflictKind::Directory => {
+                let prefix = format!("{with}/");
+                self.branches()?
+                    .iter()
+                    .filter(|(name, _)| name.as_str().starts_with(&prefix))
+                    .all(|(name, _)| deleted.contains(&name))
+            }
+            ConflictKind::CaseVariant => false,
+        })
+    }
+
     /// Moves the pointers back as a restore does (ADR-013), and runs `step` with the moves after
     /// the checks and before the first move, all under the lock of the references. The step writes
     /// the entry of the log and brings the working directory to the new tree. If the moves are
@@ -2119,7 +2197,8 @@ impl FsRefStore {
     ///
     /// The values are read under the lock, so the step sees the ones that the moves replace. Empty
     /// directories that stand where a branch is created or deleted are removed before the step; if
-    /// one removal fails, the ones before it stay removed. The branches move first, then the
+    /// one removal fails, the ones before it stay removed. The branches move first, the deletions
+    /// before the creations (so that `a` can give way to `a/b` and the other way round), then the
     /// working-copy commit, then HEAD (ADR-013); a branch whose target is `None` is deleted. A
     /// failure at the first move is [`Logged::MoveFailed`], a failure after a pointer moved is
     /// [`Logged::PartlyMoved`], and a failure to flush a directory
@@ -2217,16 +2296,36 @@ impl FsRefStore {
         Ok(self.apply_moves(done, &moves))
     }
 
-    /// Makes the moves after the step ran: the branches, the working-copy commit, then HEAD, one
-    /// after the other.
+    /// Makes the moves after the step ran: the branches, the deletions before the creations, then
+    /// the working-copy commit, then HEAD, one after the other. After a failure, the branches that
+    /// did not move are therefore not the end of the list of the moves.
     fn apply_moves<T, E>(&self, done: T, moves: &RestoreMoves) -> Logged<T, E> {
         // The steps run one after the other and stop at the first failure, so that the pointers
         // after it are not moved.
         type Step<'s> = Box<dyn Fn() -> Result<bool, RefError> + 's>;
         let mut steps: Vec<Step<'_>> = Vec::new();
-        for (name, _, target) in &moves.branches {
+        // The deletions come before the creations, so that `a` can go before `a/b` comes, and
+        // `a/b` before `a`.
+        let deletions_first = moves
+            .branches
+            .iter()
+            .filter(|(_, _, target)| target.is_none())
+            .chain(
+                moves
+                    .branches
+                    .iter()
+                    .filter(|(_, _, target)| target.is_some()),
+            );
+        for (name, _, target) in deletions_first {
             steps.push(match target {
                 Some(commit) => Box::new(move || {
+                    // The deletions before this step may have left a directory without any
+                    // branch where the name goes (`a/` after `a/b`, with a dot file or an empty
+                    // directory in it), which a plain removal of the parents does not clear.
+                    if let Some(empty) = self.current(name)?.empty_directory {
+                        fs::remove_dir_all(&empty)
+                            .map_err(io_error("remove the empty directory", &empty))?;
+                    }
                     self.write_replacing(
                         &self.branch_path(name),
                         &encode_branch(commit),
@@ -2353,10 +2452,12 @@ impl RefStore for FsRefStore {
 
     fn set_head(&self, head: &Head, objects: &dyn ObjectStore) -> Result<(), RefError> {
         self.require_root()?;
+        let _lock = self.lock()?;
+        // Under the lock, as in `set_head_after`: a purge that ran before it may have removed the
+        // commit since a look without the lock.
         if let Head::Detached(commit) = head {
             Self::require_commit(commit, objects)?;
         }
-        let _lock = self.lock()?;
         self.write_replacing(&self.head_path(), &head.encode(), &self.root)
     }
 
@@ -2419,8 +2520,10 @@ impl RefStore for FsRefStore {
         objects: &dyn ObjectStore,
     ) -> Result<(), RefError> {
         self.require_root()?;
-        Self::require_commit(&new, objects)?;
         let _lock = self.lock()?;
+        // Under the lock, as in `update_branch_after`: a purge that ran before it may have removed
+        // the commit since a look without the lock.
+        Self::require_commit(&new, objects)?;
         let current = self.current(name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
@@ -3454,6 +3557,73 @@ mod tests {
     }
 
     #[test]
+    fn a_case_variant_below_a_directory_is_cleared_when_empty_and_a_conflict_when_not() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        // The variant is one level down: the directory that is cleared is the one found there.
+        fs::create_dir_all(dir.path().join("refs/heads/x/Feat/deeper")).unwrap();
+        refs.update_branch(&name("x/feat"), None, id, &objects)
+            .unwrap();
+        assert_eq!(refs.branch(&name("x/feat")).unwrap(), Some(id));
+        // A variant that is a directory with a branch in it stays a conflict, and the branch stays.
+        refs.update_branch(&name("Main/b"), None, id, &objects)
+            .unwrap();
+        let error = refs
+            .update_branch(&name("main"), None, id, &objects)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Conflict {
+                    kind: ConflictKind::CaseVariant,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(refs.branch(&name("Main/b")).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn a_leftover_that_only_a_file_manager_touched_does_not_block_the_name() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let leftover = dir.path().join("refs/heads/feat/deeper");
+        fs::create_dir_all(&leftover).unwrap();
+        fs::write(leftover.join(".DS_Store"), b"x").unwrap();
+        assert_eq!(refs.branch(&name("feat")).unwrap(), None);
+        refs.update_branch(&name("feat"), None, id, &objects)
+            .unwrap();
+        assert_eq!(refs.branch(&name("feat")).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn an_empty_directory_that_differs_in_case_is_cleared_and_one_with_a_branch_is_a_conflict() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        fs::create_dir_all(dir.path().join("refs/heads/Main/deeper")).unwrap();
+        refs.update_branch(&name("main"), None, id, &objects)
+            .unwrap();
+        assert_eq!(refs.branch(&name("main")).unwrap(), Some(id));
+        // A variant that holds a branch stays a conflict.
+        refs.update_branch(&name("Other"), None, id, &objects)
+            .unwrap();
+        let error = refs
+            .update_branch(&name("other"), None, id, &objects)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Conflict {
+                    kind: ConflictKind::CaseVariant,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn empty_directories_are_removed_up_to_the_top_and_not_beyond() {
         let dir = TempDir::new();
         let top = dir.path().join("heads");
@@ -3694,6 +3864,28 @@ mod tests {
         assert!(!lock.exists());
         refs.update_branch(&name("main"), None, id, &objects)
             .unwrap();
+    }
+
+    #[test]
+    fn a_lock_that_this_process_holds_is_not_hidden_by_a_pending_purge() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let held = refs.lock().unwrap();
+        fs::write(dir.path().join(PURGE_JOURNAL), b"journal").unwrap();
+        let error = refs
+            .update_branch(&name("main"), None, id, &objects)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RefError::Locked {
+                    holder: LockHolder::ThisProcess,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        drop(held);
     }
 
     #[test]
@@ -4917,6 +5109,147 @@ mod tests {
         let path = dir.path().join("refs/heads/main");
         let store = OnFirstRead::new(dir.store(), move || fs::remove_file(path).unwrap());
         assert!(refs.verify(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_commit_of_a_change_is_looked_up_under_the_lock() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let lock = dir.path().join("refs.lock");
+        let seen = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hook_seen = std::rc::Rc::clone(&seen);
+        let hook_lock = lock.clone();
+        let store = OnFirstRead::new(dir.store(), move || hook_seen.set(hook_lock.exists()));
+        refs.update_branch(&name("main"), None, id, &store).unwrap();
+        assert!(
+            seen.get(),
+            "update_branch looked up the commit without the lock"
+        );
+
+        let seen = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hook_seen = std::rc::Rc::clone(&seen);
+        let store = OnFirstRead::new(dir.store(), move || hook_seen.set(lock.exists()));
+        refs.set_head(&Head::Detached(id), &store).unwrap();
+        assert!(seen.get(), "set_head looked up the commit without the lock");
+    }
+
+    /// Restores `targets` and asserts that the moves were made.
+    fn restore(refs: &FsRefStore, objects: &FsObjectStore, targets: &[(&str, Option<CommitId>)]) {
+        let branches: Vec<(BranchName, Option<CommitId>)> = targets
+            .iter()
+            .map(|(branch, commit)| (name(branch), *commit))
+            .collect();
+        let targets = RestoreTargets {
+            head: None,
+            working_copy: None,
+            branches: &branches,
+        };
+        let outcome = refs
+            .restore_after(&writer(refs), &targets, objects, |_| Ok::<_, &str>(()))
+            .unwrap();
+        assert!(matches!(outcome, Logged::Moved(())), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_restore_deletes_a_branch_that_is_in_the_way_of_one_it_creates_and_the_other_way_round() {
+        let (_dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        // `a` goes, `a/b` comes: the file of `a` holds the place of the directory.
+        refs.update_branch(&name("a"), None, id, &objects).unwrap();
+        restore(&refs, &objects, &[("a", None), ("a/b", Some(id))]);
+        assert_eq!(refs.branch(&name("a")).unwrap(), None);
+        assert_eq!(refs.branch(&name("a/b")).unwrap(), Some(id));
+        // `a/b` goes, `a` comes, and the list names `a` first.
+        restore(&refs, &objects, &[("a", Some(id)), ("a/b", None)]);
+        assert_eq!(refs.branch(&name("a")).unwrap(), Some(id));
+        assert_eq!(refs.branch(&name("a/b")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_restore_clears_what_the_deleted_branches_leave_in_the_directory() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("a/b"), None, id, &objects)
+            .unwrap();
+        // The listing of the branches skips a dot file and an empty directory, so the restore
+        // may create `a`; a plain removal of the parents of `a/b` would leave both behind.
+        fs::write(dir.path().join("refs/heads/a/.DS_Store"), b"x").unwrap();
+        fs::create_dir_all(dir.path().join("refs/heads/a/x")).unwrap();
+        restore(&refs, &objects, &[("a", Some(id)), ("a/b", None)]);
+        assert!(dir.path().join("refs/heads/a").is_file());
+        assert_eq!(refs.branch(&name("a")).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn a_restore_does_not_take_a_sibling_for_a_branch_below_the_name() {
+        let (_dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("a/b"), None, id, &objects)
+            .unwrap();
+        refs.update_branch(&name("ab"), None, id, &objects).unwrap();
+        // `ab` starts with `a` but is not below it.
+        restore(&refs, &objects, &[("a", Some(id)), ("a/b", None)]);
+        assert_eq!(refs.branch(&name("a")).unwrap(), Some(id));
+        assert_eq!(refs.branch(&name("ab")).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn a_restore_refuses_a_name_that_differs_in_case_from_a_branch_it_deletes() {
+        let (_dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("Foo"), None, id, &objects)
+            .unwrap();
+        let branches = [(name("foo"), Some(id)), (name("Foo"), None)];
+        let targets = RestoreTargets {
+            head: None,
+            working_copy: None,
+            branches: &branches,
+        };
+        let error = refs
+            .restore_after(&writer(&refs), &targets, &objects, |_| Ok::<_, &str>(()))
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Conflict {
+                    kind: ConflictKind::CaseVariant,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(refs.branch(&name("Foo")).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn a_restore_still_refuses_a_name_that_a_branch_it_keeps_holds() {
+        let (_dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        refs.update_branch(&name("a/b"), None, id, &objects)
+            .unwrap();
+        refs.update_branch(&name("a/c"), None, id, &objects)
+            .unwrap();
+        // `a/b` goes, but `a/c` stays below `a`.
+        let branches = [(name("a"), Some(id)), (name("a/b"), None)];
+        let targets = RestoreTargets {
+            head: None,
+            working_copy: None,
+            branches: &branches,
+        };
+        let error = refs
+            .restore_after(&writer(&refs), &targets, &objects, |_| Ok::<_, &str>(()))
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Conflict {
+                    kind: ConflictKind::Directory,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(refs.branch(&name("a/b")).unwrap(), Some(id));
     }
 
     #[test]

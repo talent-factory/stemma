@@ -2,15 +2,15 @@
 //!
 //! The file lists paths that are never tracked, not even by `stemma track`. (`stemma status`,
 //! STEMMA-4, will not report them as untracked.) [`IgnoreRules::parse`] reads the bytes of the file
-//! and accepts only the canonical form, as the readers of the index, trees, and the log do;
-//! [`IgnoreRules::matching`] says whether a path is excluded. [`IgnoreRules::read`] reads the file
-//! of a working directory.
+//! and is as strict as the readers of the index, trees, and the log, except that it allows empty
+//! lines and comments; [`IgnoreRules::matching`] says whether a path is excluded.
+//! [`IgnoreRules::read`] reads the file of a working directory.
 //!
-//! A line is a comment (it starts with `#`) or a pattern: parts separated by `/`, each part a name
-//! with the wildcards `*` (any run of characters inside one name) and `?` (one character), or the
-//! whole part `**` (any number of directories, also none, so `foo/**` excludes `foo` too). A
-//! leading `/` or a `/` between parts anchors the pattern at the root; otherwise it matches a name
-//! at any depth. A trailing `/` matches only a directory. There is no negation, escape, or
+//! A line is empty (it is skipped), a comment (it starts with `#`) or a pattern: parts separated
+//! by `/`, each part a name with the wildcards `*` (any run of characters inside one name) and
+//! `?` (one character), or the whole part `**` (any number of directories, also none, so
+//! `foo/**` excludes `foo` too). A leading `/` or a `/` between parts anchors the pattern at
+//! the root; otherwise it matches a name at any depth. A trailing `/` matches only a directory. There is no negation, escape, or
 //! character class: the characters `\`, `[`, `]` and a leading `!` are rejected, so that they stay
 //! free for a later version.
 //!
@@ -92,7 +92,8 @@ impl IgnoreRules {
         Self::default()
     }
 
-    /// Reads and checks the bytes of an exclusion file.
+    /// Reads and checks the bytes of an exclusion file. An empty line is skipped but counted, so
+    /// the lines after it keep their numbers.
     ///
     /// The lines are checked in order, so the error names the first line that the reader refuses;
     /// a last line without a newline is reported after the lines before it. A problem of the whole
@@ -133,8 +134,10 @@ impl IgnoreRules {
             if *crlf.get_or_insert(ends_in_crlf) != ends_in_crlf {
                 return Err(problem(LineProblem::MixedLineEnds));
             }
+            // An empty line only groups the patterns, as in `.gitignore`; it is counted, so that
+            // the lines after it keep their numbers.
             if line.is_empty() {
-                return Err(problem(LineProblem::Empty));
+                continue;
             }
             if line.len() > MAX_LINE_BYTES {
                 return Err(problem(LineProblem::TooLong));
@@ -531,8 +534,6 @@ pub enum FileProblem {
 pub enum LineProblem {
     /// The last line does not end with a newline.
     MissingNewline,
-    /// The line is empty.
-    Empty,
     /// The line has more than [`MAX_LINE_BYTES`] bytes.
     TooLong,
     /// The line has a carriage return that is not part of its line end `\r\n`.
@@ -581,7 +582,6 @@ impl fmt::Display for LineProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingNewline => f.write_str("does not end with a newline"),
-            Self::Empty => f.write_str("empty line"),
             Self::TooLong => write!(f, "more than {MAX_LINE_BYTES} bytes"),
             Self::CarriageReturn => {
                 f.write_str("carriage return; only `\\n` or `\\r\\n` ends a line")
@@ -777,9 +777,43 @@ mod tests {
     }
 
     #[test]
+    fn empty_lines_and_comments_group_the_patterns_as_in_gitignore() {
+        let grouped = rules("\n# build\n/build\n\n\n# logs\n*.log\n\n");
+        assert!(grouped.is_ignored("build", true) && grouped.is_ignored("d/a.log", false));
+        assert!(!grouped.is_ignored("src", true));
+        // The patterns keep the numbers of their lines.
+        assert_eq!(grouped.matching("build", true), NonZeroUsize::new(3));
+        assert_eq!(grouped.matching("a.log", false), NonZeroUsize::new(7));
+        let crlf = rules("\r\n# build\r\n\r\n/build\r\n");
+        assert!(crlf.is_ignored("build", true) && !crlf.is_ignored("x", false));
+        for only in ["\n", "\n\n\n", "# a\n\n# b\n", "\r\n\r\n"] {
+            let rules = rules(only);
+            assert!(rules.is_empty(), "{only:?}");
+        }
+    }
+
+    #[test]
+    fn an_error_after_empty_lines_names_its_own_line() {
+        let cases: &[(&[u8], usize, &str)] = &[
+            (b"\n\n!keep\n", 3, "negation"),
+            (b"a\n\n\na\n", 4, "repeats line 1"),
+            (b"\r\n\r\nb\n", 3, "line end differs"),
+            (b"a\n\n \n", 3, "space at the start or end"),
+            (b"\na\r\n", 2, "line end differs"),
+        ];
+        for &(bytes, line, reason) in cases {
+            let error = IgnoreRules::parse(bytes).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("line {line}")),
+                "{bytes:?}: {error}"
+            );
+            assert!(error.contains(reason), "{bytes:?}: {error}");
+        }
+    }
+
+    #[test]
     fn the_rejected_files_of_the_adr_name_the_line_and_the_reason() {
         let cases: &[(&[u8], usize, &str)] = &[
-            (b"a\n\nb\n", 2, "empty line"),
             (b"a\na\n", 2, "repeats line 1"),
             (b"a \n", 1, "space at the start or end"),
             (b" a\n", 1, "space at the start or end"),
@@ -787,7 +821,7 @@ mod tests {
             (b"a", 1, "does not end with a newline"),
             (b"a\nb", 2, "does not end with a newline"),
             (b"a\n# c", 2, "does not end with a newline"),
-            (b"a\n\nb", 2, "empty line"),
+            (b"a\n\nb", 3, "does not end with a newline"),
             (b"!keep\n", 1, "negation"),
             (b"a\\b\n", 1, "`\\` is reserved"),
             (b"[ab]\n", 1, "`[` is reserved"),
@@ -815,7 +849,6 @@ mod tests {
             (b"a\nb\r\n", 2, "line end differs from line 1"),
             (b"a\r\nb\n", 2, "line end differs from line 1"),
             (b"a\r\nb\r\nc\n", 3, "line end differs from line 1"),
-            (b"a\r\n\r\n", 2, "empty line"),
             (b"a\r\na\r\n", 2, "repeats line 1"),
             // A mix is reported before what else is wrong with the line.
             (b"a\r\n\n", 2, "line end differs from line 1"),
@@ -891,15 +924,18 @@ mod tests {
             assert_eq!(error.line(), None);
             assert_eq!(error.to_string(), *text);
         }
-        assert_eq!(refused(b"a\n\n").to_string(), "line 2: empty line");
+        assert_eq!(
+            refused(b"a\n!b\n").to_string(),
+            "line 2: negation (`!`) is not supported"
+        );
     }
 
     #[test]
     fn the_first_problem_is_the_one_reported_and_a_missing_newline_comes_after_the_lines() {
-        assert_eq!(refused(b"!a\n\n").line(), at(1));
-        assert_eq!(refused(b"a\n\n!b\n").line(), at(2));
+        assert_eq!(refused(b"!a\n!b\n").line(), at(1));
+        assert_eq!(refused(b"a\n\n!b\n").line(), at(3));
         // The unterminated last line does not hide an earlier line that is wrong.
-        assert_eq!(refused(b"a\n\nb").line(), at(2));
+        assert_eq!(refused(b"a\n!b\nc").line(), at(2));
         assert_eq!(refused(b"a \nb").line(), at(1));
     }
 
@@ -1128,7 +1164,7 @@ mod tests {
         std::fs::write(dir.path().join(FILE_NAME), "*.log\n").unwrap();
         let rules = IgnoreRules::read(dir.path()).unwrap();
         assert!(rules.is_ignored("a.log", false));
-        std::fs::write(dir.path().join(FILE_NAME), "*.log\n\n").unwrap();
+        std::fs::write(dir.path().join(FILE_NAME), "*.log\n*.log\n").unwrap();
         let error = IgnoreRules::read(dir.path()).unwrap_err();
         assert!(
             matches!(&error, IgnoreError::Invalid(e) if e.line() == at(2)),

@@ -30,8 +30,9 @@ other).
   that reads the file stop with an error, also if `.stemmaignore` exists as well: a file system
   that ignores case would open the file, a clone on another system would not find it, and the
   files that it excludes would be tracked there. Other foldings (Unicode case, normal forms) are
-  not detected (see the open items).
-- **A small pattern language** *(confirmed)*. A line is a comment or a pattern.
+- **A small pattern language** *(confirmed)*. A line is empty, a comment, or a pattern.
+  - An empty line only groups the patterns, as in `.gitignore` (STEMMA-134). It is skipped and
+    counted, so that every later line keeps its number.
   - A comment starts with `#`. A pattern cannot start with `#`; `/#name` writes such a name
     at the root, and `**/#name` at any depth.
   - A pattern is a list of parts separated by `/`. A part is a name with the wildcards `*` (any
@@ -74,7 +75,8 @@ other).
     with `\r\n`; a real file is far smaller. A file whose line ends differ is rejected at the
     first line that differs, before any other problem of that line, since a mix comes from an
     edit, not from a system.
-  - No empty line, no space or tab at the start or end of a line, no repeated line.
+  - No space or tab at the start or end of a line, no repeated line. An empty line is allowed
+    (STEMMA-134); a line of spaces is not empty.
   - Every part is non-empty (`a//b` is rejected), not `.` or `..`, and not a name that a tree
     refuses (ADR-005); a part `**` stands alone, and a pattern whose parts are all `**` is
     rejected as a mistake (it would exclude everything).
@@ -150,13 +152,14 @@ Accepted, each as a whole file:
 | `docs/**/draft-?.md\n` | `docs/draft-1.md`, `docs/a/b/draft-x.md` |
 | `# secrets\n.env\n` | every name `.env` |
 | `# secrets\r\n.env\r\n` | the same as the file above |
+| `# secrets\n\n.env\n\n` | the same; the empty lines are skipped and counted |
+| `\n` | nothing |
 | (no bytes) | nothing |
 
 Rejected, with the line:
 
 | File | Reason |
 |---|---|
-| `a\n\nb\n` | line 2: empty line |
 | `a\na\n` | line 2: repeated line |
 | `a \n` | line 1: space at the end |
 | `a` | line 1: no `\n` at the end |
@@ -173,8 +176,9 @@ Rejected, with the line:
 
 - A `track .` no longer takes secrets and build output once the file exists. Until then, and for
   files that are tracked already, nothing changes (ADR-010).
-- A person who copies a `.gitignore` finds most lines work, and the lines that do not (negation,
-  classes, escapes) fail at the first command with their line number and not by being ignored.
+- A person who copies a `.gitignore` finds most lines work, with its empty lines and comments,
+  and the lines that do not (negation, classes, escapes) fail at the first command with their
+  line number and not by being ignored.
 - The reader is a pure function on bytes, so it has golden vectors like the other readers, and a
   fuzzing target costs little.
 

@@ -8,8 +8,10 @@ publish.workspace = true
 
 [dependencies]
 blake3 = "1"
+caseless = "0.2.2"
 getrandom = { version = "0.4.3", features = ["std"] }
 unicode-general-category = "=1.1.0"
+unicode-normalization = "0.1.26"
 
 # The effective user of the process, for the owner check of `Repository::discover` (ADR-009).
 [target.'cfg(unix)'.dependencies]

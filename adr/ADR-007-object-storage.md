@@ -39,8 +39,8 @@ server will later keep objects elsewhere (API-first). The implementation is
   file of another. The file is flushed to disk, made read-only, and renamed to its final path. A
   reader sees no object or a complete one, provided that `tmp` and `objects` are on one file system.
   The store also flushes the directories it created and the directory that received the object,
-  on Unix and on Windows (STEMMA-84). Windows opens a directory only with
-  `FILE_FLAG_BACKUP_SEMANTICS`, and `FlushFileBuffers` (`sync_all`) needs the right to add a
+  with the directories above it up to `objects/` (STEMMA-131), on Unix and on Windows
+  (STEMMA-84). Windows opens a directory only with `FILE_FLAG_BACKUP_SEMANTICS`, and `FlushFileBuffers` (`sync_all`) needs the right to add a
   subdirectory or the right to add a file, which the store asks for in that order. It does not ask
   for write access as a whole, which a user who may only create folders, as below a drive root,
   does not have. A file system that cannot flush a directory fails the call as it does on Unix.
@@ -57,10 +57,23 @@ server will later keep objects elsewhere (API-first). The implementation is
   that is not a regular file blocks the path and is reported as `Corrupt`. When two writers race,
   the second rename replaces the file with one of identical content, which no reader can tell
   apart. After an error an object may or may not be stored; storing it again is safe.
+  The flush covers the directories above the fan-out directory up to `objects/` as well
+  (STEMMA-131): a call that created `objects/<alg>/` and failed to flush it leaves a retry that
+  finds the directory and creates nothing, so the retry flushes the chain itself. `init` has
+  flushed the entry of `objects/` in the root. A batch adds the same directories to its set, which
+  flushes each one once, children before parents. A purge writes its new trees and commits as a
+  batch, so that it does not flush the chain once per object.
+- **Failed rename and concurrent purge** *(confirmed, STEMMA-131)*. When a rename fails and the
+  object reads back correctly, another writer has stored it and the call succeeds. If the read
+  fails too, the error of the rename is reported and the error of the read is dropped: an object
+  that cannot be read back is not a stored object. A caller that does not hold the lock of the
+  references may find an object present and see a purge remove it before it names it. Every writer
+  that names objects holds that lock (ADR-014), so the store does not guard against it.
 - **Objects of a snapshot are flushed together** *(confirmed, STEMMA-40)*. A snapshot (ADR-010)
   writes its new blobs, trees, and commit as a batch: each object goes to its own file in `tmp/`
   without a flush, and before the log entry and the move of the pointer name any of them, every
-  file is flushed and renamed, and then each directory that received one is flushed once. The
+  file is flushed and renamed, and then each directory that received one, with the directories
+  above it up to `objects/`, is flushed once. The
   directory of an object that the store had already is flushed in the same pass (STEMMA-101),
   except in a snapshot whose tree did not change: its objects are named by the working-copy
   commit, whose entry was written after they were durable, and flushing up to 256 directories

@@ -582,7 +582,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
@@ -1303,14 +1303,17 @@ mod tests {
     fn an_invalid_file_stops_the_call_before_anything_is_tracked() {
         let dir = TempDir::new();
         let repository = repository(&dir);
-        ignore(&dir, "*.log\n\n");
+        ignore(&dir, "*.log\n*.log\n");
         write(&dir, "a.txt", "a");
         let entries = repository.oplog().entries().unwrap().len();
 
         let error = track(&repository, &["a.txt"]).unwrap_err();
 
         assert!(matches!(&error, TrackError::Ignore(_)), "{error}");
-        assert!(error.to_string().contains("line 2: empty line"), "{error}");
+        assert!(
+            error.to_string().contains("line 2: repeats line 1"),
+            "{error}"
+        );
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);
         assert!(paths(&repository).is_empty());
     }
@@ -1640,7 +1643,7 @@ mod tests {
                 .contains("remove or change that line to add it"),
             "{excluded}"
         );
-        ignore(&dir, "*.log\n\n");
+        ignore(&dir, "*.log\n*.log\n");
         let invalid = track(&repository, &["x.log"]).unwrap_err();
         assert!(
             invalid.to_string().ends_with("; nothing was tracked"),

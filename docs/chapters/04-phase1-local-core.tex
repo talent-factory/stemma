@@ -608,7 +608,7 @@ Jeder andere Name, den ein Baum ablehnt, bricht den Aufruf ab.
 Die Ausschlussdatei \type{.stemmaignore} liegt im Wurzelverzeichnis
 und hält Dateien aus \type{track} und aus den unverfolgten Dateien von \type{status} heraus
 (ADR-012, \type{ignore.rs}).
-Eine Zeile ist ein Kommentar mit \type{#} oder ein Muster aus Teilen, die ein \type{/} trennt.
+Eine Zeile ist leer, ein Kommentar mit \type{#} oder ein Muster aus Teilen, die ein \type{/} trennt.
 Ein Teil ist ein Name mit den Platzhaltern \type{*} (eine beliebige Folge von Zeichen
 innerhalb eines Namens) und \type{?} (ein Zeichen),
 oder ganz \type{**} (beliebig viele Verzeichnisse, auch keines).
@@ -650,9 +650,12 @@ Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Mu
 damit diese Formen später frei bleiben.
 \item Der Leser ist streng wie die anderen:
 UTF-8, jede Zeile endet mit einem Zeilenende,
-keine Leerzeile, kein Leerzeichen am Rand, keine doppelte Zeile,
+kein Leerzeichen am Rand, keine doppelte Zeile,
 höchstens 1024 Byte je Zeile und 64 KiB je Datei.
 Ein Fehler nennt die Zeile.
+\item Wie in \type{.gitignore} sind Leerzeilen und Kommentare erlaubt;
+sie gruppieren die Muster.
+Eine Leerzeile behält die Nummer ihrer Zeile, die späteren Zeilen zählen weiter.
 \item Gemischte Zeilenenden und ein \type{\r} ausserhalb von \type{\r\n} lehnt der Leser ab.
 Ein Zeilenende ist \type{\n} oder \type{\r\n};
 das zweite schreibt ein Editor unter Windows oder Git mit \type{autocrlf}.
@@ -1514,7 +1517,8 @@ Unverfolgte Dateien, \type{.stemma} und \type{.git} lässt sie in Ruhe.
 wenn die Ausschlussdatei ihn heute ausschliesst (ADR-012).
 \item Sie schreibt nie durch einen Link, lehnt Namen ab, die Windows nicht halten kann,
 und erkennt Namen,
-die auf einem Dateisystem ohne Unterscheidung der Gross- und Kleinschreibung zusammenfallen.
+die auf einem Dateisystem ohne Unterscheidung der Gross- und Kleinschreibung
+oder der Unicode-Form zusammenfallen.
 \item Jede Datei geht über eine temporäre Datei und ein \type{rename},
 damit ein Leser die alte oder die neue Fassung sieht.
 Ist seit der Planung eine Datei im Weg aufgetaucht, bricht sie ab.
@@ -1797,6 +1801,14 @@ erkennt es nicht.
 ersetzt es nur eine Datei in der alten Form, wie sie ein solcher Purge zurücklässt.
 \stopitemize
 \stopinfobox
+
+Auch beim Fortsetzen und beim Abbrechen prüft der Kern die Berechtigung (\type{authorize}),
+und zwar bevor er die Sperre übernimmt, für den Blob aus dem Journal.
+Unter der Sperre liest er das Journal noch einmal,
+denn ausgeführt wird das Journal, das unter der Sperre steht.
+Nennt es einen anderen Blob, fragt der Kern die Berechtigung für diesen Blob noch einmal.
+Bei einer Ablehnung gibt er die Sperre wieder frei und lässt das Journal unberührt.
+Die zweite Frage läuft unter gehaltener Sperre; eine Prüfung darf deshalb nicht blockieren.
 
 Jeder Befehl, der schreibt, nimmt die Sperre der Referenzen,
 bevor er sein erstes Objekt schreibt, und hält sie bis zu seiner letzten Zeigerbewegung.

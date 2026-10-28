@@ -769,7 +769,7 @@ mod tests {
     struct DenyAll;
 
     impl Authorizer for DenyAll {
-        fn authorize(&self, _actor: &Actor, _operation: &str, _target: &str) -> Decision {
+        fn authorize(&self, _actor: &Actor, _operation: &OperationName, _target: &str) -> Decision {
             Decision::Deny
         }
     }
