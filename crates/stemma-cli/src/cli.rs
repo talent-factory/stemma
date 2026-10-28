@@ -60,6 +60,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
 use std::num::NonZeroUsize;
@@ -154,7 +155,7 @@ struct PurgeArgs {
     /// Who runs the command: `human <id>`; an agent may not purge. Required unless the
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
-    actor: Option<String>,
+    actor: Option<OsString>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -245,7 +246,7 @@ struct OpRestoreArgs {
     /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
     /// environment sets STEMMA_ACTOR. The snapshot and the restore are made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
-    actor: Option<String>,
+    actor: Option<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -290,7 +291,7 @@ struct TrackArgs {
     /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
-    actor: Option<String>,
+    actor: Option<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -312,7 +313,7 @@ struct CommitArgs {
     /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
-    actor: Option<String>,
+    actor: Option<OsString>,
 
     /// Write one JSON object instead of text (the schema of ADR-018)
     #[arg(long)]
@@ -334,7 +335,7 @@ struct StatusArgs {
     /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
     /// environment sets STEMMA_ACTOR. The snapshot that the command takes is made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
-    actor: Option<String>,
+    actor: Option<OsString>,
 
     /// Write one JSON object instead of text (the schema of ADR-018)
     #[arg(long)]
@@ -356,7 +357,7 @@ struct DiffArgs {
     /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
     /// environment sets STEMMA_ACTOR. The snapshot of the working copy is made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
-    actor: Option<String>,
+    actor: Option<OsString>,
 
     /// Exit with 4 when a file differs, and with 0 otherwise. Git uses 1 here; stemma keeps 1 for
     /// failures
@@ -394,7 +395,7 @@ struct InitArgs {
     /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
-    actor: Option<String>,
+    actor: Option<OsString>,
 }
 
 /// Why a command fails.
@@ -407,6 +408,8 @@ enum CliError {
     EmptyActor,
     /// The text of the actor is not a valid actor line.
     Actor(ActorParseError),
+    /// The flag or the variable holds bytes that are not UTF-8.
+    ActorNotUtf8,
     /// The core refused or could not create the repository, or created it and could not make it
     /// durable ([`InitError::NotDurable`]).
     Init(InitError),
@@ -417,7 +420,12 @@ enum CliError {
     /// did not happen (`UpdateError::MoveFailed`).
     Track(TrackError),
     /// The files are tracked, but the result could not be written to the output.
-    TrackOutput(io::Error),
+    TrackOutput {
+        /// The error of the output.
+        source: io::Error,
+        /// The error of the flush, if the pointer was not flushed either.
+        not_durable: Option<Box<UpdateError>>,
+    },
     /// The core refused the commit or could not make it. Nothing is committed, except for what
     /// [`CommitError::pointer_moved`] says; the snapshot before it may have made an entry.
     Commit(CommitError),
@@ -554,6 +562,8 @@ enum CliError {
         created: PathBuf,
         /// The error of the output.
         source: io::Error,
+        /// The error of the flush, if the directory was not flushed either.
+        not_durable: Option<Box<InitError>>,
     },
 }
 
@@ -577,7 +587,7 @@ impl CliError {
             Self::Init(InitError::NotDurable { .. })
             | Self::Track(TrackError::NotDurable { .. })
             | Self::Output { .. }
-            | Self::TrackOutput(_)
+            | Self::TrackOutput { .. }
             | Self::CommitNotDurable { .. }
             | Self::CommitOutput { .. }
             | Self::StatusNotDurable { .. }
@@ -616,6 +626,7 @@ impl CliError {
             | Self::EmptyLog => ExitCode::from(5),
             Self::MissingActor
             | Self::EmptyActor
+            | Self::ActorNotUtf8
             | Self::Actor(_)
             | Self::StatusOutput { .. }
             | Self::TuiUnavailable
@@ -643,6 +654,11 @@ impl fmt::Display for CliError {
                  `human <id>` or `agent <id> model=<model> session=<session> sponsor=<sponsor>`"
             ),
             Self::Actor(error) => write!(f, "invalid actor: {error}"),
+            Self::ActorNotUtf8 => write!(
+                f,
+                "the actor is not valid UTF-8: `--actor` or {ACTOR_ENV} holds bytes that are no \
+                 text"
+            ),
             Self::Init(error) => error.fmt(f),
             Self::Open(error @ OpenError::NoRepositoryAbove { .. }) => write!(
                 f,
@@ -651,10 +667,19 @@ impl fmt::Display for CliError {
             ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
-            Self::TrackOutput(source) => write!(
-                f,
-                "tracked the files, but could not write the result: {source}"
-            ),
+            Self::TrackOutput {
+                source,
+                not_durable,
+            } => {
+                write!(
+                    f,
+                    "tracked the files, but could not write the result: {source}"
+                )?;
+                match not_durable {
+                    Some(error) => write!(f, "; flushing failed as well: {error}"),
+                    None => Ok(()),
+                }
+            }
             Self::Commit(CommitError::Snapshot(SnapshotError::Update(
                 UpdateError::NotDurable { entry, source },
             ))) => write!(
@@ -823,11 +848,21 @@ impl fmt::Display for CliError {
                 f,
                 "could not write entry {entry} to standard output: {source}"
             ),
-            Self::Output { created, source } => write!(
-                f,
-                "created `{}`, but could not write the result: {source}",
-                created.display()
-            ),
+            Self::Output {
+                created,
+                source,
+                not_durable,
+            } => {
+                write!(
+                    f,
+                    "created `{}`, but could not write the result: {source}",
+                    created.display()
+                )?;
+                match not_durable {
+                    Some(error) => write!(f, "; flushing failed as well: {error}"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
@@ -1405,23 +1440,25 @@ fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
 fn finish_track(result: Result<Tracking, TrackError>, out: &mut dyn Write) -> Result<(), CliError> {
     let (added, late) = match result {
         Ok(tracking) => (tracking.added, None),
-        Err(TrackError::NotDurable { added, error }) => (
-            added,
-            Some(CliError::Track(TrackError::NotDurable {
-                added: Vec::new(),
-                error,
-            })),
-        ),
+        Err(TrackError::NotDurable { added, error }) => (added, Some(error)),
         Err(error) => return Err(CliError::Track(error)),
     };
     match out.write_all(track_text(&added).as_bytes()) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
         Err(source) => {
-            return Err(late.unwrap_or(CliError::TrackOutput(source)));
+            return Err(CliError::TrackOutput {
+                source,
+                not_durable: late,
+            });
         }
     }
-    late.map_or(Ok(()), Err)
+    late.map_or(Ok(()), |error| {
+        Err(CliError::Track(TrackError::NotDurable {
+            added: Vec::new(),
+            error,
+        }))
+    })
 }
 
 /// One line for each file that is tracked now and was not before, or one line that says there is
@@ -1983,13 +2020,18 @@ fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
         Err(error @ InitError::NotDurable { .. }) => Some(error),
         Err(error) => return Err(CliError::Init(error)),
     };
-    writeln!(
+    match writeln!(
         out,
         "Initialized empty Stemma repository in {}",
         created.display()
-    )
-    .map_err(|source| CliError::Output { created, source })?;
-    late.map_or(Ok(()), |error| Err(CliError::Init(error)))
+    ) {
+        Ok(()) => late.map_or(Ok(()), |error| Err(CliError::Init(error))),
+        Err(source) => Err(CliError::Output {
+            created,
+            source,
+            not_durable: late.map(Box::new),
+        }),
+    }
 }
 
 /// The path as an absolute one, so that a script can use it after it changes its working
@@ -1999,11 +2041,14 @@ fn absolute(path: &Path) -> PathBuf {
     path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn actor(text: Option<String>) -> Result<Actor, CliError> {
-    match text.as_deref() {
+fn actor(text: Option<OsString>) -> Result<Actor, CliError> {
+    // The flag takes the raw text, so that a value that is not UTF-8 is an error of the actor
+    // (code 1) and not a usage error of the parser (code 2).
+    match text.as_deref().map(OsStr::to_str) {
         None => Err(CliError::MissingActor),
-        Some("") => Err(CliError::EmptyActor),
-        Some(line) => line.parse().map_err(CliError::Actor),
+        Some(None) => Err(CliError::ActorNotUtf8),
+        Some(Some("")) => Err(CliError::EmptyActor),
+        Some(Some(line)) => line.parse().map_err(CliError::Actor),
     }
 }
 
@@ -2391,7 +2436,7 @@ mod tests {
             repository: dir.to_path_buf(),
             force: false,
             dry_run,
-            actor: Some("human daniel".to_owned()),
+            actor: Some("human daniel".into()),
         };
         (args, commit)
     }
@@ -3257,7 +3302,7 @@ mod tests {
             args
         };
         let full = run(parse(&track_args("a.txt")), &mut Full).unwrap_err();
-        assert!(matches!(full, CliError::TrackOutput(_)), "{full}");
+        assert!(matches!(full, CliError::TrackOutput { .. }), "{full}");
         assert_eq!(full.exit_code(), ExitCode::from(3));
         // The file is tracked although the result was not written.
         let mut out = Vec::new();
@@ -3296,7 +3341,7 @@ mod tests {
     fn the_actor_is_missing_or_empty_or_parsed() {
         assert!(matches!(actor(None), Err(CliError::MissingActor)));
         assert!(matches!(
-            actor(Some(String::new())),
+            actor(Some(OsString::new())),
             Err(CliError::EmptyActor)
         ));
         assert!(matches!(
@@ -3354,6 +3399,26 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(std::iter::once("stemma").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn a_failed_flush_is_kept_when_the_result_cannot_be_written_either() {
+        let error = CliError::Output {
+            created: PathBuf::from(".stemma"),
+            source: io::Error::other("disk full"),
+            not_durable: Some(Box::new(InitError::NotDurable {
+                path: PathBuf::from("."),
+                source: io::Error::other("disk full"),
+            })),
+        };
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        assert!(error.to_string().contains("flushing failed"), "{error}");
+        let error = CliError::TrackOutput {
+            source: io::Error::other("disk full"),
+            not_durable: None,
+        };
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        assert!(!error.to_string().contains("flushing"), "{error}");
     }
 
     #[test]
@@ -3417,6 +3482,7 @@ mod tests {
             CliError::Output {
                 created: PathBuf::from(".stemma"),
                 source: io_error(),
+                not_durable: None,
             },
         ];
         for error in made {

@@ -62,6 +62,8 @@ agent claude model=opus-5-5 session=s1 sponsor=daniel
 \stoptyping
 
 Ein leerer Wert ist ein Fehler und fällt nicht auf die andere Quelle zurück.
+Ein Wert, der kein UTF-8 ist, ist ebenfalls ein Fehler des Akteurs (Exit-Code 1),
+kein Aufruffehler.
 Ohne Akteur bricht der Befehl ab, bevor er etwas ändert (Exit-Code 1).
 Deshalb steht \type{--actor} in den Synopsen ohne eckige Klammern; ist \type{STEMMA_ACTOR}
 gesetzt, darf die Option in einem Aufruf fehlen. Die Beispiele ohne die Option

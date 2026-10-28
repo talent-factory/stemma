@@ -146,6 +146,34 @@ fn an_empty_actor_is_reported_as_empty_and_creates_nothing() {
     assert!(!dir.path().join("target").exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn an_actor_that_is_not_utf8_is_an_error_of_the_actor_and_creates_nothing() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = Dir::new();
+    let bytes = std::ffi::OsStr::from_bytes(b"human \xff");
+    let from_variable = stemma(dir.path(), &["init", "-C", "target"], |command| {
+        command.env("STEMMA_ACTOR", bytes);
+    });
+    let from_flag = stemma(dir.path(), &["init", "-C", "target"], |command| {
+        command.arg("--actor").arg(bytes);
+    });
+    for result in [from_variable, from_flag] {
+        // Code 1, as for any other invalid actor, not the code 2 of a usage error.
+        assert_eq!(result.code, 1, "{}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .starts_with("stemma: the actor is not valid UTF-8"),
+            "{}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "");
+    }
+    assert!(!dir.path().join("target").exists());
+}
+
 #[test]
 fn the_actor_can_come_from_the_environment() {
     let dir = Dir::new();
