@@ -645,9 +645,11 @@ Was schon im Baum steht, bleibt verfolgt, und die Datei selbst schliesst kein Mu
 damit diese Formen später frei bleiben.
 \item Der Leser ist streng wie die anderen:
 UTF-8, jede Zeile endet mit einem Zeilenende,
-keine Leerzeile, kein Leerzeichen am Rand, keine doppelte Zeile,
+kein Leerzeichen am Rand, keine doppelte Zeile,
 höchstens 1024 Byte je Zeile und 64 KiB je Datei.
 Ein Fehler nennt die Zeile.
+\item Leerzeilen und Kommentare sind erlaubt und gruppieren die Muster wie in \type{.gitignore};
+eine Leerzeile behält die Nummer ihrer Zeile, die späteren Zeilen zählen weiter.
 \item Gemischte Zeilenenden und ein \type{\r} ausserhalb von \type{\r\n} lehnt der Leser ab.
 Ein Zeilenende ist \type{\n} oder \type{\r\n};
 das zweite schreibt ein Editor unter Windows oder Git mit \type{autocrlf}.
