@@ -68,7 +68,8 @@ use std::process::{self, ExitCode, Stdio};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use clap::{Args, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::diff::Edit;
@@ -369,10 +370,19 @@ struct DiffArgs {
     #[arg(long)]
     tui: bool,
 
-    /// The commits to compare, by identifier: none compares the working copy with its parent,
-    /// one compares that commit with the working copy, and two compare the first with the second
-    #[arg(value_name = "COMMIT", num_args = 0..=2)]
-    commits: Vec<String>,
+    /// The commits to compare, by identifier (`b3:` and 64 hexadecimal digits), then the files
+    /// and directories to show. No commit compares the working copy with its parent, one compares
+    /// that commit with the working copy, and two compare the first with the second. No path shows
+    /// every file that differs; a directory shows everything below it. Without `--`, the leading
+    /// operands that start with `b3:` are commits, and the first other operand and all after it
+    /// are paths; with `--`, everything before it is a commit and everything after it a path
+    // The unbalanced brackets are deliberate: clap writes the usage as `[COMMIT]... [--] [PATH]...`.
+    #[arg(value_name = "COMMIT]... [--] [PATH")]
+    operands: Vec<String>,
+
+    /// The paths that follow `--`
+    #[arg(last = true, hide = true)]
+    after_separator: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1521,23 +1531,43 @@ fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// files first when a side is the working copy. When the real stdout is a terminal, the text is
 /// coloured and goes through the pager instead of `out`; `out` then takes it only if the pager
 /// cannot run. With `--tui` on a Unix terminal, the terminal interface replaces both: nothing is
-/// written to `out`, and the interface does not start when no file differs.
+/// written to `out`, and the interface does not start when no file differs. With paths, only the
+/// files that they select are shown; they are relative to the directory of the command.
 fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
+    // A usage error comes first, as for the errors of the parser: before the actor is read or the
+    // repository is looked for.
+    let (commits, paths) = split_operands(&args.operands, &args.after_separator);
+    let comparison = match commits {
+        [] => Comparison::WithParent,
+        [commit] => Comparison::WithWorkingCopy(commit.as_str()),
+        [first, second] => Comparison::Commits(first.as_str(), second.as_str()),
+        // The parser cannot count the commits, because it does not know them from the paths.
+        _ => Cli::command()
+            .bin_name("stemma")
+            .find_subcommand_mut("diff")
+            .expect("the diff command exists")
+            .error(
+                ErrorKind::TooManyValues,
+                "the diff takes at most two commits; a path that starts with `b3:` follows `--`",
+            )
+            .exit(),
+    };
     // Checked before the diff is read, so that a refused `--tui` does not save the working copy.
     if args.tui && !(cfg!(unix) && io::stdout().is_terminal()) {
         return Err(CliError::TuiUnavailable);
     }
     let actor = actor(args.actor)?;
-    let repository = open(&args.repository)?;
-    let comparison = match args.commits.as_slice() {
-        [] => Comparison::WithParent,
-        [commit] => Comparison::WithWorkingCopy(commit.as_str()),
-        [first, second] => Comparison::Commits(first.as_str(), second.as_str()),
-        // The argument parser accepts at most two commits.
-        _ => unreachable!("the diff takes at most two commits"),
-    };
+    let Discovered {
+        repository,
+        subdirectory,
+        ..
+    } = discover(&args.repository)?;
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|path| normalize_path_in(&subdirectory, path))
+        .collect();
     let result = repository
-        .diff(&actor, &AllowAll, comparison)
+        .diff_paths(&actor, &AllowAll, comparison, &paths)
         .map_err(CliError::Diff)?;
     let differs = !result.files().is_empty();
     if args.tui {
@@ -1594,6 +1624,31 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// Splits the operands of `diff` into the commits and the paths. With `--` and at least one path
+/// behind it, every operand before it is a commit, even one that does not look like it, so that
+/// the core names it; and every operand behind it is a path, even one that looks like an
+/// identifier. Otherwise (no `--`, or nothing behind it) the commits are the leading operands that
+/// start with `b3:` (in any case, so that a mistyped `B3:` is named as a commit and not as a
+/// missing path), and the first other operand and all after it are paths. More than two commits
+/// are refused by the caller, so a third `b3:` operand is never taken for a path.
+fn split_operands<'a>(
+    operands: &'a [String],
+    after_separator: &'a [String],
+) -> (&'a [String], &'a [String]) {
+    if !after_separator.is_empty() {
+        return (operands, after_separator);
+    }
+    let commits = operands
+        .iter()
+        .take_while(|operand| {
+            operand
+                .get(..3)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("b3:"))
+        })
+        .count();
+    operands.split_at(commits)
 }
 
 /// The text of a diff: each file that differs, with its line `diff` and a header that names the

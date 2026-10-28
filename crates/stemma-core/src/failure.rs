@@ -253,7 +253,9 @@ impl Classify for DiffError {
             Self::AfterSnapshot { source, .. } => source.kind(),
             // An object that a commit of the repository names is not there or does not parse.
             Self::Missing { .. } | Self::Damaged { .. } => FailureKind::Damaged,
-            Self::UnknownCommit { .. } => FailureKind::Other,
+            Self::UnknownCommit { .. } | Self::InvalidPath { .. } | Self::NoSuchPath { .. } => {
+                FailureKind::Other
+            }
         }
     }
 }

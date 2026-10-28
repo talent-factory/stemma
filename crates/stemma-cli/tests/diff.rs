@@ -940,3 +940,359 @@ fn tui_is_refused_without_a_terminal_and_saves_nothing() {
     assert_eq!(result.stdout, "");
     assert_eq!(operations(dir.path()), before);
 }
+
+/// A repository with `a.txt`, `dir/b.txt` and `dir/sub/c.txt` committed, and all three edited.
+fn three_edited_files() -> Dir {
+    let dir = repository();
+    for file in ["a.txt", "dir/b.txt", "dir/sub/c.txt"] {
+        write(dir.path(), file, "one\n");
+        track_ok(dir.path(), file);
+    }
+    commit(dir.path(), "first");
+    for file in ["a.txt", "dir/b.txt", "dir/sub/c.txt"] {
+        write(dir.path(), file, "two\n");
+    }
+    dir
+}
+
+/// The paths of the files that a diff shows, in its order.
+fn shown(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix("diff "))
+        .collect()
+}
+
+#[test]
+fn a_file_limits_the_diff_to_that_file() {
+    let dir = three_edited_files();
+
+    let result = diff(dir.path(), &["dir/b.txt"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(shown(&result.stdout), ["dir/b.txt"], "{}", result.stdout);
+}
+
+#[test]
+fn a_directory_shows_everything_below_it() {
+    let dir = three_edited_files();
+
+    for operand in ["dir", "dir/", "./dir"] {
+        let result = diff(dir.path(), &[operand]);
+
+        assert_eq!(result.code, 0, "{operand}: {}", result.stderr);
+        assert_eq!(
+            shown(&result.stdout),
+            ["dir/b.txt", "dir/sub/c.txt"],
+            "{operand}"
+        );
+    }
+}
+
+#[test]
+fn a_name_that_only_begins_like_a_directory_does_not_match_it() {
+    let dir = repository();
+    write(dir.path(), "dir/a.txt", "one\n");
+    write(dir.path(), "dir2/b.txt", "one\n");
+    track_ok(dir.path(), "dir");
+    track_ok(dir.path(), "dir2");
+    commit(dir.path(), "first");
+    write(dir.path(), "dir/a.txt", "two\n");
+    write(dir.path(), "dir2/b.txt", "two\n");
+
+    let result = diff(dir.path(), &["dir"]);
+
+    assert_eq!(shown(&result.stdout), ["dir/a.txt"], "{}", result.stdout);
+}
+
+#[test]
+fn several_paths_show_the_files_of_each_in_the_order_of_the_diff() {
+    let dir = three_edited_files();
+
+    let result = diff(dir.path(), &["dir/sub", "a.txt"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        shown(&result.stdout),
+        ["a.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn the_dot_selects_every_file() {
+    let dir = three_edited_files();
+
+    let result = diff(dir.path(), &["."]);
+
+    assert_eq!(
+        shown(&result.stdout),
+        ["a.txt", "dir/b.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn the_dot_from_a_subdirectory_selects_that_directory_only() {
+    let dir = three_edited_files();
+
+    let result = diff(&dir.path().join("dir"), &["."]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        shown(&result.stdout),
+        ["dir/b.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_path_above_the_root_from_a_subdirectory_is_refused() {
+    let dir = three_edited_files();
+
+    let result = diff(&dir.path().join("dir"), &["../../outside"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(result.stderr.contains("cannot limit"), "{}", result.stderr);
+}
+
+#[test]
+fn two_commits_and_a_path_compare_the_commits_and_ignore_the_working_copy() {
+    let dir = repository();
+    for file in ["a.txt", "b.txt"] {
+        write(dir.path(), file, "one\n");
+        track_ok(dir.path(), file);
+    }
+    let first = commit(dir.path(), "first");
+    write(dir.path(), "a.txt", "two\n");
+    write(dir.path(), "b.txt", "two\n");
+    let second = commit(dir.path(), "second");
+    write(dir.path(), "a.txt", "three\n");
+
+    let result = diff(dir.path(), &[first.as_str(), second.as_str(), "b.txt"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(shown(&result.stdout), ["b.txt"], "{}", result.stdout);
+    assert!(result.stdout.contains("\n+two\n"), "{}", result.stdout);
+    assert!(!result.stdout.contains("three"), "{}", result.stdout);
+}
+
+#[test]
+fn a_commit_that_is_not_the_parent_limits_the_comparison_with_the_working_copy() {
+    let dir = repository();
+    for file in ["a.txt", "b.txt"] {
+        write(dir.path(), file, "one\n");
+        track_ok(dir.path(), file);
+    }
+    let first = commit(dir.path(), "first");
+    write(dir.path(), "a.txt", "two\n");
+    commit(dir.path(), "second");
+    write(dir.path(), "b.txt", "two\n");
+
+    // Against the first commit `a.txt` differs too; against the parent only `b.txt` does.
+    let all = diff(dir.path(), &[first.as_str()]);
+    let one = diff(dir.path(), &[first.as_str(), "a.txt"]);
+
+    assert_eq!(shown(&all.stdout), ["a.txt", "b.txt"], "{}", all.stdout);
+    assert_eq!(shown(&one.stdout), ["a.txt"], "{}", one.stdout);
+}
+
+#[test]
+fn a_directory_that_is_gone_is_selected_by_its_path() {
+    let dir = three_edited_files();
+    fs::remove_dir_all(dir.path().join("dir")).unwrap();
+
+    let result = diff(dir.path(), &["dir"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        shown(&result.stdout),
+        ["dir/b.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_missing_or_invalid_path_ends_with_1_also_with_the_exit_code_option() {
+    let dir = three_edited_files();
+
+    for operand in ["typo.txt", "../outside"] {
+        let result = diff(dir.path(), &["--exit-code", operand]);
+
+        assert_eq!(result.code, 1, "{operand}: {}", result.stdout);
+        assert_eq!(result.stdout, "", "{operand}");
+    }
+}
+
+#[test]
+fn a_mistyped_identifier_is_named_as_a_commit_and_not_as_a_path() {
+    let dir = three_edited_files();
+
+    let result = diff(dir.path(), &["B3:abc"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("not the identifier of a commit"),
+        "{}",
+        result.stderr
+    );
+}
+
+#[test]
+fn paths_follow_a_commit_with_or_without_the_separator() {
+    let dir = three_edited_files();
+    let old = old_side(&diff(dir.path(), &[]).stdout);
+
+    for operands in [
+        vec![old.as_str(), "a.txt"],
+        vec![old.as_str(), "--", "a.txt"],
+        vec!["--", "a.txt"],
+    ] {
+        let result = diff(dir.path(), &operands);
+
+        assert_eq!(result.code, 0, "{operands:?}: {}", result.stderr);
+        assert_eq!(shown(&result.stdout), ["a.txt"], "{operands:?}");
+    }
+}
+
+#[test]
+fn a_path_that_looks_like_an_identifier_needs_the_separator() {
+    let dir = three_edited_files();
+    let name = format!("b3:{}", "0".repeat(64));
+    write(dir.path(), &name, "one\n");
+    track_ok(dir.path(), &format!("./{name}"));
+    commit(dir.path(), "named like an identifier");
+    write(dir.path(), &name, "two\n");
+
+    let without = diff(dir.path(), &[name.as_str()]);
+    let with = diff(dir.path(), &["--", name.as_str()]);
+
+    // Without `--` it is a commit, and no commit has this identifier.
+    assert_eq!(without.code, 1, "{}", without.stdout);
+    assert!(without.stderr.contains("not the identifier of a commit"));
+    assert_eq!(with.code, 0, "{}", with.stderr);
+    assert_eq!(shown(&with.stdout), [name.as_str()], "{}", with.stdout);
+}
+
+#[test]
+fn an_added_and_a_deleted_file_are_selected_by_their_path() {
+    let dir = repository();
+    write(dir.path(), "gone.txt", "one\n");
+    track_ok(dir.path(), "gone.txt");
+    commit(dir.path(), "first");
+    fs::remove_file(dir.path().join("gone.txt")).unwrap();
+    write(dir.path(), "new.txt", "one\n");
+    track_ok(dir.path(), "new.txt");
+
+    let deleted = diff(dir.path(), &["gone.txt"]);
+    let added = diff(dir.path(), &["new.txt"]);
+
+    assert_eq!(deleted.code, 0, "{}", deleted.stderr);
+    assert_eq!(shown(&deleted.stdout), ["gone.txt"]);
+    assert_eq!(added.code, 0, "{}", added.stderr);
+    assert_eq!(shown(&added.stdout), ["new.txt"]);
+}
+
+#[test]
+fn a_path_on_neither_side_is_an_error_and_shows_nothing() {
+    let dir = three_edited_files();
+
+    let result = diff(dir.path(), &["a.txt", "typo.txt"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert_eq!(result.stdout, "");
+    assert!(result.stderr.contains("`typo.txt`"), "{}", result.stderr);
+}
+
+#[test]
+fn a_file_that_is_not_tracked_is_on_neither_side() {
+    let dir = three_edited_files();
+    write(dir.path(), "loose.txt", "x\n");
+
+    let result = diff(dir.path(), &["loose.txt"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(result.stderr.contains("not tracked"), "{}", result.stderr);
+}
+
+#[test]
+fn a_path_that_leaves_the_repository_is_refused_before_anything_is_saved() {
+    let dir = three_edited_files();
+    let before = operations(dir.path());
+
+    for operand in ["../outside", "a/../b", "/etc/passwd", ""] {
+        let result = diff(dir.path(), &["--", operand]);
+
+        assert_eq!(result.code, 1, "{operand:?}: {}", result.stdout);
+        assert!(
+            result.stderr.contains("cannot limit"),
+            "{operand:?}: {}",
+            result.stderr
+        );
+    }
+    assert_eq!(operations(dir.path()), before);
+}
+
+#[test]
+fn a_path_is_relative_to_the_directory_of_the_command() {
+    let dir = three_edited_files();
+    let sub = dir.path().join("dir");
+
+    let result = diff(&sub, &["sub", "../a.txt"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        shown(&result.stdout),
+        ["a.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn the_exit_code_4_looks_only_at_the_selected_files() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one\n");
+    write(dir.path(), "b.txt", "one\n");
+    track_ok(dir.path(), "a.txt");
+    track_ok(dir.path(), "b.txt");
+    commit(dir.path(), "first");
+    write(dir.path(), "a.txt", "two\n");
+
+    let differs = diff(dir.path(), &["--exit-code", "a.txt"]);
+    let equal = diff(dir.path(), &["--exit-code", "b.txt"]);
+
+    assert_eq!(differs.code, 4, "{}", differs.stderr);
+    assert_eq!(equal.code, 0, "{}", equal.stderr);
+    assert_eq!(equal.stdout, "");
+}
+
+#[test]
+fn more_than_two_commits_before_the_separator_are_a_usage_error() {
+    let dir = three_edited_files();
+    let id = format!("b3:{}", "0".repeat(64));
+
+    let result = diff(dir.path(), &[&id, &id, &id, "--", "a.txt"]);
+
+    assert_eq!(result.code, 2, "{}", result.stderr);
+}
+
+#[test]
+fn the_usage_error_for_too_many_commits_comes_before_the_actor_and_the_repository() {
+    // No actor and no repository: the usage error is still the first.
+    let dir = Dir::new();
+    let id = format!("b3:{}", "0".repeat(64));
+
+    let result = run(dir.path(), &["diff", &id, &id, &id]);
+
+    assert_eq!(result.code, 2, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("at most two commits"),
+        "{}",
+        result.stderr
+    );
+}

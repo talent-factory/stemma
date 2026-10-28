@@ -784,7 +784,7 @@ Zeigt die Änderungen zwischen zwei Commits oder zwischen einem Commit und dem
 Working-Copy-Commit, zeilenweise mit Kontext (ADR-010).
 
 \starttyping
-stemma diff [-C VERZEICHNIS] --actor AKTEUR [--exit-code] [--tui] [COMMIT [COMMIT]]
+stemma diff [-C VERZEICHNIS] --actor AKTEUR [--exit-code] [--tui] [COMMIT [COMMIT]] [--] [PFAD...]
 \stoptyping
 
 \startitemize
@@ -800,13 +800,24 @@ auf der Standardausgabe.
 also \type{b3:} gefolgt vom Hash. Ohne Argument vergleicht der Befehl den Working-Copy-Commit
 mit seinem Elternteil. Mit einem Argument vergleicht er diesen Commit mit dem
 Working-Copy-Commit. Mit zwei Argumenten vergleicht er den ersten mit dem zweiten.
-Mehr als zwei Argumente sind ein Aufruffehler (Exit-Code 2).
+Mehr als zwei Kennungen sind ein Aufruffehler (Exit-Code 2).
+\item {\bf \type{PFAD}:} Eine Datei oder ein Verzeichnis, auf das der Befehl die Ausgabe
+beschränkt. Ein Verzeichnis wählt alle Dateien darunter; \type{.} wählt alle. Mehrere Pfade
+wählen die Vereinigung ihrer Dateien. Ohne Pfad zeigt der Befehl jede Datei, die sich
+unterscheidet. Ein Pfad gilt relativ zum Verzeichnis, in dem der Befehl läuft (\type{-C}), wie
+bei \type{track}; \type{./a} und \type{a/} sind \type{a}. Ohne \type{--} sind die führenden
+Argumente, die mit \type{b3:} beginnen, Kennungen; das erste andere Argument und alle danach
+sind Pfade, auch wenn sie mit \type{b3:} beginnen. Mit \type{--} sind alle Argumente davor
+Kennungen und alle danach Pfade. Ein Pfad, der mit \type{b3:} beginnt, steht also hinter
+\type{--}.
 \stopitemize
 
 {\bf Verhalten.} Ist eine Seite der Working-Copy-Commit, speichert der Befehl zuerst die
 verfolgten Dateien wie ein Snapshot (Operation \type{snapshot}), wie \type{status} es tut.
 Danach vergleicht er die Dateien der beiden Seiten nach ihrem Inhalt; der Modus zählt nicht.
 Eine Datei, die auf beiden Seiten gleich ist, erscheint nicht.
+Mit Pfaden beschränkt der Befehl nur die Ausgabe: Der Snapshot umfasst weiter alle verfolgten
+Dateien, und \type{--exit-code} betrachtet nur die gewählten Dateien.
 Eine Datei mit einem NUL-Byte in den ersten 8000 Bytes ist binär: Der Befehl zeigt ihren
 Inhalt nicht, sondern nur die Zeile \type{Binary files ... and ... differ} mit den beiden
 Seiten, wie sie im Kopf stehen. Ist eine der beiden Fassungen binär, gilt das für die ganze Datei.
@@ -894,6 +905,10 @@ ehe er etwas liest oder speichert; Skripte nehmen \type{diff} ohne \type{--tui}.
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist, wenn das Verzeichnis
 in keinem Repository liegt, wenn ein Argument keine Kennung eines Commits im Repository ist
 (auch die eines Baums oder einer Datei gilt als unbekannt),
+wenn ein Pfad leer oder absolut ist oder einen Teil \type{..} behält (der Befehl prüft das,
+ehe er etwas speichert), wenn ein Pfad auf keiner der beiden Seiten vorkommt
+(ein Tippfehler, aber auch eine Datei, die nicht verfolgt wird oder die \type{.stemmaignore}
+ausschliesst; ein Pfad ohne Unterschied darunter ist dagegen ein leerer Diff),
 wenn der Snapshot fehlschlägt oder wenn eine Referenz nicht lesbar ist.
 Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt oder wenn die Oberfläche
 von \type{--tui} ausfällt, etwa weil sich das Terminal nicht einrichten lässt.
@@ -908,9 +923,16 @@ Schliesst der Leser der Ausgabe die Pipe früh, endet der Befehl ohne Fehler; mi
 unterscheiden. Mit \type{--exit-code} endet er mit 4, wenn sich mindestens eine Datei
 unterscheidet, und sonst mit 0. Git nimmt dafür 1; hier bleibt 1 den Fehlern vorbehalten.
 
-{\bf Grenzen.} Der Befehl nimmt keine Pfade und keine Namen wie \type{HEAD} oder einen
-Branch an; er löst nur Kennungen auf. Eine Verschiebung von Zeilen zeigt er als Löschung
-und Einfügung. Eine Option für ein Format für Maschinen gibt es nicht.
+{\bf Grenzen.} Der Befehl nimmt keine Namen wie \type{HEAD} oder einen
+Branch an; er löst nur Kennungen auf. Ein Pfad ist ein Name, kein Muster.
+Eine Verschiebung von Zeilen zeigt er als Löschung und Einfügung.
+Eine Option für ein Format für Maschinen gibt es nicht.
+
+{\bf Wiederholung.} Der Befehl lässt sich nach Erfolg und nach einem Fehler gefahrlos
+wiederholen; er ändert nur das Operation Log. Ein Pfad, der auf keiner Seite vorkommt,
+fällt erst auf, wenn der Snapshot geschrieben ist, weil die Dateien der Arbeitskopie erst
+dann feststehen. Der Befehl endet dann mit Exit-Code 1, und die Meldung nennt den Eintrag
+des Snapshots. Ein ungültiger Pfad schreibt nichts.
 
 {\bf Beispiele.}
 
@@ -920,6 +942,8 @@ stemma diff --actor "human daniel" --exit-code
 stemma diff --actor "human daniel" --tui
 stemma diff b3:4f2a0c… --actor "human daniel"
 stemma diff b3:4f2a0c… b3:7d9e21… --actor "human daniel"
+stemma diff --actor "human daniel" src/main.rs docs
+stemma diff b3:4f2a0c… --actor "human daniel" -- b3:notiz.txt
 \stoptyping
 
 \section{op log}

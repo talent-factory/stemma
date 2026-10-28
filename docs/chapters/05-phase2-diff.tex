@@ -33,6 +33,16 @@ Eine Grössengrenze gibt es in Phase 2 nicht.
 \item Die Seiten des Diffs werden über ihre Kennungen benannt, wie \type{op log} sie
 anzeigt. Die Arbeitskopie erscheint als \type{working-copy} mit ihrer Snapshot-Kennung,
 ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
+\item Der Diff lässt sich auf Dateien und Verzeichnisse beschränken, wie \type{git diff -- PFAD}.
+Ein Pfad wählt eine Datei oder ein Verzeichnis samt allem darunter; Globs und eine Sprache für
+Pfadmuster folgen später. Der Pfad gilt relativ zum Arbeitsverzeichnis und wird wie bei
+\type{track} umgeformt; er darf das Repository nicht verlassen. Eine Kennung beginnt immer mit
+\type{b3:}, darum lassen sich Kennung und Pfad unterscheiden; ein Pfad, der so beginnt, steht
+hinter \type{--}. Ein Pfad, der auf keiner der beiden Seiten vorkommt, ist ein Fehler und kein
+leerer Diff, damit ein Tippfehler auffällt. Das gilt auch für eine Datei, die nicht verfolgt
+wird oder die \type{.stemmaignore} ausschliesst, denn sie steht in keinem Commit. Der Snapshot
+umfasst weiter alle verfolgten Dateien; nur die Ausgabe ist beschränkt, und
+\type{--exit-code} betrachtet nur die gewählten Dateien.
 \item Keine Ausgabe für Maschinen in Phase 2. Die Hunk-Struktur im Kern sind reine Daten,
 auf die das Format aus Phase 6 aufsetzen kann (Kapitel 9).
 \stopitemize

@@ -212,6 +212,19 @@ pub enum DiffError {
         /// The operand as it was given.
         operand: String,
     },
+    /// A path that limits the diff is empty, absolute, or has a part `..`. It is checked before
+    /// the working copy is saved.
+    InvalidPath {
+        /// The path as it was passed to [`Repository::diff_paths`].
+        path: String,
+    },
+    /// A path that limits the diff is a file or directory on neither side, so a typo does not
+    /// pass as an empty diff. A file that exists only in the working directory, untracked or
+    /// excluded by `.stemmaignore`, is on neither side either.
+    NoSuchPath {
+        /// The path as it was passed to [`Repository::diff_paths`].
+        path: String,
+    },
     /// The working copy was saved as an entry of the operation log, and then the diff failed.
     AfterSnapshot {
         /// The number of the entry of the snapshot.
@@ -235,6 +248,17 @@ impl fmt::Display for DiffError {
                     "`{operand}` is not the identifier of a commit in this repository"
                 )
             }
+            Self::InvalidPath { path } => write!(
+                f,
+                "`{path}` cannot limit the diff: a path must not be empty or absolute, and must \
+                 stay in the repository"
+            ),
+            Self::NoSuchPath { path } => write!(
+                f,
+                "`{path}` is not a file or directory on either side of the diff (a file that is \
+                 not tracked, or that `.stemmaignore` excludes, is on neither; `stemma track` \
+                 adds it)"
+            ),
             Self::AfterSnapshot { entry, source } => write!(
                 f,
                 "{source}; the working copy was saved first as entry {entry} of the operation log"
@@ -251,7 +275,11 @@ impl Error for DiffError {
             Self::Snapshot(error) => Some(error),
             Self::Refs(error) => Some(error),
             Self::Store(error) => Some(error),
-            Self::Missing { .. } | Self::Damaged { .. } | Self::UnknownCommit { .. } => None,
+            Self::Missing { .. }
+            | Self::Damaged { .. }
+            | Self::UnknownCommit { .. }
+            | Self::InvalidPath { .. }
+            | Self::NoSuchPath { .. } => None,
         }
     }
 }
@@ -286,8 +314,34 @@ impl Repository {
         authorizer: &dyn Authorizer,
         comparison: Comparison<'_>,
     ) -> Result<Diff, DiffError> {
+        self.diff_paths(actor, authorizer, comparison, &[])
+    }
+
+    /// Compares two sides as [`Repository::diff`] does, and keeps only the files that `paths`
+    /// select. A path is relative to the root of the repository, in the form that
+    /// [`normalize_path_in`](super::normalize_path_in) gives, and selects the file with that path
+    /// or every file below the directory with that path; `.` selects every file. No path selects
+    /// every file. The snapshot of the working copy covers every tracked file all the same: only
+    /// the result is limited.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Repository::diff`]; [`DiffError::InvalidPath`] for a path that is
+    /// empty, absolute, or has a part `..`, before the working copy is saved; and
+    /// [`DiffError::NoSuchPath`] for a path that selects no file of either side, even if no file
+    /// differs below it.
+    pub fn diff_paths(
+        &self,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+        comparison: Comparison<'_>,
+        paths: &[String],
+    ) -> Result<Diff, DiffError> {
+        if let Some(path) = paths.iter().find(|path| !is_repository_path(path)) {
+            return Err(DiffError::InvalidPath { path: path.clone() });
+        }
         let mut saved = None;
-        self.compare_sides(actor, authorizer, comparison, &mut saved)
+        self.compare_sides(actor, authorizer, comparison, paths, &mut saved)
             .map_err(|error| match saved {
                 Some(entry) => DiffError::AfterSnapshot {
                     entry,
@@ -303,6 +357,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
         comparison: Comparison<'_>,
+        paths: &[String],
         saved: &mut Option<u64>,
     ) -> Result<Diff, DiffError> {
         let (old, new) = match comparison {
@@ -328,9 +383,20 @@ impl Repository {
             None => BTreeMap::new(),
         };
         let new_files = self.files_of(new.commit())?;
-        let paths: BTreeSet<&String> = old_files.keys().chain(new_files.keys()).collect();
+        let all: BTreeSet<&String> = old_files.keys().chain(new_files.keys()).collect();
+        if let Some(missing) = paths
+            .iter()
+            .find(|selected| *selected != "." && !all.iter().any(|path| selects(selected, path)))
+        {
+            return Err(DiffError::NoSuchPath {
+                path: missing.clone(),
+            });
+        }
         let mut files = Vec::new();
-        for path in paths {
+        for path in all {
+            if !paths.is_empty() && !paths.iter().any(|selected| selects(selected, path)) {
+                continue;
+            }
             let before = old_files.get(path).copied();
             let after = new_files.get(path).copied();
             if before == after {
@@ -409,6 +475,27 @@ impl Repository {
         };
         Ok(read_raw(self.objects(), id, Kind::Blob)?.body().to_vec())
     }
+}
+
+/// Tells whether a path that limits a diff is in the form of the repository: not empty, not
+/// absolute, without a part `..`, and without an empty part or a trailing `/`. `.` alone is the
+/// root.
+fn is_repository_path(path: &str) -> bool {
+    path == "."
+        || (!path.is_empty()
+            && path
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != ".."))
+}
+
+/// Tells whether the selected path stands for the file: it is the file, the directory above it,
+/// or the root.
+fn selects(selected: &str, file: &str) -> bool {
+    selected == "."
+        || file == selected
+        || file
+            .strip_prefix(selected)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Reads an object of the kind, or fails if the store lacks it.
