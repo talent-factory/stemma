@@ -429,7 +429,8 @@ pub enum TrackError {
         /// The path of the repository, relative to its root, as it was passed to
         /// [`Repository::track`].
         path: String,
-        /// The path as the directories spell it, if a name differs in case only.
+        /// The path as the directories spell it, if a name differs in case only. Like `path`, it is
+        /// relative to the root of the repository, not to the directory the caller works in.
         on_disk: Option<String>,
     },
     /// The path is excluded by a pattern of `.stemmaignore` (ADR-012): not even a path that the
@@ -529,7 +530,7 @@ impl fmt::Display for TrackError {
                 on_disk: Some(on_disk),
             } => write!(
                 f,
-                "`{}` is not spelled as on disk; use `{}`",
+                "`{}` is not spelled as on disk; use `{}` (relative to the root of the repository)",
                 path.escape_debug(),
                 on_disk.escape_debug()
             ),
