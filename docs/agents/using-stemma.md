@@ -135,8 +135,12 @@ that the design foresees does not exist yet. Until it does, the rule is administ
   the root does not sweep up the files of the worktrees (Claude Code creates its worktrees under
   `.claude/worktrees/`).
 
-Whether a command should warn in a worktree, and how a workspace keeps its history after the
-merge, is decided in phase 3 (STEMMA-132).
+A command in a Git worktree or a nested clone below the root warns on stderr
+(`stemma: warning: ... lies in the Git checkout ...`, STEMMA-132) and still runs, with the exit
+code of the command. The warning is a sign to stop, not a permission to continue. After a
+`stemma init` in the worktree there is no warning, because the repository is found at the start;
+that is the second case above, and nothing protects the history then. How a workspace keeps its
+history after the merge is decided in phase 3.
 
 ## Not yet there
 

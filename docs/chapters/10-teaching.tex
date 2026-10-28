@@ -359,11 +359,12 @@ damit zwei Agenten nicht im selben Verzeichnis schreiben.
 Eine Regel des Repositories ist das nur für die Prüfung des Buches;
 es entspricht aber der Konvention, die Stemma für seine Arbeitskopien aufstellt (ADR-010).
 Stemma selbst läuft in einem solchen Worktree bis Phase~3 nicht:
-Ein Befehl dort öffnet das \type{.stemma} der Wurzel,
+Ein Befehl dort läuft zwar, öffnet aber das \type{.stemma} der Wurzel
+und meldet das als Warnung (ADR-009),
 und ein eigenes \type{.stemma} im Worktree geht mit \type{git worktree remove} verloren,
 denn Git trägt das ignorierte Verzeichnis nicht in den Merge
 und Stemma kennt vor Phase~3 keinen Merge.
-Dann ist zu entscheiden, wie ein Workspace seine Historie behält (STEMMA-132).
+In Phase~3 ist zu entscheiden, wie ein Workspace seine Historie behält.
 Ein kleiner Pull Request passt zur Arbeit mit Agenten,
 weil der Mensch das Ergebnis einer Sitzung vollständig prüfen kann,
 bevor die nächste darauf aufbaut.

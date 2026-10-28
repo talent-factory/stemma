@@ -266,6 +266,54 @@ fn a_command_in_a_link_into_a_repository_warns_where_it_works() {
 }
 
 #[test]
+fn a_command_in_a_git_checkout_below_the_root_warns_where_it_works() {
+    let dir = repository();
+    // A Git worktree has a `.git` file, a nested clone a `.git` directory.
+    let worktree = dir.path().join(".worktrees/task");
+    fs::create_dir_all(worktree.join("src")).unwrap();
+    write(&worktree, ".git", "gitdir: /elsewhere\n");
+    let clone = dir.path().join("vendor/lib");
+    fs::create_dir_all(clone.join(".git")).unwrap();
+    for start in [&worktree, &worktree.join("src"), &clone] {
+        let result = run(start, &["status", "--actor", ACTOR]);
+        assert_eq!(result.code, 0, "{}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .contains("stemma: warning: `.` lies in the Git checkout `")
+                && result.stderr.contains("` inside the repository at `"),
+            "{}",
+            result.stderr
+        );
+        // Once, and not on the standard output.
+        assert_eq!(
+            result.stderr.matches("lies in the Git checkout").count(),
+            1,
+            "{}",
+            result.stderr
+        );
+        assert!(!result.stdout.contains("warning"), "{}", result.stdout);
+    }
+    // A command that writes warns too, and still runs.
+    write(&worktree, "a.txt", "one");
+    let result = track(&worktree, &["a.txt"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("lies in the Git checkout"),
+        "{}",
+        result.stderr
+    );
+    // The `.git` of the root itself is the normal case, and a plain subdirectory is quiet.
+    fs::create_dir(dir.path().join(".git")).unwrap();
+    fs::create_dir(dir.path().join("plain")).unwrap();
+    for start in [dir.path(), &dir.path().join("plain")] {
+        let result = run(start, &["status", "--actor", ACTOR]);
+        assert_eq!(result.code, 0, "{}", result.stderr);
+        assert!(!result.stderr.contains("warning"), "{}", result.stderr);
+    }
+}
+
+#[test]
 fn a_repository_without_a_working_copy_commit_fails_with_code_1_and_changes_nothing() {
     let dir = repository();
     write(dir.path(), "a.txt", "one");
