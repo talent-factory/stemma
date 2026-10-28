@@ -133,8 +133,9 @@ documented in the book chapter of that slice.
 - **A generation number for the merge base.** `merge_bases` walks the full ancestor sets of both
   tips and reads no commit date, which is linear in the size of the history. A generation number
   (the length of the longest path to a root) would end the walk early, but it is derived data
-  with a cache of its own. It is a later optimisation if a measurement asks for it, and the
-  function needs no change of its interface to take it.
+  with a cache of its own. It is a later optimisation if a measurement asks for it. It would
+  change the inputs of the function (a handle to the cache, and the format version that the first
+  entry raises), not its result.
 - **One database file** (for example SQLite). A new dependency (level 2 under ADR-004), a lock
   of its own, and a second durability story. Rejected for now; files by key are enough.
 
