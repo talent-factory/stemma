@@ -44,6 +44,10 @@ other).
     file is tracked without a word. The spelling rule of `track` (ADR-010) makes a *named path*
     spell the names as they are on disk, but it does not change what the person wrote in the
     file (see the open items).
+  - The file is read only under its exact name `.stemmaignore`. A directory that has it under
+    another spelling, such as `.StemmaIgnore`, is an error: a file system that ignores case
+    would open the file, a clone on another system would not find it, and the secrets that it
+    excludes would be tracked there.
   - A trailing `/` matches a directory, and a link is no directory (a link is never followed),
     so `target/` does not exclude a link named `target`; `target` does.
   - There is no escape, no character class, and no negation. A pattern with `\`, `[`, `]`, or a
