@@ -1,6 +1,7 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
-//! index, object storage, references (branches and HEAD, ADR-008), the repository (ADR-009), and
-//! the operation log (ADR-011), and the exclusion file `.stemmaignore` (ADR-012).
+//! index, object storage, references (branches and HEAD, ADR-008), the repository (ADR-009),
+//! the operation log (ADR-011), the exclusion file `.stemmaignore` (ADR-012), and the best common
+//! ancestors of two commits ([`merge_base`]).
 //!
 //! # Errors
 //!
@@ -20,11 +21,11 @@
 //! `root_cause()` of an error library. A program that wants the error of the file system, for
 //! example to map [`std::io::ErrorKind`] to an exit code, asks the error:
 //! [`store::StoreError::io_error`] for the store, and `store_error()` on [`store::ReadError`],
-//! [`index::WriteTreeError`], [`refs::RefError`], and [`verify::VerifyError`] (the error of a
-//! check of an index, a tree, a commit, or a reference) for the error of the store
-//! inside. [`repository::InitError`], [`repository::OpenError`], and [`change::GenerateError`]
-//! have an `io_error()` for the error of the file system or of the operating system, and so do
-//! [`oplog::OpLogError`] and [`repository::UpdateError`]. A program
+//! [`index::WriteTreeError`], [`refs::RefError`], [`merge_base::MergeBaseError`], and
+//! [`verify::VerifyError`] (the error of a check of an index, a tree, a commit, or a reference)
+//! for the error of the store inside. [`repository::InitError`], [`repository::OpenError`], and
+//! [`change::GenerateError`] have an `io_error()` for the error of the file system or of the
+//! operating system, and so do [`oplog::OpLogError`] and [`repository::UpdateError`]. A program
 //! that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
@@ -37,6 +38,7 @@ pub mod failure;
 pub mod fuzz;
 pub mod ignore;
 pub mod index;
+pub mod merge_base;
 pub mod object;
 pub mod oplog;
 #[cfg(test)]

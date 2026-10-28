@@ -53,6 +53,16 @@ _Avoid_: Change hash
 The graph of commits and their parents. (Verlauf)
 _Avoid_: Historie, log (for the commit graph)
 
+**Merge base**:
+A best common ancestor of two commits: a commit that both have as an ancestor (each counts as its
+own) and that is no ancestor of another such commit. There can be none, one, or several.
+(Merge-Basis)
+_Avoid_: Common ancestor (alone), fork point
+
+**Criss-cross merge**:
+A history in which two merges each take in the other side, so that the two commits have several
+merge bases. (Criss-Cross-Merge)
+
 ## Working copy
 
 **Working directory**:

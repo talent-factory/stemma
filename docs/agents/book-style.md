@@ -124,6 +124,8 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Arbeitsverzeichnis | Arbeitsordner | The directory on disk that holds the files |
 | Snapshot | Schnappschuss | Recording the working directory into the Working-Copy-Commit |
 | Verlauf | Historie, History | The commit graph |
+| Merge-Basis | gemeinsamer Vorfahre (alone) | A best common ancestor of two commits (ADR-017) |
+| Criss-Cross-Merge | | A history in which two merges each take in the other side, so that there are several merge bases |
 | Zeiger | | A branch, HEAD, or the working-copy reference |
 | Zeigerbewegung | Zug | Setting a pointer from an old to a new value |
 | Operation Log, Eintrag | Operationslog, Logeintrag | ADR-011 |
