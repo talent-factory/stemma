@@ -675,7 +675,9 @@ impl Repository {
         ))?;
         let journal = read()?;
         if journal.plan.blob != asked.plan.blob {
-            self.authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
+            // The lock is held already, so this second proof only gates the journal.
+            let _ = self
+                .authorize_purge(actor, authorizer, &journal.plan.blob.to_string())
                 .map_err(ApplyPurgeError::Plan)?;
         }
         Ok((journal, lock))
@@ -1299,6 +1301,30 @@ mod tests {
         assert_purged(&dir, &repository, &purged);
         assert_eq!(format(&dir), "stemma-repository 4\n");
         assert!(repository.oplog().verify().is_ok());
+    }
+
+    #[test]
+    fn a_refusal_of_the_authorizer_leaves_a_pending_purge_as_it_was() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        let lock = dir.path().join(".stemma/refs.lock");
+        let held = fs::read(&lock).ok();
+        let error = repository.resume_purge(&actor(), &DenyAll).unwrap_err();
+        assert!(
+            matches!(error, ApplyPurgeError::Plan(PurgeError::Update(_))),
+            "{error:?}"
+        );
+        let error = repository.abort_purge(&actor(), &DenyAll).unwrap_err();
+        assert!(
+            matches!(error, ApplyPurgeError::Plan(PurgeError::Update(_))),
+            "{error:?}"
+        );
+        // The lock was not taken over and the journal is still there: an allowed resume finishes.
+        assert_eq!(fs::read(&lock).ok(), held);
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_purged(&dir, &repository, &purged);
     }
 
     #[test]

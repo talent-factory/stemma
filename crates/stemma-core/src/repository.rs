@@ -694,7 +694,7 @@ impl Repository {
         outcome.into_result()
     }
 
-    /// Asks the authorizer, and returns the proof that it allowed `operation`, which the locks of
+    /// Asks the authorizer, and returns the proof that it allowed some operation, which the locks of
     /// the references require.
     fn authorize(
         &self,

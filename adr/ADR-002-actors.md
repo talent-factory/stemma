@@ -18,11 +18,15 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
 - **A write cannot start without the answer of the authorizer** *(confirmed)*. The answer is a
   value, `Allowed`, which only a `Decision::Allow` can make: its field is private to the module
   that holds it, so no other code can forge it. The functions that open a write take it as an
-  argument: the three locks of the references (`lock_writer`, `lock_purge`, `take_over_lock`),
-  which every change of a pointer and every entry of the log needs, and the installation of a new
-  repository for `init`. A path that never asks the authorizer has no `Allowed` to pass, so it does
-  not compile. The proof does not say which operation was allowed: it is the check that the
-  question was asked, and the operation name stays with the call that asks.
+  argument: the three locks of the references (`lock_writer`, `lock_purge`, `take_over_lock`), the
+  mutators of the `RefStore` trait (`set_head`, `update_branch`), and the installation of a new
+  repository for `init`. A write path of `Repository` that never asks the authorizer has no
+  `Allowed` to pass, so it does not compile. The proof does not say which operation was allowed,
+  and it is bound to no target and no repository: it is the check that the question was asked,
+  and the call that asks stays responsible for writing what it asked for. Two things are not
+  covered by the type. The operation log is written only inside the lock of a `Repository`
+  operation (`FsOpLog::append` is crate-private), which is a convention. And
+  `Repository::apply_checkout` writes the working directory without an actor.
 - The CLI, API, and MCP server call the same core *(confirmed)*. Phase 1 has the CLI; the API
   comes with the hub (Phase 5), the MCP server with the agent interfaces (Phase 6).
 - **Roles belong to the policy model, not to the core code** *(confirmed)*, with one exception:
@@ -44,9 +48,8 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   ADR-004 propose what would).
 
 Implementation: `crates/stemma-core/src/actor.rs` (actors), `crates/stemma-core/src/allowed.rs`
-(the proof), `crates/stemma-cli/src/cli.rs` (the
-actor of the command line), and `crates/stemma-core/src/lib.rs`
-(authorization hook).
+(the proof), `crates/stemma-cli/src/cli.rs` (the actor of the command line), and
+`crates/stemma-core/src/lib.rs` (authorization hook).
 
 ## Open
 

@@ -144,7 +144,9 @@ impl Repository {
     ) -> Result<Option<Entry>, SnapshotError> {
         let operation =
             OperationName::new(OPERATION).expect("`snapshot` is a valid operation name");
-        self.authorize(actor, authorizer, &operation, "working-copy")
+        // The caller holds the lock already, so the proof has nothing left to open.
+        let _ = self
+            .authorize(actor, authorizer, &operation, "working-copy")
             .map_err(SnapshotError::Update)?;
         let replaced = self.replace_locked(lock, &operation, actor, |_| {
             Ok::<_, SnapshotError>(Vec::new())

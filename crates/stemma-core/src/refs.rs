@@ -707,7 +707,12 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// [`RefError::Io`] if the store or the storage fails, [`RefError::Locked`] if another change
     /// is in progress, and [`RefError::NotFlushed`] if the change was made but could not be
     /// flushed to disk. Nothing is changed in any other case.
-    fn set_head(&self, head: &Head, objects: &dyn ObjectStore) -> Result<(), RefError>;
+    fn set_head(
+        &self,
+        head: &Head,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError>;
 
     /// Returns the commit of a branch, or `None` if there is no branch with exactly this name.
     /// That includes a name that is held by another entry, such as the branch `Main` for `main`;
@@ -754,6 +759,7 @@ pub trait RefStore: crate::store::sealed::Sealed {
         expected: Option<CommitId>,
         new: CommitId,
         objects: &dyn ObjectStore,
+        allowed: &Allowed,
     ) -> Result<(), RefError>;
 
     /// Returns the commit that HEAD leads to: the commit of its branch, `None` if that branch does
@@ -2451,9 +2457,14 @@ impl RefStore for FsRefStore {
         Head::parse(&bytes).map_err(|source| RefError::Corrupt { path, source })
     }
 
-    fn set_head(&self, head: &Head, objects: &dyn ObjectStore) -> Result<(), RefError> {
+    fn set_head(
+        &self,
+        head: &Head,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError> {
         self.require_root()?;
-        let _lock = self.lock()?;
+        let _lock = self.lock_writer(allowed)?;
         // Under the lock, as in `set_head_after`: a purge that ran before it may have removed the
         // commit since a look without the lock.
         if let Head::Detached(commit) = head {
@@ -2519,9 +2530,10 @@ impl RefStore for FsRefStore {
         expected: Option<CommitId>,
         new: CommitId,
         objects: &dyn ObjectStore,
+        allowed: &Allowed,
     ) -> Result<(), RefError> {
         self.require_root()?;
-        let _lock = self.lock()?;
+        let _lock = self.lock_writer(allowed)?;
         // Under the lock, as in `update_branch_after`: a purge that ran before it may have removed
         // the commit since a look without the lock.
         Self::require_commit(&new, objects)?;
@@ -2858,7 +2870,8 @@ mod tests {
         assert_eq!(refs.branch(&main).unwrap(), None);
         assert!(refs.branches().unwrap().is_empty());
         let first = commit(&objects, "first");
-        refs.update_branch(&main, None, first, &objects).unwrap();
+        refs.update_branch(&main, None, first, &objects, &Allowed::granted())
+            .unwrap();
         assert_eq!(refs.branch(&main).unwrap(), Some(first));
         // The file is exactly the ID and a newline, and no temporary file stays behind.
         let file = dir.path().join("refs/heads/main");
@@ -2866,7 +2879,7 @@ mod tests {
         assert_eq!(files_in(&dir.path().join("tmp")), 0);
         assert!(!dir.path().join("refs.lock").exists());
         let second = commit(&objects, "second");
-        refs.update_branch(&main, Some(first), second, &objects)
+        refs.update_branch(&main, Some(first), second, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&main).unwrap(), Some(second));
         assert_eq!(files_in(&dir.path().join("tmp")), 0);
@@ -2881,10 +2894,11 @@ mod tests {
             commit(&objects, "2"),
             commit(&objects, "3"),
         );
-        refs.update_branch(&main, None, first, &objects).unwrap();
+        refs.update_branch(&main, None, first, &objects, &Allowed::granted())
+            .unwrap();
         for expected in [None, Some(second)] {
             match refs
-                .update_branch(&main, expected, third, &objects)
+                .update_branch(&main, expected, third, &objects, &Allowed::granted())
                 .unwrap_err()
             {
                 RefError::Stale {
@@ -2902,7 +2916,13 @@ mod tests {
         }
         // A branch that does not exist cannot be moved.
         let error = refs
-            .update_branch(&name("other"), Some(first), second, &objects)
+            .update_branch(
+                &name("other"),
+                Some(first),
+                second,
+                &objects,
+                &Allowed::granted(),
+            )
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Stale { found: None, .. }),
@@ -2929,7 +2949,7 @@ mod tests {
         .unwrap()
         .id();
         let error = refs
-            .update_branch(&main, None, absent, &objects)
+            .update_branch(&main, None, absent, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::MissingCommit(id) if *id == absent),
@@ -2942,7 +2962,7 @@ mod tests {
         let blob = objects.put_blob(&Blob::new("x")).unwrap();
         let blob_as_commit = CommitId::new(ObjectId::from(blob));
         let error = refs
-            .update_branch(&main, None, blob_as_commit, &objects)
+            .update_branch(&main, None, blob_as_commit, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -2973,7 +2993,8 @@ mod tests {
         let mut expected = Vec::new();
         for (n, text) in names.iter().enumerate() {
             let id = commit(&objects, &format!("c{n}"));
-            refs.update_branch(&name(text), None, id, &objects).unwrap();
+            refs.update_branch(&name(text), None, id, &objects, &Allowed::granted())
+                .unwrap();
             expected.push((name(text), id));
         }
         expected.sort();
@@ -2989,9 +3010,10 @@ mod tests {
     fn a_name_cannot_be_a_branch_and_the_start_of_other_names() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("a"), None, id, &objects).unwrap();
+        refs.update_branch(&name("a"), None, id, &objects, &Allowed::granted())
+            .unwrap();
         let error = refs
-            .update_branch(&name("a/b"), None, id, &objects)
+            .update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Conflict { with, .. } if with == "a"),
@@ -3001,17 +3023,17 @@ mod tests {
             error.to_string(),
             "branch `a/b` conflicts with `a`, which is a branch"
         );
-        refs.update_branch(&name("x/y"), None, id, &objects)
+        refs.update_branch(&name("x/y"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let error = refs
-            .update_branch(&name("x"), None, id, &objects)
+            .update_branch(&name("x"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Conflict { with, kind: ConflictKind::Directory, .. } if with == "x"),
             "{error}"
         );
         let error = refs
-            .update_branch(&name("x/y/z"), None, id, &objects)
+            .update_branch(&name("x/y/z"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Conflict { with, kind: ConflictKind::Branch, .. } if with == "x/y"),
@@ -3028,26 +3050,26 @@ mod tests {
     fn two_names_that_differ_only_in_case_are_one_name() {
         let (_dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("Main"), None, id, &objects)
+        refs.update_branch(&name("Main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Conflict { with, .. } if with == "Main"),
             "{error}"
         );
-        refs.update_branch(&name("Feat/Login"), None, id, &objects)
+        refs.update_branch(&name("Feat/Login"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let error = refs
-            .update_branch(&name("feat/login"), None, id, &objects)
+            .update_branch(&name("feat/login"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Conflict { with, .. } if with == "Feat"),
             "{error}"
         );
         let error = refs
-            .update_branch(&name("Feat/login"), None, id, &objects)
+            .update_branch(&name("Feat/login"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Conflict { with, .. } if with == "Feat/Login"),
@@ -3055,7 +3077,7 @@ mod tests {
         );
         // Moving an existing branch is not a creation and needs no such check.
         let next = commit(&objects, "next");
-        refs.update_branch(&name("Main"), Some(id), next, &objects)
+        refs.update_branch(&name("Main"), Some(id), next, &objects, &Allowed::granted())
             .unwrap();
     }
 
@@ -3072,7 +3094,7 @@ mod tests {
         let mut permissions = fs::metadata(&read_only).unwrap().permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&read_only, permissions).unwrap();
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(files_in(&tmp), 0);
     }
@@ -3088,14 +3110,14 @@ mod tests {
         fs::write(&live, b"in progress").unwrap();
         let other = FsRefStore::new(dir.path());
         let error = other
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(matches!(error, RefError::Locked { .. }), "{error}");
         assert_eq!(fs::read(&live).unwrap(), b"in progress");
         drop(writer);
         // Once the writer is gone, the next change removes what it left.
         other
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(!live.exists());
     }
@@ -3123,7 +3145,7 @@ mod tests {
         let stale = dir.path().join("tmp").join("1-0-stale");
         fs::write(&stale, b"secret").unwrap();
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(matches!(error, RefError::PurgePending { .. }), "{error}");
         assert!(stale.exists());
@@ -3141,7 +3163,7 @@ mod tests {
         let id = commit(&objects, "c");
         let neighbour = dir.path().join(".stemma-init-1-0-0123456789abcdef");
         fs::create_dir(&neighbour).unwrap();
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(neighbour.is_dir());
     }
@@ -3156,7 +3178,7 @@ mod tests {
         fs::write(&target, b"not scratch").unwrap();
         std::os::unix::fs::symlink(&target, tmp.join("link")).unwrap();
         fs::create_dir(tmp.join("directory")).unwrap();
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(
             fs::symlink_metadata(tmp.join("link")).is_err(),
@@ -3173,7 +3195,7 @@ mod tests {
         let lock = dir.path().join("refs.lock");
         fs::write(&lock, b"").unwrap();
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(&error, RefError::Locked { path, .. } if *path == lock),
@@ -3186,7 +3208,7 @@ mod tests {
             "{error}"
         );
         let error = refs
-            .set_head(&Head::Branch(name("main")), &objects)
+            .set_head(&Head::Branch(name("main")), &objects, &Allowed::granted())
             .unwrap_err();
         assert!(matches!(error, RefError::Locked { .. }));
         assert!(
@@ -3195,7 +3217,7 @@ mod tests {
         );
         assert_eq!(refs.branch(&name("main")).unwrap(), None);
         fs::remove_file(&lock).unwrap();
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
     }
 
@@ -3203,7 +3225,7 @@ mod tests {
     fn a_file_that_is_not_canonical_is_corrupt_with_its_path() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let file = dir.path().join("refs/heads/main");
         fs::write(&file, format!("{id}")).unwrap();
@@ -3223,7 +3245,7 @@ mod tests {
         // The same file stops the listing, and a change of that branch.
         assert!(matches!(refs.branches(), Err(RefError::Corrupt { .. })));
         assert!(matches!(
-            refs.update_branch(&name("main"), Some(id), id, &objects),
+            refs.update_branch(&name("main"), Some(id), id, &objects, &Allowed::granted()),
             Err(RefError::Corrupt { .. })
         ));
         // A file in `refs/heads` whose name is not a branch name is corrupt too.
@@ -3245,16 +3267,16 @@ mod tests {
         let (dir, objects, refs) = setup();
         let error = refs.head().unwrap_err();
         assert!(matches!(&error, RefError::NoHead { path } if *path == dir.path().join("HEAD")));
-        refs.set_head(&Head::Branch(name("main")), &objects)
+        refs.set_head(&Head::Branch(name("main")), &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.head().unwrap(), Head::Branch(name("main")));
         assert_eq!(fs::read(dir.path().join("HEAD")).unwrap(), b"branch main\n");
         assert_eq!(refs.resolve_head().unwrap(), None);
         let id = commit(&objects, "c");
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.resolve_head().unwrap(), Some(id));
-        refs.set_head(&Head::Branch(name("other")), &objects)
+        refs.set_head(&Head::Branch(name("other")), &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.resolve_head().unwrap(), None);
         assert_eq!(files_in(&dir.path().join("tmp")), 0);
@@ -3265,7 +3287,8 @@ mod tests {
     fn a_detached_head_needs_a_commit_in_the_store() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.set_head(&Head::Detached(id), &objects).unwrap();
+        refs.set_head(&Head::Detached(id), &objects, &Allowed::granted())
+            .unwrap();
         assert_eq!(refs.head().unwrap(), Head::Detached(id));
         assert_eq!(
             fs::read(dir.path().join("HEAD")).unwrap(),
@@ -3274,7 +3297,7 @@ mod tests {
         assert_eq!(refs.resolve_head().unwrap(), Some(id));
         let absent = CommitId::new(ID_A.parse().unwrap());
         let error = refs
-            .set_head(&Head::Detached(absent), &objects)
+            .set_head(&Head::Detached(absent), &objects, &Allowed::granted())
             .unwrap_err();
         assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
         assert_eq!(
@@ -3314,9 +3337,9 @@ mod tests {
             refs.head().unwrap_err(),
             refs.branch(&name("main")).unwrap_err(),
             refs.branches().unwrap_err(),
-            refs.update_branch(&name("main"), None, id, &objects)
+            refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
                 .unwrap_err(),
-            refs.set_head(&Head::Branch(name("main")), &objects)
+            refs.set_head(&Head::Branch(name("main")), &objects, &Allowed::granted())
                 .unwrap_err(),
         ] {
             assert!(
@@ -3332,7 +3355,7 @@ mod tests {
     fn a_directory_in_the_place_of_a_branch_file_is_no_branch() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("a/b"), None, id, &objects)
+        refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&name("a")).unwrap(), None);
         assert_eq!(refs.branches().unwrap(), vec![(name("a/b"), id)]);
@@ -3352,7 +3375,16 @@ mod tests {
                     let (barrier, refs, objects) = (barrier.clone(), refs.clone(), dir.store());
                     scope.spawn(move || {
                         barrier.wait();
-                        (id, refs.update_branch(&name("main"), None, id, &objects))
+                        (
+                            id,
+                            refs.update_branch(
+                                &name("main"),
+                                None,
+                                id,
+                                &objects,
+                                &Allowed::granted(),
+                            ),
+                        )
                     })
                 })
                 .collect();
@@ -3385,7 +3417,7 @@ mod tests {
         let id = commit(&objects, "c");
         let faulty = FaultyStore::new(dir.store(), true, false);
         let error = refs
-            .update_branch(&name("main"), None, id, &faulty)
+            .update_branch(&name("main"), None, id, &faulty, &Allowed::granted())
             .unwrap_err();
         // A failure of the file system is an `Io`, whether it comes from the object store or from
         // the reference files.
@@ -3467,7 +3499,8 @@ mod tests {
         let (_dir, objects, refs) = setup();
         let id = commit(&objects, "c");
         for text in ["a", "x/y", "Main"] {
-            refs.update_branch(&name(text), None, id, &objects).unwrap();
+            refs.update_branch(&name(text), None, id, &objects, &Allowed::granted())
+                .unwrap();
         }
         for (new, with, kind) in [
             ("a/b", "a", ConflictKind::Branch),
@@ -3477,7 +3510,7 @@ mod tests {
             ("X/y", "x", ConflictKind::CaseVariant),
         ] {
             match refs
-                .update_branch(&name(new), None, id, &objects)
+                .update_branch(&name(new), None, id, &objects, &Allowed::granted())
                 .unwrap_err()
             {
                 RefError::Conflict {
@@ -3504,12 +3537,18 @@ mod tests {
     fn a_name_that_is_in_the_way_is_a_conflict_even_if_the_caller_expects_a_commit() {
         let (_dir, objects, refs) = setup();
         let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
-        refs.update_branch(&name("Main"), None, first, &objects)
+        refs.update_branch(&name("Main"), None, first, &objects, &Allowed::granted())
             .unwrap();
         // Not `Stale { found: None }`: nothing has moved, the name is held by another entry.
         for expected in [None, Some(first)] {
             let error = refs
-                .update_branch(&name("main"), expected, second, &objects)
+                .update_branch(
+                    &name("main"),
+                    expected,
+                    second,
+                    &objects,
+                    &Allowed::granted(),
+                )
                 .unwrap_err();
             assert!(
                 matches!(
@@ -3534,16 +3573,22 @@ mod tests {
         fs::create_dir_all(&leftover).unwrap();
         assert_eq!(refs.branch(&name("feat")).unwrap(), None);
         assert!(refs.branches().unwrap().is_empty());
-        refs.update_branch(&name("feat"), None, id, &objects)
+        refs.update_branch(&name("feat"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&name("feat")).unwrap(), Some(id));
         assert!(dir.path().join("refs/heads/feat").is_file());
         // A directory with a branch below it is still a directory of branches.
         fs::create_dir_all(dir.path().join("refs/heads/other/deeper")).unwrap();
-        refs.update_branch(&name("other/deeper/x"), None, id, &objects)
-            .unwrap();
+        refs.update_branch(
+            &name("other/deeper/x"),
+            None,
+            id,
+            &objects,
+            &Allowed::granted(),
+        )
+        .unwrap();
         let error = refs
-            .update_branch(&name("other"), None, id, &objects)
+            .update_branch(&name("other"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -3563,14 +3608,14 @@ mod tests {
         let id = commit(&objects, "c");
         // The variant is one level down: the directory that is cleared is the one found there.
         fs::create_dir_all(dir.path().join("refs/heads/x/Feat/deeper")).unwrap();
-        refs.update_branch(&name("x/feat"), None, id, &objects)
+        refs.update_branch(&name("x/feat"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&name("x/feat")).unwrap(), Some(id));
         // A variant that is a directory with a branch in it stays a conflict, and the branch stays.
-        refs.update_branch(&name("Main/b"), None, id, &objects)
+        refs.update_branch(&name("Main/b"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -3593,7 +3638,7 @@ mod tests {
         fs::create_dir_all(&leftover).unwrap();
         fs::write(leftover.join(".DS_Store"), b"x").unwrap();
         assert_eq!(refs.branch(&name("feat")).unwrap(), None);
-        refs.update_branch(&name("feat"), None, id, &objects)
+        refs.update_branch(&name("feat"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&name("feat")).unwrap(), Some(id));
     }
@@ -3603,14 +3648,14 @@ mod tests {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
         fs::create_dir_all(dir.path().join("refs/heads/Main/deeper")).unwrap();
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&name("main")).unwrap(), Some(id));
         // A variant that holds a branch stays a conflict.
-        refs.update_branch(&name("Other"), None, id, &objects)
+        refs.update_branch(&name("Other"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let error = refs
-            .update_branch(&name("other"), None, id, &objects)
+            .update_branch(&name("other"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -3663,14 +3708,14 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
         let error = refs
-            .update_branch(&name("feat/x"), None, id, &objects)
+            .update_branch(&name("feat/x"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(&error, RefError::Io { .. }), "{error}");
         assert!(!dir.path().join("refs/heads/feat").exists());
         assert!(!dir.path().join("refs.lock").exists());
         // The name is free afterwards.
-        refs.update_branch(&name("feat"), None, id, &objects)
+        refs.update_branch(&name("feat"), None, id, &objects, &Allowed::granted())
             .unwrap();
     }
 
@@ -3683,12 +3728,12 @@ mod tests {
             return;
         }
         let id = commit(&objects, "c");
-        refs.set_head(&Head::Branch(name("main")), &objects)
+        refs.set_head(&Head::Branch(name("main")), &objects, &Allowed::granted())
             .unwrap();
         // The directory may be written and entered, but not read: the rename works and the flush
         // of the directory cannot open it.
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o300)).unwrap();
-        let result = refs.set_head(&Head::Detached(id), &objects);
+        let result = refs.set_head(&Head::Detached(id), &objects, &Allowed::granted());
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
         let error = result.unwrap_err();
         assert!(
@@ -3727,7 +3772,7 @@ mod tests {
         let id = commit(&objects, "c");
         let lock = dir.path().join("refs.lock");
         fs::write(&lock, stale_lock(4_000_000)).unwrap();
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&name("main")).unwrap(), Some(id));
         assert!(!lock.exists());
@@ -3761,7 +3806,7 @@ mod tests {
         fs::write(&lock, &holder).unwrap();
         let guard = hold_guard(dir.path());
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -3795,7 +3840,7 @@ mod tests {
         // A holder whose file cannot be parsed is named without its process.
         fs::write(&lock, b"").unwrap();
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -3808,7 +3853,7 @@ mod tests {
         // The holder ends: the operating system releases the guard, and the lock is taken over.
         fs::write(&lock, &holder).unwrap();
         drop(guard);
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(!lock.exists());
     }
@@ -3827,7 +3872,7 @@ mod tests {
             })
         );
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -3863,7 +3908,7 @@ mod tests {
         );
         drop(held);
         assert!(!lock.exists());
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
     }
 
@@ -3874,7 +3919,7 @@ mod tests {
         let held = refs.lock().unwrap();
         fs::write(dir.path().join(PURGE_JOURNAL), b"journal").unwrap();
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -3913,7 +3958,7 @@ mod tests {
         ] {
             fs::write(&lock, &content).unwrap();
             let error = refs
-                .update_branch(&name("main"), None, id, &objects)
+                .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
                 .unwrap_err();
             assert!(
                 matches!(
@@ -3957,7 +4002,7 @@ mod tests {
         let elsewhere = lock_of("other-host", 4711);
         fs::write(&lock, &elsewhere).unwrap();
         let error = refs
-            .update_branch(&name("main"), None, id, &objects)
+            .update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(
@@ -3996,7 +4041,7 @@ mod tests {
         let id = commit(&objects, "c");
         let lock = dir.path().join("refs.lock");
         fs::write(&lock, stale_lock(std::process::id())).unwrap();
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(!lock.exists());
     }
@@ -4022,11 +4067,11 @@ mod tests {
         // A file left by a holder of the guard, and one of the older form.
         let guarded = stale_lock(4_000_000);
         fs::write(&lock, &guarded).unwrap();
-        let change = refs.update_branch(&name("main"), None, id, &objects);
+        let change = refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted());
         let resume = refs.take_over_lock(&Allowed::granted()).map(drop);
         let guarded_after = fs::read_to_string(&lock);
         fs::write(&lock, b"4711-0-0123456789abcdef").unwrap();
-        let older = refs.update_branch(&name("main"), None, id, &objects);
+        let older = refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted());
         let older_after = fs::read_to_string(&lock);
         let older_resume = refs.take_over_lock(&Allowed::granted()).map(drop);
         let older_resumed = lock.exists();
@@ -4066,7 +4111,7 @@ mod tests {
         assert_eq!(guarded_after.unwrap(), guarded);
         older_resume.unwrap();
         assert!(!older_resumed);
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
     }
 
@@ -4096,7 +4141,7 @@ mod tests {
         fs::write(&lock, &left).unwrap();
         fs::write(dir.path().join(PURGE_JOURNAL), b"").unwrap();
         assert!(matches!(
-            refs.update_branch(&name("main"), None, id, &objects),
+            refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted()),
             Err(RefError::PurgePending { .. })
         ));
         assert_eq!(fs::read_to_string(&lock).unwrap(), left);
@@ -4114,7 +4159,7 @@ mod tests {
             LockFile::read(&lock).unwrap().map(|lock| lock.process),
             Some(0)
         );
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(!lock.exists());
     }
@@ -4160,7 +4205,7 @@ mod tests {
     fn entries_with_a_leading_dot_are_not_branches() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let heads = dir.path().join("refs/heads");
         fs::write(heads.join(".DS_Store"), [0u8, 1, 2]).unwrap();
@@ -4183,7 +4228,7 @@ mod tests {
     fn the_rules_for_names_hold_below_a_directory_and_for_a_directory() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("feat/x"), None, id, &objects)
+        refs.update_branch(&name("feat/x"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let heads = dir.path().join("refs/heads");
         fs::write(heads.join("feat/.DS_Store"), [0u8]).unwrap();
@@ -4211,7 +4256,7 @@ mod tests {
     fn a_link_below_the_branches_is_an_error_and_not_a_branch() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let heads = dir.path().join("refs/heads");
         std::os::unix::fs::symlink(heads.join("main"), heads.join("alias")).unwrap();
@@ -4245,7 +4290,7 @@ mod tests {
         let (dir, objects, refs) = setup();
         assert_permissions_bind(dir.path());
         let id = commit(&objects, "c");
-        refs.update_branch(&name("a/b"), None, id, &objects)
+        refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let mode = |path: &Path, mode| {
             fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
@@ -4283,13 +4328,13 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let (_dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let done = AtomicBool::new(false);
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 for _ in 0..300 {
-                    refs.update_branch(&name("a/b"), None, id, &objects)
+                    refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
                         .unwrap();
                     refs.delete_branch_file(&name("a/b")).unwrap();
                 }
@@ -4319,7 +4364,7 @@ mod tests {
         assert_eq!(refs.listed_branch(heads.join("gone")).unwrap(), None);
         assert!(!has_files_below(&heads.join("gone")).unwrap());
         // What is there is read as before, and damage is still damage.
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(list_directory(&heads).unwrap().is_some());
         assert_eq!(refs.listed_branch(heads.join("main")).unwrap(), Some(id));
@@ -4366,7 +4411,7 @@ mod tests {
         for error in [
             refs.branch(&name("main")).unwrap_err(),
             refs.branches().unwrap_err(),
-            refs.update_branch(&name("main"), None, id, &objects)
+            refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
                 .unwrap_err(),
         ] {
             assert!(matches!(&error, RefError::Io { .. }), "{error}");
@@ -4379,7 +4424,9 @@ mod tests {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
         let faulty = FaultyStore::new(dir.store(), true, false);
-        let error = refs.set_head(&Head::Detached(id), &faulty).unwrap_err();
+        let error = refs
+            .set_head(&Head::Detached(id), &faulty, &Allowed::granted())
+            .unwrap_err();
         assert!(matches!(&error, RefError::Io { .. }), "{error}");
         assert_eq!(
             error.io_error().map(io::Error::kind),
@@ -4392,7 +4439,7 @@ mod tests {
             b"commit 1\0x",
         );
         let error = refs
-            .update_branch(&name("main"), None, damaged, &objects)
+            .update_branch(&name("main"), None, damaged, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
             matches!(error.store_error(), Some(StoreError::Corrupt { .. })),
@@ -4404,7 +4451,7 @@ mod tests {
     fn a_move_that_fails_removes_the_directories_that_it_made() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("keep/this"), None, id, &objects)
+        refs.update_branch(&name("keep/this"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let heads = dir.path().join("refs/heads");
         let target = heads.join("p/q/r");
@@ -4541,16 +4588,17 @@ mod tests {
     fn the_lock_is_held_while_the_step_runs_and_released_after_every_outcome() {
         let (dir, objects, refs) = setup();
         let (a, b) = (commit(&objects, "a"), commit(&objects, "b"));
-        refs.set_head(&Head::Branch(name("main")), &objects)
+        refs.set_head(&Head::Branch(name("main")), &objects, &Allowed::granted())
             .unwrap();
         let lock_file = dir.path().join("refs.lock");
         // While the step runs, the lock file exists, and a second change meets the lock.
         let outcome = refs
             .update_branch_after(&writer(&refs), &name("main"), None, a, &objects, || {
                 assert!(lock_file.exists());
-                let inner = refs.update_branch(&name("other"), None, b, &objects);
+                let inner =
+                    refs.update_branch(&name("other"), None, b, &objects, &Allowed::granted());
                 assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
-                let inner = refs.set_head(&Head::Branch(name("x")), &objects);
+                let inner = refs.set_head(&Head::Branch(name("x")), &objects, &Allowed::granted());
                 assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
                 Ok::<(), ()>(())
             })
@@ -4566,7 +4614,8 @@ mod tests {
                 |old| {
                     assert_eq!(old, &Head::Branch(name("main")));
                     assert!(lock_file.exists());
-                    let inner = refs.update_branch(&name("other"), None, b, &objects);
+                    let inner =
+                        refs.update_branch(&name("other"), None, b, &objects, &Allowed::granted());
                     assert!(matches!(inner, Err(RefError::Locked { .. })), "{inner:?}");
                     Ok::<(), ()>(())
                 },
@@ -4621,7 +4670,7 @@ mod tests {
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
-        refs.update_branch(&name("main"), None, a, &objects)
+        refs.update_branch(&name("main"), None, a, &objects, &Allowed::granted())
             .unwrap();
         let error = refs
             .update_branch_after(
@@ -4831,9 +4880,9 @@ mod tests {
         let second = commit(&objects, "second");
         write_reference(&dir, "HEAD", "branch main\n");
         write_reference(&dir, "working-copy", &format!("{second}\n"));
-        refs.update_branch(&name("main"), None, first, &objects)
+        refs.update_branch(&name("main"), None, first, &objects, &Allowed::granted())
             .unwrap();
-        refs.update_branch(&name("feat/x"), None, second, &objects)
+        refs.update_branch(&name("feat/x"), None, second, &objects, &Allowed::granted())
             .unwrap();
         assert!(refs.verify(&objects).unwrap().is_empty());
         // HEAD may name a branch that does not exist yet, as it does in a new repository.
@@ -4966,7 +5015,7 @@ mod tests {
         let id = commit(&objects, "c");
         write_reference(&dir, "HEAD", "branch main\n");
         write_reference(&dir, "working-copy", &format!("{id}\n"));
-        refs.update_branch(&name("main"), None, id, &objects)
+        refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let faulty = FaultyStore::new(dir.store(), true, false);
         let errors = refs.verify(&faulty).unwrap();
@@ -5121,7 +5170,8 @@ mod tests {
         let hook_seen = std::rc::Rc::clone(&seen);
         let hook_lock = lock.clone();
         let store = OnFirstRead::new(dir.store(), move || hook_seen.set(hook_lock.exists()));
-        refs.update_branch(&name("main"), None, id, &store).unwrap();
+        refs.update_branch(&name("main"), None, id, &store, &Allowed::granted())
+            .unwrap();
         assert!(
             seen.get(),
             "update_branch looked up the commit without the lock"
@@ -5130,7 +5180,8 @@ mod tests {
         let seen = std::rc::Rc::new(std::cell::Cell::new(false));
         let hook_seen = std::rc::Rc::clone(&seen);
         let store = OnFirstRead::new(dir.store(), move || hook_seen.set(lock.exists()));
-        refs.set_head(&Head::Detached(id), &store).unwrap();
+        refs.set_head(&Head::Detached(id), &store, &Allowed::granted())
+            .unwrap();
         assert!(seen.get(), "set_head looked up the commit without the lock");
     }
 
@@ -5156,7 +5207,8 @@ mod tests {
         let (_dir, objects, refs) = setup();
         let id = commit(&objects, "c");
         // `a` goes, `a/b` comes: the file of `a` holds the place of the directory.
-        refs.update_branch(&name("a"), None, id, &objects).unwrap();
+        refs.update_branch(&name("a"), None, id, &objects, &Allowed::granted())
+            .unwrap();
         restore(&refs, &objects, &[("a", None), ("a/b", Some(id))]);
         assert_eq!(refs.branch(&name("a")).unwrap(), None);
         assert_eq!(refs.branch(&name("a/b")).unwrap(), Some(id));
@@ -5170,7 +5222,7 @@ mod tests {
     fn a_restore_clears_what_the_deleted_branches_leave_in_the_directory() {
         let (dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("a/b"), None, id, &objects)
+        refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
             .unwrap();
         // The listing of the branches skips a dot file and an empty directory, so the restore
         // may create `a`; a plain removal of the parents of `a/b` would leave both behind.
@@ -5185,9 +5237,10 @@ mod tests {
     fn a_restore_does_not_take_a_sibling_for_a_branch_below_the_name() {
         let (_dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("a/b"), None, id, &objects)
+        refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
             .unwrap();
-        refs.update_branch(&name("ab"), None, id, &objects).unwrap();
+        refs.update_branch(&name("ab"), None, id, &objects, &Allowed::granted())
+            .unwrap();
         // `ab` starts with `a` but is not below it.
         restore(&refs, &objects, &[("a", Some(id)), ("a/b", None)]);
         assert_eq!(refs.branch(&name("a")).unwrap(), Some(id));
@@ -5198,7 +5251,7 @@ mod tests {
     fn a_restore_refuses_a_name_that_differs_in_case_from_a_branch_it_deletes() {
         let (_dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("Foo"), None, id, &objects)
+        refs.update_branch(&name("Foo"), None, id, &objects, &Allowed::granted())
             .unwrap();
         let branches = [(name("foo"), Some(id)), (name("Foo"), None)];
         let targets = RestoreTargets {
@@ -5226,9 +5279,9 @@ mod tests {
     fn a_restore_still_refuses_a_name_that_a_branch_it_keeps_holds() {
         let (_dir, objects, refs) = setup();
         let id = commit(&objects, "c");
-        refs.update_branch(&name("a/b"), None, id, &objects)
+        refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
             .unwrap();
-        refs.update_branch(&name("a/c"), None, id, &objects)
+        refs.update_branch(&name("a/c"), None, id, &objects, &Allowed::granted())
             .unwrap();
         // `a/b` goes, but `a/c` stays below `a`.
         let branches = [(name("a"), Some(id)), (name("a/b"), None)];

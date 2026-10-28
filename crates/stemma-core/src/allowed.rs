@@ -11,17 +11,24 @@ use crate::{Actor, Authorizer, Decision};
 
 /// The proof that [`Authorizer::authorize`] returned [`Decision::Allow`].
 ///
-/// The field is private to this module, so no other code can make a value: the question to
-/// the authorizer is the only way. Outside this crate there is no way at all, which this example states.
+/// The field is private to this module, so no other module of the crate can make a value; the
+/// question to the authorizer is the only way. The type is public because the mutators of the
+/// public trait [`RefStore`](crate::refs::RefStore) take it, and a caller outside the crate cannot
+/// forge one:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0603
 /// let _forged = stemma_core::Allowed(());
 /// ```
+///
+/// The proof says that some operation was asked and allowed. It is bound to no operation, no target,
+/// and no repository: the call that asks stays responsible for writing what it asked for.
 #[derive(Debug)]
+#[must_use = "a proof that is dropped unused means the question to the authorizer had no effect"]
 pub struct Allowed(());
 
 impl Allowed {
     /// Asks the authorizer, and returns the proof if it allows `operation` on `target`.
+    #[must_use]
     pub(crate) fn ask(
         authorizer: &dyn Authorizer,
         actor: &Actor,
