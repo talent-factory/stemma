@@ -1,3 +1,11 @@
+# norma/rule-packs/encapsulation/community.yaml
+#
+# Rules adopted from permissively licensed external ast-grep rule repositories on GitHub.
+# Each rule names its source and licence in the comment above its id.
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
 # Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-anyhow-in-public-api.yml
 # License: MIT
 id: rust-no-anyhow-in-public-api

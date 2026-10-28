@@ -165,12 +165,13 @@ deps:
 
 # Check the Rust code against the norma rules of `norma/rule-packs/` (needs `norma` on the PATH).
 # Builds a fresh database on every run. Files under `tests/` are left out (see `norma/README.md`).
-# Exit code 1 means that rules were violated; the recipe is not part of `just ci`.
+# A non-zero exit code means that a rule of severity warning or error was violated; the recipe is
+# not part of `just ci`.
 [group('Quality')]
 norma:
     rm -f target/norma.db
     norma import norma/rule-packs --db target/norma.db > /dev/null
-    git ls-files -z '*.rs' ':!:**/tests/**' | xargs -0 norma validate --language rust --db target/norma.db
+    git ls-files -z '*.rs' ':!:**/tests/**' | xargs -0 -r norma validate --language rust --db target/norma.db
 
 # ─────────────────────────── Documentation ─────────────────────────────────
 

@@ -1,3 +1,11 @@
+# norma/rule-packs/safety/community.yaml
+#
+# Rules adopted from permissively licensed external ast-grep rule repositories on GitHub.
+# Each rule names its source and licence in the comment above its id.
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
 # Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-panicking-let-else.yml
 # License: MIT
 # Local change (Stemma): severity error -> warning; an `unreachable!` with a reason states an invariant.

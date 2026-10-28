@@ -1,3 +1,31 @@
+# norma/rule-packs/rust-style-guide/rust.yaml
+#
+# Rules derived from the official Rust Style Guide
+# (https://doc.rust-lang.org/nightly/style-guide/), (c) The Rust Project
+# Contributors, licensed under MIT OR Apache-2.0
+# (https://github.com/rust-lang/rust, see COPYRIGHT). Paraphrased, not
+# copied; each rule's `note` names the guide section.
+#
+# The guide is almost entirely layout, which rustfmt already enforces,
+# and its naming rules are covered by default-on rustc lints
+# (`non_snake_case`, `non_camel_case_types`, `non_upper_case_globals`).
+# This pack only holds the gaps that neither rustfmt, rustc nor a
+# default-on Clippy lint checks: item ordering, `macro_rules!` naming and
+# delimiters, empty-struct form, doc-comment form and placement, comment
+# spacing, `#[path]`.
+#
+# The guide describes the default style and does not forbid deviations,
+# so this pack is stricter than its source; treat hits as style hints.
+#
+# Overlaps with other packs, built once elsewhere:
+#   - glob imports, one-module-per-`use`
+#       -> google-rust-style: google-no-glob-import-rust,
+#          google-use-one-module-per-use-rust
+#   - import sorting/normalisation and layout: rustfmt
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
 id: style-macro-name-snake-case-rust
 language: Rust
 severity: warning

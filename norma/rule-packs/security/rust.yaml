@@ -1,3 +1,15 @@
+# norma/rule-packs/security/rust.yaml
+#
+# Curated, generalized subset of coderabbitai/ast-grep-essentials
+# (Apache-2.0, https://github.com/coderabbitai/ast-grep-essentials).
+# Upstream's 8 Rust security rules are almost entirely sqlx/reqwest/
+# openssl builder-chain checks with heavy import-tracing boilerplate;
+# collapsed here into 3 library-agnostic checks. Import-tracing/aliasing
+# guards were dropped for simplicity -- see each rule's note.
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
 id: hardcoded-secret-in-call-rust
 language: Rust
 severity: warning

@@ -1,3 +1,11 @@
+# norma/rule-packs/architecture/ast-grep-catalog.yaml
+#
+# Rule pack: rules from the official ast-grep catalog (https://ast-grep.github.io/catalog).
+# Each rule names its source in the comment above its id.
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
 id: avoid-duplicate-export-rust
 message: >-
   Re-exporting the same item under two different paths increases API

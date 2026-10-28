@@ -1,3 +1,31 @@
+# norma/rule-packs/google-rust-style/rust.yaml
+#
+# Rules paraphrased and adapted from the Google Rust Style Guide
+# (https://google.github.io/styleguide/rustguide.html), (c) Google,
+# licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
+# This is an adaptation by norma: the guide's advice was reduced to
+# syntactic checks that ast-grep can decide, and re-worded; it is not the
+# guide's own text. Each rule's `note` names the guide's section anchor.
+#
+# Only checks that neither rustfmt nor a default-on Clippy/rustc lint
+# already performs are included. Many rules flag a construct the guide
+# accepts in justified cases, so severities are low (hint/info) there.
+#
+# Overlaps with other packs, built once elsewhere:
+#   - get_-prefixed getters (guide: getters-and-setters)
+#       -> rust-api-guidelines: api-c-getter-rust
+#   - bool parameters instead of an enum (prefer-enum-over-bool-in-apis)
+#       -> rust-api-guidelines: api-c-custom-type-rust
+#   - as_/to_/into_ method naming (naming-methods)
+#       -> Clippy `wrong_self_convention`, api-c-conv-mut-suffix-rust
+#   - doc-comment syntax (how-to-format-documentation-comments)
+#       -> rust-style-guide: style-doc-comments-*-rust
+#   - newtype instead of type alias (newtypes-versus-type-aliases)
+#       -> not syntactic; see rust-api-guidelines C-NEWTYPE (rejected)
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
 id: google-no-glob-import-rust
 language: Rust
 severity: info

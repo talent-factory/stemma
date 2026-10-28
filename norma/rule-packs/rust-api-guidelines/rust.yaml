@@ -1,3 +1,29 @@
+# norma/rule-packs/rust-api-guidelines/rust.yaml
+#
+# Rules derived from the Rust API Guidelines
+# (https://rust-lang.github.io/api-guidelines/), (c) The Rust Project
+# Developers, licensed under MIT OR Apache-2.0
+# (https://github.com/rust-lang/api-guidelines). Paraphrased, not copied;
+# each rule's id and `note` carry the guideline's C-xxx checklist id.
+#
+# AUDIENCE: these guidelines target LIBRARY crates with a public API.
+# In an application or binary crate most of these hits are noise, and the
+# guidelines themselves say they are not a mandate. Severities are low.
+#
+# Only guidelines that ast-grep can decide syntactically AND that no
+# default-on rustc/Clippy lint covers are included. Most of the checklist
+# needs type information or is already linted (`non_camel_case_types`,
+# `wrong_self_convention`, `ptr_arg`, `result_unit_err`,
+#
+# Overlaps with other packs, built once elsewhere:
+#   - C-STRUCT-PRIVATE (pub struct with pub fields)
+#       -> google-rust-style: google-non-exhaustive-pub-struct-rust
+#   - C-CONV (as_/to_/into_ vs. self kind): Clippy `wrong_self_convention`
+#     (only this pack's `_mut`-suffix gap is built)
+#
+# Copy for Stemma (see norma/README.md). A rule that differs from the original
+# carries the comment `Local change (Stemma)`.
+---
 id: api-c-case-acronym-rust
 language: Rust
 severity: hint
