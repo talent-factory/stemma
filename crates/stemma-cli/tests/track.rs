@@ -175,6 +175,31 @@ fn below_the_root_the_repository_is_found_and_the_paths_are_relative_to_the_dire
 }
 
 #[test]
+fn a_spelling_hint_below_the_root_names_the_path_from_the_directory_too() {
+    let dir = repository();
+    let sub = dir.path().join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    write(&sub, "Foo.txt", "one");
+    let result = track(&sub, &["foo.txt"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    // A file system that tells the two spellings apart does not have the file: there is no hint.
+    // One that ignores case finds it under another spelling, and the message names both paths.
+    if result.stderr.contains("is not spelled as on disk") {
+        assert!(
+            result.stderr.contains("use `sub/Foo.txt`"),
+            "{}",
+            result.stderr
+        );
+        assert!(
+            result.stderr.contains("from `sub`, write `Foo.txt`"),
+            "{}",
+            result.stderr
+        );
+    }
+    assert_eq!(result.stdout, "");
+}
+
+#[test]
 fn every_command_but_init_finds_the_repository_from_below_the_root() {
     let dir = repository();
     let sub = dir.path().join("sub/deep");

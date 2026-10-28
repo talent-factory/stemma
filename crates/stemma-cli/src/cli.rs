@@ -429,6 +429,15 @@ enum CliError {
     /// [`TrackError::NotDurable`]; a failed move leaves an entry in the log that names a move that
     /// did not happen (`UpdateError::MoveFailed`).
     Track(TrackError),
+    /// A path that `track` refused because it is not spelled as on disk, in a command that runs
+    /// below the root: the hint of the core is relative to the root, and the paths of the call are
+    /// relative to the directory, so the message names both.
+    TrackSpelling {
+        /// The refusal of the core, a [`TrackError::Spelling`] with a hint.
+        error: Box<TrackError>,
+        /// The directory of the call, relative to the root.
+        subdirectory: String,
+    },
     /// The files are tracked, but the result could not be written to the output.
     TrackOutput {
         /// The files that are tracked now and were not before, as in [`Tracking::added`].
@@ -623,6 +632,7 @@ impl CliError {
             Self::Init(error) => by_kind(error.kind()),
             Self::Open(error) => by_kind(error.kind()),
             Self::Track(error) => by_kind(error.kind()),
+            Self::TrackSpelling { error, .. } => by_kind(error.kind()),
             Self::Commit(error) => by_kind(error.kind()),
             Self::Status(error) => by_kind(error.kind()),
             Self::Diff(error) => by_kind(error.kind()),
@@ -679,6 +689,22 @@ impl fmt::Display for CliError {
             ),
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
+            Self::TrackSpelling {
+                error,
+                subdirectory,
+            } => {
+                error.fmt(f)?;
+                match &**error {
+                    TrackError::Spelling {
+                        on_disk: Some(on_disk),
+                        ..
+                    } => match on_disk.strip_prefix(&format!("{subdirectory}/")) {
+                        Some(here) => write!(f, "; from `{subdirectory}`, write `{here}`"),
+                        None => Ok(()),
+                    },
+                    _ => Ok(()),
+                }
+            }
             Self::TrackOutput {
                 added,
                 source,
@@ -1448,7 +1474,16 @@ fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
         .iter()
         .map(|path| normalize_path_in(&subdirectory, path))
         .collect();
-    finish_track(repository.track(&paths, &actor, &AllowAll), out)
+    let result = repository.track(&paths, &actor, &AllowAll);
+    finish_track(result, out).map_err(|error| match error {
+        CliError::Track(error @ TrackError::Spelling { .. }) if !subdirectory.is_empty() => {
+            CliError::TrackSpelling {
+                error: Box::new(error),
+                subdirectory,
+            }
+        }
+        other => other,
+    })
 }
 
 /// Writes what `track` did. If the files are tracked but a directory could not be flushed, the
@@ -3496,6 +3531,30 @@ mod tests {
         assert!(error.to_string().contains("a.txt"), "{error}");
         assert_eq!(error.exit_code(), ExitCode::from(3));
         assert!(!error.to_string().contains("flushing"), "{error}");
+    }
+
+    #[test]
+    fn a_spelling_hint_below_the_root_also_names_the_path_from_the_directory() {
+        let error = CliError::TrackSpelling {
+            error: Box::new(TrackError::Spelling {
+                path: "src/foo.txt".to_owned(),
+                on_disk: Some("src/Foo.txt".to_owned()),
+            }),
+            subdirectory: "src".to_owned(),
+        };
+        let message = error.to_string();
+        assert!(message.contains("use `src/Foo.txt`"), "{message}");
+        assert!(message.contains("from `src`, write `Foo.txt`"), "{message}");
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        // A hint outside the directory (reached with `..`) stays as the core says it.
+        let error = CliError::TrackSpelling {
+            error: Box::new(TrackError::Spelling {
+                path: "docs/x".to_owned(),
+                on_disk: Some("Docs/x".to_owned()),
+            }),
+            subdirectory: "src".to_owned(),
+        };
+        assert!(!error.to_string().contains("from `src`"), "{error}");
     }
 
     #[test]
