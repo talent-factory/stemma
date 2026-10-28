@@ -14,11 +14,12 @@ Der Kurs AISE, AI Assisted Software Engineering, findet Akteure mit Sponsor und 
 jedes Commits, das Operation Log und das Restore als Rückweg nach dem Fehler eines Agenten
 und Operationen, die nur ein Mensch ausführen darf; ab Phase~4 kommen Branch-Regeln,
 Freigaben und Risikostufen dazu.
-Die Agentenfunktionen von Phase~2 beantworten je ein Problem der Arbeit mit Agenten:
-\type{diff --exit-code} gibt einem Skript die Antwort \quotation{gibt es Änderungen?} ohne
-das Parsen von Text; reiner Text in einer Pipe hält Farbcodes und Pager aus der Eingabe eines
-Agenten; der Diff ist als reine Anzeige Risikostufe 1 und kann den Merge-Pfad nicht verändern;
-die Oberfläche im Terminal ist die Prüfung der Arbeit eines Agenten durch einen Menschen.
+Die Agentenfunktionen von Phase~2 beantworten je ein Problem der Arbeit mit Agenten.
+\type{diff --exit-code} gibt einem Skript die Antwort \quotation{gibt es Änderungen?}
+ohne das Parsen von Text.
+Reiner Text in einer Pipe hält Farbcodes und Pager aus der Eingabe eines Agenten.
+Die Oberfläche im Terminal dient dem Menschen, der die Arbeit eines Agenten prüft.
+Der Diff selbst ist eine reine Anzeige und liegt auf Risikostufe 1 nach ADR-004.
 Wie Stemma selbst mit Agenten entsteht, beschreibt \in{Abschnitt}[sec:agents]
 als Fallstudie für diesen Kurs.
 
@@ -183,8 +184,9 @@ der Einrückung; die Zahl der Änderungen bleibt gleich \stopxcell
 (\in{Abschnitt}[sec:hunks]) \stopxcell
 \stopxrow
 \startxrow
-\startxcell Gruppieren in Hunks: ein Durchlauf über das Skript, überlappende Fenster aus
-Kontextzeilen verschmelzen, Präfixsummen für die Positionen \stopxcell
+\startxcell Gruppieren in Hunks: zwei lineare Durchläufe über das Skript, überlappende oder
+sich berührende Fenster aus Kontextzeilen verschmelzen, Präfixsummen für die Positionen
+\stopxcell
 \startxcell \type{hunks} (\type{diff.rs}) \stopxcell
 \startxcell Nicht im Buch; Verschmelzen von Intervallen, verwandt mit dem Mischen in
 Abschnitt 2.2 \stopxcell
@@ -356,13 +358,16 @@ $2c$ Zeilen auseinanderliegen, und dass \type{hunks} keine Zeile in zwei Hunks a
 Wie viele Hunks hat ein Skript mit $k$ Änderungen höchstens?
 \item (AISE) Ein Agent soll in einem Skript entscheiden, ob es etwas zu committen gibt.
 Begründen Sie, warum er dazu \type{diff --exit-code} auswertet und nicht den Text der Ausgabe,
-und welche Fehler er mit Exit-Code 1 von den Unterschieden mit Exit-Code 4 trennen muss.
-Was geschieht im Skript, wenn es beide gleich behandelt?
+und warum er jeden Exit-Code ausser 0 und 4 als Fehler behandeln muss
+(1, 2, 3, 5 und 6; siehe Befehlsreferenz).
+Was geschieht im Skript, wenn es nur auf 1 prüft?
+Beachten Sie besonders den Exit-Code 3, bei dem der Snapshot schon angelegt ist.
 \item (AISE) Die Erkennung von Binärdateien sucht ein NUL-Byte in den ersten 8000 Bytes.
 Nennen Sie je eine Datei, die sie falsch als Text, und eine, die sie falsch als binär einstuft
-(denken Sie an UTF-16 und an eine Datei, deren erstes NUL erst später steht).
+(denken Sie an eine Datei, deren erstes NUL erst später steht, und an UTF-16).
 Welchen Schaden kann die falsche Einstufung anrichten, wenn ein Agent den Diff liest
-und danach entscheidet, und was begrenzt der Diff als Stufe 1 nach ADR-004?
+und danach entscheidet?
+Warum erreicht ein falsch eingestufter Diff den Merge-Pfad nicht (Stufe 1 nach ADR-004)?
 \stopitemize
 
 \section[sec:agents]{Wie Stemma mit Agenten entsteht}
@@ -512,9 +517,7 @@ die Befehlsreferenz und die Kapitel 10 und 11.
 
 \subsection{Abhängigkeiten, Stufen und Oberflächen}
 
-Phase~2 brachte drei Praktiken dazu.
-
-Die erste betrifft die Stufen der Prüfung nach ADR-004.
+Bei den Stufen der Prüfung nach ADR-004 gilt:
 Eine neue direkte Abhängigkeit zur Laufzeit gehört zur Stufe 2 und verlangt die Prüfung
 vor dem Merge.
 Die Oberfläche von \type{diff --tui} führte \type{ratatui} ein (ADR-016).
@@ -524,22 +527,22 @@ und die Wartung mit dem Umfang und der Architektur.
 Der Mensch bestätigte die Entscheidungen und nahm das ADR an;
 die Prüfung steht als eigener Abschnitt im ADR.
 Eine Prüfung der Stufe 2, die erst nach dem Merge läuft, stellt nur noch fest.
-Die Regel gilt deshalb vor dem Merge.
+Ein Agent, der eine neue Abhängigkeit einführt, beantragt sie deshalb im Pull Request selbst.
 
-Die zweite betrifft die Abhängigkeiten selbst.
-\type{just deps} führt \type{cargo audit} und \type{cargo deny check} über den Baum aus
-(\type{deny.toml}) und läuft bei jeder neuen oder geänderten Abhängigkeit.
+Für die Abhängigkeiten gibt es \type{just deps}.
+Der Befehl führt \type{cargo audit} und \type{cargo deny check} über den Baum aus
+(\type{deny.toml}) und ist bei jeder neuen oder geänderten Abhängigkeit von Hand auszuführen.
 Es gehört nicht zu \type{just ci}, weil es die Datenbank der Sicherheitshinweise aus dem Netz holt.
 Die Messung im ADR zeigt, dass die Lockdatei von 48 auf 123 Einträge wuchs,
 mehr als die Probe in einem Testprojekt vorhergesagt hatte.
 Ein Agent, der eine Abhängigkeit vorschlägt, belegt ihre Kosten deshalb am echten Baum.
 
-Die dritte betrifft Oberflächen.
+Bei Oberflächen kommt eine Schwierigkeit dazu.
 Eine Oberfläche, die ein Terminal braucht, lässt sich schwer prüfen.
 Stemma trennt deshalb den Zustand vom Terminal: \type{State} ist ein einfacher Wert,
 der sich durch Tastenereignisse ändert, und das Rendern geht in den Tests in den \type{TestBackend}
 von \type{ratatui}.
-Die Tests brauchen kein Terminal und laufen wie jede andere Funktion in \type{just ci}.
+Die Tests der Ansicht brauchen kein Terminal und laufen in \type{just ci}.
 Die Oberfläche dient dem Menschen, der die Arbeit eines Agenten prüft.
 Ein Skript nimmt \type{diff} ohne \type{--tui}, dessen Text die Referenz bleibt;
 ist die Ausgabe kein Terminal, endet \type{--tui} mit Exit-Code 1,
