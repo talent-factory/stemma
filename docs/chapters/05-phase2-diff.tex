@@ -26,9 +26,10 @@ und hängt vom Kern ab, der Kern nicht von ihr.
 Die Verwendung im Merge-Pfad, Stufe 2, folgt in Phase 3.
 \item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
 Verschiebungen. Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
-Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken. Eine Markierung der Verschiebung
-als reine Anzeige, wie \type{--color-moved} in git, lässt sich später ohne Änderung der Hunks
-nachrüsten.
+Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken
+(Vergleich der Verfahren in \type{docs/research/moved-lines-heuristics.md}).
+Eine Markierung der Verschiebung als reine Anzeige, wie \type{--color-moved} in git,
+lässt sich später ohne Änderung der Hunks nachrüsten.
 \item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten 8000 Bytes, wie git. Er zeigt
 dann eine Zusammenfassungszeile wie \quotation{Binary files differ} statt des Inhalts
 (\in{Abschnitt}[sec:binary]). Eine Grössengrenze gibt es in Phase 2 nicht.
@@ -67,6 +68,16 @@ die keine Diagonale sind. Die Diagonale $k = x - y$ fasst die Punkte mit derselb
 $x - y$ zusammen. Sie liegen auf einer Linie parallel zur Hauptdiagonale. Eine Löschung erhöht
 $k$ um eins, eine Einfügung senkt es um eins.
 
+\in{Abbildung}[fig:edit-graph] zeigt den Graphen für die Folgen \type{ABCABBA} und
+\type{CBABAC} aus der Arbeit von Myers. Die grauen Diagonalen verbinden gleiche Elemente. Der
+dicke Weg ist ein kürzestes Skript mit $D = 5$: zwei Löschungen, eine Einfügung, eine Löschung
+und eine Einfügung.
+
+\startplacefigure[title={Editiergraph für \type{ABCABBA} und \type{CBABAC} mit der Mittelschlange},
+    reference=fig:edit-graph,location=here]
+\externalfigure[images/edit-graph.pdf][width=\textwidth]
+\stopplacefigure
+
 \subsection{Invariante}
 
 Die Suche läuft vorwärts vom Anfang und rückwärts vom Ende zugleich. Nach der Runde $d$ kennt
@@ -93,6 +104,11 @@ einem kürzesten Skript. Das Verfahren zerlegt die Aufgabe an dieser Schlange in
 behandelt jeden Teil genauso. Jeder Teil hat höchstens $\lceil D/2 \rceil$ Schritte, deshalb
 endet die Rekursion nach $O(\log D)$ Ebenen. Gemeinsame Präfixe und Suffixe schneidet es vorher ab.
 
+In \in{Abbildung}[fig:edit-graph] liegt die Mittelschlange von $(3,2)$ bis $(5,4)$ auf der
+Diagonale $k = 1$. Die Vorwärtssuche hat nach drei Änderungen $(3,2)$ erreicht und läuft die
+Schlange bis $(5,4)$ ab. Die Rückwärtssuche vom Ende her erreicht nach zwei Änderungen $(5,4)$
+und läuft sie bis $(3,2)$ ab. Zusammen sind das $D = 5$ Änderungen.
+
 \subsection{Korrektheit}
 
 Die Schlange liegt auf einem kürzesten Skript, und die Summe der Schritte der beiden Teile ist
@@ -102,21 +118,28 @@ Abschneiden nichts verloren \cite[myers1986ond]. Die Teile liegen in der Reihenf
 aneinander. Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die
 Reihenfolge.
 
-\section[sec:slide]{Grenzen von Änderungsgruppen verschieben}
+\section[sec:slide]{Nachbearbeitung der Grenzen}
 
-Ein kürzestes Skript ist nicht eindeutig. Steht am Rand einer Änderungsgruppe, also einer
-zusammenhängenden Folge geänderter Zeilen, eine Zeile, die sich wiederholt, etwa eine
-schliessende Klammer, kann die Gruppe um diese Zeile nach oben oder unten rutschen, ohne dass sich
-die Zahl der Änderungen ändert. Myers wählt eine dieser Lagen nach der Reihenfolge seiner Suche,
-nicht danach, was ein Mensch gut liest. Die Nachbearbeitung wählt unter den gleichwertigen Lagen
-die, deren Grenze am besten zur Einrückung des Textes passt. Sie folgt dem Verfahren von git
-\cite[git-xdiff]. Für Textzeilen bewertet sie die Einrückung (\type{slide} und \type{diff_lines}
-in \type{diff.rs}).
+Ein kürzestes Skript ist nicht eindeutig. Dieselben Änderungen lassen sich oft an mehreren Stellen
+unterbringen, weil die erste Zeile einer Änderungsgruppe gleich der unveränderten Zeile hinter ihr
+sein kann. Die Nachbearbeitung wählt unter diesen Lagen die, die sich am besten liest
+(\type{slide} in \type{diff.rs}). Sie folgt dem Verfahren von git \cite[git-xdiff]. Sie ändert nur
+die Lage der Grenzen. Beide Folgen und die Zahl $D$ der Änderungen
+bleiben, wie sie sind. Der Kern bietet sie als \type{diff_lines} an; der Befehl \type{diff} ruft
+sie in Phase 2 noch nicht auf und zeigt das Skript des Myers-Diff.
 
-Der Befehl \type{diff} ruft sie in Phase 2 noch nicht auf. Er gruppiert das Skript des
-Myers-Diffs unverändert in Hunks (\in{Abschnitt}[sec:hunks]). Der Kern bietet die Nachbearbeitung
-als fertige Funktion an, und ein Test vergleicht sie mit \type{git diff} auf zufälligen Dateien.
-Das Anbinden an den Befehl ist eine offene Frage.
+Eine Gruppe von Einfügungen oder Löschungen gleitet nach oben oder unten, solange die Zeile, die
+sie verlässt, der Zeile gleicht, die sie aufnimmt. \in{Abbildung}[fig:slide] zeigt vier
+eingefügte Zeilen. Ein kürzestes Skript kann sie bei der schliessenden Klammer der Funktion a
+beginnen lassen (links). Nach dem Gleiten um zwei Zeilen besteht die Gruppe aus der Funktion b
+samt der Leerzeile danach (rechts). Unter den möglichen Lagen
+wählt die Einrückungsregel, die ihre Gewichte aus dem Code von git übernimmt: Sie vergleicht die
+Einrückung der Zeilen an der Grenze und beachtet Leerzeilen davor und danach.
+
+\startplacefigure[title={Eine Gruppe vor und nach der Nachbearbeitung der Grenzen},
+    reference=fig:slide,location=here]
+\externalfigure[images/slide.pdf][width=\textwidth]
+\stopplacefigure
 
 \subsection{Definition}
 
@@ -124,11 +147,11 @@ Eine Änderungsgruppe ist eine maximale Folge geänderter Zeilen einer Seite. Ei
 Seite ist geändert, wenn das Skript sie löscht, eine der neuen, wenn es sie einfügt. Eine Gruppe
 bestehe aus den Zeilen $s$ bis $e-1$ und habe die Länge $g = e - s$. Sie rückt um einen Schritt
 nach unten, wenn die Zeile $s$ gleich der Zeile $e$ ist: Dann ist die Zeile $s$ unverändert,
-die Zeile $e$ geändert, und die Gruppe belegt die Zeilen $s+1$ bis $e$.
-Ein Schritt nach oben ist erlaubt, wenn
-die Zeile $s-1$ gleich der Zeile $e-1$ ist. Die Lagen einer Gruppe sind alle, die durch solche
-Schritte erreichbar sind, ohne eine andere geänderte Zeile zu überschreiten. Mit $u$ Schritten
-nach oben und $d$ Schritten nach unten sind das die Anfangspositionen von $s-u$ bis $s+d$.
+die Zeile $e$ geändert, und die Gruppe belegt die Zeilen $s+1$ bis $e$. Ein Schritt nach oben ist
+erlaubt, wenn die Zeile $s-1$ gleich der Zeile $e-1$ ist. Die Lagen einer Gruppe sind alle, die
+durch solche Schritte erreichbar sind, ohne eine andere geänderte Zeile zu überschreiten. Mit $u$
+Schritten nach oben und $d$ Schritten nach unten sind das die Anfangspositionen von $s-u$ bis
+$s+d$.
 
 Jede Lage hat zwei Schnittstellen, vor der ersten und hinter der letzten Zeile der Gruppe.
 Für jede liest das Verfahren die Einrückung der Zeile an der Schnittstelle, die Leerzeilen davor
@@ -215,15 +238,27 @@ nimmt drei. Die Zerlegung folgt dem Unified-Format von diff und git. Eine eigene
 Buch nicht, denn sie ist ein Durchlauf über das Skript. Der Code steht in \type{diff.rs} als
 \type{hunks}.
 
+Zwei benachbarte Änderungen landen im selben Hunk, wenn höchstens $2c$ unveränderte Zeilen
+zwischen ihnen liegen. Dann überlappen oder berühren sich ihre Kontextfenster. Solche Nachbarn
+bilden Ketten, sodass ein Hunk auch Änderungen umfassen kann, die weiter auseinanderliegen.
+
+\in{Abbildung}[fig:hunks] zeigt ein Skript mit drei Änderungen und $c = 3$. Zwischen den ersten
+beiden liegen fünf unveränderte Schritte, und $5 \le 2c = 6$ gilt: Ihre Fenster überlappen, sie
+bilden einen Hunk. Zwischen der zweiten und der dritten liegen sieben Schritte. Das sind mehr als
+sechs, die Fenster berühren sich nicht, und ein neuer Hunk beginnt.
+
+\startplacefigure[title={Gruppierung eines Skripts in Hunks mit $c = 3$},
+    reference=fig:hunks,location=here]
+\externalfigure[images/hunks.pdf][width=\textwidth]
+\stopplacefigure
+
 \subsection{Definition}
 
 Das Skript habe $m$ Schritte, die mit null nummeriert sind. Ein Schritt ist eine Änderung, wenn er
 eine Zeile löscht oder einfügt. Zu jeder Änderung $i$ gehört das Fenster der Schritte von $i-c$
 bis $i+c$; am Anfang und am Ende des Skripts wird es abgeschnitten. Fenster, die sich überlappen
-oder berühren, verschmilzt das Verfahren. Jedes verschmolzene Fenster ist ein Hunk. Zwei
-benachbarte Änderungen $i < j$ landen deshalb im selben Hunk, wenn $j - i - 1 \le 2c$ gilt, wenn
-also höchstens $2c$ unveränderte Zeilen zwischen ihnen liegen. Solche Nachbarn bilden Ketten,
-sodass ein Hunk auch Änderungen umfassen kann, die weiter auseinanderliegen.
+oder berühren, verschmilzt das Verfahren. Jedes verschmolzene Fenster ist ein Hunk. Die Fenster
+zweier benachbarter Änderungen $i < j$ verschmelzen genau dann, wenn $j - i - 1 \le 2c$ gilt.
 
 Ein Hunk speichert die Schritte des Skripts und die Positionen seiner Zeilen: den Anfang und die
 Länge je Seite. Der Anfang auf einer Seite ist die Zahl der Zeilen dieser Seite, die die Schritte
@@ -267,6 +302,59 @@ denn ihre Fenster berühren sich. Der Befehl \type{diff} nimmt immer drei Zeilen
 \item Auf der Seite, die eine neue oder gelöschte Datei nicht hat, ist die Länge des Hunks null.
 Die Zeile \type{@@} nennt dann die Zeile davor; die Kommandozeilenreferenz beschreibt das.
 \item Der Hunk kennt die Zeilen nicht, nur ihre Positionen. Die Anzeige liest sie aus den Folgen.
+\stopitemize
+\stopinfobox
+
+\section[sec:diff-command]{Der Diff mit dem Working-Copy-Commit}
+
+Der Befehl \type{diff} vergleicht ohne Argument den Working-Copy-Commit mit seinem Elternteil,
+mit einer Kennung diesen Commit mit der Arbeitskopie und mit zwei Kennungen die beiden Commits.
+Ist eine Seite der Working-Copy-Commit, hält der Befehl den Stand des Arbeitsverzeichnisses
+zuerst in einem Snapshot fest (ADR-010). Erst dann hat die Arbeitskopie eine feste Kennung,
+die der Kopf des Diffs nennen kann. Der Befehl liest die Arbeitskopie deshalb nicht nur:
+Er kann den Working-Copy-Commit und das Operation Log ändern.
+
+\in{Abbildung}[fig:diff-flow] zeigt den Ablauf. Die Schritte 2 bis 4 sind der Snapshot aus
+Kapitel 4, und sie entfallen, wenn der Befehl zwei Commits vergleicht. Der Vergleich und die
+Ausgabe lesen nur.
+
+\startplacefigure[title={Ablauf von \type{diff} mit dem Working-Copy-Commit und Absturzpunkten},
+    reference=fig:diff-flow,location=here]
+\externalfigure[images/diff-flow.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+Nach Erfolg steht der Eintrag des Snapshots im Log, wenn sich eine verfolgte Datei geändert hat,
+und die Ausgabe zeigt genau den Stand, den der Snapshot festhielt. Ein Fehler vor dem Snapshot,
+etwa ein ungültiger Pfad, schreibt nichts. Hat der Snapshot den Zeiger bewegt, die Bewegung aber
+nicht sichern können, endet der Befehl mit Exit-Code 3, und die Ausgabe bleibt aus.
+Nach einem Absturz im Snapshot gilt, was \in{Abbildung}[fig:oplog-write] zeigt. Der Vergleich
+und die Ausgabe ändern nichts, ein Absturz dort lässt also nichts zurück. Der Befehl lässt sich
+nach Erfolg, nach einem Fehler und nach einem Absturz wiederholen. Nach einem Erfolg findet ein
+zweiter Aufruf den Baum unverändert und schreibt keinen Eintrag.
+
+\in{Abbildung}[fig:diff-timeline] zeigt den Befehl in einer eigenen kurzen Sitzung mit eigenen
+Kennungen, nach dem Muster des laufenden Beispiels. Nach dem Commit \quotation{Anfang} ändert
+jemand \type{notes.txt} von Hand. Das erste \type{diff} macht einen Snapshot und schreibt den
+Eintrag 4. Das zweite, mit \type{--exit-code}, findet den Baum unverändert und schreibt keinen
+Eintrag; es endet mit Exit-Code 4, weil sich die Datei unterscheidet. Nach dem Commit der
+Änderung vergleicht \type{diff} mit zwei Kennungen die beiden Commits und ändert weder Zeiger
+noch Log.
+
+\startplacefigure[title={Änderungen ansehen als Zeitachse},
+    reference=fig:diff-timeline,location=here]
+\externalfigure[images/diff-timeline.pdf][width=\textwidth]
+\stopplacefigure
+
+\startinfobox
+{\bf Grenzfälle von \type{diff}.}
+\startitemize
+\item Ein Pfad, der auf keiner Seite vorkommt, fällt erst nach dem Snapshot auf, weil die Dateien
+der Arbeitskopie erst dann feststehen. Der Befehl endet mit Exit-Code 1, und ein Eintrag des
+Snapshots bleibt, falls einer entstand.
+\item Ein ungültiger Pfad, also ein leerer, ein absoluter oder einer mit \type{..},
+schreibt nichts, denn der Befehl prüft ihn vor dem Snapshot.
+\item Mit Pfaden beschränkt der Befehl nur die Ausgabe. Der Snapshot umfasst weiter alle
+verfolgten Dateien.
 \stopitemize
 \stopinfobox
 
@@ -329,7 +417,8 @@ Code steht in \type{cli.rs} als \type{diff_text} und \type{write_paged}.
 
 \startitemize[n]
 \item Der Kern berechnet den Diff. Ist eine Seite der Working-Copy-Commit, speichert er vorher
-die verfolgten Dateien als Snapshot. Danach ändert er nichts mehr.
+die verfolgten Dateien als Snapshot (\in{Abschnitt}[sec:diff-command]). Danach ändert er nichts
+mehr.
 \item Der Befehl baut den Text. Mit Farbe sind die Zeilen \type{diff}, \type{---} und
 \type{+++} fett, die Zeilen \type{@@} cyan, entfernte Zeilen rot und eingefügte grün. Die Farbe
 endet vor dem Zeilenende, damit sie nicht in die nächste Zeile läuft.
@@ -384,8 +473,10 @@ nicht.
 
 \type{diff --tui} zeigt denselben Diff in einer schreibgeschützten Oberfläche: links die Dateien,
 rechts die Zeilen der gewählten Datei, unten eine Zeile mit den Tasten. Die Bibliothek ist ratatui
-mit dem Backend crossterm (ADR-016). Die Oberfläche liegt in der Crate \type{stemma-tui}, die vom
-Kern abhängt. Der Zustand ist ein einfacher Wert, der sich durch Eingaben ändert, und die
+mit dem Backend crossterm (ADR-016). Die Crate \type{stemma-tui} bekommt den fertigen Diff von der
+Kommandozeile und ruft den Kern nicht auf; sie braucht nur seine Typen. Der Kern hängt nicht von
+ihr ab, und der Text von \type{diff} bleibt die Bezugsgrösse für Skripte und Tests.
+Der Zustand ist ein einfacher Wert, der sich durch Eingaben ändert, und die
 Darstellung zeichnet ihn in einen beliebigen Bildschirm. Tests brauchen daher kein Terminal. Nur
 die Schleife der Oberfläche (\type{run}) berührt das echte Terminal.
 
@@ -476,7 +567,7 @@ Trifft keine Bedingung einer Zeile zu, etwa \type{J} auf der letzten Datei, blei
 unverändert. Der Ausgangszustand ist $(0, 0, 0)$. Der Ablauf ist in \in{Abbildung}[fig:tui-states]
 gezeichnet.
 
-\startplacefigure[title={Übergänge der Auswahl in \type{diff --tui}},
+\startplacefigure[title={Zustände der Oberfläche von \type{diff --tui}},
     reference=fig:tui-states,location=here]
 \externalfigure[images/tui-states.pdf][width=\textwidth]
 \stopplacefigure
@@ -529,7 +620,8 @@ ratatui verwirft Steuerzeichen. Ein Wagenrücklauf (CR) vor dem Zeilenende ersch
 \item Eine Zeile ohne Zeilenende erhält die Zeile \type{\ No newline at end of file}.
 \item Eine binäre Datei zeigt die Meldung \type{Binary file differs}, und sie hat keinen Hunk.
 Eine leere neue oder gelöschte Datei zeigt ein leeres Feld.
-\item Ein \type{SIGKILL} lässt sich nicht abfangen. Das Terminal braucht dann \type{reset}.
+\item Ein \type{SIGKILL} lässt sich nicht abfangen, und bei einem Signal ohne Handler bleibt das
+Terminal im Raw-Modus. \type{reset} stellt es wieder her.
 \item Ctrl-C kommt im Raw-Modus als Taste an und wirkt wie \type{q}: Der Befehl endet mit 0, mit
 \type{--exit-code} und Unterschieden mit 4, nicht mit 130.
 \stopitemize
