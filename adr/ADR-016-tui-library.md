@@ -57,7 +57,7 @@ ADR-004 asks for the review before the merge. PR #158 (commit 2779004, STEMMA-12
 2026-10-27 first, so this review is a check after the fact. Two independent agents did it on
 2026-10-28, one for the supply chain and security, one for maintenance, footprint, and
 architecture. Neither found a blocker. The human maintainer confirmed the decisions and accepted
-this ADR.
+this ADR. The reports of both agents are summarised in a comment on STEMMA-130.
 
 - **Checked, no finding.** At the time of the review, `cargo audit` (123 crates, 1381
   advisories) and `cargo deny check` report no advisory, ban, license, or source problem. All
@@ -78,7 +78,7 @@ this ADR.
   pseudo-terminal. `term` and `signal` were there before. The features do not reach a release
   build.
 - **`Zlib`** is needed by `foldhash 0.2.0` only. A `[[licenses.exceptions]]` entry for that crate
-  would be narrower; it is optional and not part of this change.
+  would be narrower; it is optional and tracked in STEMMA-138.
 - **Not checked.** The Windows tree (`crossterm_winapi`, `winapi`)
   is in the lockfile but not built; `--tui` is refused there (see the open points). The build
   on Linux and with the toolchain 1.89 was not run, and the owners of `ratatui` and `crossterm`
