@@ -250,7 +250,23 @@ A group of changes of an edit script together with the unchanged lines around it
 context lines overlap or touch share one hunk. (Hunk)
 _Avoid_: Chunk, block
 
+**Context line**:
+An unchanged line that a hunk shows before or after a change. The diff uses three. (Kontextzeile)
+
 **Change group**:
 A maximal run of changed lines on one side of a diff. The slide step moves a group along the
 unchanged lines that equal its edge lines. (Änderungsgruppe)
 _Avoid_: Change block
+
+**Side of a diff**:
+One of the two compared versions, the old and the new. A side is a commit, or the
+working-copy commit as it stands after a snapshot. (Seite eines Diffs)
+
+**Pager**:
+The program named in `PAGER` that shows the coloured output of `diff` page by page on a terminal.
+(Pager)
+
+**Terminal interface**:
+The read-only view of `diff --tui` in the crate `stemma-tui`, which browses the files and hunks of
+a diff (ADR-016). (Terminal-Oberfläche, TUI)
+_Avoid_: display

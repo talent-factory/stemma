@@ -6,15 +6,15 @@ Es beschreibt die Entscheidungen aus ADR-002 und den Vorschlag aus ADR-003.
 \section{Schichtenmodell}
 
 Der Kern enthält die gesamte Logik:
-Objektspeicher, Referenzen, Operation Log, Arbeitskopie und Autorisierung,
-später auch Diff und Merge.
+Objektspeicher, Referenzen, Operation Log, Arbeitskopie, Autorisierung und Diff,
+später auch Merge.
 Er liegt in einer eigenen Bibliothek (\type{stemma-core}).
 Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
 In Phase 1 gibt es eine Oberfläche, die Kommandozeile (\type{stemma-cli})
 mit Befehlen wie \type{init}, \type{commit} und \type{op log}.
-In Phase 2 kommt die Anzeige im Terminal hinzu (\type{stemma-tui}). Sie ruft den Kern nicht
+In Phase 2 kommt die Terminal-Oberfläche (TUI) hinzu (\type{stemma-tui}). Sie ruft den Kern nicht
 selbst auf: Die Kommandozeile liest den Diff aus dem Kern und übergibt ihn bei \type{diff --tui}
-zur Anzeige.
+an die Terminal-Oberfläche.
 Der Hub folgt in Phase~5, ein API-Server mit denselben Operationen wie die CLI
 und ein MCP-Server als Adapter für Agenten in Phase~6.
 
@@ -56,6 +56,9 @@ Das gilt auch für einen Plan wie \type{purge} ohne \type{--apply},
 denn er liest, was die Änderung berühren würde.
 Die Befehle, die nur das Log lesen (\type{op log}, \type{op verify}),
 haben keinen Akteur und fragen nicht.
+Der Diff fragt nur, wenn eine Seite der Working-Copy-Commit ist,
+weil er dann einen Snapshot der Arbeitskopie speichert.
+Mit zwei Kennungen fragt er nicht, verlangt aber trotzdem einen Akteur.
 In Phase 1 erlaubt die Prüfung alles.
 Nur einen Purge verweigert der Kern einem Agenten schon vorher, fest im Code,
 denn ein Purge lässt sich nicht rückgängig machen (ADR-002, ADR-014).
@@ -71,8 +74,8 @@ Ein solcher Schreibpfad, der den Authorizer nie fragt, hat keinen Wert zu überg
 und lässt sich nicht übersetzen.
 Der Wert sagt nicht, welche Operation erlaubt wurde;
 er belegt nur, dass gefragt wurde.
-Zwei Wege deckt der Typ nicht ab:
-Die Einträge des Operationslogs schreibt nur der Kern unter dieser Sperre,
+Drei Wege deckt der Typ nicht ab:
+Die Einträge des Operation Logs schreibt nur der Kern unter dieser Sperre,
 aber das ist eine Vereinbarung, die der Compiler nicht prüft,
 und das Arbeitsverzeichnis schreibt \type{apply_checkout} ohne Akteur.
 Objekte, die jemand direkt im Objektspeicher ablegt, fragt der Kern ebenfalls nicht (ADR-002).
@@ -117,7 +120,7 @@ Purge \stopxcell
 \startxcell 2 \stopxcell
 \startxcell Diff und Ausgabe \stopxcell
 \startxcell Änderungen werden angezeigt \stopxcell
-\startxcell offen \stopxcell
+\startxcell abgeschlossen \stopxcell
 \stopxrow
 \startxrow
 \startxcell 3 \stopxcell
