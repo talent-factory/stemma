@@ -238,8 +238,8 @@ impl Repository {
     /// A file to remove that lies below a link is skipped, as it is not the file of the old tree,
     /// and so is one that is gone. `.stemmaignore` is not read again.
     ///
-    /// A stop leaves the files done so far. Nothing is rolled back: the next snapshot reads what
-    /// is there as an ordinary change of the actor (ADR-013). A stop after the first file was
+    /// A stop leaves the files done so far. Nothing is rolled back: a snapshot reads only the
+    /// tracked files among them, so a stopped checkout is finished by running it again (ADR-013). A stop after the first file was
     /// removed or written is reported as [`CheckoutError::Interrupted`], which says how many files
     /// were removed and written; a stop before that, after directories were created or removed,
     /// is reported as it is. A process that ends between the creation of a temporary file

@@ -489,7 +489,9 @@ pub enum RestoreError {
     Checkout(CheckoutError),
     /// The files could not be brought to the old tree after the entry was written. The entry is in
     /// the log and names a restore that did not happen; no pointer moved, and the files done so
-    /// far stay (see [`CheckoutError::Interrupted`]). The next snapshot saves them as a change.
+    /// far stay (see [`CheckoutError::Interrupted`]). A snapshot saves only the files that the
+    /// working-copy commit tracks and misses the ones that only the old tree has, so the same
+    /// restore is to be run again before any other command.
     CheckoutFailed {
         /// The entry that was written.
         entry: Box<Entry>,
@@ -497,7 +499,8 @@ pub enum RestoreError {
         source: CheckoutError,
     },
     /// The entry was written and the files are at the old state, but the first pointer did not
-    /// move: the file system failed.
+    /// move: the file system failed. A snapshot would miss the files that only the old state has,
+    /// so the same restore is to be run again before any other command.
     MoveFailed {
         /// The entry that was written.
         entry: Box<Entry>,
@@ -663,7 +666,10 @@ impl fmt::Display for RestoreError {
             Self::CheckoutFailed { entry, source } => write!(
                 f,
                 "could not write the files; entry {} names a restore that did not happen and no \
-                 pointer moved, and the files done so far stay: {source}",
+                 pointer moved, and the files done so far stay: {source}; run the same restore \
+                 again before any other command, as a snapshot saves only the files that the \
+                 working-copy commit tracks and would miss the files that only the old state \
+                 has",
                 entry.number()
             ),
             Self::MoveFailed { entry, source } => write!(
@@ -677,8 +683,9 @@ impl fmt::Display for RestoreError {
             Self::PartlyMoved { entry, source } => write!(
                 f,
                 "entry {} was written and the files are at the old state, but only some of the \
-                 pointers moved: {source}; run the same restore again, it moves only the pointers \
-                 that have not moved",
+                 pointers moved: {source}; run the same restore again before any other command, \
+                 it moves only the pointers that have not moved, and a snapshot would miss the \
+                 files that only the old state has",
                 entry.number()
             ),
             Self::NotDurable { entry, source } => write!(
@@ -1520,6 +1527,20 @@ mod tests {
         assert!(
             moved.to_string().contains("run the same restore again"),
             "{moved}"
+        );
+        assert!(
+            moved.to_string().contains("before any other command"),
+            "{moved}"
+        );
+        let stopped = RestoreError::CheckoutFailed {
+            entry: Box::new(repository.oplog().read(snapshot).unwrap()),
+            source: CheckoutError::Reserved { path: "x".into() },
+        };
+        assert!(
+            stopped
+                .to_string()
+                .contains("run the same restore again before any other command"),
+            "{stopped}"
         );
         let failed = RestoreError::MoveFailed {
             entry,
