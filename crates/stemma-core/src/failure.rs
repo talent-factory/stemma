@@ -13,8 +13,8 @@ use crate::index::WriteTreeError;
 use crate::oplog::OpLogError;
 use crate::refs::RefError;
 use crate::repository::{
-    ApplyPurgeError, CheckoutError, CommitError, DiffError, JournalError, PurgeError, PurgeFailure,
-    RestoreError, SnapshotError, StatusError, TrackError, UpdateError,
+    ApplyPurgeError, CheckoutError, CommitError, DiffError, InitError, JournalError, OpenError,
+    PurgeError, PurgeFailure, RestoreError, SnapshotError, StatusError, TrackError, UpdateError,
 };
 use crate::store::StoreError;
 use crate::verify::VerifyError;
@@ -23,7 +23,7 @@ use crate::verify::VerifyError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     /// Another writer holds a lock, or won every race the writer tried. A later call can
-    /// succeed. The failure itself changes nothing, but the call may have left an entry for a move
+    /// succeed. The lock error itself writes nothing, but the call may have left an entry for a move
     /// that did not happen, or the entry of the snapshot that came first.
     Locked,
     /// The repository is damaged: the log has a gap or a wrong number, the chain does not hold, or
@@ -46,6 +46,44 @@ impl Classify for StoreError {
             // Like `RefError::MissingCommit`, the variant also stands for an object that the caller
             // named with the wrong kind, which is an argument error.
             Self::Io { .. } | Self::KindMismatch { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for OpenError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // The file is there but not in canonical form.
+            Self::MalformedFormat { .. } => FailureKind::Damaged,
+            // A missing `format`, another version, and a `.stemma` that is not a directory are
+            // not a form the code wrote, but the caller cannot tell them from a wrong directory or
+            // a newer program, so they stay with the other failures.
+            Self::NotARepository { .. }
+            | Self::NoRepositoryAbove { .. }
+            | Self::Missing { .. }
+            | Self::NotADirectoryToStartIn { .. }
+            | Self::NotUtf8 { .. }
+            | Self::OtherOwner { .. }
+            | Self::AtVolumeRoot { .. }
+            | Self::NotADirectory { .. }
+            | Self::MissingFormat { .. }
+            | Self::UnsupportedFormat { .. }
+            | Self::Io { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for InitError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Log(error) => error.kind(),
+            Self::Store(error) => error.kind(),
+            Self::Leftover { error, .. } => error.kind(),
+            Self::Denied { .. }
+            | Self::AlreadyExists { .. }
+            | Self::Io { .. }
+            | Self::NotDurable { .. }
+            | Self::ChangeId(_) => FailureKind::Other,
         }
     }
 }
@@ -352,6 +390,84 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn a_format_file_that_is_not_canonical_is_damage_and_the_other_open_errors_are_not() {
+        assert_eq!(
+            OpenError::MalformedFormat { path: path() }.kind(),
+            FailureKind::Damaged
+        );
+        for error in [
+            OpenError::NotARepository { path: path() },
+            OpenError::MissingFormat { path: path() },
+            OpenError::UnsupportedFormat {
+                path: path(),
+                found: "99".to_owned(),
+            },
+        ] {
+            assert_eq!(error.kind(), FailureKind::Other, "{error}");
+        }
+    }
+
+    #[test]
+    fn init_passes_the_cause_of_the_log_and_the_store_on() {
+        assert_eq!(InitError::Log(gap()).kind(), FailureKind::Damaged);
+        assert_eq!(
+            InitError::Leftover {
+                path: path(),
+                error: Box::new(InitError::Log(gap())),
+                source: std::io::Error::other("disk"),
+            }
+            .kind(),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            InitError::AlreadyExists { path: path() }.kind(),
+            FailureKind::Other
+        );
+    }
+
+    /// These stay with the other failures because the code cannot tell a wrong argument from
+    /// damage (see the comments at the variants), and ADR-018 says so. A change has to be made on
+    /// purpose, with the ADR and the book.
+    #[test]
+    fn the_variants_that_stand_for_an_argument_as_well_as_for_damage_stay_with_the_others() {
+        assert_eq!(
+            RefError::NotACommit {
+                id: id(),
+                found: Kind::Blob,
+            }
+            .kind(),
+            FailureKind::Other
+        );
+        assert_eq!(
+            StoreError::KindMismatch {
+                id: id(),
+                expected: Kind::Commit,
+                found: Kind::Blob,
+            }
+            .kind(),
+            FailureKind::Other
+        );
+    }
+
+    #[test]
+    fn an_object_file_that_is_corrupt_is_damage_wherever_it_is_wrapped() {
+        let corrupt = || StoreError::Corrupt {
+            id: id(),
+            path: path(),
+            reason: crate::store::CorruptReason::NotARegularFile,
+        };
+        assert_eq!(corrupt().kind(), FailureKind::Damaged);
+        assert_eq!(
+            RefError::Store(Box::new(corrupt())).kind(),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            SnapshotError::Store(Box::new(corrupt())).kind(),
+            FailureKind::Damaged
+        );
     }
 
     #[test]

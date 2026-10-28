@@ -31,19 +31,31 @@ A caller can tell them apart only by the text of the message, which is written f
   stays with `diff --exit-code`, where a script reads it as "a file differs"; a lock therefore
   takes 6.
   - **5:** the command found damage: the operation log has a gap or a wrong number, an entry or
-    a reference file is not in canonical form, an object that a commit names is missing or does
-    not parse, or the chain does not match an anchor (the entry is missing, from before the
-    chain, or has another hash). A caller does not retry; a person looks at the repository.
+    a reference file or the file `format` is not in canonical form, an object that a tree or an
+    index names is missing or does not parse, the tip file is missing or behind, or the chain
+    does not match an anchor (the entry is missing, from before the chain, or has another hash).
+    `op log` ends with 5 and lists nothing when the references cannot be read because of
+    damage, or when the entry before the oldest shown one is damaged. A caller does not retry;
+    a person looks at the repository. The tip file is damage although a stopped writer can leave
+    it behind, because a removed tip file could also hide a replaced last entry.
   - **6:** the command failed because a lock is held, or because the log writer lost every race
-    for a number. A later call can succeed, so a caller waits and retries. The call may have
-    left the traces of code 1 (an entry for a move that did not happen, or the entry of the
-    snapshot that came first), but nothing is lost.
+    for a number. A later call can succeed, so a caller waits and tries a few times. A lock of
+    another machine, or one in an older form, is taken over by no command, so it stays; the
+    message names the file that a person removes.
   - **1** stays for every other failure, among them nothing to commit, no repository, a missing
-    actor, a moved branch, and the errors of `init`. A caller that needs to tell these apart
-    reads `--json` or the message.
-  - Code 3 takes precedence: a command that moved a pointer ends with 3 whatever the cause was.
-    So does a `purge` whose journal stays, also when the journal cannot be read: the journal
-    keeps every writer out until `purge --resume` or `--abort` has run.
+    actor, a moved branch, a commit that the caller or a pointer names and the store lacks, and
+    most errors of `init` and of opening a repository. A commit that is missing stays at 1
+    because the code cannot tell a wrong argument from damage. A caller that needs to tell
+    these apart reads `--json` or the message.
+  - Codes 1, 5, and 6 can leave the same traces: an entry for a move that did not happen, or
+    the entry of a snapshot that came first. Nothing is lost.
+  - Code 3 takes precedence when a result exists but is incomplete or not durable: a pointer
+    moved only partly, a flush failed (also the flush of a snapshot that came first), or the
+    output that alone names the result could not be written. A snapshot that came first and was
+    followed by another failure does not make it 3; the failure keeps its own code. So does a
+    `purge` whose journal stays, also when the journal cannot be read: the journal keeps every
+    writer out until `purge --resume` or `--abort` has run. Code 3 does not say whether a lock
+    or damage lay behind it; the message does.
   - A failure is classified by `stemma-core::failure`, which lists every variant of every error
     and has no fallback arm, so a new error cannot end with 1 unnoticed.
 - **`--json` for `status` and `commit`**, the two commands that agents read most.
@@ -55,8 +67,11 @@ A caller can tell them apart only by the text of the message, which is written f
   - `commit --json` writes one object: `schema`, `commit`, `branch`, and `resumed` (boolean).
 - **Errors stay on the standard error stream**. With `--json`, a failure writes no
   JSON to the standard output; the exit code and the message on the standard error stream say
-  what happened. A command that made something and could not finish (code 3) writes its object
-  first, as the text form writes its line first.
+  what happened. A command that has its result and could not flush or write it (code 3) writes
+  its object first, as the text form writes its line first. Another code 3, such as a `commit`
+  that moved one pointer, writes no object, because no result exists yet. An object followed by
+  a non-zero code names what was made, not that the command worked; the exit code decides. A
+  reader that closes the pipe early gets no error, as in the text form.
 
 ## Consequences
 
@@ -74,5 +89,5 @@ A caller can tell them apart only by the text of the message, which is written f
       commits in a loop, but it needs no new code until a caller asks for it.
 - [ ] `diff --json`, `restore --json`, and `purge --json` with the API and the MCP server of
       phase 6 (ADR-015).
-- [ ] Whether a lock held by a crashed process (a stale lock) is code 6 or code 5. It is code 6
-      until the core can tell the two apart.
+- [ ] Whether a lock of another machine, or in an older form, which no command takes over, gets
+      a code of its own. It is code 6 until a caller needs to tell it from a lock that clears.

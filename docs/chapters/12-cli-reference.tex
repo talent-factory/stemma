@@ -102,7 +102,12 @@ Ein Feld zu entfernen, umzubenennen oder im Typ zu ändern hebt \type{schema} an
 das Buch nennt die Änderung.
 Bei einem Fehler schreibt der Befehl kein JSON; es gelten der Exit-Code
 und die Meldung auf der Fehlerausgabe.
-Endet ein Befehl mit Exit-Code 3, steht sein Objekt vor dem Fehler auf der Standardausgabe.
+Hat ein Befehl sein Ergebnis und scheitert nur das Sichern oder das Schreiben (Exit-Code 3),
+steht sein Objekt vor dem Fehler auf der Standardausgabe.
+Ein anderes Exit-Code 3, etwa bei einem \type{commit}, der nur einen Zeiger bewegte,
+schreibt kein Objekt, denn es gibt noch kein Ergebnis.
+Ein Objekt vor einem Exit-Code ungleich 0 nennt, was gemacht wurde, nicht dass der Befehl
+gelang; es entscheidet der Exit-Code.
 Die übrigen Befehle haben keine JSON-Form; sie folgt mit den Schnittstellen der Phase 6.
 
 {\bf Exit-Codes.} Ein Skript kann sich auf diese Werte verlassen.
@@ -111,7 +116,9 @@ Die übrigen Befehle haben keine JSON-Form; sie folgt mit den Schnittstellen der
 \item {\bf 0:} Der Befehl ist gelungen.
 \item {\bf 1:} Der Befehl ist gescheitert, aus einem anderen Grund als bei 5 und 6.
 Die Meldung auf der Fehlerausgabe hat das Präfix \type{stemma:}.
-Meist hat er nichts geändert. Zwei Spuren kann Code 1 hinterlassen:
+Ein Commit, den das Argument oder ein Zeiger nennt und der im Objektspeicher fehlt,
+gehört auch dazu: Der Befehl kann ein falsches Argument nicht von einem Schaden unterscheiden.
+Meist hat der Befehl nichts geändert. Zwei Spuren können die Codes 1, 5 und 6 hinterlassen:
 einen Eintrag für eine Zeigerbewegung,
 die nicht stattfand (\type{op log} markiert ihn mit \type{!}),
 und bei den Befehlen \type{commit}, \type{status}, \type{diff}, \type{op restore}
@@ -130,18 +137,30 @@ Eine Ausgabe, die sich nicht schreiben liess, führt nur dann zu Code 3,
 wenn der Befehl etwas angelegt hat, das sonst nur die Ausgabe nennt.
 Bei \type{diff}, \type{status}, \type{op log}, \type{op verify}, \type{--dry-run}
 und dem Plan von \type{purge} ist sie Code 1.
+Code 3 hat Vorrang vor 5 und 6, wenn ein Ergebnis besteht, aber unvollständig oder nicht
+gesichert ist: Ein Zeiger bewegte sich nur zum Teil, ein Sichern auf den Datenträger scheiterte
+(auch das eines Snapshots, der vorher kam), oder die Ausgabe, die allein das Ergebnis nennt,
+liess sich nicht schreiben. Ein Snapshot, der vorher gelang und auf den ein anderer Fehler folgt,
+macht daraus keine 3; der Fehler behält seinen Code. Ein \type{purge}, dessen Journal bleibt,
+endet mit 3, auch wenn sich das Journal nicht lesen lässt, denn es hält jeden Schreiber fern.
+Code 3 sagt nicht, ob eine Sperre oder ein Schaden dahintersteht; die Meldung nennt es.
 \item {\bf 4:} Nur bei \type{diff --exit-code}: Mindestens eine Datei unterscheidet sich.
 Dieser Code ist kein Fehler und wird nie für eine Sperre verwendet.
 \item {\bf 5:} Der Befehl hat einen Schaden gefunden: Das Operation Log hat eine Lücke
-oder eine falsche Nummer, seine Kette hält nicht, ein Eintrag oder eine Referenz ist nicht
-in kanonischer Form, ein Objekt, das ein Commit nennt, fehlt oder lässt sich nicht lesen,
-oder ein Anker passt nicht (sein Eintrag fehlt, stammt aus der Zeit vor der Kette oder hat
+oder eine falsche Nummer, seine Kette hält nicht, die Datei \type{oplog-tip} fehlt oder
+geht nach, ein Eintrag, eine Referenz oder die Datei \type{format} ist nicht
+in kanonischer Form, ein Objekt, das ein Baum oder der Index nennt, fehlt oder lässt sich nicht
+lesen, oder ein Anker passt nicht (sein Eintrag fehlt, stammt aus der Zeit vor der Kette oder hat
 einen anderen Hash).
+\type{op log} endet mit 5 und listet nichts, wenn sich die Referenzen wegen eines Schadens nicht
+lesen lassen oder der Eintrag vor dem ältesten gezeigten beschädigt ist.
 Ein Skript wiederholt den Befehl nicht; eine Person sieht sich das Repository an.
 \item {\bf 6:} Der Befehl ist gescheitert, weil eine Sperre gehalten ist: die Sperre der
 Referenzen, oder das Log, dessen Schreiber jede Nummer an einen anderen verlor.
 Er hinterlässt höchstens die Spuren von Code 1, und ein späterer Aufruf kann gelingen:
-Ein Skript wartet und wiederholt den Befehl.
+Ein Skript wartet und versucht es einige Male.
+Eine Sperre eines anderen Rechners oder in einer älteren Form übernimmt kein Befehl;
+sie bleibt, und die Meldung nennt die Datei, die eine Person entfernt.
 \item {\bf 130, 143, 129:} Der Befehl wurde unterbrochen: mit Ctrl-C (130),
 mit \type{SIGTERM} (143) oder mit \type{SIGHUP} (129).
 Die Codes 143 und 129 gibt es nur unter Unix; unter Windows endet Ctrl-C mit 130.
@@ -992,9 +1011,12 @@ Ein leeres Log deutet auf verlorene Einträge oder eine Veränderung von aussen,
 denn \type{init} schreibt immer den Eintrag 1; diese Meldung kommt nur,
 wenn auch die Datei \type{oplog-tip} fehlt, sonst meldet der Befehl den Verlust mit
 der Nummer des fehlenden Eintrags. Mit Exit-Code 1 endet auch ein Verzeichnis,
-das kein Repository ist, und eine Datei \type{format}, die fehlt, nicht kanonisch ist
-oder eine andere Version als 2 bis 4 nennt. Lassen sich HEAD oder die Branches der gezeigten
-Einträge nicht lesen, bricht der Befehl nicht ab: Er warnt auf der Fehlerausgabe
+das kein Repository ist, und eine Datei \type{format}, die fehlt oder eine andere Version
+als 2 bis 4 nennt; ist sie nicht kanonisch, ist es ein Schaden (Exit-Code 5).
+Lassen sich HEAD oder die Branches der gezeigten Einträge wegen eines Schadens nicht lesen
+(eine Referenz ist nicht kanonisch), endet der Befehl mit Exit-Code 5 und gibt nichts aus.
+Scheitert das Lesen aus einem anderen Grund, etwa weil die Datei nicht zugänglich ist,
+bricht der Befehl nicht ab: Er warnt auf der Fehlerausgabe
 (\type{stemma: warning:}), zeigt das Log und lässt unbekannt, was nur die Referenzen
 entscheiden würden (Exit-Code 0). Exit-Code 1 gilt auch, wenn die Ausgabe nicht
 geschrieben werden kann, zum Beispiel weil der Datenträger voll ist; die Meldung
@@ -1006,7 +1028,8 @@ in Meldungen und in der Textform maskiert (wie bei \type{escape_debug} von Rust)
 die JSON-Form maskiert nach den Regeln von JSON.
 
 {\bf Grenzen.} Der Befehl liest nur die gezeigten Einträge und den Eintrag davor, wenn er sich
-lesen lässt; lässt er sich nicht lesen, warnt der Befehl auf der Fehlerausgabe, dass der Anschluss
+lesen lässt; ist er beschädigt, endet der Befehl mit Exit-Code 5; lässt er sich aus einem anderen
+Grund nicht lesen, warnt der Befehl auf der Fehlerausgabe, dass der Anschluss
 des ältesten gezeigten Eintrags nicht geprüft ist. Eine Lücke findet er auch dann, wenn der
 fehlende Eintrag ausserhalb der gezeigten liegt, einen beschädigten oder geänderten älteren
 Eintrag aber nicht: \type{op log} ist kein Prüfwerkzeug, das ist \type{op verify}.

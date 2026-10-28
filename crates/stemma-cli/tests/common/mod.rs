@@ -166,3 +166,9 @@ pub fn hold_the_lock(dir: &Path) {
     )
     .unwrap();
 }
+
+/// The number of entry files of the log, counted without `op log`, which reads the references and
+/// lists nothing when one of them is damaged.
+pub fn entry_count(dir: &Path) -> usize {
+    fs::read_dir(dir.join(".stemma/oplog")).unwrap().count()
+}

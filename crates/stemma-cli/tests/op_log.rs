@@ -3,6 +3,8 @@
 mod common;
 
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use common::{entry_file, previous, repository, run, write_stub_entry, Dir};
@@ -88,13 +90,14 @@ fn the_newest_entry_comes_first_and_the_limit_cuts_the_old_ones() {
 
 #[test]
 fn the_limit_spares_an_entry_it_does_not_show() {
-    // The old entry is damaged, but the limit does not read it.
+    // The oldest entry is damaged, but the limit reads only the shown entry and the one before it.
     let dir = repository();
     snapshot(dir.path(), 2, "-", A);
+    snapshot(dir.path(), 3, A, B);
     fs::write(dir.path().join(".stemma/oplog/000000000001"), "damaged").unwrap();
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(result.stdout.starts_with("2  "), "{}", result.stdout);
+    assert!(result.stdout.starts_with("3  "), "{}", result.stdout);
 }
 
 #[test]
@@ -452,13 +455,17 @@ fn the_limit_does_not_change_the_outcome_of_a_shown_entry() {
     assert_eq!(flags(dir.path(), &["-n", "2"]), ["true", "false"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn references_that_cannot_be_read_give_a_warning_and_the_outcome_of_the_chain() {
     let dir = repository();
     branch_move(dir.path(), 2, "-", A);
     branch_move(dir.path(), 3, A, B);
-    // A file of a branch that is not in canonical form.
-    fs::write(dir.path().join(".stemma/refs/heads/main"), "damaged").unwrap();
+    // A branch file that cannot be read: the storage fails, which is not damage (code 5 is for a
+    // file that is not in canonical form).
+    let branch = dir.path().join(".stemma/refs/heads/main");
+    fs::write(&branch, A).unwrap();
+    fs::set_permissions(&branch, fs::Permissions::from_mode(0o000)).unwrap();
     let result = run(dir.path(), &["op", "log", "--json"]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
@@ -699,6 +706,25 @@ fn every_entry_before_a_stub_is_unknown_in_a_hash_chained_log() {
             lines[line].ends_with("\"took_effect\":null}"),
             "{}",
             result.stdout
+        );
+    }
+}
+
+#[test]
+fn a_corrupt_reference_is_damage_and_nothing_is_listed() {
+    for args in [vec!["op", "log"], vec!["op", "log", "--json"]] {
+        let dir = repository();
+        snapshot(dir.path(), 2, "-", A);
+        fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
+
+        let result = run(dir.path(), &args);
+
+        assert_eq!(result.code, 5, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "", "{args:?}");
+        assert!(
+            result.stderr.contains("could not read the references"),
+            "{}",
+            result.stderr
         );
     }
 }

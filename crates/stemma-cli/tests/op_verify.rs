@@ -288,15 +288,16 @@ fn a_missing_tip_file_is_reported() {
 }
 
 #[test]
-fn op_log_warns_when_it_cannot_check_the_link_of_its_oldest_entry() {
+fn op_log_ends_with_code_5_when_the_entry_before_its_window_is_damaged() {
     let dir = repository();
     let last = last(dir.path());
     fs::write(entry_file(dir.path(), last - 1), "damaged").unwrap();
     let result = run(dir.path(), &["op", "log", "-n", "1"]);
-    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.code, 5, "{}", result.stderr);
+    assert_eq!(result.stdout, "");
     assert!(
         result.stderr.starts_with(&format!(
-            "stemma: warning: the link of the oldest shown entry to entry {} was not checked",
+            "stemma: the link of the oldest shown entry to entry {} cannot be checked",
             last - 1
         )),
         "{}",

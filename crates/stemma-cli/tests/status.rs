@@ -8,7 +8,8 @@ use std::path::Path;
 use std::process::Command;
 
 use common::{
-    hold_the_lock, operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR,
+    entry_count, hold_the_lock, operations, repository, run, stemma, track_ok, write, Dir, Run,
+    ACTOR,
 };
 
 fn commit(dir: &Path, message: &str) {
@@ -420,14 +421,14 @@ fn a_file_that_is_corrupt_in_the_repository_is_damage_with_code_5_and_no_trace()
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
-    let entries = operations(dir.path()).len();
+    let entries = entry_count(dir.path());
 
     let result = status(dir.path());
 
     assert_eq!(result.code, 5, "{}", result.stdout);
     assert_eq!(result.stdout, "");
     assert!(result.stderr.starts_with("stemma: "), "{}", result.stderr);
-    assert_eq!(operations(dir.path()).len(), entries);
+    assert_eq!(entry_count(dir.path()), entries);
 }
 
 #[test]
