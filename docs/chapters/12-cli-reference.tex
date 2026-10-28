@@ -12,7 +12,9 @@ Die Übersicht (\in{Abbildung}[fig:commands]) zeigt auf einen Blick, welche Zone
 ein Befehl berührt: das Arbeitsverzeichnis, den Working-Copy-Commit,
 die Zeiger (Branch und HEAD) oder das Operation Log.
 Bei \type{op restore} hängt es vom Eintrag ab, welche Zeiger und Dateien sich bewegen;
-die Zeile zeigt den Höchstfall.
+die Zeile zeigt den Höchstfall. Bei \type{diff} ist der Working-Copy-Commit als Seite der
+Höchstfall: Der Snapshot ändert nur dann etwas, wenn sich eine verfolgte Datei geändert hat,
+und bei zwei Commits ändert der Befehl nichts.
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]
@@ -995,7 +997,8 @@ Eine Verschiebung von Zeilen zeigt er als Löschung und Einfügung.
 Eine Option für ein Format für Maschinen gibt es nicht.
 
 {\bf Wiederholung.} Der Befehl lässt sich nach Erfolg und nach einem Fehler gefahrlos
-wiederholen; er ändert nur das Operation Log. Ein Pfad, der auf keiner Seite vorkommt,
+wiederholen; er ändert höchstens den Working-Copy-Commit und das Operation Log. Ein Pfad,
+der auf keiner Seite vorkommt,
 fällt erst auf, wenn der Snapshot geschrieben ist, weil die Dateien der Arbeitskopie erst
 dann feststehen. Der Befehl endet dann mit Exit-Code 1, und die Meldung nennt den Eintrag
 des Snapshots. Ein ungültiger Pfad schreibt nichts.
