@@ -23,9 +23,9 @@
 //! [`store::StoreError::io_error`] for the store, and `store_error()` on [`store::ReadError`],
 //! [`index::WriteTreeError`], [`refs::RefError`], [`merge_base::MergeBaseError`], and
 //! [`verify::VerifyError`] (the error of a check of an index, a tree, a commit, or a reference)
-//! for the error of the store inside. [`repository::InitError`], [`repository::OpenError`], and [`change::GenerateError`]
-//! have an `io_error()` for the error of the file system or of the operating system, and so do
-//! [`oplog::OpLogError`] and [`repository::UpdateError`]. A program
+//! for the error of the store inside. [`repository::InitError`], [`repository::OpenError`], and
+//! [`change::GenerateError`] have an `io_error()` for the error of the file system or of the
+//! operating system, and so do [`oplog::OpLogError`] and [`repository::UpdateError`]. A program
 //! that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;

@@ -358,7 +358,10 @@ mod tests {
         let tip = commit(&store, &[child], 2);
         let error = merge_bases(&store, tip, tip).unwrap_err();
         assert!(
-            matches!(error, MergeBaseError::Missing { id, child: Some(c) } if id == absent && c == child),
+            matches!(
+                error,
+                MergeBaseError::Missing { id, child: Some(c) } if id == absent && c == child
+            ),
             "{error}"
         );
         let text = error.to_string();
