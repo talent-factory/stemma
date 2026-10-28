@@ -1,0 +1,410 @@
+id: google-no-glob-import-rust
+language: Rust
+severity: info
+message: >-
+  Glob import. Import the specific items you use instead, so readers
+  can see where a name comes from.
+note: >-
+  Google Rust Style Guide, #dont-use-glob-imports. Not flagged: `use
+  super::*;` (the guide allows it inside inline test modules) and any
+  `pub use` (re-exports in non-leaf modules). `use Enum::*;` inside
+  enum-heavy code is also allowed by the guide but cannot be told apart
+  from other globs without name resolution -- suppress case by case.
+rule:
+  kind: use_declaration
+  has:
+    kind: use_wildcard
+    stopBy: end
+  not:
+    any:
+      - regex: '^use\s+super::\*\s*;'
+      - has: { kind: visibility_modifier }
+---
+id: google-no-custom-prelude-rust
+language: Rust
+severity: warning
+message: >-
+  Do not define your own `prelude` module. Preludes hide where names
+  come from and encourage glob imports.
+note: >-
+  Google Rust Style Guide, #dont-use-glob-imports (last paragraph).
+rule:
+  kind: mod_item
+  has: { field: name, kind: identifier, regex: ^prelude$ }
+---
+id: google-use-one-module-per-use-rust
+language: Rust
+severity: info
+message: >-
+  This `use` list reaches into nested modules (`{a::b, c}`). Import
+  items from one module per `use` statement instead.
+note: >-
+  Google Rust Style Guide, #a-use-statement-should-import-items-from-one-module.
+  Boundary case: the guide points at rustfmt `imports_granularity =
+  Module`, which is nightly-only, so stable rustfmt does not enforce
+  this. Related rustfmt layout rules in the official style guide are
+  covered by rustfmt itself.
+rule:
+  kind: use_list
+  has:
+    any:
+      - kind: scoped_identifier
+      - kind: scoped_use_list
+      - kind: use_wildcard
+        regex: '::'
+      - kind: use_as_clause
+        has: { kind: scoped_identifier }
+---
+id: google-rustfmt-skip-needs-reason-rust
+language: Rust
+severity: hint
+message: >-
+  `rustfmt::skip` disables automatic formatting here. Keep it only for
+  hand-aligned tables or generated code, and say why.
+note: >-
+  Google Rust Style Guide, #opting-out-of-automatic-formatting. Whether
+  the exception is justified is a human call, hence hint severity.
+rule:
+  any:
+    - kind: attribute_item
+    - kind: inner_attribute_item
+  regex: 'rustfmt\s*::\s*skip'
+---
+id: google-ref-option-param-rust
+language: Rust
+severity: warning
+message: >-
+  Parameter of type `&Option<T>`. Take `Option<&T>` (use
+  `.as_ref()` at the call site) so callers are not forced to own an
+  `Option`.
+note: >-
+  Google Rust Style Guide, #accept-flexible-references-for-immutable-data.
+  Boundary case: the matching Clippy lint `ref_option` is pedantic
+  (off by default), so it does not count as coverage. `&mut Option<T>`
+  is not flagged.
+rule:
+  kind: reference_type
+  inside: { kind: parameter }
+  not: { has: { kind: mutable_specifier } }
+  has:
+    field: type
+    kind: generic_type
+    has: { field: type, regex: ^Option$ }
+---
+id: google-impl-into-param-rust
+language: Rust
+severity: hint
+message: >-
+  `impl Into<T>` parameter. Prefer taking `T` directly; in application
+  code this is almost never worth the generic.
+note: >-
+  Google Rust Style Guide, #accepting-into. Library code may reasonably
+  choose it for ergonomic constructors, hence hint severity. Clippy
+  `impl_trait_in_params` is restriction and flags every `impl Trait`.
+rule:
+  kind: abstract_type
+  inside: { kind: parameter }
+  has:
+    field: trait
+    kind: generic_type
+    has: { field: type, regex: ^Into$ }
+---
+id: google-tuple-struct-multiple-fields-rust
+language: Rust
+severity: warning
+message: >-
+  Tuple struct with several fields. Use named fields; keep tuple
+  structs for single-field newtypes.
+note: >-
+  Google Rust Style Guide,
+  #prefer-named-fields-over-tuples-and-non-newtype-tuple-structs.
+  A `PhantomData` marker as second field also matches; suppress case by
+  case.
+rule:
+  kind: ordered_field_declaration_list
+  inside: { kind: struct_item }
+  has:
+    nthChild:
+      position: 2
+      ofRule:
+        not:
+          any:
+            - kind: visibility_modifier
+            - kind: attribute_item
+            - kind: line_comment
+            - kind: block_comment
+---
+id: google-lifetime-name-descriptive-rust
+language: Rust
+severity: hint
+message: >-
+  Single-letter lifetime on a type, trait or impl. Give lifetimes that
+  appear on types a descriptive name (for example `'input`, `'arena`).
+note: >-
+  Google Rust Style Guide, #naming-lifetimes. Function-local lifetimes
+  (`'a`, `'b`) and `'_` are allowed by the guide and not flagged. Cow-like
+  abstractions are a documented exception. Clippy
+  `single_char_lifetime_names` is restriction.
+rule:
+  kind: lifetime_parameter
+  inside:
+    kind: type_parameters
+    inside:
+      any:
+        - kind: struct_item
+        - kind: enum_item
+        - kind: trait_item
+        - kind: impl_item
+  has:
+    field: name
+    kind: lifetime
+    regex: "^'[A-Za-z]$"
+---
+id: google-new-returning-result-rust
+language: Rust
+severity: warning
+message: >-
+  A constructor named `new` returns a `Result`. Name fallible
+  constructors `try_new`.
+note: >-
+  Google Rust Style Guide, #naming-initialization-functions. Clippy
+  `new_ret_no_self` allows `Result<Self, _>`, so it does not cover this.
+rule:
+  kind: function_item
+  all:
+    - has: { field: name, regex: ^new$ }
+    - has: { field: return_type, regex: '^(\w+::)*Result\b' }
+---
+id: google-ignore-mutex-poison-rust
+language: Rust
+severity: warning
+message: >-
+  Poisoning is being ignored by extracting the guard from the error.
+  Do not recover from a poisoned lock; propagate or abort instead.
+note: >-
+  Google Rust Style Guide, #handling-poison. Covers the common idioms
+  `.lock().unwrap_or_else(|e| e.into_inner())` (also `read`/`write`)
+  and `unwrap_or_else(PoisonError::into_inner)`, not every variant.
+rule:
+  any:
+    - pattern: $LOCK.$M().unwrap_or_else(|$E| $E.into_inner())
+    - pattern: $X.unwrap_or_else(PoisonError::into_inner)
+    - pattern: $X.unwrap_or_else(sync::PoisonError::into_inner)
+    - pattern: $X.unwrap_or_else(std::sync::PoisonError::into_inner)
+constraints:
+  M: { regex: '^(lock|read|write)$' }
+---
+id: google-non-exhaustive-pub-enum-rust
+language: Rust
+severity: hint
+message: >-
+  Public enum without `#[non_exhaustive]`. If other crates or teams
+  match on it, adding a variant later becomes a breaking change.
+note: >-
+  Google Rust Style Guide, #apply-non_exhaustive-to-publicly-exposed-enums.
+  The guide lists exceptions (stable ontologies, two-state enums, an
+  explicit large-scale-change commitment), and the rule is pointless in
+  binary crates, hence hint severity. Only plain `pub` is flagged, not
+  `pub(crate)`. Clippy `exhaustive_enums` is restriction.
+rule:
+  kind: enum_item
+  has: { kind: visibility_modifier, regex: ^pub$ }
+  not:
+    follows:
+      kind: attribute_item
+      regex: non_exhaustive
+      stopBy: { all: [ { regex: '(?s).*' }, { not: { any: [ { kind: attribute_item }, { kind: line_comment }, { kind: block_comment } ] } } ] }
+---
+id: google-non-exhaustive-pub-struct-rust
+language: Rust
+severity: hint
+message: >-
+  Public struct with public fields and no `#[non_exhaustive]`. Adding
+  a field later breaks every struct literal outside the crate. Also
+  consider making the fields private.
+note: >-
+  Google Rust Style Guide,
+  #apply-non_exhaustive-to-public-structs-with-public-fields. Also the
+  single build point for the overlapping Rust API Guidelines C-STRUCT-PRIVATE
+  (this guide's remedy is more concrete and testable). The attribute
+  forbids struct literals outside the crate, which conflicts with the
+  guide's functional-record-update exception, hence hint severity.
+  Clippy `exhaustive_structs` is restriction.
+rule:
+  kind: struct_item
+  has: { kind: visibility_modifier, regex: ^pub$ }
+  all:
+    - has:
+        kind: field_declaration_list
+        has:
+          kind: field_declaration
+          has: { kind: visibility_modifier, regex: ^pub$ }
+  not:
+    follows:
+      kind: attribute_item
+      regex: non_exhaustive
+      stopBy: { all: [ { regex: '(?s).*' }, { not: { any: [ { kind: attribute_item }, { kind: line_comment }, { kind: block_comment } ] } } ] }
+---
+id: google-no-code-before-main-rust
+language: Rust
+severity: warning
+message: >-
+  Code that runs before `main()` (ctor/dtor or an init section) is
+  forbidden. Run initialization explicitly from `main`.
+note: >-
+  Google Rust Style Guide, #do-not-run-code-before-main. Matches `#[ctor]`,
+  `#[dtor]` (also `ctor::ctor`) and `link_section` attributes that
+  target init-array style sections. No Clippy lint covers this.
+rule:
+  kind: attribute_item
+  regex: '^#\[\s*(ctor::)?(ctor|dtor)\s*\]|link_section\s*=\s*"[^"]*(init_array|\.ctors|mod_init_func|CRT\$XC)'
+---
+id: google-no-unstable-features-rust
+language: Rust
+severity: warning
+message: >-
+  `#![feature(...)]` enables unstable compiler features. Do not depend
+  on them.
+note: >-
+  Google Rust Style Guide, #no-unstable-features. Only relevant for
+  nightly projects, since stable rustc rejects the attribute anyway.
+  rustc `unstable_features` is allow-by-default.
+rule:
+  kind: inner_attribute_item
+  regex: '^#!\[\s*feature\s*\('
+---
+id: google-annotate-inferred-type-rust
+language: Rust
+severity: hint
+message: >-
+  `let` binds the result of `.into()` or `.parse()` without a type.
+  Add a type annotation or turbofish so readers can see the target
+  type.
+note: >-
+  Google Rust Style Guide, #dont-overuse-type-inference. Deliberately
+  narrow: only an untyped `let` whose initializer is `.into()`,
+  `.parse()`, `.parse()?`, `.parse().unwrap()` or `.parse().expect(..)`.
+  The guide's "complex iterator chain" part is not detectable.
+rule:
+  kind: let_declaration
+  has:
+    field: value
+    any:
+      - pattern: $A.into()
+      - pattern: $A.parse()
+      - pattern: $A.parse()?
+      - pattern: $A.parse().unwrap()
+      - pattern: $A.parse().expect($M)
+  not:
+    any:
+      - pattern: 'let $X: $T = $V;'
+      - pattern: 'let mut $X: $T = $V;'
+---
+id: google-avoid-for-each-rust
+language: Rust
+severity: hint
+message: >-
+  `Iterator::for_each` with a closure. Use a plain `for` loop unless
+  there is a good reason (for example a parallel iterator).
+note: >-
+  Google Rust Style Guide,
+  #dont-use-iterator-combinator-chains-when-direct-iteration-is-clearer.
+  Rayon's `par_iter().for_each(..)` is a legitimate use. Clippy
+  `needless_for_each` is pedantic.
+rule:
+  pattern: $ITER.for_each($F)
+---
+id: google-no-combinator-chain-in-for-head-rust
+language: Rust
+severity: hint
+message: >-
+  The iterable of this `for` loop is an adapter chain with a closure.
+  Bind the chain to a variable first, or restructure the loop.
+note: >-
+  Google Rust Style Guide,
+  #dont-use-iterator-combinator-chains-when-direct-iteration-is-clearer.
+  Pure adapters such as `.iter().enumerate()` or `.zip(..)` are not
+  flagged: only chains that contain a closure.
+rule:
+  kind: for_expression
+  has:
+    field: value
+    kind: call_expression
+    all:
+      - has: { field: function, kind: field_expression }
+      - has: { stopBy: end, kind: closure_expression }
+---
+id: google-no-catch-unwind-rust
+language: Rust
+severity: hint
+message: >-
+  Do not call `catch_unwind`. Let panics unwind or abort; do not use
+  them as error handling.
+note: >-
+  Google Rust Style Guide, #dont-call-paniccatch_unwind. The guide allows
+  defense-in-depth at `panic=unwind` boundaries (for example FFI), which
+  is a judgement call, hence hint severity. No default-on lint exists.
+rule:
+  kind: call_expression
+  has: { field: function, regex: '(^|::)catch_unwind$' }
+---
+id: google-prefer-expect-over-unwrap-rust
+language: Rust
+severity: warning
+message: >-
+  `.unwrap()` outside of test code. If a panic is really the right
+  outcome, use `.expect("reason")` so the failure explains itself.
+note: >-
+  Google Rust Style Guide, #prefer-expect-over-unwrap. Skipped inside
+  `#[test]`/`#[tokio::test]`-style functions and `#[cfg(test)]` modules
+  (the guide lets tests panic). Integration tests under `tests/` are not
+  recognizable from the file content, so exclude that path in your
+  pre-commit `exclude:` glob. Clippy `unwrap_used` is restriction.
+rule:
+  pattern: $OPT.unwrap()
+  not:
+    inside:
+      stopBy: end
+      any:
+        - kind: function_item
+          follows:
+            kind: attribute_item
+            regex: '^#\[(\w+::)*test\b'
+            stopBy: { all: [ { regex: '(?s).*' }, { not: { any: [ { kind: attribute_item }, { kind: line_comment }, { kind: block_comment } ] } } ] }
+        - kind: mod_item
+          follows:
+            kind: attribute_item
+            regex: 'cfg\([^\]]*\btest\b'
+            stopBy: { all: [ { regex: '(?s).*' }, { not: { any: [ { kind: attribute_item }, { kind: line_comment }, { kind: block_comment } ] } } ] }
+---
+id: google-unsafe-needs-safety-comment-rust
+language: Rust
+severity: warning
+message: >-
+  `unsafe` block or impl without a `// SAFETY:` comment directly above
+  it. State why the invariants hold.
+note: >-
+  Google Rust Style Guide, #unsafe-code. The comment may sit above the
+  block, or above the enclosing statement (for example
+  `let x = unsafe { .. };`), and may span several `//` lines. Known
+  limits: a trailing comment at the end of the previous statement is
+  accepted as well; a `SAFETY:` comment written after the block on the
+  same line is not; `unsafe` inside macro bodies is invisible (flat
+  token trees). Clippy `undocumented_unsafe_blocks` is restriction.
+rule:
+  any:
+    - kind: unsafe_block
+    - kind: impl_item
+      regex: '^unsafe\s'
+  not:
+    any:
+      - follows:
+          kind: line_comment
+          regex: '^//\s*SAFETY:'
+          stopBy: { all: [ { regex: '(?s).*' }, { not: { any: [ { kind: line_comment }, { kind: block_comment } ] } } ] }
+      - inside:
+          stopBy: { any: [ { kind: function_item }, { kind: closure_expression } ] }
+          follows:
+            kind: line_comment
+            regex: '^//\s*SAFETY:'
+            stopBy: { all: [ { regex: '(?s).*' }, { not: { any: [ { kind: line_comment }, { kind: block_comment } ] } } ] }

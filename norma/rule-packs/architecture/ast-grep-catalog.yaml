@@ -1,0 +1,18 @@
+id: avoid-duplicate-export-rust
+message: >-
+  Re-exporting the same item under two different paths increases API
+  surface and confuses IDE autocomplete -- export it once with `pub`
+severity: warning
+language: Rust
+rule:
+  all:
+    - pattern: pub use $B::$C;
+    - inside:
+        kind: source_file
+        has:
+          pattern: pub mod $A;
+    - has:
+        pattern: $A
+        stopBy: end
+# Source: https://ast-grep.github.io/catalog/rust/avoid-duplicated-exports
+# Contributed upstream by Julius Lungys (voidpumpkin)

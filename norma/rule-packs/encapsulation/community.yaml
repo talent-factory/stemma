@@ -1,0 +1,152 @@
+# Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-anyhow-in-public-api.yml
+# License: MIT
+id: rust-no-anyhow-in-public-api
+language: Rust
+severity: warning
+message: "Do not expose anyhow in public APIs; return a typed error instead."
+note: "anyhow is good for application boundaries, but public library APIs should expose structured error types callers can match and document."
+rule:
+  any:
+    - all:
+        - kind: function_item
+        - has:
+            kind: visibility_modifier
+            stopBy: end
+        - has:
+            field: return_type
+            any:
+              - kind: generic_type
+                regex: "^(anyhow::Result<|Result<.*anyhow::Error.*>)"
+              - kind: scoped_type_identifier
+                regex: "^anyhow::Error$"
+            stopBy: end
+    - all:
+        - kind: function_signature_item
+        - inside:
+            kind: trait_item
+            has:
+              kind: visibility_modifier
+              stopBy: end
+            stopBy: end
+        - has:
+            field: return_type
+            any:
+              - kind: generic_type
+                regex: "^(anyhow::Result<|Result<.*anyhow::Error.*>)"
+              - kind: scoped_type_identifier
+                regex: "^anyhow::Error$"
+            stopBy: end
+    - all:
+        - kind: type_item
+        - has:
+            kind: visibility_modifier
+            stopBy: end
+        - has:
+            field: type
+            any:
+              - kind: generic_type
+                regex: "^(anyhow::Result<|Result<.*anyhow::Error.*>)"
+              - kind: scoped_type_identifier
+                regex: "^anyhow::Error$"
+            stopBy: end
+---
+# Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-deref-polymorphism.yml
+# License: MIT
+id: rust-no-deref-polymorphism
+language: Rust
+severity: warning
+message: "Avoid implementing Deref for API forwarding; expose explicit methods unless this type is a true smart pointer."
+note: "Deref is for pointer-like types. Using it as inheritance hides the real API surface."
+rule:
+  all:
+    - kind: impl_item
+    - has:
+        field: trait
+        regex: "^(std::ops::)?Deref$"
+        stopBy: end
+---
+# Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-public-struct-fields.yml
+# License: MIT
+id: rust-no-public-struct-fields
+language: Rust
+severity: warning
+message: "Avoid visible fields on visible structs; keep representation private unless this is a passive data type."
+note: "Visible fields expose representation and let callers bypass validation or invariants."
+rule:
+  all:
+    - kind: field_declaration
+    - has:
+        kind: visibility_modifier
+        stopBy: end
+    - inside:
+        any:
+          - pattern: "pub struct $NAME { $$$FIELDS }"
+          - pattern: "pub(crate) struct $NAME { $$$FIELDS }"
+          - pattern: "pub(super) struct $NAME { $$$FIELDS }"
+        stopBy: end
+---
+# Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-single-field-struct.yml
+# License: MIT
+id: rust-no-single-field-struct
+language: Rust
+severity: warning
+message: "Prefer a tuple newtype over a named-field struct with only one field."
+note: "A single named field is often just a tuple newtype with extra ceremony. Keep the named field only when the name is part of an external schema or FFI contract."
+rule:
+  all:
+    - kind: struct_item
+    - has:
+        kind: field_declaration
+        nthChild:
+          position: 1
+          ofRule:
+            kind: field_declaration
+        stopBy: end
+    - not:
+        has:
+          kind: field_declaration
+          nthChild:
+            position: 2
+            ofRule:
+              kind: field_declaration
+          stopBy: end
+---
+# Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-option-bool-field.yml
+# License: MIT
+id: rust-no-option-bool-field
+language: Rust
+severity: warning
+message: "Avoid Option<bool> fields; replace the implicit three-state flag with a named enum."
+note: "Option<bool> makes callers decode None/Some(false)/Some(true) instead of naming the domain states."
+rule:
+  all:
+    - kind: generic_type
+    - regex: "^Option<bool>$"
+    - inside:
+        kind: struct_item
+        stopBy: end
+---
+# Source: https://github.com/joshuadavidthomas/ast-grep-rules/blob/main/rules/rust-no-string-error-variant.yml
+# License: MIT
+# Local change: the match is the variant, not the whole enum, and `String` must be a direct
+# element of the tuple. `Vec<String>` and `Option<String>` no longer match (upstream used
+# `stopBy: end` on the field list and flagged them).
+id: rust-no-string-error-variant
+language: Rust
+severity: warning
+message: "Do not store bare String payloads in error variants; use structured fields or source errors."
+note: "Stringly error variants make recovery, testing, and formatting policy harder than typed error data."
+rule:
+  kind: enum_variant
+  inside:
+    kind: enum_item
+    stopBy: end
+    has:
+      field: name
+      kind: type_identifier
+      regex: "Error$"
+  has:
+    kind: ordered_field_declaration_list
+    has:
+      kind: type_identifier
+      regex: "^String$"

@@ -1,0 +1,125 @@
+id: style-macro-name-snake-case-rust
+language: Rust
+severity: warning
+message: >-
+  `macro_rules!` names should be snake_case.
+note: >-
+  Official Rust Style Guide, "Advice > Names". rustc `non_snake_case`
+  does not check macro names, and Clippy has no default-on lint for it.
+rule:
+  kind: macro_definition
+  has: { field: name, not: { regex: '^[a-z_][a-z0-9_]*$' } }
+---
+id: style-macro-rules-curly-braces-rust
+language: Rust
+severity: warning
+message: >-
+  Define `macro_rules!` with curly braces: `macro_rules! name { .. }`.
+note: >-
+  Official Rust Style Guide, "Items > macro_rules!". rustfmt leaves the
+  `()`/`[]` forms untouched. Decided on the definition text because the
+  delimiters are anonymous tokens that ast-grep cannot select by kind.
+rule:
+  kind: macro_definition
+  regex: '^macro_rules!\s+[A-Za-z0-9_]+\s*[(\[]'
+---
+id: style-unit-struct-no-empty-brackets-rust
+language: Rust
+severity: hint
+message: >-
+  Empty struct written with brackets. Declare a unit struct as
+  `struct Name;`.
+note: >-
+  Official Rust Style Guide, "Items > Structs and unions" and "Tuple
+  structs". The guide tolerates the bracketed form for generated code.
+  Clippy `empty_structs_with_brackets` is restriction.
+rule:
+  kind: struct_item
+  has:
+    any:
+      - kind: field_declaration_list
+        regex: '^\{\s*\}$'
+      - kind: ordered_field_declaration_list
+        regex: '^\(\s*\)$'
+---
+id: style-doc-comment-before-attributes-rust
+language: Rust
+severity: warning
+message: >-
+  Outer doc comment placed after an attribute. Put `///` doc comments
+  before the attributes of the item.
+note: >-
+  Official Rust Style Guide, "Doc comments". Neither rustfmt nor Clippy
+  checks the order. Only the first doc line directly after an attribute
+  is reported. A trailing `//` comment on the attribute's line hides the
+  problem from this rule.
+rule:
+  kind: line_comment
+  has: { field: outer, kind: outer_doc_comment_marker }
+  follows: { kind: attribute_item }
+---
+id: style-doc-comment-line-style-rust
+language: Rust
+severity: warning
+message: >-
+  Block doc comment (`/** */` or `/*! */`). Use `///` and `//!` line
+  doc comments.
+note: >-
+  Official Rust Style Guide, "Doc comments". rustfmt does not rewrite
+  block doc comments by default (`normalize_comments` is nightly-only
+  and off).
+rule:
+  kind: block_comment
+  any:
+    - has: { field: outer, kind: outer_doc_comment_marker }
+    - has: { field: inner, kind: inner_doc_comment_marker }
+---
+id: style-comment-space-after-slashes-rust
+language: Rust
+severity: hint
+message: >-
+  Put a space after `//` at the start of a comment.
+note: >-
+  Official Rust Style Guide, "Comments". Doc comments (`///`, `//!`) and
+  banners (`////`) are not flagged. Commented-out code written as
+  `//foo();` is flagged too; that is noisy but matches the guide.
+rule:
+  kind: line_comment
+  regex: '^//[^ /!\n]'
+---
+id: style-no-path-attribute-rust
+language: Rust
+severity: hint
+message: >-
+  `#[path = ".."]` overrides the module file location. Prefer the
+  standard module layout.
+note: >-
+  Official Rust Style Guide, "Advice > Modules". Platform-specific
+  module selection is a legitimate use, hence hint severity. Clippy
+  module-layout lints are restriction.
+rule:
+  kind: attribute_item
+  regex: '^#\[\s*path\s*='
+---
+id: style-extern-crate-first-rust
+language: Rust
+severity: warning
+message: >-
+  `extern crate` must come first in the file, before any other item.
+note: >-
+  Official Rust Style Guide, "Items" (introduction). rustfmt only sorts
+  within a group and does not move `extern crate` above other items.
+  Attributes and comments before it are fine.
+rule:
+  kind: extern_crate_declaration
+  follows:
+    stopBy: end
+    all:
+      - regex: '(?s).*'
+      - not:
+          any:
+            - kind: extern_crate_declaration
+            - kind: attribute_item
+            - kind: inner_attribute_item
+            - kind: line_comment
+            - kind: block_comment
