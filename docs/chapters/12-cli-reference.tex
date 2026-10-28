@@ -805,9 +805,11 @@ Mehr als zwei Kennungen sind ein Aufruffehler (Exit-Code 2).
 beschränkt. Ein Verzeichnis wählt alle Dateien darunter; \type{.} wählt alle. Mehrere Pfade
 wählen die Vereinigung ihrer Dateien. Ohne Pfad zeigt der Befehl jede Datei, die sich
 unterscheidet. Ein Pfad gilt relativ zum Verzeichnis, in dem der Befehl läuft (\type{-C}), wie
-bei \type{track}; \type{./a} und \type{a/} sind \type{a}. Eine Kennung beginnt mit \type{b3:},
-alles andere vor dem ersten Pfad gilt als Pfad. Ein Pfad, der mit \type{b3:} beginnt, steht
-hinter \type{--}; hinter \type{--} steht nie eine Kennung.
+bei \type{track}; \type{./a} und \type{a/} sind \type{a}. Ohne \type{--} sind die führenden
+Argumente, die mit \type{b3:} beginnen, Kennungen; das erste andere Argument und alle danach
+sind Pfade, auch wenn sie mit \type{b3:} beginnen. Mit \type{--} sind alle Argumente davor
+Kennungen und alle danach Pfade. Ein Pfad, der mit \type{b3:} beginnt, steht also hinter
+\type{--}.
 \stopitemize
 
 {\bf Verhalten.} Ist eine Seite der Working-Copy-Commit, speichert der Befehl zuerst die
@@ -903,8 +905,8 @@ ehe er etwas liest oder speichert; Skripte nehmen \type{diff} ohne \type{--tui}.
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn kein Akteur da ist, wenn das Verzeichnis
 in keinem Repository liegt, wenn ein Argument keine Kennung eines Commits im Repository ist
 (auch die eines Baums oder einer Datei gilt als unbekannt),
-wenn ein Pfad leer, absolut oder ein Pfad mit \type{..} ist, der das Repository verlassen
-könnte (der Befehl prüft das, ehe er etwas speichert), wenn ein Pfad auf keiner der beiden
+wenn ein Pfad leer oder absolut ist oder einen Teil \type{..} behält (der Befehl prüft das,
+ehe er etwas speichert), wenn ein Pfad auf keiner der beiden
 Seiten vorkommt (ein Tippfehler, aber auch eine Datei, die nicht verfolgt wird oder die
 \type{.stemmaignore} ausschliesst; ein Pfad ohne Unterschied darunter ist dagegen ein leerer Diff),
 wenn der Snapshot fehlschlägt oder wenn eine Referenz nicht lesbar ist.
@@ -922,9 +924,9 @@ unterscheiden. Mit \type{--exit-code} endet er mit 4, wenn sich mindestens eine 
 unterscheidet, und sonst mit 0. Git nimmt dafür 1; hier bleibt 1 den Fehlern vorbehalten.
 
 {\bf Grenzen.} Der Befehl nimmt keine Namen wie \type{HEAD} oder einen
-Branch an; er löst nur Kennungen auf. Ein Pfad ist ein Name, kein Muster: Globs und eine
-Sprache für Pfadmuster gibt es nicht. Eine Verschiebung von Zeilen zeigt er als Löschung
-und Einfügung. Eine Option für ein Format für Maschinen gibt es nicht.
+Branch an; er löst nur Kennungen auf. Ein Pfad ist ein Name, kein Muster.
+Eine Verschiebung von Zeilen zeigt er als Löschung und Einfügung.
+Eine Option für ein Format für Maschinen gibt es nicht.
 
 {\bf Beispiele.}
 

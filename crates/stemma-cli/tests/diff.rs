@@ -1026,7 +1026,120 @@ fn the_dot_selects_every_file() {
 
     let result = diff(dir.path(), &["."]);
 
-    assert_eq!(shown(&result.stdout).len(), 3, "{}", result.stdout);
+    assert_eq!(
+        shown(&result.stdout),
+        ["a.txt", "dir/b.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn the_dot_from_a_subdirectory_selects_that_directory_only() {
+    let dir = three_edited_files();
+
+    let result = diff(&dir.path().join("dir"), &["."]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        shown(&result.stdout),
+        ["dir/b.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_path_above_the_root_from_a_subdirectory_is_refused() {
+    let dir = three_edited_files();
+
+    let result = diff(&dir.path().join("dir"), &["../../outside"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(result.stderr.contains("cannot limit"), "{}", result.stderr);
+}
+
+#[test]
+fn two_commits_and_a_path_compare_the_commits_and_ignore_the_working_copy() {
+    let dir = repository();
+    for file in ["a.txt", "b.txt"] {
+        write(dir.path(), file, "one\n");
+        track_ok(dir.path(), file);
+    }
+    let first = commit(dir.path(), "first");
+    write(dir.path(), "a.txt", "two\n");
+    write(dir.path(), "b.txt", "two\n");
+    let second = commit(dir.path(), "second");
+    write(dir.path(), "a.txt", "three\n");
+
+    let result = diff(dir.path(), &[first.as_str(), second.as_str(), "b.txt"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(shown(&result.stdout), ["b.txt"], "{}", result.stdout);
+    assert!(result.stdout.contains("\n+two\n"), "{}", result.stdout);
+    assert!(!result.stdout.contains("three"), "{}", result.stdout);
+}
+
+#[test]
+fn a_commit_that_is_not_the_parent_limits_the_comparison_with_the_working_copy() {
+    let dir = repository();
+    for file in ["a.txt", "b.txt"] {
+        write(dir.path(), file, "one\n");
+        track_ok(dir.path(), file);
+    }
+    let first = commit(dir.path(), "first");
+    write(dir.path(), "a.txt", "two\n");
+    commit(dir.path(), "second");
+    write(dir.path(), "b.txt", "two\n");
+
+    // Against the first commit `a.txt` differs too; against the parent only `b.txt` does.
+    let all = diff(dir.path(), &[first.as_str()]);
+    let one = diff(dir.path(), &[first.as_str(), "a.txt"]);
+
+    assert_eq!(shown(&all.stdout), ["a.txt", "b.txt"], "{}", all.stdout);
+    assert_eq!(shown(&one.stdout), ["a.txt"], "{}", one.stdout);
+}
+
+#[test]
+fn a_directory_that_is_gone_is_selected_by_its_path() {
+    let dir = three_edited_files();
+    fs::remove_dir_all(dir.path().join("dir")).unwrap();
+
+    let result = diff(dir.path(), &["dir"]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        shown(&result.stdout),
+        ["dir/b.txt", "dir/sub/c.txt"],
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_missing_or_invalid_path_ends_with_1_also_with_the_exit_code_option() {
+    let dir = three_edited_files();
+
+    for operand in ["typo.txt", "../outside"] {
+        let result = diff(dir.path(), &["--exit-code", operand]);
+
+        assert_eq!(result.code, 1, "{operand}: {}", result.stdout);
+        assert_eq!(result.stdout, "", "{operand}");
+    }
+}
+
+#[test]
+fn a_mistyped_identifier_is_named_as_a_commit_and_not_as_a_path() {
+    let dir = three_edited_files();
+
+    let result = diff(dir.path(), &["B3:abc"]);
+
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("not the identifier of a commit"),
+        "{}",
+        result.stderr
+    );
 }
 
 #[test]
@@ -1166,4 +1279,20 @@ fn more_than_two_commits_before_the_separator_are_a_usage_error() {
     let result = diff(dir.path(), &[&id, &id, &id, "--", "a.txt"]);
 
     assert_eq!(result.code, 2, "{}", result.stderr);
+}
+
+#[test]
+fn the_usage_error_for_too_many_commits_comes_before_the_actor_and_the_repository() {
+    // No actor and no repository: the usage error is still the first.
+    let dir = Dir::new();
+    let id = format!("b3:{}", "0".repeat(64));
+
+    let result = run(dir.path(), &["diff", &id, &id, &id]);
+
+    assert_eq!(result.code, 2, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("at most two commits"),
+        "{}",
+        result.stderr
+    );
 }

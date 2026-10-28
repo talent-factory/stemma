@@ -212,8 +212,8 @@ pub enum DiffError {
         /// The operand as it was given.
         operand: String,
     },
-    /// A path that limits the diff is empty, absolute, or leads out of the repository. It is
-    /// checked before the working copy is saved.
+    /// A path that limits the diff is empty, absolute, or has a part `..`. It is checked before
+    /// the working copy is saved.
     InvalidPath {
         /// The path as it was passed to [`Repository::diff_paths`].
         path: String,
@@ -250,12 +250,14 @@ impl fmt::Display for DiffError {
             }
             Self::InvalidPath { path } => write!(
                 f,
-                "`{path}` cannot limit the diff: a path must be relative and stay in the repository"
+                "`{path}` cannot limit the diff: a path must not be empty or absolute, and must \
+                 stay in the repository"
             ),
             Self::NoSuchPath { path } => write!(
                 f,
                 "`{path}` is not a file or directory on either side of the diff (a file that is \
-                 not tracked, or that `.stemmaignore` excludes, is on neither)"
+                 not tracked, or that `.stemmaignore` excludes, is on neither; `stemma track` \
+                 adds it)"
             ),
             Self::AfterSnapshot { entry, source } => write!(
                 f,
@@ -384,7 +386,7 @@ impl Repository {
         let all: BTreeSet<&String> = old_files.keys().chain(new_files.keys()).collect();
         if let Some(missing) = paths
             .iter()
-            .find(|selected| !all.iter().any(|path| selects(selected, path)))
+            .find(|selected| *selected != "." && !all.iter().any(|path| selects(selected, path)))
         {
             return Err(DiffError::NoSuchPath {
                 path: missing.clone(),
