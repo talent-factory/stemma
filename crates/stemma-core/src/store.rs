@@ -472,10 +472,11 @@ const REPLACE_DAMAGED: bool = cfg!(unix);
 /// read-only, and then renamed to its final path. A reader therefore sees either no object or a
 /// complete one, provided that `tmp` and `objects` are on one file system. On Unix and Windows
 /// the directories that were created, and the directory that received the object, are flushed as
-/// well. An object that exists already is not written again, but its directory is flushed, and
-/// so is the directory of an object that is removed, also when the file is gone (STEMMA-101). On
-/// other targets (WASI, for example) only the atomicity holds, not the durability of the
-/// directory entries.
+/// well, and so are the directories above it up to `objects/`, because a call that created them
+/// may have failed to flush them (STEMMA-131). An object that exists already is not written
+/// again, but its directory is flushed, and so is the directory of an object that is removed,
+/// also when the file is gone (STEMMA-101). On other targets (WASI, for example) only the
+/// atomicity holds, not the durability of the directory entries.
 #[derive(Debug, Clone)]
 pub struct FsObjectStore {
     root: PathBuf,
@@ -719,15 +720,17 @@ impl FsObjectStore {
     /// Stores an object of any kind and returns its ID. Only the typed methods of the trait are
     /// public, because the body of a tree or a commit has to come from a value that was checked.
     ///
-    /// An object that exists and reads back correctly is not written again, but its directory is
-    /// flushed, so that the object is durable when the ID is returned, whoever placed it. A
+    /// An object that exists and reads back correctly is not written again, but its directory and
+    /// the directories above it up to `objects/` are flushed, so that the object is durable when
+    /// the ID is returned, whoever placed it. A
     /// damaged one is replaced where the platform allows it (see [`REPLACE_DAMAGED`]); a
     /// directory or another entry that is not a regular file is an error.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Io`] if `root` is not a directory, the object cannot be written, or
-    /// its directory cannot be flushed. Returns [`StoreError::Corrupt`] for an entry that cannot
+    /// its directory or one above it cannot be flushed. Returns [`StoreError::Corrupt`] for an
+    /// entry that cannot
     /// be replaced: a directory or another entry that is not a regular file, or a damaged object
     /// where [`REPLACE_DAMAGED`] is false.
     pub(crate) fn put_raw(&self, kind: Kind, body: &[u8]) -> Result<ObjectId, StoreError> {
@@ -736,7 +739,7 @@ impl FsObjectStore {
         if self.present(&id)? {
             // An earlier call or another writer may have placed the object without flushing its
             // directory (the flush can fail after the rename); a caller that names the object in
-            // a log entry or a pointer needs its directory entry on disk. If the directory has
+            // a log entry or a pointer needs its directory entries on disk. If the directory has
             // vanished since, the object is not there after all and is written again.
             let fan_out = self.fan_out_path(&id)?;
             if flush_existing_directory(&fan_out)? {
@@ -751,10 +754,10 @@ impl FsObjectStore {
         Ok(id)
     }
 
-    /// Flushes every directory from the parent of `fan_out` up to `objects/`, which hold the entries
-    /// of the directories above the fan-out directory. A call that created them may have failed
-    /// to flush them, and a retry finds them existing and flushes nothing (see
-    /// [`create_dirs_synced`]), so the flush of an object repeats it.
+    /// Flushes the directories from the parent of `fan_out` up to `objects/`. They hold the
+    /// entries of the fan-out directory and of the ones between. A call that created them may
+    /// have failed to flush them, and a retry finds them existing and creates nothing (see
+    /// [`create_dirs_synced`]), so the flush of an object repeats them.
     fn sync_ancestors(&self, fan_out: &Path) -> Result<(), StoreError> {
         ancestors_below_root(&self.root, fan_out)
             .into_iter()
@@ -800,7 +803,8 @@ impl FsObjectStore {
 
     /// Makes the temporary file of an object read-only, flushes it, and renames it to the path of
     /// the object, after creating its directory. Returns that directory, which is not flushed
-    /// here: the caller flushes it once for all the objects that it moved there.
+    /// here: the caller flushes it once for all the objects that it moved there, and the
+    /// directories above it (see [`sync_ancestors`](Self::sync_ancestors)).
     ///
     /// If the rename fails but another writer has stored the same object meanwhile, the call
     /// succeeds, because the content is the same by construction. Any other failure is reported
@@ -932,8 +936,9 @@ impl ObjectStore for FsObjectStore {
 
 /// Objects that are written together and flushed together (ADR-007): each is written to a
 /// temporary file below `tmp/` without a flush, and [`finish`](Self::finish) flushes every file,
-/// moves it into place, and then flushes each directory that received one, once. The one flush of
-/// a directory for many objects is what a batch saves; the first `track` of many files was slowed
+/// moves it into place, and then flushes each directory that received one, and the directories
+/// above them up to `objects/`, once. The one flush of a directory for many objects is what a
+/// batch saves; the first `track` of many files was slowed
 /// by one per object (STEMMA-40).
 ///
 /// An object that the store has already is not written again, but its directory is flushed by
@@ -986,7 +991,8 @@ impl Batch<'_> {
     }
 
     /// Flushes every object of the batch and moves it into place, then flushes the directories
-    /// that received one and those of the objects that the store had already. After an error, the
+    /// that received one and those of the objects that the store had already, with the
+    /// directories above them up to `objects/`. After an error, the
     /// objects that were moved stay, which is harmless, and the files of the others are removed.
     /// Every directory is flushed, even after one has failed, and the first error is returned.
     ///
@@ -1033,6 +1039,8 @@ impl Batch<'_> {
             .collect();
         directories.extend(ancestors);
         let mut first_error = None;
+        // Children before parents: a parent never names an entry that is not durable yet. A path
+        // sorts after its parent, so the reverse order is the one to take.
         for directory in directories.iter().rev() {
             if let Err(error) = sync_directory(directory) {
                 first_error.get_or_insert(error);
@@ -1295,8 +1303,15 @@ pub(crate) fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreErr
 }
 
 /// The directories above `dir`, from its parent up to the one below `root`; `root` itself is left
-/// out, because `init` flushes its entries. Empty if `dir` is not below `root`.
+/// out, because `init` flushes the entry of `objects/` in it. Empty if `dir` is not below `root`,
+/// which no caller allows: the paths come from [`FsObjectStore::object_path`].
 fn ancestors_below_root(root: &Path, dir: &Path) -> Vec<PathBuf> {
+    debug_assert!(
+        dir.starts_with(root) && dir != root,
+        "{} is not below {}",
+        dir.display(),
+        root.display()
+    );
     if !dir.starts_with(root) {
         return Vec::new();
     }
@@ -1707,16 +1722,125 @@ mod tests {
         let blob = Blob::new("hello");
         let id = store.put_blob(&blob).unwrap().object_id();
         let fan_out = store.fan_out_path(&id).unwrap();
+        let (algorithm, objects) = parents_of(&store, &fan_out);
         let since = flush_count();
         store.put_blob(&blob).unwrap();
-        let flushed = flushed_since(since);
-        for parent in ancestors_below_root(&store.root, &fan_out) {
-            assert!(
-                flushed.contains(&parent),
-                "{} not flushed",
-                parent.display()
-            );
+        assert_eq!(flushed_since(since), vec![fan_out, algorithm, objects]);
+    }
+
+    /// The two directories above a fan-out directory: `objects/<alg>` and `objects`.
+    fn parents_of(store: &FsObjectStore, fan_out: &Path) -> (PathBuf, PathBuf) {
+        let algorithm = fan_out.parent().unwrap().to_path_buf();
+        let objects = store.root.join("objects");
+        assert_eq!(algorithm.parent().unwrap(), objects);
+        (algorithm, objects)
+    }
+
+    #[test]
+    fn the_ancestors_stop_below_the_root() {
+        let root = Path::new("/r");
+        let objects = root.join("objects");
+        let algorithm = objects.join("b3");
+        assert_eq!(
+            ancestors_below_root(root, &algorithm.join("ab")),
+            vec![algorithm, objects.clone()]
+        );
+        assert!(ancestors_below_root(root, &objects).is_empty());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "is not below")]
+    fn the_ancestors_of_a_path_outside_the_root_are_a_bug() {
+        ancestors_below_root(Path::new("/r"), Path::new("/other/ab"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "is not below")]
+    fn the_ancestors_of_the_root_itself_are_a_bug() {
+        ancestors_below_root(Path::new("/r"), Path::new("/r"));
+    }
+
+    #[test]
+    fn a_new_object_flushes_its_directory_and_the_parents_deepest_first() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let fan_out = store.fan_out_path(&blob.id().object_id()).unwrap();
+        let (algorithm, objects) = parents_of(&store, &fan_out);
+        let expected = vec![fan_out.clone(), algorithm, objects];
+        // The directories exist, so that only the flush after the rename remains.
+        fs::create_dir_all(&fan_out).unwrap();
+
+        let since = flush_count();
+        store.put_blob(&blob).unwrap();
+        assert!(flushed_since(since).ends_with(&expected));
+
+        for finish in [Batch::finish, Batch::finish_new] {
+            let other = Blob::new("world");
+            let other_dir = store.fan_out_path(&other.id().object_id()).unwrap();
+            let (algorithm, objects) = parents_of(&store, &other_dir);
+            fs::create_dir_all(&other_dir).unwrap();
+            let batch = store.batch();
+            batch.put_blob(&other).unwrap();
+            let since = flush_count();
+            finish(batch).unwrap();
+            assert_eq!(flushed_since(since), vec![other_dir, algorithm, objects]);
+            store.remove(&other.id().object_id()).unwrap();
         }
+    }
+
+    #[test]
+    fn a_batch_retry_flushes_the_parents_that_a_failed_batch_created() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let fan_out = store.fan_out_path(&blob.id().object_id()).unwrap();
+        let (algorithm, _) = parents_of(&store, &fan_out);
+        {
+            let _failure = fail_flush_of(&algorithm);
+            let batch = store.batch();
+            batch.put_blob(&blob).unwrap();
+            assert_flush_failed(batch.finish(), &algorithm);
+        }
+        let batch = store.batch();
+        batch.put_blob(&blob).unwrap();
+        let since = flush_count();
+        batch.finish().unwrap();
+        assert!(flushed_since(since).contains(&algorithm));
+    }
+
+    #[test]
+    fn a_failed_flush_of_a_parent_is_reported() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let present = Blob::new("hello");
+        let fan_out = store.fan_out_path(&present.id().object_id()).unwrap();
+        let (algorithm, objects) = parents_of(&store, &fan_out);
+        store.put_blob(&present).unwrap();
+        {
+            let _failure = fail_flush_of(&algorithm);
+            assert_flush_failed(store.put_blob(&present), &algorithm);
+        }
+
+        let new = Blob::new("world");
+        fs::create_dir_all(store.fan_out_path(&new.id().object_id()).unwrap()).unwrap();
+        {
+            let _failure = fail_flush_of(&algorithm);
+            assert_flush_failed(store.put_blob(&new), &algorithm);
+        }
+
+        let batch = store.batch();
+        batch.put_blob(&Blob::new("again")).unwrap();
+        fs::create_dir_all(
+            store
+                .fan_out_path(&Blob::new("again").id().object_id())
+                .unwrap(),
+        )
+        .unwrap();
+        let _failure = fail_flush_of(&objects);
+        assert_flush_failed(batch.finish(), &objects);
     }
 
     #[test]

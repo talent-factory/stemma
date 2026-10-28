@@ -297,7 +297,7 @@ impl NewObject {
     }
 
     /// Stores the object; one that the store has already is left alone (ADR-007).
-    fn put(&self, objects: &FsObjectStore) -> Result<(), StoreError> {
+    fn put(&self, objects: &impl ObjectStore) -> Result<(), StoreError> {
         match self {
             Self::Tree(tree) => objects.put_tree(tree).map(|_| ()),
             Self::Commit(commit) => objects.put_commit(commit).map(|_| ()),
