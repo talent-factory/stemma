@@ -770,7 +770,7 @@ impl Repository {
             let mut entries = Vec::new();
             if written.is_empty() || !missing.is_empty() {
                 let purge =
-                    Purge::new(now(), actor.clone(), commits, &missing).map_err(|error| {
+                    Purge::try_new(now(), actor.clone(), commits, &missing).map_err(|error| {
                         EntryStep::Failed(Vec::new(), Box::new(PurgeFailure::Entry(error)))
                     })?;
                 entries = self.append_purge(&lock, purge).map_err(|error| {
@@ -1125,7 +1125,7 @@ mod tests {
         assert_eq!(purge.commits(), purged.plan().rewrites().len() as u64);
         assert!(purged.plan().entries().iter().all(|n| purge.lists(*n)));
         // The new commits keep the messages and the file outside the secret.
-        let main = BranchName::new("main").unwrap();
+        let main = BranchName::try_new("main").unwrap();
         let tip = repository.refs().branch(&main).unwrap().unwrap();
         let tip = super::super::super::snapshot::read_commit(repository.objects(), tip).unwrap();
         assert_eq!(tip.message(), "third");
@@ -1379,7 +1379,7 @@ mod tests {
             .unwrap_err();
         pending(&error);
         // A move of a pointer is refused under the lock as well, also by the lock of the crash.
-        let operation = OperationName::new("checkout").unwrap();
+        let operation = OperationName::try_new("checkout").unwrap();
         let error = repository
             .set_head(&operation, &Head::Detached(first), &actor(), &AllowAll)
             .unwrap_err();
@@ -1496,7 +1496,7 @@ mod tests {
         assert_eq!(repository.oplog().numbers().unwrap(), entries, "no entry");
         // Nothing moved, so the purge can still be undone.
         repository.abort_purge(&actor(), &AllowAll).unwrap();
-        let main = BranchName::new("main").unwrap();
+        let main = BranchName::try_new("main").unwrap();
         assert_eq!(repository.refs().branch(&main).unwrap(), Some(first));
     }
 
@@ -1688,7 +1688,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let [_, second, _] = history(&dir, &repository);
-        let operation = OperationName::new("checkout").unwrap();
+        let operation = OperationName::try_new("checkout").unwrap();
         repository
             .set_head(&operation, &Head::Detached(second), &actor(), &AllowAll)
             .unwrap();
@@ -1708,7 +1708,7 @@ mod tests {
         let stubs = journal.plan.entries().to_vec();
         assert!(stubs.len() > 1, "{stubs:?}");
         // The first part of a split entry: the count and some of the stubs.
-        let first = Purge::new(
+        let first = Purge::try_new(
             0,
             actor(),
             journal.plan.rewrites().len() as u64,
@@ -1761,7 +1761,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let [first, second, _] = history(&dir, &repository);
-        let operation = OperationName::new("checkout").unwrap();
+        let operation = OperationName::try_new("checkout").unwrap();
         repository
             .set_head(&operation, &Head::Detached(second), &actor(), &AllowAll)
             .unwrap();
@@ -2055,7 +2055,7 @@ mod tests {
         );
         assert!(!lock_exists(&dir));
         let refs = repository.refs();
-        let main = BranchName::new("main").unwrap();
+        let main = BranchName::try_new("main").unwrap();
         assert_eq!(refs.branch(&main).unwrap(), Some(committed.commit));
         assert_eq!(refs.working_copy().unwrap(), committed.working_copy);
         assert_reachable_objects_exist(&repository);

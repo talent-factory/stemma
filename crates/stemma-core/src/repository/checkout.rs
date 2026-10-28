@@ -1157,7 +1157,7 @@ mod tests {
                 let id = build(repository, &inner);
                 entries.push(TreeEntry::directory(directory, id).unwrap());
             }
-            let tree = Tree::new(entries).unwrap();
+            let tree = Tree::try_new(entries).unwrap();
             repository.objects().put_tree(&tree).unwrap()
         }
         build(repository, files)
@@ -1413,7 +1413,7 @@ mod tests {
         ];
         let to = repository
             .objects()
-            .put_tree(&Tree::new(entries).unwrap())
+            .put_tree(&Tree::try_new(entries).unwrap())
             .unwrap();
         let error = repository.plan_checkout(None, to).unwrap_err();
         assert!(

@@ -144,7 +144,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Status, StatusError> {
-        let operation = OperationName::new(OPERATION).expect("`status` is a valid operation name");
+        let operation =
+            OperationName::try_new(OPERATION).expect("`status` is a valid operation name");
         // Only the question counts here: the writes come through `snapshot`, which asks again.
         let _ = self
             .authorize(actor, authorizer, &operation, "working-copy")
@@ -315,7 +316,7 @@ fn compare(
 /// Reads a tree, or the empty tree for `None`.
 fn read_tree(objects: &dyn ObjectStore, id: Option<TreeId>) -> Result<Tree, SnapshotError> {
     let Some(id) = id else {
-        return Ok(Tree::new(Vec::new()).expect("a tree without entries has no duplicate"));
+        return Ok(Tree::try_new(Vec::new()).expect("a tree without entries has no duplicate"));
     };
     let raw = read_object(objects, id.object_id(), Kind::Tree)?;
     Tree::parse(raw.body()).map_err(|source| SnapshotError::Tree { id, source })
@@ -418,20 +419,20 @@ impl fmt::Display for StatusError {
             Self::Refs { source, saved } => write!(
                 f,
                 "could not read the references: {source}{}",
-                saved_note(saved)
+                saved_note(saved.as_deref())
             ),
             Self::Read { source, saved } => write!(
                 f,
                 "could not read the working-copy commit or its parent: {source}{}",
-                saved_note(saved)
+                saved_note(saved.as_deref())
             ),
         }
     }
 }
 
 /// The sentence that says the snapshot of the call stays, and that its flush failed if it did.
-fn saved_note(saved: &Option<Box<Saved>>) -> String {
-    match saved.as_deref() {
+fn saved_note(saved: Option<&Saved>) -> String {
+    match saved {
         Some(Saved {
             entry,
             late: Some(late),
@@ -718,7 +719,7 @@ mod tests {
         let left = ".stemma-checkout-4711-3-0123456789abcdef";
         write(&dir, left, "key=hunter2");
         // The step that an older `track` made: put the file into the tree of the working copy.
-        let operation = OperationName::new("track").unwrap();
+        let operation = OperationName::try_new("track").unwrap();
         repository
             .replace_working_copy(&operation, &actor(), &AllowAll, |_| {
                 Ok::<_, SnapshotError>(vec![super::super::snapshot::Tracked {
@@ -908,7 +909,7 @@ mod tests {
         track(&repository, "a.txt");
         commit(&repository, "one");
         let tip = repository.refs().resolve_head().unwrap().unwrap();
-        let operation = OperationName::new("checkout").unwrap();
+        let operation = OperationName::try_new("checkout").unwrap();
         repository
             .set_head(&operation, &Head::Detached(tip), &actor(), &AllowAll)
             .unwrap();
@@ -1125,7 +1126,7 @@ mod tests {
         track(&repository, "a.txt");
         commit(&repository, "one");
         let tip = repository.refs().resolve_head().unwrap().unwrap();
-        let operation = OperationName::new("checkout").unwrap();
+        let operation = OperationName::try_new("checkout").unwrap();
         repository
             .set_head(&operation, &Head::Detached(tip), &actor(), &AllowAll)
             .unwrap();

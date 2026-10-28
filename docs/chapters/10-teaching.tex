@@ -57,7 +57,8 @@ die Datei liegt unter den ersten zwei Hexziffern \stopxcell
 \stopxrow
 \startxrow
 \startxcell Sortieren der Einträge eines Baums und der Branches eines Eintrags im Log \stopxcell
-\startxcell \type{Tree::new} (\type{object.rs}), \type{Change::new} (\type{oplog.rs}) \stopxcell
+\startxcell \type{Tree::try_new} (\type{object.rs}),
+\type{Change::try_new} (\type{oplog.rs}) \stopxcell
 \startxcell Kapitel 2, Sortieren \stopxcell
 \stopxrow
 \startxrow
@@ -73,7 +74,7 @@ die Datei liegt unter den ersten zwei Hexziffern \stopxcell
 \startxrow
 \startxcell Hashtabelle, um bereits bekannte Pfade und doppelte Eltern auszusondern \stopxcell
 \startxcell \type{HashSet} in \type{replace_locked} (\type{snapshot.rs}),
-\type{Commit::new} und \type{Commit::parse} (\type{object.rs}) \stopxcell
+\type{Commit::try_new} und \type{Commit::parse} (\type{object.rs}) \stopxcell
 \startxcell Abschnitt 3.4, Hashtabellen \stopxcell
 \stopxrow
 \startxrow
@@ -280,7 +281,7 @@ die Bytefolge der ganzen Zeichenkette umgekehrt.
 Zeigen Sie, dass auch in der Bytefolge die Pfade unter einem Verzeichnis
 einen zusammenhängenden Abschnitt bilden,
 und folgern Sie, dass \type{write_tree} mit der Bytefolge dieselben Bäume schreiben würde.
-Welche Eigenschaft von \type{Tree::new} braucht dieser Schluss?
+Welche Eigenschaft von \type{Tree::try_new} braucht dieser Schluss?
 Zeigen Sie dann an einem Beispiel, dass ein Vergleich, der den Index
 und einen Baum in einem einzigen Durchlauf nebeneinander liest,
 mit der Bytefolge falsche Unterschiede meldet (ADR-005).

@@ -111,7 +111,7 @@
 //! references, because file managers and editors leave such files; any other name is reported.
 //!
 //! Only the repository writes. `FsOpLog::append`, `append_purge`, `replace_with_stub`,
-//! `Entry::linked`, `Entry::to_stub`, and `Purge::new` are visible inside this crate only, so no
+//! `Entry::linked`, `Entry::to_stub`, and `Purge::try_new` are visible inside this crate only, so no
 //! caller can add an entry past the authorizer or invent one, a stub, or a purge that was never
 //! in the log. `replace_with_stub` is the only writer that changes an entry that exists: a purge
 //! replaces it by a stub (ADR-014).
@@ -251,7 +251,7 @@ impl OperationName {
     /// Returns [`OperationNameError`] for a name that is empty, longer than 32 characters, does
     /// not start with a lowercase letter, or has another character than a lowercase letter, a
     /// digit, or `-`.
-    pub fn new(name: impl Into<String>) -> Result<Self, OperationNameError> {
+    pub fn try_new(name: impl Into<String>) -> Result<Self, OperationNameError> {
         let name = name.into();
         if name.is_empty() {
             return Err(OperationNameError::Empty);
@@ -287,7 +287,7 @@ impl FromStr for OperationName {
     type Err = OperationNameError;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        Self::new(name)
+        Self::try_new(name)
     }
 }
 
@@ -300,7 +300,7 @@ pub struct Moved<T> {
 }
 
 impl<T> Moved<T> {
-    /// A pointer that goes from `old` to `new`. [`Change::new`] rejects a pointer where the two
+    /// A pointer that goes from `old` to `new`. [`Change::try_new`] rejects a pointer where the two
     /// are equal.
     pub fn from_to(old: Option<T>, new: Option<T>) -> Self {
         Self { old, new }
@@ -319,6 +319,7 @@ impl<T> Moved<T> {
 
 /// The pointer of a change, for a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Pointer {
     /// HEAD.
     Head,
@@ -448,7 +449,7 @@ impl Change {
     /// its own kind, [`EntryError::NoChange`] if no pointer is given, [`EntryError::Unchanged`]
     /// for a pointer whose old and new value are equal, and [`EntryError::DuplicateBranch`] for a
     /// branch that is listed twice.
-    pub fn new(
+    pub fn try_new(
         time: i64,
         actor: Actor,
         operation: OperationName,
@@ -605,6 +606,7 @@ impl FromStr for BodyHash {
 
 /// How an entry belongs to the hash chain of the log (ADR-011, STEMMA-41).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Chain {
     /// The entry has version 1 or 2: it was written before the chain and names no hash. Such
     /// entries can only come before the first entry of the chain.
@@ -665,7 +667,7 @@ impl Purge {
     /// Returns [`EntryError::StubOutOfRange`] for a stub that is 0 or larger than [`MAX_NUMBER`],
     /// and [`EntryError::TooManyCommits`] for a count larger than [`MAX_NUMBER`], which the reader
     /// would reject.
-    pub(crate) fn new(
+    pub(crate) fn try_new(
         time: i64,
         actor: Actor,
         commits: u64,
@@ -801,7 +803,7 @@ impl Entry {
     ///
     /// Returns [`EntryError::NumberOutOfRange`] if the number is 0 or larger than [`MAX_NUMBER`].
     #[cfg(test)]
-    pub(crate) fn new(number: u64, change: Change) -> Result<Self, EntryError> {
+    pub(crate) fn try_new(number: u64, change: Change) -> Result<Self, EntryError> {
         Self::of(number, Record::Change(change))
     }
 
@@ -1117,11 +1119,12 @@ impl Entry {
             return parse_stub_or_purge(&lines, body, number, chain, time, actor);
         }
         let operation = value(body, "operation ", EntryMalformed::ExpectedOperation)?;
-        let operation =
-            OperationName::new(operation).map_err(|source| EntryParseError::InvalidOperation {
+        let operation = OperationName::try_new(operation).map_err(|source| {
+            EntryParseError::InvalidOperation {
                 line: body + 1,
                 source,
-            })?;
+            }
+        })?;
 
         // The pointers, in the fixed order: head, working-copy, branches.
         let mut head = None;
@@ -1159,7 +1162,7 @@ impl Entry {
                     working_copy = Some(moved);
                 }
                 ["branch", name, old, new] => {
-                    let name = BranchName::new(*name).map_err(|source| {
+                    let name = BranchName::try_new(*name).map_err(|source| {
                         EntryParseError::InvalidBranchName {
                             line: number,
                             source,
@@ -1194,7 +1197,7 @@ impl Entry {
         // The rules of a change live in one place. The lines have been checked one by one above, to
         // report the line; this builds the value through the constructor, so that a reader cannot
         // return a change that the constructor would reject.
-        Change::new(time, actor, operation, head, working_copy, branches)
+        Change::try_new(time, actor, operation, head, working_copy, branches)
             .and_then(|change| Entry::linked(number, chain, Record::Change(change)))
             .map_err(EntryParseError::Entry)
     }
@@ -1346,7 +1349,7 @@ fn parse_head_value(text: &str, line: usize) -> Result<Option<Head>, EntryParseE
         return Ok(None);
     }
     match text.split_once(':') {
-        Some(("branch", name)) => BranchName::new(name)
+        Some(("branch", name)) => BranchName::try_new(name)
             .map(|name| Some(Head::Branch(name)))
             .map_err(|source| EntryParseError::InvalidBranchName { line, source }),
         Some(("commit", id)) => ObjectId::from_str(id)
@@ -1548,7 +1551,7 @@ pub enum EntryParseError {
     },
     /// The lines are well formed, but the entry is rejected as a whole: a change of the operation
     /// `purge`, a `purge` entry that lists its own number or a later one, or entry 1 that names
-    /// an entry before it. The other rules of [`Change::new`] and `Entry::linked` are checked
+    /// an entry before it. The other rules of [`Change::try_new`] and `Entry::linked` are checked
     /// while the lines are read.
     Entry(EntryError),
 }
@@ -3165,7 +3168,7 @@ mod tests {
     }
 
     fn branch(name: &str) -> BranchName {
-        BranchName::new(name).expect("valid branch name")
+        BranchName::try_new(name).expect("valid branch name")
     }
 
     fn human() -> Actor {
@@ -3173,7 +3176,7 @@ mod tests {
     }
 
     fn operation(name: &str) -> OperationName {
-        OperationName::new(name).expect("valid operation name")
+        OperationName::try_new(name).expect("valid operation name")
     }
 
     fn moved(old: Option<&str>, new: Option<&str>) -> Moved<CommitId> {
@@ -3185,9 +3188,9 @@ mod tests {
         head: Option<Moved<Head>>,
         branches: Vec<(BranchName, Moved<CommitId>)>,
     ) -> Entry {
-        let change = Change::new(TIME, human(), operation("snapshot"), head, None, branches)
+        let change = Change::try_new(TIME, human(), operation("snapshot"), head, None, branches)
             .expect("valid change");
-        Entry::new(number, change).expect("valid entry")
+        Entry::try_new(number, change).expect("valid entry")
     }
 
     fn moves(name: &str, old: Option<&str>, new: Option<&str>) -> (BranchName, Moved<CommitId>) {
@@ -3221,7 +3224,7 @@ mod tests {
         new: Option<&str>,
         branches: Vec<(BranchName, Moved<CommitId>)>,
     ) -> Entry {
-        let change = Change::new(
+        let change = Change::try_new(
             TIME,
             human(),
             operation("snapshot"),
@@ -3230,7 +3233,7 @@ mod tests {
             branches,
         )
         .expect("valid change");
-        Entry::new(number, change).expect("valid entry")
+        Entry::try_new(number, change).expect("valid entry")
     }
 
     #[test]
@@ -3502,7 +3505,7 @@ mod tests {
 
     /// The change of the golden vector below.
     fn sample_change() -> Change {
-        Change::new(
+        Change::try_new(
             TIME,
             human(),
             operation("snapshot"),
@@ -3520,7 +3523,7 @@ mod tests {
     }
 
     fn sample_entry() -> Entry {
-        Entry::new(42, sample_change()).expect("valid entry")
+        Entry::try_new(42, sample_change()).expect("valid entry")
     }
 
     fn golden() -> String {
@@ -3536,7 +3539,7 @@ mod tests {
     #[test]
     fn an_operation_name_is_a_lowercase_word() {
         for good in ["init", "snapshot", "a", "op-2", "x9-y", &"a".repeat(32)] {
-            assert_eq!(OperationName::new(good).unwrap().as_str(), good);
+            assert_eq!(OperationName::try_new(good).unwrap().as_str(), good);
             assert_eq!(good.parse::<OperationName>().unwrap().to_string(), good);
         }
         let cases = [
@@ -3552,10 +3555,10 @@ mod tests {
             ("a\u{e9}", OperationNameError::BadCharacter(1)),
         ];
         for (bad, expected) in cases {
-            assert_eq!(OperationName::new(bad), Err(expected), "{bad:?}");
+            assert_eq!(OperationName::try_new(bad), Err(expected), "{bad:?}");
         }
         assert_eq!(
-            OperationName::new("a".repeat(33)),
+            OperationName::try_new("a".repeat(33)),
             Err(OperationNameError::TooLong(33))
         );
     }
@@ -3565,7 +3568,7 @@ mod tests {
     #[test]
     fn a_change_needs_a_pointer_that_differs() {
         let build = |head, working_copy, branches| {
-            Change::new(TIME, human(), operation("x"), head, working_copy, branches)
+            Change::try_new(TIME, human(), operation("x"), head, working_copy, branches)
         };
         assert_eq!(build(None, None, vec![]), Err(EntryError::NoChange));
         assert_eq!(
@@ -3616,15 +3619,15 @@ mod tests {
     #[test]
     fn the_number_of_an_entry_is_from_1_to_the_maximum() {
         assert_eq!(
-            Entry::new(0, sample_change()),
+            Entry::try_new(0, sample_change()),
             Err(EntryError::NumberOutOfRange(0))
         );
         assert_eq!(
-            Entry::new(MAX_NUMBER + 1, sample_change()),
+            Entry::try_new(MAX_NUMBER + 1, sample_change()),
             Err(EntryError::NumberOutOfRange(MAX_NUMBER + 1))
         );
-        assert!(Entry::new(1, sample_change()).is_ok());
-        assert!(Entry::new(MAX_NUMBER, sample_change()).is_ok());
+        assert!(Entry::try_new(1, sample_change()).is_ok());
+        assert!(Entry::try_new(MAX_NUMBER, sample_change()).is_ok());
     }
 
     #[test]
@@ -3633,7 +3636,7 @@ mod tests {
         for id in [A, B, C] {
             assert!(commits.contains(&commit(id)), "{id}");
         }
-        let only_names = Change::new(
+        let only_names = Change::try_new(
             TIME,
             human(),
             operation("x"),
@@ -3672,9 +3675,9 @@ mod tests {
 
     #[test]
     fn the_smallest_and_the_largest_entries_are_read_back() {
-        let smallest = Entry::new(
+        let smallest = Entry::try_new(
             1,
-            Change::new(
+            Change::try_new(
                 i64::MIN,
                 human(),
                 operation("init"),
@@ -3692,9 +3695,9 @@ mod tests {
         );
         assert_eq!(Entry::parse(&smallest.encode()).unwrap(), smallest);
         let agent = Actor::agent("a1", "m=1", "s", "daniel").unwrap();
-        let largest = Entry::new(
+        let largest = Entry::try_new(
             MAX_NUMBER,
-            Change::new(
+            Change::try_new(
                 i64::MAX,
                 agent,
                 operation("op-9"),
@@ -4004,7 +4007,7 @@ mod tests {
                 at(format!("branch {name} - {A}\n")),
                 EntryParseError::InvalidBranchName {
                     line: 6,
-                    source: BranchName::new(name).unwrap_err()
+                    source: BranchName::try_new(name).unwrap_err()
                 },
                 "{name:?}"
             );
@@ -4014,7 +4017,7 @@ mod tests {
             malformed(6, EntryMalformed::WrongValueCount)
         );
         // A value of HEAD, in the old and in the new column.
-        let branch_error = |name: &str| BranchName::new(name).unwrap_err();
+        let branch_error = |name: &str| BranchName::try_new(name).unwrap_err();
         let id_error = ObjectId::from_str("b3:00").unwrap_err();
         let head_cases: [(&str, EntryParseError); 9] = [
             ("main", malformed(6, EntryMalformed::UnknownHeadValue)),
@@ -4071,7 +4074,7 @@ mod tests {
             at(format!("{h}{w}branch /a - {A}\n")),
             EntryParseError::InvalidBranchName {
                 line: 8,
-                source: BranchName::new("/a").unwrap_err()
+                source: BranchName::try_new("/a").unwrap_err()
             }
         );
         // Old and new are equal.
@@ -4149,7 +4152,7 @@ mod tests {
     }
 
     fn change(branch_name: &str, old: Option<&str>, new: &str) -> Change {
-        Change::new(
+        Change::try_new(
             TIME,
             human(),
             operation("commit"),
@@ -4965,7 +4968,7 @@ mod tests {
         let log = log_in(&dir);
         let size_of = |id_len: usize| {
             let actor = Actor::human("a".repeat(id_len)).unwrap();
-            let change = Change::new(
+            let change = Change::try_new(
                 TIME,
                 actor,
                 operation("commit"),
@@ -5046,7 +5049,7 @@ mod tests {
         assert_eq!(io_error.source().unwrap().to_string(), "deepest");
         assert_eq!(io_error.io_error().unwrap().to_string(), "outer");
         let not_flushed = OpLogError::NotFlushed {
-            entry: Box::new(Entry::new(7, change("main", None, A)).unwrap()),
+            entry: Box::new(Entry::try_new(7, change("main", None, A)).unwrap()),
             path: PathBuf::from("/x/oplog"),
             source: io::Error::other(Outer),
         };
@@ -5100,7 +5103,7 @@ mod tests {
         log.append(&change("b", None, B)).unwrap();
         log.append(&change("c", None, C)).unwrap();
         let written = log
-            .append_purge(Purge::new(TIME + 9, human(), 2, &[3, 2]).unwrap())
+            .append_purge(Purge::try_new(TIME + 9, human(), 2, &[3, 2]).unwrap())
             .unwrap();
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].number(), 4);
@@ -5111,7 +5114,7 @@ mod tests {
 
     #[test]
     fn a_stub_and_a_purge_have_one_encoding_each() {
-        let stub = Entry::new(5, change("a", None, A))
+        let stub = Entry::try_new(5, change("a", None, A))
             .unwrap()
             .to_stub()
             .unwrap();
@@ -5121,7 +5124,7 @@ mod tests {
 
         let purge = Entry::of(
             9,
-            Record::Purge(Purge::new(TIME, human(), 3, &[7, 4, 5, 1]).unwrap()),
+            Record::Purge(Purge::try_new(TIME, human(), 3, &[7, 4, 5, 1]).unwrap()),
         )
         .unwrap();
         let text = "stemma-oplog 2\nnumber 9\ntime 1700000000\nactor human daniel\n\
@@ -5129,7 +5132,11 @@ mod tests {
         assert_eq!(String::from_utf8(purge.encode()).unwrap(), text);
         assert_eq!(Entry::parse(text.as_bytes()).unwrap(), purge);
 
-        let none = Entry::of(2, Record::Purge(Purge::new(TIME, human(), 0, &[]).unwrap())).unwrap();
+        let none = Entry::of(
+            2,
+            Record::Purge(Purge::try_new(TIME, human(), 0, &[]).unwrap()),
+        )
+        .unwrap();
         let text = "stemma-oplog 2\nnumber 2\ntime 1700000000\nactor human daniel\n\
                     operation purge\ncommits 0\nstubs -\n";
         assert_eq!(String::from_utf8(none.encode()).unwrap(), text);
@@ -5269,7 +5276,7 @@ mod tests {
         log.append(&change("a", None, A)).unwrap();
         log.append(&change("b", None, B)).unwrap();
         let written = log
-            .append_purge(Purge::new(TIME + 9, human(), 1, &[2]).unwrap())
+            .append_purge(Purge::try_new(TIME + 9, human(), 1, &[2]).unwrap())
             .unwrap();
         let before = fs::read(dir.path().join("oplog/000000000002")).unwrap();
         let others = log.entries().unwrap()[..2].to_vec();
@@ -5320,7 +5327,7 @@ mod tests {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 1, &[1]).unwrap())
+        log.append_purge(Purge::try_new(TIME, human(), 1, &[1]).unwrap())
             .unwrap();
         assert_eq!(
             log.entries().unwrap().len(),
@@ -5331,7 +5338,7 @@ mod tests {
 
     #[test]
     fn a_purge_must_come_after_the_entries_it_lists() {
-        let purge = Record::Purge(Purge::new(TIME, human(), 1, &[2, 5]).unwrap());
+        let purge = Record::Purge(Purge::try_new(TIME, human(), 1, &[2, 5]).unwrap());
         assert_eq!(
             Entry::of(5, purge.clone()),
             Err(EntryError::StubNotBefore { stub: 5, purge: 5 })
@@ -5343,7 +5350,7 @@ mod tests {
     fn a_long_list_of_stubs_is_split_over_entries_that_fit() {
         // Every second number, so that no two merge into a range.
         let numbers: Vec<u64> = (1..=20_000).map(|n| n * 2 + 100_000_000_000).collect();
-        let parts = Purge::new(TIME, human(), 7, &numbers).unwrap().split();
+        let parts = Purge::try_new(TIME, human(), 7, &numbers).unwrap().split();
         assert!(parts.len() > 1, "{} parts", parts.len());
         assert_eq!(parts[0].commits(), 7);
         assert!(parts[1..].iter().all(|part| part.commits() == 0));
@@ -5367,7 +5374,7 @@ mod tests {
         };
         let purge = Entry::of(
             3,
-            Record::Purge(Purge::new(TIME, human(), 1, &[2]).unwrap()),
+            Record::Purge(Purge::try_new(TIME, human(), 1, &[2]).unwrap()),
         )
         .unwrap();
         let after = entry(4, None, vec![moves("other", None, Some(B))]);
@@ -5386,8 +5393,11 @@ mod tests {
         );
         // Without the stub, the purge entry is no barrier.
         let purge = Entry { number: 2, ..purge };
-        let alone =
-            Entry::of(2, Record::Purge(Purge::new(TIME, human(), 0, &[]).unwrap())).unwrap();
+        let alone = Entry::of(
+            2,
+            Record::Purge(Purge::try_new(TIME, human(), 0, &[]).unwrap()),
+        )
+        .unwrap();
         assert_eq!(purge.number(), alone.number());
         let result = outcomes(&[first, alone], now(&[("main", A)]).as_ref());
         assert_eq!(result, [Outcome::Took, Outcome::Unknown]);
@@ -5404,7 +5414,7 @@ mod tests {
         let stub = |entry: &Entry| entry.to_stub().unwrap();
         let purge = Entry::of(
             5,
-            Record::Purge(Purge::new(TIME, human(), 2, &[2, 3]).unwrap()),
+            Record::Purge(Purge::try_new(TIME, human(), 2, &[2, 3]).unwrap()),
         )
         .unwrap();
         let result = outcomes(
@@ -5426,20 +5436,20 @@ mod tests {
             (5, vec![MAX_NUMBER - 2, MAX_NUMBER - 1, 7]),
         ];
         for (commits, stubs) in cases {
-            let purge = Purge::new(TIME, human(), commits, &stubs).unwrap();
+            let purge = Purge::try_new(TIME, human(), commits, &stubs).unwrap();
             let entry = Entry::of(MAX_NUMBER, Record::Purge(purge)).unwrap();
             assert_eq!(Entry::parse(&entry.encode()).unwrap(), entry, "{stubs:?}");
         }
         assert_eq!(
-            Purge::new(TIME, human(), 1, &[0, 1]),
+            Purge::try_new(TIME, human(), 1, &[0, 1]),
             Err(EntryError::StubOutOfRange(0))
         );
         assert_eq!(
-            Purge::new(TIME, human(), 1, &[1, MAX_NUMBER + 1]),
+            Purge::try_new(TIME, human(), 1, &[1, MAX_NUMBER + 1]),
             Err(EntryError::StubOutOfRange(MAX_NUMBER + 1))
         );
         assert_eq!(
-            Purge::new(TIME, human(), MAX_NUMBER + 1, &[1]),
+            Purge::try_new(TIME, human(), MAX_NUMBER + 1, &[1]),
             Err(EntryError::TooManyCommits(MAX_NUMBER + 1))
         );
         assert!(EntryError::StubOutOfRange(0)
@@ -5452,7 +5462,9 @@ mod tests {
         for number in numbers {
             fs::write(
                 dir.path().join("oplog").join(format!("{number:012}")),
-                Entry::new(*number, change("a", None, A)).unwrap().encode(),
+                Entry::try_new(*number, change("a", None, A))
+                    .unwrap()
+                    .encode(),
             )
             .unwrap();
         }
@@ -5474,7 +5486,7 @@ mod tests {
         // The last entry before the purge, which comes after the stubs.
         changes_at(&dir, &[100_000_100_000]);
         let written = log
-            .append_purge(Purge::new(TIME, human(), 7, &numbers).unwrap())
+            .append_purge(Purge::try_new(TIME, human(), 7, &numbers).unwrap())
             .unwrap();
         assert!(written.len() > 1);
         for (index, entry) in written.iter().enumerate() {
@@ -5502,7 +5514,7 @@ mod tests {
     #[test]
     fn the_split_keeps_the_order_and_fills_each_part() {
         let numbers: Vec<u64> = (1..=20_000).map(|n| n * 2 + 100_000_000_000).collect();
-        let whole = Purge::new(TIME, human(), 7, &numbers).unwrap();
+        let whole = Purge::try_new(TIME, human(), 7, &numbers).unwrap();
         let parts = whole.clone().split();
         let joined: Vec<(u64, u64)> = parts
             .iter()
@@ -5532,7 +5544,7 @@ mod tests {
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
         let error = log
-            .append_purge(Purge::new(TIME, human(), 1, &[1, 2]).unwrap())
+            .append_purge(Purge::try_new(TIME, human(), 1, &[1, 2]).unwrap())
             .unwrap_err();
         assert!(
             matches!(error, OpLogError::Missing { number: 2 }),
@@ -5548,7 +5560,7 @@ mod tests {
         let log = purged_log(&dir);
         for listed in [2, 4] {
             let error = log
-                .append_purge(Purge::new(TIME, human(), 1, &[1, listed]).unwrap())
+                .append_purge(Purge::try_new(TIME, human(), 1, &[1, listed]).unwrap())
                 .unwrap_err();
             assert!(
                 matches!(error, OpLogError::NotAChange { number } if number == listed),
@@ -5568,7 +5580,7 @@ mod tests {
         changes_at(&dir, &numbers);
         changes_at(&dir, &[MAX_NUMBER - 1]);
         let error = log
-            .append_purge(Purge::new(TIME, human(), 7, &numbers).unwrap())
+            .append_purge(Purge::try_new(TIME, human(), 7, &numbers).unwrap())
             .unwrap_err();
         let OpLogError::PurgeIncomplete {
             written,
@@ -5597,7 +5609,7 @@ mod tests {
         let part = |number| {
             Entry::of(
                 number,
-                Record::Purge(Purge::new(TIME, human(), 0, &[1]).unwrap()),
+                Record::Purge(Purge::try_new(TIME, human(), 0, &[1]).unwrap()),
             )
             .unwrap()
         };
@@ -5628,7 +5640,7 @@ mod tests {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 1, &[1]).unwrap())
+        log.append_purge(Purge::try_new(TIME, human(), 1, &[1]).unwrap())
             .unwrap();
         fs::write(dir.path().join("oplog/000000000002"), "junk").unwrap();
         assert!(matches!(
@@ -5645,7 +5657,7 @@ mod tests {
         let part = |number, commits, stubs: &[u64]| {
             Entry::of(
                 number,
-                Record::Purge(Purge::new(TIME, human(), commits, stubs).unwrap()),
+                Record::Purge(Purge::try_new(TIME, human(), commits, stubs).unwrap()),
             )
             .unwrap()
         };
@@ -5664,7 +5676,7 @@ mod tests {
         let dir = TempDir::new();
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 1, &[1]).unwrap())
+        log.append_purge(Purge::try_new(TIME, human(), 1, &[1]).unwrap())
             .unwrap();
         fs::write(dir.path().join("oplog/000000000001"), "junk").unwrap();
         assert!(matches!(
@@ -5679,7 +5691,7 @@ mod tests {
         let log = log_in(&dir);
         log.append(&change("a", None, A)).unwrap();
         log.append(&change("b", None, B)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 2, &[1, 2]).unwrap())
+        log.append_purge(Purge::try_new(TIME, human(), 2, &[1, 2]).unwrap())
             .unwrap();
         log.replace_with_stub(1).unwrap();
         assert_eq!(pending_stubs(&log.entries().unwrap()), [2]);
@@ -6352,7 +6364,7 @@ mod tests {
         }
         set_tip(&dir, 2);
         log.append(&change("main", Some(A), B)).unwrap();
-        log.append_purge(Purge::new(TIME, human(), 1, &[2]).unwrap())
+        log.append_purge(Purge::try_new(TIME, human(), 1, &[2]).unwrap())
             .unwrap();
         let stub = log.replace_with_stub(2).unwrap();
         assert_eq!(stub.chain(), Chain::Unchained);
@@ -6378,7 +6390,7 @@ mod tests {
                 .unwrap(),
             Entry::of(
                 3,
-                Record::Purge(Purge::new(TIME, human(), 1, &[2]).unwrap()),
+                Record::Purge(Purge::try_new(TIME, human(), 1, &[2]).unwrap()),
             )
             .unwrap(),
         ];

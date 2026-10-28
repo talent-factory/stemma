@@ -1627,7 +1627,7 @@ mod tests {
         let mut stored = vec![
             ObjectId::from(store.put_blob(&Blob::new("one")).unwrap()),
             ObjectId::from(store.put_blob(&Blob::new("two")).unwrap()),
-            ObjectId::from(store.put_tree(&Tree::new(vec![]).unwrap()).unwrap()),
+            ObjectId::from(store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap()),
         ];
         let fan_out = store.object_path(&stored[0]);
         let fan_out = fan_out.parent().unwrap();
@@ -2056,7 +2056,7 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let blob = ObjectId::from(store.put_blob(&Blob::new("one")).unwrap());
-        let tree = ObjectId::from(store.put_tree(&Tree::new(vec![]).unwrap()).unwrap());
+        let tree = ObjectId::from(store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap());
         assert_eq!(store.kind_of(&blob).unwrap(), Some(Kind::Blob));
         assert_eq!(store.kind_of(&tree).unwrap(), Some(Kind::Tree));
         let absent = id_of(b"absent");
@@ -2171,7 +2171,7 @@ mod tests {
     fn a_tree_with_entries_is_stored_under_its_own_id() {
         let dir = TempDir::new();
         let store = dir.store();
-        let tree = Tree::new(vec![TreeEntry::file(
+        let tree = Tree::try_new(vec![TreeEntry::file(
             "a.txt",
             FileMode::File,
             BlobId::new(id(HELLO_ID)),
@@ -2193,7 +2193,7 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let author = Actor::human("daniel").unwrap();
-        let commit = Commit::new(
+        let commit = Commit::try_new(
             TreeId::new(id(EMPTY_TREE_ID)),
             vec![],
             sample_change(),
@@ -2275,11 +2275,12 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let blob = store.put_blob(&Blob::new("hello")).unwrap();
-        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
         let author = Actor::human("daniel").unwrap();
         let commit = store
             .put_commit(
-                &Commit::new(tree, vec![], sample_change(), author, 1_700_000_000, "m").unwrap(),
+                &Commit::try_new(tree, vec![], sample_change(), author, 1_700_000_000, "m")
+                    .unwrap(),
             )
             .unwrap();
         let (blob_raw, tree_raw, commit_raw) = (
@@ -2385,7 +2386,7 @@ mod tests {
             .join("b8039d1b509628ad5b125ea89780b69fcde5c272215d690a2e4dc69eac75ad");
         assert_eq!(fs::read(path).unwrap(), b"blob 5\0hello");
 
-        let tree = Tree::new(Vec::new()).unwrap();
+        let tree = Tree::try_new(Vec::new()).unwrap();
         store.put_tree(&tree).unwrap();
         let path = dir
             .path()
@@ -2398,7 +2399,7 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let author = Actor::human("daniel").unwrap();
-        let commit = Commit::new(
+        let commit = Commit::try_new(
             TreeId::new(id(EMPTY_TREE_ID)),
             vec![],
             sample_change(),
@@ -2711,7 +2712,7 @@ mod tests {
             let again = store.put_blob(&Blob::new("one")).unwrap();
             assert_eq!(one, again);
             let tree = store
-                .put_tree(&Tree::new(vec![entry("a", one), entry("b", two)]).unwrap())
+                .put_tree(&Tree::try_new(vec![entry("a", one), entry("b", two)]).unwrap())
                 .unwrap();
             vec![one.object_id(), two.object_id(), tree.object_id()]
         };
@@ -3108,14 +3109,14 @@ mod tests {
     fn get_tree_returns_the_stored_tree_and_none_for_an_absent_one() {
         let dir = TempDir::new();
         let store = dir.store();
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             TreeEntry::file("a", FileMode::File, BlobId::new(id(HELLO_ID))).unwrap(),
             TreeEntry::file("b", FileMode::Symlink, BlobId::new(id(HELLO_ID))).unwrap(),
         ])
         .unwrap();
         let stored = store.put_tree(&tree).unwrap();
         assert_eq!(store.get_tree(&stored).unwrap(), Some(tree));
-        let absent = Tree::new(vec![]).unwrap().id();
+        let absent = Tree::try_new(vec![]).unwrap().id();
         assert_eq!(store.get_tree(&absent).unwrap(), None);
     }
 
@@ -3123,10 +3124,10 @@ mod tests {
     fn get_commit_returns_the_stored_commit_and_none_for_an_absent_one() {
         let dir = TempDir::new();
         let store = dir.store();
-        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
-        let parent = Commit::new(tree, vec![], sample_change(), author(), 1, "first").unwrap();
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
+        let parent = Commit::try_new(tree, vec![], sample_change(), author(), 1, "first").unwrap();
         let parent_id = store.put_commit(&parent).unwrap();
-        let commit = Commit::new(
+        let commit = Commit::try_new(
             tree,
             vec![parent_id],
             sample_change(),
@@ -3137,7 +3138,7 @@ mod tests {
         .unwrap();
         let stored = store.put_commit(&commit).unwrap();
         assert_eq!(store.get_commit(&stored).unwrap(), Some(commit.clone()));
-        let absent = Commit::new(tree, vec![stored], sample_change(), author(), 3, "x")
+        let absent = Commit::try_new(tree, vec![stored], sample_change(), author(), 3, "x")
             .unwrap()
             .id();
         assert_eq!(store.get_commit(&absent).unwrap(), None);
@@ -3148,7 +3149,7 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let blob = store.put_blob(&Blob::new("hello")).unwrap();
-        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
         let blob_as_tree = TreeId::new(ObjectId::from(blob));
         let tree_as_commit = CommitId::new(ObjectId::from(tree));
         match store.get_tree(&blob_as_tree).unwrap_err() {
@@ -3185,9 +3186,9 @@ mod tests {
     fn get_tree_and_get_commit_report_a_damaged_object_as_a_store_error() {
         let dir = TempDir::new();
         let store = dir.store();
-        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
         let commit = store
-            .put_commit(&Commit::new(tree, vec![], sample_change(), author(), 1, "m").unwrap())
+            .put_commit(&Commit::try_new(tree, vec![], sample_change(), author(), 1, "m").unwrap())
             .unwrap();
         overwrite(&store.object_path(&ObjectId::from(tree)), b"tree 1\0x");
         overwrite(&store.object_path(&ObjectId::from(commit)), b"commit 1\0x");
@@ -3265,10 +3266,10 @@ mod tests {
     fn the_roundtrip_covers_every_mode_the_empty_tree_and_many_parents() {
         let dir = TempDir::new();
         let store = dir.store();
-        let empty = Tree::new(vec![]).unwrap();
+        let empty = Tree::try_new(vec![]).unwrap();
         let empty_id = store.put_tree(&empty).unwrap();
         assert_eq!(store.get_tree(&empty_id).unwrap(), Some(empty));
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             TreeEntry::file("exec", FileMode::Executable, hello_blob()).unwrap(),
             TreeEntry::file("file", FileMode::File, hello_blob()).unwrap(),
             TreeEntry::file("link", FileMode::Symlink, hello_blob()).unwrap(),
@@ -3279,7 +3280,7 @@ mod tests {
         assert_eq!(store.get_tree(&tree_id).unwrap(), Some(tree));
         let mut parents = Vec::new();
         for n in 0..5 {
-            let parent = Commit::new(
+            let parent = Commit::try_new(
                 empty_id,
                 vec![],
                 sample_change(),
@@ -3290,7 +3291,8 @@ mod tests {
             .unwrap();
             parents.push(store.put_commit(&parent).unwrap());
         }
-        let commit = Commit::new(tree_id, parents, sample_change(), author(), 9, "merge").unwrap();
+        let commit =
+            Commit::try_new(tree_id, parents, sample_change(), author(), 9, "merge").unwrap();
         let commit_id = store.put_commit(&commit).unwrap();
         assert_eq!(store.get_commit(&commit_id).unwrap(), Some(commit));
     }
@@ -3332,7 +3334,7 @@ mod tests {
         ));
         let commit_of =
             |body: &str| CommitId::new(store.put_raw(Kind::Commit, body.as_bytes()).unwrap());
-        let tree = Tree::new(vec![]).unwrap().id();
+        let tree = Tree::try_new(vec![]).unwrap().id();
         let no_author = format!("tree {tree}\n");
         let not_utf8 = commit_of_bytes(&store, b"tree \xff\n");
         assert!(matches!(
@@ -3377,7 +3379,10 @@ mod tests {
     fn a_storage_failure_shows_through_the_transparent_store_variant() {
         use crate::testutil::{FaultyStore, DISK_MESSAGE};
         let dir = TempDir::new();
-        let tree = dir.store().put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let tree = dir
+            .store()
+            .put_tree(&Tree::try_new(vec![]).unwrap())
+            .unwrap();
         // The store fails the same way on every system (see `FaultyStore`).
         let store = FaultyStore::new(dir.store(), true, false);
         let error = store.get_tree(&tree).unwrap_err();
@@ -3403,7 +3408,7 @@ mod tests {
     #[test]
     fn a_value_with_another_id_than_requested_is_reported_in_every_build() {
         let a = id(HELLO_ID);
-        let b = Tree::new(vec![]).unwrap().id().object_id();
+        let b = Tree::try_new(vec![]).unwrap().id().object_id();
         assert!(confirm_id(a, a).is_ok());
         let error = confirm_id(a, b).unwrap_err();
         assert!(

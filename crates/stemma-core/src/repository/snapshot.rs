@@ -81,7 +81,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, SnapshotError> {
         let operation =
-            OperationName::new(OPERATION).expect("`snapshot` is a valid operation name");
+            OperationName::try_new(OPERATION).expect("`snapshot` is a valid operation name");
         let replaced = self.replace_working_copy(&operation, actor, authorizer, |_| {
             Ok::<_, SnapshotError>(Vec::new())
         })?;
@@ -143,7 +143,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, SnapshotError> {
         let operation =
-            OperationName::new(OPERATION).expect("`snapshot` is a valid operation name");
+            OperationName::try_new(OPERATION).expect("`snapshot` is a valid operation name");
         // The caller holds the lock already, so only the question is asked again.
         let _ = self
             .authorize(actor, authorizer, &operation, "working-copy")
@@ -753,7 +753,7 @@ mod tests {
         let tree = index.write_tree(repository.objects()).unwrap();
         let old = repository.refs().working_copy().unwrap();
         let before = current(repository);
-        let commit = Commit::new(
+        let commit = Commit::try_new(
             tree,
             before.parents().to_vec(),
             before.change(),
@@ -765,7 +765,7 @@ mod tests {
         let new = repository.objects().put_commit(&commit).unwrap();
         repository
             .update_working_copy(
-                &OperationName::new("track").unwrap(),
+                &OperationName::try_new("track").unwrap(),
                 old,
                 new,
                 &actor(),
@@ -930,7 +930,7 @@ mod tests {
         assert!(paths(&repository).is_empty());
         assert_eq!(
             current(&repository).tree(),
-            Tree::new(Vec::new()).unwrap().id()
+            Tree::try_new(Vec::new()).unwrap().id()
         );
     }
 
@@ -1458,7 +1458,7 @@ mod tests {
         let record = Record(Mutex::new(Vec::new()));
         let error = repository
             .update_working_copy(
-                &OperationName::new("track").unwrap(),
+                &OperationName::try_new("track").unwrap(),
                 old,
                 old,
                 &actor(),

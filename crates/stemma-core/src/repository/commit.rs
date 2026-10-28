@@ -103,7 +103,8 @@ impl Repository {
         if message.trim().is_empty() {
             return Err(CommitError::EmptyMessage);
         }
-        let operation = OperationName::new(OPERATION).expect("`commit` is a valid operation name");
+        let operation =
+            OperationName::try_new(OPERATION).expect("`commit` is a valid operation name");
         let name = match self.refs().head().map_err(CommitError::Refs)? {
             Head::Branch(name) => name,
             Head::Detached(commit) => return Err(CommitError::DetachedHead(commit)),
@@ -195,7 +196,7 @@ impl Repository {
                 },
                 &self.objects,
                 || {
-                    let change = Change::new(
+                    let change = Change::try_new(
                         now(),
                         actor.clone(),
                         operation.clone(),
@@ -303,7 +304,7 @@ impl Repository {
         named_id: CommitId,
         actor: &Actor,
     ) -> Result<(Commit, CommitId), CommitError> {
-        let next = Commit::new(
+        let next = Commit::try_new(
             tree,
             vec![named_id],
             ChangeId::generate().map_err(CommitError::ChangeId)?,
@@ -579,7 +580,7 @@ mod tests {
     }
 
     fn main() -> BranchName {
-        BranchName::new("main").unwrap()
+        BranchName::try_new("main").unwrap()
     }
 
     #[test]
@@ -761,7 +762,7 @@ mod tests {
         write(&dir, "a.txt", "one");
         track(&repository, "a.txt");
         let first = commit(&repository, "one").unwrap();
-        let operation = OperationName::new("checkout").unwrap();
+        let operation = OperationName::try_new("checkout").unwrap();
         repository
             .set_head(
                 &operation,
@@ -788,7 +789,7 @@ mod tests {
         track(&repository, "a.txt");
         let first = commit(&repository, "one").unwrap();
         // Someone moves the branch to the working-copy commit, past the parent it is based on.
-        let operation = OperationName::new("branch").unwrap();
+        let operation = OperationName::try_new("branch").unwrap();
         repository
             .update_branch(
                 &operation,
@@ -957,7 +958,7 @@ mod tests {
         pending: &Pending,
         after_entry: impl FnOnce(),
     ) -> Result<Logged<Entry, OpLogError>, RefError> {
-        let operation = OperationName::new("commit").unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
         repository.refs.update_branch_and_working_copy_after(
             &repository
                 .refs
@@ -974,7 +975,7 @@ mod tests {
             },
             repository.objects(),
             || {
-                let change = Change::new(
+                let change = Change::try_new(
                     now(),
                     actor(),
                     operation.clone(),
@@ -1097,7 +1098,7 @@ mod tests {
             .unwrap()
             .number();
         let log = repository.oplog();
-        log.append_purge(crate::oplog::Purge::new(1, actor(), 1, &[snapshot]).unwrap())
+        log.append_purge(crate::oplog::Purge::try_new(1, actor(), 1, &[snapshot]).unwrap())
             .unwrap();
         log.replace_with_stub(snapshot).unwrap();
         let working = repository.refs().working_copy().unwrap();
@@ -1127,7 +1128,7 @@ mod tests {
             .unwrap();
         repository
             .update_branch(
-                &OperationName::new("branch").unwrap(),
+                &OperationName::try_new("branch").unwrap(),
                 &main(),
                 Some(pending.named),
                 other,
@@ -1164,7 +1165,7 @@ mod tests {
                     .refs
                     .lock_writer(&crate::Allowed::granted())
                     .unwrap(),
-                &OperationName::new("restore").unwrap(),
+                &OperationName::try_new("restore").unwrap(),
                 pending.next,
                 pending.working,
                 &actor(),
@@ -1251,7 +1252,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let pending = pending(&repository, &dir);
-        let operation = OperationName::new("branch").unwrap();
+        let operation = OperationName::try_new("branch").unwrap();
         repository
             .update_branch(
                 &operation,
@@ -1303,8 +1304,8 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let pending = pending(&repository, &dir);
-        let other = OperationName::new("branch").unwrap();
-        let deeper = BranchName::new("main/x").unwrap();
+        let other = OperationName::try_new("branch").unwrap();
+        let deeper = BranchName::try_new("main/x").unwrap();
         repository
             .update_branch(&other, &deeper, None, pending.named, &actor(), &AllowAll)
             .unwrap();
@@ -1338,7 +1339,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let pending = pending(&repository, &dir);
-        let other = OperationName::new("branch").unwrap();
+        let other = OperationName::try_new("branch").unwrap();
         repository
             .update_branch(&other, &main(), None, pending.working, &actor(), &AllowAll)
             .unwrap();
@@ -1358,7 +1359,7 @@ mod tests {
         let mut pending = pending(&repository, &dir);
         let entries = repository.oplog().entries().unwrap().len();
         pending.next = pending.named;
-        let other = Commit::new(
+        let other = Commit::try_new(
             read(&repository, pending.named).tree(),
             vec![],
             ChangeId::generate().unwrap(),
@@ -1534,7 +1535,7 @@ mod tests {
         let entries = repository.oplog().entries().unwrap().len();
         // The working directory is dirty and the branch is gone from under the working copy.
         write(&dir, "a.txt", "two");
-        let other = OperationName::new("branch").unwrap();
+        let other = OperationName::try_new("branch").unwrap();
         repository
             .update_branch(
                 &other,

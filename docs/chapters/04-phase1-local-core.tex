@@ -167,7 +167,7 @@ meldet er den Schaden.
 \subsection{Der Merkle-Graph}
 
 Ein Baum kodiert je Eintrag eine Zeile \type{<Modus> <Name>} und eine Zeile mit der ID,
-nach Namen in der Bytefolge von UTF-8 sortiert und ohne doppelten Namen (\type{Tree::new}).
+nach Namen in der Bytefolge von UTF-8 sortiert und ohne doppelten Namen (\type{Tree::try_new}).
 Ein Commit nennt seinen Baum und seine Eltern ebenfalls über deren IDs.
 Die ID eines Objekts hängt damit von den IDs aller Objekte ab, die es erreicht:
 Die Objekte bilden einen Merkle-Graphen \cite[merkle1987].

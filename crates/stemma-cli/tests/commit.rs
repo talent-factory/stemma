@@ -21,7 +21,7 @@ fn commit(dir: &Path, message: &str) -> Run {
 }
 
 fn main_branch() -> BranchName {
-    BranchName::new("main").unwrap()
+    BranchName::try_new("main").unwrap()
 }
 
 fn read(repository: &Repository, id: CommitId) -> Commit {

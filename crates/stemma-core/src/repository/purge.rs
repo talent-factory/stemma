@@ -172,7 +172,8 @@ impl Repository {
         authorizer: &dyn Authorizer,
         target: &str,
     ) -> Result<Allowed, PurgeError> {
-        let operation = OperationName::new(OPERATION).expect("`purge` is a valid operation name");
+        let operation =
+            OperationName::try_new(OPERATION).expect("`purge` is a valid operation name");
         self.authorize(actor, authorizer, &operation, target)
             .map_err(PurgeError::Update)
     }
@@ -463,7 +464,7 @@ impl<'a> Planner<'a> {
             return Ok(None);
         }
         self.places.insert(id, Places { files, directories });
-        let new = Tree::new(entries).expect("the entries of a valid tree");
+        let new = Tree::try_new(entries).expect("the entries of a valid tree");
         let new_id = new.id();
         self.tree_links.insert(new_id, (new_subtrees, false));
         self.new_trees.insert(new_id, new);
@@ -1023,7 +1024,7 @@ mod tests {
             plan.working_copy(),
             Some(&Moved::from_to(Some(working_copy), Some(new(working_copy))))
         );
-        let main = BranchName::new("main").unwrap();
+        let main = BranchName::try_new("main").unwrap();
         assert_eq!(
             plan.branches(),
             [(main, Moved::from_to(Some(third), Some(new(third))))]
@@ -1114,8 +1115,10 @@ mod tests {
         let store = repository.objects();
         let blob = BlobId::new(secret());
         let entry = TreeEntry::file("leftover", FileMode::File, blob).unwrap();
-        let tree = store.put_tree(&Tree::new(vec![entry]).unwrap()).unwrap();
-        let orphan = Commit::new(
+        let tree = store
+            .put_tree(&Tree::try_new(vec![entry]).unwrap())
+            .unwrap();
+        let orphan = Commit::try_new(
             tree,
             vec![],
             crate::change::ChangeId::generate().unwrap(),
@@ -1227,7 +1230,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let [first, second, _] = history(&dir, &repository);
-        let operation = OperationName::new("checkout").unwrap();
+        let operation = OperationName::try_new("checkout").unwrap();
         let detach = |commit| {
             repository
                 .set_head(&operation, &Head::Detached(commit), &actor(), &AllowAll)
@@ -1362,16 +1365,16 @@ mod tests {
             TreeEntry::file(name, FileMode::File, Blob::new(content).id()).unwrap()
         };
         let with = store
-            .put_tree(&Tree::new(vec![file("a.txt", "one"), file("key", SECRET)]).unwrap())
+            .put_tree(&Tree::try_new(vec![file("a.txt", "one"), file("key", SECRET)]).unwrap())
             .unwrap();
         let without = store
-            .put_tree(&Tree::new(vec![file("a.txt", "one")]).unwrap())
+            .put_tree(&Tree::try_new(vec![file("a.txt", "one")]).unwrap())
             .unwrap();
         let change = crate::change::ChangeId::generate().unwrap();
-        let parent = |tree| Commit::new(tree, vec![], change, actor(), 5, "p").unwrap();
+        let parent = |tree| Commit::try_new(tree, vec![], change, actor(), 5, "p").unwrap();
         let one = store.put_commit(&parent(with)).unwrap();
         let two = store.put_commit(&parent(without)).unwrap();
-        let merge = Commit::new(
+        let merge = Commit::try_new(
             without,
             vec![one, two],
             crate::change::ChangeId::generate().unwrap(),
@@ -1407,7 +1410,7 @@ mod tests {
         let store = repository.objects();
         let clean_tree = read_commit(store, first).unwrap().tree();
         let make = |parents, message: &str| {
-            let commit = Commit::new(
+            let commit = Commit::try_new(
                 clean_tree,
                 parents,
                 crate::change::ChangeId::generate().unwrap(),
@@ -1458,7 +1461,7 @@ mod tests {
         let store = repository.objects();
         let blob = BlobId::new(secret());
         let other = Blob::new("other target").id();
-        let tree = Tree::new(vec![
+        let tree = Tree::try_new(vec![
             TreeEntry::file("deploy.sh", FileMode::Executable, blob).unwrap(),
             TreeEntry::file("link", FileMode::Symlink, blob).unwrap(),
             TreeEntry::file("kept", FileMode::Symlink, other).unwrap(),
@@ -1481,9 +1484,10 @@ mod tests {
         history(&dir, &repository);
         let store = repository.objects();
         let blob = BlobId::new(secret());
-        let inner = Tree::new(vec![TreeEntry::file("key", FileMode::File, blob).unwrap()]).unwrap();
+        let inner =
+            Tree::try_new(vec![TreeEntry::file("key", FileMode::File, blob).unwrap()]).unwrap();
         let inner = store.put_tree(&inner).unwrap();
-        let outer = Tree::new(vec![TreeEntry::directory("deep", inner).unwrap()]).unwrap();
+        let outer = Tree::try_new(vec![TreeEntry::directory("deep", inner).unwrap()]).unwrap();
         let outer = store.put_tree(&outer).unwrap();
         let plan = plan(&repository);
         assert!(plan.deleted_trees().contains(&outer));
@@ -1498,7 +1502,7 @@ mod tests {
         let store = repository.objects();
         let missing = CommitId::new(Blob::new("no such commit").id().object_id());
         let tree = read_commit(store, first).unwrap().tree();
-        let orphan = Commit::new(
+        let orphan = Commit::try_new(
             tree,
             vec![missing],
             crate::change::ChangeId::generate().unwrap(),
@@ -1529,7 +1533,7 @@ mod tests {
         let log = repository.oplog();
         let purge = log
             .append_purge(
-                crate::oplog::Purge::new(
+                crate::oplog::Purge::try_new(
                     1,
                     actor(),
                     first.rewrites().len() as u64,

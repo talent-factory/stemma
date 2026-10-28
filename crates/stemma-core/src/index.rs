@@ -668,7 +668,7 @@ fn write_directory(
     store: &dyn ObjectStore,
     entries: Vec<TreeEntry>,
 ) -> Result<TreeId, WriteTreeError> {
-    let tree = Tree::new(entries).map_err(WriteTreeError::Tree)?;
+    let tree = Tree::try_new(entries).map_err(WriteTreeError::Tree)?;
     let id = tree.id();
     let stored = store
         .put_tree(&tree)
@@ -1346,7 +1346,7 @@ mod tests {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
         let tree = store
-            .put_tree(&crate::object::Tree::new(vec![]).unwrap())
+            .put_tree(&crate::object::Tree::try_new(vec![]).unwrap())
             .unwrap();
         // The reader claims every ID as a blob and cannot tell; the store can.
         let text = format!("stemma-index 1\n100644 {tree} a.txt\n");
@@ -1435,7 +1435,7 @@ mod tests {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
         let tree = store
-            .put_tree(&crate::object::Tree::new(vec![]).unwrap())
+            .put_tree(&crate::object::Tree::try_new(vec![]).unwrap())
             .unwrap();
         let absent = crate::object::Blob::new("absent").id();
         let parse = |first: &dyn std::fmt::Display, second: &dyn std::fmt::Display| {
@@ -1457,7 +1457,7 @@ mod tests {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
         let tree = store
-            .put_tree(&crate::object::Tree::new(vec![]).unwrap())
+            .put_tree(&crate::object::Tree::try_new(vec![]).unwrap())
             .unwrap();
         let text = format!("stemma-index 1\n100644 {tree} say\"hi\n");
         let index = Index::parse(text.as_bytes()).expect("the reader accepts the claim");
@@ -1501,7 +1501,7 @@ mod tests {
     }
 
     fn directory(name: &str, entries: Vec<TreeEntry>) -> (TreeEntry, TreeId) {
-        let id = Tree::new(entries).unwrap().id();
+        let id = Tree::try_new(entries).unwrap().id();
         (TreeEntry::directory(name, id).unwrap(), id)
     }
 
@@ -1509,7 +1509,7 @@ mod tests {
     fn write_tree_of_the_empty_index_is_the_empty_tree() {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
-        let expected = Tree::new(vec![]).unwrap().id();
+        let expected = Tree::try_new(vec![]).unwrap().id();
         assert_eq!(Index::new().write_tree(&store).unwrap(), expected);
         assert!(store.contains(&ObjectId::from(expected)).unwrap());
     }
@@ -1531,7 +1531,7 @@ mod tests {
         let (x, x_id) = directory("x", vec![file("w")]);
         let (y, y_id) = directory("y", vec![x]);
         let (z, z_id) = directory("z", vec![y]);
-        let root = Tree::new(vec![file("README"), file("a-b"), file("a.b"), a, e, z]).unwrap();
+        let root = Tree::try_new(vec![file("README"), file("a-b"), file("a.b"), a, e, z]).unwrap();
         let root_id = index.write_tree(&store).unwrap();
         assert_eq!(root_id, root.id());
         for id in [b_id, a_id, f_id, e_id, x_id, y_id, z_id, root_id] {
@@ -1564,7 +1564,7 @@ mod tests {
                 TreeEntry::file("run", FileMode::Executable, hello()).unwrap(),
             ],
         );
-        let expected = Tree::new(vec![bin, file("doc")]).unwrap().id();
+        let expected = Tree::try_new(vec![bin, file("doc")]).unwrap().id();
         assert_eq!(forward.write_tree(&store).unwrap(), expected);
         assert_eq!(backward.write_tree(&store).unwrap(), expected);
     }
@@ -1574,7 +1574,7 @@ mod tests {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
         let index = staged(&store, &["a"]);
-        let expected = Tree::new(vec![file("a")]).unwrap().id();
+        let expected = Tree::try_new(vec![file("a")]).unwrap().id();
         assert_eq!(index.write_tree(&store).unwrap(), expected);
     }
 
@@ -1600,7 +1600,7 @@ mod tests {
         let (g, _) = directory("g", vec![gb]);
         let (xb, _) = directory("b", vec![file("d")]);
         let (x, _) = directory("x", vec![xb]);
-        let expected = Tree::new(vec![a, file("f"), g, x]).unwrap().id();
+        let expected = Tree::try_new(vec![a, file("f"), g, x]).unwrap().id();
         assert_eq!(index.write_tree(&store).unwrap(), expected);
     }
 
@@ -1618,7 +1618,7 @@ mod tests {
         let store = dir.store();
         let index = staged(&store, &["a/b", "c"]);
         let (a, a_id) = directory("a", vec![file("b")]);
-        let root = Tree::new(vec![a, file("c")]).unwrap().id();
+        let root = Tree::try_new(vec![a, file("c")]).unwrap().id();
         block(&store, root);
         let error = index.write_tree(&store).unwrap_err();
         assert!(matches!(error, WriteTreeError::Store(_)), "{error}");
@@ -1631,7 +1631,7 @@ mod tests {
         let store = dir.store();
         let index = staged(&store, &["a/b", "c"]);
         let (a, a_id) = directory("a", vec![file("b")]);
-        let root = Tree::new(vec![a, file("c")]).unwrap().id();
+        let root = Tree::try_new(vec![a, file("c")]).unwrap().id();
         block(&store, a_id);
         let error = index.write_tree(&store).unwrap_err();
         assert!(matches!(error, WriteTreeError::Store(_)), "{error}");
@@ -1664,7 +1664,7 @@ mod tests {
             other => panic!("unexpected error: {other}"),
         }
         // Not even the tree of the valid directory `a` was written.
-        let tree_of_a = Tree::new(vec![file("b")]).unwrap().id();
+        let tree_of_a = Tree::try_new(vec![file("b")]).unwrap().id();
         assert!(!store.contains(&ObjectId::from(tree_of_a)).unwrap());
     }
 
@@ -1672,7 +1672,7 @@ mod tests {
     fn write_tree_rejects_an_id_that_names_a_tree_and_writes_no_tree() {
         let dir = crate::testutil::TempDir::new();
         let store = dir.store();
-        let tree = store.put_tree(&Tree::new(vec![]).unwrap()).unwrap();
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
         let text = format!("stemma-index 1\n100644 {tree} a\n");
         let index = Index::parse(text.as_bytes()).expect("the reader accepts the claim");
         match index.write_tree(&store).unwrap_err() {
@@ -1686,7 +1686,7 @@ mod tests {
             other => panic!("unexpected error: {other}"),
         }
         let claimed = BlobId::new(ObjectId::from(tree));
-        let would_be = Tree::new(vec![TreeEntry::file("a", FileMode::File, claimed).unwrap()]);
+        let would_be = Tree::try_new(vec![TreeEntry::file("a", FileMode::File, claimed).unwrap()]);
         assert!(!store
             .contains(&ObjectId::from(would_be.unwrap().id()))
             .unwrap());
@@ -1747,9 +1747,9 @@ mod tests {
         let store = dir.store();
         let path = vec!["d"; 200].join("/");
         let index = staged(&store, &[&path]);
-        let mut expected = Tree::new(vec![file("d")]).unwrap().id();
+        let mut expected = Tree::try_new(vec![file("d")]).unwrap().id();
         for _ in 1..200 {
-            expected = Tree::new(vec![TreeEntry::directory("d", expected).unwrap()])
+            expected = Tree::try_new(vec![TreeEntry::directory("d", expected).unwrap()])
                 .unwrap()
                 .id();
         }

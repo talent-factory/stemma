@@ -30,7 +30,7 @@ use crate::{Actor, Authorizer, Decision};
 ///
 /// let refs = FsRefStore::new("refs");
 /// let objects = FsObjectStore::new("objects");
-/// let head = Head::Branch(BranchName::new("main").unwrap());
+/// let head = Head::Branch(BranchName::try_new("main").unwrap());
 /// refs.set_head(&head, &objects);
 /// ```
 ///
@@ -41,7 +41,7 @@ use crate::{Actor, Authorizer, Decision};
 ///
 /// let refs = FsRefStore::new("refs");
 /// let objects = FsObjectStore::new("objects");
-/// let main = BranchName::new("main").unwrap();
+/// let main = BranchName::try_new("main").unwrap();
 /// let commit: CommitId = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65"
 ///     .parse()
 ///     .unwrap();
@@ -91,7 +91,7 @@ mod tests {
 
     fn ask(authorizer: &dyn Authorizer) -> Option<Allowed> {
         let actor = Actor::human("daniel").unwrap();
-        let operation = OperationName::new("commit").unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
         Allowed::ask(authorizer, &actor, &operation, "main")
     }
 

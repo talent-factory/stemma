@@ -3306,7 +3306,7 @@ mod tests {
             CommitError::EmptyMessage,
             CommitError::NothingToCommit,
             CommitError::BranchMoved {
-                branch: BranchName::new("main").unwrap(),
+                branch: BranchName::try_new("main").unwrap(),
                 parents: Vec::new(),
                 tip: None,
             },

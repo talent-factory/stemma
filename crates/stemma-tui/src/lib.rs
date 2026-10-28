@@ -20,6 +20,7 @@ use stemma_core::repository::{Content, Diff, FileDiff};
 
 /// What a key asks the view to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Input {
     /// Leave the interface.
     Quit,
