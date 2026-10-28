@@ -595,3 +595,30 @@ fn a_leftover_of_an_interrupted_restore_is_refused_and_nothing_changes() {
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(result.stdout, "tracked a.txt\n");
 }
+
+/// Every command that needs an actor reads one that is not UTF-8 as an error of the actor, with
+/// code 1, not as a usage error of the parser, with code 2.
+#[cfg(unix)]
+#[test]
+fn an_actor_that_is_not_utf8_fails_with_code_1_for_every_command() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = repository();
+    write(dir.path(), "a.txt", "a");
+    let bytes = std::ffi::OsStr::from_bytes(b"human \xff");
+    let commands: [&[&str]; 3] = [&["track", "a.txt"], &["commit", "-m", "first"], &["status"]];
+    for args in commands {
+        let result = stemma(dir.path(), args, |command| {
+            command.env("STEMMA_ACTOR", bytes);
+        });
+        assert_eq!(result.code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .starts_with("stemma: the actor is not valid UTF-8"),
+            "{args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "", "{args:?}");
+    }
+}

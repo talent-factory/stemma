@@ -2021,15 +2021,23 @@ fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let options = InitOptions::new(args.initial_branch);
     let created = absolute(&args.repository.join(METADATA_DIR));
     // A repository that is complete but not durable is announced like a success, so that a
-    // script can find it, and the command ends with the error afterwards. If the announcement
-    // cannot be written, the error of the output carries the flush error too. A closed pipe is an
-    // error here, unlike for the other commands: `init` makes the repository, so a script must
-    // learn that it exists (code 3) and must not run `init` again.
+    // script can find it, and the command ends with the error afterwards.
     let late = match Repository::init(&args.repository, &options, &actor, &AllowAll) {
         Ok(_) => None,
         Err(error @ InitError::NotDurable { .. }) => Some(error),
         Err(error) => return Err(CliError::Init(error)),
     };
+    finish_init(created, late, out)
+}
+
+/// Writes the announcement of `init`. If it cannot be written, the error of the output carries the
+/// flush error too. A closed pipe is an error here, unlike for the other commands: `init` makes
+/// the repository, so a script must learn that it exists (code 3) and must not run `init` again.
+fn finish_init(
+    created: PathBuf,
+    late: Option<InitError>,
+    out: &mut dyn Write,
+) -> Result<(), CliError> {
     match writeln!(
         out,
         "Initialized empty Stemma repository in {}",
@@ -3478,6 +3486,38 @@ mod tests {
         let bytes = OsString::from_vec(b"human \xff".to_vec());
         assert!(matches!(actor(Some(bytes)), Err(CliError::ActorNotUtf8)));
         assert_eq!(CliError::ActorNotUtf8.exit_code(), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn an_init_that_is_not_durable_keeps_the_flush_error_when_the_announcement_fails() {
+        let not_durable = || {
+            Some(InitError::NotDurable {
+                path: PathBuf::from("."),
+                source: io::Error::other("flush failed"),
+            })
+        };
+        let created = || PathBuf::from("/r/.stemma");
+        let error = finish_init(created(), not_durable(), &mut Full).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                CliError::Output {
+                    not_durable: Some(_),
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        // A closed pipe is an error for `init`, and so is a flush that failed after a good write.
+        let error = finish_init(created(), None, &mut Closed).unwrap_err();
+        assert!(matches!(error, CliError::Output { .. }), "{error}");
+        let mut out = Vec::new();
+        let error = finish_init(created(), not_durable(), &mut out).unwrap_err();
+        assert!(matches!(error, CliError::Init(_)), "{error}");
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        assert!(String::from_utf8(out).unwrap().contains("/r/.stemma"));
+        finish_init(created(), None, &mut Vec::new()).unwrap();
     }
 
     #[test]

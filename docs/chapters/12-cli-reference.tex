@@ -373,6 +373,7 @@ ein Projekt lässt sich also nachträglich unter Versionskontrolle stellen.
 Mit Exit-Code 3 endet der Befehl, wenn das Repository angelegt ist,
 aber die Ausgabe sich nicht schreiben liess oder das Verzeichnis nicht gesichert ist;
 ein Skript wiederholt ihn dann nicht.
+Trifft beides zu, nennt die Meldung beide Fehler.
 
 Bricht \type{init} ab, bevor \type{.stemma} entsteht, bleiben höchstens ein Verzeichnis
 \type{.stemma-init-…} und die Verzeichnisse, die \type{init} für \type{-C} neu angelegt hat,
@@ -462,7 +463,8 @@ sie zu entfernen oder umzubenennen.
 Liegt das Verzeichnis in keinem Repository, nennt die Meldung \type{-C}.
 Mit Exit-Code 3 endet der Befehl, wenn
 die Dateien verfolgt sind, aber die Ausgabe sich nicht schreiben liess oder der Zeiger nicht
-gesichert ist; ein Skript wiederholt ihn dann nicht. Ist nur der Zeiger nicht gesichert, schreibt
+gesichert ist; ein Skript wiederholt ihn dann nicht. Trifft beides zu, nennt die Meldung beide
+Fehler und die neuen Dateien. Ist nur der Zeiger nicht gesichert, schreibt
 der Befehl die Liste der neuen Dateien zuerst und meldet den Fehler danach, damit ein Skript findet,
 was verfolgt ist. Schliesst der Leser der Ausgabe die Pipe früh (zum Beispiel \type{head}), endet
 der Befehl mit Exit-Code 0, denn die Dateien sind verfolgt;
