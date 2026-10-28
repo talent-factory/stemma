@@ -55,8 +55,9 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   - A file is written to a temporary file in its own directory and renamed, so a reader sees the
     old or the new content. A file that the old tree had and the new one lacks is removed, and so
     is a directory that this emptied; no other directory is removed. A stop leaves what was done
-    and reports how many files it removed and wrote; the next snapshot saves it as a change of
-    the actor.
+    and reports how many files it removed and wrote. A snapshot reads only the files that the
+    working-copy commit tracks, so it misses a file that only the target tree has; the repeated
+    restore finishes the job (see below).
   - It keeps the duties of ADR-005: it rejects the names that are dangerous on Windows, it
     detects names that collide on a file system that ignores case, and it never writes through a
     link. Names that collide only in Unicode normalization form are an open item below.
@@ -64,8 +65,13 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   restore checks, writes the entry, flushes it, brings the directory to the target tree, and
   moves the pointers last (ADR-011). A stop after the entry leaves the old state, and the entry
   names a move that did not happen, which the log already allows. A stop after the directory
-  leaves the target tree in the directory and the old pointers; the next snapshot saves it as an
-  ordinary change of the actor. Nothing is lost in either case.
+  leaves the target tree in the directory and the old pointers. A snapshot reads only the files
+  that the old working-copy commit tracks, so it would save the edits and removals of the target
+  but not a file that only the target has: a tree that is neither state. The error therefore
+  tells the user to run the same restore again before any other command; a file that is there
+  already with the right content is left as it is, so the repeat completes the first run
+  (`a_restore_whose_move_failed_after_the_files_is_finished_by_a_repeat`). Nothing is lost in
+  either case.
 - **Each pointer is judged on its own** *(confirmed)*. The entry is an intent (ADR-011), and it may
   have moved only some of its pointers: a `commit` that stopped after the branch has moved one of
   two. The restore therefore does not ask whether the entry as a whole took effect. It puts the

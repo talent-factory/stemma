@@ -1275,11 +1275,15 @@ Scheitert das Schreiben der Dateien, nachdem der Eintrag im Log steht, ist das e
 Exit-Code 1 (bei einer gehaltenen Sperre 6):
 Der Eintrag nennt ein Restore, das nicht stattfand (\type{op log} markiert ihn
 mit \type{!}), kein Zeiger hat sich bewegt, und die schon geschriebenen Dateien bleiben;
-der nächste Snapshot sichert sie als Änderung des Akteurs.
+ein Snapshot sichert davon nur die Dateien, die der Working-Copy-Commit verfolgt,
+und übersieht jede Datei, die nur das Ziel hat.
 Dasselbe gilt, wenn nach den Dateien schon der erste Zeiger scheitert: Die Dateien haben
 den Stand des Ziels, der Working-Copy-Commit zeigt noch auf den bisherigen.
-In beiden Fällen holt derselbe Aufruf noch einmal das Restore nach.
-Er sichert die geschriebenen Dateien zuerst in einem Snapshot (die Ausgabe nennt ihn),
+In beiden Fällen holt derselbe Aufruf noch einmal das Restore nach,
+und zwar vor jedem anderen Befehl,
+sofern keine Datei im Weg liegt.
+Er sichert zuerst die verfolgten Dateien unter den geschriebenen in einem Snapshot
+(die Ausgabe nennt ihn),
 lässt Dateien, die schon den Inhalt und den Modus des Ziels haben, wie sie sind
 und bewegt die Zeiger.
 
@@ -1288,8 +1292,8 @@ Ein Teil der Zeiger hat sich bewegt und ein späterer nicht (die Ausgabe nennt
 \type{Half made} und den Aufruf, der es beendet), der Eintrag und die Zeiger sind geschrieben,
 aber ein Verzeichnis liess sich nicht auf den Datenträger sichern, oder das Restore ist gemacht
 und die Ausgabe liess sich nicht schreiben.
-Bei einem halben Restore führt ein Skript denselben Aufruf noch einmal aus: Er bewegt
-nur die Zeiger, die noch nicht den alten Wert haben.
+Bei einem halben Restore führt ein Skript denselben Aufruf noch einmal aus,
+und zwar vor jedem anderen Befehl: Er bewegt nur die Zeiger, die noch nicht den alten Wert haben.
 In den anderen Fällen darf es das Ergebnis weder löschen noch wiederholen; die Ausgabe
 oder die Meldung nennt den Eintrag, mit dem sich das Restore zurücksetzen lässt.
 Das Restore schreibt sein Ergebnis auf die Standardausgabe, bevor es einen solchen
