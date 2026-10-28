@@ -28,6 +28,26 @@
 | 2 | Object format, hash, ref updates, lease, merge, network, migrations, new dependencies | Two agents plus a human maintainer |
 | 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files | Human owner only, plus an ADR |
 
+## Paths per Risk Level
+
+The level of a change follows from all paths it touches (rule 5); the highest level wins.
+The list below was decided in STEMMA-160 for the code that exists. It is prose in this ADR.
+The machine-readable policy file, which enforces it, is part of phase 4.
+
+| Level | Paths and operations |
+|---|---|
+| 3 | `purge` (ADR-014), actor and authorizer (`actor.rs`, `allowed.rs`), CI and release files (`.github/workflows/`, `justfile`, `deny.toml`), policy files, the option `--take-over` |
+| 2 | Object and store (`object.rs`, `store.rs`), refs (`refs.rs`), operation log (`oplog.rs`), repository (`repository.rs`, `repository/`), index (`index.rs`), diff computation in the merge path (`diff.rs`), verify (`verify.rs`), `checkout`, `commit`, `restore` and `snapshot`, the parts of phase 3, `.stemmaignore` (ADR-012) |
+| 1 | CLI (`stemma-cli`), TUI (`stemma-tui`), `status`, `track`, the code of the exclusion rules (`ignore.rs`), diff display |
+| 0 | Docs (`docs/`, `adr/`, `README.md`), tests (`tests/`, `fuzz/`), examples |
+
+- Paths that no row names are level 2 until a row names them. A new directory therefore never
+  lowers a level by accident.
+- A change of the file `.stemmaignore` is level 2 (it can let a secret into the history), a change
+  of the code that reads it is level 1.
+- Operations at run time are no paths (see the first open point): `restore` is level 2 for the
+  change that implements it, and the command itself asks the authorizer, not the review.
+
 ## Open Points
 
 - [x] Level of runtime operations that remove history (purge, ADR-014): proposed level 3, a human
@@ -35,5 +55,6 @@
       Decided for the purge in ADR-014: only a human may purge.
 - [ ] Corporate customers might demand stricter floors.
       Relevant only once there are concrete customers.
-- [ ] Define concrete path lists per level. The categories exist, the directories do not yet.
+- [x] Define concrete path lists per level. Decided in STEMMA-160 (table above). The
+      machine-readable policy file that enforces it follows in phase 4.
 - [ ] Agent identities: a dedicated role, or a role with a human sponsor.
