@@ -13,7 +13,8 @@
   status={Entwurf},
   author={Daniel Senften},
   institution={Talent Factory GmbH},
-  version={0.2}
+  % The version comes from `Cargo.toml`; `just book` passes it as STEMMA_VERSION.
+  version={\ctxlua{context(os.getenv("STEMMA_VERSION") or "?")}}
 ]
 
 \setupalign[verytolerant,stretch]

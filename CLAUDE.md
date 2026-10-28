@@ -25,6 +25,12 @@ All routine tasks run through `just` (see `justfile`, list with `just`):
 - Create commits with the `git-workflow:professional-commit-workflow` skill (`/git-workflow:professional-commit-workflow`).
 - Never add `Claude-Session:` lines (or any other link to a session transcript) to commit messages or PR descriptions. The link points to a full conversation transcript and does not belong in a permanent, potentially public history. Remove such lines if a tool adds them.
 
+## Releases
+
+- The version is written once, in `[workspace.package]` of `Cargo.toml`. `stemma --version` and the title page of the book read it (`just book` passes it to ConTeXt); never write it anywhere else.
+- One phase is one minor version: phase 2 is `0.2.0`, phase 3 is `0.3.0`. A state frozen for review is a pre-release such as `0.3.0-rc.1`.
+- A release tag is `v<version>`, for example `v0.3.0`. Raise the version in `Cargo.toml` in the PR that closes the phase, and run `just release-check v0.3.0` before the tag is set. The tags `phase-1-rc1` and `phase-2-rc1` are older than this rule and stay as they are.
+
 ## Book alongside the code
 
 The book (`docs/`) is developed in step with the implementation, not after it.
