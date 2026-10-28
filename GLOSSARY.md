@@ -242,3 +242,24 @@ A value that is a function of a commit and its ancestors, such as a blame or an 
 kept in the cache `.stemma/derived/` outside the object model. It can be deleted and computed
 again, and a purge removes it (ADR-017). (abgeleitete Daten)
 _Avoid_: Index (for the cache as a whole), metadata
+
+**Hunk**:
+A group of changes in a diff with the unchanged lines before and after it. Two changes fall into
+one hunk when at most twice the number of context lines lies between them. (Hunk)
+_Avoid_: block, section of the diff output
+
+**Context line**:
+An unchanged line that a hunk shows before or after a change. The diff uses three. (Kontextzeile)
+
+**Side of a diff**:
+One of the two compared versions, the old and the new. A side is a commit, or the
+Working-Copy-Commit as it stands after a snapshot. (Seite eines Diffs)
+
+**Pager**:
+The program named in `PAGER` that shows the coloured output of `diff` page by page on a terminal.
+(Pager)
+
+**Terminal interface**:
+The read-only view of `diff --tui` in the crate `stemma-tui`, which browses the files and hunks of
+a diff (ADR-016). (Terminal-Oberfläche, TUI)
+_Avoid_: display

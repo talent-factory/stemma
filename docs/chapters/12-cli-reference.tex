@@ -296,7 +296,8 @@ und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
 \stopplacetable
 
 {\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{status},
-\type{op restore}), nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
+\type{op restore}, \type{diff} mit dem Working-Copy-Commit),
+nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
 und hält sie bis zu seiner letzten Zeigerbewegung, also mindestens so lange, wie sein Snapshot
 dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
 Ein zweiter Befehl, der in dieser Zeit schreiben will, bricht sofort mit Exit-Code 6 ab und meldet
@@ -327,12 +328,13 @@ Was sich nicht entfernen lässt, bleibt, ohne dass der Befehl scheitert;
 der nächste versucht es wieder.
 
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
-lehnen \type{track}, \type{commit}, \type{status} und \type{op restore} ab, wenn sie die
-Sperre nehmen, also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
+lehnen \type{track}, \type{commit}, \type{status}, \type{op restore} und \type{diff} mit
+dem Working-Copy-Commit ab, wenn sie die Sperre nehmen,
+also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
 nennt das Journal, \type{stemma purge --resume} und \type{--abort}.
 \type{purge --apply} lehnt ebenfalls ab, mit Exit-Code 3, denn ein Purge ist schon begonnen.
-Lesen bleibt möglich: \type{op log}, \type{op verify}, \type{op restore --dry-run}
-und \type{purge} ohne \type{--apply} laufen.
+Lesen bleibt möglich: \type{op log}, \type{op verify}, \type{op restore --dry-run},
+\type{purge} ohne \type{--apply} und \type{diff} mit zwei Kennungen laufen.
 
 Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
 \type{stemma: <Meldung>} aus und läuft keine Kette von Ursachen ab.
@@ -808,7 +810,8 @@ stemma diff [-C VERZEICHNIS] --actor AKTEUR [--exit-code] [--tui] [COMMIT [COMMI
 \startitemize
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Siehe \type{status}.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben. Macht der Befehl einen Snapshot,
-ist dieser Akteur der des Snapshots.
+ist dieser Akteur der des Snapshots. Der Akteur ist auch bei zwei Kennungen Pflicht, obwohl
+dann kein Snapshot entsteht.
 \item {\bf \type{--exit-code}:} Endet mit Exit-Code 4, wenn sich mindestens eine Datei
 unterscheidet; sonst mit 0. Ohne diese Option endet er mit 0, auch bei Unterschieden.
 \item {\bf \type{--tui}:} Zeigt den Diff in einer Oberfläche im Terminal, in der man durch
@@ -827,7 +830,8 @@ bei \type{track}; \type{./a} und \type{a/} sind \type{a}. Ohne \type{--} sind di
 Argumente, die mit \type{b3:} beginnen, Kennungen; das erste andere Argument und alle danach
 sind Pfade, auch wenn sie mit \type{b3:} beginnen. Mit \type{--} sind alle Argumente davor
 Kennungen und alle danach Pfade. Ein Pfad, der mit \type{b3:} beginnt, steht also hinter
-\type{--}.
+\type{--}. Steht hinter \type{--} kein Pfad, gilt die Regel ohne \type{--}. Die Kennung
+\type{b3:} gilt auch grossgeschrieben.
 \stopitemize
 
 {\bf Verhalten.} Ist eine Seite der Working-Copy-Commit, speichert der Befehl zuerst die
@@ -841,8 +845,9 @@ Inhalt nicht, sondern nur die Zeile \type{Binary files ... and ... differ} mit d
 Seiten, wie sie im Kopf stehen. Ist eine der beiden Fassungen binär, gilt das für die ganze Datei.
 
 Zeilen vergleicht der Befehl so, wie sie gespeichert sind, samt Zeilenende.
-Eine Änderung nur der Zeilenenden erscheint deshalb ebenso wie ein Byte, das kein UTF-8 ist.
-Angezeigt wird ein solches Byte als Ersatzzeichen. Hat die letzte Zeile kein Zeilenende,
+Eine Änderung nur der Zeilenenden erscheint deshalb als Änderung der Zeile.
+Ein Byte, das kein UTF-8 ist, zeigt der Befehl als Ersatzzeichen.
+Hat die letzte Zeile kein Zeilenende,
 folgt ihr die Marke aus dem Beispiel. Jeder Hunk zeigt drei unveränderte Zeilen als Kontext.
 Ein Pfad wird maskiert, wie bei \type{status}.
 
@@ -854,12 +859,14 @@ Ein Pfad wird maskiert, wie bei \type{status}.
 Jede Datei beginnt mit einer Zeile \type{diff} und dem Pfad. Danach folgen die beiden Seiten
 der Datei: die alte mit \type{---}, die neue mit \type{+++}. Eine Seite nennt den Commit mit
 seiner Kennung, wie \type{op log} sie nennt, und den Pfad; der Working-Copy-Commit steht als
-\type{working-copy} mit der Kennung seines Snapshots. Ohne Zeitangabe, weil sich die Zeit bei
-jedem Aufruf ändert. Fehlt die Datei auf einer Seite, also bei einer neuen oder gelöschten Datei,
+\type{working-copy} mit der Kennung seines Snapshots,
+aber ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert.
+Fehlt die Datei auf einer Seite, also bei einer neuen oder gelöschten Datei,
 steht dort \type{/dev/null}. Eine leere Datei ist vorhanden und hat keine Hunks.
 
 Ein Hunk beginnt mit einer Zeile \type{@@}, die Anfang und Anzahl der Zeilen auf beiden
-Seiten nennt, von eins gezählt, wie git. Eine Zeile wird ohne Anzahl geschrieben:
+Seiten nennt, von eins gezählt, wie git.
+Umfasst ein Bereich genau eine Zeile, entfällt die Anzahl:
 \type{@@ -1 +1 @@}. Ist der Bereich einer Seite leer, wie bei einer neuen Datei,
 steht dort die Zeile davor, also \type{0,0}. Seine Zeilen beginnen mit einem Leerzeichen für eine
 unveränderte, mit \type{-} für eine gelöschte und mit \type{+} für eine eingefügte Zeile:
@@ -883,6 +890,9 @@ gesetzt, dann läuft \type{less}. Die Shell führt den Befehl aus. Ist \type{LES
 bekommt der Pager \type{LESS=FRX}. Kann der Pager nicht laufen, etwa weil \type{PAGER} einen
 unbekannten Befehl nennt, steht der Diff ungefiltert auf dem Terminal, mit einem Hinweis auf
 stderr. Ein Pager, der früher endet, oder ein anderer Exit-Code des Pagers ist kein Fehler.
+Auf einem Terminal lassen sich Farbe und Pager nicht abschalten: Es gibt keine Option dafür,
+und \type{NO_COLOR} und \type{GIT_PAGER} gelten nicht. \type{PAGER=cat} lässt den Text
+ungeblättert, aber gefärbt. Für reinen Text leitet man die Ausgabe in eine Pipe oder eine Datei.
 Ctrl-C erreicht den Pager; der Befehl wartet, bis der Pager endet,
 und endet dann mit seinem eigenen Exit-Code.
 Ein Signal zum Beenden (\type{SIGTERM} oder \type{SIGHUP}), das nur den Befehl trifft,
@@ -902,6 +912,7 @@ Rahmen der Datei, Kopfzeilen mit \type{diff}, \type{---} und \type{+++} gibt es 
 Hat die letzte Zeile kein Zeilenende, folgt ihr die Zeile
 \type{\ No newline at end of file}, wie im Text des Befehls.
 Ein Tabulator erscheint als vier Leerzeichen.
+Eine Binärdatei zeigt statt der Zeilen die Zeile \type{Binary file differs}.
 Die Oberfläche ist schreibgeschützt. Die Tasten:
 \type{J} und \type{K} (oder Tab und Shift-Tab) wählen die nächste und die vorige Datei,
 \type{n} und \type{p} den nächsten und den vorigen Hunk, über Dateigrenzen hinweg,
@@ -927,7 +938,8 @@ wenn ein Pfad leer oder absolut ist oder einen Teil \type{..} behält (der Befeh
 ehe er etwas speichert), wenn ein Pfad auf keiner der beiden Seiten vorkommt
 (ein Tippfehler, aber auch eine Datei, die nicht verfolgt wird oder die \type{.stemmaignore}
 ausschliesst; ein Pfad ohne Unterschied darunter ist dagegen ein leerer Diff),
-wenn der Snapshot fehlschlägt oder wenn eine Referenz nicht lesbar ist.
+wenn der Snapshot fehlschlägt, auch bei einem offenen Purge (Journal \type{purge-pending}),
+oder wenn eine Referenz nicht lesbar ist.
 Das gilt auch, wenn sich die Ausgabe nicht schreiben lässt oder wenn die Oberfläche
 von \type{--tui} ausfällt, etwa weil sich das Terminal nicht einrichten lässt.
 Ein Objekt, das der Vergleich braucht und das fehlt oder beschädigt ist, ist ein Schaden
@@ -944,10 +956,14 @@ unterscheidet, und sonst mit 0. Git nimmt dafür 1; hier bleibt 1 den Fehlern vo
 {\bf Grenzen.} Der Befehl nimmt keine Namen wie \type{HEAD} oder einen
 Branch an; er löst nur Kennungen auf. Ein Pfad ist ein Name, kein Muster.
 Eine Verschiebung von Zeilen zeigt er als Löschung und Einfügung.
-Eine Option für ein Format für Maschinen gibt es nicht.
+Eine Option für ein Format für Maschinen gibt es nicht. Der Text ist für Menschen bestimmt
+und nicht stabil; ein Skript wertet nur den Exit-Code aus (\type{--exit-code}). Das Ergebnis
+steht auf der Standardausgabe, Warnungen und der Hinweis zum Pager auf der Fehlerausgabe.
 
-{\bf Wiederholung.} Der Befehl lässt sich nach Erfolg und nach einem Fehler gefahrlos
-wiederholen; er ändert nur das Operation Log. Ein Pfad, der auf keiner Seite vorkommt,
+{\bf Wiederholung.} Der Befehl lässt sich nach Erfolg, nach einem Fehler und nach einem Absturz
+gefahrlos wiederholen. Mit zwei Kennungen schreibt er nichts; mit dem Working-Copy-Commit
+speichert er höchstens einen Snapshot mit seinem Eintrag im Operation Log, wie \type{status}.
+Ein Pfad, der auf keiner Seite vorkommt,
 fällt erst auf, wenn der Snapshot geschrieben ist, weil die Dateien der Arbeitskopie erst
 dann feststehen. Der Befehl endet dann mit Exit-Code 1, und die Meldung nennt den Eintrag
 des Snapshots. Ein ungültiger Pfad schreibt nichts.

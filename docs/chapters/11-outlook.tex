@@ -30,10 +30,18 @@ zeigt erst der Gebrauch (ADR-012).
 Der Plan eines Restore (\type{--dry-run}) macht keinen Snapshot, und ein Restore warnt nicht,
 wenn ein Zeiger seit dem Eintrag weitergezogen ist (ADR-013).
 
-\section{Diff, Branches und Merge}
+\section{Nach Phase 2}
 
-Für den Diff sind die Heuristiken für bessere Hunks, der Umgang mit Binärdateien und
-sehr grossen Dateien und ein Ausgabeformat für Maschinen offen (\in{Kapitel}[chap:phase2]).
+Für den Diff sind eine Grössengrenze für sehr grosse Dateien, die Markierung verschobener
+Zeilen und eine JSON-Form offen (\in{Kapitel}[chap:phase2], ADR-018).
+Ein eigener Exit-Code für \quotation{nichts zu committen} und einer für eine Sperre einer anderen
+Maschine fehlen ebenfalls (ADR-018).
+Unter Windows gibt es weder Farbe noch Pager noch \type{diff --tui}, bis die Konsole
+geprüft ist (ADR-016). Der Pager liest nur \type{PAGER}, nicht \type{GIT_PAGER} oder die
+Einstellungen von Git, und Farbe und Pager lassen sich auf einem Terminal nicht abschalten.
+
+\section{Branches und Merge}
+
 Phase 3 entscheidet über das Konfliktmodell, Daten im Commit oder klassische Markierung,
 über einen Rebase und über einen Branch, der in einem anderen Worktree ausgecheckt ist
 (\in{Kapitel}[chap:phase3]).

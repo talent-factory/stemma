@@ -17,11 +17,11 @@ und eine reine Löschung oder Einfügung rückt nicht an sie heran. Das ist einf
 Die Einrückung zählt in Bytes, ein Tabulator gilt also als ein Zeichen, bei git als mehrere.
 \item Gruppierung in Hunks und Darstellung mit Kontextzeilen.
 \item Farbausgabe und Einbindung eines Pagers.
-\item Eine schreibgeschützte Oberfläche im Terminal, \type{diff --tui}, zum Blättern durch die
-Dateien und Hunks (ADR-016). Sie liegt in der Crate \type{stemma-tui} und hängt vom Kern ab,
+\item Eine schreibgeschützte Terminal-Oberfläche (TUI), \type{diff --tui}, zum Blättern durch
+die Dateien und Hunks (ADR-016). Sie liegt in der Crate \type{stemma-tui} und hängt vom Kern ab,
 der Kern nicht von ihr.
-\item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Stufe 1 nach ADR-004.
-Die Verwendung im Merge-Pfad, Stufe 2, folgt in Phase 3.
+\item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Risikostufe 1 nach ADR-004.
+Die Verwendung im Merge-Pfad, Risikostufe 2, folgt in Phase 3.
 \item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
 Verschiebungen. Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
 Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken. Eine Markierung der Verschiebung
@@ -37,19 +37,28 @@ ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
 Ein Pfad wählt eine Datei oder ein Verzeichnis samt allem darunter; Globs und eine Sprache für
 Pfadmuster folgen später. Der Pfad gilt relativ zum Arbeitsverzeichnis und wird wie bei
 \type{track} umgeformt; er darf das Repository nicht verlassen. Eine Kennung beginnt immer mit
-\type{b3:}, darum lassen sich Kennung und Pfad unterscheiden; ein Pfad, der so beginnt, steht
-hinter \type{--}. Ein Pfad, der auf keiner der beiden Seiten vorkommt, ist ein Fehler und kein
+\type{b3:}, auch grossgeschrieben, darum lassen sich Kennung und Pfad unterscheiden; ein Pfad,
+der so beginnt, steht hinter \type{--}. Steht hinter \type{--} kein Pfad, gilt die Regel ohne
+\type{--}. Ein Pfad, der auf keiner der beiden Seiten vorkommt, ist ein Fehler und kein
 leerer Diff, damit ein Tippfehler auffällt. Das gilt auch für eine Datei, die nicht verfolgt
 wird oder die \type{.stemmaignore} ausschliesst, denn sie steht in keinem Commit. Der Snapshot
 umfasst weiter alle verfolgten Dateien; nur die Ausgabe ist beschränkt, und
 \type{--exit-code} betrachtet nur die gewählten Dateien.
-\item Keine Ausgabe für Maschinen in Phase 2. Die Hunk-Struktur im Kern sind reine Daten,
-auf die das Format aus Phase 6 aufsetzen kann (Kapitel 9).
+\item Ist eine Seite der Working-Copy-Commit, speichert der Diff zuerst einen Snapshot und
+schreibt einen Eintrag ins Operation Log (ADR-010). Er braucht darum einen Akteur und kann
+dieselben Fehler melden wie \type{status}. Mit zwei Kennungen schreibt er nichts.
+\item Der Diff liest beide Seiten bei jedem Aufruf neu und legt nichts unter
+\type{.stemma/derived/} ab (ADR-017). Ein Cache folgt erst mit einer Abfrage, die ihn braucht.
+\item Keine JSON-Form für \type{diff} in Phase 2 (ADR-018). Der Text des Diffs ist für Menschen
+bestimmt und kann sich ändern. Ein Skript wertet den Exit-Code aus: \type{--exit-code} liefert 4,
+wenn sich eine Datei unterscheidet. Die Hunk-Struktur im Kern besteht aus reinen Daten, auf die
+das Format aus Phase 6 aufsetzen kann (\in{Kapitel}[chap:phase6]).
 \stopitemize
 
 \section[sec:myers]{Der Myers-Diff}
 
-Der Diff vergleicht zwei Folgen, meist die Zeilen zweier Dateien. Er sucht eine kürzeste
+Der Diff vergleicht zwei Folgen $a$ und $b$ der Längen $N$ und $M$, meist die Zeilen zweier
+Dateien. Er sucht eine kürzeste
 Folge von Einfügungen und Löschungen, die die alte Folge in die neue überführt. Die Zahl dieser
 Änderungen heisst $D$. Myers hat dafür ein Verfahren über den Editiergraphen angegeben
 \cite[myers1986ond]. Der Code steht in \type{diff.rs} als \type{diff}.
@@ -80,21 +89,24 @@ liest deshalb auf den Diagonalen $\pm 1$ den Wert null, und die Suche setzt im P
 Die Suchen besuchen zusammen höchstens $O(D)$ Runden mit je $O(D)$ Diagonalen. Auf einer
 Diagonale steigt $x$ über die Runden nur an und sinkt nie. Das Folgen gleicher Elemente kostet
 deshalb auf jeder Diagonale zusammen höchstens $N$ Schritte, auf allen $O(D)$ Diagonalen also
-$O(N\,D)$. Die Laufzeit ist damit $O((N+M)\,D)$
-\cite[myers1986ond]. Der Speicher ist $O(N+M)$: Die Suche hält zwei Felder der Länge
+$O(N\,D)$. Die Runden selbst kosten $O(D^2)$. Wegen $D \le N+M$ ist die Laufzeit damit
+$O((N+M)\,D)$ \cite[myers1986ond]. Der Speicher ist $O(N+M)$: Die Suche hält zwei Felder der Länge
 $2(N+M)+3$, und jeder Aufruf gibt sie wieder frei, bevor er die Teile rekursiv behandelt.
 
 \subsection{Mittelschlange}
 
-Treffen sich die beiden Suchen auf einer Diagonale, liegt dort eine Schlange gleicher Elemente auf
-einem kürzesten Skript. Das Verfahren zerlegt die Aufgabe an dieser Schlange in zwei Teile und
+Treffen sich die beiden Suchen auf einer Diagonale, liegt dort eine Schlange,
+also eine Folge gleicher Elemente entlang
+einer Diagonale, auf einem kürzesten Skript.
+Das Verfahren zerlegt die Aufgabe an dieser Schlange in zwei Teile und
 behandelt jeden Teil genauso. Jeder Teil hat höchstens $\lceil D/2 \rceil$ Schritte, deshalb
 endet die Rekursion nach $O(\log D)$ Ebenen. Gemeinsame Präfixe und Suffixe schneidet es vorher ab.
 
 \subsection{Korrektheit}
 
 Die Schlange liegt auf einem kürzesten Skript, und die Summe der Schritte der beiden Teile ist
-$D$. Ein kürzeres Skript für einen Teil würde das Ganze verkürzen, also ist jeder Teil kürzest.
+$D$. Ein kürzeres Skript für einen Teil würde das Ganze verkürzen,
+also ist jeder Teil ein kürzester Weg.
 Ein gemeinsames Element am Rand liegt ebenfalls auf einem kürzesten Skript, deshalb geht beim
 Abschneiden nichts verloren \cite[myers1986ond]. Die Teile liegen in der Reihenfolge der Schlange
 aneinander. Die so gebaute Folge deckt jedes Element beider Folgen genau einmal ab und hält die
@@ -103,8 +115,9 @@ Reihenfolge.
 \section[sec:hunks]{Hunks und Kontextzeilen}
 
 Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk ist eine Gruppe von Änderungen mit den
-unveränderten Zeilen davor und danach. Jede Änderung bekommt so viele Kontextzeilen auf beiden
-Seiten, wie die Anzeige verlangt. Die Anzahl $c$ setzt der Aufruf.
+unveränderten Zeilen davor und danach. Jede Änderung bekommt so viele Kontextzeilen vor und nach
+sich, wie die Anzeige verlangt. Die Anzahl $c$ ist in Phase 2 fest drei, wie bei git; die
+Funktion \type{hunks} nimmt sie als Argument.
 
 Zwei benachbarte Änderungen landen im selben Hunk, wenn höchstens $2c$ unveränderte Zeilen
 zwischen ihnen liegen. Dann überlappen oder berühren sich ihre Kontextfenster. Solche Nachbarn
@@ -114,11 +127,13 @@ Seiten. Die Zeilen selbst bleiben in den Folgen.
 
 \section{Offene Fragen}
 
-Die folgenden Fragen sind vertagt und nicht entschieden. Sie gehören zu späteren Phasen.
+Die folgenden Fragen sind offen und gehören zu späteren Phasen.
 
 \startitemize
-\item Grössengrenze für sehr grosse Dateien. In Phase 2 ist das eine bekannte Einschränkung.
-\item Markierung verschobener Zeilen als Anzeige, in einer Phase nach 2.
+\item Grössengrenze für sehr grosse Dateien. Eine Datei wird heute ganz gelesen und verglichen;
+eine Phase ist dafür noch nicht festgelegt.
+\item Markierung verschobener Zeilen als reine Anzeige; auch dafür ist noch keine Phase
+festgelegt.
 \item Eine JSON-Form für \type{diff} und die übrigen Befehle ohne \type{--json},
 mit der Schnittstelle der Phase 6 (ADR-018).
 \stopitemize

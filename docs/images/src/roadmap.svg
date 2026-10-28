@@ -7,7 +7,7 @@
   <!-- Phase markers, all drawn alike -->
   <g fill="#FFFFFF" stroke="#0F172A" stroke-width="2">
     <circle cx="40" cy="40" r="16" fill="#0F172A"/>
-    <circle cx="40" cy="96" r="16"/>
+    <circle cx="40" cy="96" r="16" fill="#0F172A"/>
     <circle cx="40" cy="152" r="16"/>
     <circle cx="40" cy="208" r="16"/>
     <circle cx="40" cy="264" r="16"/>
@@ -45,7 +45,7 @@
   <!-- Chapter of each phase -->
   <g font-size="12" fill="#64748B" text-anchor="end">
     <text x="680" y="36">Kapitel 4, abgeschlossen</text>
-    <text x="680" y="92">Kapitel 5</text>
+    <text x="680" y="92">Kapitel 5, abgeschlossen</text>
     <text x="680" y="148">Kapitel 6</text>
     <text x="680" y="204">Kapitel 7</text>
     <text x="680" y="260">Kapitel 8</text>

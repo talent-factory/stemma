@@ -153,6 +153,11 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Undo, Redo | | Only the two directions of the journal of a purge; never for `op restore` |
 | Commit-Satz | | The record that completes a transaction in database recovery |
 | strenger Leser | | A reader that accepts only the one encoding (ADR-005) |
+| Hunk | Block, Abschnitt (of the diff output) | A group of changes with its context lines in a diff |
+| Kontextzeile | | An unchanged line before or after a change in a hunk |
+| Seite (eines Diffs) | | One of the two compared versions, the old and the new |
+| Pager | | The program in `PAGER` that shows the output page by page |
+| Terminal-Oberfläche (TUI) | Anzeige | `diff --tui`, crate `stemma-tui` (ADR-016) |
 | Option | Schalter, Flag | A named argument of a command, such as `--actor` |
 | abgeleitete Daten | Metadaten, Index (für den ganzen Cache) | A value computed from a commit and its ancestors and kept in `.stemma/derived/`; never part of the object model (ADR-017) |
 | Sitzung | | A work session, such as the running example; `Session` only for the field of an agent |
