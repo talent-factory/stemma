@@ -421,6 +421,8 @@ enum CliError {
     Track(TrackError),
     /// The files are tracked, but the result could not be written to the output.
     TrackOutput {
+        /// The files that are tracked now and were not before, as in [`Tracking::added`].
+        added: Vec<String>,
         /// The error of the output.
         source: io::Error,
         /// The error of the flush, if the pointer was not flushed either.
@@ -656,8 +658,8 @@ impl fmt::Display for CliError {
             Self::Actor(error) => write!(f, "invalid actor: {error}"),
             Self::ActorNotUtf8 => write!(
                 f,
-                "the actor is not valid UTF-8: `--actor` or {ACTOR_ENV} holds bytes that are no \
-                 text"
+                "the actor is not valid UTF-8: `--actor` or {ACTOR_ENV} holds bytes that are not \
+                 UTF-8"
             ),
             Self::Init(error) => error.fmt(f),
             Self::Open(error @ OpenError::NoRepositoryAbove { .. }) => write!(
@@ -668,6 +670,7 @@ impl fmt::Display for CliError {
             Self::Open(error) => error.fmt(f),
             Self::Track(error) => error.fmt(f),
             Self::TrackOutput {
+                added,
                 source,
                 not_durable,
             } => {
@@ -675,6 +678,10 @@ impl fmt::Display for CliError {
                     f,
                     "tracked the files, but could not write the result: {source}"
                 )?;
+                if !added.is_empty() {
+                    let names: Vec<String> = added.iter().map(|path| escape_path(path)).collect();
+                    write!(f, "; new: {}", names.join(", "))?;
+                }
                 match not_durable {
                     Some(error) => write!(f, "; flushing failed as well: {error}"),
                     None => Ok(()),
@@ -1436,7 +1443,9 @@ fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
 
 /// Writes what `track` did. If the files are tracked but a directory could not be flushed, the
 /// list is written first, like the announcement of `init`, so that a script finds what exists
-/// before it reads the error. A closed pipe ends the output quietly, as it does for `op log`.
+/// before it reads the error. If the list cannot be written, the error names the files and keeps
+/// the flush error (`CliError::TrackOutput`). A closed pipe ends the output quietly, as it does
+/// for `op log`; the flush error is still returned.
 fn finish_track(result: Result<Tracking, TrackError>, out: &mut dyn Write) -> Result<(), CliError> {
     let (added, late) = match result {
         Ok(tracking) => (tracking.added, None),
@@ -1448,16 +1457,14 @@ fn finish_track(result: Result<Tracking, TrackError>, out: &mut dyn Write) -> Re
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
         Err(source) => {
             return Err(CliError::TrackOutput {
+                added,
                 source,
                 not_durable: late,
             });
         }
     }
     late.map_or(Ok(()), |error| {
-        Err(CliError::Track(TrackError::NotDurable {
-            added: Vec::new(),
-            error,
-        }))
+        Err(CliError::Track(TrackError::NotDurable { added, error }))
     })
 }
 
@@ -2014,7 +2021,10 @@ fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let options = InitOptions::new(args.initial_branch);
     let created = absolute(&args.repository.join(METADATA_DIR));
     // A repository that is complete but not durable is announced like a success, so that a
-    // script can find it, and the command ends with the error afterwards.
+    // script can find it, and the command ends with the error afterwards. If the announcement
+    // cannot be written, the error of the output carries the flush error too. A closed pipe is an
+    // error here, unlike for the other commands: `init` makes the repository, so a script must
+    // learn that it exists (code 3) and must not run `init` again.
     let late = match Repository::init(&args.repository, &options, &actor, &AllowAll) {
         Ok(_) => None,
         Err(error @ InitError::NotDurable { .. }) => Some(error),
@@ -3405,20 +3415,69 @@ mod tests {
     fn a_failed_flush_is_kept_when_the_result_cannot_be_written_either() {
         let error = CliError::Output {
             created: PathBuf::from(".stemma"),
-            source: io::Error::other("disk full"),
+            source: io::Error::other("write failed"),
             not_durable: Some(Box::new(InitError::NotDurable {
                 path: PathBuf::from("."),
-                source: io::Error::other("disk full"),
+                source: io::Error::other("flush failed"),
             })),
         };
         assert_eq!(error.exit_code(), ExitCode::from(3));
-        assert!(error.to_string().contains("flushing failed"), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("write failed"), "{message}");
+        assert!(message.contains("flush failed"), "{message}");
         let error = CliError::TrackOutput {
+            added: vec!["a.txt".to_owned()],
             source: io::Error::other("disk full"),
             not_durable: None,
         };
+        assert!(error.to_string().contains("a.txt"), "{error}");
         assert_eq!(error.exit_code(), ExitCode::from(3));
         assert!(!error.to_string().contains("flushing"), "{error}");
+    }
+
+    #[test]
+    fn a_track_that_is_not_durable_keeps_the_flush_error_when_the_list_cannot_be_written() {
+        let not_durable = || {
+            Err(TrackError::NotDurable {
+                added: vec!["a.txt".to_owned()],
+                error: Box::new(UpdateError::Refs(RefError::Locked {
+                    path: PathBuf::from("lock"),
+                    holder: stemma_core::refs::LockHolder::Unknown,
+                })),
+            })
+        };
+        let error = finish_track(not_durable(), &mut Full).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                CliError::TrackOutput {
+                    not_durable: Some(_),
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+        assert!(error.to_string().contains("a.txt"), "{error}");
+        // A closed pipe is quiet, but the flush error is not lost.
+        let error = finish_track(not_durable(), &mut Closed).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                CliError::Track(TrackError::NotDurable { added, .. }) if added == &["a.txt"]
+            ),
+            "{error}"
+        );
+        assert_eq!(error.exit_code(), ExitCode::from(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_actor_is_an_error_of_the_actor() {
+        use std::os::unix::ffi::OsStringExt;
+        let bytes = OsString::from_vec(b"human \xff".to_vec());
+        assert!(matches!(actor(Some(bytes)), Err(CliError::ActorNotUtf8)));
+        assert_eq!(CliError::ActorNotUtf8.exit_code(), ExitCode::FAILURE);
     }
 
     #[test]

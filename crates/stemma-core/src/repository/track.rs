@@ -530,8 +530,7 @@ impl fmt::Display for TrackError {
                 on_disk: Some(on_disk),
             } => write!(
                 f,
-                "`{}` is not spelled as on disk; use `{}`, which is relative to the root of the \
-                 repository",
+                "`{}` is not spelled as on disk; use `{}` (relative to the root of the repository)",
                 path.escape_debug(),
                 on_disk.escape_debug()
             ),
