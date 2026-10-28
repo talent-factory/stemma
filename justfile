@@ -12,6 +12,9 @@ set positional-arguments
 
 docs_dir := "docs"
 
+# The version of the workspace, from `Cargo.toml` (the only place where it is written).
+version := `sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' Cargo.toml`
+
 # Default: grouped recipe list (file order preserved).
 default:
     @just --list --unsorted
@@ -173,6 +176,23 @@ norma:
     norma import norma/rule-packs --db target/norma.db > /dev/null
     git ls-files -z '*.rs' ':!:**/tests/**' | xargs -0 -r norma validate --language rust --db target/norma.db
 
+# Check before a release that the tag, `Cargo.toml`, and the program name the same version (the
+# book takes it from `Cargo.toml` as well). Call it with the tag: `just release-check v0.2.0`.
+[group('Release')]
+release-check tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "{{tag}}" = "v{{version}}" ] || {
+        echo "tag {{tag}} does not match Cargo.toml: expected v{{version}}" >&2
+        exit 1
+    }
+    shown=$(cargo run --quiet -p stemma-cli -- --version)
+    [ "$shown" = "stemma {{version}}" ] || {
+        echo "stemma --version prints '$shown', expected 'stemma {{version}}'" >&2
+        exit 1
+    }
+    echo "ok: {{tag}} = Cargo.toml = $shown"
+
 # ─────────────────────────── Documentation ─────────────────────────────────
 
 # Build API documentation (rustdoc) and open it in the browser.
@@ -193,7 +213,7 @@ figures:
 # Build the book (ConTeXt → docs/main.pdf).
 [group('Documentation')]
 book: figures
-    cd {{docs_dir}} && context --nonstopmode main.tex
+    cd {{docs_dir}} && STEMMA_VERSION={{version}} context --nonstopmode main.tex
 
 # Build the book and open the PDF.
 [group('Documentation')]

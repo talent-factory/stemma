@@ -5,7 +5,9 @@ members = ["crates/stemma-core", "crates/stemma-cli", "crates/stemma-tui"]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.1"
+# The only place of the version: `stemma --version` and the title page of the book read it. One
+# phase is one minor version (phase 2 is 0.2.0). See "Releases" in CLAUDE.md.
+version = "0.2.0"
 edition = "2021"
 # `File::try_lock`, which holds the guard of the lock of the references (ADR-008).
 rust-version = "1.89"
