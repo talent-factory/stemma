@@ -1177,7 +1177,7 @@ fn made_text(number: u64, error: &RestoreError) -> String {
     match (error.half_made(), error.entry()) {
         (true, Some(entry)) => format!(
             "{}Half made: entry {} of the restore moved some of the pointers of entry {number}\n\
-             To finish it: stemma op restore {number}\n",
+             To finish it, before any other command: stemma op restore {number}\n",
             saved_text(error.snapshot()),
             entry.number()
         ),
@@ -2493,7 +2493,7 @@ mod tests {
             made_text(5, &half),
             "Saved the working copy first as entry 1\n\
              Half made: entry 1 of the restore moved some of the pointers of entry 5\n\
-             To finish it: stemma op restore 5\n"
+             To finish it, before any other command: stemma op restore 5\n"
         );
         let not_durable = RestoreError::NotDurable {
             entry: entry.clone(),

@@ -1404,15 +1404,25 @@ mod tests {
         assert_eq!(entry.change().unwrap().operation().as_str(), "restore");
     }
 
-    /// A restore whose checkout wrote `new.rs`, which only the target tree has, and whose move of
-    /// the pointers then fails: the working-copy commit stays the old one and does not track
-    /// `new.rs`, so a snapshot would miss it. A repeated restore must finish the job.
+    /// What a restore left that wrote `new.rs`, which only the target tree has, and whose move of
+    /// the pointers then failed.
     #[cfg(unix)]
-    #[test]
-    fn a_restore_whose_move_failed_after_the_files_is_finished_by_a_repeat() {
+    struct Stopped {
+        /// The entry that was restored.
+        entry: u64,
+        /// The target commit: its tree has `new.rs`.
+        target: CommitId,
+        /// The working-copy commit before the restore, which does not track `new.rs`.
+        before: CommitId,
+        /// The error of the restore.
+        error: RestoreError,
+    }
+
+    /// Runs a restore whose checkout wrote `new.rs` and whose move of the first pointer fails
+    /// (a read-only `refs/heads`). Returns `None` if permissions have no effect for this user.
+    #[cfg(unix)]
+    fn stopped_after_the_files(dir: &TempDir, repository: &Repository) -> Option<Stopped> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = TempDir::new();
-        let repository = repository(&dir);
         let probe = dir.path().join("probe");
         fs::create_dir(&probe).unwrap();
         fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
@@ -1420,10 +1430,10 @@ mod tests {
         fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
         if !held {
             eprintln!("skipped: permissions have no effect for this user");
-            return;
+            return None;
         }
-        write(&dir, "a.txt", "one");
-        write(&dir, "new.rs", "fn main() {}");
+        write(dir, "a.txt", "one");
+        write(dir, "new.rs", "fn main() {}");
         repository
             .track(
                 &["a.txt".to_owned(), "new.rs".to_owned()],
@@ -1436,14 +1446,14 @@ mod tests {
             .map(drop)
             .unwrap();
         fs::remove_file(dir.path().join("new.rs")).unwrap();
-        write(&dir, "a.txt", "two");
+        write(dir, "a.txt", "two");
         repository
             .commit("second", &actor(), &AllowAll)
             .map(drop)
             .unwrap();
         // An entry that claims to have moved the branch and the working copy away from `first`,
         // whose tree has `new.rs`; the branch is the first pointer that the restore moves.
-        let (tip, first) = tip_and_first(&repository);
+        let (tip, first) = tip_and_first(repository);
         let current = repository.refs().working_copy().unwrap();
         let change = Change::new(
             now(),
@@ -1464,24 +1474,66 @@ mod tests {
             },
         );
         let before = repository.refs().working_copy().unwrap();
-        let error = restore(&repository, commit).unwrap_err();
+        let error = restore(repository, commit).unwrap_err();
         fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
+        Some(Stopped {
+            entry: commit,
+            target: first,
+            before,
+            error,
+        })
+    }
+
+    /// The checkout ran, but the working-copy commit is the old one and lacks `new.rs`. A
+    /// repeated restore must finish the job.
+    #[cfg(unix)]
+    #[test]
+    fn a_restore_whose_move_failed_after_the_files_is_finished_by_a_repeat() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let Some(Stopped {
+            entry,
+            before,
+            error,
+            ..
+        }) = stopped_after_the_files(&dir, &repository)
+        else {
+            return;
+        };
         assert!(matches!(error, RestoreError::MoveFailed { .. }), "{error}");
         assert!(!error.pointer_moved());
         assert!(
             error.to_string().contains("before any other command"),
             "{error}"
         );
-        // The checkout ran, but the working-copy commit is the old one and lacks `new.rs`.
         assert_eq!(read(&dir, "new.rs"), "fn main() {}");
         assert_eq!(repository.refs().working_copy().unwrap(), before);
         // The repeat completes it: the files and the pointers are at the target.
-        done(restore(&repository, commit));
+        done(restore(&repository, entry));
         assert_eq!(read(&dir, "a.txt"), "one");
         assert_eq!(read(&dir, "new.rs"), "fn main() {}");
         assert_ne!(repository.refs().working_copy().unwrap(), before);
         // The next snapshot has nothing left to save: `new.rs` is tracked now.
         assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+    }
+
+    /// The reason for the advice: a snapshot between the failure and the repeat saves the edits of
+    /// the target but not `new.rs`, a tree that is neither the old state nor the target.
+    #[cfg(unix)]
+    #[test]
+    fn a_snapshot_after_a_failed_move_misses_the_file_that_only_the_target_has() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let Some(Stopped { target, before, .. }) = stopped_after_the_files(&dir, &repository)
+        else {
+            return;
+        };
+        let snapshot = repository.snapshot(&actor(), &AllowAll).unwrap();
+        assert!(snapshot.is_some(), "the files differ from the old commit");
+        let saved = repository.refs().working_copy().unwrap();
+        let tree = |commit| repository.tree_of(commit).unwrap();
+        assert_ne!(tree(saved), tree(target), "new.rs is not in the snapshot");
+        assert_ne!(tree(saved), tree(before));
     }
 
     #[test]
