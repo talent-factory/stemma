@@ -58,6 +58,28 @@ fn line_indent(line: &&str) -> Option<usize> {
     }
 }
 
+/// Returns the edit script for two sequences of lines kept as bytes, with the boundaries of the
+/// change groups moved by the indent heuristic, as [`diff_lines`] does for text.
+///
+/// Whitespace is the ASCII whitespace. A byte that is not UTF-8 takes part in the comparison like
+/// any other byte. Within a group of changes the script lists the deletions before the insertions.
+pub fn diff_byte_lines(old: &[&[u8]], new: &[&[u8]]) -> Vec<Edit> {
+    slide(old, new, &diff(old, new), byte_line_indent)
+}
+
+/// The indentation of a line of bytes, or `None` for a blank line.
+fn byte_line_indent(line: &&[u8]) -> Option<usize> {
+    let indent = line
+        .iter()
+        .take_while(|byte| byte.is_ascii_whitespace())
+        .count();
+    if indent == line.len() {
+        None
+    } else {
+        Some(indent)
+    }
+}
+
 /// Appends the edit script for `old` and `new` to `edits`. `old_base` and `new_base` are the
 /// positions of the two slices in the whole sequences, so that the steps carry whole indices.
 fn align<T: PartialEq>(
@@ -1264,5 +1286,43 @@ mod tests {
         let slid = slide(&old, &new, &edits, digit_indent);
         let lowest = 1 + run;
         assert!(first_insert(&slid) >= lowest - MAX_SLIDING);
+    }
+
+    #[test]
+    fn byte_lines_slide_like_text_lines() {
+        let old = ["fn a() {\n", "}\n", "\n", "fn c() {\n", "}\n"];
+        let new = [
+            "fn a() {\n",
+            "}\n",
+            "\n",
+            "fn b() {\n",
+            "}\n",
+            "\n",
+            "fn c() {\n",
+            "}\n",
+        ];
+        let text = diff_lines(&old, &new);
+        let old_bytes: Vec<&[u8]> = old.iter().map(|line| line.as_bytes()).collect();
+        let new_bytes: Vec<&[u8]> = new.iter().map(|line| line.as_bytes()).collect();
+        assert_eq!(diff_byte_lines(&old_bytes, &new_bytes), text);
+    }
+
+    #[test]
+    fn byte_lines_list_deletions_before_insertions() {
+        let edits = diff_byte_lines(&[b"a\n", b"x\n"], &[b"a\n", b"y\n"]);
+        assert_eq!(
+            edits,
+            [
+                Edit::Equal { old: 0, new: 0 },
+                Edit::Delete { old: 1 },
+                Edit::Insert { new: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_takes_part() {
+        let edits = diff_byte_lines(&[b"\xff\n"], &[b"\xfe\n"]);
+        assert_eq!(changes(&edits), 2);
     }
 }

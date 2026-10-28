@@ -15,8 +15,7 @@ und Bewertung von Einrückungen. Sie ändert nur die Lage der Grenzen, nicht die
 Eine Ersetzung, also eine Folge aus Löschungen und Einfügungen, bleibt dabei zusammen,
 und eine reine Löschung oder Einfügung rückt nicht an sie heran. Das ist einfacher als bei git.
 Die Einrückung zählt in Bytes, ein Tabulator gilt also als ein Zeichen, bei git als mehrere.
-Der Befehl \type{diff} ruft die Nachbearbeitung in Phase 2 noch nicht auf
-(\in{Abschnitt}[sec:slide]).
+Der Befehl \type{diff} ruft die Nachbearbeitung auf (\in{Abschnitt}[sec:slide]).
 \item Gruppierung in Hunks und Darstellung mit Kontextzeilen (\in{Abschnitt}[sec:hunks]).
 \item Farbausgabe und Einbindung eines Pagers (\in{Abschnitt}[sec:pager]).
 \item Eine schreibgeschützte Terminal-Oberfläche (TUI), \type{diff --tui}, zum Blättern durch
@@ -142,8 +141,9 @@ unterbringen, weil die erste Zeile einer Änderungsgruppe gleich der unveränder
 sein kann. Die Nachbearbeitung wählt unter diesen Lagen die, die sich am besten liest
 (\type{slide} in \type{diff.rs}). Sie folgt dem Verfahren von git \cite[git-xdiff]. Sie ändert nur
 die Lage der Grenzen. Beide Folgen und die Zahl $D$ der Änderungen
-bleiben, wie sie sind. Der Kern bietet sie als \type{diff_lines} an; der Befehl \type{diff} ruft
-sie in Phase 2 noch nicht auf und zeigt das Skript des Myers-Diff.
+bleiben, wie sie sind.
+Der Kern bietet sie als \type{diff_lines} für Text und als \type{diff_byte_lines}
+für Zeilen aus Bytes an; der Befehl \type{diff} ruft die zweite auf.
 
 Eine Gruppe von Einfügungen oder Löschungen gleitet nach oben oder unten, solange die Zeile, die
 sie verlässt, der Zeile gleicht, die sie aufnimmt. \in{Abbildung}[fig:slide] zeigt vier
