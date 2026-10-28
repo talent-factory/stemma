@@ -25,7 +25,12 @@ other).
 
 - **One file at the root of the repository directory** *(confirmed)*. The path is
   `.stemmaignore` next to `.stemma`. Nested files are not read; they can come later without
-  changing the meaning of this one.
+  changing the meaning of this one. The file is read only under its exact name. A directory that
+  has a file under another spelling in ASCII case, such as `.StemmaIgnore`, makes every command
+  that reads the file stop with an error, also if `.stemmaignore` exists as well: a file system
+  that ignores case would open the file, a clone on another system would not find it, and the
+  files that it excludes would be tracked there. Other foldings (Unicode case, normal forms) are
+  not detected (see the open items).
 - **A small pattern language** *(confirmed)*. A line is a comment or a pattern.
   - A comment starts with `#`. A pattern cannot start with `#`; `/#name` writes such a name
     at the root, and `**/#name` at any depth.
@@ -44,10 +49,6 @@ other).
     file is tracked without a word. The spelling rule of `track` (ADR-010) makes a *named path*
     spell the names as they are on disk, but it does not change what the person wrote in the
     file (see the open items).
-  - The file is read only under its exact name `.stemmaignore`. A directory that has it under
-    another spelling, such as `.StemmaIgnore`, is an error: a file system that ignores case
-    would open the file, a clone on another system would not find it, and the secrets that it
-    excludes would be tracked there.
   - A trailing `/` matches a directory, and a link is no directory (a link is never followed),
     so `target/` does not exclude a link named `target`; `target` does.
   - There is no escape, no character class, and no negation. A pattern with `\`, `[`, `]`, or a
@@ -189,7 +190,9 @@ Rejected, with the line:
       (a pattern `Target/` and a directory `target`, a pattern in NFC and a name in NFD). Today a
       pattern compares bytes, so such a file is tracked without a word. A comparison after
       normalization and case folding, or a warning for a name that differs only so, needs its own
-      decision and a dependency for the normalization.
+      decision and a dependency for the normalization. The same holds for the name of the file
+      itself: only a spelling in ASCII case is refused, not one that a file system folds in
+      another way (`.ſtemmaignore`).
 - [ ] A file replaced by a pipe between the inspection and the open blocks the open. The std
       library has no way to open without blocking, so closing the window needs a call of the
       system (`O_NONBLOCK`) and with it a dependency or `unsafe`.
