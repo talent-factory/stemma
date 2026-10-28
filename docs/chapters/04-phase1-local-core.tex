@@ -763,12 +763,21 @@ danach der Zeiger des Working-Copy-Commits auf den neuen.
 \stopitemize
 
 Vor dem zweiten Commit hat die Sitzung \type{README.md} geändert.
-Schon \type{status} hat die Änderung gespeichert, mit einem Eintrag \type{snapshot};
-der Snapshot des Commits findet deshalb nichts mehr und schreibt keinen Eintrag.
+Sie liest die Änderung zuerst mit \type{diff} (\in{Abschnitt}[sec:diff-workflows]).
+Dieser Aufruf hat die Änderung schon gespeichert, mit einem Eintrag \type{snapshot};
+\type{status} und der Snapshot des Commits finden deshalb nichts mehr
+und schreiben keinen Eintrag.
 \type{op log} zeigt den Eintrag des Commits mit beiden Zeigern:
 
 \starttyping
 $ echo "Hallo Welt" > README.md
+$ stemma diff
+diff README.md
+--- b3:2037…df79 README.md
++++ working-copy b3:7694…d054 README.md
+@@ -1 +1 @@
+-Hallo
++Hallo Welt
 $ stemma status
 Working copy changes:
 M README.md
@@ -1453,7 +1462,7 @@ M README.md
 Der Branch \type{main} steht wieder auf dem Commit \quotation{Erste Fassung}.
 Die Änderung an \type{README.md} bleibt,
 denn vor Eintrag 5 hatte der Working-Copy-Commit sie schon:
-Der Snapshot von \type{status} hat sie in Eintrag 4 gespeichert.
+Der Snapshot von \type{diff} hat sie in Eintrag 4 gespeichert.
 Das Restore nimmt also den Commit zurück und lässt die Änderung im Working-Copy-Commit.
 Wer auch sie zurücknehmen will, stellt danach den Zustand vor Eintrag 4 her.
 \in{Abbildung}[fig:restore-pointers] zeigt die Zeiger vor und nach dem Restore.
@@ -1685,7 +1694,8 @@ Damit ist die Sitzung zu Ende.
 \in{Abbildung}[fig:session-timeline] fasst sie als Zeitachse zusammen:
 Jede Zeile ist ein Eintrag des Logs, mit dem Befehl, der ihn schrieb,
 den Werten der beiden Zeiger danach und dem, was der Befehl im Verzeichnis las oder schrieb.
-Befehle ohne Eintrag fehlen: \type{status} ohne Änderung, \type{op log}, \type{op verify},
+Befehle ohne Eintrag fehlen: \type{status} und \type{diff} ohne Änderung,
+\type{op log}, \type{op verify},
 die Pläne mit \type{--dry-run} oder ohne \type{--apply} und die abgelehnten Restores.
 
 \startplacefigure[title={Die Sitzung als Zeitachse},

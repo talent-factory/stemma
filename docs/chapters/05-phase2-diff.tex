@@ -112,6 +112,209 @@ bilden Ketten, sodass ein Hunk auch Änderungen umfassen kann, die weiter ausein
 Ein Hunk speichert nur die Schritte des Skripts und die Positionen seiner Zeilen auf beiden
 Seiten. Die Zeilen selbst bleiben in den Folgen.
 
+\section[sec:diff-workflows]{Änderungen ansehen: die Arbeitsabläufe}
+
+Der Diff ist ein lesender Befehl mit einer Ausnahme: Ist eine Seite der Working-Copy-Commit,
+macht er zuerst einen Snapshot der verfolgten Dateien (ADR-010), wie \type{status}.
+Der Snapshot schreibt einen Eintrag nur, wenn sich eine verfolgte Datei geändert hat.
+Vergleicht der Aufruf zwei Commits, liest er nur Objekte und schreibt gar nichts.
+Einen Akteur verlangt er in beiden Fällen, auch wenn nichts zu schreiben ist.
+Die folgenden Abläufe setzen die Sitzung aus Kapitel 4 fort.
+Die Ausgaben stammen aus einem echten Lauf; die IDs sind gekürzt und stammen aus derselben
+Sitzung wie dort.
+Die Synopsis, die Exit-Codes und die Fehler jeder Option stehen in der Befehlsreferenz.
+
+\subsection{Änderungen vor dem Commit ansehen}
+
+Wer \type{README.md} geändert hat, will vor dem Commit lesen, was er festhält.
+Der Ablauf ist der des zweiten Commits in Kapitel 4:
+
+\starttyping
+$ echo "Hallo Welt" > README.md
+$ stemma diff
+diff README.md
+--- b3:2037…df79 README.md
++++ working-copy b3:7694…d054 README.md
+@@ -1 +1 @@
+-Hallo
++Hallo Welt
+\stoptyping
+
+Die linke Seite ist der Elternteil des Working-Copy-Commits, der Commit \quotation{Erste Fassung};
+die rechte Seite ist der Working-Copy-Commit selbst, genannt mit der ID seines Snapshots.
+Das Arbeitsverzeichnis bleibt unberührt, der Befehl schreibt keine Datei hinein.
+Der Snapshot speichert die geänderte \type{README.md} und bewegt den Zeiger des
+Working-Copy-Commits von \type{b3:e6a3…} auf \type{b3:7694…}; \type{op log} zeigt dazu den
+Eintrag 4, \type{snapshot}. Der Branch \type{main} bleibt stehen.
+Ein zweiter Aufruf liest denselben Stand, findet nichts zu speichern und schreibt keinen Eintrag.
+Aus demselben Grund schreiben das \type{status} danach und der Snapshot im \type{commit}
+nichts mehr: Die Änderung ist schon im Working-Copy-Commit.
+
+Eine neue Datei erscheint erst, wenn \type{track} sie aufgenommen hat, denn der Diff
+vergleicht nur verfolgte Dateien. Nennt man ihren Pfad vorher, endet der Befehl mit einem Fehler
+und nennt \type{track} als Abhilfe.
+
+\subsection{Zwei Commits vergleichen}
+
+Nach dem zweiten Commit ist der Working-Copy-Commit leer, ein Diff ohne Argumente also auch.
+Was die beiden Commits der Sitzung unterscheidet, zeigt der Aufruf mit beiden Kennungen:
+
+\starttyping
+$ stemma diff b3:2037…df79 b3:9d8a…4c77
+diff README.md
+--- b3:2037…df79 README.md
++++ b3:9d8a…4c77 README.md
+@@ -1 +1 @@
+-Hallo
++Hallo Welt
+\stoptyping
+
+Beide Seiten sind Commits, deshalb gibt es keinen Snapshot.
+Das Arbeitsverzeichnis, der Working-Copy-Commit, die Zeiger und das Log bleiben, wie sie sind;
+der Befehl kann jederzeit wiederholt werden.
+Mit nur einer Kennung vergleicht der Befehl diesen Commit mit dem Working-Copy-Commit und macht
+dann doch einen Snapshot.
+Der Befehl nimmt nur Kennungen an, wie \type{op log} sie schreibt; Namen wie \type{main}
+löst er nicht auf.
+
+\subsection{Auf einen Pfad beschränken}
+
+Ein Pfad am Ende des Aufrufs wählt eine Datei oder ein Verzeichnis samt allem darunter:
+
+\starttyping
+$ stemma diff b3:2037…df79 b3:9d8a…4c77 src
+$ echo $?
+0
+$ stemma diff b3:2037…df79 b3:9d8a…4c77 nope.txt
+stemma: `nope.txt` is not a file or directory on either side of the diff (…)
+$ echo $?
+1
+\stoptyping
+
+Unter \type{src} hat sich zwischen den Commits nichts geändert, der Diff ist leer, und der Befehl
+endet mit 0. Der Pfad \type{nope.txt} kommt auf keiner Seite vor.
+Das ist ein Fehler und kein leerer Diff, damit ein Tippfehler auffällt (Exit-Code 1).
+Die Meldung ist hier gekürzt; sie nennt auch \type{track} als Abhilfe für eine Datei,
+die nicht verfolgt wird.
+Der Pfad beschränkt allein die Ausgabe. Mit dem Working-Copy-Commit als Seite speichert der
+Snapshot weiter alle verfolgten Dateien, und das Log sieht keinen Unterschied zum Aufruf ohne Pfad.
+
+\subsection{Den Diff in einem Skript prüfen}
+
+Ein Skript will wissen, ob sich etwas geändert hat, und nicht den Text lesen.
+Dafür gibt es \type{--exit-code}:
+
+\starttyping
+$ stemma diff --exit-code
+$ echo $?
+0
+$ stemma diff --exit-code b3:2037…df79 b3:9d8a…4c77 > /dev/null
+$ echo $?
+4
+\stoptyping
+
+Der erste Aufruf vergleicht den leeren Working-Copy-Commit mit seinem Elternteil und endet mit 0.
+Der zweite findet einen Unterschied und endet mit 4.
+Die 4 ist kein Fehler: Git nimmt dafür 1, doch hier steht 1 für Fehler, die ein Skript von einem
+Unterschied trennen muss (ADR-018). Mit Pfaden zählen nur die gewählten Dateien.
+Auf Arbeitsverzeichnis, Zeiger und Log wirkt die Option nicht; es gilt, was für die Seiten
+des Aufrufs gilt, also ein Snapshot beim Working-Copy-Commit und sonst nichts.
+
+\subsection{Die Oberfläche im Terminal}
+
+Mit \type{--tui} blättert man durch die Dateien und Hunks, statt den Text zu lesen.
+Die Oberfläche ist schreibgeschützt (ADR-016). Auf einem Terminal macht sie denselben Snapshot
+wie der Text, danach schreibt sie nichts. Ohne Terminal auf der Standardausgabe endet der Befehl
+mit Exit-Code 1, bevor er etwas liest oder speichert:
+
+\starttyping
+$ stemma diff --tui | cat
+stemma: `diff --tui` needs a terminal on standard output; use `diff` without `--tui` for scripts
+\stoptyping
+
+Für Skripte und Agenten gilt deshalb der Text ohne \type{--tui}.
+
+\subsection{Farbe und Pager gegenüber einer Pipe}
+
+Auf einem Terminal färbt der Befehl die Ausgabe und gibt sie an einen Pager weiter.
+Geht die Ausgabe in eine Pipe oder eine Datei, ist sie reiner Text ohne Farbe und ohne Pager.
+Damit liest ein Skript denselben Text, den die Beispiele dieses Kapitels zeigen.
+Die Ausgabe ändert nichts am Repository. Ein Pager, der früher endet, ist kein Fehler.
+Welche Variablen den Pager wählen, steht in der Befehlsreferenz.
+
+\subsection{Binärdateien}
+
+Eine Datei mit einem NUL-Byte in den ersten 8000 Bytes gilt als binär.
+Der Diff zeigt dann keinen Inhalt, sondern eine Zeile mit beiden Seiten.
+Die Sitzung hat dazu \type{blob.bin} verfolgt, committet und ein Byte darin geändert:
+
+\starttyping
+$ stemma diff
+diff blob.bin
+Binary files b3:c76d…402f blob.bin and working-copy b3:39f0…cdc7 blob.bin differ
+\stoptyping
+
+Die Zeile ist hier der Breite wegen umbrochen. Mit \type{--exit-code} endet der Befehl auch bei
+Binärdateien mit 4. Der Snapshot ist wie bei Text: ein Eintrag \type{snapshot}, weil sich eine
+verfolgte Datei geändert hat. Ist nur eine der beiden Fassungen binär, gilt die ganze Datei als
+binär.
+
+\subsection{Was jeder Ablauf ändert}
+
+\in{Tabelle}[tab:diff-effects] fasst zusammen, was die Abläufe in den vier Bereichen ändern.
+Das Arbeitsverzeichnis ändert nie ein Diff. Ein Eintrag entsteht nur durch den Snapshot,
+und der nur bei einer geänderten verfolgten Datei.
+
+\startplacetable[title={Was ein Diff ändert},reference=tab:diff-effects]
+\startxtable[frame=off]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Aufruf} \stopxcell
+\startxcell {\bf Arbeitsverzeichnis} \stopxcell
+\startxcell {\bf Working-Copy-Commit} \stopxcell
+\startxcell {\bf Zeiger} \stopxcell
+\startxcell {\bf Operation Log} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff}, Datei geändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell neuer Snapshot \stopxcell
+\startxcell Working-Copy-Zeiger bewegt \stopxcell
+\startxcell ein Eintrag \type{snapshot} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff}, nichts geändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell kein Eintrag \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff} mit zwei Commits \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell kein Eintrag \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff} mit Pfad \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell wie ohne Pfad \stopxcell
+\startxcell wie ohne Pfad \stopxcell
+\startxcell wie ohne Pfad \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{diff --tui} ohne Terminal \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell kein Eintrag \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Nach einem Absturz im Snapshot gilt, was Kapitel 4 für den Snapshot sagt.
+Der Diff schreibt sonst nichts, ein erneuter Aufruf ist deshalb jederzeit sicher.
+
 \section{Offene Fragen}
 
 Die folgenden Fragen sind vertagt und nicht entschieden. Sie gehören zu späteren Phasen.
