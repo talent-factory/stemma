@@ -83,38 +83,30 @@ not that the command worked.
   repository it also changes files that Git owns, so ask first.
 - `stemma purge` of any kind. It is for humans only (ADR-002, ADR-014).
 
-## Until phase 3: one working copy per actor
+## Until phase 3: no `stemma` in a Git worktree
 
 An actor needs its own working copy (ADR-010), and the per-agent branch in its own workspace
 that the design foresees does not exist yet. Until it does, the rule is administrative:
 
 - **One agent per directory.** Two agents in one directory is not supported, and the program
   does not check it. A held lock only shows up as exit code 6.
-- **A Git worktree below the repository root is not a separate Stemma repository.** A command
-  there opens the `.stemma` of the root, because it searches the parent directories. The
-  files of the worktree then appear as untracked paths such as `.worktrees/task/a.txt`, and a
-  `track` or `commit` would write them into the history of the root. Tested on a copy of the
-  layout (a root with `.stemma` and a worktree at `.worktrees/task`).
-- **A worktree can have its own Stemma repository.** `stemma init` in the worktree creates
-  an independent one: its own log, its own branch `main`, no link to the history of the root.
-  The root keeps showing the files of the worktree as untracked and does not take them in.
-  `.stemma/` is in `.gitignore`, so Git does not see it.
-- **The history of such a repository is lost with the worktree.** Git does not carry `.stemma/`
-  into a merge, because it is ignored, and Stemma has no merge before phase 3.
-  `git worktree remove` deletes the directory with the `.stemma` in it, without `--force` and
-  without a message (tested: the ignored `.stemma/` does not make the worktree unclean).
-  What survives is
-  the content of the files, through the Git merge. The snapshots, the log, and the anchor of
-  the worktree are gone, and an anchor proves nothing once its log is gone.
-- **So, in a Git worktree:** either do not call `stemma`, or run `stemma init` there first and
-  use the worktree as its own repository with its own actor. Treat that history as disposable.
-  If it should be kept, copy the directory before the worktree is removed
-  (`cp -a .stemma <archive>/<task>/.stemma`); that it can be opened again from there with `-C`
-  is not tested. After the Git merge, `stemma status` and `stemma commit` in the root save the
-  merged result as one commit of the root history. Never call `stemma` with `-C` pointing at the
-  root from a worktree.
+- **In a Git worktree, do not call `stemma`.** Two things speak against it, both tested on a copy
+  of the layout (a root with `.stemma` and a worktree at `.worktrees/task`):
+  - Without a `stemma init` of its own, a command in the worktree opens the `.stemma` of the
+    root, because it searches the parent directories. The files of the worktree then appear as
+    untracked paths such as `.worktrees/task/a.txt`, and a `track` or `commit` would write them
+    into the history of the root.
+  - With a `stemma init` of its own, the worktree is an independent repository, but its history
+    is lost with it. Git does not carry the ignored `.stemma/` into a merge, Stemma has no merge
+    before phase 3, and `git worktree remove` deletes the directory with the `.stemma` in it,
+    without `--force` and without a message. Only the content of the files survives, through
+    the Git merge.
+- Never call `stemma` with `-C` pointing at the root from a worktree.
 - `.worktrees/` is in `.stemmaignore` of this repository, so that `track .` in the root does not
   sweep up the files of the worktrees.
+
+Whether a command should warn in a worktree, and how a workspace keeps its history after the
+merge, is decided in phase 3 (STEMMA-132).
 
 ## Not yet there
 
