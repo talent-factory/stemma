@@ -266,13 +266,19 @@ impl Classify for DiffError {
 impl Classify for HistoryError {
     fn kind(&self) -> FailureKind {
         match self {
-            // A commit that the working copy or a parent names is not there, or its body is not in
-            // canonical form: the history is damaged. The start is the working-copy commit, which
-            // a pointer names, so it is no argument of the caller.
+            // A commit that a pointer or a commit names is not there, or its body is not in
+            // canonical form: the history is damaged. Nobody named these commits as an argument.
             Self::Missing { .. } => FailureKind::Damaged,
-            Self::Read(error) => error
-                .store_error()
-                .map_or(FailureKind::Damaged, Classify::kind),
+            Self::Read(error) => match error.store_error() {
+                Some(StoreError::Io { .. }) => FailureKind::Other,
+                // A parent of the wrong kind (`KindMismatch`) is damage here, unlike the case of
+                // `StoreError::kind`, where the caller named the object. So is an object that is
+                // corrupt, a body that is not canonical, and an ID that does not match (a defect of
+                // the reader, which the caller cannot tell from damage).
+                Some(StoreError::Corrupt { .. } | StoreError::KindMismatch { .. }) | None => {
+                    FailureKind::Damaged
+                }
+            },
         }
     }
 }
@@ -412,6 +418,46 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn the_read_errors_of_the_history_are_damage_except_a_failing_disk() {
+        use crate::object::CommitParseError;
+        use crate::store::ReadError;
+
+        let commit = crate::object::CommitId::new(id());
+        let tree = crate::object::TreeId::new(id());
+        let io = StoreError::Io {
+            operation: "read the object file",
+            path: path(),
+            source: std::io::Error::other("the disk failed"),
+        };
+        let mismatch = StoreError::KindMismatch {
+            id: id(),
+            expected: Kind::Commit,
+            found: Kind::Tree,
+        };
+        let history = |error: ReadError| HistoryError::Read(error).kind();
+        assert_eq!(history(ReadError::Store(Box::new(io))), FailureKind::Other);
+        // A parent that names a tree: nobody gave that object as an argument.
+        assert_eq!(
+            history(ReadError::Store(Box::new(mismatch))),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            history(ReadError::Commit {
+                id: commit,
+                source: CommitParseError::NotUtf8 { valid_up_to: 0 }
+            }),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            history(ReadError::IdMismatch {
+                requested: id(),
+                parsed: tree.object_id()
+            }),
+            FailureKind::Damaged
+        );
     }
 
     #[test]

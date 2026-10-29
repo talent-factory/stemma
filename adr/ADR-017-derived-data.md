@@ -2,8 +2,9 @@
 
 **Status:** Accepted. Decisions marked *(confirmed)* agreed with the author on
 2026-10-27 (STEMMA-18). Nothing here is implemented. Phase 2 shipped without a cache: the diff
-reads both sides anew on every call and writes nothing under `.stemma/derived/`. The first slice
-that needs derived data, `log` of phase 3, turns it into code. The ADR amends ADR-009 (the layout
+reads both sides anew on every call and writes nothing under `.stemma/derived/`. `log` of phase 3
+(STEMMA-164) ships without one as well, as the alternatives below allow. The first slice that
+needs derived data, such as blame or the history of a path, turns it into code. The ADR amends ADR-009 (the layout
 names `derived/`) and ADR-014 (step 8 of the purge deletes it). The open items below are questions
 for later slices; none of them changes a decision above.
 

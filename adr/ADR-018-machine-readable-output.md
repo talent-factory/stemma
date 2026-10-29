@@ -65,7 +65,8 @@ A caller can tell them apart only by the text of the message, which is written f
     one of `A`, `M`, `D`, and these letters are part of schema 1 although the text form may
     change. Paths are JSON strings, not escaped as the text form escapes them.
   - `commit --json` writes one object: `schema`, `commit`, `branch`, and `resumed` (boolean).
-  - `log --json` writes one object per line, one per commit, the newest first: `schema`, `commit`,
+  - `log --json` writes one object per line, one per commit, each commit before its parents:
+    `schema`, `commit`,
     `working_copy` (boolean, true for `@`), `parents` (a list of IDs), `change`, `author`, `time`
     (seconds since the Unix epoch, as the commit claims), and `message` (verbatim).
 - **Errors stay on the standard error stream**. With `--json`, a failure writes no
@@ -74,7 +75,9 @@ A caller can tell them apart only by the text of the message, which is written f
   its object first, as the text form writes its line first. Another code 3, such as a `commit`
   that moved one pointer, writes no object, because no result exists yet. An object followed by
   a non-zero code names what was made, not that the command worked; the exit code decides. A
-  reader that closes the pipe early gets no error, as in the text form.
+  reader that closes the pipe early gets no error, as in the text form. `log --json` writes
+  its lines one by one, so a write that fails (code 1) may follow some of them; a caller
+  discards the output of a non-zero exit, as for the text form.
 
 ## Consequences
 

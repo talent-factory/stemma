@@ -1,5 +1,5 @@
 //! The ancestors of a commit in the order that `stemma log` shows them, as a pure function over
-//! the object store.
+//! the object store, and the error that the walks over the history share ([`HistoryError`]).
 //!
 //! The order is topological: a commit comes before all of its parents. Where several commits are
 //! ready at once, the one with the newest commit date comes first, and equal dates are ordered by
@@ -7,9 +7,11 @@
 //! [`crate::object::Commit`]) and only breaks ties: it never decides whether a child comes before
 //! its parent, so a wrong date changes the look of the list and not its correctness.
 //!
-//! The function keeps no cache and changes no format. It reads each reachable commit once; with
-//! `first_parent` it follows the first parent only and stops after `limit` commits, otherwise the
-//! order needs the whole reachable set, because a commit may be reached again by a later branch.
+//! The function keeps no cache and changes no format. It reads each reachable commit once. With
+//! [`Parents::First`] it follows the first parent only and reads no more commits than `limit`
+//! allows. With [`Parents::All`] the order needs the whole reachable set, because a later branch
+//! may reach a commit again, so the walk reads all of it before it lists the first `limit`
+//! commits.
 
 use std::collections::{BinaryHeap, HashMap};
 use std::error::Error;
@@ -18,10 +20,20 @@ use std::fmt;
 use crate::object::{Commit, CommitId};
 use crate::store::{ObjectStore, ReadError, StoreError};
 
+/// Which parents of a commit [`ancestors`] follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parents {
+    /// Every parent: the whole history that leads to the start.
+    All,
+    /// The first parent only, so that a merge hides the history it brought in.
+    First,
+}
+
 /// Returns the commit `start` and its ancestors, children before parents, at most `limit` of them.
+/// A `limit` of `Some(0)` gives an empty list; `None` lists every commit.
 ///
-/// With `first_parent`, only the first parent of each commit is followed, so the result is the
-/// chain from `start` down to a root.
+/// With [`Parents::First`], the result is the chain from `start` down to a root, or to the commit
+/// where `limit` cuts it. The list of any `limit` is the beginning of the list without one.
 ///
 /// # Errors
 ///
@@ -30,17 +42,19 @@ use crate::store::{ObjectStore, ReadError, StoreError};
 pub fn ancestors(
     store: &dyn ObjectStore,
     start: CommitId,
-    first_parent: bool,
+    parents: Parents,
     limit: Option<usize>,
 ) -> Result<Vec<(CommitId, Commit)>, HistoryError> {
-    if first_parent {
-        first_parent_chain(store, start, limit)
-    } else {
-        topological(store, start, limit)
+    match parents {
+        Parents::First => first_parent_chain(store, start, limit),
+        Parents::All => topological(store, start, limit),
     }
 }
 
-fn read(
+/// Reads the commit `id`. `child` is the commit that `id` was reached from, for the error: a
+/// commit that is absent is a defect of the history if it is a parent, and a wrong start if it is
+/// the start.
+pub(crate) fn read_commit(
     store: &dyn ObjectStore,
     id: CommitId,
     child: Option<CommitId>,
@@ -63,7 +77,7 @@ fn first_parent_chain(
         if limit.is_some_and(|limit| chain.len() >= limit) {
             break;
         }
-        let commit = read(store, id, child)?;
+        let commit = read_commit(store, id, child)?;
         next = commit.parents().first().map(|&parent| (parent, Some(id)));
         chain.push((id, commit));
     }
@@ -75,8 +89,9 @@ fn topological(
     start: CommitId,
     limit: Option<usize>,
 ) -> Result<Vec<(CommitId, Commit)>, HistoryError> {
-    // The first pass reads every reachable commit once and counts, for each commit, the children
-    // that are reachable too. A commit is ready when all of them are listed.
+    // The first pass reads every reachable commit once and counts, for each commit, the edges from
+    // its children that are reachable too (a commit names each parent once, so an edge is a
+    // child). A commit is ready when all of them are listed.
     let mut commits: HashMap<CommitId, Commit> = HashMap::new();
     let mut waiting: HashMap<CommitId, usize> = HashMap::new();
     let mut pending = vec![(start, None)];
@@ -84,7 +99,7 @@ fn topological(
         if commits.contains_key(&id) {
             continue;
         }
-        let commit = read(store, id, child)?;
+        let commit = read_commit(store, id, child)?;
         for &parent in commit.parents() {
             *waiting.entry(parent).or_insert(0) += 1;
             pending.push((parent, Some(id)));
@@ -115,7 +130,7 @@ fn topological(
     Ok(listed)
 }
 
-/// Why [`ancestors`] fails.
+/// Why a walk over the history fails: [`ancestors`] and [`merge_bases`](crate::merge_base).
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum HistoryError {
@@ -123,7 +138,8 @@ pub enum HistoryError {
     Missing {
         /// The commit that is absent.
         id: CommitId,
-        /// The commit that names it as a parent, or `None` if it is the start.
+        /// The commit that names it as a parent, or `None` if it is a start (one of the two tips of
+        /// a merge base).
         child: Option<CommitId>,
     },
     /// The store could not return a commit. The message and the cause are those of the read error.
@@ -132,8 +148,8 @@ pub enum HistoryError {
 
 impl HistoryError {
     /// Returns the error of the store if the store could not return a commit: the storage failed,
-    /// the object is damaged, or it has another kind. `None` for a commit that is absent and for
-    /// one whose body is not in canonical form.
+    /// the object is damaged, or it has another kind. `None` for a commit that is absent, for one
+    /// whose body is not in canonical form, and for one whose ID does not match its content.
     pub fn store_error(&self) -> Option<&StoreError> {
         match self {
             Self::Read(source) => source.store_error(),
@@ -180,8 +196,9 @@ impl From<ReadError> for HistoryError {
 mod tests {
     use super::*;
     use crate::change::sample_change;
+    use crate::failure::{Classify, FailureKind};
     use crate::object::Tree;
-    use crate::testutil::TempDir;
+    use crate::testutil::{FaultyStore, TempDir};
     use crate::Actor;
 
     /// Stores a commit with the given parents; `time` is its date and makes the commit unique.
@@ -220,7 +237,7 @@ mod tests {
         let root = commit(&store, &[], 0);
         let middle = commit(&store, &[root], 1);
         let tip = commit(&store, &[middle], 2);
-        let listed = ancestors(&store, tip, false, None).unwrap();
+        let listed = ancestors(&store, tip, Parents::All, None).unwrap();
         assert_eq!(listed[0].1.message(), "commit 2");
         assert_eq!(ids(listed), vec![tip, middle, root]);
     }
@@ -233,7 +250,7 @@ mod tests {
         let left = commit(&store, &[fork], 1);
         let right = commit(&store, &[fork], 2);
         let merge = commit(&store, &[left, right], 3);
-        let listed = ids(ancestors(&store, merge, false, None).unwrap());
+        let listed = ids(ancestors(&store, merge, Parents::All, None).unwrap());
         // The newer parent first; the fork waits for both.
         assert_eq!(listed, vec![merge, right, left, fork]);
     }
@@ -247,7 +264,7 @@ mod tests {
         let left = commit(&store, &[fork], 1);
         let right = commit(&store, &[fork], 2);
         let merge = commit(&store, &[left, right], 3);
-        let listed = ids(ancestors(&store, merge, false, None).unwrap());
+        let listed = ids(ancestors(&store, merge, Parents::All, None).unwrap());
         assert_eq!(listed, vec![merge, right, left, fork]);
     }
 
@@ -262,7 +279,7 @@ mod tests {
         let a = commit(&store, &[one, two], 9);
         let b = commit(&store, &[two, one], 9);
         for merge in [a, b] {
-            let listed = ids(ancestors(&store, merge, false, None).unwrap());
+            let listed = ids(ancestors(&store, merge, Parents::All, None).unwrap());
             assert_eq!(listed, vec![merge, high, low, fork]);
         }
     }
@@ -274,13 +291,13 @@ mod tests {
         let root = commit(&store, &[], 0);
         let middle = commit(&store, &[root], 1);
         let tip = commit(&store, &[middle], 2);
-        for first_parent in [false, true] {
+        for parents in [Parents::All, Parents::First] {
             assert_eq!(
-                ids(ancestors(&store, tip, first_parent, Some(2)).unwrap()),
+                ids(ancestors(&store, tip, parents, Some(2)).unwrap()),
                 vec![tip, middle]
             );
             assert_eq!(
-                ids(ancestors(&store, tip, first_parent, Some(10)).unwrap()),
+                ids(ancestors(&store, tip, parents, Some(10)).unwrap()),
                 vec![tip, middle, root]
             );
         }
@@ -295,7 +312,7 @@ mod tests {
         let right = commit(&store, &[fork], 2);
         let merge = commit(&store, &[left, right], 3);
         assert_eq!(
-            ids(ancestors(&store, merge, true, None).unwrap()),
+            ids(ancestors(&store, merge, Parents::First, None).unwrap()),
             vec![merge, left, fork]
         );
     }
@@ -309,26 +326,112 @@ mod tests {
         let lost = commit(&elsewhere, &[], 0);
         let child = commit(&elsewhere, &[lost], 1);
         // Only the child is in `store`.
-        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
+        store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
         let kept = elsewhere.get_commit(&child).unwrap().unwrap();
-        assert_eq!(kept.tree(), tree);
         store.put_commit(&kept).unwrap();
 
-        for first_parent in [false, true] {
+        for parents in [Parents::All, Parents::First] {
             assert!(matches!(
-                ancestors(&store, lost, first_parent, None),
+                ancestors(&store, lost, parents, None),
                 Err(HistoryError::Missing {
                     id,
                     child: None
                 }) if id == lost
             ));
             assert!(matches!(
-                ancestors(&store, child, first_parent, None),
+                ancestors(&store, child, parents, None),
                 Err(HistoryError::Missing {
                     id,
                     child: Some(from)
                 }) if id == lost && from == child
             ));
+        }
+    }
+
+    #[test]
+    fn a_skip_edge_does_not_bring_a_parent_forward() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        // `root` is a parent of `tip` and of `a`, and has the newest date of all.
+        let root = commit(&store, &[], 100);
+        let a = commit(&store, &[root], 1);
+        let tip = commit(&store, &[a, root], 2);
+        let listed = ids(ancestors(&store, tip, Parents::All, None).unwrap());
+        assert_eq!(listed, vec![tip, a, root]);
+    }
+
+    #[test]
+    fn a_criss_cross_lists_every_commit_once_and_after_its_children() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let root = commit(&store, &[], 0);
+        let a = commit(&store, &[root], 1);
+        let b = commit(&store, &[root], 2);
+        let m1 = commit_named(&store, &[a, b], 3, "m1");
+        let m2 = commit_named(&store, &[b, a], 3, "m2");
+        let tip = commit(&store, &[m1, m2], 9);
+        let listed = ids(ancestors(&store, tip, Parents::All, None).unwrap());
+        assert_eq!(listed.len(), 6);
+        let position = |id: CommitId| listed.iter().position(|&listed| listed == id).unwrap();
+        assert_eq!(position(tip), 0);
+        assert_eq!(position(root), 5);
+        for (child, parent) in [(m1, a), (m1, b), (m2, a), (m2, b), (a, root), (b, root)] {
+            assert!(position(child) < position(parent));
+        }
+        let (high, low) = if m1 > m2 { (m1, m2) } else { (m2, m1) };
+        assert_eq!(&listed[1..3], &[high, low]);
+        assert_eq!(&listed[3..5], &[b, a]);
+    }
+
+    #[test]
+    fn the_limit_cuts_a_merge_and_every_limit_is_the_beginning_of_the_full_list() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let fork = commit(&store, &[], 0);
+        let left = commit(&store, &[fork], 1);
+        let right = commit(&store, &[fork], 2);
+        let merge = commit(&store, &[left, right], 3);
+        assert_eq!(
+            ids(ancestors(&store, merge, Parents::All, Some(2)).unwrap()),
+            vec![merge, right]
+        );
+        assert_eq!(
+            ids(ancestors(&store, merge, Parents::First, Some(2)).unwrap()),
+            vec![merge, left]
+        );
+        for parents in [Parents::All, Parents::First] {
+            let full = ids(ancestors(&store, merge, parents, None).unwrap());
+            for limit in 0..=full.len() + 1 {
+                let limited = ids(ancestors(&store, merge, parents, Some(limit)).unwrap());
+                assert_eq!(limited[..], full[..limit.min(full.len())]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_parent_of_the_wrong_kind_is_damage() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
+        // A commit that names a tree as its parent.
+        let parent = CommitId::new(tree.object_id());
+        let child = commit(&store, &[parent], 1);
+        for parents in [Parents::All, Parents::First] {
+            let error = ancestors(&store, child, parents, None).unwrap_err();
+            assert!(matches!(error, HistoryError::Read(_)), "{error}");
+            assert_eq!(error.kind(), FailureKind::Damaged, "{error}");
+        }
+    }
+
+    #[test]
+    fn a_failing_disk_is_an_error_of_the_store_and_not_damage() {
+        let dir = TempDir::new();
+        let root = commit(&dir.store(), &[], 0);
+        let store = FaultyStore::new(dir.store(), true, false);
+        for parents in [Parents::All, Parents::First] {
+            let error = ancestors(&store, root, parents, None).unwrap_err();
+            assert!(error.store_error().is_some());
+            assert_eq!(error.kind(), FailureKind::Other);
         }
     }
 }
