@@ -29,7 +29,9 @@
 //!
 //! The terms of a sum are compared one by one, so the cost of `simplify` is quadratic in the
 //! number of terms. The number of sides is the number of branches that were merged into one
-//! conflict, which is small.
+//! conflict, which is small. [`Merge::is_equivalent`] simplifies both sums and then compares the
+//! terms as multisets, which is quadratic again; it is meant for tests and checks, not for a loop
+//! over every path.
 
 use std::error::Error;
 use std::fmt;
@@ -249,13 +251,46 @@ pub enum AnyCommit {
     Commit2(Commit2),
 }
 
+/// Why [`AnyCommit::from_sum`] rejects its input: the error of the form it chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FromSumError {
+    /// The sum cancelled down to one tree and [`Commit::try_new`] rejected the commit.
+    Commit(CommitError),
+    /// The sum has sides left and [`Commit2::try_new`] rejected the commit.
+    Commit2(Commit2Error),
+}
+
+impl fmt::Display for FromSumError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Commit(source) => write!(f, "{source}"),
+            Self::Commit2(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl Error for FromSumError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        // The message includes that of the cause, so the source is the cause of the cause (see the
+        // crate documentation).
+        match self {
+            Self::Commit(source) => source.source(),
+            Self::Commit2(source) => source.source(),
+        }
+    }
+}
+
 impl AnyCommit {
     /// Creates the commit for a sum of trees. The other arguments are those of
     /// [`Commit::try_new`].
     ///
     /// # Errors
     ///
-    /// Returns [`CommitError::DuplicateParent`] if a parent is listed twice.
+    /// Returns the error of the commit that the sum simplifies to: a duplicate parent is the only
+    /// reason today. The error of the other form cannot be a wrong number of trees, since a
+    /// simplified sum of more than one term has an odd length of at least three, but the type
+    /// keeps the case and does not assume it.
     pub fn from_sum(
         trees: &Merge<TreeId>,
         parents: Vec<CommitId>,
@@ -263,11 +298,12 @@ impl AnyCommit {
         author: Actor,
         timestamp: i64,
         message: impl Into<String>,
-    ) -> Result<Self, CommitError> {
+    ) -> Result<Self, FromSumError> {
         let simplified = trees.simplify();
         match simplified.terms() {
             [tree] => Commit::try_new(*tree, parents, change, author, timestamp, message)
-                .map(Self::Commit),
+                .map(Self::Commit)
+                .map_err(FromSumError::Commit),
             _ => Commit2::try_new(
                 simplified.into_terms(),
                 parents,
@@ -277,13 +313,7 @@ impl AnyCommit {
                 message,
             )
             .map(Self::Commit2)
-            .map_err(|error| match error {
-                Commit2Error::DuplicateParent(parent) => CommitError::DuplicateParent(parent),
-                other => unreachable!(
-                    "a simplified sum of more than one term has an odd length of at least three: \
-                     {other}"
-                ),
-            }),
+            .map_err(FromSumError::Commit2),
         }
     }
 
@@ -325,7 +355,11 @@ const MIN_MARKER_LEN: usize = 7;
 ///
 /// A term is the content of the file in one version, or `None` where the file does not exist in
 /// that version. The sum is simplified first, so a pair of cancelling terms never shows, and a sum
-/// and its padded form give the same text. The text is a function of the sum and of nothing else.
+/// and its padded form give the same text. The text is a function of the list of terms and of
+/// nothing else, so it depends on their order: two sums that are
+/// [equivalent](Merge::is_equivalent) but list their sides in another order show them in that
+/// order. The snapshot compares the file with the text of the sum that the commit stores, so the
+/// order of the stored sum is the one that counts.
 /// Disk, `diff`, and the snapshot all call it, and the snapshot decides whether a file is still
 /// the conflict by comparing the bytes of the file with this text; Stemma does not parse markers.
 ///
@@ -599,9 +633,23 @@ mod tests {
                     0,
                     "m"
                 ),
-                Err(CommitError::DuplicateParent(parent))
+                Err(if numbers.len() == 1 {
+                    FromSumError::Commit(CommitError::DuplicateParent(parent))
+                } else {
+                    FromSumError::Commit2(Commit2Error::DuplicateParent(parent))
+                })
             );
         }
+    }
+
+    #[test]
+    fn the_error_of_from_sum_prints_the_message_of_its_cause() {
+        let parent = from_sum(&trees(&[9])).id();
+        let error = FromSumError::Commit2(Commit2Error::DuplicateParent(parent));
+        assert_eq!(error.to_string(), format!("duplicate parent {parent}"));
+        assert!(error.source().is_none());
+        let error = FromSumError::Commit(CommitError::DuplicateParent(parent));
+        assert_eq!(error.to_string(), format!("duplicate parent {parent}"));
     }
 
     #[test]
@@ -726,6 +774,36 @@ mod tests {
         assert!(empty.starts_with("<<<<<<< conflict\n+++++++ side 1\n------- base 1\n"));
         assert!(absent.starts_with("<<<<<<< conflict\n+++++++ side 1 (absent)\n"));
         assert_ne!(empty, absent);
+    }
+
+    #[test]
+    fn marker_text_tells_an_empty_file_from_one_empty_line() {
+        let empty = text(&[some(b""), some(b"x\n"), some(b"y\n")]);
+        let blank = text(&[some(b"\n"), some(b"x\n"), some(b"y\n")]);
+        assert!(blank.starts_with("<<<<<<< conflict\n+++++++ side 1\n\n------- base 1\n"));
+        assert_ne!(empty, blank);
+    }
+
+    #[test]
+    fn marker_text_follows_the_order_of_the_terms() {
+        // Equivalent sums with the sides in another order show them in that order.
+        let one = [some(b"a\n"), some(b"x\n"), some(b"b\n")];
+        let other = [some(b"b\n"), some(b"x\n"), some(b"a\n")];
+        assert!(Merge::try_from_terms(one.to_vec())
+            .unwrap()
+            .is_equivalent(&Merge::try_from_terms(other.to_vec()).unwrap()));
+        assert_ne!(text(&one), text(&other));
+    }
+
+    #[test]
+    fn padding_a_sum_that_cancels_in_itself_gives_the_same_result() {
+        // The first removed term equals the first side, as the pad pair does.
+        let merge = sum(&[1, 1, 2]);
+        let padded = merge.padded(4);
+        assert_eq!(padded, sum(&[1, 1, 1, 1, 1, 1, 2]));
+        assert_eq!(padded.simplify(), merge.simplify());
+        let merge = sum(&[1, 1, 1, 2, 1]);
+        assert_eq!(merge.padded(6).simplify(), merge.simplify());
     }
 
     #[test]
