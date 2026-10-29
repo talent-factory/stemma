@@ -108,6 +108,9 @@ impl Classify for RefError {
             // held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at 1).
             // `StaleWorkingCopy` is the same case for the working-copy commit.
             Self::Stale { .. } | Self::StaleWorkingCopy { .. } => FailureKind::Other,
+            // A tag that exists is a name that is taken; it never moves, so there is nothing to
+            // read again and retry.
+            Self::TagExists { .. } => FailureKind::Other,
             // A pointer that a purge moves is at neither of its journal values. A person has to
             // look at it, but the variant also stands for a plain race after a lock removed by
             // hand, so it is not called damage here; `purge --resume` says what to do.
@@ -328,6 +331,7 @@ impl Classify for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
+            | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }
     }

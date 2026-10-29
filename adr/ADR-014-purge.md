@@ -80,8 +80,10 @@ Facts that bound the design:
 - **The purge deletes the objects that its rewrite replaced, and nothing else** *(confirmed)*;
   the one addition is the cache of derived data (step 8, ADR-017). The delete set is the old
   versions of the rewritten commits, their trees that changed, and the blob. An object is deleted
-  only if no kept root reaches it any more (the branches, HEAD, the
-  working-copy commit, and the entries that remain). Everything else stays, also an object that
+  only if no kept root reaches it any more (the branches, the tags, HEAD, the
+  working-copy commit, and the entries that remain). A tag cannot move (ADR-008), so a purge
+  that would rewrite the commit of a tag is refused (`TaggedCommit`) and names the tag; the tag
+  has to be dealt with first. Everything else stays, also an object that
   only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
   does not make ADR-007's collection necessary. The plan also scans the store for trees that name
@@ -319,7 +321,10 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
       (`CommitError::DuplicateParent`), and of commits that are signed (ADR-003): a signature does
       not survive a rewrite.
 - [ ] The reachability check of the last step has to know every kind of reference that holds
-      objects, including those that come later (tags, remote references).
+      objects, including those that come later (remote references). Tags are known (STEMMA-54).
+- [ ] A purge that deals with a tag on a commit that it would rewrite, instead of refusing:
+      deleting the tag and setting it again at the new commit is a decision for the human who
+      runs the purge.
 - [ ] The removal on a hub and the rule for a repository that was synchronized (phase 5).
 - [ ] A secret blob whose file is damaged cannot be purged: the plan does not know that it is a
       blob. Deleting it needs no knowledge of its content, so a later version may allow it.

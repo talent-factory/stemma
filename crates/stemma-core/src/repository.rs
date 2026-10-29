@@ -895,6 +895,24 @@ impl RefsView<'_> {
         self.refs.branches()
     }
 
+    /// The commit of a tag, or `None` if there is no such tag. See [`RefStore::tag`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::tag`].
+    pub fn tag(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
+        self.refs.tag(name)
+    }
+
+    /// All tags with their commits, sorted by name. See [`RefStore::tags`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::tags`].
+    pub fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        self.refs.tags()
+    }
+
     /// Whether a writer holds the lock of the references, so that an operation may be between its
     /// entry in the log and the move of a pointer. A lock that a crashed writer left counts as held
     /// until the next writer of this host takes it over or a person removes it (ADR-008).

@@ -339,6 +339,8 @@ pub enum Pointer {
     WorkingCopy,
     /// A branch.
     Branch(BranchName),
+    /// A tag (ADR-008).
+    Tag(BranchName),
 }
 
 impl fmt::Display for Pointer {
@@ -347,6 +349,7 @@ impl fmt::Display for Pointer {
             Self::Head => f.write_str("HEAD"),
             Self::WorkingCopy => f.write_str("the working-copy commit"),
             Self::Branch(name) => write!(f, "the branch `{name}`"),
+            Self::Tag(name) => write!(f, "the tag `{name}`"),
         }
     }
 }

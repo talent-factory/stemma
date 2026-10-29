@@ -185,11 +185,13 @@ impl Repository {
         let head = refs.head().map_err(PurgeError::Refs)?;
         let working_copy = refs.working_copy().map_err(PurgeError::Refs)?;
         let branches = refs.branches().map_err(PurgeError::Refs)?;
+        let tags = refs.tags().map_err(PurgeError::Refs)?;
         let log = self.oplog().entries().map_err(PurgeError::Log)?;
 
         let mut planner = Planner::new(self.objects(), blob);
         let mut roots = vec![working_copy];
         roots.extend(branches.iter().map(|(_, commit)| *commit));
+        roots.extend(tags.iter().map(|(_, commit)| *commit));
         if let Head::Detached(commit) = &head {
             roots.push(*commit);
         }
@@ -199,6 +201,15 @@ impl Repository {
         }
         let rewrites = planner.rewrites.clone();
         let rewritten: HashSet<CommitId> = rewrites.iter().map(|(old, _)| *old).collect();
+        // A tag never moves (ADR-008), so a purge cannot rewrite the commit of a tag, and a tag
+        // that is left would keep the secret reachable. The purge is refused until the tag is
+        // dealt with (ADR-014).
+        if let Some((tag, commit)) = tags.iter().find(|(_, commit)| rewritten.contains(commit)) {
+            return Err(PurgeError::TaggedCommit {
+                tag: tag.clone(),
+                commit: *commit,
+            });
+        }
         let new = |commit: CommitId| planner.commits[&commit];
 
         let working_copy_move = rewritten
@@ -232,6 +243,7 @@ impl Repository {
         // replaced.
         let mut kept_roots = vec![new(working_copy)];
         kept_roots.extend(branches.iter().map(|(_, commit)| new(*commit)));
+        kept_roots.extend(tags.iter().map(|(_, commit)| new(*commit)));
         if let Head::Detached(commit) = &head {
             kept_roots.push(new(*commit));
         }
@@ -702,6 +714,14 @@ pub enum PurgeError {
         /// The number of entries that the plan would replace.
         count: usize,
     },
+    /// A tag points to a commit that the purge would rewrite. A tag never moves (ADR-008), so the
+    /// purge would leave the commit with the secret reachable.
+    TaggedCommit {
+        /// The tag.
+        tag: BranchName,
+        /// The commit it points to, which holds the blob or follows a commit that does.
+        commit: CommitId,
+    },
     /// The plan would keep an object reachable that holds the blob or that it deletes. This is a
     /// mistake of the plan and not of the repository; it is an error so that the secret does not
     /// stay without a word.
@@ -764,6 +784,11 @@ impl PurgeError {
                 "{id} is a {} object, which a purge cannot follow yet",
                 kind.name()
             ),
+            Self::TaggedCommit { tag, commit } => write!(
+                f,
+                "the tag `{tag}` points to the commit {commit}, which the purge would rewrite; a \
+                 tag never moves, so the purge cannot proceed while the tag exists"
+            ),
             Self::Unsound { id } => write!(
                 f,
                 "the plan would keep {id} reachable although it holds the blob or is deleted; \
@@ -801,6 +826,7 @@ impl Error for PurgeError {
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
             | Self::UnsupportedKind { .. }
+            | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => None,
         }
     }
@@ -1047,6 +1073,51 @@ mod tests {
             [(main, Moved::from_to(Some(third), Some(new(third))))]
         );
         assert_eq!(plan.head(), None, "HEAD names the branch");
+    }
+
+    /// Creates a tag, which the repository has no command for yet.
+    fn tag(dir: &TempDir, repository: &Repository, name: &str, commit: CommitId) {
+        use crate::allowed::Allowed;
+        use crate::refs::{FsRefStore, RefStore};
+        FsRefStore::new(dir.path().join(".stemma"))
+            .create_tag(
+                &BranchName::try_new(name).unwrap(),
+                commit,
+                repository.objects(),
+                &Allowed::granted(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_tag_on_a_commit_that_would_be_rewritten_refuses_the_purge() {
+        for index in [1, 2] {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            let commits = history(&dir, &repository);
+            tag(&dir, &repository, "v1", commits[index]);
+            let error = repository
+                .plan_purge(secret(), &actor(), &AllowAll)
+                .unwrap_err();
+            match &error {
+                PurgeError::TaggedCommit { tag, commit } => {
+                    assert_eq!(tag.as_str(), "v1");
+                    assert_eq!(*commit, commits[index]);
+                }
+                other => panic!("expected a tagged commit, got {other:?}"),
+            }
+            assert!(error.to_string().contains("a tag never moves"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_tag_on_a_commit_before_the_secret_does_not_stand_in_the_way() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        tag(&dir, &repository, "v0", first);
+        let plan = plan(&repository);
+        assert!(!plan.rewrites().iter().any(|(old, _)| *old == first));
     }
 
     #[test]
