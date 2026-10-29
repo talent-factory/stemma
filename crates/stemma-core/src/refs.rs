@@ -778,6 +778,37 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// [`RefError::Io`] if the storage fails.
     fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError>;
 
+    /// Returns the commit of a tag, or `None` if there is no tag with exactly this name. A tag
+    /// name follows the rules of a branch name (ADR-008).
+    ///
+    /// # Errors
+    ///
+    /// As [`branch`](Self::branch).
+    fn tag(&self, name: &BranchName) -> Result<Option<CommitId>, RefError>;
+
+    /// Returns all tags with their commits, sorted by name, as [`branches`](Self::branches) does
+    /// for branches.
+    ///
+    /// # Errors
+    ///
+    /// As [`branches`](Self::branches).
+    fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError>;
+
+    /// Creates a tag at `commit`, which has to be in `objects`. A tag is a plain pointer and never
+    /// moves (ADR-008): if the tag exists, at this commit or at another, the answer is
+    /// [`RefError::Stale`] with `expected` `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`update_branch`](Self::update_branch) for a branch that is created.
+    fn create_tag(
+        &self,
+        name: &BranchName,
+        commit: CommitId,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError>;
+
     /// Moves a branch to `new`, or creates it, if it is still at `expected` (`None` for a branch
     /// that does not exist). The commit has to be in `objects`.
     ///
@@ -1096,13 +1127,23 @@ impl FsRefStore {
     }
 
     fn heads_dir(&self) -> PathBuf {
-        self.root.join("refs").join("heads")
+        self.namespace_dir(Namespace::Heads)
+    }
+
+    fn namespace_dir(&self, namespace: Namespace) -> PathBuf {
+        self.root.join("refs").join(namespace.directory())
     }
 
     fn branch_path(&self, name: &BranchName) -> PathBuf {
+        self.reference_path(Namespace::Heads, name)
+    }
+
+    fn reference_path(&self, namespace: Namespace, name: &BranchName) -> PathBuf {
         name.as_str()
             .split('/')
-            .fold(self.heads_dir(), |path, component| path.join(component))
+            .fold(self.namespace_dir(namespace), |path, component| {
+                path.join(component)
+            })
     }
 
     fn working_copy_path(&self) -> PathBuf {
@@ -1518,12 +1559,13 @@ impl FsRefStore {
         placed
     }
 
-    /// Whether the directory of the branches exists. `refs` and `refs/heads` are each checked for
+    /// Whether the directory of the branches or of the tags exists. `refs` and `refs/heads` (or
+    /// `refs/tags`) are each checked for
     /// what they are, because the error for a path that goes through a file is not the same on
     /// every platform (Windows says "not found"), and a file in the place of a directory is
     /// damage and not "no branches".
-    fn heads_exist(&self) -> Result<bool, RefError> {
-        for dir in [self.root.join("refs"), self.heads_dir()] {
+    fn namespace_exists(&self, namespace: Namespace) -> Result<bool, RefError> {
+        for dir in [self.root.join("refs"), self.namespace_dir(namespace)] {
             match fs::symlink_metadata(&dir) {
                 Ok(metadata) if metadata.is_dir() => {}
                 Ok(_) => {
@@ -1545,12 +1587,12 @@ impl FsRefStore {
     /// directory shows the case that is stored, so such a name is found to be in conflict and not
     /// to be the other branch. A variant that is a directory without any file below it is a
     /// leftover, as for an exact name, and is reported as [`Lookup::EmptyDirectory`].
-    fn lookup(&self, name: &BranchName) -> Result<Lookup, RefError> {
-        if !self.heads_exist()? {
+    fn lookup(&self, namespace: Namespace, name: &BranchName) -> Result<Lookup, RefError> {
+        if !self.namespace_exists(namespace)? {
             return Ok(Lookup::Absent);
         }
         let components: Vec<&str> = name.as_str().split('/').collect();
-        let mut dir = self.heads_dir();
+        let mut dir = self.namespace_dir(namespace);
         let mut relative = String::new();
         for (index, component) in components.iter().enumerate() {
             // Every directory but the first was seen to be a directory, and the first has to be
@@ -1619,8 +1661,8 @@ impl FsRefStore {
     }
 
     /// The commit of the branch, and what stands in the way of creating it if there is none.
-    fn current(&self, name: &BranchName) -> Result<Current, RefError> {
-        match self.lookup(name)? {
+    fn current(&self, namespace: Namespace, name: &BranchName) -> Result<Current, RefError> {
+        match self.lookup(namespace, name)? {
             Lookup::Absent => Ok(Current::default()),
             Lookup::EmptyDirectory(path) => Ok(Current {
                 empty_directory: Some(path),
@@ -1651,6 +1693,23 @@ impl FsRefStore {
                 Err(RefError::NotACommit { id, found })
             }
             Err(error) => Err(from_store(error)),
+        }
+    }
+}
+
+/// A directory of references below `refs`: the branches or the tags. Both use the same names, the
+/// same files, and the same checks.
+#[derive(Clone, Copy)]
+enum Namespace {
+    Heads,
+    Tags,
+}
+
+impl Namespace {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Heads => "heads",
+            Self::Tags => "tags",
         }
     }
 }
@@ -1854,7 +1913,7 @@ impl FsRefStore {
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
         Self::require_commit(&new, objects)?;
-        let current = self.current(name)?;
+        let current = self.current(Namespace::Heads, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 name: name.clone(),
@@ -2185,7 +2244,7 @@ impl FsRefStore {
         self.require_root()?;
         Self::require_commit(&branch.new, objects)?;
         Self::require_commit(&working_copy.new, objects)?;
-        let current = self.current(branch.name)?;
+        let current = self.current(Namespace::Heads, branch.name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 name: branch.name.clone(),
@@ -2269,7 +2328,7 @@ impl FsRefStore {
         }
         let mut currents = Vec::with_capacity(targets.branches.len());
         for (name, _) in targets.branches {
-            currents.push(self.current(name)?);
+            currents.push(self.current(Namespace::Heads, name)?);
         }
         // The branches that this restore deletes: they are no obstacle for the ones it creates
         // (`a` is deleted and `a/b` created, or the other way round), because the deletions come
@@ -2415,7 +2474,7 @@ impl FsRefStore {
         }
         for (name, old, new) in &planned.branches {
             Self::require_commit(new, objects)?;
-            let current = self.current(name)?.commit;
+            let current = self.current(Namespace::Heads, name)?.commit;
             if current == Some(*old) {
                 moves.branches.push((name.clone(), Some(*old), Some(*new)));
             } else if current != Some(*new) {
@@ -2455,7 +2514,7 @@ impl FsRefStore {
                     // The deletions before this step may have left a directory without any
                     // branch where the name goes (`a/` after `a/b`, with a dot file or an empty
                     // directory in it), which a plain removal of the parents does not clear.
-                    if let Some(empty) = self.current(name)?.empty_directory {
+                    if let Some(empty) = self.current(Namespace::Heads, name)?.empty_directory {
                         fs::remove_dir_all(&empty)
                             .map_err(io_error("remove the empty directory", &empty))?;
                     }
@@ -2572,44 +2631,17 @@ impl FsRefStore {
     }
 }
 
-impl RefStore for FsRefStore {
-    fn head(&self) -> Result<Head, RefError> {
-        self.require_root()?;
-        let path = self.head_path();
-        let bytes = self
-            .read_reference(&path)?
-            .ok_or_else(|| RefError::NoHead { path: path.clone() })?;
-        Head::parse(&bytes).map_err(|source| RefError::Corrupt { path, source })
-    }
-
-    fn set_head(
+impl FsRefStore {
+    /// The references of a namespace with their commits, sorted by name.
+    fn list_namespace(
         &self,
-        head: &Head,
-        objects: &dyn ObjectStore,
-        allowed: &Allowed,
-    ) -> Result<(), RefError> {
-        self.require_root()?;
-        let _lock = self.lock_writer(allowed)?;
-        // Under the lock, as in `set_head_after`: a purge that ran before it may have removed the
-        // commit since a look without the lock.
-        if let Head::Detached(commit) = head {
-            Self::require_commit(commit, objects)?;
-        }
-        self.write_replacing(&self.head_path(), &head.encode(), &self.root)
-    }
-
-    fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
-        self.require_root()?;
-        Ok(self.current(name)?.commit)
-    }
-
-    fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
-        self.require_root()?;
-        if !self.heads_exist()? {
+        namespace: Namespace,
+    ) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        if !self.namespace_exists(namespace)? {
             return Ok(Vec::new());
         }
         let mut found = Vec::new();
-        let mut pending = vec![(self.heads_dir(), String::new())];
+        let mut pending = vec![(self.namespace_dir(namespace), String::new())];
         while let Some((dir, prefix)) = pending.pop() {
             let Some(entries) = list_directory(&dir)? else {
                 continue;
@@ -2649,6 +2681,91 @@ impl RefStore for FsRefStore {
         found.sort();
         Ok(found)
     }
+}
+
+impl RefStore for FsRefStore {
+    fn head(&self) -> Result<Head, RefError> {
+        self.require_root()?;
+        let path = self.head_path();
+        let bytes = self
+            .read_reference(&path)?
+            .ok_or_else(|| RefError::NoHead { path: path.clone() })?;
+        Head::parse(&bytes).map_err(|source| RefError::Corrupt { path, source })
+    }
+
+    fn set_head(
+        &self,
+        head: &Head,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError> {
+        self.require_root()?;
+        let _lock = self.lock_writer(allowed)?;
+        // Under the lock, as in `set_head_after`: a purge that ran before it may have removed the
+        // commit since a look without the lock.
+        if let Head::Detached(commit) = head {
+            Self::require_commit(commit, objects)?;
+        }
+        self.write_replacing(&self.head_path(), &head.encode(), &self.root)
+    }
+
+    fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
+        self.require_root()?;
+        Ok(self.current(Namespace::Heads, name)?.commit)
+    }
+
+    fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        self.require_root()?;
+        self.list_namespace(Namespace::Heads)
+    }
+
+    fn tag(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
+        self.require_root()?;
+        Ok(self.current(Namespace::Tags, name)?.commit)
+    }
+
+    fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        self.require_root()?;
+        self.list_namespace(Namespace::Tags)
+    }
+
+    fn create_tag(
+        &self,
+        name: &BranchName,
+        commit: CommitId,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError> {
+        self.require_root()?;
+        let _lock = self.lock_writer(allowed)?;
+        // Under the lock, as in `update_branch`.
+        Self::require_commit(&commit, objects)?;
+        let current = self.current(Namespace::Tags, name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                name: name.clone(),
+                with,
+                kind,
+            });
+        }
+        // A tag never moves (ADR-008): one that exists is stale for the expected "new".
+        if current.commit.is_some() {
+            return Err(RefError::Stale {
+                name: name.clone(),
+                expected: None,
+                found: current.commit,
+            });
+        }
+        if let Some(empty) = current.empty_directory {
+            // Nothing is below it, and the lock is held, so no tag is lost.
+            fs::remove_dir_all(&empty).map_err(io_error("remove the empty directory", &empty))?;
+        }
+        self.write_replacing(
+            &self.reference_path(Namespace::Tags, name),
+            &encode_branch(&commit),
+            &self.namespace_dir(Namespace::Tags),
+        )
+    }
 
     fn update_branch(
         &self,
@@ -2663,7 +2780,7 @@ impl RefStore for FsRefStore {
         // Under the lock, as in `update_branch_after`: a purge that ran before it may have removed
         // the commit since a look without the lock.
         Self::require_commit(&new, objects)?;
-        let current = self.current(name)?;
+        let current = self.current(Namespace::Heads, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 name: name.clone(),
@@ -3053,6 +3170,85 @@ mod tests {
             RefParseError::NotUtf8 { valid_up_to: 3 }.to_string(),
             "not valid UTF-8 (valid up to byte 3)"
         );
+    }
+
+    // ---- tags
+
+    #[test]
+    fn a_created_tag_is_read_back_listed_and_separate_from_the_branches() {
+        let (dir, objects, refs) = setup();
+        let v1 = name("v1.0");
+        assert_eq!(refs.tag(&v1).unwrap(), None);
+        assert!(refs.tags().unwrap().is_empty());
+        let first = commit(&objects, "first");
+        refs.create_tag(&v1, first, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+        // The file is exactly the ID and a newline, and no temporary file stays behind.
+        let file = dir.path().join("refs/tags/v1.0");
+        assert_eq!(fs::read(&file).unwrap(), format!("{first}\n").into_bytes());
+        assert_eq!(files_in(&dir.path().join("tmp")), 0);
+        assert!(!dir.path().join("refs.lock").exists());
+        // A tag is no branch, and a branch of the same name is no tag.
+        assert_eq!(refs.branch(&v1).unwrap(), None);
+        assert!(refs.branches().unwrap().is_empty());
+        let second = commit(&objects, "second");
+        refs.update_branch(&v1, None, second, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+        refs.create_tag(&name("rel/a"), second, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(
+            refs.tags().unwrap(),
+            vec![(name("rel/a"), second), (v1, first)]
+        );
+    }
+
+    #[test]
+    fn a_tag_never_moves() {
+        let (_dir, objects, refs) = setup();
+        let v1 = name("v1.0");
+        let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
+        refs.create_tag(&v1, first, &objects, &Allowed::granted())
+            .unwrap();
+        for target in [first, second] {
+            match refs
+                .create_tag(&v1, target, &objects, &Allowed::granted())
+                .unwrap_err()
+            {
+                RefError::Stale {
+                    expected: None,
+                    found: Some(found),
+                    ..
+                } => assert_eq!(found, first),
+                other => panic!("{other}"),
+            }
+        }
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+    }
+
+    #[test]
+    fn a_tag_needs_a_commit_that_the_store_has_and_a_name_that_is_free() {
+        let (dir, objects, refs) = setup();
+        let missing = CommitId::new(ID_A.parse().unwrap());
+        assert!(matches!(
+            refs.create_tag(&name("v1"), missing, &objects, &Allowed::granted()),
+            Err(RefError::MissingCommit(_))
+        ));
+        assert!(!dir.path().join("refs/tags/v1").exists());
+        let first = commit(&objects, "first");
+        refs.create_tag(&name("a"), first, &objects, &Allowed::granted())
+            .unwrap();
+        for taken in ["a/b", "A"] {
+            assert!(
+                matches!(
+                    refs.create_tag(&name(taken), first, &objects, &Allowed::granted()),
+                    Err(RefError::Conflict { .. })
+                ),
+                "{taken}"
+            );
+        }
+        assert_eq!(refs.tags().unwrap(), vec![(name("a"), first)]);
     }
 
     // ---- branches
