@@ -1126,6 +1126,9 @@ Mit \type{--first-parent} liest er nur die Kette, höchstens so viele Commits, w
 Change-ID, die Eltern (ein \type{-} für keinen), der Autor und die Zeit (UTC),
 dann die Nachricht, jede Zeile um vier Leerzeichen eingerückt, und eine Leerzeile.
 Die Marke ist \type{@} für den Working-Copy-Commit und \type{o} für jeden anderen.
+Autor und Nachricht stammen vom Commit und können das Terminal steuern; die Textform schreibt
+darum jedes Steuerzeichen als \type{\u{..}} (hexadezimal), auch ein einzelnes
+Wagenrücklaufzeichen und die Trenner U+2028 und U+2029. Andere Zeichen, etwa Umlaute, bleiben.
 
 \starttyping
 @ b3:2222...2222

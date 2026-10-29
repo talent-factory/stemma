@@ -1576,16 +1576,32 @@ fn log_text(id: CommitId, commit: &Commit, current: bool) -> String {
         if current { '@' } else { 'o' },
         commit.change(),
         if parents.is_empty() { "-" } else { &parents },
-        commit.author(),
+        mask_controls(&commit.author().to_string()),
         op_log::utc(commit.timestamp())
     );
     for line in commit.message().lines() {
         text.push_str("    ");
-        text.push_str(line);
+        text.push_str(&mask_controls(line));
         text.push('\n');
     }
     text.push('\n');
     text
+}
+
+/// The text with every control character written as `\u{..}`: the escape codes of a terminal, the
+/// delete character, the C1 controls, a bare carriage return, and the separators U+2028 and
+/// U+2029. The author and the message come from the commit, so they must not steer the terminal
+/// of the reader. Other characters, such as umlauts, stay as they are.
+fn mask_controls(text: &str) -> String {
+    let mut masked = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            masked.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            masked.push(c);
+        }
+    }
+    masked
 }
 
 /// One commit as one JSON object and a newline (`schema`, ADR-018): `commit`, `working_copy`

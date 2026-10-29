@@ -211,3 +211,24 @@ fn a_missing_parent_commit_is_damage_with_code_5_and_lists_nothing() {
         result.stderr
     );
 }
+
+#[test]
+fn the_text_masks_control_characters_of_the_message_and_keeps_other_characters() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "a");
+    track_ok(dir.path(), "a.txt");
+    let message = "red \u{1b}[31m text\rline \u{85} \u{2028} Bär";
+    ok(dir.path(), &["commit", "--actor", ACTOR, "-m", message]);
+    let result = run(dir.path(), &["log"]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(!result
+        .stdout
+        .contains(['\u{1b}', '\r', '\u{85}', '\u{2028}']));
+    assert!(
+        result
+            .stdout
+            .contains("    red \\u{1b}[31m text\\u{d}line \\u{85} \\u{2028} Bär\n"),
+        "{}",
+        result.stdout
+    );
+}
