@@ -646,8 +646,9 @@ impl Repository {
     /// # Errors
     ///
     /// Returns [`UpdateError::Denied`], [`UpdateError::Refs`] (a commit that is not in the store, an
-    /// unreadable HEAD, [`RefError::StaleHead`], [`RefError::Locked`]), [`UpdateError::Log`], [`UpdateError::MoveFailed`],
-    /// and [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch).
+    /// unreadable HEAD, [`RefError::StaleHead`], [`RefError::Locked`]), [`UpdateError::Log`],
+    /// [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
+    /// [`update_branch`](Self::update_branch).
     pub fn set_head(
         &self,
         operation: &OperationName,
@@ -4146,8 +4147,11 @@ mod tests {
                                 &AllowAll,
                             ) {
                                 Ok(entry) => return entry.expect("every value is new"),
-                                // Another writer holds the lock: try again.
-                                Err(UpdateError::Refs(RefError::Locked { .. })) => {
+                                // Another writer holds the lock, or finished a change between the
+                                // read of HEAD and the lock: read again and try again.
+                                Err(UpdateError::Refs(
+                                    RefError::Locked { .. } | RefError::StaleHead { .. },
+                                )) => {
                                     std::thread::yield_now();
                                 }
                                 Err(error) => panic!("{error}"),

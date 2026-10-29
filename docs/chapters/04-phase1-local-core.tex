@@ -932,10 +932,10 @@ ist darum jeder Wert, den ein Zeiger je hatte, alter oder neuer Wert eines Eintr
 Ein Commit, den ein Zeiger einmal nannte, bleibt im Log genannt,
 bis ein Purge den Eintrag durch einen Stub ersetzt.
 
-Für einen Branch und den Working-Copy-Commit ist die Prüfung unter der Sperre
+Für einen Branch, HEAD und den Working-Copy-Commit ist die Prüfung unter der Sperre
 ein Compare-and-Swap:
 Der Zeiger bewegt sich nur, wenn er noch den Wert hat, den der Aufrufer erwartet.
-Für HEAD und beim Restore liest der Kern den alten Wert unter der Sperre und bewegt dann.
+Beim Restore liest der Kern den alten Wert unter der Sperre und bewegt dann.
 In beiden Fällen kommt kein anderer Schreiber zwischen Lesen und Zeigerbewegung,
 denn jeder braucht die Sperre,
 und der alte Wert im Eintrag ist der Wert, den die Bewegung ersetzt.

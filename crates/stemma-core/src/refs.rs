@@ -1942,9 +1942,8 @@ impl FsRefStore {
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
     /// does not have, [`RefError::StaleHead`] if HEAD is not `expected`, and the errors of
-    /// [`RefStore::head`] for an unreadable HEAD. Once `step` has
-    /// run, nothing is an error of this call; see
-    /// [`update_branch_after`](Self::update_branch_after).
+    /// [`RefStore::head`] for an unreadable HEAD. Once `step` has run, nothing is an error of
+    /// this call; see [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn set_head_after<T, E>(
         &self,
         _lock: &WriteLock,
