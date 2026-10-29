@@ -807,12 +807,18 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`RefError::Locked`] if another change is in progress, [`RefError::Conflict`] if
-    /// the name is held by another entry (checked before `expected`, as for
-    /// [`update_branch`](Self::update_branch)), [`RefError::Stale`] if the branch is not at
+    /// Returns [`RefError::Locked`] if another change is in progress,
+    /// [`RefError::PurgePending`] if the journal of a purge exists (ADR-014),
+    /// [`RefError::Conflict`] if the name is held by another entry (checked before `expected`, as
+    /// for [`update_branch`](Self::update_branch)), [`RefError::Stale`] if the branch is not at
     /// `expected`, [`RefError::Io`] if the storage fails, and [`RefError::Corrupt`] as for
     /// [`branch`](Self::branch). Nothing is changed in any of these cases, except for
-    /// [`RefError::NotFlushed`]: the branch is gone, and the directory could not be flushed.
+    /// [`RefError::NotFlushed`]: the branch is gone, but may come back after a crash. A caller
+    /// must not repeat the delete then, because the repeat is `Stale` with `found` `None`; it
+    /// reads the branch instead.
+    ///
+    /// This changes the pointer without an entry in the operation log. A command that deletes a
+    /// branch for a person logs the move through the operation log (ADR-011) and does not call this directly.
     fn delete_branch(
         &self,
         name: &BranchName,
@@ -2731,7 +2737,17 @@ impl RefStore for FsRefStore {
                 found: current.commit,
             });
         }
-        self.delete_branch_file(name).map(drop)
+        // The file was there under the lock, so a file that is gone now was removed by a process
+        // that ignores the lock: this call did not delete the branch.
+        if self.delete_branch_file(name)? {
+            Ok(())
+        } else {
+            Err(RefError::Stale {
+                name: name.clone(),
+                expected: Some(expected),
+                found: None,
+            })
+        }
     }
 }
 
@@ -3185,7 +3201,7 @@ mod tests {
         refs.delete_branch(&main, first, &Allowed::granted())
             .unwrap();
         assert_eq!(refs.branch(&main).unwrap(), None);
-        // The directory that the deletion empties goes with it; the directory of the branches stays.
+        // The directory that the deletion empties goes with it; `refs/heads` stays.
         refs.delete_branch(&nested, second, &Allowed::granted())
             .unwrap();
         assert!(!dir.path().join("refs/heads/a").exists());
@@ -3234,6 +3250,76 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RefError::Conflict { .. }), "{error}");
         assert_eq!(refs.branch(&name("a/b")).unwrap(), Some(first));
+    }
+
+    #[test]
+    fn a_delete_is_refused_while_a_lock_or_a_pending_purge_exists() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "1");
+        let main = name("main");
+        refs.update_branch(&main, None, first, &objects, &Allowed::granted())
+            .unwrap();
+        let lock = dir.path().join("refs.lock");
+        fs::write(&lock, b"").unwrap();
+        // The lock is checked before `expected`: a wrong tip is `Locked`, not `Stale`.
+        let error = refs
+            .delete_branch(&main, commit(&objects, "2"), &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Locked { .. }), "{error}");
+        assert!(
+            lock.exists(),
+            "a lock of another process is not ours to remove"
+        );
+        fs::remove_file(&lock).unwrap();
+        let journal = dir.path().join(PURGE_JOURNAL);
+        fs::write(&journal, b"journal").unwrap();
+        let error = refs
+            .delete_branch(&main, first, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::PurgePending { .. }), "{error}");
+        assert_eq!(refs.branch(&main).unwrap(), Some(first));
+    }
+
+    #[test]
+    fn deleting_a_case_variant_of_a_branch_is_a_conflict_and_not_stale() {
+        let (_dir, objects, refs) = setup();
+        let first = commit(&objects, "1");
+        refs.update_branch(&name("Main"), None, first, &objects, &Allowed::granted())
+            .unwrap();
+        let error = refs
+            .delete_branch(&name("main"), first, &Allowed::granted())
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RefError::Conflict {
+                    kind: ConflictKind::CaseVariant,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(refs.branch(&name("Main")).unwrap(), Some(first));
+    }
+
+    #[test]
+    fn a_delete_keeps_the_directory_that_other_branches_or_files_still_use() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "1");
+        for branch in ["a/b", "a/c", "d/e"] {
+            refs.update_branch(&name(branch), None, first, &objects, &Allowed::granted())
+                .unwrap();
+        }
+        refs.delete_branch(&name("a/b"), first, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.branch(&name("a/c")).unwrap(), Some(first));
+        // A file that is no branch, such as one of a file manager, keeps its directory as well.
+        let dot = dir.path().join("refs/heads/d/.DS_Store");
+        fs::write(&dot, b"").unwrap();
+        refs.delete_branch(&name("d/e"), first, &Allowed::granted())
+            .unwrap();
+        assert!(dot.exists());
+        assert_eq!(refs.branch(&name("d/e")).unwrap(), None);
     }
 
     #[test]

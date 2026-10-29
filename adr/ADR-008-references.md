@@ -2,7 +2,7 @@
 
 **Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
-The open items move to Phase 3 (deleting a branch, a compare-and-swap for HEAD) and to Phase 5
+The open items move to Phase 3 (a compare-and-swap for HEAD) and to Phase 5
 (remote references); tags and packed references have no phase yet, and the rename on Windows
 waits for the CI run (STEMMA-33).
 
@@ -35,7 +35,7 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   bytes. Upper case is allowed, because names such as `feat/TF-792-login` are in use. Because the
   name is a file path on every platform, a name that works on one cannot fail on another.
   Loosening the rule later changes no ID.
-- **A name is checked before the commit** *(confirmed)* (`update_branch`). When another entry holds
+- **A name is checked before the commit** *(confirmed)* (`update_branch`, `delete_branch`). When another entry holds
   the name (a case variant, a branch that is a prefix, or a directory of branches), the answer is
   `Conflict` with the kind of the entry, also if the caller names an `expected` commit: there is no
   branch of this name that could be at it, and `Stale` would hide the reason. `branch(name)` says
@@ -49,7 +49,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   (`None` for a branch that does not exist) and fails with `Stale` otherwise. It checks that `new`
   is a commit that the object store has, so a branch cannot point to an object that is missing, or
   to a tree. As for `Index::write_tree` (ADR-005), no caller can forget a check. HEAD to a commit
-  is checked the same way.
+  is checked the same way. `delete_branch(name, expected)` is the same swap with a required
+  `expected`; a missing branch is `Stale` with `found` `None`.
 - **One lock for all changes** *(confirmed)*. The check, the comparison, and the write happen while
   the file `<metadata directory>/refs.lock` exists. It is created with "create new" and holds a
   token that only the process that made it knows; it is removed when the change ends, but only if it
