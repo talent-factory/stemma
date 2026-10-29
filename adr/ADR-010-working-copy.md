@@ -185,7 +185,8 @@ art, not a template (ADR-015).
   confirmation of new files make this rare, but not impossible: a tracked `config` can gain a
   key. Removing a secret from the log is an operation of its own (see the open items).
 - **Conflicts can be data in a commit.** This model allows it, because every state is a commit.
-  It does not decide it; the conflict model stays with phase 3 (STEMMA-19).
+  The conflict model of phase 3 makes it so: a conflict is a sum of trees in a `commit2`
+  (ADR-005), and the algebra is in `conflict.rs` of the core.
 - **A working copy belongs to one actor** *(confirmed)*. A snapshot is made by the actor of the
   command that takes it, and the log names that actor. A snapshot saves whatever is in the
   directory, so when two actors (a human and an agent, say) work in one directory, a change of

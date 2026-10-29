@@ -63,6 +63,17 @@ _Avoid_: Common ancestor (alone), fork point
 A history in which two merges each take in the other side, so that the two commits have several
 merge bases. (Criss-Cross-Merge)
 
+**Conflict**:
+A state that two or more changes made to the same place and that nothing has decided. It is data
+in the commit, a sum of trees, and not a mark in a file (ADR-005). (Konflikt)
+_Avoid_: Merge conflict (alone), marker conflict
+
+**Sum of trees**:
+The list of trees of a conflict as add, remove, add, and so on: take the first tree, and apply
+the change from each removed tree to the added tree after it. Equal added and removed terms
+cancel, so a conflict never nests. One tree is no conflict. (Summe von Trees)
+_Avoid_: Merge list, tree list (for the algebra)
+
 ## Working copy
 
 **Working directory**:

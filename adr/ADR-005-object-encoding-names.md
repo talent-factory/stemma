@@ -154,6 +154,20 @@ them.
   difference, and `verify` still read a `CommitId` as the kind `commit`. Until phase 3 decides
   how a `CommitId` resolves to either kind, a `commit2` cannot be a parent that verifies, nor
   the target of a branch or of the working copy (STEMMA-179).
+- **Algebra of the sum of trees** *(confirmed)*. The list of a `commit2` is a sum, read as the
+  first tree plus the change from each removed tree to the added tree after it. The module
+  `conflict` of the core holds it: `Merge` is the sum over any value, and `AnyCommit::from_sum`
+  writes the commit for a sum of trees. Equal added and removed terms cancel, by the equality of
+  the IDs and without reading a tree, so a second branch that lands on an open conflict extends
+  the sum and never nests it. A sum that cancels down to one tree is written as a `commit`, so
+  one state has one encoding and one ID. All paths of a commit share the number of sides; a
+  conflict with fewer sides is padded with pairs that cancel again (they stand in front, so the
+  padded sum simplifies to the sum it came from). The rule that two sides which made the same
+  change resolve at once is not part of the algebra: it loses information when the result is
+  merged again, and the merge decides whether to apply it. The text with markers that shows a
+  conflicted file is one function of the sum (`marker_text`), a pure function of the contents of
+  the terms; disk, `diff`, and the snapshot use it, and the snapshot compares bytes and does not
+  parse markers. No command writes a `commit2` yet.
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
   repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
   other non-canonical form. Otherwise one logical object could have several encodings and several
