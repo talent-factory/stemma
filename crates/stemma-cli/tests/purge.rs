@@ -174,7 +174,7 @@ fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
     );
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 4\n"
+        "stemma-repository 5\n"
     );
     assert!(!dir.path().join(".stemma/purge-pending").exists());
 

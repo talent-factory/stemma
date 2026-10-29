@@ -17,7 +17,7 @@ use common::{
 };
 
 fn commit(dir: &Path, message: &str) -> Run {
-    run(dir, &["commit", "-m", message, "--actor", "human alice"])
+    run(dir, &["commit", "-m", message, "--actor", "human daniel"])
 }
 
 fn main_branch() -> BranchName {
@@ -63,7 +63,7 @@ fn a_commit_names_the_working_copy_and_starts_a_new_one() {
     assert_eq!(branch.to_string(), id);
     let named = read(&repository, branch);
     assert_eq!(named.message(), "Add a");
-    assert_eq!(named.author().to_string(), "human alice");
+    assert_eq!(named.author().to_string(), "human daniel");
     let working = read(&repository, repository.refs().working_copy().unwrap());
     assert_eq!(working.parents(), [branch]);
     assert_eq!(working.tree(), named.tree());
@@ -72,7 +72,8 @@ fn a_commit_names_the_working_copy_and_starts_a_new_one() {
     let log = operations(dir.path());
     assert_eq!(log.len(), 3, "{log:?}");
     assert!(
-        log[0].contains("\"actor\":\"human alice\"") && log[0].contains("\"operation\":\"commit\""),
+        log[0].contains("\"actor\":\"human daniel\"")
+            && log[0].contains("\"operation\":\"commit\""),
         "{log:?}"
     );
     assert!(log[0].contains("\"took_effect\":true"), "{log:?}");
@@ -86,7 +87,7 @@ fn the_long_form_of_the_message_flag_works() {
 
     let result = run(
         dir.path(),
-        &["commit", "--message", "Add a", "--actor", "human alice"],
+        &["commit", "--message", "Add a", "--actor", "human daniel"],
     );
 
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -114,7 +115,7 @@ fn a_change_since_the_last_command_is_committed_after_its_own_snapshot_entry() {
     assert_eq!(log.len(), 5, "{log:?}");
     assert!(log[0].contains("\"operation\":\"commit\""), "{log:?}");
     assert!(log[1].contains("\"operation\":\"snapshot\""), "{log:?}");
-    assert!(log[1].contains("\"actor\":\"human alice\""), "{log:?}");
+    assert!(log[1].contains("\"actor\":\"human daniel\""), "{log:?}");
 }
 
 #[test]
@@ -219,11 +220,10 @@ fn a_commit_that_is_refused_after_the_snapshot_leaves_the_snapshot_entry() {
     assert_eq!(commit(dir.path(), "one").code, 0);
     // Someone points main at the working-copy commit, past the parent that it is based on.
     let metadata = dir.path().join(".stemma");
-    fs::copy(
-        metadata.join("working-copy"),
-        metadata.join("refs/heads/main"),
-    )
-    .unwrap();
+    // The first line of `working-copy` has the form of a branch file; the second names the owner.
+    let working_copy = fs::read_to_string(metadata.join("working-copy")).unwrap();
+    let id = working_copy.lines().next().unwrap();
+    fs::write(metadata.join("refs/heads/main"), format!("{id}\n")).unwrap();
     let entries = operations(dir.path()).len();
     write(dir.path(), "a.txt", "two");
 
@@ -264,7 +264,7 @@ fn a_head_that_names_a_commit_is_refused() {
 fn without_a_message_the_command_is_a_usage_error() {
     let dir = repository();
 
-    let result = run(dir.path(), &["commit", "--actor", "human alice"]);
+    let result = run(dir.path(), &["commit", "--actor", "human daniel"]);
 
     assert_eq!(result.code, 2, "{}", result.stderr);
     assert_eq!(result.stdout, "");
@@ -309,12 +309,12 @@ fn the_directory_flag_and_the_environment_variable_are_used() {
         elsewhere.path(),
         &["commit", "-C", dir.path().to_str().unwrap(), "-m", "Add a"],
         |command| {
-            command.env("STEMMA_ACTOR", "human bob");
+            command.env("STEMMA_ACTOR", ACTOR);
         },
     );
 
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(operations(dir.path())[0].contains("\"actor\":\"human bob\""));
+    assert!(operations(dir.path())[0].contains(&format!("\"actor\":\"{ACTOR}\"")));
 }
 
 #[test]
@@ -325,14 +325,14 @@ fn the_flag_goes_before_the_variable() {
 
     let result = stemma(
         dir.path(),
-        &["commit", "-m", "Add a", "--actor", "human alice"],
+        &["commit", "-m", "Add a", "--actor", "human daniel"],
         |command| {
             command.env("STEMMA_ACTOR", "human bob");
         },
     );
 
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(operations(dir.path())[0].contains("\"actor\":\"human alice\""));
+    assert!(operations(dir.path())[0].contains("\"actor\":\"human daniel\""));
 }
 
 #[test]
@@ -351,7 +351,7 @@ fn a_commit_that_stopped_between_its_moves_is_finished_by_the_next_one() {
     // The log reads the entry as not taken because the pointer is at the old value of the entry.
     fs::write(
         dir.path().join(".stemma").join("working-copy"),
-        format!("{before}\n"),
+        format!("{before}\nowner {ACTOR}\n"),
     )
     .unwrap();
     let entries = operations(dir.path()).len();
@@ -396,7 +396,7 @@ fn a_stop_is_finished_also_after_a_change_since_the_stop() {
     // A stop between the moves, written as in the test above, and then a change of a file.
     fs::write(
         dir.path().join(".stemma").join("working-copy"),
-        format!("{before}\n"),
+        format!("{before}\nowner {ACTOR}\n"),
     )
     .unwrap();
     write(dir.path(), "a.txt", "two");
@@ -436,7 +436,7 @@ fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
     let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
         .env_remove("STEMMA_ACTOR")
-        .args(["commit", "-m", "Add a", "--actor", "human alice"])
+        .args(["commit", "-m", "Add a", "--actor", "human daniel"])
         .stdout(full)
         .output()
         .unwrap();

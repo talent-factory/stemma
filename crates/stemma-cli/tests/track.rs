@@ -9,7 +9,7 @@ use common::{operations, repository, run, stemma, write, Dir, Run, ACTOR};
 use stemma_core::object::Blob;
 
 fn track(dir: &Path, paths: &[&str]) -> Run {
-    let mut args = vec!["track", "--actor", "human alice"];
+    let mut args = vec!["track", "--actor", "human daniel"];
     args.extend_from_slice(paths);
     run(dir, &args)
 }
@@ -26,7 +26,7 @@ fn a_file_is_tracked_and_the_command_lists_it() {
     let log = operations(dir.path());
     assert_eq!(log.len(), 2, "{log:?}");
     assert!(
-        log[0].contains("\"actor\":\"human alice\"") && log[0].contains("\"operation\":\"track\""),
+        log[0].contains("\"actor\":\"human daniel\"") && log[0].contains("\"operation\":\"track\""),
         "{log:?}"
     );
 }
@@ -69,7 +69,7 @@ fn the_repository_can_be_named_and_the_paths_are_relative_to_it() {
             "-C",
             dir.path().to_str().unwrap(),
             "--actor",
-            "human alice",
+            "human daniel",
             "a.txt",
         ],
     );
@@ -139,7 +139,7 @@ fn a_relative_repository_is_the_base_of_the_paths() {
     fs::create_dir(outer.path().join("elsewhere")).unwrap();
     let result = run(
         &outer.path().join("elsewhere"),
-        &["track", "-C", "../proj", "--actor", "human alice", "."],
+        &["track", "-C", "../proj", "--actor", "human daniel", "."],
     );
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(result.stdout, "tracked a.txt\n");
@@ -397,7 +397,7 @@ fn a_path_that_is_wrong_fails_with_code_1_and_changes_nothing() {
 #[test]
 fn no_path_is_a_usage_error() {
     let dir = repository();
-    let result = run(dir.path(), &["track", "--actor", "human alice"]);
+    let result = run(dir.path(), &["track", "--actor", "human daniel"]);
     assert_eq!(result.code, 2, "{}", result.stderr);
     assert_eq!(result.stdout, "");
 }
@@ -437,19 +437,20 @@ fn the_actor_is_needed_and_comes_from_the_flag_or_the_variable() {
     assert!(result.stderr.contains("no actor"), "{}", result.stderr);
     assert_eq!(operations(dir.path()).len(), 1);
     let result = stemma(dir.path(), &["track", "a.txt"], |command| {
-        command.env("STEMMA_ACTOR", "human bob");
+        command.env("STEMMA_ACTOR", ACTOR);
     });
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(operations(dir.path())[0].contains("human bob"));
+    assert!(operations(dir.path())[0].contains(ACTOR));
+    // The variable names an actor that does not own the working copy, so only the flag succeeds.
     let result = stemma(
         dir.path(),
-        &["track", "--actor", "human alice", "b.txt"],
+        &["track", "--actor", ACTOR, "b.txt"],
         |command| {
             command.env("STEMMA_ACTOR", "human bob");
         },
     );
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(operations(dir.path())[0].contains("human alice"));
+    assert!(operations(dir.path())[0].contains(ACTOR));
 }
 
 #[test]
@@ -565,7 +566,7 @@ fn an_invalid_exclusion_file_does_not_stop_a_commit() {
 
     let result = run(
         dir.path(),
-        &["commit", "-m", "Change a", "--actor", "human alice"],
+        &["commit", "-m", "Change a", "--actor", "human daniel"],
     );
 
     assert_eq!(result.code, 0, "{}", result.stderr);

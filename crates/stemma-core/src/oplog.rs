@@ -30,12 +30,12 @@
 //! ```
 //!
 //! The `…` stands for digits that are left out here; a real ID has all 64. The first five lines come
-//! in this order, each once. Then come the lines of the pointers that
-//! changed, at least one: `head`, then `working-copy`, then one `branch <name>` for each branch,
-//! sorted by name in UTF-8 byte order and each name once. Each has the old and the new value, which
-//! differ. `-` means that the pointer did not exist, or does not exist any more. A branch and the
-//! working-copy commit have a commit ID or `-`; HEAD has `branch:<name>`, `commit:<id>`, or `-`.
-//! The file ends with a newline and has nothing after the last pointer.
+//! in this order, each once. Then come the lines of the pointers that changed, at least one (but
+//! see the change of the owner below): `head`, then `working-copy`, then one `branch <name>` for
+//! each branch, sorted by name in UTF-8 byte order and each name once. Each has the old and the
+//! new value, which differ. `-` means that the pointer did not exist, or does not exist any more.
+//! A branch and the working-copy commit have a commit ID or `-`; HEAD has `branch:<name>`,
+//! `commit:<id>`, or `-`. The file ends with a newline and has nothing after the last pointer.
 //!
 //! # Stubs and purges (version 2)
 //!
@@ -94,6 +94,13 @@
 //! The chain shows that the entries agree with one another, not who wrote them: whoever can write
 //! `.stemma` can compute every later hash and the tip again. Only an anchor kept outside the
 //! repository, a hash that `stemma op verify` printed, shows that (ADR-011).
+//!
+//! # The change of the owner
+//!
+//! The entry of the operation `take-over` makes its actor the owner of the working copy
+//! (ADR-010). The owner is not a pointer, so the entry has no line after the operation; it is
+//! the only change that may have none, and it may have no other. Only a repository of format 5
+//! has it, so a program that cannot read it refuses the repository before it reads the log.
 //!
 //! # Numbers and writers
 //!
@@ -175,6 +182,11 @@ const BODY_HEADER: &str = "stemma-oplog-body 1";
 /// The name of the operation of a purge. A change cannot have it: a purge entry names no pointer
 /// (ADR-014).
 pub const PURGE: &str = "purge";
+
+/// The name of the operation that makes the actor of the entry the owner of the working copy
+/// (ADR-010). Its entry names no pointer, as the owner is not one, and only its entry may name
+/// none.
+pub const TAKE_OVER: &str = "take-over";
 
 /// The start of the first line of every version of the encoding.
 const HEADER_PREFIX: &str = "stemma-oplog ";
@@ -343,8 +355,12 @@ impl fmt::Display for Pointer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EntryError {
-    /// The operation changes no pointer. Only a change writes an entry (ADR-011).
+    /// The operation changes no pointer. Only a change writes an entry (ADR-011); the operation
+    /// `take-over` is the one that changes the owner instead (ADR-010).
     NoChange,
+    /// A change with the operation `take-over` names a pointer. It changes the owner of the
+    /// working copy, and its entry names no pointer.
+    TakeOverWithPointer,
     /// The old and the new value of a pointer are equal, so it did not change.
     Unchanged(Pointer),
     /// A branch is listed twice.
@@ -381,6 +397,10 @@ impl fmt::Display for EntryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoChange => f.write_str("the operation changes no pointer"),
+            Self::TakeOverWithPointer => write!(
+                f,
+                "a change with the operation `{TAKE_OVER}` changes the owner and names no pointer"
+            ),
             Self::Unchanged(pointer) => write!(f, "{pointer} has the same old and new value"),
             Self::DuplicateBranch(name) => write!(f, "the branch `{name}` is listed twice"),
             Self::NumberOutOfRange(number) => {
@@ -446,7 +466,9 @@ impl Change {
     /// # Errors
     ///
     /// Returns [`EntryError::ReservedOperation`] for the operation `purge`, which has an entry of
-    /// its own kind, [`EntryError::NoChange`] if no pointer is given, [`EntryError::Unchanged`]
+    /// its own kind, [`EntryError::NoChange`] if no pointer is given, unless the operation is
+    /// `take-over`, [`EntryError::TakeOverWithPointer`] if it is and a pointer is given,
+    /// [`EntryError::Unchanged`]
     /// for a pointer whose old and new value are equal, and [`EntryError::DuplicateBranch`] for a
     /// branch that is listed twice.
     pub fn try_new(
@@ -460,8 +482,11 @@ impl Change {
         if operation.as_str() == PURGE {
             return Err(EntryError::ReservedOperation);
         }
-        if head.is_none() && working_copy.is_none() && branches.is_empty() {
-            return Err(EntryError::NoChange);
+        let no_pointer = head.is_none() && working_copy.is_none() && branches.is_empty();
+        match (operation.as_str() == TAKE_OVER, no_pointer) {
+            (false, true) => return Err(EntryError::NoChange),
+            (true, false) => return Err(EntryError::TakeOverWithPointer),
+            _ => {}
         }
         if head.as_ref().is_some_and(|m| m.old == m.new) {
             return Err(EntryError::Unchanged(Pointer::Head));
@@ -1191,7 +1216,11 @@ impl Entry {
                 _ => return Err(malformed(number, EntryMalformed::UnknownPointer)),
             }
         }
-        if head.is_none() && working_copy.is_none() && branches.is_empty() {
+        if head.is_none()
+            && working_copy.is_none()
+            && branches.is_empty()
+            && operation.as_str() != TAKE_OVER
+        {
             return Err(malformed(lines.len() + 1, EntryMalformed::ExpectedPointer));
         }
         // The rules of a change live in one place. The lines have been checked one by one above, to
@@ -2955,6 +2984,9 @@ pub struct Current {
     head: Head,
     working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
+    /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
+    /// `Some(None)` for a working copy without an owner.
+    owner: Option<Option<Actor>>,
     settled: bool,
 }
 
@@ -2983,6 +3015,7 @@ impl Current {
             head,
             working_copy: WorkingCopy::Unknown,
             branches: branches.into_iter().collect(),
+            owner: None,
             settled,
         }
     }
@@ -2992,6 +3025,14 @@ impl Current {
     #[must_use]
     pub fn with_working_copy(mut self, working_copy: Option<CommitId>) -> Self {
         self.working_copy = working_copy.map_or(WorkingCopy::Absent, WorkingCopy::At);
+        self
+    }
+
+    /// Adds the owner of the working copy, `None` for a working copy without one (ADR-010).
+    /// Without it, the newest entry of `take-over` stays unknown.
+    #[must_use]
+    pub fn with_owner(mut self, owner: Option<Actor>) -> Self {
+        self.owner = Some(owner);
         self
     }
 }
@@ -3056,6 +3097,12 @@ fn judge<T: PartialEq>(
 /// not be read. An entry took effect
 /// if all its pointers did, it did not if one did not, and otherwise it is unknown.
 ///
+/// The entry of `take-over` names no pointer; it is judged by the owner of the working copy
+/// (ADR-010). The newest one took effect if its actor owns the working copy now, and it did not
+/// if another actor does and `current` is settled; a `current` without the owner
+/// ([`Current::with_owner`]) leaves it unknown. An older one is unknown: only another take-over
+/// changes an owner, so the owner now says nothing about it.
+///
 /// `entries` must ascend and end with the newest entry of the log, because an entry that is the
 /// last of its pointer is compared with `current`; `current` must be read after the entries and
 /// must hold every branch that they name. A writer that completes an entry and its move between
@@ -3090,6 +3137,8 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     // it is evidence for an entry before it: such an entry is unknown (ADR-014). A purge entry
     // moves nothing and is no barrier.
     let mut behind_stub = false;
+    // A take-over after this entry: the owner now is the work of that one.
+    let mut newer_take_over = false;
     for (index, entry) in entries.iter().enumerate().rev() {
         let change = match entry.record() {
             Record::Change(change) if !behind_stub => change,
@@ -3099,6 +3148,19 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
                 continue;
             }
         };
+        if change.operation().as_str() == TAKE_OVER {
+            result[index] = if newer_take_over {
+                Outcome::Unknown
+            } else {
+                match current.and_then(|current| current.owner.as_ref()) {
+                    Some(Some(owner)) if owner == change.actor() => Outcome::Took,
+                    Some(_) if settled => Outcome::NotTaken,
+                    _ => Outcome::Unknown,
+                }
+            };
+            newer_take_over = true;
+            continue;
+        }
         let mut judged = Vec::new();
         if let Some(moved) = change.head() {
             let now = current.map_or(Now::Unknown, |current| Now::Is(&current.head));
@@ -5749,6 +5811,42 @@ mod tests {
         // An entry written before the chain has no hash.
         assert_eq!(sample_entry().hash(), None);
         assert_eq!(sample_entry().chain(), Chain::Unchained);
+    }
+
+    #[test]
+    fn a_take_over_names_no_pointer_and_only_it_may() {
+        let take_over = |working_copy| {
+            Change::try_new(
+                TIME,
+                human(),
+                operation(TAKE_OVER),
+                None,
+                working_copy,
+                vec![],
+            )
+        };
+        let change = take_over(None).unwrap();
+        assert_eq!(
+            take_over(Some(moved(Some(A), Some(B)))),
+            Err(EntryError::TakeOverWithPointer)
+        );
+
+        let entry = Entry::linked(1, Chain::Start, Record::Change(change)).unwrap();
+        let text = format!(
+            "stemma-oplog 3\nnumber 1\ntime {TIME}\nactor human daniel\nprevious -\n\
+             operation take-over\n"
+        );
+        assert_eq!(String::from_utf8(entry.encode()).unwrap(), text);
+        assert_eq!(Entry::parse(text.as_bytes()).unwrap(), entry);
+
+        // Any other operation needs a pointer, in the reader as in the constructor.
+        let other = text.replace("operation take-over", "operation snapshot");
+        assert!(Entry::parse(other.as_bytes()).is_err());
+        let with_pointer = format!("{text}working-copy {A} {B}\n");
+        assert_eq!(
+            Entry::parse(with_pointer.as_bytes()),
+            Err(EntryParseError::Entry(EntryError::TakeOverWithPointer))
+        );
     }
 
     #[test]

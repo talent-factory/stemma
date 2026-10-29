@@ -248,6 +248,11 @@ struct OpRestoreArgs {
     /// environment sets STEMMA_ACTOR. The snapshot and the restore are made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
+
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long, conflicts_with = "dry_run")]
+    take_over: bool,
 }
 
 #[derive(Debug, Args)]
@@ -293,6 +298,11 @@ struct TrackArgs {
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
+
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
 }
 
 #[derive(Debug, Args)]
@@ -316,6 +326,11 @@ struct CommitArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
 
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
+
     /// Write one JSON object instead of text (the schema of ADR-018)
     #[arg(long)]
     json: bool,
@@ -338,6 +353,11 @@ struct StatusArgs {
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
 
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
+
     /// Write one JSON object instead of text (the schema of ADR-018)
     #[arg(long)]
     json: bool,
@@ -359,6 +379,11 @@ struct DiffArgs {
     /// environment sets STEMMA_ACTOR. The snapshot of the working copy is made by this actor
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
+
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
 
     /// Exit with 4 when a file differs, and with 0 otherwise. Git uses 1 here; stemma keeps 1 for
     /// failures
@@ -600,6 +625,19 @@ fn by_kind(kind: FailureKind) -> ExitCode {
 }
 
 impl CliError {
+    /// The snapshot error that the error of a command carries, if it carries one.
+    fn snapshot(&self) -> Option<&SnapshotError> {
+        match self {
+            Self::Track(TrackError::Snapshot(error))
+            | Self::Commit(CommitError::Snapshot(error))
+            | Self::Status(StatusError::Snapshot(error))
+            | Self::Diff(DiffError::Snapshot(error))
+            | Self::Restore(RestoreError::Snapshot(error))
+            | Self::ApplyPurge(ApplyPurgeError::Snapshot(error)) => Some(error),
+            _ => None,
+        }
+    }
+
     /// The exit code of the error (see the module documentation).
     fn exit_code(&self) -> ExitCode {
         // The order of the arms matters: the arms for code 3 come first, so that a result that is
@@ -620,6 +658,16 @@ impl CliError {
             | Self::RestoreOutput {
                 snapshot: Some(_), ..
             } => ExitCode::from(3),
+            // The take-over is made, but not flushed; the command stopped there.
+            error
+                if matches!(
+                    error.snapshot(),
+                    Some(SnapshotError::TakeOver(update))
+                        if matches!(**update, UpdateError::NotDurable { .. })
+                ) =>
+            {
+                ExitCode::from(3)
+            }
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
@@ -940,6 +988,35 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     }
 }
 
+/// The repository of a command that takes a snapshot, which takes the working copy over if
+/// `--take-over` asks for it (ADR-010). The core makes the take-over after the checks of the
+/// command and after the files are read, just before the snapshot moves the working-copy commit.
+fn taking_over(repository: Repository, wanted: bool) -> Repository {
+    if wanted {
+        repository.taking_over()
+    } else {
+        repository
+    }
+}
+
+/// Names the entry of a take-over on standard error when the command ends, also when it fails
+/// after the take-over, so that the output of the command stays as it is. An actor that owns the
+/// working copy already writes no entry and gets no note.
+struct TakeOverNote<'a>(&'a Repository);
+
+impl Drop for TakeOverNote<'_> {
+    fn drop(&mut self) {
+        if let Some(entry) = self.0.taken_over() {
+            // A note that cannot be written is dropped on purpose, as in `main`.
+            let _ = writeln!(
+                io::stderr(),
+                "stemma: took the working copy over as entry {}",
+                entry.number()
+            );
+        }
+    }
+}
+
 /// Purges a blob (ADR-014), or shows what that would do. The core refuses an agent before it
 /// reads the history. Without `--apply` the command writes nothing, not even a snapshot, and a
 /// closed pipe is not a failure. With `--apply` the purge is made: it takes a snapshot, rewrites
@@ -1126,6 +1203,8 @@ fn ranges(numbers: &[u64]) -> String {
 fn restore(args: OpRestoreArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
     if args.dry_run {
         let plan = repository
             .plan_restore(args.number, args.force, &actor, &AllowAll)
@@ -1319,10 +1398,10 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let head = refs.head()?;
         // A missing file is not a pointer that does not exist: `init` records one, so the log
         // cannot say what the file held and the outcome of the working-copy entries stays unknown.
-        let working_copy = match refs.working_copy() {
-            Ok(commit) => Some(commit),
-            Err(RefError::NoWorkingCopy { .. }) => None,
-            Err(error) => return Err(error),
+        let (working_copy, owner) = match (refs.working_copy(), refs.working_copy_owner()) {
+            (Ok(commit), Ok(owner)) => (Some(commit), owner),
+            (Err(RefError::NoWorkingCopy { .. }), _) => (None, None),
+            (Err(error), _) | (_, Err(error)) => return Err(error),
         };
         let mut branches = Vec::new();
         for name in &names {
@@ -1331,14 +1410,20 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
             }
         }
         let locked_after = refs.is_locked()?;
-        Ok((head, working_copy, branches, locked_before || locked_after))
+        Ok((
+            head,
+            working_copy,
+            owner,
+            branches,
+            locked_before || locked_after,
+        ))
     };
     let current = match read() {
-        Ok((head, working_copy, branches, locked)) => {
+        Ok((head, working_copy, owner, branches, locked)) => {
             let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
             let current = oplog::Current::new(head, branches, !locked && unchanged);
             Some(match working_copy {
-                Some(commit) => current.with_working_copy(Some(commit)),
+                Some(commit) => current.with_working_copy(Some(commit)).with_owner(owner),
                 None => {
                     // A warning that cannot be written is dropped on purpose, as in `main`.
                     let _ = writeln!(
@@ -1490,6 +1575,8 @@ fn track(args: TrackArgs, out: &mut dyn Write) -> Result<(), CliError> {
         subdirectory,
         ..
     } = discover(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
     let paths: Vec<String> = args
         .paths
         .iter()
@@ -1568,6 +1655,8 @@ fn pointer_moved(error: &CommitError) -> bool {
 fn commit(args: CommitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
     let result = repository
         .commit(&args.message, &actor, &AllowAll)
         .map_err(CliError::Commit)?;
@@ -1628,6 +1717,8 @@ fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Resul
 fn status(args: StatusArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
     let result = repository
         .status(&actor, &AllowAll)
         .map_err(CliError::Status)?;
@@ -1669,6 +1760,8 @@ fn diff(args: DiffArgs, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         subdirectory,
         ..
     } = discover(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
     let paths: Vec<String> = paths
         .iter()
         .map(|path| normalize_path_in(&subdirectory, path))
@@ -2573,6 +2666,7 @@ mod tests {
             force: false,
             dry_run,
             actor: Some("human daniel".into()),
+            take_over: false,
         };
         (args, commit)
     }

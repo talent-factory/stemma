@@ -592,10 +592,6 @@ mod tests {
         Actor::human("daniel").unwrap()
     }
 
-    fn other_actor() -> Actor {
-        Actor::human("alice").unwrap()
-    }
-
     fn repository(dir: &TempDir) -> Repository {
         Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap()
     }
@@ -608,7 +604,7 @@ mod tests {
 
     fn track(repository: &Repository, paths: &[&str]) -> Result<Tracking, TrackError> {
         let paths: Vec<String> = paths.iter().map(|path| (*path).to_owned()).collect();
-        repository.track(&paths, &other_actor(), &AllowAll)
+        repository.track(&paths, &actor(), &AllowAll)
     }
 
     fn current(repository: &Repository) -> Commit {
@@ -642,7 +638,7 @@ mod tests {
         assert_eq!(after.parents(), before.parents());
         assert_eq!(after.change(), before.change());
         assert_eq!(after.message(), before.message());
-        assert_eq!(after.author(), &other_actor());
+        assert_eq!(after.author(), &actor());
         let entry = tracking.entry.unwrap();
         assert_eq!(entry.change().unwrap().operation().as_str(), "track");
         let moved = entry.change().unwrap().working_copy().unwrap();
@@ -964,10 +960,7 @@ mod tests {
         write(&dir, "a.txt", "one");
         track(&repository, &["a.txt"]).unwrap();
         write(&dir, "a.txt", "changed");
-        assert!(repository
-            .snapshot(&other_actor(), &AllowAll)
-            .unwrap()
-            .is_some());
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_some());
     }
 
     #[cfg(unix)]
@@ -1002,15 +995,9 @@ mod tests {
         let repository = repository(&dir);
         write(&dir, "a.txt", "one");
         track(&repository, &["a.txt"]).unwrap();
-        assert!(repository
-            .snapshot(&other_actor(), &AllowAll)
-            .unwrap()
-            .is_none());
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
         write(&dir, "a.txt", "changed");
-        let entry = repository
-            .snapshot(&other_actor(), &AllowAll)
-            .unwrap()
-            .unwrap();
+        let entry = repository.snapshot(&actor(), &AllowAll).unwrap().unwrap();
         assert_eq!(entry.change().unwrap().operation().as_str(), "snapshot");
     }
 
@@ -1026,10 +1013,7 @@ mod tests {
         assert_eq!(tracking.added, ["d/b.txt"]);
         assert_eq!(paths(&repository), ["d/a.txt", "d/b.txt"]);
         // The change to the tracked file was saved by the same call.
-        assert!(repository
-            .snapshot(&other_actor(), &AllowAll)
-            .unwrap()
-            .is_none());
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
     }
 
     #[test]

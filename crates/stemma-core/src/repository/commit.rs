@@ -553,10 +553,6 @@ mod tests {
         Actor::human("daniel").unwrap()
     }
 
-    fn other_actor() -> Actor {
-        Actor::human("alice").unwrap()
-    }
-
     fn repository(dir: &TempDir) -> Repository {
         Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap()
     }
@@ -572,7 +568,7 @@ mod tests {
     }
 
     fn commit(repository: &Repository, message: &str) -> Result<Committed, CommitError> {
-        repository.commit(message, &other_actor(), &AllowAll)
+        repository.commit(message, &actor(), &AllowAll)
     }
 
     fn read(repository: &Repository, id: CommitId) -> Commit {
@@ -608,7 +604,7 @@ mod tests {
             change,
             "the named commit keeps the change ID"
         );
-        assert_eq!(named.author(), &other_actor());
+        assert_eq!(named.author(), &actor());
         assert!(named.parents().is_empty());
         let next = read(&repository, done.working_copy);
         assert_eq!(next.parents(), [done.commit]);
@@ -690,7 +686,7 @@ mod tests {
         assert_eq!(last, &done.entry);
         let change = last.change().unwrap();
         assert_eq!(change.operation().as_str(), "commit");
-        assert_eq!(change.actor(), &other_actor());
+        assert_eq!(change.actor(), &actor());
         assert_eq!(
             change.working_copy().unwrap().after(),
             Some(&done.working_copy)
@@ -826,9 +822,7 @@ mod tests {
         let entries = repository.oplog().entries().unwrap().len();
 
         fs::write(dir.path().join(".stemma/refs.lock"), "other").unwrap();
-        let error = repository
-            .commit("Add a", &other_actor(), &DenyAll)
-            .unwrap_err();
+        let error = repository.commit("Add a", &actor(), &DenyAll).unwrap_err();
 
         assert!(
             matches!(&error, CommitError::Update(UpdateError::Denied { operation, target })
@@ -1389,7 +1383,7 @@ mod tests {
                 .map(|n| {
                     let repository = repository.clone();
                     scope.spawn(move || {
-                        repository.commit(&format!("commit {n}"), &other_actor(), &AllowAll)
+                        repository.commit(&format!("commit {n}"), &actor(), &AllowAll)
                     })
                 })
                 .collect();
@@ -1475,9 +1469,7 @@ mod tests {
         track(&repository, "a.txt");
         let recording = Recording(Mutex::new(Vec::new()));
 
-        let _ = repository
-            .commit("Add a", &other_actor(), &recording)
-            .unwrap();
+        let _ = repository.commit("Add a", &actor(), &recording).unwrap();
 
         let asked = recording.0.into_inner().unwrap();
         assert_eq!(
@@ -1512,7 +1504,7 @@ mod tests {
         track(&repository, "a.txt");
 
         let error = repository
-            .commit("Add a", &other_actor(), &OnlyCommit)
+            .commit("Add a", &actor(), &OnlyCommit)
             .unwrap_err();
 
         assert!(

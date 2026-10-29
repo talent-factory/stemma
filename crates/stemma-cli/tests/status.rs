@@ -18,7 +18,7 @@ fn commit(dir: &Path, message: &str) {
 }
 
 fn status(dir: &Path) -> Run {
-    run(dir, &["status", "--actor", "human alice"])
+    run(dir, &["status", "--actor", "human daniel"])
 }
 
 /// Whether a user is bound by permissions: root is not, and a test that needs a failure of the
@@ -244,7 +244,7 @@ fn a_change_is_saved_by_the_actor_of_the_call_and_only_once() {
     assert_eq!(log.len(), entries + 1, "{log:?}");
     assert!(
         log[0].contains("\"operation\":\"snapshot\"")
-            && log[0].contains("\"actor\":\"human alice\""),
+            && log[0].contains("\"actor\":\"human daniel\""),
         "{log:?}"
     );
 }
@@ -261,13 +261,13 @@ fn the_directory_flag_and_the_actor_variable_are_used() {
         elsewhere.path(),
         &["status", "-C", dir.path().to_str().unwrap()],
         |command| {
-            command.env("STEMMA_ACTOR", "human bob");
+            command.env("STEMMA_ACTOR", ACTOR);
         },
     );
 
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(result.stdout, "Working copy changes:\nA a.txt\n");
-    assert!(operations(dir.path())[0].contains("\"actor\":\"human bob\""));
+    assert!(operations(dir.path())[0].contains(&format!("\"actor\":\"{ACTOR}\"")));
     assert!(
         !elsewhere.path().join(".stemma").exists(),
         "the command worked in the directory that it was given"
@@ -281,16 +281,13 @@ fn the_actor_flag_goes_before_the_variable() {
     track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
 
-    let result = stemma(
-        dir.path(),
-        &["status", "--actor", "human carol"],
-        |command| {
-            command.env("STEMMA_ACTOR", "human bob");
-        },
-    );
+    let result = stemma(dir.path(), &["status", "--actor", ACTOR], |command| {
+        command.env("STEMMA_ACTOR", "human bob");
+    });
 
+    // The variable names an actor that does not own the working copy, so only the flag succeeds.
     assert_eq!(result.code, 0, "{}", result.stderr);
-    assert!(operations(dir.path())[0].contains("\"actor\":\"human carol\""));
+    assert!(operations(dir.path())[0].contains(&format!("\"actor\":\"{ACTOR}\"")));
 }
 
 #[test]
@@ -336,7 +333,7 @@ fn an_argument_that_status_does_not_take_is_a_usage_error_and_saves_nothing() {
     write(dir.path(), "a.txt", "two");
     let entries = operations(dir.path()).len();
 
-    let result = run(dir.path(), &["status", "--actor", "human alice", "a.txt"]);
+    let result = run(dir.path(), &["status", "--actor", "human daniel", "a.txt"]);
 
     assert_eq!(result.code, 2, "{}", result.stderr);
     assert_eq!(result.stdout, "");
@@ -437,7 +434,7 @@ fn damage_with_json_writes_no_json() {
     write(dir.path(), "a.txt", "one");
     fs::write(dir.path().join(".stemma/working-copy"), "damaged\n").unwrap();
 
-    let result = run(dir.path(), &["status", "--actor", "human alice", "--json"]);
+    let result = run(dir.path(), &["status", "--actor", "human daniel", "--json"]);
 
     assert_eq!(result.code, 5, "{}", result.stdout);
     assert_eq!(result.stdout, "");
@@ -454,8 +451,8 @@ fn a_held_lock_is_code_6_and_writes_nothing() {
     let entries = operations(dir.path()).len();
 
     for args in [
-        &["status", "--actor", "human alice"][..],
-        &["status", "--actor", "human alice", "--json"][..],
+        &["status", "--actor", "human daniel"][..],
+        &["status", "--actor", "human daniel", "--json"][..],
     ] {
         let result = run(dir.path(), args);
 
@@ -582,7 +579,7 @@ fn a_status_that_cannot_be_written_ends_with_code_1() {
     let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
         .env_remove("STEMMA_ACTOR")
-        .args(["status", "--actor", "human alice"])
+        .args(["status", "--actor", "human daniel"])
         .stdout(full)
         .output()
         .unwrap();

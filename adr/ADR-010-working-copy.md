@@ -191,11 +191,35 @@ art, not a template (ADR-015).
   directory, so when two actors (a human and an agent, say) work in one directory, a change of
   one can be saved by a command of the other, and the log then names the actor who saved it,
   not the one who made the change. The rule is therefore: **every actor works in a working copy
-  of its own**. Two actors in one directory are not a supported mode. The core does not enforce
-  the rule yet: nothing records an owner in the file `working-copy`, and a command of another
-  actor is not refused. Enforcement comes with the second working copy (a worktree, phase 3, see
-  the open items), which needs a mechanism for owning a directory anyway. Until then the rule is
-  a convention that the people and the agents who use a repository keep.
+  of its own**. Two actors in one directory are not a supported mode.
+- **The owner of a working copy** *(confirmed; STEMMA-156, STEMMA-162)*. Format 5 (ADR-009)
+  records the owner in the file `working-copy`: a second line `owner <actor>` after the line of
+  the commit, with the actor as the exact string of ADR-002. `init` writes the owner, the actor
+  of `init`. A repository of format 4 has no owner; it rises to 5 with its next log entry, and
+  the actor of that entry becomes the owner once the entry is written, so the entry names it.
+  The owner is recorded after the entry and never before it, so an entry that fails leaves no
+  owner behind that no entry names; if recording the owner fails, the entry stands and the
+  next entry records it. A purge raises the format as well, but its entries are no changes and
+  record no owner; until a change does, any actor may save, as in format 4.
+  A command of another actor that would take a snapshot is refused before it reads a file
+  (`status` checks before it reads the exclusion file, and the snapshot again under the lock).
+  The message names the owner and, for a human, the option `--take-over`; an agent is told to
+  ask a human. The option is on the commands that take a snapshot (`track`, `commit`,
+  `status`, `diff`, `op restore`); `purge --apply` has none, and a person who has to take over
+  runs `status --take-over` first. The take-over is part of the snapshot of the command
+  (`Repository::taking_over`): it is decided before a file is read (an agent is refused, and
+  the authorizer is asked for the operation `take-over`) and made after the files are read and
+  the tree is written, just before the move. A command whose own checks fail first, such as a
+  path that does not exist or an empty message, takes nothing over; one that fails only after
+  its snapshot, such as a commit with nothing to commit, keeps the take-over, as it keeps its
+  snapshot. The change of the owner has an entry of its own: the operation `take-over`, with no
+  pointer, as the owner is not one (ADR-011). The entry is written first, and then the file
+  names the new owner, in the order of every pointer. An owner who takes over writes nothing.
+  Taking over is level 3 (ADR-004): it decides whose changes a snapshot may save, so only a
+  human may do it, as only a human may purge. The refusal is an error of the class that the
+  other refusals of a repository state have (exit code 1), so it needs no exit code of its
+  own. Every move of the working-copy commit keeps the owner, `op restore` included: the owner
+  is not a pointer, and a restore does not give the directory back to an earlier actor.
 - **The lease of ADR-004 and the rule are independent.** ADR-004 proposes a lease on a branch,
   which a server would enforce: it governs who may move the branch. It does not govern who
   writes into a local directory, and a server cannot see that. The rule above is what covers
@@ -239,10 +263,9 @@ art, not a template (ADR-015).
       (STEMMA-26) and built in STEMMA-46 to STEMMA-48.
 - [x] Who the actor of a snapshot is when two actors use one directory, and how the lease of
       ADR-004 applies. Decided above (STEMMA-38): one actor per working copy, kept by convention.
-- [ ] Enforcing that rule: an owner in the file `working-copy`, and a command of another actor
-      that takes a snapshot is refused unless it takes the working copy over explicitly (one
-      possible design). The file has the form of a branch file today, so an owner changes its
-      format. Comes with the second working copy (phase 3).
+- [x] Enforcing that rule: an owner in the file `working-copy`, and a command of another actor
+      that takes a snapshot is refused unless it takes the working copy over explicitly.
+      Decided above (STEMMA-156) and built in format 5 (STEMMA-162).
 - [x] The cost of a snapshot for a large working directory: reading every file at every
       command. It is twice the tracked files today, because `Index::write_tree` verifies the
       blobs again (the code points here and does not repeat it). Measured in STEMMA-37 (release

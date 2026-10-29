@@ -239,6 +239,7 @@ pub enum DiffError {
 impl fmt::Display for DiffError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(f, "the working copy could not be saved: {error}"),
             Self::Refs(error) => write!(f, "the references could not be read: {error}"),
             Self::Store(error) => write!(f, "an object could not be read from the store: {error}"),

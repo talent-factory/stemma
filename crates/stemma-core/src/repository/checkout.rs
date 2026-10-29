@@ -1032,6 +1032,7 @@ impl CheckoutError {
 impl fmt::Display for CheckoutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(f, "could not read or write the files: {error}"),
             Self::Ignore(error) => write!(f, "could not read the exclusion file: {error}"),
             Self::Reserved { path } => write!(

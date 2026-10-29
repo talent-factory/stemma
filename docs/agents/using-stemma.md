@@ -32,6 +32,11 @@ a command.
    ```
 
    An agent never acts as `human ...`.
+   The working copy belongs to one actor, its owner (ADR-010; the second line of
+   `.stemma/working-copy`). A command of another actor that would take a snapshot fails with
+   exit code 1 and saves nothing. If that happens, stop and report it: the directory is the
+   working copy of someone else. The program refuses `--take-over` from an agent (level 3,
+   ADR-004), so only the human can give the working copy to you.
 2. Read the state: `stemma status --json`. Look at `clean`, `changes`, `untracked`, and
    `leftovers`. A `leftovers` entry is a `.stemma-checkout-...` file of an interrupted restore;
    report it, do not delete it. If a purge is pending (the file `.stemma/purge-pending`),
@@ -106,14 +111,17 @@ not that the command worked.
 - `stemma purge`, not even the plan without `--apply`. The program refuses an agent at every
   step (ADR-002, ADR-014). If a secret is in the history, report it to the human, who runs the
   purge.
+- `--take-over`. The program refuses it from an agent (ADR-004, ADR-010). If the working copy
+  belongs to someone else, report it to the human.
 
 ## Until phase 3: no `stemma` in a Git worktree
 
 An actor needs its own working copy (ADR-010), and the per-agent branch in its own workspace
 that the design foresees does not exist yet. Until it does, the rule is administrative:
 
-- **One agent per directory.** Two agents in one directory is not supported, and the program
-  does not check it. A held lock only shows up as exit code 6.
+- **One agent per directory.** Two actors in one directory are not supported. Since format 5
+  the program refuses a snapshot of an actor who does not own the working copy (exit code 1),
+  so a second agent finds out at its first command; a held lock still shows up as exit code 6.
 - **In a Git worktree, do not call `stemma`.** Two things speak against it, both tested on a copy
   of the layout (a root with `.stemma` and a worktree at `.worktrees/task`):
   - Without a `stemma init` of its own, a command in the worktree opens the `.stemma` of the

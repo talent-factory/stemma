@@ -12,7 +12,7 @@
 //! <root>/refs.lock.guard         stays; its holder holds a lock of the system on it (ADR-008)
 //! ```
 //!
-//! A [`BranchName`] is valid by construction, as an [`Actor`](crate::Actor) is. A branch that has
+//! A [`BranchName`] is valid by construction, as an [`Actor`] is. A branch that has
 //! no file does not exist yet; HEAD may name such a branch, as it does in a new repository.
 //!
 //! A change is a compare-and-swap: [`RefStore::update_branch`] takes the commit that the caller
@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use crate::actor::ActorParseError;
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
 use crate::oplog::Pointer;
 use crate::store::{
@@ -36,7 +37,7 @@ use crate::store::{
     ObjectStore, StoreError,
 };
 use crate::verify::{RefVerifyError, VerifyError};
-use crate::Allowed;
+use crate::{Actor, Allowed};
 
 /// The longest branch name in bytes. A file name is limited by the file system, which is 255 bytes
 /// for the usual ones, and this stays below that. The path of a branch has the directory of the
@@ -208,6 +209,8 @@ pub enum RefMalformed {
     HeadShape,
     /// The kind in HEAD is neither `branch` nor `commit`.
     UnknownHeadKind,
+    /// The second line of the file `working-copy` is not `owner <actor>`.
+    OwnerShape,
 }
 
 impl fmt::Display for RefMalformed {
@@ -217,6 +220,7 @@ impl fmt::Display for RefMalformed {
             Self::ExtraLines => "the file has more than one line",
             Self::HeadShape => "expected `branch <name>` or `commit <id>`",
             Self::UnknownHeadKind => "the kind is neither `branch` nor `commit`",
+            Self::OwnerShape => "expected `owner <actor>` on the second line",
         })
     }
 }
@@ -237,6 +241,8 @@ pub enum RefParseError {
     /// The name of a branch is rejected: the one in HEAD, or the name of a file in the directory
     /// of the branches.
     InvalidBranchName(BranchNameError),
+    /// The owner in the file `working-copy` is not a valid actor.
+    InvalidOwner(ActorParseError),
 }
 
 impl fmt::Display for RefParseError {
@@ -248,6 +254,7 @@ impl fmt::Display for RefParseError {
             Self::Malformed(reason) => write!(f, "{reason}"),
             Self::InvalidObjectId(source) => write!(f, "invalid object ID: {source}"),
             Self::InvalidBranchName(source) => write!(f, "{source}"),
+            Self::InvalidOwner(source) => write!(f, "invalid owner: {source}"),
         }
     }
 }
@@ -258,6 +265,7 @@ impl Error for RefParseError {
             // The message has the message of the cause; see the crate documentation.
             Self::InvalidObjectId(source) => source.source(),
             Self::InvalidBranchName(source) => source.source(),
+            Self::InvalidOwner(source) => source.source(),
             Self::NotUtf8 { .. } | Self::Malformed(_) => None,
         }
     }
@@ -286,6 +294,37 @@ pub(crate) fn encode_branch(commit: &CommitId) -> Vec<u8> {
 pub(crate) fn parse_branch(bytes: &[u8]) -> Result<CommitId, RefParseError> {
     let id = ObjectId::from_str(single_line(bytes)?).map_err(RefParseError::InvalidObjectId)?;
     Ok(CommitId::new(id))
+}
+
+/// The content of the file `working-copy`: the ID of the working-copy commit and a newline, as
+/// in the file of a branch, and from format 5 on the line `owner <actor>` with the exact actor
+/// string of ADR-002 (ADR-010). A file without an owner is that of a repository from before
+/// format 5.
+pub(crate) fn encode_working_copy(commit: &CommitId, owner: Option<&Actor>) -> Vec<u8> {
+    match owner {
+        Some(owner) => format!("{commit}\nowner {owner}\n"),
+        None => format!("{commit}\n"),
+    }
+    .into_bytes()
+}
+
+/// Reads the file `working-copy`. It accepts what [`encode_working_copy`] writes and nothing else:
+/// the actor reads back to exactly the line it was read from.
+pub(crate) fn parse_working_copy(bytes: &[u8]) -> Result<(CommitId, Option<Actor>), RefParseError> {
+    let Some(first) = bytes.iter().position(|&byte| byte == b'\n') else {
+        return parse_branch(bytes).map(|commit| (commit, None));
+    };
+    let (commit, rest) = bytes.split_at(first + 1);
+    let commit = parse_branch(commit)?;
+    if rest.is_empty() {
+        return Ok((commit, None));
+    }
+    let line = single_line(rest)?;
+    let owner = line
+        .strip_prefix("owner ")
+        .ok_or(RefParseError::Malformed(RefMalformed::OwnerShape))?;
+    let owner = Actor::from_str(owner).map_err(RefParseError::InvalidOwner)?;
+    Ok((commit, Some(owner)))
 }
 
 /// What HEAD points to.
@@ -1895,12 +1934,103 @@ impl FsRefStore {
     /// Returns [`RefError::NoWorkingCopy`] if the file is missing, [`RefError::Corrupt`] if it is
     /// not in canonical form, and [`RefError::Io`] if the storage fails.
     pub fn working_copy(&self) -> Result<CommitId, RefError> {
+        self.working_copy_and_owner().map(|(commit, _)| commit)
+    }
+
+    /// The owner of the working copy (ADR-010): the actor that the file `working-copy` names on
+    /// its second line, or `None` for a repository from before format 5, whose file names none.
+    ///
+    /// # Errors
+    ///
+    /// See [`working_copy`](Self::working_copy).
+    pub fn working_copy_owner(&self) -> Result<Option<Actor>, RefError> {
+        self.working_copy_and_owner().map(|(_, owner)| owner)
+    }
+
+    /// Reads the file `working-copy` once: the commit and the owner. See
+    /// [`working_copy`](Self::working_copy) and [`working_copy_owner`](Self::working_copy_owner).
+    ///
+    /// # Errors
+    ///
+    /// See [`working_copy`](Self::working_copy).
+    pub(crate) fn working_copy_and_owner(&self) -> Result<(CommitId, Option<Actor>), RefError> {
         self.require_root()?;
         let path = self.working_copy_path();
         let bytes = self
             .read_reference(&path)?
             .ok_or_else(|| RefError::NoWorkingCopy { path: path.clone() })?;
-        parse_branch(&bytes).map_err(|source| RefError::Corrupt { path, source })
+        parse_working_copy(&bytes).map_err(|source| RefError::Corrupt { path, source })
+    }
+
+    /// Moves the working-copy commit to `new` and keeps the owner that the file names now, which
+    /// it reads again: a step before the move can have recorded one ([`Self::adopt_owner`]).
+    fn write_working_copy(&self, new: &CommitId) -> Result<(), RefError> {
+        let (_, owner) = self.working_copy_and_owner()?;
+        self.write_replacing(
+            &self.working_copy_path(),
+            &encode_working_copy(new, owner.as_ref()),
+            &self.root,
+        )
+    }
+
+    /// Makes `actor` the owner of the working copy if the file `working-copy` names none, as in a
+    /// repository from before format 5 (ADR-010). The writer of an entry calls it under the lock
+    /// of the references, after the entry, so the actor of the first entry in format 5 becomes
+    /// the owner. A repository without the file has no working copy to own, and is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Corrupt`] for a file that is not in canonical form, and
+    /// [`RefError::Io`] or [`RefError::NotFlushed`] if the storage fails.
+    pub(crate) fn adopt_owner(&self, _lock: &WriteLock, actor: &Actor) -> Result<(), RefError> {
+        let (commit, owner) = match self.working_copy_and_owner() {
+            Ok(read) => read,
+            Err(RefError::NoWorkingCopy { .. }) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if owner.is_some() {
+            return Ok(());
+        }
+        self.write_replacing(
+            &self.working_copy_path(),
+            &encode_working_copy(&commit, Some(actor)),
+            &self.root,
+        )
+    }
+
+    /// Makes `owner` the owner of the working copy, and runs `step` before, under the lock of the
+    /// references, as [`update_working_copy_after`](Self::update_working_copy_after) does for the
+    /// commit: the step writes the entry of the operation `take-over` (ADR-010, ADR-011). If
+    /// `owner` owns the working copy already, `step` does not run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::NoWorkingCopy`] and [`RefError::Corrupt`] for a file that cannot be
+    /// read. Once `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn set_owner_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        owner: &Actor,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        let (_, found) = self.working_copy_and_owner()?;
+        if found.as_ref() == Some(owner) {
+            return Ok(Logged::Unchanged);
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        // The step may have recorded an owner and so rewritten the file: read the commit again.
+        let moved = self.working_copy_and_owner().and_then(|(commit, _)| {
+            self.write_replacing(
+                &self.working_copy_path(),
+                &encode_working_copy(&commit, Some(owner)),
+                &self.root,
+            )
+        });
+        Ok(Self::after_move(done, moved))
     }
 
     /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
@@ -2021,8 +2151,7 @@ impl FsRefStore {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
-        let moved =
-            self.write_replacing(&self.working_copy_path(), &encode_branch(&new), &self.root);
+        let moved = self.write_working_copy(&new);
         Ok(Self::after_move(done, moved))
     }
 
@@ -2091,11 +2220,7 @@ impl FsRefStore {
             &self.heads_dir(),
         );
         Ok(Self::after_two_moves(done, first, || {
-            self.write_replacing(
-                &self.working_copy_path(),
-                &encode_branch(&working_copy.new),
-                &self.root,
-            )
+            self.write_working_copy(&working_copy.new)
         }))
     }
 
@@ -2346,8 +2471,7 @@ impl FsRefStore {
         }
         if let Some((_, new)) = &moves.working_copy {
             steps.push(Box::new(move || {
-                self.write_replacing(&self.working_copy_path(), &encode_branch(new), &self.root)
-                    .map(|()| true)
+                self.write_working_copy(new).map(|()| true)
             }));
         }
         // HEAD last: a stop before it leaves the file of HEAD as it was. A HEAD that names a
@@ -2735,6 +2859,74 @@ mod tests {
             Head::parse(format!("commit {ID_A}\n").as_bytes()),
             Ok(Head::Detached(id))
         );
+    }
+
+    #[test]
+    fn the_file_working_copy_names_the_owner_on_a_second_line() {
+        let id = CommitId::new(ID_A.parse().unwrap());
+        let owner: Actor = "agent bot model=m session=s sponsor=daniel"
+            .parse()
+            .unwrap();
+        let with_owner =
+            format!("{ID_A}\nowner agent bot model=m session=s sponsor=daniel\n").into_bytes();
+        assert_eq!(encode_working_copy(&id, Some(&owner)), with_owner);
+        assert_eq!(
+            encode_working_copy(&id, None),
+            format!("{ID_A}\n").into_bytes()
+        );
+        assert_eq!(parse_working_copy(&with_owner), Ok((id, Some(owner))));
+        // A file from before format 5 has no owner.
+        assert_eq!(
+            parse_working_copy(format!("{ID_A}\n").as_bytes()),
+            Ok((id, None))
+        );
+    }
+
+    #[test]
+    fn the_owner_is_read_only_in_the_form_that_the_writer_writes() {
+        use RefMalformed::*;
+        let cases: Vec<(String, RefParseError)> = vec![
+            (
+                format!("{ID_A}\nowner human a"),
+                RefParseError::Malformed(CutOff),
+            ),
+            (format!("{ID_A}\n\n"), RefParseError::Malformed(OwnerShape)),
+            (
+                format!("{ID_A}\nowner human a\n\n"),
+                RefParseError::Malformed(ExtraLines),
+            ),
+            (
+                format!("{ID_A}\nowner human a\nowner human b\n"),
+                RefParseError::Malformed(ExtraLines),
+            ),
+            (
+                format!("{ID_A}\nowner: human a\n"),
+                RefParseError::Malformed(OwnerShape),
+            ),
+            (
+                format!("{ID_A}\nOwner human a\n"),
+                RefParseError::Malformed(OwnerShape),
+            ),
+            (
+                format!("{ID_A}\nowner  human a\n"),
+                RefParseError::InvalidOwner(Actor::from_str(" human a").unwrap_err()),
+            ),
+            (
+                format!("{ID_A}\nowner human a \n"),
+                RefParseError::InvalidOwner(Actor::from_str("human a ").unwrap_err()),
+            ),
+            (
+                format!("{ID_A}\nowner robot a\n"),
+                RefParseError::InvalidOwner(Actor::from_str("robot a").unwrap_err()),
+            ),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(
+                parse_working_copy(text.as_bytes()),
+                Err(expected),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

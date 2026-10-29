@@ -18,7 +18,7 @@ use crate::object::{BlobId, CommitId, ObjectId};
 use crate::oplog::{Entry, EntryError, OpLogError, Purge, Record};
 use crate::refs::{Logged, PurgeLock, RefError};
 use crate::repository::{
-    now, raise_format, Repository, SnapshotError, UpdateError, CHAIN_FORMAT_VERSION,
+    now, raise_format, Repository, SnapshotError, UpdateError, FORMAT_VERSION,
 };
 use crate::store::{scratch_left, ObjectStore, StoreError};
 use crate::{Actor, Allowed, Authorizer};
@@ -303,6 +303,7 @@ impl fmt::Display for ApplyPurgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Plan(error) => error.fmt(f),
+            Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(
                 f,
                 "could not save the working directory before the purge, nothing was purged: \
@@ -590,7 +591,7 @@ impl Repository {
         new.sort();
         new.dedup();
         let dir = self.metadata_dir();
-        raise_format(&dir, CHAIN_FORMAT_VERSION).map_err(|error| start(store(error)))?;
+        raise_format(&dir, FORMAT_VERSION).map_err(|error| start(store(error)))?;
         let journal = Journal { plan, last, new };
         journal::write(&dir, &journal).map_err(|error| {
             if error.made() {
@@ -628,7 +629,7 @@ impl Repository {
         let (journal, lock) = self.take_over(actor, authorizer)?;
         // A purge that an older program started left an older format; the entries that the
         // resume writes are in the hash chain, so the format rises first, as for a new purge.
-        raise_format(&self.metadata_dir(), CHAIN_FORMAT_VERSION).map_err(stopped(
+        raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(stopped(
             PurgeStep::Journal,
             &[],
             store,
@@ -1100,7 +1101,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 4\n");
+        assert_eq!(format(dir), "stemma-repository 5\n");
     }
 
     #[test]
@@ -1309,7 +1310,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 4\n");
+        assert_eq!(format(&dir), "stemma-repository 5\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -1425,7 +1426,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 4\n",
+            "stemma-repository 5\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -2031,7 +2032,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 4\n");
+        assert_eq!(format(&dir), "stemma-repository 5\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);
