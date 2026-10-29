@@ -75,7 +75,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::diff::Edit;
 use stemma_core::failure::{Classify, FailureKind};
-use stemma_core::object::{ObjectId, METADATA_DIR};
+use stemma_core::history::{self, HistoryError};
+use stemma_core::object::{Commit, CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
@@ -112,6 +113,8 @@ enum Command {
     Status(StatusArgs),
     /// Show the changes between two commits, or between a commit and the working copy
     Diff(DiffArgs),
+    /// Show the commits that lead to the working-copy commit, the newest first
+    Log(LogArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -269,6 +272,30 @@ struct OpLogArgs {
     /// The number of entries to show; only their files are read, but all file names are listed
     #[arg(short = 'n', long, value_name = "N", default_value = "20")]
     limit: NonZeroUsize,
+
+    /// Write one JSON object per line instead of text (the schema of ADR-018)
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LogArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// The number of commits to show; without it, every commit is shown
+    #[arg(short = 'n', long, value_name = "N")]
+    limit: Option<NonZeroUsize>,
+
+    /// Follow only the first parent of each commit, so that a merge hides the history it brought in
+    #[arg(long)]
+    first_parent: bool,
 
     /// Write one JSON object per line instead of text (the schema of ADR-018)
     #[arg(long)]
@@ -561,6 +588,17 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The history cannot be read: a commit is absent, damaged, or the store failed.
+    History(HistoryError),
+    /// `log` could not read the working-copy pointer.
+    LogRefs(RefError),
+    /// The commits were read, but the output could not be written.
+    LogWrite {
+        /// The commit that was being written.
+        commit: CommitId,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// `op log` found damage in the entry before the oldest shown one, so the link of the shown
@@ -686,6 +724,8 @@ impl CliError {
             Self::Status(error) => by_kind(error.kind()),
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
+            Self::History(error) => by_kind(error.kind()),
+            Self::LogRefs(error) => by_kind(error.kind()),
             Self::OpLog(error) => by_kind(error.kind()),
             Self::OpLogUnchecked { .. } => by_kind(FailureKind::Damaged),
             Self::OpLogRefs(error) => by_kind(error.kind()),
@@ -706,6 +746,7 @@ impl CliError {
             | Self::RestoreOutput { .. }
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
+            | Self::LogWrite { .. }
             | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
@@ -910,6 +951,16 @@ impl fmt::Display for CliError {
                 "the link of the oldest shown entry to entry {number} cannot be checked, as the \
                  entry is damaged: {reason}; `stemma op verify` checks the whole log"
             ),
+            Self::History(error) => write!(f, "could not read the history: {error}"),
+            Self::LogRefs(error) => {
+                write!(f, "could not read the working-copy commit: {error}")
+            }
+            Self::LogWrite { commit, source } => {
+                write!(
+                    f,
+                    "could not write commit {commit} to standard output: {source}"
+                )
+            }
             Self::OpLogRefs(error) => write!(
                 f,
                 "could not read the references, so the outcome of the newest entries is not \
@@ -975,6 +1026,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
         Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
         Command::Diff(args) => diff(args, out),
+        Command::Log(args) => show_log(args, out).map(|()| ExitCode::SUCCESS),
         Command::Op {
             command: OpCommand::Log(args),
         } => show_op_log(args, out).map(|()| ExitCode::SUCCESS),
@@ -1469,6 +1521,92 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Shows the commits that lead to the working-copy commit, children before parents. The walk
+/// starts at the working-copy commit, which is `@`: on a branch it is the child of the branch tip
+/// (ADR-010), so the tip and all of its ancestors follow. It only reads and takes no snapshot, so
+/// it needs no actor. A closed pipe is not a failure.
+fn show_log(args: LogArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = open(&args.repository)?;
+    let working_copy = repository
+        .refs()
+        .working_copy()
+        .map_err(CliError::LogRefs)?;
+    let commits = history::ancestors(
+        repository.objects(),
+        working_copy,
+        args.first_parent,
+        args.limit.map(NonZeroUsize::get),
+    )
+    .map_err(CliError::History)?;
+    for (id, commit) in &commits {
+        let current = *id == working_copy;
+        let text = if args.json {
+            log_json(*id, commit, current)
+        } else {
+            log_text(*id, commit, current)
+        };
+        match out.write_all(text.as_bytes()) {
+            // The reader of a pipe, such as `head`, has had enough: that is not a failure.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(source) => {
+                return Err(CliError::LogWrite {
+                    commit: *id,
+                    source,
+                })
+            }
+            Ok(()) => {}
+        }
+    }
+    Ok(())
+}
+
+/// One commit for a person: the mark and the ID, then the change, the parents (`-` for none), the
+/// author, and the time, then the message indented by four spaces. A blank line ends the block.
+fn log_text(id: CommitId, commit: &Commit, current: bool) -> String {
+    let parents = commit
+        .parents()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut text = format!(
+        "{} {id}\n  change   {}\n  parents  {}\n  author   {}\n  time     {}\n\n",
+        if current { '@' } else { 'o' },
+        commit.change(),
+        if parents.is_empty() { "-" } else { &parents },
+        commit.author(),
+        op_log::utc(commit.timestamp())
+    );
+    for line in commit.message().lines() {
+        text.push_str("    ");
+        text.push_str(line);
+        text.push('\n');
+    }
+    text.push('\n');
+    text
+}
+
+/// One commit as one JSON object and a newline (`schema`, ADR-018): `commit`, `working_copy`
+/// (true for `@`), `parents` (a list of IDs), `change`, `author`, `time` (seconds since the Unix
+/// epoch, as the commit claims), and `message` (verbatim).
+fn log_json(id: CommitId, commit: &Commit, current: bool) -> String {
+    let parents: Vec<String> = commit
+        .parents()
+        .iter()
+        .map(|parent| op_log::quote(&parent.to_string()))
+        .collect();
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"commit\":{},\"working_copy\":{current},\"parents\":[{}],\
+         \"change\":{},\"author\":{},\"time\":{},\"message\":{}}}\n",
+        op_log::quote(&id.to_string()),
+        parents.join(","),
+        op_log::quote(&commit.change().to_string()),
+        op_log::quote(&commit.author().to_string()),
+        commit.timestamp(),
+        op_log::quote(commit.message())
+    )
 }
 
 /// Checks the hash chain of the whole log and the tip file (see `FsOpLog::verify`), and the

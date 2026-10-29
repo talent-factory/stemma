@@ -36,6 +36,7 @@ pub mod failure;
 #[cfg(any(fuzzing, test))]
 #[doc(hidden)]
 pub mod fuzz;
+pub mod history;
 pub mod ignore;
 pub mod index;
 pub mod merge_base;

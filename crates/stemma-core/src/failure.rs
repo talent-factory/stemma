@@ -9,6 +9,7 @@
 //! not compile until it is classified, so a lock or damage cannot fall back to
 //! [`FailureKind::Other`] unnoticed.
 
+use crate::history::HistoryError;
 use crate::index::WriteTreeError;
 use crate::oplog::OpLogError;
 use crate::refs::RefError;
@@ -262,6 +263,20 @@ impl Classify for DiffError {
     }
 }
 
+impl Classify for HistoryError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // A commit that the working copy or a parent names is not there, or its body is not in
+            // canonical form: the history is damaged. The start is the working-copy commit, which
+            // a pointer names, so it is no argument of the caller.
+            Self::Missing { .. } => FailureKind::Damaged,
+            Self::Read(error) => error
+                .store_error()
+                .map_or(FailureKind::Damaged, Classify::kind),
+        }
+    }
+}
+
 impl Classify for CheckoutError {
     fn kind(&self) -> FailureKind {
         match self {
@@ -397,6 +412,19 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn a_commit_of_the_history_that_is_missing_is_damage() {
+        let commit = crate::object::CommitId::new(id());
+        assert_eq!(
+            HistoryError::Missing {
+                id: commit,
+                child: None
+            }
+            .kind(),
+            FailureKind::Damaged
+        );
     }
 
     #[test]
