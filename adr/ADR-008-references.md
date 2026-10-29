@@ -157,8 +157,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 
 ## Open items
 
-- [ ] Deleting a branch (`delete_branch(name, expected)`) with the same compare-and-swap, and the
-      rule that the branch of HEAD is not deleted (that one belongs to the layer above).
+- [x] Deleting a branch: `delete_branch(name, expected)` with the same compare-and-swap
+      (STEMMA-52); a missing branch or another tip is `Stale`, a name held by another entry is
+      `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above.
 - [ ] Packed references, when there are many branches.
 - [ ] Tags.
 - [x] Checking that the branches and HEAD of a repository point to commits that the store has

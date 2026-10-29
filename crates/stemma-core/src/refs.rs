@@ -801,6 +801,25 @@ pub trait RefStore: crate::store::sealed::Sealed {
         allowed: &Allowed,
     ) -> Result<(), RefError>;
 
+    /// Deletes a branch, and the directories above it that this empties, if it is still at
+    /// `expected`. A branch that does not exist is [`RefError::Stale`] with `found` `None`. The
+    /// rule that the branch of HEAD is not deleted belongs to the layer above.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Locked`] if another change is in progress, [`RefError::Conflict`] if
+    /// the name is held by another entry (checked before `expected`, as for
+    /// [`update_branch`](Self::update_branch)), [`RefError::Stale`] if the branch is not at
+    /// `expected`, [`RefError::Io`] if the storage fails, and [`RefError::Corrupt`] as for
+    /// [`branch`](Self::branch). Nothing is changed in any of these cases, except for
+    /// [`RefError::NotFlushed`]: the branch is gone, and the directory could not be flushed.
+    fn delete_branch(
+        &self,
+        name: &BranchName,
+        expected: CommitId,
+        allowed: &Allowed,
+    ) -> Result<(), RefError>;
+
     /// Returns the commit that HEAD leads to: the commit of its branch, `None` if that branch does
     /// not exist yet, or the commit that it names. This is two reads without a lock, so HEAD can
     /// change between them; a caller that changes a branch uses [`head`](Self::head) and
@@ -2688,6 +2707,32 @@ impl RefStore for FsRefStore {
             &self.heads_dir(),
         )
     }
+
+    fn delete_branch(
+        &self,
+        name: &BranchName,
+        expected: CommitId,
+        allowed: &Allowed,
+    ) -> Result<(), RefError> {
+        self.require_root()?;
+        let _lock = self.lock_writer(allowed)?;
+        let current = self.current(name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                name: name.clone(),
+                with,
+                kind,
+            });
+        }
+        if current.commit != Some(expected) {
+            return Err(RefError::Stale {
+                name: name.clone(),
+                expected: Some(expected),
+                found: current.commit,
+            });
+        }
+        self.delete_branch_file(name).map(drop)
+    }
 }
 
 #[cfg(test)]
@@ -3126,6 +3171,69 @@ mod tests {
         assert!(!dir.path().join("refs/heads/other").exists());
         // The lock is released after a failure too.
         assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn a_branch_is_deleted_if_it_is_at_the_expected_commit() {
+        let (dir, objects, refs) = setup();
+        let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
+        let (main, nested) = (name("main"), name("a/b"));
+        for (branch, tip) in [(&main, first), (&nested, second)] {
+            refs.update_branch(branch, None, tip, &objects, &Allowed::granted())
+                .unwrap();
+        }
+        refs.delete_branch(&main, first, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.branch(&main).unwrap(), None);
+        // The directory that the deletion empties goes with it; the directory of the branches stays.
+        refs.delete_branch(&nested, second, &Allowed::granted())
+            .unwrap();
+        assert!(!dir.path().join("refs/heads/a").exists());
+        assert!(dir.path().join("refs/heads").is_dir());
+        assert!(refs.branches().unwrap().is_empty());
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn a_delete_from_a_state_that_is_not_current_is_stale_and_changes_nothing() {
+        let (dir, objects, refs) = setup();
+        let main = name("main");
+        let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
+        refs.update_branch(&main, None, first, &objects, &Allowed::granted())
+            .unwrap();
+        match refs
+            .delete_branch(&main, second, &Allowed::granted())
+            .unwrap_err()
+        {
+            RefError::Stale {
+                expected, found, ..
+            } => assert_eq!((expected, found), (Some(second), Some(first))),
+            other => panic!("unexpected error: {other}"),
+        }
+        // A branch that does not exist cannot be deleted.
+        let error = refs
+            .delete_branch(&name("other"), first, &Allowed::granted())
+            .unwrap_err();
+        assert!(
+            matches!(&error, RefError::Stale { found: None, .. }),
+            "{error}"
+        );
+        assert_eq!(refs.branch(&main).unwrap(), Some(first));
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn deleting_a_name_that_another_entry_holds_is_a_conflict() {
+        let (_dir, objects, refs) = setup();
+        let first = commit(&objects, "1");
+        refs.update_branch(&name("a/b"), None, first, &objects, &Allowed::granted())
+            .unwrap();
+        // `a` is a directory with a branch below it, not a branch.
+        let error = refs
+            .delete_branch(&name("a"), first, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Conflict { .. }), "{error}");
+        assert_eq!(refs.branch(&name("a/b")).unwrap(), Some(first));
     }
 
     #[test]
