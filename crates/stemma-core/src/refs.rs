@@ -400,6 +400,13 @@ pub enum RefError {
         /// The commit the branch has, or `None` if it does not exist.
         found: Option<CommitId>,
     },
+    /// HEAD is not where the caller saw it: another change came first.
+    StaleHead {
+        /// The value the caller expected.
+        expected: Head,
+        /// The value HEAD has.
+        found: Head,
+    },
     /// The name cannot be created because of another entry: a branch is a file, so a name cannot
     /// be a branch and the start of other names, and on a file system that ignores case two names
     /// that differ only in case are one file.
@@ -635,6 +642,12 @@ impl fmt::Display for RefError {
                  or the repository was made before the working-copy commit existed",
                 path.display()
             ),
+            Self::StaleHead { expected, found } => write!(
+                f,
+                "HEAD has moved: it was expected to be {}, but it is {}",
+                describe_head(expected),
+                describe_head(found)
+            ),
             Self::StaleWorkingCopy { expected, found } => write!(
                 f,
                 "the working-copy commit has moved: it was expected to be at {expected}, but it \
@@ -683,6 +696,7 @@ impl Error for RefError {
             Self::Corrupt { source, .. } => source.source(),
             Self::Store(source) => source.source(),
             Self::Stale { .. }
+            | Self::StaleHead { .. }
             | Self::Conflict { .. }
             | Self::MissingCommit(_)
             | Self::NotACommit { .. }
@@ -693,6 +707,14 @@ impl Error for RefError {
             | Self::PurgePending { .. }
             | Self::PurgeStale { .. } => None,
         }
+    }
+}
+
+/// HEAD as a phrase for a message: `branch main` or `commit <id>`.
+fn describe_head(head: &Head) -> String {
+    match head {
+        Head::Branch(name) => format!("branch {name}"),
+        Head::Detached(commit) => format!("commit {commit}"),
     }
 }
 
@@ -737,7 +759,8 @@ pub trait RefStore: crate::store::sealed::Sealed {
 
     /// Points HEAD to a branch, which need not exist yet, or to a commit. A commit has to be in
     /// `objects`; for a branch, `objects` is not used. The change replaces HEAD whatever it was:
-    /// of two changes that race, the later one wins, and there is no `expected` as for a branch.
+    /// of two changes that race, the later one wins; use [`replace_head`](Self::replace_head) for
+    /// a change that has to know what it replaces.
     ///
     /// # Errors
     ///
@@ -748,6 +771,24 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// flushed to disk. Nothing is changed in any other case.
     fn set_head(
         &self,
+        head: &Head,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError>;
+
+    /// Points HEAD to `head` if it still is `expected`, as [`update_branch`](Self::update_branch)
+    /// does for a branch. The rules for `head` are those of [`set_head`](Self::set_head); the
+    /// check and the write happen under the lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::StaleHead`] if HEAD is not `expected`, the errors of
+    /// [`head`](Self::head) if it cannot be read, and the errors of
+    /// [`set_head`](Self::set_head) otherwise. Nothing is changed in any of these cases, except
+    /// for [`RefError::NotFlushed`].
+    fn replace_head(
+        &self,
+        expected: &Head,
         head: &Head,
         objects: &dyn ObjectStore,
         allowed: &Allowed,
@@ -1889,9 +1930,10 @@ impl FsRefStore {
         Ok(Self::after_move(done, moved))
     }
 
-    /// Points HEAD to `head`, and runs `step` with the value that HEAD had, after the checks and
-    /// before the move, under the lock of the references. The old value is read under the lock, so
-    /// it is the one that the move replaces. If HEAD has the value already, `step` does not run.
+    /// Points HEAD to `head` if it still is `expected`, and runs `step` with the value that HEAD
+    /// had, after the checks and before the move, under the lock of the references. The old value
+    /// is read under the lock, so it is the one that the move replaces. If HEAD has the value
+    /// already, `step` does not run.
     ///
     /// Unlike [`RefStore::set_head`], which replaces HEAD whatever it was, this reads HEAD first,
     /// so a HEAD that is missing or damaged is an error and is not replaced.
@@ -1899,12 +1941,14 @@ impl FsRefStore {
     /// # Errors
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] for a commit that `objects`
-    /// does not have, and the errors of [`RefStore::head`] for an unreadable HEAD. Once `step` has
+    /// does not have, [`RefError::StaleHead`] if HEAD is not `expected`, and the errors of
+    /// [`RefStore::head`] for an unreadable HEAD. Once `step` has
     /// run, nothing is an error of this call; see
     /// [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn set_head_after<T, E>(
         &self,
         _lock: &WriteLock,
+        expected: &Head,
         head: &Head,
         objects: &dyn ObjectStore,
         step: impl FnOnce(&Head) -> Result<T, E>,
@@ -1914,6 +1958,12 @@ impl FsRefStore {
             Self::require_commit(commit, objects)?;
         }
         let old = self.head()?;
+        if &old != expected {
+            return Err(RefError::StaleHead {
+                expected: expected.clone(),
+                found: old,
+            });
+        }
         if &old == head {
             return Ok(Logged::Unchanged);
         }
@@ -2594,6 +2644,28 @@ impl RefStore for FsRefStore {
         // commit since a look without the lock.
         if let Head::Detached(commit) = head {
             Self::require_commit(commit, objects)?;
+        }
+        self.write_replacing(&self.head_path(), &head.encode(), &self.root)
+    }
+
+    fn replace_head(
+        &self,
+        expected: &Head,
+        head: &Head,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError> {
+        self.require_root()?;
+        let _lock = self.lock_writer(allowed)?;
+        if let Head::Detached(commit) = head {
+            Self::require_commit(commit, objects)?;
+        }
+        let found = self.head()?;
+        if &found != expected {
+            return Err(RefError::StaleHead {
+                expected: expected.clone(),
+                found,
+            });
         }
         self.write_replacing(&self.head_path(), &head.encode(), &self.root)
     }
@@ -3499,6 +3571,53 @@ mod tests {
             Head::Detached(id),
             "HEAD is unchanged"
         );
+    }
+
+    #[test]
+    fn replace_head_moves_head_only_if_it_is_still_the_expected_value() {
+        let (_dir, objects, refs) = setup();
+        let (a, b) = (commit(&objects, "a"), commit(&objects, "b"));
+        let main = Head::Branch(name("main"));
+        let granted = Allowed::granted();
+        refs.set_head(&main, &objects, &granted).unwrap();
+
+        refs.replace_head(&main, &Head::Detached(a), &objects, &granted)
+            .unwrap();
+        assert_eq!(refs.head().unwrap(), Head::Detached(a));
+
+        // The caller still saw `main`: the later change loses and HEAD stays where it is.
+        let error = refs
+            .replace_head(&main, &Head::Detached(b), &objects, &granted)
+            .unwrap_err();
+        assert!(
+            matches!(&error, RefError::StaleHead { expected, found }
+                if expected == &main && found == &Head::Detached(a)),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("HEAD has moved: it was expected to be branch main, but it is commit {a}")
+        );
+        assert_eq!(refs.head().unwrap(), Head::Detached(a));
+    }
+
+    #[test]
+    fn replace_head_needs_a_head_and_a_commit_in_the_store() {
+        let (_dir, objects, refs) = setup();
+        let main = Head::Branch(name("main"));
+        let granted = Allowed::granted();
+        let error = refs
+            .replace_head(&main, &main, &objects, &granted)
+            .unwrap_err();
+        assert!(matches!(error, RefError::NoHead { .. }), "{error}");
+
+        refs.set_head(&main, &objects, &granted).unwrap();
+        let absent = CommitId::new(ID_A.parse().unwrap());
+        let error = refs
+            .replace_head(&main, &Head::Detached(absent), &objects, &granted)
+            .unwrap_err();
+        assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
+        assert_eq!(refs.head().unwrap(), main);
     }
 
     #[test]
@@ -4803,6 +4922,7 @@ mod tests {
         let outcome = refs
             .set_head_after(
                 &writer(&refs),
+                &Head::Branch(name("main")),
                 &Head::Branch(name("dev")),
                 &objects,
                 |old| {
@@ -4879,9 +4999,13 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RefError::Conflict { .. }), "{error}");
         let error = refs
-            .set_head_after(&writer(&refs), &Head::Detached(absent), &objects, |_| {
-                counted(&ran)()
-            })
+            .set_head_after(
+                &writer(&refs),
+                &Head::Branch(name("main")),
+                &Head::Detached(absent),
+                &objects,
+                |_| counted(&ran)(),
+            )
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::MissingCommit(_)), "{error}");
@@ -4908,23 +5032,52 @@ mod tests {
     }
 
     #[test]
+    fn a_head_that_is_not_the_expected_one_is_stale_and_no_step_runs() {
+        let (_dir, objects, refs) = setup();
+        let ran = std::cell::Cell::new(0);
+        refs.set_head(&Head::Branch(name("main")), &objects, &Allowed::granted())
+            .unwrap();
+        let error = refs
+            .set_head_after(
+                &writer(&refs),
+                &Head::Branch(name("other")),
+                &Head::Branch(name("dev")),
+                &objects,
+                |_| counted(&ran)(),
+            )
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(error, RefError::StaleHead { .. }), "{error}");
+        assert_eq!(refs.head().unwrap(), Head::Branch(name("main")));
+        assert_eq!(ran.get(), 0);
+    }
+
+    #[test]
     fn a_head_that_is_missing_or_damaged_is_an_error_and_no_step_runs() {
         let (dir, objects, refs) = setup();
         let ran = std::cell::Cell::new(0);
         let head = dir.path().join("HEAD");
         let error = refs
-            .set_head_after(&writer(&refs), &Head::Branch(name("x")), &objects, |_| {
-                counted(&ran)()
-            })
+            .set_head_after(
+                &writer(&refs),
+                &Head::Branch(name("main")),
+                &Head::Branch(name("x")),
+                &objects,
+                |_| counted(&ran)(),
+            )
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::NoHead { .. }), "{error}");
         assert!(!head.exists());
         fs::write(&head, b"damaged\n").unwrap();
         let error = refs
-            .set_head_after(&writer(&refs), &Head::Branch(name("x")), &objects, |_| {
-                counted(&ran)()
-            })
+            .set_head_after(
+                &writer(&refs),
+                &Head::Branch(name("main")),
+                &Head::Branch(name("x")),
+                &objects,
+                |_| counted(&ran)(),
+            )
             .map(|_| ())
             .unwrap_err();
         assert!(matches!(error, RefError::Corrupt { .. }), "{error}");

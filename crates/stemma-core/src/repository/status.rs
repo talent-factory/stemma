@@ -914,7 +914,13 @@ mod tests {
         let tip = repository.refs().resolve_head().unwrap().unwrap();
         let operation = OperationName::try_new("checkout").unwrap();
         repository
-            .set_head(&operation, &Head::Detached(tip), &actor(), &AllowAll)
+            .set_head(
+                &operation,
+                &repository.refs().head().unwrap(),
+                &Head::Detached(tip),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap();
 
         let status = status(&repository);
@@ -1131,7 +1137,13 @@ mod tests {
         let tip = repository.refs().resolve_head().unwrap().unwrap();
         let operation = OperationName::try_new("checkout").unwrap();
         repository
-            .set_head(&operation, &Head::Detached(tip), &actor(), &AllowAll)
+            .set_head(
+                &operation,
+                &repository.refs().head().unwrap(),
+                &Head::Detached(tip),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap();
         write(&dir, "a.txt", "two");
 

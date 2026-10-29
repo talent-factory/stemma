@@ -116,7 +116,8 @@ Crosby und Wallach \cite[crosby2009tamper] \stopxcell
 \stopxrow
 \startxrow
 \startxcell Write-Ahead-Regel: Der Eintrag ist gesichert, bevor sich der Zeiger bewegt;
-für Branches und den Working-Copy-Commit mit einem Compare-and-Swap unter der Sperre \stopxcell
+für Branches, HEAD und den Working-Copy-Commit mit einem Compare-and-Swap
+unter der Sperre \stopxcell
 \startxcell die Funktionen \type{*_after} (\type{refs.rs}),
 \type{update_branch} und \type{set_head} (\type{repository.rs}),
 \type{append} und \type{publish} (\type{oplog.rs}) \stopxcell
