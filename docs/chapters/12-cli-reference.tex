@@ -253,7 +253,8 @@ Eine Sperre eines anderen Rechners oder in einer älteren Form übernimmt kein B
 sie bleibt, und die Meldung nennt die Datei, die eine Person entfernt.
 \item {\bf 130, 143, 129:} Der Befehl wurde unterbrochen: mit Ctrl-C (130),
 mit \type{SIGTERM} (143) oder mit \type{SIGHUP} (129).
-Die Codes 143 und 129 gibt es nur unter Unix; unter Windows endet Ctrl-C mit 130.
+Die Codes 143 und 129 gibt es nur unter Unix;
+unter Windows enden Ctrl-C und Ctrl-Break mit 130.
 Er hat die Sperre der Referenzen entfernt, bevor er endete.
 Ein unterbrochenes \type{op restore} entfernt ausserdem die temporäre Datei, die es gerade
 schrieb; liess sie sich nicht entfernen, nennt die Fehlermeldung sie.
