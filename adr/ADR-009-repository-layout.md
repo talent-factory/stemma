@@ -95,10 +95,14 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   would otherwise open a `/tmp/.stemma` of another user. A user could otherwise put a `.stemma`
   into a shared directory such as `/tmp`, and a command run in it or below it would save the
   files that its tree names into the store of that user. There is no way around the check, and
-  the message says to run the command as the owner. On Windows, where `std` gives no owner, a
-  `.stemma` above `start` must not be at the root of a volume, where every user may create
-  directories (`AtVolumeRoot`); one at `start` is opened there, as `-C` reaches the root of a
-  volume only when it names it, and the message gives that call.
+  the message says to run the command as the owner. On Windows the owner SID of the `.stemma`
+  must be the user SID or the default owner SID of the token of the process (`OtherOwner`
+  otherwise), at `start` as well as above it, as Git for Windows checks for `safe.directory`;
+  the default owner is the group of administrators for an elevated process. The owner of the
+  target counts there, as the API follows a link. A `.stemma` above `start` must also not be at
+  the root of a volume, where every user may create directories (`AtVolumeRoot`), even when the
+  user owns it; one at `start` is opened there, as `-C` reaches the root of a volume only when
+  it names it, and the message gives that call.
   The search also reports the nearest directory from the start, included, up to the root, not
   included, that holds a `.git`, a file in a Git worktree or a directory in a nested clone
   (`nested_git`, STEMMA-132). Such a command works in the repository of the root, and unless
@@ -147,8 +151,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       `read_format` that refuses anything but a regular file (STEMMA-88).
 - [ ] A list of trusted directories, as Git's `safe.directory`, for a repository that several
       users share on one machine; it needs the configuration file below.
-- [ ] On Windows only the root of a volume is refused; other places that all users may write,
-      such as `C:\Users\Public`, stay open until the owner is checked by its SID (STEMMA-73).
+- [x] On Windows the owner of a `.stemma` is checked by its SID, so places that all users may
+      write, such as `C:\Users\Public`, no longer let another user plant a repository
+      (STEMMA-73). Only the Windows run of the CI workflow compiles and tests it.
 - [x] Removing a stale `.stemma-init-*` directory: the next writer that takes the lock removes
       it, if its name is exactly one that `init` makes (STEMMA-31).
 - [ ] A configuration file, and the user-level default branch it would allow.

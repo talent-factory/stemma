@@ -921,6 +921,7 @@ dependencies = [
  "rustix",
  "unicode-general-category",
  "unicode-normalization",
+ "windows-sys",
 ]
 
 [[package]]

@@ -379,10 +379,12 @@ impl Repository {
     /// snapshot would save the files that its tree names into the store of the other user. On
     /// Unix the effective user of the process must own it ([`OpenError::OtherOwner`]), at `start`
     /// as well as above it, since `-C` defaults to the current directory and `cd /tmp` is as
-    /// common as a directory below it. On Windows, where `std` gives no owner, a `.stemma` above
-    /// `start` must not be at the root of a volume, where every user may create directories
-    /// ([`OpenError::AtVolumeRoot`]); a `.stemma` at `start` is opened there without a check, as
-    /// the root of a volume is only reached by naming it (ADR-009).
+    /// common as a directory below it. On Windows the owner SID of the `.stemma` must be the user
+    /// SID or the default owner SID of the token of the process, at `start` as well as above it
+    /// ([`OpenError::OtherOwner`]). A `.stemma` above `start` must also not be at the root of a
+    /// volume, where every user may create directories ([`OpenError::AtVolumeRoot`]); a `.stemma`
+    /// at `start` is opened there, as the root of a volume is only reached by naming it
+    /// (ADR-009).
     ///
     /// # Errors
     ///
@@ -457,6 +459,8 @@ impl Repository {
                 }
                 Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
             }
+            #[cfg(windows)]
+            refuse_volume_root(&metadata_dir)?;
             trusted(&metadata_dir)?;
             let below = real
                 .strip_prefix(root)
@@ -1625,9 +1629,8 @@ fn lies_below(start: &Path, root: &Path) -> bool {
 }
 
 /// Whether [`trusted`] is asked for a `.stemma` at the start of [`Repository::discover`] as well
-/// as for one above it: on Unix, where it checks the owner, but not on Windows, where it only
-/// refuses the root of a volume.
-const CHECK_AT_START: bool = cfg!(unix);
+/// as for one above it: on every platform, since each checks the owner.
+const CHECK_AT_START: bool = true;
 
 /// Whether the `.stemma` that the search found may be used: on Unix the effective user of the
 /// process owns it, as Git checks for `safe.directory`. The owner of the entry itself counts, so
@@ -1647,11 +1650,27 @@ fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
     }
 }
 
-/// Whether the `.stemma` that the search found above the start may be used. `std` gives no
-/// owner on Windows, so only the root of a volume is refused, where every user may create
-/// directories by default. Other places that all users may write stay open (STEMMA-73).
-#[cfg(not(unix))]
+/// Whether the `.stemma` that the search found may be used: the user of the token of the process
+/// owns it, as Git for Windows checks for `safe.directory` (STEMMA-73). The owner is the one of
+/// the target of a link, since the API of Windows follows it.
+#[cfg(windows)]
 fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
+    if windows_owner::is_the_user(metadata_dir)
+        .map_err(OpenError::io("inspect the owner of", metadata_dir))?
+    {
+        Ok(())
+    } else {
+        Err(OpenError::OtherOwner {
+            found: metadata_dir.to_path_buf(),
+        })
+    }
+}
+
+/// Refuses a `.stemma` at the root of a volume, where every user may create directories by
+/// default, even when the user owns it: the search asks for it above the start only, as `-C`
+/// reaches the root of a volume by naming it.
+#[cfg(windows)]
+fn refuse_volume_root(metadata_dir: &Path) -> Result<(), OpenError> {
     let at_volume_root = metadata_dir
         .parent()
         .is_some_and(|root| root.parent().is_none());
@@ -1661,6 +1680,122 @@ fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
         })
     } else {
         Ok(())
+    }
+}
+
+/// The owner of a path and the SIDs of the token of the process, through `windows-sys`.
+#[cfg(windows)]
+mod windows_owner {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, TokenOwner, TokenUser, OWNER_SECURITY_INFORMATION, PSID,
+        TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    /// Whether the owner SID of `path` is the user of the token of the process or its default
+    /// owner. The default owner is the group of administrators for an elevated process, which
+    /// is the owner of what such a process creates.
+    pub(super) fn is_the_user(path: &Path) -> io::Result<bool> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let mut owner: PSID = ptr::null_mut();
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: `wide` ends in a NUL; the out pointers are valid for writes. On success
+        // `descriptor` is a block that `LocalFree` releases and that `owner` points into.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let result = owned_by_token(owner);
+        // SAFETY: `descriptor` came from `GetNamedSecurityInfoW` and is released once.
+        unsafe { LocalFree(descriptor) };
+        result
+    }
+
+    /// Whether `owner` equals the user SID or the default owner SID of the token of the process.
+    fn owned_by_token(owner: PSID) -> io::Result<bool> {
+        if owner.is_null() {
+            return Ok(false);
+        }
+        let mut token: HANDLE = ptr::null_mut();
+        // SAFETY: the pseudo handle of the process needs no release; `token` is valid for writes.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let sids = token_sid(token, TokenUser).and_then(|user| {
+            token_sid(token, TokenOwner).map(|default_owner| (user, default_owner))
+        });
+        // SAFETY: `token` was opened above and is closed once.
+        unsafe { CloseHandle(token) };
+        let (user, default_owner) = sids?;
+        // SAFETY: `owner` lies in the descriptor that the caller still holds, and the SIDs of
+        // the token in the buffers that `user` and `default_owner` keep alive.
+        Ok(
+            unsafe {
+                EqualSid(owner, user.sid()) != 0 || EqualSid(owner, default_owner.sid()) != 0
+            },
+        )
+    }
+
+    /// A buffer that holds a `TOKEN_USER` or `TOKEN_OWNER`, aligned for either, and so the SID
+    /// that points into it.
+    struct TokenSid(Vec<u64>);
+
+    impl TokenSid {
+        /// Both structures start with the pointer to the SID, as `TOKEN_USER` holds it as the
+        /// first field of its `SID_AND_ATTRIBUTES`.
+        fn sid(&self) -> PSID {
+            // SAFETY: `token_sid` filled the buffer with one of the two structures, whose first
+            // field is a pointer, and `Vec<u64>` is aligned for it.
+            unsafe { *self.0.as_ptr().cast::<PSID>() }
+        }
+    }
+
+    // The two structures must start with that pointer for `sid` to read either.
+    const _: () = {
+        assert!(std::mem::offset_of!(TOKEN_USER, User) == 0);
+        assert!(std::mem::offset_of!(TOKEN_OWNER, Owner) == 0);
+    };
+
+    fn token_sid(token: HANDLE, class: i32) -> io::Result<TokenSid> {
+        let mut length = 0;
+        // SAFETY: a call without a buffer only reports the length that is needed.
+        unsafe { GetTokenInformation(token, class, ptr::null_mut(), 0, &mut length) };
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut buffer = vec![0u64; (length as usize).div_ceil(size_of::<u64>())];
+        // SAFETY: `buffer` holds at least `length` bytes.
+        let read = unsafe {
+            GetTokenInformation(
+                token,
+                class,
+                buffer.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        };
+        if read == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(TokenSid(buffer))
     }
 }
 
@@ -1696,7 +1831,7 @@ pub enum OpenError {
         path: PathBuf,
     },
     /// The search found a `.stemma` in the directory where it started or above it, but the user
-    /// who runs the command does not own it, so it is not opened (Unix,
+    /// who runs the command does not own it, so it is not opened (Unix and Windows,
     /// [`Repository::discover`]).
     OtherOwner {
         /// The `.stemma` that was found.
@@ -2839,14 +2974,25 @@ mod tests {
         for root in [r"C:\.stemma", r"\\?\C:\.stemma", r"\\server\share\.stemma"] {
             assert!(
                 matches!(
-                    trusted(Path::new(root)),
+                    refuse_volume_root(Path::new(root)),
                     Err(OpenError::AtVolumeRoot { .. })
                 ),
                 "{root}"
             );
         }
-        trusted(Path::new(r"C:\x\.stemma")).unwrap();
-        trusted(Path::new(r"\\?\C:\x\.stemma")).unwrap();
+        refuse_volume_root(Path::new(r"C:\x\.stemma")).unwrap();
+        refuse_volume_root(Path::new(r"\\?\C:\x\.stemma")).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_user_owns_what_the_user_creates() {
+        let dir = TempDir::new();
+        trusted(dir.path()).unwrap();
+        assert!(matches!(
+            trusted(&dir.path().join("missing")),
+            Err(OpenError::Io { .. })
+        ));
     }
 
     #[cfg(unix)]

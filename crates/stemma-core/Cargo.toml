@@ -17,6 +17,16 @@ unicode-normalization = "0.1.26"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.5", default-features = false, features = ["std", "process"] }
 
+# The owner SID of a `.stemma` and the SIDs of the token of the process, for the same check on
+# Windows (ADR-009, STEMMA-73). The version is the one that the tree already has.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 # `cargo fuzz` builds with `--cfg fuzzing`, which turns on the checks of the fuzz targets
 # (`src/fuzz.rs`, `fuzz/`).
 [lints.rust]
