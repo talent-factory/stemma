@@ -12,7 +12,7 @@
 mod common;
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -77,7 +77,10 @@ fn interrupt_a_snapshot() -> Result<(), &'static str> {
         .unwrap();
     }
     let lock = dir.path().join(".stemma").join("refs.lock");
+    // Stderr is kept to name the reason when the test fails, for example a handler that could not
+    // be installed.
     let mut child = stemma(dir.path(), &["track", "--actor", ACTOR, "."])
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let start = Instant::now();
@@ -95,19 +98,39 @@ fn interrupt_a_snapshot() -> Result<(), &'static str> {
     // SAFETY: the call reads two integers and touches no memory of this program.
     let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
     if sent == 0 {
-        // Not a miss to try again: the event needs the console of this process, and without
-        // one the test cannot show anything.
         let error = io::Error::last_os_error();
+        // A command that ended on its own took its process group with it: a miss to try again.
+        if child.try_wait().unwrap().is_some() {
+            return Err("the command ended before the event");
+        }
+        // Otherwise the event needs the console of this process, and without one the test cannot
+        // show anything.
         let _ = child.kill();
         let _ = child.wait();
         panic!("GenerateConsoleCtrlEvent failed: {error}");
     }
-    let status = child.wait().unwrap();
+    // A handler that does not end the command must fail the test and not hang it.
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the command did not end 30 seconds after the event");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     if status.success() {
         // The command ended between the check of the lock and the event.
         return Err("the command ended before the event");
     }
-    assert_eq!(status.code(), Some(130), "{status:?}");
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    assert_eq!(status.code(), Some(130), "{status:?}, stderr: {stderr:?}");
     assert!(!lock.exists(), "the interrupted command removed its lock");
     let status = stemma(dir.path(), &["status", "--actor", ACTOR])
         .status()
