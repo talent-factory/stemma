@@ -104,10 +104,13 @@ impl Classify for RefError {
             Self::Locked { .. } => FailureKind::Locked,
             Self::Corrupt { .. } => FailureKind::Damaged,
             Self::Store(error) => error.kind(),
-            // A branch or the working-copy commit that moved is the caller's stale view, not a
-            // held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at 1).
-            // `StaleWorkingCopy` is the same case for the working-copy commit.
-            Self::Stale { .. } | Self::StaleWorkingCopy { .. } => FailureKind::Other,
+            // A branch, HEAD, or the working-copy commit that moved is the caller's stale view, not
+            // a held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at
+            // 1). `StaleHead` and `StaleWorkingCopy` are the same case for HEAD and the
+            // working-copy commit.
+            Self::Stale { .. } | Self::StaleHead { .. } | Self::StaleWorkingCopy { .. } => {
+                FailureKind::Other
+            }
             // A pointer that a purge moves is at neither of its journal values. A person has to
             // look at it, but the variant also stands for a plain race after a lock removed by
             // hand, so it is not called damage here; `purge --resume` says what to do.

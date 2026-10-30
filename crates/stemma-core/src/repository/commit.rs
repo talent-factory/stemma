@@ -762,6 +762,7 @@ mod tests {
         repository
             .set_head(
                 &operation,
+                &repository.refs().head().unwrap(),
                 &Head::Detached(first.commit),
                 &actor(),
                 &AllowAll,

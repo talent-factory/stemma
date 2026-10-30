@@ -2,7 +2,7 @@
 
 **Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
-The open items move to Phase 3 (a compare-and-swap for HEAD) and to Phase 5
+The open items move to Phase 5
 (remote references); tags and packed references have no phase yet, and the rename on Windows
 waits for the CI run (STEMMA-33).
 
@@ -49,8 +49,18 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   (`None` for a branch that does not exist) and fails with `Stale` otherwise. It checks that `new`
   is a commit that the object store has, so a branch cannot point to an object that is missing, or
   to a tree. As for `Index::write_tree` (ADR-005), no caller can forget a check. HEAD to a commit
-  is checked the same way. `delete_branch(name, expected)` is the same swap with a required
-  `expected`; a missing branch is `Stale` with `found` `None`.
+  is checked the same way.
+  HEAD has the same compare-and-swap *(STEMMA-53)*: `replace_head(expected, head, objects)` and
+  `Repository::set_head(operation, expected, head, ...)` change HEAD only if it still is `expected`
+  and fail with `StaleHead` otherwise, under the same lock, so of two racing changes (two
+  `checkout`) the later one fails and does not replace the first. A HEAD that is missing or
+  damaged is an error there, not a value to compare. The unconditional `RefStore::set_head`
+  stays for what writes HEAD first (`init`) and has no value to compare.
+  `update_branch` keeps `Option<CommitId>` for `expected`: `None` means "the branch has to be
+  new", the doc comment and the message of `Stale` say so, and no caller has misread it; an
+  `Expected { Absent, At(commit) }` would change over a hundred call sites for no failure seen.
+  `delete_branch(name, expected)` is the same swap with a required `expected`; a missing branch is
+  `Stale` with `found` `None`.
 - **One lock for all changes** *(confirmed)*. The check, the comparison, and the write happen while
   the file `<metadata directory>/refs.lock` exists. It is created with "create new" and holds a
   token that only the process that made it knows; it is removed when the change ends, but only if it
@@ -165,9 +175,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - [ ] Tags.
 - [x] Checking that the branches and HEAD of a repository point to commits that the store has
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.
-- [ ] `set_head` replaces HEAD whatever it was; a compare-and-swap for HEAD when `checkout` needs
-      it. `Expected { Absent, At(commit) }` in place of `Option` for `update_branch`, if the
-      meaning of `None` (the branch has to be new) proves easy to misread.
+- [x] A compare-and-swap for HEAD (`replace_head`, `Repository::set_head` with `expected`,
+      `StaleHead`, STEMMA-53), see the decision above. `Expected { Absent, At(commit) }` in place
+      of `Option` for `update_branch` is not made; open it again if `None` is misread.
 - [x] A lock that a crashed process left behind: the guard of the lock (STEMMA-51), see the
       decision above.
 - [ ] The behavior of the replacing rename on Windows is tested only by the CI workflow run by

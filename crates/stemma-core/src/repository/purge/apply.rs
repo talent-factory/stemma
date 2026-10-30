@@ -1382,7 +1382,13 @@ mod tests {
         // A move of a pointer is refused under the lock as well, also by the lock of the crash.
         let operation = OperationName::try_new("checkout").unwrap();
         let error = repository
-            .set_head(&operation, &Head::Detached(first), &actor(), &AllowAll)
+            .set_head(
+                &operation,
+                &repository.refs().head().unwrap(),
+                &Head::Detached(first),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap_err();
         assert!(
             matches!(error, UpdateError::Refs(RefError::PurgePending { .. })),
@@ -1691,7 +1697,13 @@ mod tests {
         let [_, second, _] = history(&dir, &repository);
         let operation = OperationName::try_new("checkout").unwrap();
         repository
-            .set_head(&operation, &Head::Detached(second), &actor(), &AllowAll)
+            .set_head(
+                &operation,
+                &repository.refs().head().unwrap(),
+                &Head::Detached(second),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap();
         let purged = apply(&repository);
         let moved = purged.plan().head().unwrap();
@@ -1764,7 +1776,13 @@ mod tests {
         let [first, second, _] = history(&dir, &repository);
         let operation = OperationName::try_new("checkout").unwrap();
         repository
-            .set_head(&operation, &Head::Detached(second), &actor(), &AllowAll)
+            .set_head(
+                &operation,
+                &repository.refs().head().unwrap(),
+                &Head::Detached(second),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap();
         stop_at(&repository, Stop::Objects);
         fs::write(
