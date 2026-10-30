@@ -3,8 +3,8 @@
 //! Exit codes: 0 for success, 1 for a command that fails, 2 for arguments that are wrong (the code
 //! of the argument parser), 4 for `diff --exit-code` when a file differs, 5 for damage, 6 for a
 //! held lock (both below), and 3 for a command that has done its work but could not finish: the
-//! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`, and
-//! `op restore`) writing the result failed after the work was made, or a `commit` moved one of
+//! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`,
+//! `tag`, and `op restore`) writing the result failed after the work was made, or a `commit` moved one of
 //! its two pointers and not the other. A script must not remove or repeat what such a command
 //! made; only the next `commit` after a half-made one finishes it, and the message of that call is
 //! not used. The exception is an `op restore` that moved some pointers and not all: it is code 3,
@@ -19,7 +19,8 @@
 //! no failure there, as the log names the entry of a purge, an abort leaves the repository as it
 //! was before the purge, and nothing can undo either.
 //!
-//! A command that only reads (`log`, `op log`, `status`, `op restore --dry-run`, and `purge` without
+//! A command that only reads (`log`, `op log`, `status`, `tag` without a name, `op restore
+//! --dry-run`, and `purge` without
 //! `--apply`, `--resume`, or `--abort`) has made nothing by its output, so a failed write of its
 //! output is code 1; some of the output may already be written, and a script discards it. A
 //! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
@@ -39,7 +40,7 @@
 //! at 1.
 //!
 //! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
-//! log (`track`, `commit`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
+//! log (`track`, `commit`, `tag`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
@@ -115,6 +116,8 @@ enum Command {
     Diff(DiffArgs),
     /// Show the commits that lead to the working-copy commit, children before parents
     Log(LogArgs),
+    /// Create a tag, a name for a commit that never moves; without a name, list the tags
+    Tag(TagArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -122,6 +125,37 @@ enum Command {
     },
     /// Remove a secret from the history and the log; without --apply, only show what it would do
     Purge(PurgeArgs),
+}
+
+#[derive(Debug, Args)]
+struct TagArgs {
+    /// The name of the tag, with the rules of a branch name; without it, the tags are listed
+    #[arg(value_name = "NAME")]
+    name: Option<BranchName>,
+
+    /// The ID of the commit to tag, `b3:` and 64 hexadecimal digits; by default the commit that
+    /// HEAD leads to (the tip of its branch)
+    #[arg(value_name = "COMMIT", requires = "name")]
+    commit: Option<ObjectId>,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required to create a tag
+    /// unless the environment sets STEMMA_ACTOR
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+
+    /// Write JSON objects instead of text (the schema of ADR-018)
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -588,6 +622,28 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The core refused the tag or could not make it. An entry of the log can name a tag that
+    /// was not made ([`UpdateError::MoveFailed`]).
+    Tag(UpdateError),
+    /// `tag` could not read the references.
+    TagRefs(RefError),
+    /// `tag` has no commit to tag: no commit is given and the branch of HEAD has none yet.
+    NoCommitToTag,
+    /// The tags were read, but the output could not be written.
+    TagWrite {
+        /// The tag that was being written.
+        name: String,
+        /// The error of the output.
+        source: io::Error,
+    },
+    /// The tag is made and recorded in the log, but the result could not be written to the output.
+    /// A script must not repeat the command: the tag exists and never moves.
+    TagOutput {
+        /// The tag and its commit, as the output would have named them.
+        made: String,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The history cannot be read: a commit is absent, damaged, or the store failed.
     History(HistoryError),
     /// `log` could not read the working-copy pointer.
@@ -688,6 +744,7 @@ impl CliError {
             | Self::TrackOutput { .. }
             | Self::CommitNotDurable { .. }
             | Self::CommitOutput { .. }
+            | Self::TagOutput { .. }
             | Self::StatusNotDurable { .. }
             | Self::PurgedOutput { .. }
             | Self::RestoreOutput {
@@ -707,6 +764,7 @@ impl CliError {
                 ExitCode::from(3)
             }
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
+            Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
             Self::Diff(error) if error.not_durable() => ExitCode::from(3),
@@ -725,6 +783,8 @@ impl CliError {
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
             Self::History(error) => by_kind(error.kind()),
+            Self::Tag(error) => by_kind(error.kind()),
+            Self::TagRefs(error) => by_kind(error.kind()),
             // `init` writes the file, so a repository without it lost it: damage, as for `op log`.
             Self::LogRefs(RefError::NoWorkingCopy { .. }) => ExitCode::from(5),
             Self::LogRefs(error) => by_kind(error.kind()),
@@ -749,6 +809,8 @@ impl CliError {
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
             | Self::LogWrite { .. }
+            | Self::NoCommitToTag
+            | Self::TagWrite { .. }
             | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
@@ -971,6 +1033,22 @@ impl fmt::Display for CliError {
                 }
                 Ok(())
             }
+            Self::Tag(error) => error.fmt(f),
+            Self::TagRefs(error) => write!(f, "could not read the references: {error}"),
+            Self::NoCommitToTag => f.write_str(
+                "there is no commit to tag: the branch of HEAD has none yet; name a commit",
+            ),
+            Self::TagOutput { made, source } => write!(
+                f,
+                "the tag {made} is made, but the result could not be written to standard output: \
+                 {source}"
+            ),
+            Self::TagWrite { name, source } => {
+                write!(
+                    f,
+                    "could not write the tag {name} to standard output: {source}"
+                )
+            }
             Self::LogWrite { commit, source } => {
                 write!(
                     f,
@@ -1052,6 +1130,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Op {
             command: OpCommand::Verify(args),
         } => verify_op_log(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Tag(args) => tag(args, out).map(|()| ExitCode::SUCCESS),
         Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
     }
 }
@@ -1460,6 +1539,11 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         .filter_map(oplog::Entry::change)
         .flat_map(|change| change.branches().iter().map(|(name, _)| name))
         .collect();
+    let tag_names: BTreeSet<&BranchName> = entries
+        .iter()
+        .filter_map(oplog::Entry::change)
+        .flat_map(|change| change.tags().iter().map(|(name, _)| name))
+        .collect();
     let read = || -> Result<_, RefError> {
         let refs = repository.refs();
         let locked_before = refs.is_locked()?;
@@ -1477,19 +1561,26 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
                 branches.push(((*name).clone(), commit));
             }
         }
+        let mut tags = Vec::new();
+        for name in &tag_names {
+            if let Some(commit) = refs.tag(name)? {
+                tags.push(((*name).clone(), commit));
+            }
+        }
         let locked_after = refs.is_locked()?;
         Ok((
             head,
             working_copy,
             owner,
             branches,
+            tags,
             locked_before || locked_after,
         ))
     };
     let current = match read() {
-        Ok((head, working_copy, owner, branches, locked)) => {
+        Ok((head, working_copy, owner, branches, tags, locked)) => {
             let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
-            let current = oplog::Current::new(head, branches, !locked && unchanged);
+            let current = oplog::Current::new(head, branches, !locked && unchanged).with_tags(tags);
             Some(match working_copy {
                 Some(commit) => current.with_working_copy(Some(commit)).with_owner(owner),
                 None => {
@@ -1905,6 +1996,77 @@ fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Resul
         }),
         None => Ok(()),
     }
+}
+
+/// Creates the tag `NAME` at a commit, or lists the tags if no name is given (ADR-008). Creating
+/// writes the operation `tag` to the operation log (the core asks the authorizer for it, and the
+/// command passes `AllowAll` until the policy of phase 4 exists); listing only reads. A tag that exists is refused, at this commit or at another, because a tag never moves.
+fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let Some(name) = args.name else {
+        return list_tags(&args.repository, args.json, out);
+    };
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let commit = match args.commit {
+        Some(id) => id,
+        None => repository
+            .refs()
+            .resolve_head()
+            .map_err(CliError::TagRefs)?
+            .ok_or(CliError::NoCommitToTag)?
+            .object_id(),
+    };
+    let operation = oplog::OperationName::try_new("tag").expect("`tag` is an operation name");
+    repository
+        .create_tag(&operation, &name, commit, &actor, &AllowAll)
+        .map_err(CliError::Tag)?;
+    let text = if args.json {
+        tag_json(&name, commit)
+    } else {
+        format!("Tagged {name} at {commit}\n")
+    };
+    match out.write_all(text.as_bytes()) {
+        // The reader of a pipe, such as `head`, has had enough: that is not a failure.
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(CliError::TagOutput {
+            made: format!("{name} at {commit}"),
+            source,
+        }),
+        Ok(()) => Ok(()),
+    }
+}
+
+/// The JSON object of a tag (ADR-018).
+fn tag_json(name: &BranchName, commit: impl fmt::Display) -> String {
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"tag\":{},\"commit\":{}}}\n",
+        op_log::quote(name.as_str()),
+        op_log::quote(&commit.to_string())
+    )
+}
+
+/// Lists the tags with their commits, sorted by name.
+fn list_tags(dir: &Path, json: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = open(dir)?;
+    let tags = repository.refs().tags().map_err(CliError::TagRefs)?;
+    for (name, commit) in tags {
+        let text = if json {
+            tag_json(&name, commit)
+        } else {
+            format!("{name} {commit}\n")
+        };
+        match out.write_all(text.as_bytes()) {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(source) => {
+                return Err(CliError::TagWrite {
+                    name: name.to_string(),
+                    source,
+                })
+            }
+            Ok(()) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Reports what the working copy changes and which files are not tracked. The core saves the

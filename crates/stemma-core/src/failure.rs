@@ -323,6 +323,7 @@ impl Classify for RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::TagsOnly { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => FailureKind::Other,

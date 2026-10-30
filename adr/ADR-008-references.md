@@ -2,9 +2,10 @@
 
 **Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1. The decision on
-tags (STEMMA-54) was taken on 2026-10-29 and implemented in the store; its use is open.
-The open items move to Phase 5 (remote references); the use of tags (log, command, restore) and
-packed references have no phase yet, and the rename on Windows waits for the CI run (STEMMA-33).
+tags (STEMMA-54) was taken on 2026-10-29 and implemented in the store; the operation `tag` and
+the command followed on 2026-10-30 (STEMMA-183). The open items move to Phase 5 (remote
+references); deleting a tag and packed references have no phase yet, and the rename on Windows
+waits for the CI run (STEMMA-33).
 
 ## Context
 
@@ -118,16 +119,18 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   `<metadata directory>/refs/tags/<name>` is a file in the form of a branch file: the ID of a
   commit and a newline. A tag has no object of its own, so there is no new object kind
   (ADR-005) and no message; a note can be added later as an object without changing any ID. Who
-  set the tag and when will be in the operation log (ADR-011) once the operation `tag` exists
-  (open item). A tag name follows the rules of a branch name and the checks of a branch (one name
+  set the tag and when is in the operation log (ADR-011): `Repository::create_tag` writes an
+  entry of the operation `tag` before it makes the tag, and `stemma tag` calls it
+  (STEMMA-183). A tag name follows the rules of a branch name and the checks of a branch (one name
   per file system entry, no case variants), in its own directory, so a tag and a branch may have
   the same name, and the two are checked each among themselves. `create_tag` fails with
   `TagExists` if the tag exists, at this commit or at another: a release that someone has read
   must keep its meaning, and the answer is no lost race that a caller could retry (`Stale` is for
   a branch). A tag that was set wrongly is deleted and set again, which belongs to the deletion
-  of references (open item); ADR-004 does not classify it yet. A repository from before the
+  of references (open item). The operation `tag` is level 2 (ADR-004). A repository from before the
   tags has no `refs/tags/`, which is no tags; the directory is made by the first tag.
-- **Until the following items are done, tags are only partly known** *(STEMMA-54)*.
+- **Tags are partly known** *(STEMMA-54, STEMMA-183)*. Still open: deleting a tag, a purge of a
+  tagged commit, and a name that is both a branch and a tag.
   `verify` checks the commits of the tags. A purge refuses (`TaggedCommit`) while a tag points
   to a commit that it would rewrite, because a tag cannot move (ADR-014). A restore does not
   touch tags: they are not part of the state it brings back, and a tag that a later entry
@@ -192,9 +195,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above.
 - [ ] Packed references, when there are many branches.
 - [x] Tags: layout, plain pointer, never moves (STEMMA-54), see the decision above. The store
-      has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. Still open: the
-      operation `tag` in the operation log (ADR-011) and the command, deleting a tag (with
-      `delete_branch`) and its level in ADR-004, how a purge deals with a tag on a commit that it
+      has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. The operation
+      `tag` in the operation log (ADR-011), its level (ADR-004), and the command `stemma tag`
+      are done (STEMMA-183). Still open: deleting a tag (with `delete_branch`), how a purge deals with a tag on a commit that it
       rewrites (today it refuses), and the name that is both a branch and a tag, for a command
       that resolves names.
 - [x] Checking that the branches, tags, and HEAD of a repository point to commits that the store

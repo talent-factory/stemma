@@ -64,6 +64,8 @@ Die Prüfung ist nicht frei von Wettläufen (ADR-009).
 Ein Tag ist eine Datei unter \type{refs/tags/} in der Form einer Branch-Datei.
 Er wird einmal gesetzt und nie verschoben; ein vorhandener Tag ist ein Fehler,
 auch wenn er auf denselben Commit zeigt (ADR-008).
+\type{stemma tag} setzt ihn und schreibt zuvor einen Eintrag ins Operation Log
+(siehe \in{Abschnitt}[sec:tag-entry]).
 
 Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 4,
 die das Log mit der Hash-Kette kennzeichnet (siehe unten). Ein Repository der Version 2 oder 3
@@ -873,7 +875,7 @@ Ein Eintrag ist eine Textdatei, deren Name seine fortlaufende Nummer ist,
 zwölf Ziffern mit führenden Nullen (\type{000000000001});
 das Log hält damit höchstens 999'999'999'999 Einträge.
 Ein Eintrag nennt den Akteur, die Zeit, den Namen der Operation
-und für jeden geänderten Zeiger (HEAD, Working-Copy-Commit, Branches)
+und für jeden geänderten Zeiger (HEAD, Working-Copy-Commit, Branches, Tags)
 den alten und den neuen Wert:
 
 \starttyping
@@ -1097,6 +1099,39 @@ die ein Absturz zwischen Anlegen und Schreiben zurücklässt.
 Ohne Journal ist sie von Hand zu entfernen, wenn kein Befehl mehr läuft.
 \stopitemize
 \stopinfobox
+
+\subsection[sec:tag-entry]{Der Eintrag eines Tags}
+
+Ein Tag ist ein Zeiger wie ein Branch, aber er bewegt sich nie. Die Operation \type{tag}
+folgt darum derselben Regel wie jede andere (siehe \in{Abschnitt}[sec:pointer-move]):
+Unter der Sperre der Referenzen prüft sie den Namen und den Commit, schreibt und flusht den
+Eintrag, und erst dann legt sie die Datei unter \type{refs/tags/} an.
+Ein Tag, den es gibt, ist ein Fehler und schreibt keinen Eintrag, auch wenn er auf denselben
+Commit zeigt; ein Release, das jemand gelesen hat, behält seine Bedeutung.
+
+Der Eintrag trägt eine Zeile \type{tag NAME} mit dem alten Wert \type{-} und der ID des Commits.
+Sie steht unter den Zeilen der Branches, nach Namen sortiert wie diese. Ein Tag und ein Branch
+dürfen denselben Namen haben, denn jeder hat sein eigenes Verzeichnis; die beiden Listen im
+Eintrag sind darum getrennt, und ein Name ist nur innerhalb einer Liste eindeutig.
+
+\starttyping
+stemma-oplog 3
+number 5
+time 1700000000
+actor human daniel
+previous b3:7f0c…91aa
+operation tag
+tag v1 - b3:4feb…b32c
+\stoptyping
+
+Wer einen Tag gesetzt hat und wann, steht damit im Log: im Akteur und in der Zeit des Eintrags.
+Das Format bekommt dafür keine neue Version. Ein Leser, der die Zeile \type{tag} nicht kennt,
+lehnt den Eintrag als unbekannten Zeiger ab; das ist richtig, denn er könnte nicht sagen, was der
+Eintrag tat. Den Ausgang liest \type{op log} am Tag, wie er jetzt ist (siehe
+\in{Abschnitt}[sec:outcome]). Eine Wiederherstellung rührt Tags nicht an (ADR-013): Sie gehören
+nicht zum Zustand, den \type{op restore} zurückbringt, und der Befehl lehnt darum einen Eintrag
+ab, der nur Tags gesetzt hat. Ein Purge lehnt einen Commit ab, auf den
+ein Tag zeigt (ADR-014).
 
 \subsection[sec:oplog-tip]{Nummern und die Datei \type{oplog-tip}}
 

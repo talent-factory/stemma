@@ -47,6 +47,8 @@ The machine-readable policy file, which enforces it, is part of phase 4.
   of the code that reads it is level 1.
 - Operations at run time are no paths (see the first open point): `restore` is level 2 for the
   change that implements it, and the command itself asks the authorizer, not the review.
+  The same holds for `tag` (ADR-008, ADR-011): it is level 2, because it sets a name that never
+  moves and a release may rely on it, and it asks the authorizer for the operation `tag`.
 
 ## Open Points
 

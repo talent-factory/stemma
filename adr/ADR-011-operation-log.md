@@ -363,10 +363,21 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - The first five lines, with the header, come in this order, each once. `operation` is a
   lowercase name of letters, digits, and `-`, starting with a letter.
 - Then come the lines of the pointers that changed, at least one: `head`, then `working-copy`,
-  then `branch <name>` for each branch, sorted by name in UTF-8 byte order. Each has the old and
-  the new value; `-` means that the pointer did not exist or does not exist any more.
-- A branch and the working-copy commit have a commit ID or `-`. HEAD has `branch:<name>` or
-  `commit:<id>` or `-`.
+  then `branch <name>` for each branch, sorted by name in UTF-8 byte order, then `tag <name>` for
+  each tag, sorted in the same way. Each has the old and the new value; `-` means that the
+  pointer did not exist or does not exist any more.
+- A branch, a tag, and the working-copy commit have a commit ID or `-`. HEAD has `branch:<name>`
+  or `commit:<id>` or `-`.
+- A tag never moves (ADR-008), so the line of the operation `tag` is `tag <name> - <commit>`.
+  The line is part of encodings 1 and 3 and needs no new version: an entry without a tag line
+  reads as before, and a reader from before the operation `tag` rejects the line as an unknown
+  pointer, which is right, since it cannot say what the entry did. A tag and a branch may have
+  the same name (ADR-008), so the two lists are separate, and a name is unique within each.
+  The operation `tag` is level 2 (ADR-004). Who set a tag and when is the actor and the time of
+  its entry. The outcome of the entry is read from the tag as it is now: the tag exists with the
+  commit of the entry (took effect), or it does not exist and no writer is at work (did not).
+  A restore does not touch tags (ADR-013), so `op restore` refuses an entry that only made
+  tags.
 - The file ends with a newline and has no message and no further lines.
 - Version 2 of the encoding is written only for a stub and for the entry of a purge (ADR-014,
   STEMMA-47). A stub has the header, `number`, `time`, `actor`, and the line `stub`. A `purge`

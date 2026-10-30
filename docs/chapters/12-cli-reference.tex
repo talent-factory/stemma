@@ -1187,6 +1187,66 @@ stemma log -n 5 -C projekt
 stemma log --first-parent --json | head -1
 \stoptyping
 
+\section{tag}
+
+Setzt einen Tag auf einen Commit, oder listet die Tags, wenn kein Name folgt (ADR-008).
+
+\starttyping
+stemma tag [-C VERZEICHNIS] [--actor AKTEUR] [--json] NAME [COMMIT]
+stemma tag [-C VERZEICHNIS] [--json]
+\stoptyping
+
+\startitemize
+\item {\bf NAME:} Der Name des Tags, nach den Regeln eines Branch-Namens. Ohne ihn listet der
+Befehl die Tags.
+\item {\bf COMMIT:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern. Ohne sie nimmt der
+Befehl den Commit, zu dem HEAD führt: die Spitze des Branches von HEAD, bei einem abgekoppelten
+HEAD dessen Commit. Hat der Branch noch keinen Commit, ist das ein Fehler.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt: \type{human <id>} oder
+\type{agent <id> model=<model> session=<session> sponsor=<sponsor>}. Er ist nötig, wenn der Befehl
+einen Tag setzt; fehlt die Option, gilt \type{STEMMA_ACTOR}. Beim Auflisten braucht der Befehl
+keinen Akteur.
+\item {\bf \type{--json}:} Schreibt je Tag ein JSON-Objekt pro Zeile statt Text.
+\stopitemize
+
+Ein Tag ist ein Zeiger, der sich nie bewegt. Die Operation \type{tag} ist Stufe 2 (ADR-004);
+der Kern fragt den Autorisierer danach, der Befehl übergibt bis zur Richtlinie der Phase 4
+\type{AllowAll}. Der Befehl prüft unter der Sperre der Referenzen den Namen und den Commit,
+schreibt den Eintrag \type{tag} ins Operation Log und legt dann erst die Datei
+\type{refs/tags/NAME} an (ADR-011). Der Eintrag nennt Akteur und Zeit; wer einen Tag gesetzt hat
+und wann, steht also im Log (\type{stemma op log}). Das Setzen ändert weder die Arbeitskopie noch
+HEAD und macht keinen Snapshot.
+
+{\bf Textform.} Beim Setzen eine Zeile \type{Tagged NAME at COMMIT}. Beim Auflisten je Tag eine
+Zeile \type{NAME COMMIT}, nach Name sortiert.
+
+{\bf JSON-Form.} Je Zeile die Felder \type{schema} (heute 1), \type{tag} und \type{commit}.
+
+{\bf Fehler.} Ein Tag, den es gibt, lehnt der Befehl ab, auch wenn er auf denselben Commit zeigt:
+Ein Release, das jemand gelesen hat, behält seine Bedeutung (ADR-008). Das ist kein Wettlauf,
+den ein Skript wiederholen könnte; der Befehl endet mit Exit-Code 1 und schreibt keinen Eintrag.
+Dasselbe gilt für einen Namen, der im Weg steht (etwa \type{a} neben dem Tag \type{a/b}) und
+einen Commit, der nicht im Objektspeicher liegt oder ein anderes Objekt ist.
+Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6. Ist ein Fehler
+des Dateisystems nach dem Eintrag eingetreten, steht im Log ein Eintrag für einen Tag, den es nicht
+gibt; \type{op log} markiert ihn mit \type{!}. Konnte nur das Verzeichnis nicht auf den
+Datenträger geschrieben werden, ist der Tag gesetzt, und der Exit-Code ist 3.
+Ebenso endet der Befehl mit Exit-Code 3, wenn der Tag gesetzt ist, aber die Ausgabe sich nicht
+schreiben lässt (die Meldung nennt den Tag); ein Skript wiederholt den Befehl dann nicht, denn ein
+zweiter Aufruf scheitert an dem Tag, den es nun gibt. Beim Auflisten ist eine Ausgabe, die sich
+nicht schreiben lässt, Exit-Code 1. Beschädigte Referenzen enden mit Exit-Code 5.
+Einen Tag löschen kann der Befehl noch nicht (ADR-008).
+
+{\bf Beispiele.}
+
+\starttyping
+stemma tag v1 --actor "human daniel"
+stemma tag v0.9 b3:1111...1111 --actor "human daniel"
+stemma tag --json
+\stoptyping
+
 \section{op log}
 
 Zeigt das Operation Log (ADR-011), die neuesten Einträge zuerst.
@@ -1228,10 +1288,20 @@ trennen.
 
 (Im Beispiel sind die Commit-IDs gekürzt; der Befehl gibt sie vollständig aus.)
 
+{\bf Tags.} Der Eintrag von \type{tag} (siehe \type{stemma tag}) zeigt den Tag als Zeile
+\type{tag NAME}; der alte Wert ist immer \type{-}, denn ein Tag bewegt sich nie (ADR-008).
+Den Ausgang liest der Befehl am Tag, wie er jetzt ist: Er existiert mit dem Commit des Eintrags,
+oder er existiert nicht (ohne Schreiber am Werk).
+
+\starttyping
+5  2023-11-14T22:20:00Z  human daniel  tag
+    tag v1  - -> b3:2222...2222
+\stoptyping
+
 {\bf Übernahme.} Der Eintrag von \type{take-over} macht seinen Akteur zum Eigentümer der
 Arbeitskopie (ADR-010). Der Eigentümer ist kein Zeiger, also folgt keine eingerückte Zeile;
 die JSON-Form hat \type{head} und \type{working_copy} mit \type{null} und \type{branches}
-leer. Den Ausgang des neuesten solchen Eintrags liest der Befehl am Eigentümer, den
+und \type{tags} leer. Den Ausgang des neuesten solchen Eintrags liest der Befehl am Eigentümer, den
 \type{.stemma/working-copy} jetzt nennt: Ist es sein Akteur, fand die Übernahme statt,
 sonst nicht (ohne Schreiber am Werk). Ein älterer Eintrag \type{take-over} hat einen
 unbekannten Ausgang (\type{?}), denn der Eigentümer von heute stammt von einem späteren.
@@ -1264,13 +1334,16 @@ Purge.
 ein Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits} und \type{stubs}, eine
 Liste von Bereichen \type{[start, end]}. Für eine Änderung sind die weiteren Felder \type{time}
 (Sekunden seit dem 1.1.1970, wie im Eintrag), \type{actor}, \type{operation}, \type{head},
-\type{working_copy}, \type{branches}, \type{purge_pending} (\type{true}, wenn ein unfertiger Purge
+\type{working_copy}, \type{branches}, \type{tags}, \type{purge_pending}
+(\type{true}, wenn ein unfertiger Purge
 den Eintrag nennt) und \type{took_effect}. \type{took_effect} ist \type{true}, wenn die
 Zeigerbewegung stattfand, \type{false}, wenn sie nicht stattfand, und \type{null}, wenn das Log und
 die Referenzen es nicht entscheiden. \type{head} und \type{working_copy} sind \type{null}, wenn die
 Operation den Zeiger nicht berührt hat, sonst ein Objekt mit \type{old} und \type{new}.
 \type{branches} ist eine Liste von Objekten mit \type{name}, \type{old} und \type{new}, leer wenn
-kein Branch sich bewegt hat. Ein Wert, den es nicht gibt, ist \type{null}.
+kein Branch sich bewegt hat. \type{tags} hat dieselbe Form für die Tags, die der Eintrag
+gesetzt hat (\type{old} ist \type{null}); das Feld kam ohne neues \type{schema} dazu, denn ein Feld
+hinzuzufügen ändert es nicht (ADR-018). Ein Wert, den es nicht gibt, ist \type{null}.
 HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
@@ -1512,7 +1585,9 @@ Das gilt auch für \type{--dry-run}.
 Eintrag nicht im Log steht, der Ausgang unbekannt ist und \type{--force} fehlt, oder der Eintrag
 HEAD oder den Working-Copy-Commit angelegt hat (das tut nur der erste Eintrag, und beide können
 nicht fehlen). Ebenso endet er bei einem Stub, denn was der Eintrag bewegt hat, ist mit dem Purge
-weg, beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-014), und bei
+weg, beim Eintrag eines Purge, denn ein Purge lässt sich nicht zurücksetzen (ADR-014), bei
+einem Eintrag, der nur Tags gesetzt hat (\type{tag}), denn ein Tag bewegt sich nie und gehört nicht
+zum Zustand, den der Befehl zurückbringt (ADR-008, ADR-013), und bei
 einem Eintrag, den ein Purge nennt, der noch nicht fertig ist;
 diese Fälle hebt auch \type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren
 Zeigerbewegungen niemand mehr kennt; der Ausgang jedes Eintrags vor dem jüngsten Stub ist deshalb

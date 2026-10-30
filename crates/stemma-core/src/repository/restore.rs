@@ -333,6 +333,15 @@ impl Repository {
             Record::Stub(_) => return Err(RestoreError::Purged { number }),
             Record::Purge(_) => return Err(RestoreError::IsPurge { number }),
         };
+        // A restore puts back head, working copy, and branches (ADR-013). An entry that only made
+        // tags has nothing of that, and its tags stay, so the restore says so and is refused.
+        if change.head().is_none()
+            && change.working_copy().is_none()
+            && change.branches().is_empty()
+            && !change.tags().is_empty()
+        {
+            return Err(RestoreError::TagsOnly { number });
+        }
         if pending_stubs(&entries).contains(&number) {
             return Err(RestoreError::PurgePending { number });
         }
@@ -431,16 +440,28 @@ impl Repository {
                 branches.push((name.clone(), commit));
             }
         }
+        let tag_names: BTreeSet<&BranchName> = entries
+            .iter()
+            .filter_map(Entry::change)
+            .flat_map(|change| change.tags().iter().map(|(name, _)| name))
+            .collect();
+        let mut tags = Vec::new();
+        for name in tag_names {
+            if let Some(commit) = refs.tag(name).map_err(RestoreError::Refs)? {
+                tags.push((name.clone(), commit));
+            }
+        }
         let locked_after = refs.is_locked().map_err(RestoreError::Refs)?;
         let current = Current::new(head, branches, !(locked_before || locked_after))
             .with_working_copy(Some(working_copy))
+            .with_tags(tags)
             .with_owner(owner);
         Ok(outcomes(entries, Some(&current))[position])
     }
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `PurgePending`,
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`, `PurgePending`,
 /// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
 /// those with an `entry` wrote it.
 #[derive(Debug)]
@@ -465,6 +486,13 @@ pub enum RestoreError {
     /// The entry is that of a purge, which cannot be restored: it removed history for good
     /// (ADR-014).
     IsPurge {
+        /// The number.
+        number: u64,
+    },
+    /// The entry only made tags. A restore puts back HEAD, the working-copy commit, and the
+    /// branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so the
+    /// restore is refused and no file is written.
+    TagsOnly {
         /// The number.
         number: u64,
     },
@@ -571,6 +599,7 @@ impl RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::TagsOnly { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
@@ -643,6 +672,11 @@ impl fmt::Display for RestoreError {
             Self::IsPurge { number } => write!(
                 f,
                 "entry {number} is a purge, which removed history for good and cannot be restored"
+            ),
+            Self::TagsOnly { number } => write!(
+                f,
+                "entry {number} only made tags, which a restore does not touch (a tag never moves), \
+                 so there is nothing to restore"
             ),
             Self::PurgePending { number } => write!(
                 f,
@@ -755,6 +789,7 @@ impl Error for RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::TagsOnly { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
