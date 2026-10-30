@@ -99,10 +99,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   must be the user SID or the default owner SID of the token of the process (`OtherOwner`
   otherwise), at `start` as well as above it, as Git for Windows checks for `safe.directory`;
   the default owner is the group of administrators for an elevated process. The owner of the
-  target counts there, as the API follows a link. A `.stemma` above `start` must also not be at
-  the root of a volume, where every user may create directories (`AtVolumeRoot`), even when the
-  user owns it; one at `start` is opened there, as `-C` reaches the root of a volume only when
-  it names it, and the message gives that call.
+  entry itself counts, as on Unix: a link or a junction in the place of `.stemma` is refused
+  (`NotADirectory`), because the API would name the owner of its target. A `.stemma` above
+  `start` must also not be at the root of a volume, where every user may create directories
+  (`AtVolumeRoot`), even when the user owns it; one at `start` is opened there, as `-C` reaches
+  the root of a volume only when it names it, and the message gives that call.
   The search also reports the nearest directory from the start, included, up to the root, not
   included, that holds a `.git`, a file in a Git worktree or a directory in a nested clone
   (`nested_git`, STEMMA-132). Such a command works in the repository of the root, and unless

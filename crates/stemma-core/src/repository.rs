@@ -1651,10 +1651,22 @@ fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
 }
 
 /// Whether the `.stemma` that the search found may be used: the user of the token of the process
-/// owns it, as Git for Windows checks for `safe.directory` (STEMMA-73). The owner is the one of
-/// the target of a link, since the API of Windows follows it.
+/// owns it, as Git for Windows checks for `safe.directory` (STEMMA-73). A link or a junction in
+/// its place is refused, since the API of Windows would name the owner of its target.
 #[cfg(windows)]
 fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    // The API follows a link or a junction, so the owner it names would be the one of the target
+    // and not of the entry that another user may have made: such an entry is not used.
+    let attributes = fs::symlink_metadata(metadata_dir)
+        .map_err(OpenError::io("inspect", metadata_dir))?
+        .file_attributes();
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(OpenError::NotADirectory {
+            path: metadata_dir.to_path_buf(),
+        });
+    }
     if windows_owner::is_the_user(metadata_dir)
         .map_err(OpenError::io("inspect the owner of", metadata_dir))?
     {
