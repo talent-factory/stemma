@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::fault;
 use crate::object::{
     hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
     TreeParseError, METADATA_DIR, PREFIX,
@@ -825,7 +826,7 @@ impl FsObjectStore {
             .map_err(io_error("flush the temporary file", &temp.path))?;
         drop(file);
 
-        match fs::rename(&temp.path, &path) {
+        match fault::rename(&temp.path, &path) {
             Ok(()) => temp.disarm(),
             Err(error) => {
                 // Another writer may have stored the object in the meantime. Only an object that
@@ -1100,7 +1101,7 @@ impl Drop for TempFile {
         if self.armed {
             // Best effort: a file that stays behind is harmless, because temporary names are
             // never reused, and the next writer that takes the lock removes it (ADR-011).
-            let _ = fs::remove_file(&self.path);
+            let _ = fault::remove_file(&self.path);
         }
     }
 }
@@ -1127,7 +1128,7 @@ pub(crate) fn create_temp(
     let mut last = dir.to_path_buf();
     for _ in 0..TEMP_ATTEMPTS {
         let path = dir.join(next_name());
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        match fault::create_new(&path) {
             Ok(file) => return Ok((file, TempFile { path, armed: true })),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = path,
             Err(error) => return Err(io_error(operation, &path)(error)),
@@ -1158,7 +1159,7 @@ pub(crate) fn create_temp(
 /// `tmp/`, which no writer makes, stays. A directory of the working copy whose name only starts
 /// like the one of `init` is content and stays.
 pub(crate) fn remove_scratch(root: &Path) {
-    if let Ok(entries) = fs::read_dir(root.join("tmp")) {
+    if let Ok(entries) = fault::read_dir(&root.join("tmp")) {
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|kind| !kind.is_dir()) {
                 remove_scratch_file(&entry.path());
@@ -1196,7 +1197,7 @@ fn remove_scratch_file(path: &Path) {
             }
         }
     }
-    let _ = fs::remove_file(path);
+    let _ = fault::remove_file(path);
 }
 
 /// The names in `<root>/tmp/` that are not directories, sorted: what [`remove_scratch`] could not
@@ -1204,7 +1205,7 @@ fn remove_scratch_file(path: &Path) {
 /// one that cannot be read is reported as itself, so the caller does not take it for empty.
 pub(crate) fn scratch_left(root: &Path) -> Vec<PathBuf> {
     let tmp = root.join("tmp");
-    let entries = match fs::read_dir(&tmp) {
+    let entries = match fault::read_dir(&tmp) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Err(_) => return vec![tmp],
@@ -1284,7 +1285,7 @@ pub(crate) fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreErr
         }
     }
     for created in missing.iter().rev() {
-        match fs::create_dir(created) {
+        match fault::create_dir(created) {
             Ok(()) => {}
             // Another writer was faster. Whether it is a directory shows when it is used.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1563,23 +1564,16 @@ mod tests {
         assert!(tmp.join("directory").is_dir());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_scratch_directory_that_cannot_be_read_is_named_and_not_taken_for_empty() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let tmp = dir.path().join("tmp");
         fs::create_dir(&tmp).unwrap();
         fs::write(tmp.join("a"), b"").unwrap();
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o000)).unwrap();
-        let readable = fs::read_dir(&tmp).is_ok();
+        let denied = fault::deny_reads_of(&tmp);
         let left = scratch_left(dir.path());
         remove_scratch(dir.path());
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
-        if readable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        drop(denied);
         assert_eq!(left, std::slice::from_ref(&tmp));
         assert!(tmp.join("a").exists(), "what cannot be reached stays");
     }
@@ -2865,10 +2859,8 @@ mod tests {
             .unwrap());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failed_rename_is_reported_with_its_error_and_the_temporary_file_is_removed() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let store = dir.store();
         let stored = Blob::new("hello").id();
@@ -2878,14 +2870,9 @@ mod tests {
             .unwrap()
             .to_path_buf();
         fs::create_dir_all(&fan_out).unwrap();
-        fs::set_permissions(&fan_out, fs::Permissions::from_mode(0o555)).unwrap();
-        // A process with the right to write anyway (root) cannot provoke the failure.
-        let writable = fs::write(fan_out.join("probe"), b"x").is_ok();
+        let denied = fault::deny_writes_in(&fan_out);
         let result = store.put_blob(&Blob::new("hello"));
-        fs::set_permissions(&fan_out, fs::Permissions::from_mode(0o755)).unwrap();
-        if writable {
-            return;
-        }
+        drop(denied);
         match result {
             Err(StoreError::Io {
                 operation, source, ..
