@@ -115,9 +115,9 @@ mod tests {
 
     use super::*;
     use crate::change::sample_change;
-    use crate::object::{Blob, BlobId, Commit, ObjectId, Tree, TreeId};
+    use crate::object::{Blob, BlobId, Commit, Kind, ObjectId, Tree, TreeId};
     use crate::properties::{cases, seed, Rng, DEFAULT_CASES, DEFAULT_SEED};
-    use crate::store::{sealed, RawObject, StoreError};
+    use crate::store::{sealed, RawObject, ReadError, StoreError};
     use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
     use crate::Actor;
 
@@ -165,6 +165,45 @@ mod tests {
         fn get(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
             self.reads.set(self.reads.get() + 1);
             self.inner.get(id)
+        }
+
+        fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
+            self.inner.contains(id)
+        }
+    }
+
+    /// A store that fails to read one object and serves everything else, to fail the read of a
+    /// parent while the tip reads fine.
+    struct FailingAt<'a> {
+        inner: &'a dyn ObjectStore,
+        id: ObjectId,
+    }
+
+    impl sealed::Sealed for FailingAt<'_> {}
+
+    impl ObjectStore for FailingAt<'_> {
+        fn put_blob(&self, blob: &Blob) -> Result<BlobId, StoreError> {
+            self.inner.put_blob(blob)
+        }
+
+        fn put_tree(&self, tree: &Tree) -> Result<TreeId, StoreError> {
+            self.inner.put_tree(tree)
+        }
+
+        fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError> {
+            self.inner.put_commit(commit)
+        }
+
+        fn get(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
+            if *id == self.id {
+                Err(StoreError::Io {
+                    operation: "read the object file",
+                    path: std::path::PathBuf::from("objects/b3/00/faulty"),
+                    source: std::io::Error::other(DISK_MESSAGE),
+                })
+            } else {
+                self.inner.get(id)
+            }
         }
 
         fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
@@ -267,6 +306,34 @@ mod tests {
     }
 
     #[test]
+    fn a_branching_history_is_walked_in_full_and_reads_each_commit_once() {
+        const DIAMONDS: i64 = 500;
+        let dir = TempDir::new();
+        let store = dir.store();
+        // A chain of diamonds: every step forks into two commits and merges them again, so each
+        // commit except the root is reachable over more than one path.
+        let mut tip = commit(&store, &[], 0);
+        let mut middle = tip;
+        let mut n = 1;
+        for step in 0..DIAMONDS {
+            let left = commit(&store, &[tip], n);
+            let right = commit(&store, &[tip], n + 1);
+            tip = commit(&store, &[left, right], n + 2);
+            n += 3;
+            if step == DIAMONDS / 2 {
+                middle = tip;
+            }
+        }
+        let counting = CountingStore {
+            inner: &store,
+            reads: Cell::new(0),
+        };
+        assert_eq!(merge_bases(&counting, tip, middle).unwrap(), vec![middle]);
+        // The root and three commits for each diamond are reachable from the tip.
+        assert_eq!(counting.reads.get(), 1 + 3 * DIAMONDS as usize);
+    }
+
+    #[test]
     fn an_absent_tip_is_reported_for_either_argument() {
         let dir = TempDir::new();
         let store = dir.store();
@@ -303,6 +370,81 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains(&absent.to_string()), "{text}");
         assert!(text.contains(&child.to_string()), "{text}");
+    }
+
+    #[test]
+    fn an_absent_parent_on_one_side_fails_before_a_result_is_returned() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let other = TempDir::new();
+        let absent = commit(&other.store(), &[], 0);
+        let root = commit(&store, &[], 1);
+        // `a` is intact down to the common ancestor `root`; `b` names an absent parent next to it.
+        let a = commit(&store, &[root], 2);
+        let b = commit(&store, &[root, absent], 3);
+        for (x, y) in [(a, b), (b, a)] {
+            let error = merge_bases(&store, x, y).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    HistoryError::Missing { id, child: Some(c) } if id == absent && c == b
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_messages_of_a_missing_commit_name_the_commit_and_its_child_in_the_right_places() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let other = TempDir::new();
+        let absent = commit(&other.store(), &[], 0);
+        let child = commit(&store, &[absent], 1);
+        let present = commit(&store, &[], 2);
+
+        let tip = merge_bases(&store, present, absent).unwrap_err();
+        assert_eq!(
+            tip.to_string(),
+            format!("commit {absent} is not in the object store")
+        );
+
+        let parent = merge_bases(&store, child, child).unwrap_err();
+        assert_eq!(
+            parent.to_string(),
+            format!("commit {absent}, a parent of commit {child}, is not in the object store")
+        );
+    }
+
+    #[test]
+    fn a_read_error_on_a_parent_is_reported_with_its_message_once() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let parent = commit(&store, &[], 0);
+        let tip = commit(&store, &[parent], 1);
+        let failing = FailingAt {
+            inner: &store,
+            id: parent.into(),
+        };
+        let error = merge_bases(&failing, tip, tip).unwrap_err();
+        assert!(matches!(error, HistoryError::Read(_)), "{error}");
+        let text = error.to_string();
+        assert!(text.ends_with(DISK_MESSAGE), "{text}");
+        assert_eq!(text.matches(DISK_MESSAGE).count(), 1, "{text}");
+        assert!(error.store_error().is_some());
+    }
+
+    #[test]
+    fn a_commit_with_a_body_that_is_not_canonical_is_no_store_error() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let broken = CommitId::new(store.put_raw(Kind::Commit, b"not a commit").unwrap());
+        let error = merge_bases(&store, broken, broken).unwrap_err();
+        assert!(
+            matches!(error, HistoryError::Read(ReadError::Commit { id, .. }) if id == broken),
+            "{error}"
+        );
+        assert!(error.store_error().is_none());
     }
 
     #[test]
@@ -361,8 +503,8 @@ mod tests {
         // How often the generator produced the interesting results, so that the test cannot pass
         // on trivial histories only. Checked for the default seed and at least the default number
         // of cases, which contain such pairs; another seed may not, and the fixed tests above
-        // cover both results anyway.
-        let (mut none, mut several) = (0, 0);
+        // cover these results anyway.
+        let (mut none, mut several, mut shadowed) = (0, 0, 0);
         for round in 0..histories {
             let mut rng = Rng::new(seed(), 0x6D62 + round as u64);
             let dir = TempDir::new();
@@ -402,6 +544,11 @@ mod tests {
                 );
                 none += usize::from(found.is_empty());
                 several += usize::from(found.len() >= 2);
+                // A candidate is shadowed if a common ancestor is not among the bases.
+                let common = reference_ancestors(&shape, a)
+                    .intersection(&reference_ancestors(&shape, b))
+                    .count();
+                shadowed += usize::from(common > found.len());
                 // Symmetry.
                 assert_eq!(merge_bases(&store, ids[b], ids[a]).unwrap(), found);
                 // The result is an antichain: no base is an ancestor of another one.
@@ -430,6 +577,7 @@ mod tests {
         if seed() == DEFAULT_SEED && cases() >= DEFAULT_CASES {
             assert!(none > 0, "no generated pair without a common ancestor");
             assert!(several > 0, "no generated pair with several bases");
+            assert!(shadowed > 0, "no generated pair with a shadowed candidate");
         }
     }
 }
