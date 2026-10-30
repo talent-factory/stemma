@@ -187,6 +187,11 @@ Seite, jedes folgende Paar eine Basis, die weggenommen, und eine Seite, die hinz
 Ihre Länge ist deshalb ungerade und mindestens drei. Der Rumpf gleicht dem eines Commits, nur
 steht am Anfang je Baum eine Zeile \type{tree <ID>} in der Reihenfolge der Liste. Ein Stand mit
 einem einzigen Baum ist immer ein \type{commit}, damit er nur eine Kodierung und eine ID hat.
+Ähnlich nimmt der Leser keine Liste an, in der ein weggenommener Baum einem hinzugefügten gleicht:
+Beide heben sich auf, und die Summe hat eine kürzere, gültige Form. Eine Summe, die sich aufhebt,
+hat so keine zweite, unvereinfachte Kodierung.
+Gleiche Seiten und gleiche Basen sind dagegen erlaubt, weil sich zwei Zweige auf dasselbe einigen
+können.
 Die neue Art heisst \type{commit2}, weil eine geänderte Kodierung von \type{commit} die ID jedes
 gespeicherten Commits ändern würde (ADR-005). Weil die Art zum gehashten Kopf gehört, ergeben
 dieselben Bytes als \type{commit} ein anderes Objekt. In Phase 1 schreibt noch kein Befehl

@@ -299,9 +299,9 @@ impl AnyCommit {
     /// # Errors
     ///
     /// Returns the error of the commit that the sum simplifies to: a duplicate parent is the only
-    /// reason today. The error of the other form cannot be a wrong number of trees, since a
-    /// simplified sum of more than one term has an odd length of at least three, but the type
-    /// keeps the case and does not assume it.
+    /// reason today. The error of the other form cannot be a wrong number of trees or a base that
+    /// equals a side, since a simplified sum of more than one term has an odd length of at least
+    /// three and nothing left to cancel, but the type keeps the cases and does not assume them.
     pub fn from_sum(
         trees: &Merge<TreeId>,
         parents: Vec<CommitId>,
@@ -986,6 +986,40 @@ mod tests {
             assert_eq!(landed.terms().len() % 2, 1, "seed {seed}, case {case}");
             // Landing never nests: the result is already simplified.
             assert_eq!(landed.simplify(), landed, "seed {seed}, case {case}");
+        }
+    }
+
+    #[test]
+    fn a_commit2_takes_a_list_if_and_only_if_simplifying_leaves_it_alone() {
+        let (seed, mut rng) = (seed(), Rng::new(seed(), 0xC0F9));
+        let (mut accepted, mut rejected) = (0, 0);
+        for case in 0..cases() {
+            // Few distinct trees, so that a base equals a side in about half of the lists.
+            let numbers: Vec<u8> = (0..3 + 2 * rng.below(3))
+                .map(|_| rng.below(4) as u8)
+                .collect();
+            let list: Vec<TreeId> = numbers.iter().map(|&n| tree(n)).collect();
+            let merge = Merge::try_from_terms(list.clone()).expect("odd");
+            let result = Commit2::try_new(list, vec![], sample_change(), human(), 0, "m");
+            let context = format!("seed {seed}, case {case}: {numbers:?}");
+            if merge.simplify() == merge {
+                accepted += 1;
+                assert!(result.is_ok(), "{context}");
+            } else {
+                rejected += 1;
+                let Err(Commit2Error::CancellingTrees(named)) = result else {
+                    panic!("{context}: {result:?}");
+                };
+                // The tree named is a base that has an equal side.
+                assert!(
+                    merge.removes().any(|base| *base == named)
+                        && merge.adds().any(|side| *side == named),
+                    "{context}"
+                );
+            }
+        }
+        if seed == DEFAULT_SEED && cases() >= DEFAULT_CASES {
+            assert!(accepted > 0 && rejected > 0, "{accepted} / {rejected}");
         }
     }
 

@@ -511,9 +511,20 @@ fn random_commit(rng: &mut Rng) -> Commit {
 /// A `commit2` with three, five, or seven trees, and the other fields of a random commit.
 fn random_commit2(rng: &mut Rng) -> Commit2 {
     let base = random_commit(rng);
-    let trees = (0..3 + 2 * rng.below(3))
+    let mut trees: Vec<_> = (0..3 + 2 * rng.below(3))
         .map(|_| random_tree(rng).id())
         .collect();
+    // Two sides may agree: the same tree can stand more than once, as a side.
+    if rng.one_in(3) {
+        trees[2] = trees[0];
+    }
+    // A base that equals a side would cancel, and the constructor rejects it. The empty tree is
+    // common, so draw again until no base equals a side.
+    for base in (1..trees.len()).step_by(2) {
+        while trees.iter().step_by(2).any(|side| *side == trees[base]) {
+            trees[base] = random_tree(rng).id();
+        }
+    }
     Commit2::try_new(
         trees,
         base.parents().to_vec(),
@@ -522,7 +533,7 @@ fn random_commit2(rng: &mut Rng) -> Commit2 {
         base.timestamp(),
         base.message(),
     )
-    .expect("an odd number of trees and distinct parents")
+    .expect("an odd number of trees, no base equal to a side, and distinct parents")
 }
 
 /// A branch name made of a few parts, some of them invalid; the names that the rule rejects are
@@ -1056,6 +1067,29 @@ fn every_commit2_the_code_can_build_is_read_back() {
         assert_eq!(again, commit, "{context}");
         assert_eq!(again.encode(), bytes, "{context}");
         assert_eq!(again.id(), commit.id(), "{context}");
+    }
+}
+
+#[test]
+fn a_commit2_with_a_base_copied_from_a_side_is_rejected_and_names_the_tree() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 32));
+    for case in 0..cases() {
+        let context = format!("seed {seed}, case {case}");
+        let commit = random_commit2(&mut rng);
+        let trees = commit.trees();
+        let base = 1 + 2 * rng.below((trees.len() - 1) / 2);
+        let side = 2 * rng.below(trees.len().div_ceil(2));
+        let text = String::from_utf8(commit.encode()).expect("UTF-8");
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        lines[base] = lines[side];
+        let result = Commit2::parse(lines.join("\n").as_bytes());
+        assert_eq!(
+            result,
+            Err(CommitParseError::Commit2(
+                crate::object::Commit2Error::CancellingTrees(trees[side])
+            )),
+            "{context}"
+        );
     }
 }
 

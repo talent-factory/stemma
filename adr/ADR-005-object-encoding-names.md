@@ -134,42 +134,44 @@ them.
   of a commit (see "Change ID") is the one exception, made while no repository held a commit; it
   is part of version 1 and not a second version. The hash algorithm
   is versioned separately by the ID prefix (ADR-001).
-- **Commit with a list of trees, `commit2`** *(confirmed)*. A commit that records an open
-  conflict (ADR-010, phase 3) names a list of trees instead of one: add, remove, add, and so on,
-  an odd number of at least three. It is a new object kind with the name `commit2`, by the rule
-  of "Format version", and not a change of `commit`, so that every stored commit keeps its ID. The
-  body is that of a commit, except that the first header is a run of `tree <id>` lines, one for
-  each tree, in the order of the list; `parent`, `change`, `author`, `time`, the empty line, and
-  the message follow unchanged. A state with one tree is always a `commit`, so that it has one
-  encoding and one ID. The strict reader of `commit2` rejects an even number of `tree` lines, a
-  single `tree` line, a `tree` line after the first `parent` line, and everything that
-  `Commit::parse` rejects. The same tree may stand more than once, since the sides of a conflict
-  may agree. The kind name is hashed with the body, so the bytes of a `commit2` are another
-  object under the kind `commit`. `Commit::parse` still rejects more than one `tree` line.
-  The type is `Commit2`, separate from `Commit`; no command writes it yet. What a conflict
-  means, and how it is resolved, stays with phase 3 (STEMMA-19). The purge (ADR-014) does not
-  follow a `commit2` yet and reports one that it finds in the store as an error, instead of
-  skipping a tree that may hold the blob. `Commit2::id` returns a `CommitId`, so that a
-  conflict can stand where a commit stands, but the store, the reads of a snapshot and a
-  difference, and `verify` still read a `CommitId` as the kind `commit`. Until phase 3 decides
-  how a `CommitId` resolves to either kind, a `commit2` cannot be a parent that verifies, nor
-  the target of a branch or of the working copy (STEMMA-179).
-- **Algebra of the sum of trees** *(confirmed)*. The list of a `commit2` is a sum, read as the
-  first tree plus the change from each removed tree to the added tree after it. The module
-  `conflict` of the core holds it: `Merge` is the sum over any value, and `AnyCommit::from_sum`
-  writes the commit for a sum of trees. Equal added and removed terms cancel, by the equality of
-  the IDs and without reading a tree, so a second branch that lands on an open conflict extends
-  the sum and never nests it. A sum that cancels down to one tree is written as a `commit`, so
-  one state has one encoding and one ID. That holds for what the algebra writes; the reader of
-  `commit2` does not yet reject a list whose terms cancel (STEMMA-181). All paths of a commit
-  share the number of sides; a conflict with fewer sides is padded with pairs that cancel again
-  (they stand in front, so a padded sum simplifies exactly as the sum it came from does). The
-  rule that two sides which made the same change resolve at once is not part of the algebra: it
-  loses information when the result is merged again, and the merge decides whether to apply it. The text with markers that shows a
-  conflicted file is one function of the sum (`marker_text`), a pure function of the list of the
-  contents of the terms, in order. The working copy and `diff` are to show it, and the snapshot is
-  to compare the bytes of a file with it and not to parse markers. Nothing calls it yet, and no
-  command writes a `commit2` yet.
+- **Commit with a list of trees, `commit2`** *(confirmed)*. A commit that records an open conflict
+  (ADR-010, phase 3) names a list of trees instead of one: add, remove, add, and so on, an odd
+  number of at least three. It is a new object kind with the name `commit2`, by the rule of "Format
+  version", and not a change of `commit`, so that every stored commit keeps its ID. The body is that
+  of a commit, except that the first header is a run of `tree <id>` lines, one for each tree, in the
+  order of the list; `parent`, `change`, `author`, `time`, the empty line, and the message follow
+  unchanged. A state with one tree is always a `commit`, so that it has one encoding and one ID. The
+  strict reader of `commit2` rejects an even number of `tree` lines, a single `tree` line, a `tree`
+  line after the first `parent` line, a removed tree (a base) that equals an added tree (a side),
+  which would cancel, and everything that `Commit::parse` rejects. The same tree may stand more than
+  once, as a side or as a base, since the sides of a conflict may agree; only a base that equals a
+  side is rejected. No command writes a `commit2` yet, so no stored object is affected by this rule
+  and the version of the format stays. The kind name is hashed with the body, so the bytes of a
+  `commit2` are another object under the kind `commit`. `Commit::parse` still rejects more than one
+  `tree` line. The type is `Commit2`, separate from `Commit`. What a conflict means, and how it is
+  resolved, stays with phase 3 (STEMMA-19). The purge (ADR-014) does not follow a `commit2` yet and
+  reports one that it finds in the store as an error, instead of skipping a tree that may hold the
+  blob. `Commit2::id` returns a `CommitId`, so that a conflict can stand where a commit stands, but
+  the store, the reads of a snapshot and a difference, and `verify` still read a `CommitId` as the
+  kind `commit`. Until phase 3 decides how a `CommitId` resolves to either kind, a `commit2` cannot
+  be a parent that verifies, nor the target of a branch or of the working copy (STEMMA-179).
+- **Algebra of the sum of trees** *(confirmed)*. The list of a `commit2` is a sum, read as the first
+  tree plus the change from each removed tree to the added tree after it. The module `conflict` of
+  the core holds it: `Merge` is the sum over any value, and `AnyCommit::from_sum` writes the commit
+  for a sum of trees. Equal added and removed terms cancel, by the equality of the IDs and without
+  reading a tree, so a second branch that lands on an open conflict extends the sum and never nests
+  it. A sum that cancels down to one tree is written as a `commit`, so a sum that cancels has no
+  second, unsimplified encoding, and the reader of `commit2` rejects a list whose terms cancel
+  (STEMMA-181). All paths of a commit share the number of sides; the sum of a path with fewer sides
+  is padded with pairs that cancel again (they stand in front, so a padded sum simplifies exactly as
+  the sum it came from does). The padding belongs to the sums of the paths, not to the list of trees
+  of a `commit2`, which is stored simplified. The rule that two sides which made the same change
+  resolve at once is not part of the algebra: it loses information when the result is merged again,
+  and the merge decides whether to apply it. The text with markers that shows a conflicted file is
+  one function of the sum (`marker_text`), a pure function of the list of the contents of the terms,
+  in order. The working copy and `diff` are to show it, and the snapshot is to compare the bytes of
+  a file with it and not to parse markers. Nothing calls it yet, and no command writes a `commit2`
+  yet.
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
   repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
   other non-canonical form. Otherwise one logical object could have several encodings and several
