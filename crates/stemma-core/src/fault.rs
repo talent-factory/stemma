@@ -147,6 +147,37 @@ pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
+/// [`fs::hard_link`], failing if the injection denies writes in the directory of `to`.
+pub(crate) fn hard_link(from: &Path, to: &Path) -> io::Result<()> {
+    check_write(to)?;
+    fs::hard_link(from, to)
+}
+
+/// [`fs::read`], failing if the injection denies reads of `path`.
+pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
+    check_read(path)?;
+    fs::read(path)
+}
+
+/// [`File::open`], failing if the injection denies reads of `path`.
+pub(crate) fn open(path: &Path) -> io::Result<File> {
+    check_read(path)?;
+    File::open(path)
+}
+
+/// Opens the guard file at `path` for reading and writing, creating it, and falls back to
+/// reading only, as the lock does. Fails if the injection denies reads of `path`.
+pub(crate) fn open_or_create(path: &Path) -> io::Result<File> {
+    check_read(path)?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .or_else(|_| File::open(path))
+}
+
 /// [`fs::remove_file`], failing if the injection denies writes in the directory of `path`.
 pub(crate) fn remove_file(path: &Path) -> io::Result<()> {
     check_write(path)?;

@@ -25,13 +25,14 @@
 
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::actor::ActorParseError;
+use crate::fault;
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
 use crate::oplog::Pointer;
 use crate::store::{
@@ -1062,7 +1063,7 @@ impl LockFile {
     ///
     /// Returns [`RefError::Io`] if the file cannot be read.
     fn read(path: &Path) -> Result<Option<Self>, RefError> {
-        match fs::read(path) {
+        match fault::read(path) {
             Ok(bytes) => Ok(Self::parse(&bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(io_error("read the lock file", path)(error)),
@@ -1149,7 +1150,7 @@ fn exists(path: &Path) -> Result<bool, RefError> {
 
 /// Makes the lock file with "create new": `None` if something is at the path already.
 fn create_lock_file(path: &Path) -> Result<Option<fs::File>, RefError> {
-    match OpenOptions::new().write(true).create_new(true).open(path) {
+    match fault::create_new(path) {
         Ok(file) => Ok(Some(file)),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
         Err(error) => Err(io_error("create the lock file", path)(error)),
@@ -1325,7 +1326,7 @@ impl FsRefStore {
         match settled(|| fs::symlink_metadata(path)) {
             // A reader without the lock may see another change delete the file between the two
             // calls; it is then gone, as if the first call had found nothing.
-            Ok(metadata) if metadata.is_file() => match settled(|| fs::read(path)) {
+            Ok(metadata) if metadata.is_file() => match settled(|| fault::read(path)) {
                 Ok(bytes) => Ok(Some(bytes)),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(io_error("read the reference", path)(error)),
@@ -1552,7 +1553,7 @@ impl FsRefStore {
                     (Ok(_), None) => return Err(locked(LockHolder::Unknown)),
                 };
                 if replace {
-                    match fs::remove_file(&path) {
+                    match fault::remove_file(&path) {
                         Ok(()) => {}
                         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                         Err(error) => return Err(io_error("remove the lock file", &path)(error)),
@@ -1605,14 +1606,8 @@ impl FsRefStore {
     /// only read, is no error: the lock is made without it.
     fn guard(&self) -> Result<Result<fs::File, String>, RefError> {
         let path = self.guard_path();
-        let opened = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            // A lock of the operating system needs no right to write.
-            .or_else(|_| fs::File::open(&path));
+        // A lock of the operating system needs no right to write.
+        let opened = fault::open_or_create(&path);
         let file = match opened {
             Ok(file) => file,
             Err(error) => {
@@ -1670,7 +1665,7 @@ impl FsRefStore {
             // does not happen after another process took the lock (ADR-014).
             let _held = held_locks();
             self.place(&temp.path, path, parent, top, |from, to| {
-                fs::rename(from, to)
+                fault::rename(from, to)
             })?;
         }
         temp.disarm();
@@ -1740,7 +1735,7 @@ impl FsRefStore {
         for (index, component) in components.iter().enumerate() {
             // Every directory but the first was seen to be a directory, and the first has to be
             // one if it exists: `refs` or `heads` as a file is damage and not "no branches".
-            let entries = match settled(|| fs::read_dir(&dir)) {
+            let entries = match settled(|| fault::read_dir(&dir)) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
                 Err(error) => return Err(io_error("list the references in", &dir)(error)),
@@ -1924,7 +1919,7 @@ fn remove_empty_directories(dir: &Path, top: &Path) {
 /// directory (see [`FsRefStore::delete_branch_file`]), so a directory that was listed a moment ago
 /// may be gone.
 fn list_directory(dir: &Path) -> Result<Option<fs::ReadDir>, RefError> {
-    match settled(|| fs::read_dir(dir)) {
+    match settled(|| fault::read_dir(dir)) {
         Ok(entries) => Ok(Some(entries)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(io_error("list the references in", dir)(error)),
@@ -2767,7 +2762,7 @@ impl FsRefStore {
     /// [`RefError::NotFlushed`]: the branch is gone, but may come back after a crash.
     fn delete_branch_file(&self, name: &BranchName) -> Result<bool, RefError> {
         let path = self.branch_path(name);
-        match fs::remove_file(&path) {
+        match fault::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(io_error("remove the reference", &path)(error)),
@@ -3068,6 +3063,7 @@ mod tests {
     use crate::store::FsObjectStore;
     use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
     use crate::Actor;
+    use std::fs::OpenOptions;
 
     const ID_A: &str = "b3:4a0b6603381c7c38c557e9ceb3cba8876f0a7863146e7309801352e80b073b65";
 
@@ -4456,20 +4452,6 @@ mod tests {
 
     // ---- review fixes
 
-    /// Whether permissions have an effect: a user that may write into a directory without the
-    /// write permission (root) cannot show a failure of the file system by a permission.
-    #[cfg(unix)]
-    fn permissions_hold(dir: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = dir.join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
-        let held = fs::write(probe.join("file"), b"").is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::remove_dir_all(&probe).unwrap();
-        held
-    }
-
     #[test]
     fn what_is_in_the_way_of_a_name_is_named_by_its_kind() {
         let (_dir, objects, refs) = setup();
@@ -4671,22 +4653,17 @@ mod tests {
         assert!(outside.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_change_that_cannot_make_its_temporary_file_leaves_no_directory_behind() {
-        use std::os::unix::fs::PermissionsExt;
         let (dir, objects, refs) = setup();
-        if !permissions_hold(dir.path()) {
-            return;
-        }
         let id = commit(&objects, "c");
         let tmp = dir.path().join("tmp");
         fs::create_dir_all(&tmp).unwrap();
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&tmp);
         let error = refs
             .update_branch(&name("feat/x"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         assert!(matches!(&error, RefError::Io { .. }), "{error}");
         assert!(!dir.path().join("refs/heads/feat").exists());
         assert!(!dir.path().join("refs.lock").exists());
@@ -4695,22 +4672,16 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_change_that_cannot_flush_its_directory_says_that_it_was_made() {
-        use std::os::unix::fs::PermissionsExt;
         let (dir, objects, refs) = setup();
-        if !permissions_hold(dir.path()) {
-            return;
-        }
         let id = commit(&objects, "c");
         refs.set_head(&Head::Branch(name("main")), &objects, &Allowed::granted())
             .unwrap();
-        // The directory may be written and entered, but not read: the rename works and the flush
-        // of the directory cannot open it.
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        // The rename works and the flush of the directory fails.
+        let failing = crate::store::fail_flush_of(dir.path());
         let result = refs.set_head(&Head::Detached(id), &objects, &Allowed::granted());
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        drop(failing);
         let error = result.unwrap_err();
         assert!(
             matches!(&error, RefError::NotFlushed { path, .. } if path == dir.path()),
@@ -5022,19 +4993,16 @@ mod tests {
         assert!(!lock.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_guard_that_cannot_be_opened_costs_the_takeover_and_not_the_exclusion() {
         // Another user made the guard, and this one may not open it: the lock is made in the
         // form of an older version, which still excludes, and which no command takes over.
-        use std::os::unix::fs::PermissionsExt;
         let (dir, objects, refs) = setup();
-        assert_permissions_bind(dir.path());
         let id = commit(&objects, "c");
         let guard = dir.path().join("refs.lock.guard");
         let lock = dir.path().join("refs.lock");
         fs::write(&guard, b"").unwrap();
-        fs::set_permissions(&guard, fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = fault::deny_reads_of(&guard);
         let made = refs.lock().map(|held| {
             let content = fs::read_to_string(&lock);
             drop(held);
@@ -5051,7 +5019,7 @@ mod tests {
         let older_after = fs::read_to_string(&lock);
         let older_resume = refs.take_over_lock(&Allowed::granted()).map(drop);
         let older_resumed = lock.exists();
-        fs::set_permissions(&guard, fs::Permissions::from_mode(0o644)).unwrap();
+        drop(denied);
 
         let content = made.unwrap().unwrap();
         assert!(!content.starts_with(LOCK_HEADER), "{content:?}");
@@ -5243,39 +5211,17 @@ mod tests {
         );
     }
 
-    /// Fails unless a file without permissions cannot be read, as for a user who is not root.
-    #[cfg(unix)]
-    fn assert_permissions_bind(dir: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = dir.join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).unwrap();
-        let binds = fs::read_dir(&probe).is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::remove_dir(&probe).unwrap();
-        assert!(
-            binds,
-            "permissions do not bind this user; do not run the tests as root"
-        );
-    }
-
-    #[cfg(unix)]
     #[test]
     fn a_branch_or_a_directory_that_cannot_be_read_is_an_error_and_not_an_absence() {
-        use std::os::unix::fs::PermissionsExt;
         let (dir, objects, refs) = setup();
-        assert_permissions_bind(dir.path());
         let id = commit(&objects, "c");
         refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
             .unwrap();
-        let mode = |path: &Path, mode| {
-            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
-        };
         let file = dir.path().join("refs/heads/a/b");
-        mode(&file, 0o000);
+        let denied = fault::deny_reads_of(&file);
         let listed = refs.branches();
         let looked_up = refs.branch(&name("a/b"));
-        mode(&file, 0o644);
+        drop(denied);
         assert!(
             matches!(&listed, Err(RefError::Io { path, .. }) if *path == file),
             "{listed:?}"
@@ -5286,10 +5232,10 @@ mod tests {
         );
         // A directory: the listing, and the lookup of a name that the directory holds.
         let sub = dir.path().join("refs/heads/a");
-        mode(&sub, 0o000);
+        let denied = fault::deny_reads_of(&sub);
         let listed = refs.branches();
         let looked_up = refs.branch(&name("a"));
-        mode(&sub, 0o755);
+        drop(denied);
         assert!(matches!(listed, Err(RefError::Io { .. })), "{listed:?}");
         assert!(
             matches!(looked_up, Err(RefError::Io { .. })),
@@ -5839,16 +5785,13 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_move_that_fails_after_the_step_leaves_the_step_done_and_the_pointer_where_it_was() {
-        use std::os::unix::fs::PermissionsExt;
         let (dir, objects, refs) = setup();
         let a = commit(&objects, "a");
         let heads = dir.path().join("refs/heads");
         fs::create_dir_all(&heads).unwrap();
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
-        let writable = fs::File::create(heads.join("probe")).is_ok();
+        let denied = fault::deny_writes_in(&heads);
         let ran = std::cell::Cell::new(0);
         let outcome = refs.update_branch_after(
             &writer(&refs),
@@ -5858,12 +5801,7 @@ mod tests {
             &objects,
             counted(&ran),
         );
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = fs::remove_file(heads.join("probe"));
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        drop(denied);
         let outcome = outcome.unwrap();
         assert!(
             matches!(outcome, Logged::MoveFailed(1, RefError::Io { .. })),
