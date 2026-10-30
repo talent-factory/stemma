@@ -634,23 +634,26 @@ impl Repository {
         outcome.into_result()
     }
 
-    /// Points HEAD to a branch, which need not exist yet, or to a commit, and records the change
-    /// in the log, in the order of [`update_branch`](Self::update_branch) and under the same lock.
-    /// The old value in the entry is the one that the change replaces: it is read under the lock.
+    /// Points HEAD to a branch, which need not exist yet, or to a commit, if HEAD still is
+    /// `expected`, and records the change in the log, in the order of
+    /// [`update_branch`](Self::update_branch) and under the same lock. The old value in the entry
+    /// is the one that the change replaces: it is read under the lock, and it is `expected`.
     ///
-    /// Unlike the store of the references, which replaces HEAD whatever it was, this reads HEAD
-    /// first, so a HEAD that is missing or damaged is an error and is not replaced.
+    /// Unlike [`RefStore::set_head`], which replaces HEAD whatever it was, this reads HEAD first,
+    /// so a HEAD that is missing or damaged is an error and is not replaced.
     ///
     /// Returns the entry, or `None` if HEAD has the value already.
     ///
     /// # Errors
     ///
     /// Returns [`UpdateError::Denied`], [`UpdateError::Refs`] (a commit that is not in the store, an
-    /// unreadable HEAD, [`RefError::Locked`]), [`UpdateError::Log`], [`UpdateError::MoveFailed`],
-    /// and [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch).
+    /// unreadable HEAD, [`RefError::StaleHead`], [`RefError::Locked`]), [`UpdateError::Log`],
+    /// [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
+    /// [`update_branch`](Self::update_branch).
     pub fn set_head(
         &self,
         operation: &OperationName,
+        expected: &Head,
         head: &Head,
         actor: &Actor,
         authorizer: &dyn Authorizer,
@@ -659,7 +662,7 @@ impl Repository {
         let lock = self.refs.lock_writer(&allowed)?;
         let outcome = self
             .refs
-            .set_head_after(&lock, head, &self.objects, |old| {
+            .set_head_after(&lock, expected, head, &self.objects, |old| {
                 let change = Change::try_new(
                     now(),
                     actor.clone(),
@@ -3031,6 +3034,7 @@ mod tests {
         let entry = repository
             .set_head(
                 &OperationName::try_new("checkout").unwrap(),
+                &repository.refs().head().unwrap(),
                 &Head::Branch(BranchName::try_new("other").unwrap()),
                 &actor(),
                 &AllowAll,
@@ -3874,6 +3878,7 @@ mod tests {
         let error = repository
             .set_head(
                 &op("checkout"),
+                &repository.refs().head().unwrap(),
                 &Head::Branch(branch("x")),
                 &actor(),
                 &DenyAll,
@@ -3913,6 +3918,7 @@ mod tests {
         assert!(error.entry().is_none());
         let moved = repository.set_head(
             &op("checkout"),
+            &repository.refs().head().unwrap(),
             &Head::Branch(branch("x")),
             &actor(),
             &AllowAll,
@@ -3955,6 +3961,7 @@ mod tests {
         let error = repository
             .set_head(
                 &op("checkout"),
+                &repository.refs().head().unwrap(),
                 &Head::Branch(branch("x")),
                 &actor(),
                 &AllowAll,
@@ -4153,13 +4160,17 @@ mod tests {
                         while std::time::Instant::now() < deadline {
                             match repository.set_head(
                                 &op("checkout"),
+                                &repository.refs().head().unwrap(),
                                 &Head::Branch(name.clone()),
                                 &actor(),
                                 &AllowAll,
                             ) {
                                 Ok(entry) => return entry.expect("every value is new"),
-                                // Another writer holds the lock: try again.
-                                Err(UpdateError::Refs(RefError::Locked { .. })) => {
+                                // Another writer holds the lock, or finished a change between the
+                                // read of HEAD and the lock: read again and try again.
+                                Err(UpdateError::Refs(
+                                    RefError::Locked { .. } | RefError::StaleHead { .. },
+                                )) => {
                                     std::thread::yield_now();
                                 }
                                 Err(error) => panic!("{error}"),
@@ -4199,6 +4210,7 @@ mod tests {
         let error = repository
             .set_head(
                 &op("checkout"),
+                &Head::Branch(branch("main")),
                 &Head::Branch(branch("x")),
                 &actor(),
                 &AllowAll,
@@ -4231,6 +4243,7 @@ mod tests {
         let error = repository
             .set_head(
                 &op("checkout"),
+                &repository.refs().head().unwrap(),
                 &Head::Branch(branch("x")),
                 &actor(),
                 &AllowAll,
@@ -4251,6 +4264,7 @@ mod tests {
         let to_branch = repository
             .set_head(
                 &op("checkout"),
+                &repository.refs().head().unwrap(),
                 &Head::Branch(branch("dev")),
                 &actor(),
                 &AllowAll,
@@ -4258,7 +4272,13 @@ mod tests {
             .unwrap()
             .unwrap();
         let detached = repository
-            .set_head(&op("checkout"), &Head::Detached(a), &actor(), &AllowAll)
+            .set_head(
+                &op("checkout"),
+                &repository.refs().head().unwrap(),
+                &Head::Detached(a),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(repository.refs().head().unwrap(), Head::Detached(a));
@@ -4280,6 +4300,7 @@ mod tests {
         let same = repository
             .set_head(
                 &op("checkout"),
+                &repository.refs().head().unwrap(),
                 &Head::Branch(branch("main")),
                 &actor(),
                 &AllowAll,
@@ -4291,6 +4312,7 @@ mod tests {
         let error = repository
             .set_head(
                 &op("checkout"),
+                &repository.refs().head().unwrap(),
                 &Head::Detached(foreign),
                 &actor(),
                 &AllowAll,
@@ -4300,6 +4322,45 @@ mod tests {
             matches!(error, UpdateError::Refs(RefError::MissingCommit(_))),
             "{error}"
         );
+        assert_eq!(numbers(&repository), before);
+    }
+
+    #[test]
+    fn set_head_from_a_value_that_is_not_the_current_one_changes_nothing_and_logs_nothing() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let seen = repository.refs().head().unwrap();
+        repository
+            .set_head(
+                &op("checkout"),
+                &seen,
+                &Head::Detached(a),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap()
+            .unwrap();
+        let before = numbers(&repository);
+        // A second caller still holds `seen`: its change must not replace the first one.
+        let error = repository
+            .set_head(
+                &op("checkout"),
+                &seen,
+                &Head::Branch(branch("x")),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                UpdateError::Refs(RefError::StaleHead { expected, found })
+                    if expected == &seen && found == &Head::Detached(a)
+            ),
+            "{error}"
+        );
+        assert_eq!(repository.refs().head().unwrap(), Head::Detached(a));
         assert_eq!(numbers(&repository), before);
     }
 

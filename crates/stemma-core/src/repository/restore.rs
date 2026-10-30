@@ -1165,11 +1165,23 @@ mod tests {
         two_commits(&dir, &repository);
         let (tip, first) = tip_and_first(&repository);
         let detach = repository
-            .set_head(&op("checkout"), &Head::Detached(first), &actor(), &AllowAll)
+            .set_head(
+                &op("checkout"),
+                &repository.refs().head().unwrap(),
+                &Head::Detached(first),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap()
             .unwrap();
         let attach = repository
-            .set_head(&op("checkout"), &Head::Branch(main()), &actor(), &AllowAll)
+            .set_head(
+                &op("checkout"),
+                &repository.refs().head().unwrap(),
+                &Head::Branch(main()),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap()
             .unwrap();
         // Undo the second move: HEAD is detached again, at `first`.
@@ -1188,10 +1200,22 @@ mod tests {
         two_commits(&dir, &repository);
         let (_, first) = tip_and_first(&repository);
         repository
-            .set_head(&op("checkout"), &Head::Detached(first), &actor(), &AllowAll)
+            .set_head(
+                &op("checkout"),
+                &repository.refs().head().unwrap(),
+                &Head::Detached(first),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap();
         let attach = repository
-            .set_head(&op("checkout"), &Head::Branch(main()), &actor(), &AllowAll)
+            .set_head(
+                &op("checkout"),
+                &repository.refs().head().unwrap(),
+                &Head::Branch(main()),
+                &actor(),
+                &AllowAll,
+            )
             .unwrap()
             .unwrap();
         let path = repository.objects().object_path(&first.object_id());

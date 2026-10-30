@@ -158,7 +158,7 @@ Bis Phase 3 ruft ein Akteur \type{stemma} deshalb nicht in einem Git-Worktree au
 
 Auch \type{op restore --dry-run} und \type{purge} ohne \type{--apply} verlangen einen Akteur,
 obwohl sie nichts schreiben; sie prüfen ihn, bevor sie das Repository öffnen.
-Nur \type{op log} und \type{op verify} laufen ohne Akteur.
+Nur \type{log}, \type{op log} und \type{op verify} laufen ohne Akteur.
 Eine Akteur-Zeile in falscher Form endet wie ein fehlender Akteur mit Exit-Code 1,
 nicht mit Exit-Code 2.
 
@@ -180,9 +180,9 @@ Menschen und können sich mit jeder Version ändern; ein Skript liest sie nicht.
 Eine Meldung, die das Buch über mehrere Zeilen zeigt, ist in der Ausgabe eine Zeile;
 hier ist sie umbrochen.
 
-{\bf Maschinenlesbare Ausgabe.} Mit \type{--json} schreiben \type{status}, \type{commit} und
-\type{op log} JSON statt Text: \type{status} und \type{commit} ein Objekt,
-\type{op log} ein Objekt pro Zeile.
+{\bf Maschinenlesbare Ausgabe.} Mit \type{--json} schreiben \type{status}, \type{commit},
+\type{log} und \type{op log} JSON statt Text: \type{status} und \type{commit} ein Objekt,
+\type{log} und \type{op log} ein Objekt pro Zeile.
 Jedes Objekt hat das Feld \type{schema}, eine ganze Zahl, heute 1.
 Ein neues Feld ändert sie nicht, und wer JSON liest, übergeht Felder, die er nicht kennt.
 Ein Feld zu entfernen, umzubenennen oder im Typ zu ändern hebt \type{schema} an;
@@ -222,8 +222,8 @@ was stattdessen zu tun ist, hängt vom Befehl ab (\in{Tabelle}[tab:exit3]),
 und Einzelheiten nennt der Abschnitt des Befehls.
 Eine Ausgabe, die sich nicht schreiben liess, führt nur dann zu Code 3,
 wenn der Befehl etwas angelegt hat, das sonst nur die Ausgabe nennt.
-Bei \type{diff}, \type{status}, \type{op log}, \type{op verify}, \type{--dry-run}
-und dem Plan von \type{purge} ist sie Code 1.
+Bei \type{diff}, \type{status}, \type{log}, \type{op log}, \type{op verify},
+\type{--dry-run} und dem Plan von \type{purge} ist sie Code 1.
 Code 3 hat Vorrang vor 5 und 6, wenn ein Ergebnis besteht, aber unvollständig oder nicht
 gesichert ist: Ein Zeiger bewegte sich nur zum Teil, ein Sichern auf den Datenträger scheiterte
 (auch das eines Snapshots, der vorher kam), oder die Ausgabe, die allein das Ergebnis nennt,
@@ -237,8 +237,9 @@ Dieser Code ist kein Fehler und wird nie für eine Sperre verwendet.
 oder eine falsche Nummer, seine Kette hält nicht, die Datei \type{oplog-tip} fehlt oder
 geht nach, ein Eintrag, eine Referenz oder die Datei \type{format} ist nicht
 in kanonischer Form, ein Objekt, das ein Baum oder der Index nennt, fehlt oder lässt sich nicht
-lesen, oder ein Anker passt nicht (sein Eintrag fehlt, stammt aus der Zeit vor der Kette oder hat
-einen anderen Hash).
+lesen, ein Commit, den eine Referenz oder ein Commit nennt, fehlt, lässt sich nicht lesen
+oder hat eine andere Art, oder ein Anker passt nicht
+(sein Eintrag fehlt, stammt aus der Zeit vor der Kette oder hat einen anderen Hash).
 \type{op log} endet mit 5 und listet nichts, wenn sich die Referenzen wegen eines Schadens nicht
 lesen lassen oder der Eintrag vor dem ältesten gezeigten beschädigt ist.
 Ein Skript wiederholt den Befehl nicht; eine Person sieht sich das Repository an.
@@ -413,7 +414,8 @@ dem Working-Copy-Commit ab, wenn sie die Sperre nehmen,
 also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
 nennt das Journal, \type{stemma purge --resume} und \type{--abort}.
 \type{purge --apply} lehnt ebenfalls ab, mit Exit-Code 3, denn ein Purge ist schon begonnen.
-Lesen bleibt möglich: \type{op log}, \type{op verify}, \type{op restore --dry-run},
+Lesen bleibt möglich: \type{log}, \type{op log}, \type{op verify},
+\type{op restore --dry-run},
 \type{purge} ohne \type{--apply} und \type{diff} mit zwei Kennungen laufen.
 
 Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
@@ -1086,6 +1088,103 @@ stemma diff b3:4f2a0c… --actor "human daniel"
 stemma diff b3:4f2a0c… b3:7d9e21… --actor "human daniel"
 stemma diff --actor "human daniel" src/main.rs docs
 stemma diff b3:4f2a0c… --actor "human daniel" -- b3:notiz.txt
+\stoptyping
+
+\section{log}
+
+Zeigt die Commits, die zum Working-Copy-Commit führen: jeden Commit vor seinen Eltern.
+
+\starttyping
+stemma log [-C VERZEICHNIS] [-n ANZAHL] [--first-parent] [--json]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+\item {\bf \type{-n}, \type{--limit} ANZAHL:} Wie viele Commits der Befehl zeigt.
+Ohne die Option zeigt er alle. Null ist ein Aufruffehler (Exit-Code 2).
+\item {\bf \type{--first-parent}:} Folgt bei jedem Commit nur dem ersten Elternteil.
+Ein Merge-Commit verbirgt dann die Geschichte, die er hereinbrachte.
+\item {\bf \type{--json}:} Schreibt je Commit ein JSON-Objekt pro Zeile statt Text.
+\stopitemize
+
+Der Befehl liest nur, macht keinen Snapshot und braucht keinen Akteur.
+Er beginnt beim Working-Copy-Commit, den die Ausgabe mit \type{@} markiert;
+auf einem Branch ist das die Arbeitsschicht über der Spitze (ADR-010),
+darunter folgen die Spitze und ihre Vorfahren.
+
+{\bf Reihenfolge.} Ein Commit steht immer vor allen seinen Eltern.
+Sind mehrere Commits an der Reihe, kommt der mit dem neuesten Datum zuerst,
+bei gleichem Datum der mit der grösseren ID.
+Das Datum eines Commits stammt vom Autor und beweist nichts (ADR-005;
+erst Signaturen machen es verlässlich, ADR-003);
+es ordnet nur Commits, die sich nicht gegenseitig bedingen, und ein falsches Datum
+stellt nie ein Kind hinter sein Elternteil.
+Die Reihenfolge hängt nur von der Geschichte ab, nicht von der Reihenfolge der Eltern.
+Der Befehl führt keinen Cache (ADR-017). Ohne \type{--first-parent} liest er jeden erreichbaren
+Commit einmal, auch mit \type{-n}, denn die Reihenfolge braucht die ganze Menge;
+\type{-n} kürzt nur die Liste. Mit \type{--first-parent} liest er nur die Kette,
+höchstens so viele Commits, wie \type{-n} nennt.
+
+{\bf Textform.} Pro Commit steht eine Zeile mit der Marke und der ID, danach eingerückt die
+Change-ID, die Eltern (ein \type{-} für keinen), der Autor und die Zeit (UTC).
+Hat der Commit eine Nachricht, folgen nach einer Leerzeile ihre Zeilen,
+jede um vier Leerzeichen eingerückt. Eine Leerzeile beendet den Block;
+ein Commit ohne Nachricht, etwa der Working-Copy-Commit nach \type{init},
+hat also den Kopf und eine Leerzeile.
+Die Marke ist \type{@} für den Working-Copy-Commit und \type{o} für jeden anderen.
+Autor und Nachricht stammen vom Commit und können das Terminal steuern oder die Anzeige
+täuschen; die Textform schreibt darum diese Zeichen als \type{\u{..}} (hexadezimal):
+die Steuerzeichen von Unicode (C0, DEL und C1) ausser dem Tabulator, ein einzelnes
+Wagenrücklaufzeichen, die Trenner U+2028 und U+2029, die Richtungszeichen U+200E, U+200F
+und U+061C sowie die Einbettungen, Überschreibungen und Isolate der Schreibrichtung
+(U+202A bis U+202E und U+2066 bis U+2069). Andere Zeichen, etwa Umlaute, bleiben.
+Die Nachricht wird nur an \type{\n} getrennt, also bleibt das \type{\r} einer Nachricht
+mit \type{\r\n} sichtbar maskiert, wie es die JSON-Form unverändert führt.
+
+\starttyping
+@ b3:2222...2222
+  change   ch:9b5f9b53...
+  parents  b3:1111...1111
+  author   human daniel
+  time     2023-11-14T22:13:20Z
+
+o b3:1111...1111
+  change   ch:8f9745dd...
+  parents  -
+  author   human daniel
+  time     2023-11-14T22:10:00Z
+
+    Erster Commit
+
+\stoptyping
+
+(Im Beispiel sind die IDs gekürzt; der Befehl gibt sie vollständig aus.)
+
+{\bf JSON-Form.} Jede Zeile hat die Felder \type{schema} (heute 1), \type{commit},
+\type{working_copy} (\type{true} für den Working-Copy-Commit), \type{parents} (eine Liste von IDs,
+leer ohne Eltern), \type{change}, \type{author}, \type{time} (Sekunden seit dem 1.1.1970,
+wie im Commit) und \type{message} (unverändert, mit den Regeln von JSON maskiert).
+
+{\bf Fehler.} Der Befehl liest die Commits, bevor er etwas ausgibt, und gibt bei einem Fehler
+nichts aus. Fehlt ein Commit, den der Working-Copy-Commit oder ein Elternteil nennt, ist er nicht in
+kanonischer Form oder hat er eine andere Art als Commit (ein Elternteil, das auf einen Baum
+zeigt), endet der Befehl mit Exit-Code 5; die Meldung nennt den Schaden,
+und ein Skript wiederholt ihn nicht. Dasselbe gilt für eine Datei \type{working-copy},
+die fehlt (\type{init} schreibt sie immer) oder nicht kanonisch ist.
+Mit Exit-Code 1 endet ein Verzeichnis, das kein Repository ist, und ein Objektspeicher,
+den das Dateisystem nicht lesen lässt.
+Mit Exit-Code 1 endet auch eine Ausgabe, die sich nicht schreiben lässt;
+dann kann schon ein Teil der Commits ausgegeben sein, und ein Skript verwirft die Ausgabe.
+Schliesst der Leser der Ausgabe die Pipe früh, zum Beispiel \type{head},
+endet der Befehl ohne Meldung mit Exit-Code 0.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma log
+stemma log -n 5 -C projekt
+stemma log --first-parent --json | head -1
 \stoptyping
 
 \section{op log}

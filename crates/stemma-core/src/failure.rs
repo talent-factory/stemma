@@ -9,6 +9,7 @@
 //! not compile until it is classified, so a lock or damage cannot fall back to
 //! [`FailureKind::Other`] unnoticed.
 
+use crate::history::HistoryError;
 use crate::index::WriteTreeError;
 use crate::oplog::OpLogError;
 use crate::refs::RefError;
@@ -104,10 +105,13 @@ impl Classify for RefError {
             Self::Locked { .. } => FailureKind::Locked,
             Self::Corrupt { .. } => FailureKind::Damaged,
             Self::Store(error) => error.kind(),
-            // A branch or the working-copy commit that moved is the caller's stale view, not a
-            // held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at 1).
-            // `StaleWorkingCopy` is the same case for the working-copy commit.
-            Self::Stale { .. } | Self::StaleWorkingCopy { .. } => FailureKind::Other,
+            // A branch, HEAD, or the working-copy commit that moved is the caller's stale view, not
+            // a held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at
+            // 1). `StaleHead` and `StaleWorkingCopy` are the same case for HEAD and the
+            // working-copy commit.
+            Self::Stale { .. } | Self::StaleHead { .. } | Self::StaleWorkingCopy { .. } => {
+                FailureKind::Other
+            }
             // A tag that exists is a name that is taken; it never moves, so there is nothing to
             // read again and retry.
             Self::TagExists { .. } => FailureKind::Other,
@@ -265,6 +269,26 @@ impl Classify for DiffError {
     }
 }
 
+impl Classify for HistoryError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // A commit that a pointer or a commit names is not there, or its body is not in
+            // canonical form: the history is damaged. Nobody named these commits as an argument.
+            Self::Missing { .. } => FailureKind::Damaged,
+            Self::Read(error) => match error.store_error() {
+                Some(StoreError::Io { .. }) => FailureKind::Other,
+                // A parent of the wrong kind (`KindMismatch`) is damage here, unlike the case of
+                // `StoreError::kind`, where the caller named the object. So is an object that is
+                // corrupt, a body that is not canonical, and an ID that does not match (a defect of
+                // the reader, which the caller cannot tell from damage).
+                Some(StoreError::Corrupt { .. } | StoreError::KindMismatch { .. }) | None => {
+                    FailureKind::Damaged
+                }
+            },
+        }
+    }
+}
+
 impl Classify for CheckoutError {
     fn kind(&self) -> FailureKind {
         match self {
@@ -401,6 +425,59 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn the_read_errors_of_the_history_are_damage_except_a_failing_disk() {
+        use crate::object::CommitParseError;
+        use crate::store::ReadError;
+
+        let commit = crate::object::CommitId::new(id());
+        let tree = crate::object::TreeId::new(id());
+        let io = StoreError::Io {
+            operation: "read the object file",
+            path: path(),
+            source: std::io::Error::other("the disk failed"),
+        };
+        let mismatch = StoreError::KindMismatch {
+            id: id(),
+            expected: Kind::Commit,
+            found: Kind::Tree,
+        };
+        let history = |error: ReadError| HistoryError::Read(error).kind();
+        assert_eq!(history(ReadError::Store(Box::new(io))), FailureKind::Other);
+        // A parent that names a tree: nobody gave that object as an argument.
+        assert_eq!(
+            history(ReadError::Store(Box::new(mismatch))),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            history(ReadError::Commit {
+                id: commit,
+                source: CommitParseError::NotUtf8 { valid_up_to: 0 }
+            }),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            history(ReadError::IdMismatch {
+                requested: id(),
+                parsed: tree.object_id()
+            }),
+            FailureKind::Damaged
+        );
+    }
+
+    #[test]
+    fn a_commit_of_the_history_that_is_missing_is_damage() {
+        let commit = crate::object::CommitId::new(id());
+        assert_eq!(
+            HistoryError::Missing {
+                id: commit,
+                child: None
+            }
+            .kind(),
+            FailureKind::Damaged
+        );
     }
 
     #[test]

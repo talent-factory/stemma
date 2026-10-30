@@ -1365,7 +1365,13 @@ mod tests {
         let operation = OperationName::try_new("checkout").unwrap();
         let detach = |commit| {
             repository
-                .set_head(&operation, &Head::Detached(commit), &actor(), &AllowAll)
+                .set_head(
+                    &operation,
+                    &repository.refs().head().unwrap(),
+                    &Head::Detached(commit),
+                    &actor(),
+                    &AllowAll,
+                )
                 .unwrap();
         };
         detach(second);

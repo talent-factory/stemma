@@ -12,12 +12,11 @@
 //! all of them, and the caller combines them.
 
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
-use std::fmt;
 use std::rc::Rc;
 
+use crate::history::{read_commit, HistoryError};
 use crate::object::CommitId;
-use crate::store::{ObjectStore, ReadError, StoreError};
+use crate::store::ObjectStore;
 
 /// Returns the best common ancestors of two commits, sorted by ID.
 ///
@@ -28,13 +27,13 @@ use crate::store::{ObjectStore, ReadError, StoreError};
 ///
 /// # Errors
 ///
-/// Returns [`MergeBaseError::Missing`] if the store lacks a commit that the walk reaches, and
-/// [`MergeBaseError::Read`] if the store cannot return one intact.
+/// Returns [`HistoryError::Missing`] if the store lacks a commit that the walk reaches, and
+/// [`HistoryError::Read`] if the store cannot return one intact.
 pub fn merge_bases(
     store: &dyn ObjectStore,
     a: CommitId,
     b: CommitId,
-) -> Result<Vec<CommitId>, MergeBaseError> {
+) -> Result<Vec<CommitId>, HistoryError> {
     let mut walk = Walk::new(store);
     let from_a = walk.ancestors(&[a])?;
     let from_b = walk.ancestors(&[b])?;
@@ -79,23 +78,18 @@ impl<'a> Walk<'a> {
         &mut self,
         id: CommitId,
         child: Option<CommitId>,
-    ) -> Result<Rc<[CommitId]>, MergeBaseError> {
+    ) -> Result<Rc<[CommitId]>, HistoryError> {
         if let Some(known) = self.parents.get(&id) {
             return Ok(Rc::clone(known));
         }
-        // A commit that a reachable commit names must exist, so `None` is an error here, while
-        // the store returns it as a normal answer.
-        let commit = self
-            .store
-            .get_commit(&id)?
-            .ok_or(MergeBaseError::Missing { id, child })?;
+        let commit = read_commit(self.store, id, child)?;
         let parents: Rc<[CommitId]> = commit.parents().into();
         self.parents.insert(id, Rc::clone(&parents));
         Ok(parents)
     }
 
     /// The commits reachable from `starts` through parents, the starts included.
-    fn ancestors(&mut self, starts: &[CommitId]) -> Result<HashSet<CommitId>, MergeBaseError> {
+    fn ancestors(&mut self, starts: &[CommitId]) -> Result<HashSet<CommitId>, HistoryError> {
         let mut seen = HashSet::new();
         let mut pending = Vec::new();
         for &start in starts {
@@ -114,76 +108,16 @@ impl<'a> Walk<'a> {
     }
 }
 
-/// Why [`merge_bases`] fails.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum MergeBaseError {
-    /// The store does not hold a commit that the walk reached: a tip, or a parent of a commit.
-    Missing {
-        /// The commit that is absent.
-        id: CommitId,
-        /// The commit that names it as a parent, or `None` if it is one of the two tips.
-        child: Option<CommitId>,
-    },
-    /// The store could not return a commit. The message and the cause are those of the read error.
-    Read(ReadError),
-}
-
-impl MergeBaseError {
-    /// Returns the error of the store if the store could not return a commit: the storage failed,
-    /// the object is damaged, or it has another kind. `None` for a commit that is absent and for
-    /// one whose body is not in canonical form.
-    pub fn store_error(&self) -> Option<&StoreError> {
-        match self {
-            Self::Read(source) => source.store_error(),
-            Self::Missing { .. } => None,
-        }
-    }
-}
-
-impl fmt::Display for MergeBaseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing { id, child: None } => {
-                write!(f, "commit {id} is not in the object store")
-            }
-            Self::Missing {
-                id,
-                child: Some(child),
-            } => write!(
-                f,
-                "commit {id}, a parent of commit {child}, is not in the object store"
-            ),
-            Self::Read(source) => write!(f, "{source}"),
-        }
-    }
-}
-
-impl Error for MergeBaseError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Missing { .. } => None,
-            // Transparent: the message is that of the read error, so its cause is the cause here.
-            Self::Read(source) => source.source(),
-        }
-    }
-}
-
-impl From<ReadError> for MergeBaseError {
-    fn from(source: ReadError) -> Self {
-        Self::Read(source)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::error::Error;
 
     use super::*;
     use crate::change::sample_change;
     use crate::object::{Blob, BlobId, Commit, ObjectId, Tree, TreeId};
     use crate::properties::{cases, seed, Rng, DEFAULT_CASES, DEFAULT_SEED};
-    use crate::store::{sealed, RawObject};
+    use crate::store::{sealed, RawObject, StoreError};
     use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
     use crate::Actor;
 
@@ -342,7 +276,7 @@ mod tests {
         for (a, b) in [(present, absent), (absent, present)] {
             let error = merge_bases(&store, a, b).unwrap_err();
             assert!(
-                matches!(error, MergeBaseError::Missing { id, child: None } if id == absent),
+                matches!(error, HistoryError::Missing { id, child: None } if id == absent),
                 "{error}"
             );
             assert!(error.to_string().contains(&absent.to_string()));
@@ -362,7 +296,7 @@ mod tests {
         assert!(
             matches!(
                 error,
-                MergeBaseError::Missing { id, child: Some(c) } if id == absent && c == child
+                HistoryError::Missing { id, child: Some(c) } if id == absent && c == child
             ),
             "{error}"
         );
@@ -377,7 +311,7 @@ mod tests {
         let root = commit(&dir.store(), &[], 0);
         let store = FaultyStore::new(dir.store(), true, false);
         let error = merge_bases(&store, root, root).unwrap_err();
-        assert!(matches!(error, MergeBaseError::Read(_)));
+        assert!(matches!(error, HistoryError::Read(_)));
         let text = error.to_string();
         assert!(text.ends_with(DISK_MESSAGE), "{text}");
         assert_eq!(text.matches(DISK_MESSAGE).count(), 1, "{text}");
