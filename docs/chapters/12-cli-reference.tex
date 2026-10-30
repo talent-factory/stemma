@@ -42,14 +42,16 @@ Positionsargument dafür, denn \type{track} braucht die Positionsargumente für 
 Ausser \type{init} öffnet jeder Befehl das Repository in diesem Verzeichnis oder, wenn es dort
 keines gibt, im nächsten übergeordneten Verzeichnis mit \type{.stemma} (ADR-009), wie Git.
 Ist an der Stelle selbst etwas im Weg, etwa ein \type{.stemma}, das eine Datei ist, sucht der
-Befehl nicht weiter. Ein \type{.stemma} muss unter Unix dem Benutzer gehören, der den Befehl
+Befehl nicht weiter. Ein \type{.stemma} muss dem Benutzer gehören, der den Befehl
 ausführt, im Verzeichnis selbst wie oberhalb davon. Sonst könnte ein anderer Benutzer ein
 \type{.stemma} in ein geteiltes Verzeichnis wie \type{/tmp} legen, und ein Snapshot nach
 \type{cd /tmp} speicherte Dateien in seinen Speicher. Die Meldung rät, den Befehl als Besitzer
-auszuführen; einen anderen Weg gibt es nicht. Unter Windows, wo kein Besitzer bekannt ist, darf
-ein \type{.stemma} oberhalb nicht im Wurzelverzeichnis eines Laufwerks liegen, wo jeder Benutzer
-Ordner anlegen darf; ein solches Repository öffnet ein Befehl nur, wenn \type{-C} sein
-Verzeichnis selbst nennt, und die Meldung nennt den Aufruf.
+auszuführen; einen anderen Weg gibt es nicht. Unter Windows zählt die SID des Besitzers: Sie muss
+die des Benutzers oder des Standardbesitzers im Token des Prozesses sein, und ein Link oder eine
+Junction an der Stelle von \type{.stemma} wird abgelehnt. Zusätzlich darf ein \type{.stemma}
+oberhalb nicht im Wurzelverzeichnis eines Laufwerks liegen, wo jeder Benutzer Ordner anlegen darf;
+ein solches Repository öffnet ein Befehl nur, wenn \type{-C} sein Verzeichnis selbst nennt,
+und die Meldung nennt den Aufruf.
 Führt der Weg zum Repository über einen Link, warnt der Befehl und nennt das Repository, denn
 in einem Link auf ein Verzeichnis eines anderen Repositories arbeitet er in diesem.
 Den Weg liest er wie die Shell: \type{-C ..} aus einem

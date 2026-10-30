@@ -99,8 +99,13 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   must be the user SID or the default owner SID of the token of the process (`OtherOwner`
   otherwise), at `start` as well as above it, as Git for Windows checks for `safe.directory`;
   the default owner is the group of administrators for an elevated process. The owner of the
-  entry itself counts, as on Unix: a link or a junction in the place of `.stemma` is refused
-  (`NotADirectory`), because the API would name the owner of its target. A `.stemma` above
+  entry itself counts, as on Unix, but a link or a junction in the place of `.stemma` is refused
+  (`ReparsePoint`) even when the user made it, because the API would name the owner of its
+  target. The default owner is an accepted widening: an elevated process also trusts a `.stemma`
+  that another administrator made. Two limits stay: a `.stemma` that an elevated shell made is
+  not trusted from a normal shell of the same administrator, whom Git for Windows would accept as
+  a member of the group, and a file system that records no owner, such as FAT, fails with an
+  error of the inspection, since nothing proves who owns it. A `.stemma` above
   `start` must also not be at the root of a volume, where every user may create directories
   (`AtVolumeRoot`), even when the user owns it; one at `start` is opened there, as `-C` reaches
   the root of a volume only when it names it, and the message gives that call.

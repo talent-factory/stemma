@@ -381,7 +381,8 @@ impl Repository {
     /// as well as above it, since `-C` defaults to the current directory and `cd /tmp` is as
     /// common as a directory below it. On Windows the owner SID of the `.stemma` must be the user
     /// SID or the default owner SID of the token of the process, at `start` as well as above it
-    /// ([`OpenError::OtherOwner`]). A `.stemma` above `start` must also not be at the root of a
+    /// ([`OpenError::OtherOwner`]), and it must not be a link or a junction
+    /// ([`OpenError::ReparsePoint`]). A `.stemma` above `start` must also not be at the root of a
     /// volume, where every user may create directories ([`OpenError::AtVolumeRoot`]); a `.stemma`
     /// at `start` is opened there, as the root of a volume is only reached by naming it
     /// (ADR-009).
@@ -408,7 +409,7 @@ impl Repository {
         let at_start = start.join(METADATA_DIR);
         // Before the open, so that nothing of another user's `.stemma` is read, such as a
         // `format` that is a FIFO and would block. Anything else in the way is the error of `open`.
-        if CHECK_AT_START && fs::symlink_metadata(&at_start).is_ok() {
+        if fs::symlink_metadata(&at_start).is_ok() {
             trusted(&at_start)?;
         }
         match Self::open(start) {
@@ -416,7 +417,7 @@ impl Repository {
             opened => {
                 // And after an open that succeeded, so that a `.stemma` that appeared after the
                 // first look, or one that the first look could not inspect, is not used unchecked.
-                if CHECK_AT_START && opened.is_ok() {
+                if opened.is_ok() {
                     trusted(&at_start)?;
                 }
                 return opened.map(|repository| Discovered {
@@ -459,9 +460,11 @@ impl Repository {
                 }
                 Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
             }
+            // The owner first, so that a `.stemma` of another user at the root of a volume is
+            // named for its owner and the `-C` call of `AtVolumeRoot` is not offered for it.
+            trusted(&metadata_dir)?;
             #[cfg(windows)]
             refuse_volume_root(&metadata_dir)?;
-            trusted(&metadata_dir)?;
             let below = real
                 .strip_prefix(root)
                 .expect("an ancestor of a path is a prefix of it");
@@ -1628,10 +1631,6 @@ fn lies_below(start: &Path, root: &Path) -> bool {
         .any(|ancestor| fs::canonicalize(ancestor).is_ok_and(|real| real == root))
 }
 
-/// Whether [`trusted`] is asked for a `.stemma` at the start of [`Repository::discover`] as well
-/// as for one above it: on every platform, since each checks the owner.
-const CHECK_AT_START: bool = true;
-
 /// Whether the `.stemma` that the search found may be used: on Unix the effective user of the
 /// process owns it, as Git checks for `safe.directory`. The owner of the entry itself counts, so
 /// a link that another user made is not followed.
@@ -1650,21 +1649,26 @@ fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
     }
 }
 
-/// Whether the `.stemma` that the search found may be used: the user of the token of the process
-/// owns it, as Git for Windows checks for `safe.directory` (STEMMA-73). A link or a junction in
-/// its place is refused, since the API of Windows would name the owner of its target.
+/// Whether the `.stemma` that the search found may be used: the user of the token of the process,
+/// or its default owner, owns it, as Git for Windows checks for `safe.directory` (STEMMA-73).
+/// A link or a junction in its place is refused ([`OpenError::ReparsePoint`]), since the API of
+/// Windows would name the owner of its target. A file system that records no owner, such as FAT,
+/// is an error of the inspection and not another owner.
 #[cfg(windows)]
 fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
     // The API follows a link or a junction, so the owner it names would be the one of the target
-    // and not of the entry that another user may have made: such an entry is not used.
-    let attributes = fs::symlink_metadata(metadata_dir)
+    // and not of the entry that another user may have made: such an entry is not used. `std`
+    // counts the reparse points that name another path (symbolic links, junctions) as links, and
+    // not those of a cloud service or of deduplication. The entry may still be swapped between
+    // this look and the owner call, as the owner is checked on the path and not on a handle
+    // (ADR-009).
+    let is_link = fs::symlink_metadata(metadata_dir)
         .map_err(OpenError::io("inspect", metadata_dir))?
-        .file_attributes();
-    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(OpenError::NotADirectory {
-            path: metadata_dir.to_path_buf(),
+        .file_type()
+        .is_symlink();
+    if is_link {
+        return Err(OpenError::ReparsePoint {
+            found: metadata_dir.to_path_buf(),
         });
     }
     if windows_owner::is_the_user(metadata_dir)
@@ -1695,7 +1699,7 @@ fn refuse_volume_root(metadata_dir: &Path) -> Result<(), OpenError> {
     }
 }
 
-/// The owner of a path and the SIDs of the token of the process, through `windows-sys`.
+/// Whether a path is owned by the user of the process, through `windows-sys`.
 #[cfg(windows)]
 mod windows_owner {
     use std::io;
@@ -1744,7 +1748,12 @@ mod windows_owner {
     /// Whether `owner` equals the user SID or the default owner SID of the token of the process.
     fn owned_by_token(owner: PSID) -> io::Result<bool> {
         if owner.is_null() {
-            return Ok(false);
+            // A file system without owners, such as FAT: no other user is to blame, but nothing
+            // proves that this one owns it, so the check fails with that cause.
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the file system records no owner",
+            ));
         }
         let mut token: HANDLE = ptr::null_mut();
         // SAFETY: the pseudo handle of the process needs no release; `token` is valid for writes.
@@ -1855,6 +1864,13 @@ pub enum OpenError {
         /// The `.stemma` that was found.
         found: PathBuf,
     },
+    /// The search found a `.stemma` that is a link or a junction, so the owner that the system
+    /// names is the one of its target and not of the entry, and it is not opened (Windows,
+    /// [`Repository::discover`]).
+    ReparsePoint {
+        /// The `.stemma` that was found.
+        found: PathBuf,
+    },
     /// `.stemma` exists, but it is not a directory: it is a file, or a link that leads nowhere.
     NotADirectory {
         /// The `.stemma` that is in the way.
@@ -1912,6 +1928,7 @@ impl OpenError {
             | Self::NotUtf8 { .. }
             | Self::OtherOwner { .. }
             | Self::AtVolumeRoot { .. }
+            | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
             | Self::MalformedFormat { .. }
@@ -1959,6 +1976,12 @@ impl fmt::Display for OpenError {
                 found.display(),
                 found.parent().unwrap_or(found).display()
             ),
+            Self::ReparsePoint { found } => write!(
+                f,
+                "`{}` is a link or a junction, so its owner cannot be checked and it is not \
+                 used; replace it with the directory itself",
+                found.display()
+            ),
             Self::NotADirectory { path } => write!(
                 f,
                 "`{}` exists, but it is not a directory (a file, or a link that leads nowhere)",
@@ -2002,6 +2025,7 @@ impl Error for OpenError {
             | Self::NotUtf8 { .. }
             | Self::OtherOwner { .. }
             | Self::AtVolumeRoot { .. }
+            | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
             | Self::MalformedFormat { .. }
@@ -2870,7 +2894,7 @@ mod tests {
     }
 
     #[test]
-    fn discover_checks_a_repository_above_and_on_unix_one_at_the_start() {
+    fn discover_checks_a_repository_above_and_one_at_the_start() {
         // The check stands for another owner: it refuses every `.stemma` it is shown.
         let refuse = |found: &Path| {
             Err(OpenError::OtherOwner {
@@ -2896,16 +2920,12 @@ mod tests {
         );
         // At the start, as after `cd /tmp`, the check names the `.stemma` as it was given.
         let at_start = Repository::discover_with(dir.path(), &refuse);
-        if cfg!(unix) {
-            let found = dir.path().join(METADATA_DIR);
-            assert!(
-                matches!(&at_start, Err(OpenError::OtherOwner { found: at }) if *at == found),
-                "{:?}",
-                at_start.err()
-            );
-        } else {
-            at_start.unwrap();
-        }
+        let found = dir.path().join(METADATA_DIR);
+        assert!(
+            matches!(&at_start, Err(OpenError::OtherOwner { found: at }) if *at == found),
+            "{:?}",
+            at_start.err()
+        );
     }
 
     #[test]
@@ -2982,7 +3002,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_repository_at_the_root_of_a_volume_is_not_trusted() {
+    fn a_repository_at_the_root_of_a_volume_is_refused() {
         for root in [r"C:\.stemma", r"\\?\C:\.stemma", r"\\server\share\.stemma"] {
             assert!(
                 matches!(
@@ -3005,6 +3025,41 @@ mod tests {
             trusted(&dir.path().join("missing")),
             Err(OpenError::Io { .. })
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_directory_that_the_system_owns_is_not_trusted() {
+        // The directory of Windows belongs to TrustedInstaller or to the administrators of the
+        // system, which is neither the user of a normal token nor its default owner.
+        let windows = std::env::var_os("SystemRoot").expect("Windows sets SystemRoot");
+        let error = trusted(Path::new(&windows)).unwrap_err();
+        assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_in_the_place_of_a_repository_is_refused_whoever_owns_the_target() {
+        // On Unix a link that the user made is followed to nothing and counts by its own owner;
+        // here the API names the owner of the target, so the junction is refused outright.
+        let dir = TempDir::new();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let junction = dir.path().join("junction");
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success(), "mklink /J failed");
+        let error = trusted(&junction).unwrap_err();
+        assert!(matches!(error, OpenError::ReparsePoint { .. }), "{error}");
+        // The target itself is the user's own.
+        trusted(&target).unwrap();
     }
 
     #[cfg(unix)]
@@ -4319,6 +4374,7 @@ mod tests {
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
         use crate::oplog::{outcomes, Current, Outcome};
