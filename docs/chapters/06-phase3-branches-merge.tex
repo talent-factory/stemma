@@ -15,8 +15,24 @@ Die Funktion \type{merge_bases} liefert alle Merge-Basen zweier Commits.
 Nach einem Criss-Cross-Merge, bei dem sich zwei Seiten gegenseitig einmischen,
 sind es mehrere, und der Merge muss sie zusammenführen.
 Die Funktion liest kein Commit-Datum, sondern geht die ganze Vorfahrenmenge beider Seiten durch.
-\item Konflikte als Daten im Commit oder als Markierung in der Arbeitskopie.
-Kapitel 2 beschreibt das Vorbild Jujutsu; die Entscheidung ist offen.
+\item Konflikte als Daten im Commit, nicht als Markierung in der Arbeitskopie.
+Kapitel 2 beschreibt das Vorbild Jujutsu.
+Ein Konflikt ist eine Summe von Trees: Der erste Tree wird genommen, und die Änderung von jedem
+entfernten Tree zum hinzugefügten danach wird angewandt.
+Gleiche hinzugefügte und entfernte Terme heben sich auf.
+Deshalb verschachtelt sich ein Konflikt nie: Ein zweiter Branch, der auf einen offenen Konflikt
+trifft, verlängert die Summe.
+Bleibt ein Tree übrig, ist der Zustand ein gewöhnlicher Commit mit unverändertem Format und
+unveränderter ID.
+Alle Pfade eines Commits teilen die Zahl der Seiten; ein kleinerer Konflikt wird mit
+aufhebenden Paaren aufgefüllt.
+Der Text mit Markierungen entsteht aus einer einzigen Funktion der Summe.
+Er soll nur auf der Platte und im \type{diff} erscheinen; der Snapshot soll Bytes vergleichen und
+keine Markierungen lesen.
+Noch ruft ihn nichts auf.
+Die Regel, dass zwei Seiten mit gleicher Änderung sofort als gelöst gelten, gehört nicht zur
+Algebra, weil sie beim erneuten Zusammenführen Information verliert.
+Noch schreibt kein Befehl einen solchen Commit.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
 \item Eigentümer der Arbeitskopie (Format 5, ADR-010): Ein Snapshot speichert nur die
 Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich
@@ -27,7 +43,6 @@ der Anhang die Befehle. Die zweite Arbeitskopie baut darauf auf.
 \section{Offene Fragen}
 
 \startitemize
-\item Konfliktmodell: Daten im Commit oder klassische Markierung?
 \item Rebase: Ja oder nein in Phase 3?
 \item Verhalten bei einem Branch, der in einem anderen Worktree ausgecheckt ist.
 \item Abgeleitete Daten, etwa Indizes für \type{log} oder später Blame.

@@ -1,7 +1,7 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
 //! index, object storage, references (branches and HEAD, ADR-008), the repository (ADR-009),
 //! the operation log (ADR-011), the exclusion file `.stemmaignore` (ADR-012), and the best common
-//! ancestors of two commits ([`merge_base`]).
+//! ancestors of two commits ([`merge_base`]), and conflicts as sums of trees ([`conflict`]).
 //!
 //! # Errors
 //!
@@ -31,6 +31,7 @@
 mod actor;
 mod allowed;
 pub mod change;
+pub mod conflict;
 pub mod diff;
 pub mod failure;
 #[cfg(any(fuzzing, test))]
