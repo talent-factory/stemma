@@ -19,7 +19,7 @@
 //! no failure there, as the log names the entry of a purge, an abort leaves the repository as it
 //! was before the purge, and nothing can undo either.
 //!
-//! A command that only reads (`op log`, `status`, `op restore --dry-run`, and `purge` without
+//! A command that only reads (`log`, `op log`, `status`, `op restore --dry-run`, and `purge` without
 //! `--apply`, `--resume`, or `--abort`) has made nothing by its output, so a failed write of its
 //! output is code 1; some of the output may already be written, and a script discards it. A
 //! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
@@ -75,7 +75,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::diff::Edit;
 use stemma_core::failure::{Classify, FailureKind};
-use stemma_core::object::{ObjectId, METADATA_DIR};
+use stemma_core::history::{self, HistoryError, Parents};
+use stemma_core::object::{Commit, CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
@@ -112,6 +113,8 @@ enum Command {
     Status(StatusArgs),
     /// Show the changes between two commits, or between a commit and the working copy
     Diff(DiffArgs),
+    /// Show the commits that lead to the working-copy commit, children before parents
+    Log(LogArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -269,6 +272,30 @@ struct OpLogArgs {
     /// The number of entries to show; only their files are read, but all file names are listed
     #[arg(short = 'n', long, value_name = "N", default_value = "20")]
     limit: NonZeroUsize,
+
+    /// Write one JSON object per line instead of text (the schema of ADR-018)
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LogArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// The number of commits to show; without it, every commit is shown
+    #[arg(short = 'n', long, value_name = "N")]
+    limit: Option<NonZeroUsize>,
+
+    /// Follow only the first parent of each commit, so that a merge hides the history it brought in
+    #[arg(long)]
+    first_parent: bool,
 
     /// Write one JSON object per line instead of text (the schema of ADR-018)
     #[arg(long)]
@@ -561,6 +588,17 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The history cannot be read: a commit is absent, damaged, or the store failed.
+    History(HistoryError),
+    /// `log` could not read the working-copy pointer.
+    LogRefs(RefError),
+    /// The commits were read, but the output could not be written.
+    LogWrite {
+        /// The commit that was being written.
+        commit: CommitId,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The operation log cannot be read.
     OpLog(OpLogError),
     /// `op log` found damage in the entry before the oldest shown one, so the link of the shown
@@ -686,6 +724,10 @@ impl CliError {
             Self::Status(error) => by_kind(error.kind()),
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
+            Self::History(error) => by_kind(error.kind()),
+            // `init` writes the file, so a repository without it lost it: damage, as for `op log`.
+            Self::LogRefs(RefError::NoWorkingCopy { .. }) => ExitCode::from(5),
+            Self::LogRefs(error) => by_kind(error.kind()),
             Self::OpLog(error) => by_kind(error.kind()),
             Self::OpLogUnchecked { .. } => by_kind(FailureKind::Damaged),
             Self::OpLogRefs(error) => by_kind(error.kind()),
@@ -706,6 +748,7 @@ impl CliError {
             | Self::RestoreOutput { .. }
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
+            | Self::LogWrite { .. }
             | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
@@ -910,6 +953,30 @@ impl fmt::Display for CliError {
                 "the link of the oldest shown entry to entry {number} cannot be checked, as the \
                  entry is damaged: {reason}; `stemma op verify` checks the whole log"
             ),
+            Self::History(error) => {
+                write!(f, "could not read the history: {error}")?;
+                if error.kind() == FailureKind::Damaged {
+                    write!(
+                        f,
+                        "; the object store lost a commit or holds a damaged one, so a person \
+                         restores it from a copy of the repository"
+                    )?;
+                }
+                Ok(())
+            }
+            Self::LogRefs(error) => {
+                write!(f, "could not read the working-copy commit: {error}")?;
+                if matches!(error, RefError::NoWorkingCopy { .. }) {
+                    write!(f, "; `init` writes the file, so it was removed or lost")?;
+                }
+                Ok(())
+            }
+            Self::LogWrite { commit, source } => {
+                write!(
+                    f,
+                    "could not write commit {commit} to standard output: {source}"
+                )
+            }
             Self::OpLogRefs(error) => write!(
                 f,
                 "could not read the references, so the outcome of the newest entries is not \
@@ -975,6 +1042,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
         Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
         Command::Diff(args) => diff(args, out),
+        Command::Log(args) => show_log(args, out).map(|()| ExitCode::SUCCESS),
         Command::Op {
             command: OpCommand::Log(args),
         } => show_op_log(args, out).map(|()| ExitCode::SUCCESS),
@@ -1469,6 +1537,133 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Shows the commits that lead to the working-copy commit, children before parents. The walk
+/// starts at the working-copy commit, which is `@`: on a branch it is the child of the branch tip
+/// (ADR-010), so the tip and all of its ancestors follow. It only reads and takes no snapshot, so
+/// it needs no actor. A closed pipe is not a failure.
+fn show_log(args: LogArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = open(&args.repository)?;
+    let working_copy = repository
+        .refs()
+        .working_copy()
+        .map_err(CliError::LogRefs)?;
+    let commits = history::ancestors(
+        repository.objects(),
+        working_copy,
+        if args.first_parent {
+            Parents::First
+        } else {
+            Parents::All
+        },
+        args.limit.map(NonZeroUsize::get),
+    )
+    .map_err(CliError::History)?;
+    for (id, commit) in &commits {
+        let current = *id == working_copy;
+        let text = if args.json {
+            log_json(*id, commit, current)
+        } else {
+            log_text(*id, commit, current)
+        };
+        match out.write_all(text.as_bytes()) {
+            // The reader of a pipe, such as `head`, has had enough: that is not a failure.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(source) => {
+                return Err(CliError::LogWrite {
+                    commit: *id,
+                    source,
+                })
+            }
+            Ok(()) => {}
+        }
+    }
+    Ok(())
+}
+
+/// One commit for a person: the mark and the ID, then the change, the parents (`-` for none), the
+/// author, and the time. A message follows after a blank line, every line indented by four spaces.
+/// A blank line ends the block, so a commit with an empty message, such as the working-copy commit
+/// after `init`, has the header and one blank line.
+fn log_text(id: CommitId, commit: &Commit, current: bool) -> String {
+    let parents = commit
+        .parents()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut text = format!(
+        "{} {id}\n  change   {}\n  parents  {}\n  author   {}\n  time     {}\n",
+        if current { '@' } else { 'o' },
+        commit.change(),
+        if parents.is_empty() { "-" } else { &parents },
+        mask_controls(&commit.author().to_string()),
+        op_log::utc(commit.timestamp())
+    );
+    // Split at `\n` only, so that the `\r` of a message with CRLF stays and is masked, as the JSON
+    // form keeps it. Trailing newlines end the last line and are no lines of their own.
+    let message = commit.message().trim_end_matches('\n');
+    if !message.is_empty() {
+        text.push('\n');
+        for line in message.split('\n') {
+            text.push_str("    ");
+            text.push_str(&mask_controls(line));
+            text.push('\n');
+        }
+    }
+    text.push('\n');
+    text
+}
+
+/// Whether `mask_controls` writes the character as `\u{..}`: the controls of Unicode (C0, DEL, and
+/// C1) except the tab, and the characters that change how a terminal lays out or reads the text:
+/// the separators U+2028 and U+2029, the direction marks U+200E, U+200F, and U+061C, and the
+/// embeddings, overrides, and isolates of the bidirectional algorithm (U+202A to U+202E and
+/// U+2066 to U+2069), which can make a line read other than it is stored.
+fn is_masked(c: char) -> bool {
+    (c.is_control() && c != '\t')
+        || matches!(
+            c,
+            '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}'
+                | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// The text with every character that [`is_masked`] selects written as `\u{..}`. The author and
+/// the message come from the commit, so they must not steer the terminal of the reader. Other
+/// characters, such as umlauts and the tab, stay as they are.
+fn mask_controls(text: &str) -> String {
+    let mut masked = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_masked(c) {
+            masked.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            masked.push(c);
+        }
+    }
+    masked
+}
+
+/// One commit as one JSON object and a newline (`schema`, ADR-018): `commit`, `working_copy`
+/// (true for `@`), `parents` (a list of IDs), `change`, `author`, `time` (seconds since the Unix
+/// epoch, as the commit claims), and `message` (verbatim).
+fn log_json(id: CommitId, commit: &Commit, current: bool) -> String {
+    let parents: Vec<String> = commit
+        .parents()
+        .iter()
+        .map(|parent| op_log::quote(&parent.to_string()))
+        .collect();
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"commit\":{},\"working_copy\":{current},\"parents\":[{}],\
+         \"change\":{},\"author\":{},\"time\":{},\"message\":{}}}\n",
+        op_log::quote(&id.to_string()),
+        parents.join(","),
+        op_log::quote(&commit.change().to_string()),
+        op_log::quote(&commit.author().to_string()),
+        commit.timestamp(),
+        op_log::quote(commit.message())
+    )
 }
 
 /// Checks the hash chain of the whole log and the tip file (see `FsOpLog::verify`), and the
@@ -3987,5 +4182,99 @@ mod tests {
             text.ends_with("may hold an old file or a purged secret, so remove it"),
             "{text}"
         );
+    }
+
+    /// The working-copy commit of a new repository, and a commit with two parents that is built
+    /// from it and not stored: enough to format.
+    fn merge_commit(name: &str) -> (PathBuf, CommitId, Commit, CommitId, Commit) {
+        use stemma_core::store::ObjectStore;
+        let (dir, _) = repository_with_entry(name);
+        let repository = Repository::open(&dir).unwrap();
+        let first_id = repository.refs().working_copy().unwrap();
+        let first = repository.objects().get_commit(&first_id).unwrap().unwrap();
+        let second = first.rewrite(first.tree(), first.author().clone(), 7, "other");
+        let merge = Commit::try_new(
+            first.tree(),
+            vec![first_id, second.id()],
+            first.change(),
+            Actor::human("daniel").unwrap(),
+            1_700_000_000,
+            "Merge \"x\"\r\nsecond\tline\n\n",
+        )
+        .unwrap();
+        (dir, first_id, first, merge.id(), merge)
+    }
+
+    #[test]
+    fn a_commit_with_two_parents_lists_both_in_the_text_and_the_json() {
+        let (dir, first_id, first, merge_id, merge) = merge_commit("log-two-parents");
+        let second_id = merge.parents()[1];
+        let text = log_text(merge_id, &merge, false);
+        assert!(
+            text.contains(&format!("  parents  {first_id} {second_id}\n")),
+            "{text}"
+        );
+        // The message: indented, the tab kept, the carriage return masked, no empty last line.
+        assert!(
+            text.ends_with("\n\n    Merge \"x\"\\u{d}\n    second\tline\n\n"),
+            "{text:?}"
+        );
+        assert!(text.starts_with(&format!("o {merge_id}\n")), "{text}");
+
+        let json = log_json(merge_id, &merge, false);
+        assert!(
+            json.contains(&format!("\"parents\":[\"{first_id}\",\"{second_id}\"]")),
+            "{json}"
+        );
+        assert!(json.contains("\"time\":1700000000,"), "{json}");
+        assert!(
+            json.contains(&format!("\"change\":\"{}\"", first.change())),
+            "{json}"
+        );
+        assert!(
+            json.ends_with(
+                "\"message\":\"Merge \\\"x\\\"\\u000d\\u000a\
+            second\\u0009line\\u000a\\u000a\"}\n"
+            ),
+            "{json}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_message_leaves_the_header_and_one_blank_line() {
+        let (dir, first_id, first, _, _) = merge_commit("log-empty-message");
+        let text = log_text(first_id, &first, true);
+        assert!(text.starts_with(&format!("@ {first_id}\n")), "{text}");
+        assert!(text.ends_with("Z\n\n"), "{text:?}");
+        assert_eq!(text.matches("\n\n").count(), 1, "{text:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_mask_covers_controls_and_bidirectional_characters_and_keeps_the_rest() {
+        let masked = mask_controls(
+            "a\u{1b}[0m\u{7f}\u{85}\r\u{2028}\u{2029}\u{202e}\u{2066}\u{200f}\u{61c}b",
+        );
+        assert_eq!(
+            masked,
+            "a\\u{1b}[0m\\u{7f}\\u{85}\\u{d}\\u{2028}\\u{2029}\\u{202e}\\u{2066}\\u{200f}\\u{61c}b"
+        );
+        assert_eq!(
+            mask_controls("Bär\ttab \u{200d} 日本"),
+            "Bär\ttab \u{200d} 日本"
+        );
+    }
+
+    #[test]
+    fn a_closed_pipe_ends_log_without_an_error_and_another_write_error_is_code_1() {
+        let (dir, _) = repository_with_entry("log-writers");
+        let path = dir.to_str().unwrap();
+        assert!(run(parse(&["log", "-C", path]), &mut Closed).is_ok());
+        let error = run(parse(&["log", "-C", path]), &mut Full).unwrap_err();
+        assert!(matches!(error, CliError::LogWrite { .. }), "{error}");
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert!(error.to_string().contains("disk full"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

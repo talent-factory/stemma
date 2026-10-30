@@ -29,7 +29,7 @@ impl Display for HeadValue<'_> {
 
 /// Seconds since the Unix epoch as `YYYY-MM-DDThh:mm:ssZ` (UTC), by the civil-from-days
 /// algorithm of Howard Hinnant.
-fn utc(seconds: i64) -> String {
+pub(crate) fn utc(seconds: i64) -> String {
     let days = seconds.div_euclid(86_400);
     let rest = seconds.rem_euclid(86_400);
     let shifted = days + 719_468;

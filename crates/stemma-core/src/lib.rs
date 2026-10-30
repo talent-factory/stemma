@@ -21,7 +21,7 @@
 //! `root_cause()` of an error library. A program that wants the error of the file system, for
 //! example to map [`std::io::ErrorKind`] to an exit code, asks the error:
 //! [`store::StoreError::io_error`] for the store, and `store_error()` on [`store::ReadError`],
-//! [`index::WriteTreeError`], [`refs::RefError`], [`merge_base::MergeBaseError`], and
+//! [`index::WriteTreeError`], [`refs::RefError`], [`history::HistoryError`], and
 //! [`verify::VerifyError`] (the error of a check of an index, a tree, a commit, or a reference)
 //! for the error of the store inside. [`repository::InitError`], [`repository::OpenError`], and
 //! [`change::GenerateError`] have an `io_error()` for the error of the file system or of the
@@ -36,6 +36,7 @@ pub mod failure;
 #[cfg(any(fuzzing, test))]
 #[doc(hidden)]
 pub mod fuzz;
+pub mod history;
 pub mod ignore;
 pub mod index;
 pub mod merge_base;

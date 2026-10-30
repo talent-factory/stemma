@@ -8,6 +8,8 @@ Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und 
 
 \startitemize
 \item Befehle \type{branch}, \type{checkout} und \type{log}.
+Der Befehl \type{log} zeigt die Vorfahren des Working-Copy-Commits ohne Cache,
+jeden Commit vor seinen Eltern, mit \type{-n}, \type{--first-parent} und \type{--json}.
 \item Drei-Wege-Merge über die Merge-Basis, den besten gemeinsamen Vorfahren der beiden Seiten.
 Die Funktion \type{merge_bases} liefert alle Merge-Basen zweier Commits.
 Nach einem Criss-Cross-Merge, bei dem sich zwei Seiten gegenseitig einmischen,
