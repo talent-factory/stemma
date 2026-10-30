@@ -3280,6 +3280,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_status_with_json_that_is_not_durable_writes_one_object_and_ends_with_code_3() {
         let (dir, status) = a_status_not_durable("status-late-json");
