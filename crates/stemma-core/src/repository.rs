@@ -1153,7 +1153,9 @@ impl UpdateError {
 
     /// Whether a pointer moved although the call failed. [`NotDurable`](Self::NotDurable) and
     /// [`PartlyMoved`](Self::PartlyMoved) moved one; in every other case the pointers are where they
-    /// were, and the change can be repeated (with a second entry if the first one stays).
+    /// were, and the change can be repeated (with a second entry if the first one stays). The one
+    /// exception is a tag whose file vanished after the check ([`MoveFailed`](Self::MoveFailed)
+    /// with [`RefError::StaleTag`] and no `found`): the tag is gone, and a repeat finds nothing.
     pub fn pointer_moved(&self) -> bool {
         matches!(self, Self::NotDurable { .. } | Self::PartlyMoved { .. })
     }
@@ -1228,7 +1230,7 @@ impl fmt::Display for UpdateError {
             Self::MoveFailed { entry, source } => write!(
                 f,
                 "entry {} of the operation log was written, but the move failed: {source}; the \
-                 entry names a move that did not happen",
+                 entry may name a move that did not happen",
                 entry.number()
             ),
             Self::PartlyMoved { entry, source } => write!(
@@ -4118,6 +4120,86 @@ mod tests {
     }
 
     #[test]
+    fn an_authorizer_that_allows_tag_but_not_untag_keeps_the_tag() {
+        struct DenyUntag;
+
+        impl Authorizer for DenyUntag {
+            fn authorize(
+                &self,
+                _actor: &Actor,
+                operation: &OperationName,
+                _target: &str,
+            ) -> Decision {
+                if operation.as_str() == "untag" {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                }
+            }
+        }
+
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &DenyUntag,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let error = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &DenyUntag,
+            )
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+    }
+
+    #[test]
+    fn a_tag_stays_if_the_entry_of_its_deletion_cannot_be_written() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        // The entry of the tag is lost; the tip file still names it.
+        fs::remove_file(dir.path().join(".stemma/oplog/000000000002")).unwrap();
+
+        let error = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Log(OpLogError::TipAhead { .. })),
+            "{error}"
+        );
+        assert!(!error.pointer_moved());
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+    }
+
+    #[test]
     fn a_tag_that_is_not_where_the_caller_saw_it_is_not_deleted_and_writes_no_entry() {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
@@ -4310,7 +4392,7 @@ mod tests {
         assert_eq!(error.entry().map(Entry::number), Some(2));
         let message = error.to_string();
         assert!(
-            message.contains("entry 2") && message.contains("names a move that did not happen"),
+            message.contains("entry 2") && message.contains("name a move that did not happen"),
             "{message}"
         );
         assert!(error.io_error().is_some());

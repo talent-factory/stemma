@@ -1134,8 +1134,8 @@ er bewegt sich nie. Man löscht ihn und setzt ihn neu.
 Die Operation \type{untag} folgt derselben Regel wie \type{tag}:
 Unter der Sperre prüft sie, ob der Tag noch auf dem Commit steht, den der Aufrufer gesehen hat,
 schreibt und flusht den Eintrag, und erst dann löscht sie die Datei. Der Aufrufer übergibt den
-Commit mit, weil er sonst einen Tag löschen könnte, den jemand inzwischen gelöscht und auf einen
-anderen Commit neu gesetzt hat. Der Eintrag trägt dieselbe Zeile \type{tag NAME} wie der des
+Commit mit, weil er sonst einen Tag löschen könnte, der inzwischen gelöscht und auf einen
+anderen Commit neu gesetzt wurde. Der Eintrag trägt dieselbe Zeile \type{tag NAME} wie der des
 Setzens, mit dem Commit als altem Wert und \type{-} als neuem:
 
 \starttyping
@@ -1146,7 +1146,7 @@ tag v1 b3:4feb…b32c -
 Das Format bekommt auch dafür keine neue Version, denn die Zeile erlaubt für beide Werte einen
 Commit oder \type{-}. Den Ausgang liest \type{op log} wieder am Tag, wie er jetzt ist: Ein Eintrag
 von \type{untag} hat gewirkt, wenn es den Tag nicht mehr gibt. Der Eintrag des Setzens bleibt
-im Log. Wer einen Tag gesetzt hat und wer ihn gelöscht hat, ist also beides nachzulesen.
+im Log. Wer einen Tag gesetzt und wer ihn gelöscht hat, steht also beides im Log.
 
 \subsection[sec:oplog-tip]{Nummern und die Datei \type{oplog-tip}}
 

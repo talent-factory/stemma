@@ -133,8 +133,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   `expected`: the tag is deleted only if it is still at that commit. Another commit, or no tag
   at all, is `StaleTag` (a variant of its own, because `Stale` is for a branch), and a name that
   another entry holds is `Conflict`, checked before `expected` (the command reads the tag first,
-  so it reports such a name as a tag that does not exist, and `Conflict` reaches only a caller of
-  the core). The reason for `expected` is the
+  so it reports such a name as a tag that does not exist, and `Conflict` reaches the command only
+  if the name appears between the read and the lock, or a caller of the core). The reason for `expected` is the
   case that a tag is deleted and set again at another commit between the look of the caller and
   its deletion: without `expected`, the deletion would remove the new tag, which someone may
   have read. `Repository::delete_tag` writes an entry of the operation `untag` before it

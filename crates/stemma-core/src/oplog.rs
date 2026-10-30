@@ -3075,7 +3075,7 @@ pub struct Current {
     head: Head,
     working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
-    /// The tags that exist; empty until [`Current::with_tags`] gave them.
+    /// The tags that exist; unknown (`None`) until [`Current::with_tags`] gave them.
     tags: Option<BTreeMap<BranchName, CommitId>>,
     /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
     /// `Some(None)` for a working copy without an owner.
@@ -3122,8 +3122,8 @@ impl Current {
         self
     }
 
-    /// Adds the tags that exist. Without them, the outcome of an entry that made a tag stays
-    /// unknown.
+    /// Adds the tags that exist. Without them, the outcome of an entry that made or deleted a tag
+    /// stays unknown.
     #[must_use]
     pub fn with_tags(mut self, tags: impl IntoIterator<Item = (BranchName, CommitId)>) -> Self {
         self.tags = Some(tags.into_iter().collect());

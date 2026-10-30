@@ -627,16 +627,16 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
-    /// The core refused the tag or could not make it. An entry of the log can name a tag that
-    /// was not made ([`UpdateError::MoveFailed`]).
+    /// The core refused the tag or could not make or delete it. An entry of the log can name a
+    /// tag that was not made or not deleted ([`UpdateError::MoveFailed`]).
     Tag(UpdateError),
     /// `tag` could not read the references.
     TagRefs(RefError),
     /// `tag` has no commit to tag: no commit is given and the branch of HEAD has none yet.
     NoCommitToTag,
-    /// `tag --delete` names a tag that does not exist.
+    /// `tag --delete` names a tag that does not exist, or a name that is only a directory of tags.
     NoSuchTag(BranchName),
-    /// The tag was made or the tags were read, but the output could not be written.
+    /// The tag was made or deleted, or the tags were read, but the output could not be written.
     TagWrite {
         /// The tag that was being written.
         name: String,

@@ -791,7 +791,8 @@ impl PurgeError {
                 write!(
                     f,
                     ", which the purge would rewrite; delete each tag with `stemma tag --delete \
-                     <name>`, run the purge again, and then set the tag again at the commit \
+                     <name>` (if a purge is pending, abort it first with `stemma purge \
+                     --abort`), run the purge again, and then set the tag again at the commit \
                      that the purge leaves if it is still needed"
                 )
             }

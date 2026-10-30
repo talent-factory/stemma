@@ -1227,7 +1227,7 @@ HEAD und macht keinen Snapshot.
 den der Tag haben soll. Unter der Sperre der Referenzen prüft der Kern, ob der Tag noch dort
 steht, und schreibt dann den Eintrag \type{untag} (Stufe 2, ADR-004) mit dem Commit als altem
 Wert und \type{-} als neuem. Erst danach löscht er die Datei. So löscht der Befehl keinen Tag,
-den jemand inzwischen gelöscht und auf einen anderen Commit neu gesetzt hat. Der Eintrag nennt
+der inzwischen gelöscht und auf einen anderen Commit neu gesetzt wurde. Der Eintrag nennt
 Akteur und Zeit; wer einen Tag gelöscht hat und wann, steht also im Log. Löschen und neu setzen
 sind zwei Aufrufe mit zwei Einträgen. Das Löschen ändert weder die Arbeitskopie noch HEAD noch
 einen Branch und macht keinen Snapshot.
@@ -1243,21 +1243,25 @@ Commit, auf den der Tag zeigte. Das Feld kam ohne neues \type{schema} dazu (ADR-
 {\bf Fehler.} Ein Tag, den es gibt, lehnt der Befehl ab, auch wenn er auf denselben Commit zeigt:
 Ein Release, das jemand gelesen hat, behält seine Bedeutung (ADR-008). Das ist kein Wettlauf,
 den ein Skript wiederholen könnte; der Befehl endet mit Exit-Code 1 und schreibt keinen Eintrag.
-Dasselbe gilt für einen Namen, der im Weg steht (etwa \type{a} neben dem Tag \type{a/b}), einen
-Commit, der nicht im Objektspeicher liegt oder ein anderes Objekt ist, und einen Akteur, den der
-Autorisierer ablehnt. Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6. Ist ein Fehler
-des Dateisystems nach dem Eintrag eingetreten, steht im Log ein Eintrag für einen Tag, den es nicht
-gibt; \type{op log} markiert ihn mit \type{!}. Konnte nur das Verzeichnis nicht auf den
-Datenträger geschrieben werden, ist der Tag gesetzt, und der Exit-Code ist 3.
+Dasselbe gilt für einen Namen, der im Weg steht (etwa \type{a} über dem Tag \type{a/b}), einen
+Commit, der nicht im Objektspeicher liegt oder ein anderes Objekt ist, und einen fehlenden
+\type{--actor} (Exit-Code 2). Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6.
+Ist ein Fehler des Dateisystems nach dem Eintrag eingetreten, steht im Log ein Eintrag für einen
+Tag, den es nicht gibt; \type{op log} markiert ihn mit \type{!}.
+Konnte nur das Verzeichnis nicht auf den Datenträger geschrieben werden,
+ist der Tag gesetzt, und der Exit-Code ist 3.
 Beschädigte Referenzen enden mit Exit-Code 5.
 
 {\bf Fehler beim Löschen.} Einen Tag, den es nicht gibt, löscht der Befehl nicht: Exit-Code 1 und
 die Meldung \type{there is no tag `NAME` to delete}, ohne Eintrag. Dasselbe gilt für einen
-Namen, der nur ein Verzeichnis von Tags ist (etwa \type{a} neben dem Tag \type{a/b}). Hat jemand
+Namen, der nur ein Verzeichnis von Tags ist (etwa \type{a} über dem Tag \type{a/b}). Hat jemand
 den Tag zwischen dem Lesen und der Sperre gelöscht oder auf einen anderen Commit neu gesetzt,
 endet der Befehl mit Exit-Code 1 und der Meldung, dass sich der Tag geändert hat; er schreibt
-keinen Eintrag. Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6, beschädigte
-Referenzen enden mit Exit-Code 5.
+keinen Eintrag. Verschwindet die Datei erst nach der Prüfung, steht der Eintrag schon im Log
+und stimmt: Der Tag ist weg. Der Befehl endet dann mit Exit-Code 1 und der Meldung, dass sich
+der Tag geändert hat. Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6.
+Besteht das Journal eines Purge, lehnt der Befehl das Löschen mit Exit-Code 1 ab; ein fehlender
+\type{--actor} endet mit Exit-Code 2. Beschädigte Referenzen enden mit Exit-Code 5.
 
 {\bf Wiederholen.} Nach einer Meldung, die vor dem Eintrag kommt (kein solcher Tag, Sperre),
 hat der Befehl nichts geändert, und man kann ihn wiederholen. Nach der Meldung, dass sich der
@@ -1265,8 +1269,9 @@ Tag geändert hat, liest man den Tag zuerst mit \type{stemma tag}: Ein Wiederhol
 der jetzt dort steht. Ein Fehler des Dateisystems nach dem Eintrag lässt im Log einen Eintrag für
 ein Löschen zurück, das nicht stattfand; \type{op log} markiert ihn mit \type{!}, und man liest
 den Tag, bevor man wiederholt. Nach Exit-Code 3 ist der Tag gelöscht, nur das Verzeichnis kam
-nicht auf den Datenträger; ein Wiederholen meldete einen Tag, den es nicht gibt. Den Akteur
-prüft heute kein Autorisierer; eine Policy, die ihn ablehnen kann, kommt mit Phase 4.
+nicht auf den Datenträger; ein Wiederholen meldet einen Tag, den es nicht gibt (Exit-Code 1,
+nichts geändert). Der Befehl lässt
+heute jeden Akteur zu; ein Autorisierer, der ihn ablehnen kann, kommt mit Phase 4.
 
 {\bf Beispiele.}
 
@@ -1834,6 +1839,8 @@ Ein Tag bewegt sich nie, und er würde das Geheimnis erreichbar halten.
 Die Meldung nennt jeden solchen Tag und den Befehl \type{stemma tag --delete <name>}, der ihn
 löscht. Wer den Tag noch braucht, setzt ihn nach dem Purge auf den Commit, den der Purge übrig
 lässt.
+Solange ein Journal besteht, lehnt \type{stemma tag --delete} ab; dann gilt:
+erst \type{--abort}, dann den Tag löschen, dann den Purge neu planen.
 Dieselbe Prüfung läuft unter der Sperre vor dem ersten Schreiben noch einmal,
 auch bei \type{--resume}; ein Tag, der seit dem Plan entstand, hält den Purge dann an,
 und das Journal bleibt für \type{--abort} oder ein erneutes \type{--resume}.

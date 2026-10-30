@@ -9,7 +9,7 @@
 //! ```text
 //! <root>/HEAD                    branch main\n   or   commit b3:<64 hex digits>\n
 //! <root>/refs/heads/<name>       b3:<64 hex digits>\n
-//! <root>/refs/tags/<name>        b3:<64 hex digits>\n   (created once, never moved)
+//! <root>/refs/tags/<name>        b3:<64 hex digits>\n   (created once, never moved, deleted)
 //! <root>/refs.lock               exists while a command writes (ADR-014)
 //! <root>/refs.lock.guard         stays; its holder holds a lock of the system on it (ADR-008)
 //! ```
@@ -433,8 +433,8 @@ pub enum RefError {
         /// The value HEAD has.
         found: Head,
     },
-    /// The name cannot be created because of another entry: a reference is a file, so a name
-    /// cannot be a reference and the start of other names, and on a file system that ignores case
+    /// The name cannot be created, or a tag cannot be deleted under it, because of another entry:
+    /// a reference is a file, so a name cannot be a reference and the start of other names, and on a file system that ignores case
     /// two names that differ only in case are one file. Branches and tags are checked each among
     /// themselves.
     Conflict {
@@ -548,7 +548,7 @@ pub enum LockHolder {
     },
 }
 
-/// The kind of a reference that is created: a branch or a tag.
+/// The kind of a reference that is created or deleted: a branch or a tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RefKind {
@@ -963,11 +963,10 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// Returns [`RefError::Locked`] if another change is in progress, [`RefError::PurgePending`]
     /// if the journal of a purge exists (ADR-014), [`RefError::Conflict`] if the name is held by
     /// another tag (checked before `expected`), [`RefError::StaleTag`] if the tag is not at
-    /// `expected` or does not exist, [`RefError::Io`] if the storage fails, and
-    /// [`RefError::Corrupt`] as for [`tag`](Self::tag). Nothing is changed in any of these cases,
+    /// `expected` or does not exist, [`RefError::Io`] if the storage fails,
+    /// [`RefError::NotFlushed`], and [`RefError::Corrupt`] as for [`tag`](Self::tag). Nothing is changed in any of these cases,
     /// except for [`RefError::NotFlushed`]: the tag is gone, but may come back after a crash. A
-    /// caller must not repeat the delete then, because the repeat is `StaleTag` with `found`
-    /// `None`; it reads the tag instead.
+    /// repeat of the delete is `StaleTag` with `found` `None`, so the caller reads the tag first.
     ///
     /// This changes the pointer without an entry in the operation log. A command that deletes a
     /// tag for a person uses [`Repository::delete_tag`](crate::repository::Repository::delete_tag)
@@ -1855,8 +1854,8 @@ impl FsRefStore {
         Ok(Lookup::Absent)
     }
 
-    /// The commit of the branch or tag, and what stands in the way of creating it if there is
-    /// none.
+    /// The commit of the branch or tag, and what stands in the way of creating or deleting it if
+    /// there is none.
     fn current(&self, namespace: RefKind, name: &BranchName) -> Result<Current, RefError> {
         match self.lookup(namespace, name)? {
             Lookup::Absent => Ok(Current::default()),
