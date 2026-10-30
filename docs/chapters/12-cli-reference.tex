@@ -1245,7 +1245,7 @@ Ein Release, das jemand gelesen hat, behält seine Bedeutung (ADR-008). Das ist 
 den ein Skript wiederholen könnte; der Befehl endet mit Exit-Code 1 und schreibt keinen Eintrag.
 Dasselbe gilt für einen Namen, der im Weg steht (etwa \type{a} über dem Tag \type{a/b}), einen
 Commit, der nicht im Objektspeicher liegt oder ein anderes Objekt ist, und einen fehlenden
-\type{--actor} (Exit-Code 2). Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6.
+\type{--actor} (Exit-Code 1). Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6.
 Ist ein Fehler des Dateisystems nach dem Eintrag eingetreten, steht im Log ein Eintrag für einen
 Tag, den es nicht gibt; \type{op log} markiert ihn mit \type{!}.
 Konnte nur das Verzeichnis nicht auf den Datenträger geschrieben werden,
@@ -1261,7 +1261,7 @@ keinen Eintrag. Verschwindet die Datei erst nach der Prüfung, steht der Eintrag
 und stimmt: Der Tag ist weg. Der Befehl endet dann mit Exit-Code 1 und der Meldung, dass sich
 der Tag geändert hat. Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6.
 Besteht das Journal eines Purge, lehnt der Befehl das Löschen mit Exit-Code 1 ab; ein fehlender
-\type{--actor} endet mit Exit-Code 2. Beschädigte Referenzen enden mit Exit-Code 5.
+\type{--actor} endet mit Exit-Code 1. Beschädigte Referenzen enden mit Exit-Code 5.
 
 {\bf Wiederholen.} Nach einer Meldung, die vor dem Eintrag kommt (kein solcher Tag, Sperre),
 hat der Befehl nichts geändert, und man kann ihn wiederholen. Nach der Meldung, dass sich der

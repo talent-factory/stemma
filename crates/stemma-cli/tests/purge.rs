@@ -135,6 +135,32 @@ fn object_path(dir: &Path, id: &str) -> PathBuf {
 }
 
 #[test]
+fn a_tag_stops_the_purge_and_the_advice_of_the_refusal_works() {
+    let dir = with_secret();
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+
+    // The plan names the tag and the command that deletes it, and writes nothing.
+    let refused = run(dir.path(), &["purge", &secret(), "--actor", ACTOR]);
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("the tag `v1`") && refused.stderr.contains("stemma tag --delete"),
+        "{}",
+        refused.stderr
+    );
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+
+    // Follow the advice: delete the tag, purge, and set the tag again at the tip that is left.
+    ok(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+    ok(
+        dir.path(),
+        &["purge", &secret(), "--apply", "--actor", ACTOR],
+    );
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+    ok(dir.path(), &["op", "verify"]);
+}
+
+#[test]
 fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
     let dir = with_secret();
     // An anchor kept before the purge: the stubs keep the hashes, so it still holds after it.

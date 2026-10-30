@@ -3980,7 +3980,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_is_made_after_its_entry_and_the_entry_says_who_set_it() {
+    fn a_tag_is_made_and_the_entry_says_who_set_it() {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
@@ -4069,7 +4069,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_is_deleted_after_its_entry_and_the_entry_says_who_deleted_it() {
+    fn a_tag_is_deleted_and_the_entry_says_who_deleted_it() {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");

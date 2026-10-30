@@ -22,7 +22,7 @@ fn commit(dir: &Dir, message: &str) -> String {
 }
 
 #[test]
-fn a_tag_names_the_tip_of_the_branch_by_default_and_the_log_says_who_and_when() {
+fn a_tag_names_the_tip_of_the_branch_by_default_and_the_log_says_who_set_it_and_when() {
     let dir = repository();
     let first = commit(&dir, "first");
     let result = run(dir.path(), &["tag", "v1", "--actor", ACTOR]);
@@ -62,6 +62,8 @@ fn a_tag_names_the_tip_of_the_branch_by_default_and_the_log_says_who_and_when() 
         "{}",
         json.stdout
     );
+    assert!(newest.contains("human daniel"), "{}", log.stdout);
+    assert!(json.stdout.contains("\"time\":"), "{}", json.stdout);
 }
 
 #[test]
@@ -189,7 +191,7 @@ fn a_commit_without_a_name_is_a_usage_error() {
 }
 
 #[test]
-fn a_tag_is_deleted_and_set_again_and_the_log_says_who_and_when() {
+fn a_tag_is_deleted_and_set_again_and_the_log_says_who_deleted_it_and_when() {
     let dir = repository();
     let first = commit(&dir, "first");
     ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
@@ -223,6 +225,7 @@ fn a_tag_is_deleted_and_set_again_and_the_log_says_who_and_when() {
     );
     // The newest line names the actor who deleted the tag.
     assert!(newest.contains("human daniel"), "{}", log.stdout);
+    assert!(json.stdout.contains("\"time\":"), "{}", json.stdout);
     ok(dir.path(), &["op", "verify"]);
 
     // The name is free again.
@@ -313,6 +316,51 @@ fn deleting_a_tag_needs_an_actor_and_a_name_and_no_commit() {
     );
     assert_eq!(with_commit.code, 2, "{}", with_commit.stderr);
 
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}
+
+#[test]
+fn a_held_lock_ends_setting_and_deleting_a_tag_with_code_6_and_changes_nothing() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    common::hold_the_lock(dir.path());
+
+    for args in [
+        vec!["tag", "v2", "--actor", ACTOR],
+        vec!["tag", "--delete", "v1", "--actor", ACTOR],
+    ] {
+        let result = run(dir.path(), &args);
+        assert_eq!(result.code, 6, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "", "{args:?}");
+    }
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap(),
+        format!("{first}\n")
+    );
+    assert!(!dir.path().join(".stemma/refs/tags/v2").exists());
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}
+
+#[test]
+fn a_pending_purge_refuses_the_deletion_of_a_tag_and_names_resume() {
+    let dir = repository();
+    commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    fs::write(dir.path().join(".stemma/purge-pending"), "damaged").unwrap();
+
+    let result = run(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("stemma purge --resume"),
+        "{}",
+        result.stderr
+    );
     assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
     assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
 }

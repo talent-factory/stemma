@@ -430,6 +430,17 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_tag_is_no_damage_and_no_held_lock() {
+        let stale = RefError::StaleTag {
+            name: "v1".parse().unwrap(),
+            expected: crate::object::CommitId::new(id()),
+            found: None,
+        };
+        assert_eq!(stale.kind(), FailureKind::Other);
+        assert_eq!(locked().kind(), FailureKind::Locked);
+    }
+
+    #[test]
     fn the_read_errors_of_the_history_are_damage_except_a_failing_disk() {
         use crate::object::CommitParseError;
         use crate::store::ReadError;
