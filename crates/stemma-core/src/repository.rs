@@ -4161,6 +4161,7 @@ mod tests {
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
         use crate::oplog::{outcomes, Current, Outcome};
