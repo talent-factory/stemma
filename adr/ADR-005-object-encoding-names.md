@@ -160,14 +160,16 @@ them.
   writes the commit for a sum of trees. Equal added and removed terms cancel, by the equality of
   the IDs and without reading a tree, so a second branch that lands on an open conflict extends
   the sum and never nests it. A sum that cancels down to one tree is written as a `commit`, so
-  one state has one encoding and one ID. All paths of a commit share the number of sides; a
-  conflict with fewer sides is padded with pairs that cancel again (they stand in front, so the
-  padded sum simplifies to the sum it came from). The rule that two sides which made the same
-  change resolve at once is not part of the algebra: it loses information when the result is
-  merged again, and the merge decides whether to apply it. The text with markers that shows a
-  conflicted file is one function of the sum (`marker_text`), a pure function of the contents of
-  the terms; disk, `diff`, and the snapshot use it, and the snapshot compares bytes and does not
-  parse markers. No command writes a `commit2` yet.
+  one state has one encoding and one ID. That holds for what the algebra writes; the reader of
+  `commit2` does not yet reject a list whose terms cancel (STEMMA-181). All paths of a commit
+  share the number of sides; a conflict with fewer sides is padded with pairs that cancel again
+  (they stand in front, so a padded sum simplifies exactly as the sum it came from does). The
+  rule that two sides which made the same change resolve at once is not part of the algebra: it
+  loses information when the result is merged again, and the merge decides whether to apply it. The text with markers that shows a
+  conflicted file is one function of the sum (`marker_text`), a pure function of the list of the
+  contents of the terms, in order. The working copy and `diff` are to show it, and the snapshot is
+  to compare the bytes of a file with it and not to parse markers. Nothing calls it yet, and no
+  command writes a `commit2` yet.
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
   repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
   other non-canonical form. Otherwise one logical object could have several encodings and several

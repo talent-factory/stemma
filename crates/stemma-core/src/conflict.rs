@@ -12,7 +12,8 @@
 //!
 //! 1. **Equal terms cancel.** An added value that equals a removed value is dropped together with
 //!    it ([`Merge::simplify`]). The test is the equality of the value, which for a tree or a blob
-//!    is the equality of its ID, so no content is read. Because of this a conflict never nests:
+//!    is the equality of its ID, so no content is read ([`marker_text`] compares the bytes of the
+//!    contents). Because of this a conflict never nests:
 //!    a second branch that lands on an open conflict extends the sum ([`Merge::land`]) and the
 //!    terms that the two have in common cancel.
 //! 2. **The number of sides is global.** All paths of a commit share the number of sides, so a
@@ -65,7 +66,7 @@ impl fmt::Display for MergeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TermCount(count) => {
-                write!(f, "a sum lists an odd number of terms, not {count}")
+                write!(f, "a sum needs an odd number of terms, got {count}")
             }
         }
     }
@@ -130,9 +131,9 @@ impl<T: Clone + Eq> Merge<T> {
     /// meaning, and the meaning does not depend on the order of the terms. The choice does decide
     /// the order of what is left, and with it the text of a marker and the ID of a commit. The rule
     /// is made to fit [`padded`](Self::padded): the pairs of padding stand in front, and each
-    /// cancels against itself, so a padded sum simplifies to the sum it was padded from. The
-    /// result is never empty: every cancelled pair takes one side and one base, and a sum has one
-    /// side more.
+    /// cancels against itself, so a padded sum simplifies exactly as the sum it was padded from
+    /// does. The result is never empty: every cancelled pair takes one side and one base, and a
+    /// sum has one side more.
     pub fn simplify(&self) -> Self {
         let adds: Vec<&T> = self.adds().collect();
         let removes: Vec<&T> = self.removes().collect();
@@ -156,6 +157,7 @@ impl<T: Clone + Eq> Merge<T> {
                 terms.push((*remove).clone());
             }
         }
+        debug_assert!(terms.len() % 2 == 1, "a simplified sum is never empty");
         Self { terms }
     }
 
@@ -180,11 +182,17 @@ impl<T: Clone + Eq> Merge<T> {
     /// Pads the sum to `sides` sides with pairs of equal terms, which do not change its meaning.
     /// A sum that already has that many sides or more is returned as it is. Commits share the
     /// number of sides across all paths, and a path with fewer sides is padded to it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `sides` is so large that the padded sum cannot be held in memory. The caller
+    /// passes the largest number of sides of the paths of a commit, which is small.
     pub fn padded(&self, sides: usize) -> Self {
-        let mut terms = Vec::with_capacity(self.terms.len().max(2 * sides));
-        // The pairs stand in front and repeat the first term: the added one is the first side, so
-        // the removed one cancels against it and no term of the original is touched.
-        while terms.len() + self.terms.len() + 1 < 2 * sides {
+        let target = sides.saturating_mul(2);
+        let mut terms = Vec::with_capacity(self.terms.len().max(target));
+        // Each pair is `t0, t0`. Its removed term cancels against its own added term, which stands
+        // in front of everything else, so no term of the original is touched.
+        while terms.len() + self.terms.len() + 1 < target {
             terms.push(self.terms[0].clone());
             terms.push(self.terms[0].clone());
         }
@@ -230,9 +238,12 @@ impl From<&Commit> for Merge<TreeId> {
 impl From<&Commit2> for Merge<TreeId> {
     fn from(commit: &Commit2) -> Self {
         // A `Commit2` holds an odd number of at least three trees, which is the invariant of a sum.
-        Self {
-            terms: commit.trees().to_vec(),
-        }
+        let terms = commit.trees().to_vec();
+        debug_assert!(
+            terms.len() % 2 == 1,
+            "a commit2 holds an odd number of trees"
+        );
+        Self { terms }
     }
 }
 
@@ -360,8 +371,10 @@ const MIN_MARKER_LEN: usize = 7;
 /// [equivalent](Merge::is_equivalent) but list their sides in another order show them in that
 /// order. The snapshot compares the file with the text of the sum that the commit stores, so the
 /// order of the stored sum is the one that counts.
-/// Disk, `diff`, and the snapshot all call it, and the snapshot decides whether a file is still
-/// the conflict by comparing the bytes of the file with this text; Stemma does not parse markers.
+///
+/// Nothing calls it yet. The working copy and `diff` are to show this text, and the snapshot is
+/// to decide whether a file is still the conflict by comparing the bytes of the file with it;
+/// Stemma does not parse markers.
 ///
 /// The form, for a sum of three terms:
 ///
@@ -378,10 +391,12 @@ const MIN_MARKER_LEN: usize = 7;
 ///
 /// - The terms follow in the order of the sum: side, base, side, base, ..., side. The sides and
 ///   the bases are numbered from 1 in that order.
-/// - A marker line starts with a run of `<`, `+`, `-`, or `>`. The run has seven characters. If a
-///   line of some content starts with a run of such a character, the run of all marker lines is
-///   one longer than the longest of them, so that no line of content is a marker line.
-/// - A term that is absent has `(absent)` after its label and no lines. A term whose last line has
+/// - A marker line starts with a run of `<`, `+`, `-`, or `>`. The run has seven characters, or,
+///   if a line of some content starts with a run of seven or more of such a character, one more
+///   than the longest of them, so that no line of content is a marker line. The run is the same
+///   for all marker lines of a text.
+/// - A term that is absent has `(absent)` after its label and no lines. An empty file has its
+///   label and no lines, without `(absent)`. A term whose last line has
 ///   no line feed gets one, and `(no newline at end)` after its label tells that it was not
 ///   there. The text uses `\n` for every line it writes, whatever the content uses.
 /// - The text ends with the closing marker and a line feed.
@@ -453,7 +468,7 @@ fn push_marker(out: &mut Vec<u8>, character: u8, run: usize, rest: &str) {
 mod tests {
     use super::*;
     use crate::change::sample_change;
-    use crate::object::{Kind, ObjectId};
+    use crate::object::ObjectId;
     use crate::properties::{cases, seed, Rng, DEFAULT_CASES, DEFAULT_SEED};
 
     fn sum(terms: &[u8]) -> Merge<u8> {
@@ -509,7 +524,7 @@ mod tests {
         );
         assert_eq!(
             MergeError::TermCount(4).to_string(),
-            "a sum lists an odd number of terms, not 4"
+            "a sum needs an odd number of terms, got 4"
         );
     }
 
@@ -533,8 +548,10 @@ mod tests {
         assert_eq!(sum(&[1, 1, 2]).simplify(), sum(&[2]));
         assert_eq!(sum(&[1, 1, 2]).resolution(), Some(2));
         assert_eq!(sum(&[1, 2, 3]).resolution(), None);
-        // A removed term cancels against the nearest equal side before it: 5 - 5 + 5 is 5.
+        // A removed term cancels against the first equal side that is still free: 5 - 5 + 5 is 5.
         assert_eq!(sum(&[5, 5, 5]).simplify(), sum(&[5]));
+        // The first one, not the last: 1 - 9 + 2 - 1 + 1 leaves the sides 2 and 1, in that order.
+        assert_eq!(sum(&[1, 9, 2, 1, 1]).simplify(), sum(&[2, 9, 1]));
     }
 
     #[test]
@@ -545,8 +562,8 @@ mod tests {
 
     #[test]
     fn a_second_branch_extends_the_conflict_and_does_not_nest_it() {
-        // The prototype of the conflict model: timeout 45 and 60 over the base 30 conflict, and a
-        // hotfix with 10 over the same base lands on it.
+        // Timeout 45 and 60 over the base 30 conflict, and a hotfix with 10 over the same base
+        // lands on it.
         let open = sum(&[45, 30, 60]);
         let landed = open.land(30, 10);
         assert_eq!(landed, sum(&[45, 30, 60, 30, 10]));
@@ -558,9 +575,9 @@ mod tests {
         // Landing the change from 60 to 45 on 45 - 30 + 60 takes both sides to 45.
         let open = sum(&[45, 30, 60]);
         assert_eq!(open.land(60, 45), sum(&[45, 30, 45]));
-        // Landing the change from 30 to 45 on 45 - 30 + 60: the base 30 cancels against the added
-        // 30 of a change that leaves the conflict, and 60 is the only value left.
-        assert_eq!(sum(&[45, 30, 60, 45, 30]).simplify(), sum(&[60]));
+        // Landing the change from 45 back to 30 takes side 1 back to the base, so both cancel and
+        // 60 is the only value left.
+        assert_eq!(open.land(45, 30), sum(&[60]));
     }
 
     #[test]
@@ -832,7 +849,7 @@ mod tests {
         assert_eq!(&shown[start..start + binary.len()], binary);
     }
 
-    /// A random sum of `sides` values from a small alphabet, so that terms cancel often.
+    /// A random sum of one to five sides from a small alphabet, so that terms cancel often.
     fn random_sum(rng: &mut Rng) -> Merge<u8> {
         let length = 2 * (1 + rng.below(5)) - 1;
         let terms = (0..length).map(|_| rng.below(4) as u8).collect();
@@ -902,20 +919,24 @@ mod tests {
                 permuted.is_equivalent(&merge),
                 "seed {seed}, case {case}: {merge:?} and {permuted:?}"
             );
-            // What is left is the same multiset, whichever term cancelled first.
-            let (mut left, mut right) = (
-                permuted.simplify().into_terms(),
-                merge.simplify().into_terms(),
-            );
-            let (mut left_adds, mut right_adds): (Vec<_>, Vec<_>) = (
-                left.iter().copied().step_by(2).collect(),
-                right.iter().copied().step_by(2).collect(),
-            );
-            left_adds.sort_unstable();
-            right_adds.sort_unstable();
-            assert_eq!(left_adds, right_adds, "seed {seed}, case {case}");
-            left.clear();
-            right.clear();
+            // What is left is the same multiset of sides and of bases, whichever term cancelled
+            // first.
+            let (left, right) = (permuted.simplify(), merge.simplify());
+            for (left, right) in [
+                (
+                    left.adds().copied().collect::<Vec<_>>(),
+                    right.adds().copied().collect(),
+                ),
+                (
+                    left.removes().copied().collect(),
+                    right.removes().copied().collect(),
+                ),
+            ] {
+                let (mut left, mut right): (Vec<u8>, Vec<u8>) = (left, right);
+                left.sort_unstable();
+                right.sort_unstable();
+                assert_eq!(left, right, "seed {seed}, case {case}");
+            }
         }
     }
 
@@ -1024,13 +1045,187 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_of_the_two_forms_differs_for_the_same_trees() {
-        // Two commits with the same body but not the same kind are different objects.
-        let conflicted = from_sum(&trees(&[1, 2, 3]));
+    fn from_sum_hands_every_argument_to_the_commit_of_either_form() {
+        let parents = vec![from_sum(&trees(&[8])).id(), from_sum(&trees(&[9])).id()];
+        let change = sample_change();
+        for numbers in [&[1_u8][..], &[1, 2, 3]] {
+            let commit = AnyCommit::from_sum(
+                &trees(numbers),
+                parents.clone(),
+                change,
+                human(),
+                1_234,
+                "the message",
+            )
+            .expect("valid commit");
+            let (got_parents, got_change, got_author, got_time, got_message) = match &commit {
+                AnyCommit::Commit(c) => (
+                    c.parents(),
+                    c.change(),
+                    c.author(),
+                    c.timestamp(),
+                    c.message(),
+                ),
+                AnyCommit::Commit2(c) => (
+                    c.parents(),
+                    c.change(),
+                    c.author(),
+                    c.timestamp(),
+                    c.message(),
+                ),
+            };
+            assert_eq!(got_parents, parents.as_slice(), "{numbers:?}");
+            assert_eq!(got_change, change, "{numbers:?}");
+            assert_eq!(*got_author, human(), "{numbers:?}");
+            assert_eq!(got_time, 1_234, "{numbers:?}");
+            assert_eq!(got_message, "the message", "{numbers:?}");
+        }
+    }
+
+    #[test]
+    fn a_removed_term_cancels_against_the_first_free_side_and_the_rest_keeps_its_order() {
+        let (seed, mut rng) = (seed(), Rng::new(seed(), 0xC0F6));
+        for case in 0..cases() {
+            let merge = random_sum(&mut rng);
+            let simplified = merge.simplify();
+            for (kept, all) in [
+                (
+                    simplified.adds().copied().collect::<Vec<u8>>(),
+                    merge.adds().copied().collect::<Vec<u8>>(),
+                ),
+                (
+                    simplified.removes().copied().collect(),
+                    merge.removes().copied().collect(),
+                ),
+            ] {
+                let mut rest = all.iter();
+                assert!(
+                    kept.iter().all(|k| rest.any(|a| a == k)),
+                    "seed {seed}, case {case}: {kept:?} is not a subsequence of {all:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn equivalence_counts_how_often_a_term_occurs() {
+        // The sides are {1, 1, 2} against {1, 2, 2}: same length, same bases, not the same sum.
+        assert!(!sum(&[1, 9, 1, 8, 2]).is_equivalent(&sum(&[1, 9, 2, 8, 2])));
+        assert!(sum(&[1, 9, 1, 8, 2]).is_equivalent(&sum(&[2, 8, 1, 9, 1])));
+    }
+
+    #[test]
+    fn equivalence_is_the_equality_of_the_net_counts() {
+        let (seed, mut rng) = (seed(), Rng::new(seed(), 0xC0F7));
+        for case in 0..cases() {
+            let (left, right) = (random_sum(&mut rng), random_sum(&mut rng));
+            assert_eq!(
+                left.is_equivalent(&right),
+                counts(&left) == counts(&right),
+                "seed {seed}, case {case}: {left:?} and {right:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn landing_on_a_resolved_sum_opens_a_conflict_or_changes_the_value() {
+        assert_eq!(Merge::resolved(30_u8).land(30, 10), sum(&[10]));
+        assert_eq!(Merge::resolved(30_u8).land(20, 10), sum(&[30, 20, 10]));
+    }
+
+    #[test]
+    fn an_empty_file_and_an_absent_file_do_not_cancel() {
+        // Absent in all versions, or equal to the value: nothing to show.
         assert_eq!(
-            conflicted.id(),
-            Commit2::parse(&conflicted.encode()).unwrap().id()
+            marker_text(&Merge::try_from_terms(vec![None, None, None]).unwrap()),
+            None
         );
-        assert_ne!(Kind::Commit, Kind::Commit2);
+        assert_eq!(
+            marker_text(&Merge::try_from_terms(vec![None, None, some(b"x")]).unwrap()),
+            None
+        );
+        // An empty file is not an absent file, so this stays a conflict.
+        let shown = text(&[some(b""), None, some(b"x\n")]);
+        assert!(shown.contains("+++++++ side 1\n-------"), "{shown}");
+        assert!(shown.contains("------- base 1 (absent)\n"), "{shown}");
+    }
+
+    #[test]
+    fn marker_text_counts_the_longest_run_over_all_lines_and_terms() {
+        let run =
+            |shown: &str, character: char| shown.chars().take_while(|&c| c == character).count();
+        // A later line, not only the first one: the run of ten gives eleven.
+        let shown = text(&[some(b"ok\n++++++++++\n"), some(b"b\n"), some(b"c\n")]);
+        assert_eq!(run(&shown, '<'), 11, "{shown}");
+        // A run of nine is one longer than the longest, not a fixed eight.
+        let shown = text(&[some(b"a\n"), some(b"b\n---------\n"), some(b"c\n")]);
+        assert_eq!(run(&shown, '<'), 10, "{shown}");
+        // Every one of the four characters counts, in a base as well.
+        for character in ['<', '+', '-', '>'] {
+            let line = format!("{}\n", character.to_string().repeat(8));
+            let shown = text(&[some(b"a\n"), some(line.as_bytes()), some(b"c\n")]);
+            assert_eq!(run(&shown, '<'), 9, "{character}: {shown}");
+        }
+        // A term that cancels away does not lengthen the run.
+        let long: &[u8] = b"<<<<<<<<<<\n";
+        let shown = text(&[
+            some(b"a\n"),
+            some(long),
+            some(long),
+            some(b"b\n"),
+            some(b"c\n"),
+        ]);
+        assert_eq!(run(&shown, '<'), 7, "{shown}");
+    }
+
+    #[test]
+    fn marker_text_keeps_carriage_returns_and_ends_a_bare_one_with_a_line_feed() {
+        let shown = text(&[some(b"a\r\nb\r"), some(b"x\n"), some(b"y\n")]);
+        assert!(
+            shown.starts_with(
+                "<<<<<<< conflict\n+++++++ side 1 (no newline at end)\na\r\nb\r\n-------"
+            ),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn no_line_of_content_looks_like_a_marker_line() {
+        let (seed, mut rng) = (seed(), Rng::new(seed(), 0xC0F8));
+        let alphabet = *b"<+->\na";
+        let mut shown_texts = 0;
+        for case in 0..cases() {
+            let contents: Vec<Vec<u8>> = (0..2 * (1 + rng.below(3)) + 1)
+                .map(|_| {
+                    (0..rng.below(14))
+                        .map(|_| alphabet[rng.below(alphabet.len())])
+                        .collect()
+                })
+                .collect();
+            let terms: Vec<Option<&[u8]>> = contents.iter().map(|c| Some(c.as_slice())).collect();
+            let sum = Merge::try_from_terms(terms).expect("odd");
+            let Some(shown) = marker_text(&sum) else {
+                continue;
+            };
+            shown_texts += 1;
+            let run = shown.iter().take_while(|&&byte| byte == b'<').count();
+            let marker_lines = shown
+                .split(|&byte| byte == b'\n')
+                .filter(|line| {
+                    line.len() >= run
+                        && b"<+->".contains(&line[0])
+                        && line[..run].iter().all(|&byte| byte == line[0])
+                })
+                .count();
+            assert_eq!(
+                marker_lines,
+                2 + sum.simplify().terms().len(),
+                "seed {seed}, case {case}: {:?}",
+                String::from_utf8_lossy(&shown)
+            );
+        }
+        if seed == DEFAULT_SEED && cases() >= DEFAULT_CASES {
+            assert!(shown_texts > 0, "no case reached a conflict");
+        }
     }
 }
