@@ -79,7 +79,7 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
   # The fuzz targets of the strict readers (STEMMA-20) need nightly, so they are not part of
   # `just ci`. Each target runs a minute from its seeds; a finding fails the job and is kept as an
