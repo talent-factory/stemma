@@ -66,6 +66,7 @@ Er wird einmal gesetzt und nie verschoben; ein vorhandener Tag ist ein Fehler,
 auch wenn er auf denselben Commit zeigt (ADR-008).
 \type{stemma tag} setzt ihn und schreibt zuvor einen Eintrag ins Operation Log
 (siehe \in{Abschnitt}[sec:tag-entry]).
+Ein Tag, der falsch gesetzt wurde, wird mit \type{stemma tag --delete} gelöscht und neu gesetzt.
 
 Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 4,
 die das Log mit der Hash-Kette kennzeichnet (siehe unten). Ein Repository der Version 2 oder 3
@@ -1126,7 +1127,25 @@ Eintrag tat. Den Ausgang liest \type{op log} am Tag, wie er jetzt ist (siehe
 \in{Abschnitt}[sec:outcome]). Eine Wiederherstellung rührt Tags nicht an (ADR-013): Sie gehören
 nicht zum Zustand, den \type{op restore} zurückbringt, und der Eintrag eines Tags
 gibt keinen Zustand her, den es wiederherzustellen gäbe. Ein Purge lehnt einen Commit ab, auf den
-ein Tag zeigt (ADR-014).
+ein Tag zeigt (ADR-014); die Meldung nennt den Befehl, der den Tag löscht.
+
+Ein Tag, der falsch gesetzt wurde, behält seinen Commit nicht, denn er bewegt sich nie. Man
+löscht ihn und setzt ihn neu. Die Operation \type{untag} folgt derselben Regel wie \type{tag}:
+Unter der Sperre prüft sie, ob der Tag noch auf dem Commit steht, den der Aufrufer gesehen hat,
+schreibt und flusht den Eintrag, und erst dann löscht sie die Datei. Der Aufrufer übergibt den
+Commit mit, weil er sonst einen Tag löschen könnte, den jemand inzwischen gelöscht und auf einen
+anderen Commit neu gesetzt hat. Der Eintrag trägt dieselbe Zeile \type{tag NAME} wie der des
+Setzens, mit dem Commit als altem Wert und \type{-} als neuem:
+
+\starttyping
+operation untag
+tag v1 b3:4feb…b32c -
+\stoptyping
+
+Das Format bekommt auch dafür keine neue Version, denn die Zeile erlaubt für beide Werte einen
+Commit oder \type{-}. Den Ausgang liest \type{op log} wieder am Tag, wie er jetzt ist: Ein Eintrag
+von \type{untag} hat gewirkt, wenn es den Tag nicht mehr gibt. Der Eintrag des Setzens bleibt
+im Log; wer einen Tag gesetzt und wieder gelöscht hat, ist also beides nachzulesen.
 
 \subsection[sec:oplog-tip]{Nummern und die Datei \type{oplog-tip}}
 

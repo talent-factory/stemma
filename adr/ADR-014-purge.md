@@ -84,8 +84,9 @@ Facts that bound the design:
   working-copy commit, and the entries that remain). A tag does not move (ADR-008), so a purge
   that would rewrite the commit of a tag is refused (`TaggedCommit`) and names every such tag.
   The tags are read again under the lock before the first object is written, so a tag that
-  appeared after the plan, or before a resume, is refused as well. Until a command deletes tags,
-  the file `refs/tags/<name>` is removed by hand. Everything else stays, also an object that
+  appeared after the plan, or before a resume, is refused as well. The message names the command
+  that removes a tag, `stemma tag --delete <name>` (STEMMA-184), and a person who still needs the
+  tag sets it again at the commit that the purge leaves. Everything else stays, also an object that
   only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
   does not make ADR-007's collection necessary. The plan also scans the store for trees that name

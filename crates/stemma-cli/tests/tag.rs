@@ -187,3 +187,93 @@ fn a_commit_without_a_name_is_a_usage_error() {
     assert_ne!(result.code, 0);
     assert!(!dir.path().join(".stemma/refs/tags").exists());
 }
+
+#[test]
+fn a_tag_is_deleted_and_set_again_and_the_log_says_who_and_when() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let second = commit(&dir, "second");
+
+    let result = run(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, format!("Deleted v1, which was at {first}\n"));
+    assert!(!dir.path().join(".stemma/refs/tags/v1").exists());
+    assert_eq!(ok(dir.path(), &["tag"]).stdout, "");
+
+    let log = ok(dir.path(), &["op", "log"]);
+    let newest = log.stdout.lines().next().unwrap();
+    assert!(newest.contains("untag"), "{}", log.stdout);
+    assert!(
+        log.stdout.contains(&format!("tag v1  {first} -> -")),
+        "{}",
+        log.stdout
+    );
+    assert!(!log.stdout.contains("! "), "{}", log.stdout);
+    assert!(!log.stdout.contains("? "), "{}", log.stdout);
+    let json = ok(dir.path(), &["op", "log", "--json", "--limit", "1"]);
+    assert!(
+        json.stdout.contains("\"operation\":\"untag\"")
+            && json.stdout.contains(&format!(
+                "\"tags\":[{{\"name\":\"v1\",\"old\":\"{first}\",\"new\":null}}]"
+            ))
+            && json.stdout.contains("\"took_effect\":true"),
+        "{}",
+        json.stdout
+    );
+    ok(dir.path(), &["op", "verify"]);
+
+    // The name is free again.
+    ok(dir.path(), &["tag", "v1", &second, "--actor", ACTOR]);
+    assert_eq!(ok(dir.path(), &["tag"]).stdout, format!("v1 {second}\n"));
+}
+
+#[test]
+fn deleting_a_tag_can_write_json_and_short_d_does_the_same() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let result = run(dir.path(), &["tag", "-d", "v1", "--json", "--actor", ACTOR]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        format!("{{\"schema\":1,\"tag\":\"v1\",\"commit\":\"{first}\",\"deleted\":true}}\n")
+    );
+}
+
+#[test]
+fn deleting_a_tag_that_does_not_exist_is_refused_without_an_entry() {
+    let dir = repository();
+    commit(&dir, "first");
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    let result = run(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("no tag `v1` to delete"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}
+
+#[test]
+fn deleting_a_tag_needs_an_actor_and_a_name_and_no_commit() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+
+    let result = run(dir.path(), &["tag", "--delete", "v1"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    // A usage error: no name, or a commit that a deletion does not take.
+    let nameless = run(dir.path(), &["tag", "--delete", "--actor", ACTOR]);
+    assert_ne!(nameless.code, 0);
+    let with_commit = run(
+        dir.path(),
+        &["tag", "--delete", "v1", &first, "--actor", ACTOR],
+    );
+    assert_ne!(with_commit.code, 0);
+
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}

@@ -368,15 +368,22 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   pointer did not exist or does not exist any more.
 - A branch, a tag, and the working-copy commit have a commit ID or `-`. HEAD has `branch:<name>`
   or `commit:<id>` or `-`.
-- A tag never moves (ADR-008), so the line of the operation `tag` is `tag <name> - <commit>`.
-  The line is part of encodings 1 and 3 and needs no new version: an entry without a tag line
-  reads as before, and a reader from before the operation `tag` rejects the line as an unknown
-  pointer, which is right, since it cannot say what the entry did. A tag and a branch may have
-  the same name (ADR-008), so the two lists are separate, and a name is unique within each.
-  The operation `tag` is level 2 (ADR-004). Who set a tag and when is the actor and the time of
-  its entry. The outcome of the entry is read from the tag as it is now: the tag exists with the
-  commit of the entry (took effect), or it does not exist and no writer is at work (did not).
-  A restore does not touch tags (ADR-013), so the entry of a tag is no state to restore.
+- A tag never moves (ADR-008), so the line of the operation `tag` is `tag <name> - <commit>`,
+  and the line of the operation `untag`, which deletes a tag (STEMMA-184), is
+  `tag <name> <commit> -`: the commit that the tag had, and `-` for the tag that is gone. The
+  writers write no other form, and `tag` and `untag` are the only operations that write a tag
+  line. The line is part of encodings 1 and 3 and needs no new version: an entry without a tag
+  line reads as before, a reader from before the operation `tag` rejects the line as an unknown
+  pointer, which is right, since it cannot say what the entry did, and a reader that knows the
+  line reads both forms. A tag and a branch may have the same name (ADR-008), so the two lists
+  are separate, and a name is unique within each.
+  The operations `tag` and `untag` are level 2 (ADR-004). Who set or deleted a tag and when is
+  the actor and the time of its entry. The outcome of a `tag` entry is read from the tag as it
+  is now: the tag exists with the commit of the entry (took effect), or it does not exist and no
+  writer is at work (did not). The outcome of an `untag` entry is read the same way: the tag does
+  not exist (took effect), or it exists at the commit of the entry (did not). A tag that was
+  deleted and set again is judged by the entries that follow, as for a branch. A restore does not
+  touch tags (ADR-013), so the entry of a tag is no state to restore.
 - The file ends with a newline and has no message and no further lines.
 - Version 2 of the encoding is written only for a stub and for the entry of a purge (ADR-014,
   STEMMA-47). A stub has the header, `number`, `time`, `actor`, and the line `stub`. A `purge`

@@ -413,6 +413,17 @@ pub enum RefError {
         /// The commit it points to.
         found: CommitId,
     },
+    /// The tag is not where the caller saw it when it was to be deleted: it was deleted, or
+    /// deleted and set again at another commit, since. Only the deletion of a tag is stale,
+    /// because a tag never moves (ADR-008).
+    StaleTag {
+        /// The tag.
+        name: BranchName,
+        /// The commit the caller expected.
+        expected: CommitId,
+        /// The commit the tag has, or `None` if it does not exist.
+        found: Option<CommitId>,
+    },
     /// HEAD is not where the caller saw it: another change came first.
     StaleHead {
         /// The value the caller expected.
@@ -628,6 +639,18 @@ impl fmt::Display for RefError {
                 f,
                 "the tag `{name}` exists already at {found}; a tag never moves"
             ),
+            Self::StaleTag {
+                name,
+                expected,
+                found,
+            } => write!(
+                f,
+                "the tag `{name}` has changed: it was expected to be at {expected}, but {}",
+                found.as_ref().map_or_else(
+                    || "it does not exist".to_owned(),
+                    |id| format!("it is at {id}")
+                )
+            ),
             Self::Conflict {
                 reference,
                 name,
@@ -771,6 +794,7 @@ impl Error for RefError {
             Self::Store(source) => source.source(),
             Self::Stale { .. }
             | Self::TagExists { .. }
+            | Self::StaleTag { .. }
             | Self::StaleHead { .. }
             | Self::Conflict { .. }
             | Self::MissingCommit(_)
@@ -924,6 +948,32 @@ pub trait RefStore: crate::store::sealed::Sealed {
         name: &BranchName,
         commit: CommitId,
         objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError>;
+
+    /// Deletes a tag if it still is at `expected`: the same compare-and-swap as
+    /// [`delete_branch`](Self::delete_branch). A tag never moves (ADR-008), so a tag that was set
+    /// wrongly is deleted and set again, and `expected` keeps a deletion from removing a tag that
+    /// was deleted and set again at another commit since the caller looked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Locked`] if another change is in progress, [`RefError::PurgePending`]
+    /// if the journal of a purge exists (ADR-014), [`RefError::Conflict`] if the name is held by
+    /// another tag (checked before `expected`), [`RefError::StaleTag`] if the tag is not at
+    /// `expected` or does not exist, [`RefError::Io`] if the storage fails, and
+    /// [`RefError::Corrupt`] as for [`tag`](Self::tag). Nothing is changed in any of these cases,
+    /// except for [`RefError::NotFlushed`]: the tag is gone, but may come back after a crash. A
+    /// caller must not repeat the delete then, because the repeat is `StaleTag` with `found`
+    /// `None`; it reads the tag instead.
+    ///
+    /// This changes the pointer without an entry in the operation log. A command that deletes a
+    /// tag for a person uses [`Repository::delete_tag`](crate::repository::Repository::delete_tag)
+    /// and does not call this directly.
+    fn delete_tag(
+        &self,
+        name: &BranchName,
+        expected: CommitId,
         allowed: &Allowed,
     ) -> Result<(), RefError>;
 
@@ -1921,7 +1971,7 @@ fn remove_empty_directories(dir: &Path, top: &Path) {
 
 /// The entries of a directory of branches, or `None` if the directory is gone: a listing runs
 /// without the lock, and a change that deletes the last branch below a directory removes the
-/// directory (see [`FsRefStore::delete_branch_file`]), so a directory that was listed a moment ago
+/// directory (see [`FsRefStore::delete_reference_file`]), so a directory that was listed a moment ago
 /// may be gone.
 fn list_directory(dir: &Path) -> Result<Option<fs::ReadDir>, RefError> {
     match settled(|| fs::read_dir(dir)) {
@@ -2127,6 +2177,66 @@ impl FsRefStore {
             &self.namespace_dir(RefKind::Tag),
         );
         Ok(Self::after_move(done, moved))
+    }
+
+    /// The checks of a deletion of a tag, under the lock: a name that is in the way is a
+    /// [`RefError::Conflict`], and a tag that is not at `expected`, or does not exist, is a
+    /// [`RefError::StaleTag`].
+    fn check_tag_deletion(&self, name: &BranchName, expected: CommitId) -> Result<(), RefError> {
+        let current = self.current(RefKind::Tag, name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                reference: RefKind::Tag,
+                name: name.clone(),
+                with,
+                kind,
+            });
+        }
+        if current.commit != Some(expected) {
+            return Err(RefError::StaleTag {
+                name: name.clone(),
+                expected,
+                found: current.commit,
+            });
+        }
+        Ok(())
+    }
+
+    /// Deletes the tag `name` if it is at `expected`, and runs `step` after the checks and before
+    /// the deletion, under the lock of the references that the caller holds (`_lock`). The checks
+    /// are the ones of [`RefStore::delete_tag`], so `step` runs only for a tag that is going to be
+    /// deleted, and this call never returns [`Logged::Unchanged`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of the checks. Once `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after). A tag whose file is gone after the
+    /// checks was removed by a process that ignores the lock: the step stays done, and the result
+    /// is [`Logged::MoveFailed`] with [`RefError::StaleTag`], as the entry then names a deletion
+    /// that this call did not make.
+    pub(crate) fn delete_tag_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        name: &BranchName,
+        expected: CommitId,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        self.check_tag_deletion(name, expected)?;
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let deleted = match self.delete_reference_file(RefKind::Tag, name) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(RefError::StaleTag {
+                name: name.clone(),
+                expected,
+                found: None,
+            }),
+            Err(error) => Err(error),
+        };
+        Ok(Self::after_move(done, deleted))
     }
 
     /// Points HEAD to `head` if it still is `expected`, and runs `step` with the value that HEAD
@@ -2721,7 +2831,7 @@ impl FsRefStore {
                     )
                     .map(|()| true)
                 }),
-                None => Box::new(move || self.delete_branch_file(name)),
+                None => Box::new(move || self.delete_reference_file(RefKind::Branch, name)),
             });
         }
         if let Some((_, new)) = &moves.working_copy {
@@ -2757,22 +2867,26 @@ impl FsRefStore {
         }
     }
 
-    /// Deletes the file of a branch, and the directories above it that this empties, up to the
-    /// directory of the branches, which stays. Returns `false` if the file was gone already, so
-    /// that nothing moved and nothing needs a flush.
+    /// Deletes the file of a branch or a tag, and the directories above it that this empties, up
+    /// to the directory of its namespace, which stays. Returns `false` if the file was gone
+    /// already, so that nothing moved and nothing needs a flush.
     ///
-    /// Once the file is gone the branch is gone: a directory that cannot be removed is left, and
-    /// is no failure of the move (it is an empty directory, which a later lookup clears). The
+    /// Once the file is gone the reference is gone: a directory that cannot be removed is left,
+    /// and is no failure of the move (it is an empty directory, which a later lookup clears). The
     /// deepest directory that changed is flushed; if that fails, the result is
-    /// [`RefError::NotFlushed`]: the branch is gone, but may come back after a crash.
-    fn delete_branch_file(&self, name: &BranchName) -> Result<bool, RefError> {
-        let path = self.branch_path(name);
+    /// [`RefError::NotFlushed`]: the reference is gone, but may come back after a crash.
+    fn delete_reference_file(
+        &self,
+        namespace: RefKind,
+        name: &BranchName,
+    ) -> Result<bool, RefError> {
+        let path = self.reference_path(namespace, name);
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(io_error("remove the reference", &path)(error)),
         }
-        let heads = self.heads_dir();
+        let heads = self.namespace_dir(namespace);
         let mut changed = path
             .parent()
             .map_or_else(|| heads.clone(), Path::to_path_buf);
@@ -2982,6 +3096,28 @@ impl RefStore for FsRefStore {
         )
     }
 
+    fn delete_tag(
+        &self,
+        name: &BranchName,
+        expected: CommitId,
+        allowed: &Allowed,
+    ) -> Result<(), RefError> {
+        self.require_root()?;
+        let _lock = self.lock_writer(allowed)?;
+        self.check_tag_deletion(name, expected)?;
+        // The file was there under the lock, so a file that is gone now was removed by a process
+        // that ignores the lock: this call did not delete the tag.
+        if self.delete_reference_file(RefKind::Tag, name)? {
+            Ok(())
+        } else {
+            Err(RefError::StaleTag {
+                name: name.clone(),
+                expected,
+                found: None,
+            })
+        }
+    }
+
     fn update_branch(
         &self,
         name: &BranchName,
@@ -3048,7 +3184,7 @@ impl RefStore for FsRefStore {
         }
         // The file was there under the lock, so a file that is gone now was removed by a process
         // that ignores the lock: this call did not delete the branch.
-        if self.delete_branch_file(name)? {
+        if self.delete_reference_file(RefKind::Branch, name)? {
             Ok(())
         } else {
             Err(RefError::Stale {
@@ -3861,6 +3997,120 @@ mod tests {
             .unwrap();
         assert!(dot.exists());
         assert_eq!(refs.branch(&name("d/e")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_tag_is_deleted_if_it_is_at_the_expected_commit_and_can_be_set_again() {
+        let (dir, objects, refs) = setup();
+        let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
+        let (flat, nested) = (name("v1"), name("rel/v2"));
+        for tag in [&flat, &nested] {
+            refs.create_tag(tag, first, &objects, &Allowed::granted())
+                .unwrap();
+        }
+        refs.delete_tag(&flat, first, &Allowed::granted()).unwrap();
+        assert_eq!(refs.tag(&flat).unwrap(), None);
+        // The directory that the deletion empties goes with it; `refs/tags` stays.
+        refs.delete_tag(&nested, first, &Allowed::granted())
+            .unwrap();
+        assert!(!dir.path().join("refs/tags/rel").exists());
+        assert!(dir.path().join("refs/tags").is_dir());
+        assert!(refs.tags().unwrap().is_empty());
+        assert!(!dir.path().join("refs.lock").exists());
+        // A tag that was set wrongly is set again, now at another commit.
+        refs.create_tag(&flat, second, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&flat).unwrap(), Some(second));
+    }
+
+    #[test]
+    fn a_tag_delete_from_a_state_that_is_not_current_is_stale_and_changes_nothing() {
+        let (dir, objects, refs) = setup();
+        let v1 = name("v1");
+        let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
+        refs.create_tag(&v1, first, &objects, &Allowed::granted())
+            .unwrap();
+        let error = refs
+            .delete_tag(&v1, second, &Allowed::granted())
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::StaleTag { expected, found: Some(found), .. }
+                    if (*expected, *found) == (second, first)
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the tag `v1` has changed: it was expected to be at {second}, but it is at {first}"
+            )
+        );
+        // A tag that does not exist cannot be deleted.
+        let error = refs
+            .delete_tag(&name("other"), first, &Allowed::granted())
+            .unwrap_err();
+        assert!(
+            matches!(&error, RefError::StaleTag { found: None, .. }),
+            "{error}"
+        );
+        // A branch of the same name is no tag.
+        refs.update_branch(&name("main"), None, first, &objects, &Allowed::granted())
+            .unwrap();
+        let error = refs
+            .delete_tag(&name("main"), first, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::StaleTag { .. }), "{error}");
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+        assert_eq!(refs.branch(&name("main")).unwrap(), Some(first));
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn deleting_a_tag_name_that_another_entry_holds_is_a_conflict() {
+        let (_dir, objects, refs) = setup();
+        let first = commit(&objects, "1");
+        refs.create_tag(&name("rel/v1"), first, &objects, &Allowed::granted())
+            .unwrap();
+        // `rel` is a directory with a tag below it, not a tag.
+        let error = refs
+            .delete_tag(&name("rel"), first, &Allowed::granted())
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RefError::Conflict {
+                    reference: RefKind::Tag,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(refs.tag(&name("rel/v1")).unwrap(), Some(first));
+    }
+
+    #[test]
+    fn a_tag_delete_is_refused_while_a_lock_or_a_pending_purge_exists() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "1");
+        let v1 = name("v1");
+        refs.create_tag(&v1, first, &objects, &Allowed::granted())
+            .unwrap();
+        let lock = dir.path().join("refs.lock");
+        fs::write(&lock, b"").unwrap();
+        // The lock is checked before `expected`: a wrong commit is `Locked`, not `StaleTag`.
+        let error = refs
+            .delete_tag(&v1, commit(&objects, "2"), &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Locked { .. }), "{error}");
+        fs::remove_file(&lock).unwrap();
+        fs::write(dir.path().join(PURGE_JOURNAL), b"journal").unwrap();
+        let error = refs
+            .delete_tag(&v1, first, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::PurgePending { .. }), "{error}");
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
     }
 
     #[test]
@@ -5312,7 +5562,8 @@ mod tests {
                 for _ in 0..300 {
                     refs.update_branch(&name("a/b"), None, id, &objects, &Allowed::granted())
                         .unwrap();
-                    refs.delete_branch_file(&name("a/b")).unwrap();
+                    refs.delete_reference_file(RefKind::Branch, &name("a/b"))
+                        .unwrap();
                 }
                 done.store(true, Ordering::SeqCst);
             });

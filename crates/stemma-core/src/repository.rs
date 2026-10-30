@@ -689,6 +689,60 @@ impl Repository {
         }
     }
 
+    /// Deletes the tag `name` if it still is at `expected`, and records it in the log, in the
+    /// order of [`create_tag`](Self::create_tag) and under the same lock: the tag is checked (a
+    /// name that is in the way, a tag that is not at `expected`), the entry is written and
+    /// flushed, and only then is the tag deleted (ADR-008, ADR-011). A tag never moves, so a tag
+    /// that was set wrongly is deleted and set again; the entry has the commit of the tag as its
+    /// old value and `-` as its new one, and says who deleted the tag and when.
+    ///
+    /// Returns the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
+    /// the checks find ([`RefError::StaleTag`] for a tag that is not at `expected` or does not
+    /// exist; [`RefError::Locked`]), and [`UpdateError::Log`], [`UpdateError::MoveFailed`], and
+    /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
+    /// writes no entry.
+    pub fn delete_tag(
+        &self,
+        operation: &OperationName,
+        name: &BranchName,
+        expected: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        // A claim only: a tag is at `expected` or the call is `StaleTag`, so an ID that names no
+        // commit finds no tag.
+        let expected = CommitId::new(expected);
+        let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
+        let lock = self.refs.lock_writer(&allowed)?;
+        let outcome = self.refs.delete_tag_after(&lock, name, expected, || {
+            let change = Change::try_new_with_tags(
+                now(),
+                actor.clone(),
+                operation.clone(),
+                None,
+                None,
+                vec![],
+                vec![(name.clone(), Moved::from_to(Some(expected), None))],
+            )
+            .map_err(OpLogError::Entry)?;
+            self.append(&lock, &change)
+        })?;
+        match outcome.into_result()? {
+            Some(entry) => Ok(entry),
+            // `delete_tag_after` refuses a tag that is not at `expected` and never reports
+            // "unchanged"; if it did, the tag would be gone already.
+            None => Err(UpdateError::Refs(RefError::StaleTag {
+                name: name.clone(),
+                expected,
+                found: None,
+            })),
+        }
+    }
+
     /// Points HEAD to a branch, which need not exist yet, or to a commit, if HEAD still is
     /// `expected`, and records the change in the log, in the order of
     /// [`update_branch`](Self::update_branch) and under the same lock. The old value in the entry
@@ -4002,6 +4056,103 @@ mod tests {
         assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
         assert_eq!(numbers(&repository), before);
         assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_tag_is_deleted_after_its_entry_and_the_entry_says_who_deleted_it() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let entry = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), None);
+        assert_eq!(numbers(&repository).len(), before.len() + 1);
+        let change = entry.change().unwrap();
+        assert_eq!(change.operation().as_str(), "untag");
+        assert_eq!(change.actor(), &actor());
+        assert!(change.head().is_none() && change.working_copy().is_none());
+        assert!(change.branches().is_empty());
+        let [(name, moved)] = change.tags() else {
+            panic!("one tag expected");
+        };
+        assert_eq!(name, &branch("v1"));
+        assert_eq!((moved.before(), moved.after()), (Some(&a), None));
+        assert_eq!(repository.oplog().entries().unwrap().last(), Some(&entry));
+        // The name is free again, and the tag can be set at another commit.
+        let b = store_commit(&repository, "b");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                b.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(b));
+    }
+
+    #[test]
+    fn a_tag_that_is_not_where_the_caller_saw_it_is_not_deleted_and_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let (a, b) = (
+            store_commit(&repository, "a"),
+            store_commit(&repository, "b"),
+        );
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let delete = |name: &str, expected: CommitId, authorizer: &dyn Authorizer| {
+            repository.delete_tag(
+                &op("untag"),
+                &branch(name),
+                expected.object_id(),
+                &actor(),
+                authorizer,
+            )
+        };
+        let error = delete("v1", b, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::StaleTag { found: Some(found), .. }) if *found == a),
+            "{error}"
+        );
+        let error = delete("other", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                UpdateError::Refs(RefError::StaleTag { found: None, .. })
+            ),
+            "{error}"
+        );
+        let error = delete("v1", a, &DenyAll).unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
     }
 
     #[test]

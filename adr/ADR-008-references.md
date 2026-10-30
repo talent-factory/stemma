@@ -3,8 +3,9 @@
 **Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1. The decision on
 tags (STEMMA-54) was taken on 2026-10-29 and implemented in the store; the operation `tag` and
-the command followed on 2026-10-30 (STEMMA-183). The open items move to Phase 5 (remote
-references); deleting a tag and packed references have no phase yet, and the rename on Windows waits for the CI run (STEMMA-33).
+the command followed on 2026-10-30 (STEMMA-183), and so did the deletion of a tag (STEMMA-184).
+The open items move to Phase 5 (remote references); packed references have no phase yet, and the
+rename on Windows waits for the CI run (STEMMA-33).
 
 ## Context
 
@@ -125,9 +126,22 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   the same name, and the two are checked each among themselves. `create_tag` fails with
   `TagExists` if the tag exists, at this commit or at another: a release that someone has read
   must keep its meaning, and the answer is no lost race that a caller could retry (`Stale` is for
-  a branch). A tag that was set wrongly is deleted and set again, which belongs to the deletion
-  of references (open item). The operation `tag` is level 2 (ADR-004). A repository from before the
+  a branch). The operation `tag` is level 2 (ADR-004). A repository from before the
   tags has no `refs/tags/`, which is no tags; the directory is made by the first tag.
+- **A tag that was set wrongly is deleted and set again** *(confirmed, STEMMA-184)*.
+  `delete_tag(name, expected)` is the same compare-and-swap as `delete_branch`, with a required
+  `expected`: the tag is deleted only if it is still at that commit. Another commit, or no tag
+  at all, is `StaleTag` (a variant of its own, because `Stale` is for a branch), and a name that
+  another entry holds is `Conflict`, checked before `expected`. The reason for `expected` is the
+  case that a tag is deleted and set again at another commit between the look of the caller and
+  its deletion: without `expected`, the deletion would remove the new tag, which someone may
+  have read. `Repository::delete_tag` writes an entry of the operation `untag` before it
+  deletes the file, in the order of `create_tag`, and `stemma tag --delete` calls it. The entry has
+  the line `tag <name> <commit> -` (ADR-011). `untag` is level 2, like `tag` (ADR-004), and an
+  authorizer can grant it apart from `tag`. Deleting a tag and setting it again are two
+  operations with two entries: no operation moves a tag, which keeps the rule that a tag never
+  moves and keeps the whole history of a name in the log. A purge that is refused for a tag
+  (`TaggedCommit`) names `stemma tag --delete <name>` instead of the file.
 - **Until the following items are done, tags are only partly known** *(STEMMA-54, STEMMA-183)*.
   `verify` checks the commits of the tags. A purge refuses (`TaggedCommit`) while a tag points
   to a commit that it would rewrite, because a tag cannot move (ADR-014). A restore does not
@@ -195,9 +209,10 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - [x] Tags: layout, plain pointer, never moves (STEMMA-54), see the decision above. The store
       has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. The operation
       `tag` in the operation log (ADR-011), its level (ADR-004), and the command `stemma tag`
-      are done (STEMMA-183). Still open: deleting a tag (with `delete_branch`), how a purge deals with a tag on a commit that it
-      rewrites (today it refuses), and the name that is both a branch and a tag, for a command
-      that resolves names.
+      are done (STEMMA-183), and so is deleting a tag, `delete_tag` and `stemma tag --delete`
+      with the operation `untag` (STEMMA-184). Still open: how a purge deals with a tag on a
+      commit that it rewrites (today it refuses), and the name that is both a branch and a tag,
+      for a command that resolves names.
 - [x] Checking that the branches, tags, and HEAD of a repository point to commits that the store
       has
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.

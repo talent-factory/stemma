@@ -790,8 +790,9 @@ impl PurgeError {
                 }
                 write!(
                     f,
-                    ", which the purge would rewrite; no command removes a tag yet, so remove the \
-                     file `refs/tags/<name>` in the metadata directory of each by hand"
+                    ", which the purge would rewrite; delete each tag with `stemma tag --delete \
+                     <name>`, set it again at the commit that the purge leaves if it is still \
+                     needed, and run the purge again"
                 )
             }
             Self::Unsound { id } => write!(
@@ -1132,7 +1133,10 @@ mod tests {
                 other => panic!("expected a tagged commit, got {other:?}"),
             }
             assert!(error.to_string().contains("a tag never moves"), "{error}");
-            assert!(error.to_string().contains("refs/tags/"), "{error}");
+            assert!(
+                error.to_string().contains("stemma tag --delete <name>"),
+                "{error}"
+            );
         }
     }
 

@@ -1189,10 +1189,12 @@ stemma log --first-parent --json | head -1
 
 \section{tag}
 
-Setzt einen Tag auf einen Commit, oder listet die Tags, wenn kein Name folgt (ADR-008).
+Setzt einen Tag auf einen Commit, löscht ihn oder listet die Tags, wenn kein Name folgt
+(ADR-008).
 
 \starttyping
 stemma tag [-C VERZEICHNIS] [--actor AKTEUR] [--json] NAME [COMMIT]
+stemma tag [-C VERZEICHNIS] [--actor AKTEUR] [--json] --delete NAME
 stemma tag [-C VERZEICHNIS] [--json]
 \stoptyping
 
@@ -1201,12 +1203,16 @@ stemma tag [-C VERZEICHNIS] [--json]
 Befehl die Tags.
 \item {\bf COMMIT:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern. Ohne sie nimmt der
 Befehl den Commit an der Spitze des Branches von HEAD, also den letzten Commit, den \type{commit}
-benannt hat. Hat der Branch noch keinen, ist das ein Fehler.
+benannt hat. Hat der Branch noch keinen, ist das ein Fehler. Zusammen mit \type{--delete} ist
+ein COMMIT ein Aufruffehler.
+\item {\bf \type{-d}, \type{--delete}:} Löscht den Tag NAME, statt ihn zu setzen. Er ist für einen
+Tag gedacht, der falsch gesetzt wurde; danach lässt sich der Name neu setzen. Ohne NAME ist die
+Option ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt: \type{human <id>} oder
 \type{agent <id> model=<model> session=<session> sponsor=<sponsor>}. Er ist nötig, wenn der Befehl
-einen Tag setzt, sonst nicht, und fehlt er, liest der Befehl \type{STEMMA_ACTOR}.
+einen Tag setzt oder löscht, sonst nicht, und fehlt er, liest der Befehl \type{STEMMA_ACTOR}.
 \item {\bf \type{--json}:} Schreibt je Tag ein JSON-Objekt pro Zeile statt Text.
 \stopitemize
 
@@ -1217,10 +1223,22 @@ schreibt den Eintrag \type{tag} ins Operation Log und legt dann erst die Datei
 und wann, steht also im Log (\type{stemma op log}). Das Setzen ändert weder die Arbeitskopie noch
 HEAD und macht keinen Snapshot.
 
-{\bf Textform.} Beim Setzen eine Zeile \type{Tagged NAME at COMMIT}. Beim Auflisten je Tag eine
-Zeile \type{NAME COMMIT}, nach Name sortiert.
+{\bf Löschen.} \type{--delete} liest den Tag und übergibt seinen Commit dem Kern als den Wert,
+den der Tag haben soll. Unter der Sperre der Referenzen prüft der Kern, ob der Tag noch dort
+steht, und schreibt dann den Eintrag \type{untag} (Stufe 2, ADR-004) mit dem Commit als altem
+Wert und \type{-} als neuem. Erst danach löscht er die Datei. So löscht der Befehl keinen Tag,
+den jemand inzwischen gelöscht und auf einen anderen Commit neu gesetzt hat. Der Eintrag nennt
+Akteur und Zeit; wer einen Tag gelöscht hat und wann, steht also im Log. Löschen und neu setzen
+sind zwei Aufrufe mit zwei Einträgen. Das Löschen ändert weder die Arbeitskopie noch HEAD noch
+einen Branch und macht keinen Snapshot.
 
-{\bf JSON-Form.} Je Zeile die Felder \type{schema} (heute 1), \type{tag} und \type{commit}.
+{\bf Textform.} Beim Setzen eine Zeile \type{Tagged NAME at COMMIT}, beim Löschen eine Zeile
+\type{Deleted NAME, which was at COMMIT}. Beim Auflisten je Tag eine Zeile \type{NAME COMMIT},
+nach Name sortiert.
+
+{\bf JSON-Form.} Je Zeile die Felder \type{schema} (heute 1), \type{tag} und \type{commit}. Beim
+Löschen kommt das Feld \type{deleted} mit dem Wert \type{true} dazu; \type{commit} ist dann der
+Commit, auf den der Tag zeigte. Das Feld kam ohne neues \type{schema} dazu (ADR-018).
 
 {\bf Fehler.} Ein Tag, den es gibt, lehnt der Befehl ab, auch wenn er auf denselben Commit zeigt:
 Ein Release, das jemand gelesen hat, behält seine Bedeutung (ADR-008). Das ist kein Wettlauf,
@@ -1232,13 +1250,24 @@ des Dateisystems nach dem Eintrag eingetreten, steht im Log ein Eintrag für ein
 gibt; \type{op log} markiert ihn mit \type{!}. Konnte nur das Verzeichnis nicht auf den
 Datenträger geschrieben werden, ist der Tag gesetzt, und der Exit-Code ist 3.
 Beschädigte Referenzen enden mit Exit-Code 5.
-Einen Tag löschen kann der Befehl noch nicht (ADR-008).
+
+{\bf Fehler beim Löschen.} Einen Tag, den es nicht gibt, löscht der Befehl nicht: Exit-Code 1 und
+die Meldung \type{there is no tag `NAME` to delete}, ohne Eintrag. Dasselbe gilt für einen
+Namen, der im Weg steht, und für einen Akteur, den der Autorisierer ablehnt. Hat jemand den Tag
+zwischen dem Lesen und der Sperre gelöscht oder auf einen anderen Commit neu gesetzt, endet der
+Befehl mit Exit-Code 1 und der Meldung, dass sich der Tag geändert hat; er schreibt keinen
+Eintrag. Der Befehl lässt sich nach einer Meldung sicher wiederholen, denn ein Löschen, das nicht
+stattfand, hat nichts geändert. Das gilt nicht nach Exit-Code 3: Dort ist der Tag gelöscht, nur
+das Verzeichnis kam nicht auf den Datenträger, und ein Wiederholen meldete einen Tag, den es nicht
+gibt. Ein Fehler des Dateisystems nach dem Eintrag lässt im Log einen Eintrag für ein Löschen
+zurück, das nicht stattfand; \type{op log} markiert ihn mit \type{!}.
 
 {\bf Beispiele.}
 
 \starttyping
 stemma tag v1 --actor "human daniel"
 stemma tag v0.9 b3:1111...1111 --actor "human daniel"
+stemma tag --delete v1 --actor "human daniel"
 stemma tag --json
 \stoptyping
 
@@ -1283,14 +1312,17 @@ trennen.
 
 (Im Beispiel sind die Commit-IDs gekürzt; der Befehl gibt sie vollständig aus.)
 
-{\bf Tags.} Der Eintrag von \type{tag} (siehe \type{stemma tag}) zeigt den Tag als Zeile
-\type{tag NAME}; der alte Wert ist immer \type{-}, denn ein Tag bewegt sich nie (ADR-008).
-Den Ausgang liest der Befehl am Tag, wie er jetzt ist: Er existiert mit dem Commit des Eintrags,
-oder er existiert nicht (ohne Schreiber am Werk).
+{\bf Tags.} Die Einträge von \type{tag} und \type{untag} (siehe \type{stemma tag}) zeigen den Tag
+als Zeile \type{tag NAME}. Ein Tag bewegt sich nie (ADR-008); darum ist der alte Wert \type{-}, wenn
+\type{tag} ihn setzt, und der neue Wert \type{-}, wenn \type{untag} ihn löscht.
+Den Ausgang liest der Befehl am Tag, wie er jetzt ist. Beim Setzen existiert er mit dem Commit des
+Eintrags, oder er existiert nicht (ohne Schreiber am Werk); beim Löschen existiert er nicht mehr.
 
 \starttyping
 5  2023-11-14T22:20:00Z  human daniel  tag
     tag v1  - -> b3:2222...2222
+6  2023-11-14T22:25:00Z  human daniel  untag
+    tag v1  b3:2222...2222 -> -
 \stoptyping
 
 {\bf Übernahme.} Der Eintrag von \type{take-over} macht seinen Akteur zum Eigentümer der
@@ -1337,7 +1369,8 @@ die Referenzen es nicht entscheiden. \type{head} und \type{working_copy} sind \t
 Operation den Zeiger nicht berührt hat, sonst ein Objekt mit \type{old} und \type{new}.
 \type{branches} ist eine Liste von Objekten mit \type{name}, \type{old} und \type{new}, leer wenn
 kein Branch sich bewegt hat. \type{tags} hat dieselbe Form für die Tags, die der Eintrag
-gesetzt hat (\type{old} ist \type{null}); das Feld kam ohne neues \type{schema} dazu, denn ein Feld
+gesetzt hat (\type{old} ist \type{null}) oder gelöscht hat (\type{new} ist \type{null}); das Feld
+kam ohne neues \type{schema} dazu, denn ein Feld
 hinzuzufügen ändert es nicht (ADR-018). Ein Wert, den es nicht gibt, ist \type{null}.
 HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
 
@@ -1792,8 +1825,8 @@ Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung
 mit \type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn ein Tag auf einen Commit zeigt, den der Purge umschreiben würde:
 Ein Tag bewegt sich nie, und er würde das Geheimnis erreichbar halten.
-Die Meldung nennt jeden solchen Tag; ein Befehl, der Tags löscht, fehlt noch,
-deshalb entfernt man die Datei \type{refs/tags/<name>} im Metadatenverzeichnis von Hand.
+Die Meldung nennt jeden solchen Tag und den Befehl \type{stemma tag --delete <name>}, der ihn
+löscht; wer den Tag danach noch braucht, setzt ihn auf den Commit, den der Purge übrig lässt.
 Dieselbe Prüfung läuft unter der Sperre vor dem ersten Schreiben noch einmal,
 auch bei \type{--resume}; ein Tag, der seit dem Plan entstand, hält den Purge dann an,
 und das Journal bleibt für \type{--abort} oder ein erneutes \type{--resume}.
