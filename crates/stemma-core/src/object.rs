@@ -1416,9 +1416,9 @@ pub enum Commit2Error {
     /// A single tree is a `commit`, so that the same state has no second encoding.
     TreeCount(usize),
     /// A removed tree equals an added tree, so the two cancel and the state is the sum without
-    /// them. The sum has to be written in its simplified form, so that one state has one
-    /// encoding and one ID; a `commit2` whose terms cancel is rejected, and the tree is the first
-    /// removed one that has an equal added one.
+    /// them. The sum has to be written in its simplified form, so that a sum that cancels has no
+    /// second, unsimplified encoding; a `commit2` whose terms cancel is rejected, and the tree is
+    /// the first removed one that has an equal added one.
     CancellingTrees(TreeId),
     /// A parent is listed twice.
     DuplicateParent(CommitId),
@@ -1449,7 +1449,7 @@ impl Error for Commit2Error {}
 /// following pair is a base that is taken away and a side that is put in. The list has an odd
 /// length of at least three, and no removed tree equals an added one; a sum in which two terms
 /// cancel is not written, but its simplified form, and a state with one tree is a [`Commit`], so
-/// that every state has one encoding and one ID. The kind name is `commit2` (ADR-005, "Format
+/// that no sum has a second, unsimplified encoding. The kind name is `commit2` (ADR-005, "Format
 /// version"), so a `commit` keeps its ID. Every other field is the same as in a `Commit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit2 {
@@ -1463,14 +1463,15 @@ pub struct Commit2 {
 
 impl Commit2 {
     /// Creates a `commit2`. The trees are kept in the given order, and the order is part of the
-    /// ID, as the order of the parents is. The same tree may stand more than once.
+    /// ID, as the order of the parents is. The same tree may stand more than once, as a side or as
+    /// a base; a base that equals a side is rejected.
     ///
     /// # Errors
     ///
     /// Returns [`Commit2Error::TreeCount`] if the list does not have an odd length of at least
-    /// three, [`Commit2Error::CancellingTrees`] if a tree at an odd position (a base) equals a
-    /// tree at an even position (a side), and [`Commit2Error::DuplicateParent`] if a parent is
-    /// listed twice. The trees are checked first, in this order, then the parents.
+    /// three, [`Commit2Error::CancellingTrees`] if a removed tree (a base) equals an added tree
+    /// (a side), and [`Commit2Error::DuplicateParent`] if a parent is listed twice. The checks run
+    /// in this order: the number of trees, then the trees, then the parents.
     pub fn try_new(
         trees: Vec<TreeId>,
         parents: Vec<CommitId>,
@@ -2369,6 +2370,19 @@ mod tests {
         assert!(new(vec![a, b, c, b, d]).is_ok());
         // The count is checked before the trees: an even list is a `TreeCount`, not a cancel.
         assert_eq!(new(vec![a, a]), Err(Commit2Error::TreeCount(2)));
+        // The trees are checked before the parents.
+        let parent = commit_id(EMPTY_ID);
+        assert_eq!(
+            Commit2::try_new(
+                vec![a, a, b],
+                vec![parent, parent],
+                sample_change(),
+                human(),
+                TIME,
+                "m"
+            ),
+            Err(Commit2Error::CancellingTrees(a))
+        );
     }
 
     #[test]
@@ -2469,6 +2483,16 @@ mod tests {
             (
                 with(&format!("tree {t}\ntree {t}\ntree {EMPTY_TREE_ID}\n")),
                 CommitParseError::Commit2(Commit2Error::CancellingTrees(tree_id_of(t))),
+            ),
+            // A repeated parent line is reported by the line, before the trees are looked at.
+            (
+                with(&format!(
+                    "tree {t}\ntree {t}\ntree {EMPTY_TREE_ID}\nparent {HELLO_ID}\nparent {HELLO_ID}\n"
+                )),
+                CommitParseError::DuplicateParent {
+                    line: 5,
+                    id: commit_id(HELLO_ID),
+                },
             ),
             // A tree after a parent.
             (

@@ -1071,6 +1071,29 @@ fn every_commit2_the_code_can_build_is_read_back() {
 }
 
 #[test]
+fn a_commit2_with_a_base_copied_from_a_side_is_rejected_and_names_the_tree() {
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 32));
+    for case in 0..cases() {
+        let context = format!("seed {seed}, case {case}");
+        let commit = random_commit2(&mut rng);
+        let trees = commit.trees();
+        let base = 1 + 2 * rng.below((trees.len() - 1) / 2);
+        let side = 2 * rng.below(trees.len().div_ceil(2));
+        let text = String::from_utf8(commit.encode()).expect("UTF-8");
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        lines[base] = lines[side];
+        let result = Commit2::parse(lines.join("\n").as_bytes());
+        assert_eq!(
+            result,
+            Err(CommitParseError::Commit2(
+                crate::object::Commit2Error::CancellingTrees(trees[side])
+            )),
+            "{context}"
+        );
+    }
+}
+
+#[test]
 fn the_commit2_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
     let (seed, mut rng) = (seed(), Rng::new(seed(), 31));
     let valid: Vec<Vec<u8>> = (0..64).map(|_| random_commit2(&mut rng).encode()).collect();

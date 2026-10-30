@@ -698,7 +698,12 @@ mod tests {
             .is_ok());
         // The first tree that is absent is named, in the order of the list.
         let absent = absent_tree();
-        match commit2(vec![tree, other, absent, other, tree], vec![])
+        let later_absent = Tree::try_new(vec![
+            TreeEntry::file("z", FileMode::File, absent_blob()).unwrap()
+        ])
+        .unwrap()
+        .id();
+        match commit2(vec![tree, other, absent, other, later_absent], vec![])
             .verify(&store)
             .unwrap_err()
         {

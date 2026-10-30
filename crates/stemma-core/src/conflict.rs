@@ -990,6 +990,40 @@ mod tests {
     }
 
     #[test]
+    fn a_commit2_takes_a_list_if_and_only_if_simplifying_leaves_it_alone() {
+        let (seed, mut rng) = (seed(), Rng::new(seed(), 0xC0F9));
+        let (mut accepted, mut rejected) = (0, 0);
+        for case in 0..cases() {
+            // Few distinct trees, so that a base equals a side in about half of the lists.
+            let numbers: Vec<u8> = (0..3 + 2 * rng.below(3))
+                .map(|_| rng.below(4) as u8)
+                .collect();
+            let list: Vec<TreeId> = numbers.iter().map(|&n| tree(n)).collect();
+            let merge = Merge::try_from_terms(list.clone()).expect("odd");
+            let result = Commit2::try_new(list, vec![], sample_change(), human(), 0, "m");
+            let context = format!("seed {seed}, case {case}: {numbers:?}");
+            if merge.simplify() == merge {
+                accepted += 1;
+                assert!(result.is_ok(), "{context}");
+            } else {
+                rejected += 1;
+                let Err(Commit2Error::CancellingTrees(named)) = result else {
+                    panic!("{context}: {result:?}");
+                };
+                // The tree named is a base that has an equal side.
+                assert!(
+                    merge.removes().any(|base| *base == named)
+                        && merge.adds().any(|side| *side == named),
+                    "{context}"
+                );
+            }
+        }
+        if seed == DEFAULT_SEED && cases() >= DEFAULT_CASES {
+            assert!(accepted > 0 && rejected > 0, "{accepted} / {rejected}");
+        }
+    }
+
+    #[test]
     fn the_form_of_a_commit_follows_the_simplified_sum() {
         let (seed, mut rng) = (seed(), Rng::new(seed(), 0xC0F5));
         let (mut plain, mut conflicted) = (0, 0);
