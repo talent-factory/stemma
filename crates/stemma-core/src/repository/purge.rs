@@ -1670,7 +1670,13 @@ mod tests {
         let store = repository.objects();
         let tree = read_commit(store, first).unwrap().tree();
         let conflict = crate::object::Commit2::try_new(
-            vec![tree; 3],
+            vec![
+                tree,
+                crate::object::TreeId::new(crate::object::ObjectId::from_digest(blake3::hash(
+                    b"other",
+                ))),
+                tree,
+            ],
             vec![first],
             crate::change::ChangeId::generate().unwrap(),
             actor(),

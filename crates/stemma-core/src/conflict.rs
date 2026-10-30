@@ -299,9 +299,9 @@ impl AnyCommit {
     /// # Errors
     ///
     /// Returns the error of the commit that the sum simplifies to: a duplicate parent is the only
-    /// reason today. The error of the other form cannot be a wrong number of trees, since a
-    /// simplified sum of more than one term has an odd length of at least three, but the type
-    /// keeps the case and does not assume it.
+    /// reason today. The error of the other form cannot be a wrong number of trees or a base that
+    /// equals a side, since a simplified sum of more than one term has an odd length of at least
+    /// three and nothing left to cancel, but the type keeps the cases and does not assume them.
     pub fn from_sum(
         trees: &Merge<TreeId>,
         parents: Vec<CommitId>,

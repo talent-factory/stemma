@@ -511,9 +511,20 @@ fn random_commit(rng: &mut Rng) -> Commit {
 /// A `commit2` with three, five, or seven trees, and the other fields of a random commit.
 fn random_commit2(rng: &mut Rng) -> Commit2 {
     let base = random_commit(rng);
-    let trees = (0..3 + 2 * rng.below(3))
+    let mut trees: Vec<_> = (0..3 + 2 * rng.below(3))
         .map(|_| random_tree(rng).id())
         .collect();
+    // Two sides may agree: the same tree can stand more than once, as a side.
+    if rng.one_in(3) {
+        trees[2] = trees[0];
+    }
+    // A base that equals a side would cancel, and the constructor rejects it. The empty tree is
+    // common, so draw again until no base equals a side.
+    for base in (1..trees.len()).step_by(2) {
+        while trees.iter().step_by(2).any(|side| *side == trees[base]) {
+            trees[base] = random_tree(rng).id();
+        }
+    }
     Commit2::try_new(
         trees,
         base.parents().to_vec(),
@@ -522,7 +533,7 @@ fn random_commit2(rng: &mut Rng) -> Commit2 {
         base.timestamp(),
         base.message(),
     )
-    .expect("an odd number of trees and distinct parents")
+    .expect("an odd number of trees, no base equal to a side, and distinct parents")
 }
 
 /// A branch name made of a few parts, some of them invalid; the names that the rule rejects are

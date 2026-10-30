@@ -1415,6 +1415,11 @@ pub enum Commit2Error {
     /// trees of a conflict as add, remove, add, and so on, so its length is `2n + 1` with `n >= 1`.
     /// A single tree is a `commit`, so that the same state has no second encoding.
     TreeCount(usize),
+    /// A removed tree equals an added tree, so the two cancel and the state is the sum without
+    /// them. The sum has to be written in its simplified form, so that one state has one
+    /// encoding and one ID; a `commit2` whose terms cancel is rejected, and the tree is the first
+    /// removed one that has an equal added one.
+    CancellingTrees(TreeId),
     /// A parent is listed twice.
     DuplicateParent(CommitId),
 }
@@ -1425,6 +1430,10 @@ impl fmt::Display for Commit2Error {
             Self::TreeCount(count) => write!(
                 f,
                 "a commit2 lists an odd number of at least three trees, not {count}"
+            ),
+            Self::CancellingTrees(id) => write!(
+                f,
+                "a commit2 removes the tree {id}, which it also adds, so the two cancel"
             ),
             Self::DuplicateParent(id) => write!(f, "duplicate parent {id}"),
         }
@@ -1438,9 +1447,10 @@ impl Error for Commit2Error {}
 ///
 /// The trees are read as add, remove, add, remove, ..., add: the first tree is a side, and each
 /// following pair is a base that is taken away and a side that is put in. The list has an odd
-/// length of at least three; a state with one tree is a [`Commit`], so that it has one encoding
-/// and one ID. The kind name is `commit2` (ADR-005, "Format version"), so a `commit` keeps its ID.
-/// Every other field is the same as in a `Commit`.
+/// length of at least three, and no removed tree equals an added one; a sum in which two terms
+/// cancel is not written, but its simplified form, and a state with one tree is a [`Commit`], so
+/// that every state has one encoding and one ID. The kind name is `commit2` (ADR-005, "Format
+/// version"), so a `commit` keeps its ID. Every other field is the same as in a `Commit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit2 {
     trees: Vec<TreeId>,
@@ -1458,7 +1468,9 @@ impl Commit2 {
     /// # Errors
     ///
     /// Returns [`Commit2Error::TreeCount`] if the list does not have an odd length of at least
-    /// three, and [`Commit2Error::DuplicateParent`] if a parent is listed twice.
+    /// three, [`Commit2Error::CancellingTrees`] if a tree at an odd position (a base) equals a
+    /// tree at an even position (a side), and [`Commit2Error::DuplicateParent`] if a parent is
+    /// listed twice. The trees are checked first, in this order, then the parents.
     pub fn try_new(
         trees: Vec<TreeId>,
         parents: Vec<CommitId>,
@@ -1469,6 +1481,15 @@ impl Commit2 {
     ) -> Result<Self, Commit2Error> {
         if trees.len() < 3 || trees.len().is_multiple_of(2) {
             return Err(Commit2Error::TreeCount(trees.len()));
+        }
+        let sides = trees.iter().step_by(2);
+        if let Some(base) = trees
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .find(|base| sides.clone().any(|side| side == *base))
+        {
+            return Err(Commit2Error::CancellingTrees(*base));
         }
         if let Some(parent) = first_duplicate(&parents) {
             return Err(Commit2Error::DuplicateParent(parent));
@@ -1540,9 +1561,9 @@ impl Commit2 {
     /// # Errors
     ///
     /// Returns every error of [`Commit::parse`], and [`CommitParseError::Commit2`] with
-    /// [`Commit2Error::TreeCount`] if the number of `tree` lines is even or below three. That
-    /// check comes after the headers are read, so the first problem in the lines is reported
-    /// before it.
+    /// [`Commit2Error::TreeCount`] if the number of `tree` lines is even or below three, and
+    /// [`Commit2Error::CancellingTrees`] if a base equals a side. Those checks come after the
+    /// headers are read, so the first problem in the lines is reported before them.
     pub fn parse(bytes: &[u8]) -> Result<Self, CommitParseError> {
         let parts = parse_parts(bytes, true)?;
         Commit2::try_new(
@@ -2231,6 +2252,11 @@ mod tests {
         ]
     }
 
+    /// A tree ID for a number, without a tree behind it.
+    fn distinct_tree(number: u8) -> TreeId {
+        TreeId::new(ObjectId::from_digest(blake3::hash(&[number])))
+    }
+
     fn commit2_of(trees: Vec<TreeId>, parents: Vec<CommitId>, message: &str) -> Commit2 {
         Commit2::try_new(trees, parents, sample_change(), human(), TIME, message)
             .expect("valid commit2")
@@ -2303,7 +2329,7 @@ mod tests {
         }
         for count in [3, 5, 7] {
             let commit = Commit2::try_new(
-                vec![tree; count],
+                (0..count).map(|n| distinct_tree(n as u8)).collect(),
                 vec![],
                 sample_change(),
                 human(),
@@ -2313,6 +2339,45 @@ mod tests {
             .expect("an odd number of trees");
             assert_eq!(commit.trees().len(), count);
         }
+    }
+
+    #[test]
+    fn commit2_rejects_a_base_that_equals_a_side() {
+        let (a, b, c, d) = (
+            distinct_tree(1),
+            distinct_tree(2),
+            distinct_tree(3),
+            distinct_tree(4),
+        );
+        let new = |trees: Vec<TreeId>| {
+            Commit2::try_new(trees, vec![], sample_change(), human(), TIME, "m")
+        };
+        // The base cancels against a side: a - a + b is b, which is a `commit` with the tree b.
+        assert_eq!(new(vec![a, a, b]), Err(Commit2Error::CancellingTrees(a)));
+        assert_eq!(new(vec![a, b, b]), Err(Commit2Error::CancellingTrees(b)));
+        // Also against a side that is not the neighbour, and the first such base is named.
+        assert_eq!(
+            new(vec![a, b, c, a, d]),
+            Err(Commit2Error::CancellingTrees(a))
+        );
+        assert_eq!(
+            new(vec![a, d, c, c, b]),
+            Err(Commit2Error::CancellingTrees(c))
+        );
+        // Two sides that agree, and two bases that agree, do not cancel.
+        assert!(new(vec![a, b, a]).is_ok());
+        assert!(new(vec![a, b, c, b, d]).is_ok());
+        // The count is checked before the trees: an even list is a `TreeCount`, not a cancel.
+        assert_eq!(new(vec![a, a]), Err(Commit2Error::TreeCount(2)));
+    }
+
+    #[test]
+    fn the_error_of_a_cancelling_commit2_names_the_tree() {
+        let tree = distinct_tree(1);
+        assert_eq!(
+            Commit2Error::CancellingTrees(tree).to_string(),
+            format!("a commit2 removes the tree {tree}, which it also adds, so the two cancel")
+        );
     }
 
     #[test]
@@ -2362,8 +2427,16 @@ mod tests {
                 vec![commit_id(HELLO_ID), commit_id(EMPTY_ID)],
                 "a\n\nb",
             ),
-            // The same tree may stand more than once.
-            commit2_of(vec![tree_id_of(TREE_ID); 3], vec![], "same"),
+            // The same tree may stand more than once, as a side.
+            commit2_of(
+                vec![
+                    tree_id_of(TREE_ID),
+                    tree_id_of(EMPTY_TREE_ID),
+                    tree_id_of(TREE_ID),
+                ],
+                vec![],
+                "same",
+            ),
         ] {
             let again = Commit2::parse(&commit.encode()).expect("canonical");
             assert_eq!(again, commit);
@@ -2391,6 +2464,11 @@ mod tests {
             (
                 with(&format!("tree {t}\ntree {t}\ntree {t}\ntree {t}\n")),
                 CommitParseError::Commit2(Commit2Error::TreeCount(4)),
+            ),
+            // A base that equals a side is a sum that was not simplified.
+            (
+                with(&format!("tree {t}\ntree {t}\ntree {EMPTY_TREE_ID}\n")),
+                CommitParseError::Commit2(Commit2Error::CancellingTrees(tree_id_of(t))),
             ),
             // A tree after a parent.
             (

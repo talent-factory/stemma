@@ -672,6 +672,15 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let tree = empty_tree(&store);
+        // A second tree that is in the store: a base must differ from every side.
+        let other = store
+            .put_tree(
+                &Tree::try_new(vec![
+                    TreeEntry::file("y", FileMode::File, absent_blob()).unwrap()
+                ])
+                .unwrap(),
+            )
+            .unwrap();
         let parent = store.put_commit(&commit(tree, vec![])).unwrap();
         let commit2 = |trees: Vec<TreeId>, parents: Vec<CommitId>| {
             Commit2::try_new(
@@ -684,10 +693,12 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(commit2(vec![tree; 3], vec![parent]).verify(&store).is_ok());
+        assert!(commit2(vec![tree, other, tree], vec![parent])
+            .verify(&store)
+            .is_ok());
         // The first tree that is absent is named, in the order of the list.
         let absent = absent_tree();
-        match commit2(vec![tree, tree, absent, tree, absent], vec![])
+        match commit2(vec![tree, other, absent, other, tree], vec![])
             .verify(&store)
             .unwrap_err()
         {
@@ -715,7 +726,7 @@ mod tests {
         }
         // The trees are checked before the parents.
         let absent_parent = commit(absent, vec![]).id();
-        match commit2(vec![tree, tree, absent], vec![absent_parent])
+        match commit2(vec![tree, other, absent], vec![absent_parent])
             .verify(&store)
             .unwrap_err()
         {
@@ -724,7 +735,7 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
-        match commit2(vec![tree; 3], vec![parent, absent_parent])
+        match commit2(vec![tree, other, tree], vec![parent, absent_parent])
             .verify(&store)
             .unwrap_err()
         {
