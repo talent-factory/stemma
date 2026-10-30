@@ -297,6 +297,7 @@ fn a_detached_head_does_not_change_where_the_list_starts() {
     repository
         .set_head(
             &OperationName::try_new("checkout").unwrap(),
+            &repository.refs().head().unwrap(),
             &Head::Detached(parent),
             &actor,
             &AllowAll,

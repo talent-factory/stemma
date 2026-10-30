@@ -10,6 +10,7 @@
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
+//! ├── refs/tags/      tags, made by the first tag (ADR-008)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
 //! ├── oplog-tip       the number and the hash of the last entry of the log (ADR-011)
 //! ├── purge-pending   the journal of a purge, only while it runs or after it stopped (ADR-014)
@@ -519,8 +520,8 @@ impl Repository {
         RefsView { refs: &self.refs }
     }
 
-    /// Checks that a detached HEAD, the working-copy commit, and every branch name a commit that
-    /// the object store of this repository has. See [`FsRefStore::verify`].
+    /// Checks that a detached HEAD, the working-copy commit, every branch, and every tag name a
+    /// commit that the object store of this repository has. See [`FsRefStore::verify`].
     ///
     /// # Errors
     ///
@@ -896,6 +897,24 @@ impl RefsView<'_> {
     /// See [`RefStore::branches`].
     pub fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
         self.refs.branches()
+    }
+
+    /// The commit of a tag, or `None` if there is no such tag. See [`RefStore::tag`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::tag`].
+    pub fn tag(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
+        self.refs.tag(name)
+    }
+
+    /// All tags with their commits, sorted by name. See [`RefStore::tags`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::tags`].
+    pub fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        self.refs.tags()
     }
 
     /// Whether a writer holds the lock of the references, so that an operation may be between its

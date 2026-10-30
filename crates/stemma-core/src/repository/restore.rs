@@ -657,11 +657,7 @@ impl fmt::Display for RestoreError {
             Self::NoOldValue { number, pointer } => write!(
                 f,
                 "entry {number} created {}, which cannot be absent, so it cannot be restored",
-                match pointer {
-                    Pointer::Head => "HEAD".to_owned(),
-                    Pointer::WorkingCopy => "the working-copy commit".to_owned(),
-                    Pointer::Branch(name) => format!("the branch `{name}`"),
-                }
+                pointer
             ),
             Self::Refs(error) => write!(f, "could not restore, nothing of it was written: {error}"),
             Self::Snapshot(error) if error.stands_alone() => error.fmt(f),

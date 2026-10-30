@@ -54,11 +54,16 @@ Die Prüfung ist nicht frei von Wettläufen (ADR-009).
     oplog/        Operation Log, eine nummerierte Datei je Eintrag
     oplog-tip     Nummer und Hash des letzten Eintrags des Logs
     refs/heads/   Branches
+    refs/tags/    Tags, entsteht mit dem ersten Tag (ADR-008)
     refs.lock     Sperre der Referenzen, solange ein Befehl schreibt
     refs.lock.guard  Datei für die Sperre des Betriebssystems, bleibt
     purge-pending Journal eines Purge, nur solange er läuft oder nachdem er abbrach
     tmp/          temporäre Dateien des Objektspeichers, der Referenzen und des Logs
 \stoptyping
+
+Ein Tag ist eine Datei unter \type{refs/tags/} in der Form einer Branch-Datei.
+Er wird einmal gesetzt und nie verschoben; ein vorhandener Tag ist ein Fehler,
+auch wenn er auf denselben Commit zeigt (ADR-008).
 
 Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 4,
 die das Log mit der Hash-Kette kennzeichnet (siehe unten). Ein Repository der Version 2 oder 3
@@ -2212,8 +2217,11 @@ Der Plan hält deshalb $f$ für jede ID, die er gesehen hat, in einer Hashtabell
 dem Memo, und einen Baum oder Commit, den mehrere Commits teilen, schreibt er einmal um.
 
 Der Durchlauf beginnt bei jeder Wurzel, das heisst
-beim Working-Copy-Commit, bei jedem Branch, bei einem abgekoppelten HEAD
+beim Working-Copy-Commit, bei jedem Branch und jedem Tag, bei einem abgekoppelten HEAD
 und bei jedem Commit, den ein Eintrag des Logs nennt.
+Ein Tag bewegt sich nie (ADR-008);
+nennt er einen Commit, den der Purge umschreiben würde,
+lehnt der Plan ihn ab (\type{TaggedCommit}).
 Ein Verlauf kann tausende Commits lang sein,
 deshalb hält der Durchlauf einen eigenen Stapel statt der Rekursion (\type{Planner::commit}):
 

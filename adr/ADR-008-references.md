@@ -1,10 +1,10 @@
-# ADR-008: References: Branches and HEAD
+# ADR-008: References: Branches, Tags, and HEAD
 
 **Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
-confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
-The open items move to Phase 5
-(remote references); tags and packed references have no phase yet, and the rename on Windows
-waits for the CI run (STEMMA-33).
+confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1. The decision on
+tags (STEMMA-54) was taken on 2026-10-29 and implemented in the store; its use is open.
+The open items move to Phase 5 (remote references); the use of tags (log, command, restore) and
+packed references have no phase yet, and the rename on Windows waits for the CI run (STEMMA-33).
 
 ## Context
 
@@ -114,6 +114,24 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   place and only the flush of the directory fails, the change has happened, and the error is
   `NotFlushed`; the caller reads the reference again and does not repeat the change with the old
   state.
+- **A tag is a plain pointer that never moves** *(confirmed, STEMMA-54)*.
+  `<metadata directory>/refs/tags/<name>` is a file in the form of a branch file: the ID of a
+  commit and a newline. A tag has no object of its own, so there is no new object kind
+  (ADR-005) and no message; a note can be added later as an object without changing any ID. Who
+  set the tag and when will be in the operation log (ADR-011) once the operation `tag` exists
+  (open item). A tag name follows the rules of a branch name and the checks of a branch (one name
+  per file system entry, no case variants), in its own directory, so a tag and a branch may have
+  the same name, and the two are checked each among themselves. `create_tag` fails with
+  `TagExists` if the tag exists, at this commit or at another: a release that someone has read
+  must keep its meaning, and the answer is no lost race that a caller could retry (`Stale` is for
+  a branch). A tag that was set wrongly is deleted and set again, which belongs to the deletion
+  of references (open item); ADR-004 does not classify it yet. A repository from before the
+  tags has no `refs/tags/`, which is no tags; the directory is made by the first tag.
+- **Until the following items are done, tags are only partly known** *(STEMMA-54)*.
+  `verify` checks the commits of the tags. A purge refuses (`TaggedCommit`) while a tag points
+  to a commit that it would rewrite, because a tag cannot move (ADR-014). A restore does not
+  touch tags: they are not part of the state it brings back, and a tag that a later entry
+  created stays (ADR-013).
 - **The module stores, and nothing more** *(confirmed)*. The module does not call the
   authorization hook (ADR-002) and does not write the operation log (ADR-011); the layer above
   does, because it knows the actor and the operation. The default branch of a new repository is
@@ -152,7 +170,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - The names of `con` and its kind are refused on every platform, also for people who never use
   Windows.
 - `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
-  HEAD, the working-copy commit, and every branch name a commit that the store has. A write
+  HEAD, the working-copy commit, every branch, and every tag name a commit that the store has.
+  The result lists the references in this order, the tags after the branches. A write
   checks this already, so a failure means that an object was removed or damaged, or that a
   reference file was edited by hand. The check is shallow: the commit is read and its hash
   checked, but it is not parsed, and its tree and parents are not followed. The result lists
@@ -172,8 +191,14 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       (STEMMA-52); a missing branch or another tip is `Stale`, a name held by another entry is
       `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above.
 - [ ] Packed references, when there are many branches.
-- [ ] Tags.
-- [x] Checking that the branches and HEAD of a repository point to commits that the store has
+- [x] Tags: layout, plain pointer, never moves (STEMMA-54), see the decision above. The store
+      has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. Still open: the
+      operation `tag` in the operation log (ADR-011) and the command, deleting a tag (with
+      `delete_branch`) and its level in ADR-004, how a purge deals with a tag on a commit that it
+      rewrites (today it refuses), and the name that is both a branch and a tag, for a command
+      that resolves names.
+- [x] Checking that the branches, tags, and HEAD of a repository point to commits that the store
+      has
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.
 - [x] A compare-and-swap for HEAD (`replace_head`, `Repository::set_head` with `expected`,
       `StaleHead`, STEMMA-53), see the decision above. `Expected { Absent, At(commit) }` in place

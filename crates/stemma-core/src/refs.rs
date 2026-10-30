@@ -1,13 +1,15 @@
-//! References: the branches and HEAD of a repository (ADR-008).
+//! References: the branches, the tags, and HEAD of a repository (ADR-008).
 //!
-//! A branch is a name for a commit. The names and the files follow the rule of ADR-005: one
-//! value, one encoding, and a reader that rejects everything else.
+//! A branch is a name for a commit that moves; a tag is a name that never moves. The names and
+//! the files follow the rule of ADR-005: one value, one encoding, and a reader that rejects
+//! everything else.
 //!
 //! The files live below the repository's metadata directory (`root`):
 //!
 //! ```text
 //! <root>/HEAD                    branch main\n   or   commit b3:<64 hex digits>\n
 //! <root>/refs/heads/<name>       b3:<64 hex digits>\n
+//! <root>/refs/tags/<name>        b3:<64 hex digits>\n   (created once, never moved)
 //! <root>/refs.lock               exists while a command writes (ADR-014)
 //! <root>/refs.lock.guard         stays; its holder holds a lock of the system on it (ADR-008)
 //! ```
@@ -392,6 +394,8 @@ pub enum RefError {
         source: RefParseError,
     },
     /// The branch is not where the caller saw it: another change came first.
+    ///
+    /// Only a branch is stale. A tag never moves, so a tag that exists is [`RefError::TagExists`].
     Stale {
         /// The branch.
         name: BranchName,
@@ -400,6 +404,15 @@ pub enum RefError {
         /// The commit the branch has, or `None` if it does not exist.
         found: Option<CommitId>,
     },
+    /// The tag exists already. A tag is created once and never moves (ADR-008), so the answer is
+    /// the same whether the caller names the commit of the tag or another one, and it is not a
+    /// lost race that the caller could retry.
+    TagExists {
+        /// The tag.
+        name: BranchName,
+        /// The commit it points to.
+        found: CommitId,
+    },
     /// HEAD is not where the caller saw it: another change came first.
     StaleHead {
         /// The value the caller expected.
@@ -407,14 +420,17 @@ pub enum RefError {
         /// The value HEAD has.
         found: Head,
     },
-    /// The name cannot be created because of another entry: a branch is a file, so a name cannot
-    /// be a branch and the start of other names, and on a file system that ignores case two names
-    /// that differ only in case are one file.
+    /// The name cannot be created because of another entry: a reference is a file, so a name
+    /// cannot be a reference and the start of other names, and on a file system that ignores case
+    /// two names that differ only in case are one file. Branches and tags are checked each among
+    /// themselves.
     Conflict {
+        /// Whether a branch or a tag was to be created.
+        reference: RefKind,
         /// The name that was to be created.
         name: BranchName,
-        /// The entry that is in the way, as a name below the branches. It is not always a branch;
-        /// `kind` says what it is.
+        /// The entry that is in the way, as a name below the branches or the tags. It is not
+        /// always a reference; `kind` says what it is.
         with: String,
         /// What `with` is.
         kind: ConflictKind,
@@ -519,13 +535,53 @@ pub enum LockHolder {
     },
 }
 
-/// What stands in the way of a new branch name.
+/// The kind of a reference that is created: a branch or a tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RefKind {
+    /// A branch, below `refs/heads`.
+    Branch,
+    /// A tag, below `refs/tags`.
+    Tag,
+}
+
+impl RefKind {
+    /// The directory below `refs` that holds the references of this kind. Branches and tags use
+    /// the same names, the same files, and the same checks, each in its own directory.
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Branch => "heads",
+            Self::Tag => "tags",
+        }
+    }
+
+    /// The plural, for a message.
+    fn plural(self) -> &'static str {
+        match self {
+            Self::Branch => "branches",
+            Self::Tag => "tags",
+        }
+    }
+}
+
+impl fmt::Display for RefKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Branch => "branch",
+            Self::Tag => "tag",
+        })
+    }
+}
+
+/// What stands in the way of a new branch or tag name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ConflictKind {
-    /// A branch with a name that is the start of the new one: `a` is a branch, so `a/b` cannot be.
-    Branch,
-    /// A directory of other branches has the name: `x/y` is a branch, so `x` cannot be.
+    /// A reference of the same kind has a name that is the start of the new one: `a` is a branch,
+    /// so the branch `a/b` cannot be. The same holds for tags.
+    Reference,
+    /// A directory of references of the same kind has the name: `x/y` is a branch, so the branch
+    /// `x` cannot be.
     Directory,
     /// A name that differs only in case, which is one file on a file system that ignores case.
     CaseVariant,
@@ -534,8 +590,8 @@ pub enum ConflictKind {
 impl fmt::Display for ConflictKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Branch => "is a branch",
-            Self::Directory => "is a directory of branches",
+            Self::Reference => "is a reference",
+            Self::Directory => "is a directory of references",
             Self::CaseVariant => "differs only in case",
         })
     }
@@ -568,11 +624,29 @@ impl fmt::Display for RefError {
                     |id| format!("it is at {id}")
                 )
             ),
-            Self::Conflict { name, with, kind } => write!(
+            Self::TagExists { name, found } => write!(
                 f,
-                "branch `{name}` conflicts with `{}`, which {kind}",
-                with.escape_debug()
+                "the tag `{name}` exists already at {found}; a tag never moves"
             ),
+            Self::Conflict {
+                reference,
+                name,
+                with,
+                kind,
+            } => {
+                write!(
+                    f,
+                    "{reference} `{name}` conflicts with `{}`, which ",
+                    with.escape_debug()
+                )?;
+                match kind {
+                    ConflictKind::Reference => write!(f, "is a {reference}"),
+                    ConflictKind::Directory => {
+                        write!(f, "is a directory of {}", reference.plural())
+                    }
+                    ConflictKind::CaseVariant => write!(f, "{kind}"),
+                }
+            }
             Self::MissingCommit(id) => write!(f, "the store has no commit {id}"),
             Self::NotACommit { id, found } => {
                 write!(f, "object {id} is a {}, not a commit", found.name())
@@ -696,6 +770,7 @@ impl Error for RefError {
             Self::Corrupt { source, .. } => source.source(),
             Self::Store(source) => source.source(),
             Self::Stale { .. }
+            | Self::TagExists { .. }
             | Self::StaleHead { .. }
             | Self::Conflict { .. }
             | Self::MissingCommit(_)
@@ -745,7 +820,7 @@ fn io_error<'a>(
     }
 }
 
-/// Storage for the branches and HEAD of a repository.
+/// Storage for the branches, the tags, and HEAD of a repository.
 ///
 /// The trait is sealed: only this crate implements it.
 pub trait RefStore: crate::store::sealed::Sealed {
@@ -818,6 +893,39 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// is not a valid branch name such as `main~`, and for a directory with such a name; and
     /// [`RefError::Io`] if the storage fails.
     fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError>;
+
+    /// Returns the commit of a tag, or `None` if there is no tag with exactly this name. A tag
+    /// name follows the rules of a branch name (ADR-008).
+    ///
+    /// # Errors
+    ///
+    /// As [`branch`](Self::branch).
+    fn tag(&self, name: &BranchName) -> Result<Option<CommitId>, RefError>;
+
+    /// Returns all tags with their commits, sorted by name, as [`branches`](Self::branches) does
+    /// for branches.
+    ///
+    /// # Errors
+    ///
+    /// As [`branches`](Self::branches).
+    fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError>;
+
+    /// Creates a tag at `commit`, which has to be in `objects`. A tag is a plain pointer and never
+    /// moves (ADR-008): if the tag exists, at this commit or at another, the answer is
+    /// [`RefError::TagExists`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::TagExists`] if the tag exists, [`RefError::Conflict`] if the name is
+    /// held by another tag, and the other errors of [`update_branch`](Self::update_branch) for a
+    /// branch that is created.
+    fn create_tag(
+        &self,
+        name: &BranchName,
+        commit: CommitId,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError>;
 
     /// Moves a branch to `new`, or creates it, if it is still at `expected` (`None` for a branch
     /// that does not exist). The commit has to be in `objects`.
@@ -1162,13 +1270,23 @@ impl FsRefStore {
     }
 
     fn heads_dir(&self) -> PathBuf {
-        self.root.join("refs").join("heads")
+        self.namespace_dir(RefKind::Branch)
+    }
+
+    fn namespace_dir(&self, namespace: RefKind) -> PathBuf {
+        self.root.join("refs").join(namespace.directory())
     }
 
     fn branch_path(&self, name: &BranchName) -> PathBuf {
+        self.reference_path(RefKind::Branch, name)
+    }
+
+    fn reference_path(&self, namespace: RefKind, name: &BranchName) -> PathBuf {
         name.as_str()
             .split('/')
-            .fold(self.heads_dir(), |path, component| path.join(component))
+            .fold(self.namespace_dir(namespace), |path, component| {
+                path.join(component)
+            })
     }
 
     fn working_copy_path(&self) -> PathBuf {
@@ -1222,9 +1340,9 @@ impl FsRefStore {
         }
     }
 
-    /// The commit of a branch file that a lookup or a listing found, or `None` if the file is gone
-    /// since: a reader without the lock may see another change delete the branch in between, and
-    /// the branch then does not exist.
+    /// The commit of a reference file (a branch or a tag) that a lookup or a listing found, or
+    /// `None` if the file is gone since: a reader without the lock may see another change delete
+    /// it in between, and the reference then does not exist.
     fn listed_branch(&self, path: PathBuf) -> Result<Option<CommitId>, RefError> {
         let Some(bytes) = self.read_reference(&path)? else {
             return Ok(None);
@@ -1584,17 +1702,18 @@ impl FsRefStore {
         placed
     }
 
-    /// Whether the directory of the branches exists. `refs` and `refs/heads` are each checked for
-    /// what they are, because the error for a path that goes through a file is not the same on
-    /// every platform (Windows says "not found"), and a file in the place of a directory is
-    /// damage and not "no branches".
-    fn heads_exist(&self) -> Result<bool, RefError> {
-        for dir in [self.root.join("refs"), self.heads_dir()] {
+    /// Whether the directory of the branches or of the tags exists. `refs` and `refs/heads` (or
+    /// `refs/tags`) are each checked for what they are, because the error for a path that goes
+    /// through a file is not the same on every platform (Windows says "not found"), and a file in
+    /// the place of a directory is damage and not "no references". A repository from before the
+    /// tags has no `refs/tags`, which is no tags.
+    fn namespace_exists(&self, namespace: RefKind) -> Result<bool, RefError> {
+        for dir in [self.root.join("refs"), self.namespace_dir(namespace)] {
             match fs::symlink_metadata(&dir) {
                 Ok(metadata) if metadata.is_dir() => {}
                 Ok(_) => {
                     return Err(RefError::Io {
-                        operation: "list the branches in",
+                        operation: "list the references in",
                         path: dir,
                         source: io::Error::new(io::ErrorKind::InvalidInput, "not a directory"),
                     })
@@ -1611,12 +1730,12 @@ impl FsRefStore {
     /// directory shows the case that is stored, so such a name is found to be in conflict and not
     /// to be the other branch. A variant that is a directory without any file below it is a
     /// leftover, as for an exact name, and is reported as [`Lookup::EmptyDirectory`].
-    fn lookup(&self, name: &BranchName) -> Result<Lookup, RefError> {
-        if !self.heads_exist()? {
+    fn lookup(&self, namespace: RefKind, name: &BranchName) -> Result<Lookup, RefError> {
+        if !self.namespace_exists(namespace)? {
             return Ok(Lookup::Absent);
         }
         let components: Vec<&str> = name.as_str().split('/').collect();
-        let mut dir = self.heads_dir();
+        let mut dir = self.namespace_dir(namespace);
         let mut relative = String::new();
         for (index, component) in components.iter().enumerate() {
             // Every directory but the first was seen to be a directory, and the first has to be
@@ -1624,11 +1743,11 @@ impl FsRefStore {
             let entries = match settled(|| fs::read_dir(&dir)) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
-                Err(error) => return Err(io_error("list the branches in", &dir)(error)),
+                Err(error) => return Err(io_error("list the references in", &dir)(error)),
             };
             let (mut exact, mut variant) = (false, None);
             for entry in entries {
-                let entry = entry.map_err(io_error("list the branches in", &dir))?;
+                let entry = entry.map_err(io_error("list the references in", &dir))?;
                 let found = entry.file_name().to_string_lossy().into_owned();
                 if found == *component {
                     exact = true;
@@ -1654,7 +1773,7 @@ impl FsRefStore {
                     )),
                     // Gone since the listing: a change removed it, and nothing holds the name.
                     Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Lookup::Absent),
-                    Err(error) => Err(io_error("inspect the branch", &there)(error)),
+                    Err(error) => Err(io_error("inspect the reference", &there)(error)),
                 };
             }
             let here = dir.join(component);
@@ -1674,9 +1793,9 @@ impl FsRefStore {
                 }
                 Ok(_) if last => return Ok(Lookup::Branch(here)),
                 // A file holds the place of a directory in the name.
-                Ok(_) => return Ok(Lookup::Conflict(current, ConflictKind::Branch)),
+                Ok(_) => return Ok(Lookup::Conflict(current, ConflictKind::Reference)),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
-                Err(error) => return Err(io_error("inspect the branch", &here)(error)),
+                Err(error) => return Err(io_error("inspect the reference", &here)(error)),
             }
             dir = here;
             relative = current;
@@ -1684,9 +1803,10 @@ impl FsRefStore {
         Ok(Lookup::Absent)
     }
 
-    /// The commit of the branch, and what stands in the way of creating it if there is none.
-    fn current(&self, name: &BranchName) -> Result<Current, RefError> {
-        match self.lookup(name)? {
+    /// The commit of the branch or tag, and what stands in the way of creating it if there is
+    /// none.
+    fn current(&self, namespace: RefKind, name: &BranchName) -> Result<Current, RefError> {
+        match self.lookup(namespace, name)? {
             Lookup::Absent => Ok(Current::default()),
             Lookup::EmptyDirectory(path) => Ok(Current {
                 empty_directory: Some(path),
@@ -1721,18 +1841,18 @@ impl FsRefStore {
     }
 }
 
-/// What a branch name is in the file system.
+/// What a name is in the file system of its namespace, the branches or the tags.
 enum Lookup {
     /// Nothing is there, and nothing is in the way.
     Absent,
-    /// The file of the branch.
+    /// The file of the branch or tag.
     Branch(PathBuf),
     /// A directory without any file below it holds the name. It is no branch and in nobody's way:
     /// it is what a change leaves behind that stopped. A change removes it.
     EmptyDirectory(PathBuf),
-    /// The name cannot be a branch: another branch, or a directory of branches, is in the way, or
-    /// a branch, or a directory that holds one, whose name differs only in case. Carries that name
-    /// and what it is.
+    /// The name cannot be taken: another reference of the namespace, or a directory of them, is in
+    /// the way, or one, or a directory that holds one, whose name differs only in case. Carries
+    /// that name and what it is.
     Conflict(String, ConflictKind),
 }
 
@@ -1762,7 +1882,7 @@ fn has_files_below(dir: &Path) -> Result<bool, RefError> {
     let mut pending = vec![(dir.to_path_buf(), entries)];
     while let Some((dir, entries)) = pending.pop() {
         for entry in entries {
-            let entry = entry.map_err(io_error("list the branches in", &dir))?;
+            let entry = entry.map_err(io_error("list the references in", &dir))?;
             if entry.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
@@ -1770,7 +1890,7 @@ fn has_files_below(dir: &Path) -> Result<bool, RefError> {
             let kind = match entry.file_type() {
                 Ok(kind) => kind,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
-                Err(error) => return Err(io_error("inspect the branch", &path)(error)),
+                Err(error) => return Err(io_error("inspect the reference", &path)(error)),
             };
             if !kind.is_dir() {
                 return Ok(true);
@@ -1807,7 +1927,7 @@ fn list_directory(dir: &Path) -> Result<Option<fs::ReadDir>, RefError> {
     match settled(|| fs::read_dir(dir)) {
         Ok(entries) => Ok(Some(entries)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io_error("list the branches in", dir)(error)),
+        Err(error) => Err(io_error("list the references in", dir)(error)),
     }
 }
 
@@ -1920,9 +2040,10 @@ impl FsRefStore {
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
         Self::require_commit(&new, objects)?;
-        let current = self.current(name)?;
+        let current = self.current(RefKind::Branch, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
+                reference: RefKind::Branch,
                 name: name.clone(),
                 with,
                 kind,
@@ -2108,15 +2229,16 @@ impl FsRefStore {
     }
 
     /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
-    /// working-copy commit, and every branch. A write checks the commit already (ADR-008), so a
+    /// working-copy commit, every branch, and every tag. A write checks the commit already
+    /// (ADR-008), so a
     /// problem here comes from outside the module: an object that was removed or damaged, or a
     /// reference file that was edited by hand. HEAD that names a branch is not checked itself; the
     /// branch is, if it exists, and a branch that does not exist yet is no problem, as in a new
     /// repository.
     ///
     /// The result has one error for each reference that fails, in the order HEAD, the
-    /// working-copy commit, and the branches in the byte order of their names; it is empty if all
-    /// hold. A commit that is missing is [`VerifyError::Missing`]; one that is another kind of
+    /// working-copy commit, the branches, and then the tags, each in the byte order of their
+    /// names; it is empty if all hold. A commit that is missing is [`VerifyError::Missing`]; one that is another kind of
     /// object ([`StoreError::KindMismatch`]), is damaged ([`StoreError::Corrupt`]), or cannot be
     /// read ([`StoreError::Io`]) is [`VerifyError::Store`]. Each commit is read and hashed
     /// completely, but it is not parsed, and its tree and parents are not followed.
@@ -2147,6 +2269,9 @@ impl FsRefStore {
         pointers.push((Pointer::WorkingCopy, self.working_copy()?));
         for (name, commit) in self.branches()? {
             pointers.push((Pointer::Branch(name), commit));
+        }
+        for (name, commit) in self.tags()? {
+            pointers.push((Pointer::Tag(name), commit));
         }
         let mut errors = Vec::new();
         for (pointer, commit) in pointers {
@@ -2188,6 +2313,7 @@ impl FsRefStore {
             }),
             Pointer::WorkingCopy => self.working_copy().map(Some),
             Pointer::Branch(name) => self.branch(name),
+            Pointer::Tag(name) => self.tag(name),
         }
     }
 
@@ -2259,9 +2385,10 @@ impl FsRefStore {
         self.require_root()?;
         Self::require_commit(&branch.new, objects)?;
         Self::require_commit(&working_copy.new, objects)?;
-        let current = self.current(branch.name)?;
+        let current = self.current(RefKind::Branch, branch.name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
+                reference: RefKind::Branch,
                 name: branch.name.clone(),
                 with,
                 kind,
@@ -2343,7 +2470,7 @@ impl FsRefStore {
         }
         let mut currents = Vec::with_capacity(targets.branches.len());
         for (name, _) in targets.branches {
-            currents.push(self.current(name)?);
+            currents.push(self.current(RefKind::Branch, name)?);
         }
         // The branches that this restore deletes: they are no obstacle for the ones it creates
         // (`a` is deleted and `a/b` created, or the other way round), because the deletions come
@@ -2360,6 +2487,7 @@ impl FsRefStore {
                 // A branch that is to be deleted is not in the way of itself.
                 if target.is_some() && !self.cleared_by(with, *kind, &deleted)? {
                     return Err(RefError::Conflict {
+                        reference: RefKind::Branch,
                         name: name.clone(),
                         with: with.clone(),
                         kind: *kind,
@@ -2385,7 +2513,7 @@ impl FsRefStore {
         deleted: &[&BranchName],
     ) -> Result<bool, RefError> {
         Ok(match kind {
-            ConflictKind::Branch => deleted.iter().any(|name| name.as_str() == with),
+            ConflictKind::Reference => deleted.iter().any(|name| name.as_str() == with),
             ConflictKind::Directory => {
                 let prefix = format!("{with}/");
                 self.branches()?
@@ -2489,7 +2617,7 @@ impl FsRefStore {
         }
         for (name, old, new) in &planned.branches {
             Self::require_commit(new, objects)?;
-            let current = self.current(name)?.commit;
+            let current = self.current(RefKind::Branch, name)?.commit;
             if current == Some(*old) {
                 moves.branches.push((name.clone(), Some(*old), Some(*new)));
             } else if current != Some(*new) {
@@ -2529,7 +2657,7 @@ impl FsRefStore {
                     // The deletions before this step may have left a directory without any
                     // branch where the name goes (`a/` after `a/b`, with a dot file or an empty
                     // directory in it), which a plain removal of the parents does not clear.
-                    if let Some(empty) = self.current(name)?.empty_directory {
+                    if let Some(empty) = self.current(RefKind::Branch, name)?.empty_directory {
                         fs::remove_dir_all(&empty)
                             .map_err(io_error("remove the empty directory", &empty))?;
                     }
@@ -2646,6 +2774,55 @@ impl FsRefStore {
     }
 }
 
+impl FsRefStore {
+    /// The references of a namespace with their commits, sorted by name.
+    fn list_namespace(&self, namespace: RefKind) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        if !self.namespace_exists(namespace)? {
+            return Ok(Vec::new());
+        }
+        let mut found = Vec::new();
+        let mut pending = vec![(self.namespace_dir(namespace), String::new())];
+        while let Some((dir, prefix)) = pending.pop() {
+            let Some(entries) = list_directory(&dir)? else {
+                continue;
+            };
+            for entry in entries {
+                let entry = entry.map_err(io_error("list the references in", &dir))?;
+                let path = entry.path();
+                let file_name = entry.file_name().to_string_lossy().into_owned();
+                // No branch name starts with a dot, and file managers and editors leave files
+                // that do, such as `.DS_Store`.
+                if file_name.starts_with('.') {
+                    continue;
+                }
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(io_error("inspect the reference", &path)(error)),
+                };
+                // A directory holds the start of branch names, so its name follows the same rule:
+                // one that does not is damage, and it is not skipped with all that is below it.
+                let name =
+                    BranchName::try_new(join_name(&prefix, &file_name)).map_err(|error| {
+                        RefError::Corrupt {
+                            path: path.clone(),
+                            source: RefParseError::InvalidBranchName(error),
+                        }
+                    })?;
+                if kind.is_dir() {
+                    pending.push((path, name.as_str().to_owned()));
+                    continue;
+                }
+                if let Some(commit) = self.listed_branch(path)? {
+                    found.push((name, commit));
+                }
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+}
+
 impl RefStore for FsRefStore {
     fn head(&self) -> Result<Head, RefError> {
         self.require_root()?;
@@ -2696,54 +2873,60 @@ impl RefStore for FsRefStore {
 
     fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
         self.require_root()?;
-        Ok(self.current(name)?.commit)
+        Ok(self.current(RefKind::Branch, name)?.commit)
     }
 
     fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
         self.require_root()?;
-        if !self.heads_exist()? {
-            return Ok(Vec::new());
+        self.list_namespace(RefKind::Branch)
+    }
+
+    fn tag(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
+        self.require_root()?;
+        Ok(self.current(RefKind::Tag, name)?.commit)
+    }
+
+    fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+        self.require_root()?;
+        self.list_namespace(RefKind::Tag)
+    }
+
+    fn create_tag(
+        &self,
+        name: &BranchName,
+        commit: CommitId,
+        objects: &dyn ObjectStore,
+        allowed: &Allowed,
+    ) -> Result<(), RefError> {
+        self.require_root()?;
+        let _lock = self.lock_writer(allowed)?;
+        // Under the lock, as in `update_branch`.
+        Self::require_commit(&commit, objects)?;
+        let current = self.current(RefKind::Tag, name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                reference: RefKind::Tag,
+                name: name.clone(),
+                with,
+                kind,
+            });
         }
-        let mut found = Vec::new();
-        let mut pending = vec![(self.heads_dir(), String::new())];
-        while let Some((dir, prefix)) = pending.pop() {
-            let Some(entries) = list_directory(&dir)? else {
-                continue;
-            };
-            for entry in entries {
-                let entry = entry.map_err(io_error("list the branches in", &dir))?;
-                let path = entry.path();
-                let file_name = entry.file_name().to_string_lossy().into_owned();
-                // No branch name starts with a dot, and file managers and editors leave files
-                // that do, such as `.DS_Store`.
-                if file_name.starts_with('.') {
-                    continue;
-                }
-                let kind = match entry.file_type() {
-                    Ok(kind) => kind,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(io_error("inspect the branch", &path)(error)),
-                };
-                // A directory holds the start of branch names, so its name follows the same rule:
-                // one that does not is damage, and it is not skipped with all that is below it.
-                let name =
-                    BranchName::try_new(join_name(&prefix, &file_name)).map_err(|error| {
-                        RefError::Corrupt {
-                            path: path.clone(),
-                            source: RefParseError::InvalidBranchName(error),
-                        }
-                    })?;
-                if kind.is_dir() {
-                    pending.push((path, name.as_str().to_owned()));
-                    continue;
-                }
-                if let Some(commit) = self.listed_branch(path)? {
-                    found.push((name, commit));
-                }
-            }
+        // A tag never moves (ADR-008): one that exists is no lost race but a taken name.
+        if let Some(found) = current.commit {
+            return Err(RefError::TagExists {
+                name: name.clone(),
+                found,
+            });
         }
-        found.sort();
-        Ok(found)
+        if let Some(empty) = current.empty_directory {
+            // Nothing is below it, and the lock is held, so no tag is lost.
+            fs::remove_dir_all(&empty).map_err(io_error("remove the empty directory", &empty))?;
+        }
+        self.write_replacing(
+            &self.reference_path(RefKind::Tag, name),
+            &encode_branch(&commit),
+            &self.namespace_dir(RefKind::Tag),
+        )
     }
 
     fn update_branch(
@@ -2759,9 +2942,10 @@ impl RefStore for FsRefStore {
         // Under the lock, as in `update_branch_after`: a purge that ran before it may have removed
         // the commit since a look without the lock.
         Self::require_commit(&new, objects)?;
-        let current = self.current(name)?;
+        let current = self.current(RefKind::Branch, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
+                reference: RefKind::Branch,
                 name: name.clone(),
                 with,
                 kind,
@@ -2793,9 +2977,10 @@ impl RefStore for FsRefStore {
     ) -> Result<(), RefError> {
         self.require_root()?;
         let _lock = self.lock_writer(allowed)?;
-        let current = self.current(name)?;
+        let current = self.current(RefKind::Branch, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
+                reference: RefKind::Branch,
                 name: name.clone(),
                 with,
                 kind,
@@ -3187,6 +3372,238 @@ mod tests {
         );
     }
 
+    // ---- tags
+
+    #[test]
+    fn a_created_tag_is_read_back_listed_and_separate_from_the_branches() {
+        let (dir, objects, refs) = setup();
+        let v1 = name("v1.0");
+        assert_eq!(refs.tag(&v1).unwrap(), None);
+        assert!(refs.tags().unwrap().is_empty());
+        let first = commit(&objects, "first");
+        refs.create_tag(&v1, first, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+        // The file is exactly the ID and a newline, and no temporary file stays behind.
+        let file = dir.path().join("refs/tags/v1.0");
+        assert_eq!(fs::read(&file).unwrap(), format!("{first}\n").into_bytes());
+        assert_eq!(files_in(&dir.path().join("tmp")), 0);
+        assert!(!dir.path().join("refs.lock").exists());
+        // A tag is no branch, and a branch of the same name is no tag.
+        assert_eq!(refs.branch(&v1).unwrap(), None);
+        assert!(refs.branches().unwrap().is_empty());
+        let second = commit(&objects, "second");
+        refs.update_branch(&v1, None, second, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+        refs.create_tag(&name("rel/a"), second, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(
+            refs.tags().unwrap(),
+            vec![(name("rel/a"), second), (v1, first)]
+        );
+    }
+
+    #[test]
+    fn a_tag_never_moves() {
+        let (_dir, objects, refs) = setup();
+        let v1 = name("v1.0");
+        let (first, second) = (commit(&objects, "1"), commit(&objects, "2"));
+        refs.create_tag(&v1, first, &objects, &Allowed::granted())
+            .unwrap();
+        for target in [first, second] {
+            match refs
+                .create_tag(&v1, target, &objects, &Allowed::granted())
+                .unwrap_err()
+            {
+                RefError::TagExists { name, found } => {
+                    assert_eq!(name, v1);
+                    assert_eq!(found, first);
+                }
+                other => panic!("{other}"),
+            }
+        }
+        assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+        let message = refs
+            .create_tag(&v1, second, &objects, &Allowed::granted())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            format!("the tag `v1.0` exists already at {first}; a tag never moves")
+        );
+    }
+
+    #[test]
+    fn a_tag_needs_a_commit_that_the_store_has_and_a_name_that_is_free() {
+        let (dir, objects, refs) = setup();
+        let missing = CommitId::new(ID_A.parse().unwrap());
+        assert!(matches!(
+            refs.create_tag(&name("v1"), missing, &objects, &Allowed::granted()),
+            Err(RefError::MissingCommit(_))
+        ));
+        assert!(!dir.path().join("refs/tags/v1").exists());
+        let first = commit(&objects, "first");
+        refs.create_tag(&name("a"), first, &objects, &Allowed::granted())
+            .unwrap();
+        for (taken, expected) in [
+            ("a/b", ConflictKind::Reference),
+            ("A", ConflictKind::CaseVariant),
+        ] {
+            match refs
+                .create_tag(&name(taken), first, &objects, &Allowed::granted())
+                .unwrap_err()
+            {
+                RefError::Conflict {
+                    reference: RefKind::Tag,
+                    kind,
+                    ..
+                } => assert_eq!(kind, expected, "{taken}"),
+                other => panic!("{taken}: {other}"),
+            }
+        }
+        // The message says tag, and not branch.
+        let message = refs
+            .create_tag(&name("a/b"), first, &objects, &Allowed::granted())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(message, "tag `a/b` conflicts with `a`, which is a tag");
+        refs.create_tag(&name("x/y"), first, &objects, &Allowed::granted())
+            .unwrap();
+        let message = refs
+            .create_tag(&name("x"), first, &objects, &Allowed::granted())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            "tag `x` conflicts with `x`, which is a directory of tags"
+        );
+        assert_eq!(
+            refs.tags().unwrap(),
+            vec![(name("a"), first), (name("x/y"), first)]
+        );
+    }
+
+    #[test]
+    fn a_branch_and_a_tag_do_not_stand_in_each_others_way() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "first");
+        refs.update_branch(&name("a/b"), None, first, &objects, &Allowed::granted())
+            .unwrap();
+        refs.update_branch(&name("Main"), None, first, &objects, &Allowed::granted())
+            .unwrap();
+        refs.create_tag(&name("a"), first, &objects, &Allowed::granted())
+            .unwrap();
+        refs.create_tag(&name("main"), first, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&name("a")).unwrap(), Some(first));
+        assert_eq!(refs.tags().unwrap().len(), 2);
+        assert_eq!(refs.branches().unwrap().len(), 2);
+        assert!(dir.path().join("refs/tags/a").is_file());
+        assert!(dir.path().join("refs/heads/a/b").is_file());
+    }
+
+    #[test]
+    fn an_empty_directory_on_the_name_of_a_tag_is_cleared() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "first");
+        let leftover = dir.path().join("refs/tags/feat/deeper");
+        fs::create_dir_all(&leftover).unwrap();
+        fs::write(leftover.join(".DS_Store"), [0u8]).unwrap();
+        assert_eq!(refs.tag(&name("feat")).unwrap(), None);
+        assert!(refs.tags().unwrap().is_empty());
+        refs.create_tag(&name("feat"), first, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&name("feat")).unwrap(), Some(first));
+        assert!(dir.path().join("refs/tags/feat").is_file());
+    }
+
+    #[test]
+    fn a_tag_waits_for_the_lock_and_for_a_pending_purge() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let writer = refs.lock_writer(&Allowed::granted()).unwrap();
+        let other = FsRefStore::new(dir.path());
+        let error = other
+            .create_tag(&name("v1"), id, &objects, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Locked { .. }), "{error}");
+        drop(writer);
+        fs::write(dir.path().join(PURGE_JOURNAL), b"journal").unwrap();
+        let stale = dir.path().join("tmp").join("1-0-stale");
+        fs::write(&stale, b"secret").unwrap();
+        let error = refs
+            .create_tag(&name("v1"), id, &objects, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::PurgePending { .. }), "{error}");
+        assert!(stale.exists());
+        assert_eq!(refs.tag(&name("v1")).unwrap(), None);
+    }
+
+    #[test]
+    fn without_a_directory_of_tags_there_are_no_tags_and_a_file_in_its_place_is_damage() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        // A repository from before the tags has no such directory.
+        assert!(!dir.path().join("refs/tags").exists());
+        assert_eq!(refs.tag(&name("v1")).unwrap(), None);
+        assert!(refs.tags().unwrap().is_empty());
+        refs.create_tag(&name("v1"), id, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&name("v1")).unwrap(), Some(id));
+        fs::remove_dir_all(dir.path().join("refs/tags")).unwrap();
+        fs::write(dir.path().join("refs/tags"), b"x").unwrap();
+        assert!(matches!(refs.tags(), Err(RefError::Io { .. })));
+        assert!(matches!(refs.tag(&name("v1")), Err(RefError::Io { .. })));
+    }
+
+    #[test]
+    fn the_listing_of_tags_is_as_strict_as_the_one_of_branches() {
+        let (dir, objects, refs) = setup();
+        let id = commit(&objects, "c");
+        let tags = dir.path().join("refs/tags");
+        fs::create_dir_all(&tags).unwrap();
+        fs::write(tags.join(".DS_Store"), [0u8, 1]).unwrap();
+        fs::create_dir(tags.join(".hidden")).unwrap();
+        refs.create_tag(&name("v1"), id, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tags().unwrap(), vec![(name("v1"), id)]);
+        fs::write(tags.join("v2~"), format!("{id}\n")).unwrap();
+        assert!(matches!(refs.tags(), Err(RefError::Corrupt { .. })));
+        fs::remove_file(tags.join("v2~")).unwrap();
+        fs::create_dir(tags.join("bad~")).unwrap();
+        fs::write(tags.join("bad~/x"), format!("{id}\n")).unwrap();
+        assert!(matches!(refs.tags(), Err(RefError::Corrupt { .. })));
+        fs::remove_dir_all(tags.join("bad~")).unwrap();
+        fs::write(tags.join("v3"), b"not an id\n").unwrap();
+        assert!(matches!(refs.tags(), Err(RefError::Corrupt { .. })));
+        assert!(matches!(
+            refs.tag(&name("v3")),
+            Err(RefError::Corrupt { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tags_are_checked_by_verify_after_the_branches() {
+        let (dir, objects, refs) = setup();
+        let kept = commit(&objects, "kept");
+        let removed = commit(&objects, "removed");
+        fs::remove_file(objects.object_path(&removed.object_id())).unwrap();
+        write_reference(&dir, "HEAD", "branch main\n");
+        write_reference(&dir, "working-copy", &format!("{kept}\n"));
+        write_reference(&dir, "refs/heads/b", &format!("{removed}\n"));
+        write_reference(&dir, "refs/tags/v1", &format!("{kept}\n"));
+        write_reference(&dir, "refs/tags/v2", &format!("{removed}\n"));
+        let errors = refs.verify(&objects).unwrap();
+        let places: Vec<&Pointer> = errors.iter().map(VerifyError::at).collect();
+        assert_eq!(
+            places,
+            [&Pointer::Branch(name("b")), &Pointer::Tag(name("v2"))]
+        );
+        assert!(errors[1].to_string().contains("the tag `v2`"));
+    }
+
     // ---- branches
 
     #[test]
@@ -3495,7 +3912,7 @@ mod tests {
             .update_branch(&name("x/y/z"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
-            matches!(&error, RefError::Conflict { with, kind: ConflictKind::Branch, .. } if with == "x/y"),
+            matches!(&error, RefError::Conflict { with, kind: ConflictKind::Reference, .. } if with == "x/y"),
             "{error}"
         );
         // Nothing was written for the refused names, and the lock is gone.
@@ -4009,9 +4426,9 @@ mod tests {
                 .unwrap();
         }
         for (new, with, kind) in [
-            ("a/b", "a", ConflictKind::Branch),
+            ("a/b", "a", ConflictKind::Reference),
             ("x", "x", ConflictKind::Directory),
-            ("x/y/z", "x/y", ConflictKind::Branch),
+            ("x/y/z", "x/y", ConflictKind::Reference),
             ("main", "Main", ConflictKind::CaseVariant),
             ("X/y", "x", ConflictKind::CaseVariant),
         ] {
@@ -4031,7 +4448,7 @@ mod tests {
         }
         assert_eq!(
             ConflictKind::Directory.to_string(),
-            "is a directory of branches"
+            "is a directory of references"
         );
         assert_eq!(
             ConflictKind::CaseVariant.to_string(),

@@ -13,7 +13,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::journal::{self, Journal, JournalError};
-use super::{refuse_agent, Planner, PurgeError, PurgePlan};
+use super::{check_tags, refuse_agent, Planner, PurgeError, PurgePlan};
 use crate::object::{BlobId, CommitId, ObjectId};
 use crate::oplog::{Entry, EntryError, OpLogError, Purge, Record};
 use crate::refs::{Logged, PurgeLock, RefError};
@@ -715,6 +715,10 @@ impl Repository {
             &[],
             PurgeFailure::Log,
         ))?;
+        // A tag that was written since the plan, by hand or by a program that does not know the
+        // lock, must not point to a commit that the purge deletes (ADR-014). This is checked
+        // again on a resume, and before anything is written or deleted.
+        self.check_tags_against(plan, &written)?;
         // The numbers of the `purge` entries that are written, for an error: once there is one,
         // only `--resume` can finish the purge.
         let numbers = |written: &[Entry]| written.iter().map(Entry::number).collect::<Vec<_>>();
@@ -884,6 +888,28 @@ impl Repository {
         self.remove_journal(&entries)?;
         drop(lock);
         Ok(Some(written))
+    }
+
+    /// Refuses the delete set of `plan` if a tag points to a commit that it rewrites. Tags are
+    /// read again under the lock, because the plan may be older than a tag (a resume, or a tag
+    /// that was written by hand).
+    fn check_tags_against(
+        &self,
+        plan: &PurgePlan,
+        written: &[Entry],
+    ) -> Result<(), ApplyPurgeError> {
+        let entries: Vec<u64> = written.iter().map(Entry::number).collect();
+        let tags = self.refs().tags().map_err(stopped(
+            PurgeStep::Objects,
+            &entries,
+            PurgeFailure::Refs,
+        ))?;
+        let rewritten = plan.rewrites.iter().map(|(old, _)| *old).collect();
+        check_tags(&tags, &rewritten).map_err(|error| ApplyPurgeError::Stopped {
+            step: PurgeStep::Objects,
+            entries,
+            source: Box::new(PurgeFailure::Plan(Box::new(error))),
+        })
     }
 
     /// Removes the journal: the last step of a purge (`entries` are its `purge` entries) and of
@@ -1218,6 +1244,94 @@ mod tests {
             before
         );
         assert_eq!(format(&dir), "stemma-repository 2\n");
+    }
+
+    /// Creates a tag, which the repository has no command for yet.
+    fn tag(dir: &TempDir, repository: &Repository, name: &str, commit: CommitId) {
+        use crate::refs::{FsRefStore, RefStore};
+        FsRefStore::new(dir.path().join(".stemma"))
+            .create_tag(
+                &crate::refs::BranchName::try_new(name).unwrap(),
+                commit,
+                repository.objects(),
+                &Allowed::granted(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_tag_on_a_rewritten_commit_refuses_the_purge_and_changes_nothing() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        let error = repository
+            .apply_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        let refused = match &error {
+            ApplyPurgeError::Plan(PurgeError::TaggedCommit { .. }) => true,
+            ApplyPurgeError::AfterSnapshot { source, .. } => matches!(
+                **source,
+                ApplyPurgeError::Plan(PurgeError::TaggedCommit { .. })
+            ),
+            _ => false,
+        };
+        assert!(refused, "{error:?}");
+        assert!(!error.pending());
+        assert!(!journal_exists(&dir), "no journal was written");
+        assert!(!lock_exists(&dir), "the lock is released");
+        assert!(repository.objects().contains(&secret()).unwrap());
+        let name = crate::refs::BranchName::try_new("v1").unwrap();
+        assert_eq!(repository.refs().tag(&name).unwrap(), Some(second));
+    }
+
+    #[test]
+    fn a_tag_on_a_commit_before_the_secret_lets_the_purge_through() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        tag(&dir, &repository, "v0", first);
+        let purged = apply(&repository);
+        assert_purged(&dir, &repository, &purged);
+        let name = crate::refs::BranchName::try_new("v0").unwrap();
+        assert_eq!(repository.refs().tag(&name).unwrap(), Some(first));
+        assert!(
+            repository.verify_refs().unwrap().is_empty(),
+            "verify is clean"
+        );
+    }
+
+    #[test]
+    fn a_tag_written_by_hand_after_the_journal_stops_the_resume_before_any_delete() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        // A program that does not know the lock writes the tag.
+        fs::create_dir_all(dir.path().join(".stemma/refs/tags")).unwrap();
+        fs::write(
+            dir.path().join(".stemma/refs/tags/v1"),
+            format!("{second}\n"),
+        )
+        .unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        match &error {
+            ApplyPurgeError::Stopped { source, .. } => assert!(
+                matches!(&**source, PurgeFailure::Plan(plan)
+                    if matches!(**plan, PurgeError::TaggedCommit { .. })),
+                "{error:?}"
+            ),
+            other => panic!("expected a stopped purge, got {other:?}"),
+        }
+        assert!(repository.objects().contains(&secret()).unwrap());
+        assert!(
+            journal_exists(&dir),
+            "the journal stays, so the purge can be aborted"
+        );
+        // With the tag gone, the resume finishes the purge.
+        fs::remove_file(dir.path().join(".stemma/refs/tags/v1")).unwrap();
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_purged(&dir, &repository, &purged);
     }
 
     #[test]

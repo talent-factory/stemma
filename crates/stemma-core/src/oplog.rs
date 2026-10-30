@@ -329,7 +329,8 @@ impl<T> Moved<T> {
     }
 }
 
-/// The pointer of a change, for a message.
+/// The pointer of a change, for a message: HEAD, the working-copy commit, a branch, or a tag.
+/// A tag never moves, so no entry of the log changes one yet; `verify` names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pointer {
@@ -339,6 +340,8 @@ pub enum Pointer {
     WorkingCopy,
     /// A branch.
     Branch(BranchName),
+    /// A tag (ADR-008).
+    Tag(BranchName),
 }
 
 impl fmt::Display for Pointer {
@@ -347,6 +350,7 @@ impl fmt::Display for Pointer {
             Self::Head => f.write_str("HEAD"),
             Self::WorkingCopy => f.write_str("the working-copy commit"),
             Self::Branch(name) => write!(f, "the branch `{name}`"),
+            Self::Tag(name) => write!(f, "the tag `{name}`"),
         }
     }
 }

@@ -112,6 +112,9 @@ impl Classify for RefError {
             Self::Stale { .. } | Self::StaleHead { .. } | Self::StaleWorkingCopy { .. } => {
                 FailureKind::Other
             }
+            // A tag that exists is a name that is taken; it never moves, so there is nothing to
+            // read again and retry.
+            Self::TagExists { .. } => FailureKind::Other,
             // A pointer that a purge moves is at neither of its journal values. A person has to
             // look at it, but the variant also stands for a plain race after a lock removed by
             // hand, so it is not called damage here; `purge --resume` says what to do.
@@ -352,6 +355,7 @@ impl Classify for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
+            | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }
     }

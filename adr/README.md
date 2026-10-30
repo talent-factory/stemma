@@ -9,7 +9,7 @@
 | [ADR-005](ADR-005-object-encoding-names.md) | Object encoding, names, and identity characters | Accepted, implemented |
 | [ADR-006](ADR-006-trunk-based-development.md) | Trunk-based development | Accepted |
 | [ADR-007](ADR-007-object-storage.md) | Object storage | Accepted, implemented |
-| [ADR-008](ADR-008-references.md) | References: branches and HEAD | Accepted, implemented |
+| [ADR-008](ADR-008-references.md) | References: branches, tags, and HEAD | Accepted, implemented |
 | [ADR-009](ADR-009-repository-layout.md) | Repository layout and `init` | Accepted, implemented |
 | [ADR-010](ADR-010-working-copy.md) | The working copy is a commit | Accepted, implemented |
 | [ADR-011](ADR-011-operation-log.md) | The operation log | Accepted, implemented |
