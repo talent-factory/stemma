@@ -1129,8 +1129,9 @@ nicht zum Zustand, den \type{op restore} zurückbringt, und der Eintrag eines Ta
 gibt keinen Zustand her, den es wiederherzustellen gäbe. Ein Purge lehnt einen Commit ab, auf den
 ein Tag zeigt (ADR-014); die Meldung nennt den Befehl, der den Tag löscht.
 
-Ein Tag, der falsch gesetzt wurde, behält seinen Commit nicht, denn er bewegt sich nie. Man
-löscht ihn und setzt ihn neu. Die Operation \type{untag} folgt derselben Regel wie \type{tag}:
+Ein Tag, der falsch gesetzt wurde, lässt sich nicht auf einen anderen Commit verschieben, denn
+er bewegt sich nie. Man löscht ihn und setzt ihn neu.
+Die Operation \type{untag} folgt derselben Regel wie \type{tag}:
 Unter der Sperre prüft sie, ob der Tag noch auf dem Commit steht, den der Aufrufer gesehen hat,
 schreibt und flusht den Eintrag, und erst dann löscht sie die Datei. Der Aufrufer übergibt den
 Commit mit, weil er sonst einen Tag löschen könnte, den jemand inzwischen gelöscht und auf einen
@@ -1145,7 +1146,7 @@ tag v1 b3:4feb…b32c -
 Das Format bekommt auch dafür keine neue Version, denn die Zeile erlaubt für beide Werte einen
 Commit oder \type{-}. Den Ausgang liest \type{op log} wieder am Tag, wie er jetzt ist: Ein Eintrag
 von \type{untag} hat gewirkt, wenn es den Tag nicht mehr gibt. Der Eintrag des Setzens bleibt
-im Log; wer einen Tag gesetzt und wieder gelöscht hat, ist also beides nachzulesen.
+im Log. Wer einen Tag gesetzt hat und wer ihn gelöscht hat, ist also beides nachzulesen.
 
 \subsection[sec:oplog-tip]{Nummern und die Datei \type{oplog-tip}}
 

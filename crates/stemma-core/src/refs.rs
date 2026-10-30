@@ -395,7 +395,9 @@ pub enum RefError {
     },
     /// The branch is not where the caller saw it: another change came first.
     ///
-    /// Only a branch is stale. A tag never moves, so a tag that exists is [`RefError::TagExists`].
+    /// Only a branch is stale when it is moved or created. A tag never moves, so a tag that exists
+    /// is [`RefError::TagExists`] when it is created, and a tag that is not where the caller saw
+    /// it is [`RefError::StaleTag`] when it is deleted.
     Stale {
         /// The branch.
         name: BranchName,
@@ -1971,8 +1973,8 @@ fn remove_empty_directories(dir: &Path, top: &Path) {
 
 /// The entries of a directory of branches, or `None` if the directory is gone: a listing runs
 /// without the lock, and a change that deletes the last branch below a directory removes the
-/// directory (see [`FsRefStore::delete_reference_file`]), so a directory that was listed a moment ago
-/// may be gone.
+/// directory (see [`FsRefStore::delete_reference_file`]), so a directory that was listed a moment
+/// ago may be gone.
 fn list_directory(dir: &Path) -> Result<Option<fs::ReadDir>, RefError> {
     match settled(|| fs::read_dir(dir)) {
         Ok(entries) => Ok(Some(entries)),
@@ -2050,6 +2052,9 @@ pub(crate) enum Logged<T, E> {
     /// which `E` says (a log entry that was written and is not known to be safe).
     StepFailed(E),
     /// The step ran, but the pointer did not move: the file system failed. The step stays done.
+    /// The deletion of a tag has one more case: the file was removed after the checks by a
+    /// process that ignores the lock ([`RefError::StaleTag`] with `found` `None`). The pointer is
+    /// gone then, so it has the new value of the entry, although this call did not move it.
     MoveFailed(T, RefError),
     /// The step ran and the pointer moved, but the directory could not be flushed to disk
     /// ([`RefError::NotFlushed`]).
@@ -4079,11 +4084,13 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(
-                error,
+                &error,
                 RefError::Conflict {
                     reference: RefKind::Tag,
+                    kind: ConflictKind::Directory,
+                    with,
                     ..
-                }
+                } if with == "rel"
             ),
             "{error}"
         );
@@ -4104,6 +4111,10 @@ mod tests {
             .delete_tag(&v1, commit(&objects, "2"), &Allowed::granted())
             .unwrap_err();
         assert!(matches!(error, RefError::Locked { .. }), "{error}");
+        assert!(
+            lock.exists(),
+            "a lock of another process is not ours to remove"
+        );
         fs::remove_file(&lock).unwrap();
         fs::write(dir.path().join(PURGE_JOURNAL), b"journal").unwrap();
         let error = refs
@@ -5760,6 +5771,72 @@ mod tests {
             ran.set(ran.get() + 1);
             Ok(ran.get())
         }
+    }
+
+    #[test]
+    fn a_tag_deletion_runs_its_step_first_and_only_for_a_deletion_that_is_made() {
+        let (dir, objects, refs) = setup();
+        let (a, b) = (commit(&objects, "a"), commit(&objects, "b"));
+        let v1 = name("v1");
+        refs.create_tag(&v1, a, &objects, &Allowed::granted())
+            .unwrap();
+        let ran = std::cell::Cell::new(0);
+        // A check that fails comes before the step.
+        let error = refs
+            .delete_tag_after(&writer(&refs), &v1, b, counted(&ran))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(error, RefError::StaleTag { .. }), "{error}");
+        assert_eq!(ran.get(), 0);
+        assert_eq!(refs.tag(&v1).unwrap(), Some(a));
+        // The step runs while the tag still exists, and the tag is gone after it.
+        let outcome = refs
+            .delete_tag_after(&writer(&refs), &v1, a, || {
+                assert_eq!(refs.tag(&v1).unwrap(), Some(a));
+                counted(&ran)()
+            })
+            .unwrap();
+        assert!(matches!(outcome, Logged::Moved(1)));
+        assert_eq!(refs.tag(&v1).unwrap(), None);
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn a_tag_stays_when_the_step_of_its_deletion_fails() {
+        let (dir, objects, refs) = setup();
+        let a = commit(&objects, "a");
+        let v1 = name("v1");
+        refs.create_tag(&v1, a, &objects, &Allowed::granted())
+            .unwrap();
+        let outcome = refs
+            .delete_tag_after(&writer(&refs), &v1, a, || Err::<u32, _>("the log is full"))
+            .unwrap();
+        assert!(matches!(outcome, Logged::StepFailed("the log is full")));
+        assert_eq!(refs.tag(&v1).unwrap(), Some(a));
+        assert!(!dir.path().join("refs.lock").exists());
+    }
+
+    #[test]
+    fn a_tag_that_is_gone_after_the_checks_is_a_failed_move_and_the_step_stays_done() {
+        let (_dir, objects, refs) = setup();
+        let a = commit(&objects, "a");
+        let v1 = name("v1");
+        refs.create_tag(&v1, a, &objects, &Allowed::granted())
+            .unwrap();
+        let ran = std::cell::Cell::new(0);
+        // A process that ignores the lock removes the file between the checks and the deletion.
+        let outcome = refs
+            .delete_tag_after(&writer(&refs), &v1, a, || {
+                fs::remove_file(refs.reference_path(RefKind::Tag, &v1)).unwrap();
+                counted(&ran)()
+            })
+            .unwrap();
+        match outcome {
+            Logged::MoveFailed(1, RefError::StaleTag { found: None, .. }) => {}
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+        assert_eq!(ran.get(), 1);
+        assert_eq!(refs.tag(&v1).unwrap(), None);
     }
 
     #[test]

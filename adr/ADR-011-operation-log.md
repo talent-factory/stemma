@@ -381,8 +381,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   the actor and the time of its entry. The outcome of a `tag` entry is read from the tag as it
   is now: the tag exists with the commit of the entry (took effect), or it does not exist and no
   writer is at work (did not). The outcome of an `untag` entry is read the same way: the tag does
-  not exist (took effect), or it exists at the commit of the entry (did not). A tag that was
-  deleted and set again is judged by the entries that follow, as for a branch. A restore does not
+  not exist (took effect), or it exists at the commit of the entry (did not); at any other commit
+  the outcome is not known, and the entries that follow decide. A tag that was deleted and set
+  again is judged by the entries that follow, as for a branch. A restore does not
   touch tags (ADR-013), so the entry of a tag is no state to restore.
 - The file ends with a newline and has no message and no further lines.
 - Version 2 of the encoding is written only for a stub and for the entry of a purge (ADR-014,

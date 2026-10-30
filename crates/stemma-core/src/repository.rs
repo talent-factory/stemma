@@ -702,7 +702,9 @@ impl Repository {
     ///
     /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
     /// the checks find ([`RefError::StaleTag`] for a tag that is not at `expected` or does not
-    /// exist; [`RefError::Locked`]), and [`UpdateError::Log`], [`UpdateError::MoveFailed`], and
+    /// exist, [`RefError::Conflict`] for a name that another entry holds, [`RefError::Locked`],
+    /// [`RefError::PurgePending`], and [`RefError::Corrupt`]), and [`UpdateError::Log`],
+    /// [`UpdateError::MoveFailed`], and
     /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
     /// writes no entry.
     pub fn delete_tag(
@@ -735,11 +737,14 @@ impl Repository {
             Some(entry) => Ok(entry),
             // `delete_tag_after` refuses a tag that is not at `expected` and never reports
             // "unchanged"; if it did, the tag would be gone already.
-            None => Err(UpdateError::Refs(RefError::StaleTag {
-                name: name.clone(),
-                expected,
-                found: None,
-            })),
+            None => {
+                debug_assert!(false, "delete_tag_after reported an unchanged tag");
+                Err(UpdateError::Refs(RefError::StaleTag {
+                    name: name.clone(),
+                    expected,
+                    found: None,
+                }))
+            }
         }
     }
 
@@ -1103,6 +1108,9 @@ pub enum UpdateError {
     Log(OpLogError),
     /// The entry was written, but the move failed. The file system failed after the checks, so the
     /// entry names a move that did not happen; the old value in it was true when it was written.
+    /// The exception is the deletion of a tag that a process without the lock removed after the
+    /// checks ([`RefError::StaleTag`] with `found` `None`): the tag is gone, as the entry says.
+    /// Read the pointer before a retry in any case.
     MoveFailed {
         /// The entry that is in the log.
         entry: Box<Entry>,

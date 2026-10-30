@@ -1253,14 +1253,20 @@ Beschädigte Referenzen enden mit Exit-Code 5.
 
 {\bf Fehler beim Löschen.} Einen Tag, den es nicht gibt, löscht der Befehl nicht: Exit-Code 1 und
 die Meldung \type{there is no tag `NAME` to delete}, ohne Eintrag. Dasselbe gilt für einen
-Namen, der im Weg steht, und für einen Akteur, den der Autorisierer ablehnt. Hat jemand den Tag
-zwischen dem Lesen und der Sperre gelöscht oder auf einen anderen Commit neu gesetzt, endet der
-Befehl mit Exit-Code 1 und der Meldung, dass sich der Tag geändert hat; er schreibt keinen
-Eintrag. Der Befehl lässt sich nach einer Meldung sicher wiederholen, denn ein Löschen, das nicht
-stattfand, hat nichts geändert. Das gilt nicht nach Exit-Code 3: Dort ist der Tag gelöscht, nur
-das Verzeichnis kam nicht auf den Datenträger, und ein Wiederholen meldete einen Tag, den es nicht
-gibt. Ein Fehler des Dateisystems nach dem Eintrag lässt im Log einen Eintrag für ein Löschen
-zurück, das nicht stattfand; \type{op log} markiert ihn mit \type{!}.
+Namen, der nur ein Verzeichnis von Tags ist (etwa \type{a} neben dem Tag \type{a/b}). Hat jemand
+den Tag zwischen dem Lesen und der Sperre gelöscht oder auf einen anderen Commit neu gesetzt,
+endet der Befehl mit Exit-Code 1 und der Meldung, dass sich der Tag geändert hat; er schreibt
+keinen Eintrag. Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6, beschädigte
+Referenzen enden mit Exit-Code 5.
+
+{\bf Wiederholen.} Nach einer Meldung, die vor dem Eintrag kommt (kein solcher Tag, Sperre),
+hat der Befehl nichts geändert, und man kann ihn wiederholen. Nach der Meldung, dass sich der
+Tag geändert hat, liest man den Tag zuerst mit \type{stemma tag}: Ein Wiederholen löscht den Tag,
+der jetzt dort steht. Ein Fehler des Dateisystems nach dem Eintrag lässt im Log einen Eintrag für
+ein Löschen zurück, das nicht stattfand; \type{op log} markiert ihn mit \type{!}, und man liest
+den Tag, bevor man wiederholt. Nach Exit-Code 3 ist der Tag gelöscht, nur das Verzeichnis kam
+nicht auf den Datenträger; ein Wiederholen meldete einen Tag, den es nicht gibt. Den Akteur
+prüft heute kein Autorisierer; eine Policy, die ihn ablehnen kann, kommt mit Phase 4.
 
 {\bf Beispiele.}
 
@@ -1826,7 +1832,8 @@ mit \type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn ein Tag auf einen Commit zeigt, den der Purge umschreiben würde:
 Ein Tag bewegt sich nie, und er würde das Geheimnis erreichbar halten.
 Die Meldung nennt jeden solchen Tag und den Befehl \type{stemma tag --delete <name>}, der ihn
-löscht; wer den Tag danach noch braucht, setzt ihn auf den Commit, den der Purge übrig lässt.
+löscht. Wer den Tag noch braucht, setzt ihn nach dem Purge auf den Commit, den der Purge übrig
+lässt.
 Dieselbe Prüfung läuft unter der Sperre vor dem ersten Schreiben noch einmal,
 auch bei \type{--resume}; ein Tag, der seit dem Plan entstand, hält den Purge dann an,
 und das Journal bleibt für \type{--abort} oder ein erneutes \type{--resume}.

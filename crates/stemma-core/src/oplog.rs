@@ -4005,6 +4005,49 @@ mod tests {
             with(vec![(branch("v1"), commit(A))], true),
             [Outcome::Took, Outcome::NotTaken]
         );
+        // A writer may be between its entry and its deletion.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(A))], false),
+            [Outcome::Took, Outcome::Unknown]
+        );
+        // A tag at a commit that neither entry names was changed outside the log.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(B))], true),
+            [Outcome::Took, Outcome::Unknown]
+        );
+        // Without the tags the deletion is not known; the setting is, because the deletion that
+        // follows it starts from the commit that it set.
+        let current = Current::new(head, [], true);
+        assert_eq!(
+            outcomes(&entries, Some(&current)),
+            [Outcome::Took, Outcome::Unknown]
+        );
+    }
+
+    #[test]
+    fn a_tag_that_is_deleted_and_set_again_is_judged_by_the_entries_that_follow() {
+        let entry = |number: u64, old: Option<&str>, new: Option<&str>| {
+            let operation = if new.is_some() { "tag" } else { "untag" };
+            let change =
+                tag_change(operation, vec![], vec![(branch("v1"), moved(old, new))]).unwrap();
+            Entry::try_new(number, change).unwrap()
+        };
+        let head = Head::Branch(branch("main"));
+        for again in [A, B] {
+            // set at A, deleted, set again (at the same commit or at another)
+            let entries = [
+                entry(1, None, Some(A)),
+                entry(2, Some(A), None),
+                entry(3, None, Some(again)),
+            ];
+            let current =
+                Current::new(head.clone(), [], true).with_tags([(branch("v1"), commit(again))]);
+            assert_eq!(
+                outcomes(&entries, Some(&current)),
+                [Outcome::Took, Outcome::Took, Outcome::Took],
+                "set again at {again}"
+            );
+        }
     }
 
     #[test]

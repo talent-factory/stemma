@@ -791,8 +791,8 @@ impl PurgeError {
                 write!(
                     f,
                     ", which the purge would rewrite; delete each tag with `stemma tag --delete \
-                     <name>`, set it again at the commit that the purge leaves if it is still \
-                     needed, and run the purge again"
+                     <name>`, run the purge again, and then set the tag again at the commit \
+                     that the purge leaves if it is still needed"
                 )
             }
             Self::Unsound { id } => write!(
@@ -1099,7 +1099,7 @@ mod tests {
         assert_eq!(plan.head(), None, "HEAD names the branch");
     }
 
-    /// Creates a tag, which the repository has no command for yet.
+    /// Creates a tag directly in the store, without an entry in the operation log.
     fn tag(dir: &TempDir, repository: &Repository, name: &str, commit: CommitId) {
         use crate::allowed::Allowed;
         use crate::refs::{FsRefStore, RefStore};

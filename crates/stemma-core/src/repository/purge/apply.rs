@@ -1246,7 +1246,7 @@ mod tests {
         assert_eq!(format(&dir), "stemma-repository 2\n");
     }
 
-    /// Creates a tag, which the repository has no command for yet.
+    /// Creates a tag directly in the store, without an entry in the operation log.
     fn tag(dir: &TempDir, repository: &Repository, name: &str, commit: CommitId) {
         use crate::refs::{FsRefStore, RefStore};
         FsRefStore::new(dir.path().join(".stemma"))
