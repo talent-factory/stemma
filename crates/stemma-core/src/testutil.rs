@@ -44,6 +44,16 @@ impl Drop for TempDir {
 
 /// Replaces a read-only object file with other content.
 pub(crate) fn overwrite(path: &Path, bytes: &[u8]) {
+    if cfg!(windows) {
+        // Windows refuses to remove a read-only file.
+        let mut permissions = fs::metadata(path).expect("inspect object").permissions();
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows has no other bits, and the file is removed next"
+        )]
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions).expect("make object writable");
+    }
     fs::remove_file(path).expect("remove object");
     fs::write(path, bytes).expect("write object");
 }

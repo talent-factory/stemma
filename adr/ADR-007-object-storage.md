@@ -161,10 +161,12 @@ server will later keep objects elsewhere (API-first). The implementation is
 - [ ] Windows and other platforms: the code builds and its tests pass on Windows (a CI run,
       ADR-006),
       but several tests run on Unix only, and the behavior there is not known: a rename over an
-      existing or read-only file, and replacing a damaged object (it is reported as an error for
-      now). Decide what the store promises on each platform and test it. Flushing directory
-      entries is decided (STEMMA-84): Windows flushes them as Unix does, and a test that runs on
-      every platform flushes a directory and fails on one that cannot be opened.
+      existing or read-only file. Decide what the store promises on each platform and test it.
+      Flushing directory entries is decided (STEMMA-84): Windows flushes them as Unix does, and a
+      test that runs on every platform flushes a directory and fails on one that cannot be
+      opened. Replacing a damaged object is decided (STEMMA-85): on Windows the rename onto the
+      read-only file fails, so the store clears the flag, removes the damaged file, and renames
+      again; a test that runs on every platform covers it.
 - [x] Type object IDs per kind, so that a caller does not have to compare the kind of the result of
       `get` itself (ADR-005). Done: the typed IDs are in ADR-005, and `resolve_blob`,
       `resolve_tree`, and `resolve_commit` are the checked way from an untyped ID to a typed one.

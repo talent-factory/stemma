@@ -458,9 +458,10 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TEMP_ATTEMPTS: usize = 16;
 
 /// Whether a damaged object file is replaced when the same object is stored again. A rename
-/// replaces an existing file on Unix. Elsewhere the result is not known, so the error is
-/// reported instead (ADR-007).
-const REPLACE_DAMAGED: bool = cfg!(unix);
+/// replaces an existing file on Unix. On Windows it fails onto a read-only file, so `place`
+/// clears the flag and removes the damaged file first. Elsewhere the result is not known, so the
+/// error is reported instead (ADR-007).
+const REPLACE_DAMAGED: bool = cfg!(any(unix, windows));
 
 /// Loose objects in a directory tree (ADR-007).
 ///
@@ -825,7 +826,11 @@ impl FsObjectStore {
             .map_err(io_error("flush the temporary file", &temp.path))?;
         drop(file);
 
-        match fs::rename(&temp.path, &path) {
+        let mut renamed = fs::rename(&temp.path, &path);
+        if renamed.is_err() && cfg!(windows) && self.remove_damaged(id, &path) {
+            renamed = fs::rename(&temp.path, &path);
+        }
+        match renamed {
             Ok(()) => temp.disarm(),
             Err(error) => {
                 // Another writer may have stored the object in the meantime. Only an object that
@@ -843,6 +848,23 @@ impl FsObjectStore {
             }
         }
         Ok(fan_out)
+    }
+
+    /// Removes the file of an object that does not read back correctly, so that a rename can
+    /// take its place. Windows refuses to rename onto a read-only file, and every object file is
+    /// read-only, so the flag is cleared first. Returns whether a file was removed. A file that
+    /// reads back correctly, a missing file, and an entry that is not a regular file stay as they
+    /// are. The caller holds the lock of the references (ADR-011), so no remover or reader of
+    /// the same object runs meanwhile.
+    fn remove_damaged(&self, id: &ObjectId, path: &Path) -> bool {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return false;
+        };
+        if !metadata.is_file() || matches!(self.read_checked(id, path), Ok(Some(_))) {
+            return false;
+        }
+        remove_scratch_file(path);
+        !path.exists()
     }
 
     /// Reads the file at `path` as the object with the ID and checks it, as [`get`] does for
@@ -2679,7 +2701,6 @@ mod tests {
         assert_eq!(before, after, "the file was replaced");
     }
 
-    #[cfg(unix)]
     #[test]
     fn storing_an_object_again_replaces_a_damaged_file() {
         for damage in [&b""[..], b"blob 5\0jello", b"blob 5\0hel", b"garbage"] {
