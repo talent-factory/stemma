@@ -1623,6 +1623,13 @@ Dann ist nicht bekannt, ob es den Blob nennt.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.
 Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung eines Agenten
 mit \type{could not plan the purge, nothing was written}.
+Ebenso endet er, wenn ein Tag auf einen Commit zeigt, den der Purge umschreiben würde:
+Ein Tag bewegt sich nie, und er würde das Geheimnis erreichbar halten.
+Die Meldung nennt jeden solchen Tag; ein Befehl, der Tags löscht, fehlt noch,
+deshalb entfernt man die Datei \type{refs/tags/<name>} im Metadatenverzeichnis von Hand.
+Dieselbe Prüfung läuft unter der Sperre vor dem ersten Schreiben noch einmal,
+auch bei \type{--resume}; ein Tag, der seit dem Plan entstand, hält den Purge dann an,
+und das Journal bleibt für \type{--abort} oder ein erneutes \type{--resume}.
 Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
 erst ein Merge (Phase 3). Er endet auch, wenn der Purge mehr als $2^{24}$ Einträge des Log
 ersetzen würde, mehr, als sein Journal aufnimmt.

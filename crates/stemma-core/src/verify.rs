@@ -102,7 +102,7 @@ pub type TreeVerifyError = VerifyError<EntryName>;
 pub type CommitVerifyError = VerifyError<CommitReference>;
 
 /// Why a reference fails [`FsRefStore::verify`](crate::refs::FsRefStore::verify). The place is
-/// the pointer: HEAD, the working-copy commit, or a branch.
+/// the pointer: HEAD, the working-copy commit, a branch, or a tag.
 pub type RefVerifyError = VerifyError<Pointer>;
 
 impl<L: fmt::Debug + fmt::Display> VerifyError<L> {

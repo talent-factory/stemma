@@ -2217,8 +2217,11 @@ Der Plan hält deshalb $f$ für jede ID, die er gesehen hat, in einer Hashtabell
 dem Memo, und einen Baum oder Commit, den mehrere Commits teilen, schreibt er einmal um.
 
 Der Durchlauf beginnt bei jeder Wurzel, das heisst
-beim Working-Copy-Commit, bei jedem Branch, bei einem abgekoppelten HEAD
+beim Working-Copy-Commit, bei jedem Branch und jedem Tag, bei einem abgekoppelten HEAD
 und bei jedem Commit, den ein Eintrag des Logs nennt.
+Ein Tag bewegt sich nie (ADR-008);
+nennt er einen Commit, den der Purge umschreiben würde,
+lehnt der Plan ihn ab (\type{TaggedCommit}).
 Ein Verlauf kann tausende Commits lang sein,
 deshalb hält der Durchlauf einen eigenen Stapel statt der Rekursion (\type{Planner::commit}):
 

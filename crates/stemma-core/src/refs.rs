@@ -538,6 +538,25 @@ pub enum RefKind {
     Tag,
 }
 
+impl RefKind {
+    /// The directory below `refs` that holds the references of this kind. Branches and tags use
+    /// the same names, the same files, and the same checks, each in its own directory.
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Branch => "heads",
+            Self::Tag => "tags",
+        }
+    }
+
+    /// The plural, for a message.
+    fn plural(self) -> &'static str {
+        match self {
+            Self::Branch => "branches",
+            Self::Tag => "tags",
+        }
+    }
+}
+
 impl fmt::Display for RefKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -551,10 +570,11 @@ impl fmt::Display for RefKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ConflictKind {
-    /// A reference with a name that is the start of the new one: `a` is a branch, so `a/b` cannot
-    /// be. The same holds for tags.
-    Branch,
-    /// A directory of other references has the name: `x/y` is a branch, so `x` cannot be.
+    /// A reference of the same kind has a name that is the start of the new one: `a` is a branch,
+    /// so the branch `a/b` cannot be. The same holds for tags.
+    Reference,
+    /// A directory of references of the same kind has the name: `x/y` is a branch, so the branch
+    /// `x` cannot be.
     Directory,
     /// A name that differs only in case, which is one file on a file system that ignores case.
     CaseVariant,
@@ -563,8 +583,8 @@ pub enum ConflictKind {
 impl fmt::Display for ConflictKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Branch => "is a branch",
-            Self::Directory => "is a directory of branches",
+            Self::Reference => "is a reference",
+            Self::Directory => "is a directory of references",
             Self::CaseVariant => "differs only in case",
         })
     }
@@ -612,10 +632,12 @@ impl fmt::Display for RefError {
                     "{reference} `{name}` conflicts with `{}`, which ",
                     with.escape_debug()
                 )?;
-                match (kind, reference) {
-                    (ConflictKind::Branch, RefKind::Tag) => f.write_str("is a tag"),
-                    (ConflictKind::Directory, RefKind::Tag) => f.write_str("is a directory of tags"),
-                    _ => write!(f, "{kind}"),
+                match kind {
+                    ConflictKind::Reference => write!(f, "is a {reference}"),
+                    ConflictKind::Directory => {
+                        write!(f, "is a directory of {}", reference.plural())
+                    }
+                    ConflictKind::CaseVariant => write!(f, "{kind}"),
                 }
             }
             Self::MissingCommit(id) => write!(f, "the store has no commit {id}"),
@@ -776,7 +798,7 @@ fn io_error<'a>(
     }
 }
 
-/// Storage for the branches and HEAD of a repository.
+/// Storage for the branches, the tags, and HEAD of a repository.
 ///
 /// The trait is sealed: only this crate implements it.
 pub trait RefStore: crate::store::sealed::Sealed {
@@ -1182,18 +1204,18 @@ impl FsRefStore {
     }
 
     fn heads_dir(&self) -> PathBuf {
-        self.namespace_dir(Namespace::Heads)
+        self.namespace_dir(RefKind::Branch)
     }
 
-    fn namespace_dir(&self, namespace: Namespace) -> PathBuf {
+    fn namespace_dir(&self, namespace: RefKind) -> PathBuf {
         self.root.join("refs").join(namespace.directory())
     }
 
     fn branch_path(&self, name: &BranchName) -> PathBuf {
-        self.reference_path(Namespace::Heads, name)
+        self.reference_path(RefKind::Branch, name)
     }
 
-    fn reference_path(&self, namespace: Namespace, name: &BranchName) -> PathBuf {
+    fn reference_path(&self, namespace: RefKind, name: &BranchName) -> PathBuf {
         name.as_str()
             .split('/')
             .fold(self.namespace_dir(namespace), |path, component| {
@@ -1619,7 +1641,7 @@ impl FsRefStore {
     /// through a file is not the same on every platform (Windows says "not found"), and a file in
     /// the place of a directory is damage and not "no references". A repository from before the
     /// tags has no `refs/tags`, which is no tags.
-    fn namespace_exists(&self, namespace: Namespace) -> Result<bool, RefError> {
+    fn namespace_exists(&self, namespace: RefKind) -> Result<bool, RefError> {
         for dir in [self.root.join("refs"), self.namespace_dir(namespace)] {
             match fs::symlink_metadata(&dir) {
                 Ok(metadata) if metadata.is_dir() => {}
@@ -1642,7 +1664,7 @@ impl FsRefStore {
     /// directory shows the case that is stored, so such a name is found to be in conflict and not
     /// to be the other branch. A variant that is a directory without any file below it is a
     /// leftover, as for an exact name, and is reported as [`Lookup::EmptyDirectory`].
-    fn lookup(&self, namespace: Namespace, name: &BranchName) -> Result<Lookup, RefError> {
+    fn lookup(&self, namespace: RefKind, name: &BranchName) -> Result<Lookup, RefError> {
         if !self.namespace_exists(namespace)? {
             return Ok(Lookup::Absent);
         }
@@ -1705,7 +1727,7 @@ impl FsRefStore {
                 }
                 Ok(_) if last => return Ok(Lookup::Branch(here)),
                 // A file holds the place of a directory in the name.
-                Ok(_) => return Ok(Lookup::Conflict(current, ConflictKind::Branch)),
+                Ok(_) => return Ok(Lookup::Conflict(current, ConflictKind::Reference)),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
                 Err(error) => return Err(io_error("inspect the reference", &here)(error)),
             }
@@ -1717,7 +1739,7 @@ impl FsRefStore {
 
     /// The commit of the branch or tag, and what stands in the way of creating it if there is
     /// none.
-    fn current(&self, namespace: Namespace, name: &BranchName) -> Result<Current, RefError> {
+    fn current(&self, namespace: RefKind, name: &BranchName) -> Result<Current, RefError> {
         match self.lookup(namespace, name)? {
             Lookup::Absent => Ok(Current::default()),
             Lookup::EmptyDirectory(path) => Ok(Current {
@@ -1749,23 +1771,6 @@ impl FsRefStore {
                 Err(RefError::NotACommit { id, found })
             }
             Err(error) => Err(from_store(error)),
-        }
-    }
-}
-
-/// A directory of references below `refs`: the branches or the tags. Both use the same names, the
-/// same files, and the same checks.
-#[derive(Clone, Copy)]
-enum Namespace {
-    Heads,
-    Tags,
-}
-
-impl Namespace {
-    fn directory(self) -> &'static str {
-        match self {
-            Self::Heads => "heads",
-            Self::Tags => "tags",
         }
     }
 }
@@ -1969,7 +1974,7 @@ impl FsRefStore {
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
         Self::require_commit(&new, objects)?;
-        let current = self.current(Namespace::Heads, name)?;
+        let current = self.current(RefKind::Branch, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 reference: RefKind::Branch,
@@ -2150,15 +2155,16 @@ impl FsRefStore {
     }
 
     /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
-    /// working-copy commit, and every branch. A write checks the commit already (ADR-008), so a
+    /// working-copy commit, every branch, and every tag. A write checks the commit already
+    /// (ADR-008), so a
     /// problem here comes from outside the module: an object that was removed or damaged, or a
     /// reference file that was edited by hand. HEAD that names a branch is not checked itself; the
     /// branch is, if it exists, and a branch that does not exist yet is no problem, as in a new
     /// repository.
     ///
     /// The result has one error for each reference that fails, in the order HEAD, the
-    /// working-copy commit, and the branches in the byte order of their names; it is empty if all
-    /// hold. A commit that is missing is [`VerifyError::Missing`]; one that is another kind of
+    /// working-copy commit, the branches, and then the tags, each in the byte order of their
+    /// names; it is empty if all hold. A commit that is missing is [`VerifyError::Missing`]; one that is another kind of
     /// object ([`StoreError::KindMismatch`]), is damaged ([`StoreError::Corrupt`]), or cannot be
     /// read ([`StoreError::Io`]) is [`VerifyError::Store`]. Each commit is read and hashed
     /// completely, but it is not parsed, and its tree and parents are not followed.
@@ -2305,7 +2311,7 @@ impl FsRefStore {
         self.require_root()?;
         Self::require_commit(&branch.new, objects)?;
         Self::require_commit(&working_copy.new, objects)?;
-        let current = self.current(Namespace::Heads, branch.name)?;
+        let current = self.current(RefKind::Branch, branch.name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 reference: RefKind::Branch,
@@ -2390,7 +2396,7 @@ impl FsRefStore {
         }
         let mut currents = Vec::with_capacity(targets.branches.len());
         for (name, _) in targets.branches {
-            currents.push(self.current(Namespace::Heads, name)?);
+            currents.push(self.current(RefKind::Branch, name)?);
         }
         // The branches that this restore deletes: they are no obstacle for the ones it creates
         // (`a` is deleted and `a/b` created, or the other way round), because the deletions come
@@ -2433,7 +2439,7 @@ impl FsRefStore {
         deleted: &[&BranchName],
     ) -> Result<bool, RefError> {
         Ok(match kind {
-            ConflictKind::Branch => deleted.iter().any(|name| name.as_str() == with),
+            ConflictKind::Reference => deleted.iter().any(|name| name.as_str() == with),
             ConflictKind::Directory => {
                 let prefix = format!("{with}/");
                 self.branches()?
@@ -2537,7 +2543,7 @@ impl FsRefStore {
         }
         for (name, old, new) in &planned.branches {
             Self::require_commit(new, objects)?;
-            let current = self.current(Namespace::Heads, name)?.commit;
+            let current = self.current(RefKind::Branch, name)?.commit;
             if current == Some(*old) {
                 moves.branches.push((name.clone(), Some(*old), Some(*new)));
             } else if current != Some(*new) {
@@ -2577,7 +2583,7 @@ impl FsRefStore {
                     // The deletions before this step may have left a directory without any
                     // branch where the name goes (`a/` after `a/b`, with a dot file or an empty
                     // directory in it), which a plain removal of the parents does not clear.
-                    if let Some(empty) = self.current(Namespace::Heads, name)?.empty_directory {
+                    if let Some(empty) = self.current(RefKind::Branch, name)?.empty_directory {
                         fs::remove_dir_all(&empty)
                             .map_err(io_error("remove the empty directory", &empty))?;
                     }
@@ -2696,10 +2702,7 @@ impl FsRefStore {
 
 impl FsRefStore {
     /// The references of a namespace with their commits, sorted by name.
-    fn list_namespace(
-        &self,
-        namespace: Namespace,
-    ) -> Result<Vec<(BranchName, CommitId)>, RefError> {
+    fn list_namespace(&self, namespace: RefKind) -> Result<Vec<(BranchName, CommitId)>, RefError> {
         if !self.namespace_exists(namespace)? {
             return Ok(Vec::new());
         }
@@ -2774,22 +2777,22 @@ impl RefStore for FsRefStore {
 
     fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
         self.require_root()?;
-        Ok(self.current(Namespace::Heads, name)?.commit)
+        Ok(self.current(RefKind::Branch, name)?.commit)
     }
 
     fn branches(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
         self.require_root()?;
-        self.list_namespace(Namespace::Heads)
+        self.list_namespace(RefKind::Branch)
     }
 
     fn tag(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
         self.require_root()?;
-        Ok(self.current(Namespace::Tags, name)?.commit)
+        Ok(self.current(RefKind::Tag, name)?.commit)
     }
 
     fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
         self.require_root()?;
-        self.list_namespace(Namespace::Tags)
+        self.list_namespace(RefKind::Tag)
     }
 
     fn create_tag(
@@ -2803,7 +2806,7 @@ impl RefStore for FsRefStore {
         let _lock = self.lock_writer(allowed)?;
         // Under the lock, as in `update_branch`.
         Self::require_commit(&commit, objects)?;
-        let current = self.current(Namespace::Tags, name)?;
+        let current = self.current(RefKind::Tag, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 reference: RefKind::Tag,
@@ -2824,9 +2827,9 @@ impl RefStore for FsRefStore {
             fs::remove_dir_all(&empty).map_err(io_error("remove the empty directory", &empty))?;
         }
         self.write_replacing(
-            &self.reference_path(Namespace::Tags, name),
+            &self.reference_path(RefKind::Tag, name),
             &encode_branch(&commit),
-            &self.namespace_dir(Namespace::Tags),
+            &self.namespace_dir(RefKind::Tag),
         )
     }
 
@@ -2843,7 +2846,7 @@ impl RefStore for FsRefStore {
         // Under the lock, as in `update_branch_after`: a purge that ran before it may have removed
         // the commit since a look without the lock.
         Self::require_commit(&new, objects)?;
-        let current = self.current(Namespace::Heads, name)?;
+        let current = self.current(RefKind::Branch, name)?;
         if let Some((with, kind)) = current.in_the_way {
             return Err(RefError::Conflict {
                 reference: RefKind::Branch,
@@ -3311,7 +3314,7 @@ mod tests {
         refs.create_tag(&name("a"), first, &objects, &Allowed::granted())
             .unwrap();
         for (taken, expected) in [
-            ("a/b", ConflictKind::Branch),
+            ("a/b", ConflictKind::Reference),
             ("A", ConflictKind::CaseVariant),
         ] {
             match refs
@@ -3435,6 +3438,10 @@ mod tests {
         fs::write(tags.join("v2~"), format!("{id}\n")).unwrap();
         assert!(matches!(refs.tags(), Err(RefError::Corrupt { .. })));
         fs::remove_file(tags.join("v2~")).unwrap();
+        fs::create_dir(tags.join("bad~")).unwrap();
+        fs::write(tags.join("bad~/x"), format!("{id}\n")).unwrap();
+        assert!(matches!(refs.tags(), Err(RefError::Corrupt { .. })));
+        fs::remove_dir_all(tags.join("bad~")).unwrap();
         fs::write(tags.join("v3"), b"not an id\n").unwrap();
         assert!(matches!(refs.tags(), Err(RefError::Corrupt { .. })));
         assert!(matches!(
@@ -3639,7 +3646,7 @@ mod tests {
             .update_branch(&name("x/y/z"), None, id, &objects, &Allowed::granted())
             .unwrap_err();
         assert!(
-            matches!(&error, RefError::Conflict { with, kind: ConflictKind::Branch, .. } if with == "x/y"),
+            matches!(&error, RefError::Conflict { with, kind: ConflictKind::Reference, .. } if with == "x/y"),
             "{error}"
         );
         // Nothing was written for the refused names, and the lock is gone.
@@ -4106,9 +4113,9 @@ mod tests {
                 .unwrap();
         }
         for (new, with, kind) in [
-            ("a/b", "a", ConflictKind::Branch),
+            ("a/b", "a", ConflictKind::Reference),
             ("x", "x", ConflictKind::Directory),
-            ("x/y/z", "x/y", ConflictKind::Branch),
+            ("x/y/z", "x/y", ConflictKind::Reference),
             ("main", "Main", ConflictKind::CaseVariant),
             ("X/y", "x", ConflictKind::CaseVariant),
         ] {
@@ -4128,7 +4135,7 @@ mod tests {
         }
         assert_eq!(
             ConflictKind::Directory.to_string(),
-            "is a directory of branches"
+            "is a directory of references"
         );
         assert_eq!(
             ConflictKind::CaseVariant.to_string(),

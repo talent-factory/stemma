@@ -160,7 +160,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - The names of `con` and its kind are refused on every platform, also for people who never use
   Windows.
 - `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
-  HEAD, the working-copy commit, and every branch name a commit that the store has. A write
+  HEAD, the working-copy commit, every branch, and every tag name a commit that the store has.
+  The result lists the references in this order, the tags after the branches. A write
   checks this already, so a failure means that an object was removed or damaged, or that a
   reference file was edited by hand. The check is shallow: the commit is read and its hash
   checked, but it is not parsed, and its tree and parents are not followed. The result lists
@@ -185,7 +186,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       `delete_branch`) and its level in ADR-004, how a purge deals with a tag on a commit that it
       rewrites (today it refuses), and the name that is both a branch and a tag, for a command
       that resolves names.
-- [x] Checking that the branches and HEAD of a repository point to commits that the store has
+- [x] Checking that the branches, tags, and HEAD of a repository point to commits that the store
+      has
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.
 - [ ] `set_head` replaces HEAD whatever it was; a compare-and-swap for HEAD when `checkout` needs
       it. `Expected { Absent, At(commit) }` in place of `Option` for `update_branch`, if the

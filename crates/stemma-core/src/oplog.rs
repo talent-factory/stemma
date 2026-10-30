@@ -329,7 +329,8 @@ impl<T> Moved<T> {
     }
 }
 
-/// The pointer of a change, for a message.
+/// The pointer of a change, for a message: HEAD, the working-copy commit, a branch, or a tag.
+/// A tag never moves, so no entry of the log changes one yet; `verify` names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pointer {
