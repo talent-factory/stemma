@@ -307,11 +307,13 @@ mod tests {
 
     #[test]
     fn a_branching_history_is_walked_in_full_and_reads_each_commit_once() {
-        const DIAMONDS: i64 = 500;
+        // Small, because every commit is a durable write. The number of paths doubles with each
+        // diamond, so a walk without a set of seen commits is hopeless at this size already.
+        const DIAMONDS: i64 = 50;
         let dir = TempDir::new();
         let store = dir.store();
-        // A chain of diamonds: every step forks into two commits and merges them again, so each
-        // commit except the root is reachable over more than one path.
+        // A chain of diamonds: every step forks into two commits and merges them again, so every
+        // commit except the tip and its two parents is reachable over more than one path.
         let mut tip = commit(&store, &[], 0);
         let mut middle = tip;
         let mut n = 1;
@@ -379,7 +381,7 @@ mod tests {
         let other = TempDir::new();
         let absent = commit(&other.store(), &[], 0);
         let root = commit(&store, &[], 1);
-        // `a` is intact down to the common ancestor `root`; `b` names an absent parent next to it.
+        // `a` is intact down to the common ancestor `root`; `b` names `root` and an absent commit as its parents.
         let a = commit(&store, &[root], 2);
         let b = commit(&store, &[root, absent], 3);
         for (x, y) in [(a, b), (b, a)] {
@@ -544,7 +546,8 @@ mod tests {
                 );
                 none += usize::from(found.is_empty());
                 several += usize::from(found.len() >= 2);
-                // A candidate is shadowed if a common ancestor is not among the bases.
+                // Another common ancestor shadows a common ancestor that is not a base, so the pair
+                // has more common ancestors than bases. The bases are a subset of them.
                 let common = reference_ancestors(&shape, a)
                     .intersection(&reference_ancestors(&shape, b))
                     .count();
