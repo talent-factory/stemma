@@ -124,6 +124,13 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             value(moved.after()),
         );
     }
+    for (name, moved) in change.tags() {
+        line(
+            format!("tag {}", name.to_string().escape_debug()),
+            value(moved.before()),
+            value(moved.after()),
+        );
+    }
     match outcome {
         Outcome::Took => {}
         Outcome::NotTaken => out.push_str("    ! the move did not take effect\n"),
@@ -237,16 +244,28 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
             )
         })
         .collect();
+    let tags: Vec<String> = change
+        .tags()
+        .iter()
+        .map(|(name, moved)| {
+            format!(
+                "{{\"name\":{},{}}}",
+                quote(&name.to_string()),
+                moved_json(moved)
+            )
+        })
+        .collect();
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
          \"head\":{head},\
-         \"working_copy\":{working_copy},\"branches\":[{}],\"purge_pending\":{pending},\
+         \"working_copy\":{working_copy},\"branches\":[{}],\"tags\":[{}],\"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",
         entry.number(),
         change.time(),
         quote(&change.actor().to_string()),
         quote(change.operation().as_str()),
-        branches.join(",")
+        branches.join(","),
+        tags.join(",")
     )
 }
 

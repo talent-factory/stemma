@@ -2076,6 +2076,59 @@ impl FsRefStore {
         Ok(Self::after_move(done, moved))
     }
 
+    /// Creates a tag at `commit`, and runs `step` after the checks and before the write, under the
+    /// lock of the references that the caller holds (`_lock`). The checks are the ones of
+    /// [`RefStore::create_tag`]: the commit has to be in `objects`, a name that is in the way is a
+    /// [`RefError::Conflict`], and a tag that exists, at this commit or at another, is a
+    /// [`RefError::TagExists`] (a tag never moves, ADR-008), so `step` runs only for a tag that is
+    /// going to be made and this call never returns [`Logged::Unchanged`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of the checks. Once `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn create_tag_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        name: &BranchName,
+        commit: CommitId,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        Self::require_commit(&commit, objects)?;
+        let current = self.current(RefKind::Tag, name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                reference: RefKind::Tag,
+                name: name.clone(),
+                with,
+                kind,
+            });
+        }
+        if let Some(found) = current.commit {
+            return Err(RefError::TagExists {
+                name: name.clone(),
+                found,
+            });
+        }
+        if let Some(empty) = &current.empty_directory {
+            // Nothing is below it, and the lock is held, so no tag is lost. It goes before the
+            // step, so that a failure here leaves no entry that names a tag that cannot be made.
+            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let moved = self.write_replacing(
+            &self.reference_path(RefKind::Tag, name),
+            &encode_branch(&commit),
+            &self.namespace_dir(RefKind::Tag),
+        );
+        Ok(Self::after_move(done, moved))
+    }
+
     /// Points HEAD to `head` if it still is `expected`, and runs `step` with the value that HEAD
     /// had, after the checks and before the move, under the lock of the references. The old value
     /// is read under the lock, so it is the one that the move replaces. If HEAD has the value

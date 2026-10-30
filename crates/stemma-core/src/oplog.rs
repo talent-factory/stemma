@@ -330,7 +330,7 @@ impl<T> Moved<T> {
 }
 
 /// The pointer of a change, for a message: HEAD, the working-copy commit, a branch, or a tag.
-/// A tag never moves, so no entry of the log changes one yet; `verify` names it.
+/// A tag never moves, so an entry only creates one (the operation `tag`, ADR-011).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pointer {
@@ -369,6 +369,8 @@ pub enum EntryError {
     Unchanged(Pointer),
     /// A branch is listed twice.
     DuplicateBranch(BranchName),
+    /// A tag is listed twice.
+    DuplicateTag(BranchName),
     /// The number is 0 or larger than [`MAX_NUMBER`].
     NumberOutOfRange(u64),
     /// A change has the operation `purge`, which only the entry of a purge has.
@@ -407,6 +409,7 @@ impl fmt::Display for EntryError {
             ),
             Self::Unchanged(pointer) => write!(f, "{pointer} has the same old and new value"),
             Self::DuplicateBranch(name) => write!(f, "the branch `{name}` is listed twice"),
+            Self::DuplicateTag(name) => write!(f, "the tag `{name}` is listed twice"),
             Self::NumberOutOfRange(number) => {
                 write!(f, "entry number {number} is not between 1 and {MAX_NUMBER}")
             }
@@ -460,6 +463,7 @@ pub struct Change {
     head: Option<Moved<Head>>,
     working_copy: Option<Moved<CommitId>>,
     branches: Vec<(BranchName, Moved<CommitId>)>,
+    tags: Vec<(BranchName, Moved<CommitId>)>,
 }
 
 impl Change {
@@ -481,12 +485,41 @@ impl Change {
         operation: OperationName,
         head: Option<Moved<Head>>,
         working_copy: Option<Moved<CommitId>>,
+        branches: Vec<(BranchName, Moved<CommitId>)>,
+    ) -> Result<Self, EntryError> {
+        Self::try_new_with_tags(
+            time,
+            actor,
+            operation,
+            head,
+            working_copy,
+            branches,
+            Vec::new(),
+        )
+    }
+
+    /// Builds a change that also names tags (ADR-008, ADR-011), which are kept sorted by name like
+    /// the branches. A tag is a pointer of its own namespace, so a tag and a branch may have the
+    /// same name.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_new`](Self::try_new), and [`EntryError::DuplicateTag`] for a tag that is listed
+    /// twice. A tag counts as a pointer for [`EntryError::NoChange`].
+    pub fn try_new_with_tags(
+        time: i64,
+        actor: Actor,
+        operation: OperationName,
+        head: Option<Moved<Head>>,
+        working_copy: Option<Moved<CommitId>>,
         mut branches: Vec<(BranchName, Moved<CommitId>)>,
+        mut tags: Vec<(BranchName, Moved<CommitId>)>,
     ) -> Result<Self, EntryError> {
         if operation.as_str() == PURGE {
             return Err(EntryError::ReservedOperation);
         }
-        let no_pointer = head.is_none() && working_copy.is_none() && branches.is_empty();
+        let no_pointer =
+            head.is_none() && working_copy.is_none() && branches.is_empty() && tags.is_empty();
         match (operation.as_str() == TAKE_OVER, no_pointer) {
             (false, true) => return Err(EntryError::NoChange),
             (true, false) => return Err(EntryError::TakeOverWithPointer),
@@ -507,6 +540,15 @@ impl Change {
         if let Some((name, _)) = branches.iter().find(|(_, m)| m.old == m.new) {
             return Err(EntryError::Unchanged(Pointer::Branch(name.clone())));
         }
+        tags.sort_by(|a, b| a.0.cmp(&b.0));
+        for pair in tags.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(EntryError::DuplicateTag(pair[0].0.clone()));
+            }
+        }
+        if let Some((name, _)) = tags.iter().find(|(_, m)| m.old == m.new) {
+            return Err(EntryError::Unchanged(Pointer::Tag(name.clone())));
+        }
         Ok(Self {
             time,
             actor,
@@ -514,6 +556,7 @@ impl Change {
             head,
             working_copy,
             branches,
+            tags,
         })
     }
 
@@ -548,6 +591,12 @@ impl Change {
         &self.branches
     }
 
+    /// The tags that the operation made, sorted by name. A tag never moves (ADR-008), so the old
+    /// value of each is `None` until the deletion of a tag exists.
+    pub fn tags(&self) -> &[(BranchName, Moved<CommitId>)] {
+        &self.tags
+    }
+
     /// Every commit that the change names, old and new: the roots that the garbage collection
     /// needs from this entry (ADR-007, ADR-011). A commit that is named twice is listed twice.
     pub fn commits(&self) -> Vec<CommitId> {
@@ -562,7 +611,8 @@ impl Change {
         let moves = self
             .working_copy
             .iter()
-            .chain(self.branches.iter().map(|(_, moved)| moved));
+            .chain(self.branches.iter().map(|(_, moved)| moved))
+            .chain(self.tags.iter().map(|(_, moved)| moved));
         for moved in moves {
             commits.extend(moved.old.iter().chain(moved.new.iter()).copied());
         }
@@ -976,6 +1026,13 @@ impl Entry {
                         commit_value(moved.new.as_ref())
                     ));
                 }
+                for (name, moved) in &change.tags {
+                    out.push_str(&format!(
+                        "tag {name} {} {}\n",
+                        commit_value(moved.old.as_ref()),
+                        commit_value(moved.new.as_ref())
+                    ));
+                }
                 Some(out)
             }
         }
@@ -1155,14 +1212,15 @@ impl Entry {
             }
         })?;
 
-        // The pointers, in the fixed order: head, working-copy, branches.
+        // The pointers, in the fixed order: head, working-copy, branches, tags.
         let mut head = None;
         let mut working_copy = None;
         let mut branches: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
+        let mut tags: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
         for (index, line) in lines.iter().enumerate().skip(body + 1) {
             let number = index + 1;
             let tokens: Vec<&str> = line.split(' ').collect();
-            let after_branches = !branches.is_empty();
+            let after_branches = !branches.is_empty() || !tags.is_empty();
             match tokens.as_slice() {
                 ["head", old, new] => {
                     if head.is_some() || working_copy.is_some() || after_branches {
@@ -1191,6 +1249,9 @@ impl Entry {
                     working_copy = Some(moved);
                 }
                 ["branch", name, old, new] => {
+                    if !tags.is_empty() {
+                        return Err(malformed(number, EntryMalformed::PointerOutOfOrder));
+                    }
                     let name = BranchName::try_new(*name).map_err(|source| {
                         EntryParseError::InvalidBranchName {
                             line: number,
@@ -1214,7 +1275,31 @@ impl Entry {
                     }
                     branches.push((name, moved));
                 }
-                ["head" | "working-copy" | "branch", ..] => {
+                ["tag", name, old, new] => {
+                    let name = BranchName::try_new(*name).map_err(|source| {
+                        EntryParseError::InvalidBranchName {
+                            line: number,
+                            source,
+                        }
+                    })?;
+                    let moved = Moved {
+                        old: parse_commit_value(old, number)?,
+                        new: parse_commit_value(new, number)?,
+                    };
+                    if moved.old == moved.new {
+                        return Err(EntryParseError::Unchanged { line: number });
+                    }
+                    if let Some((previous, _)) = tags.last() {
+                        if previous.as_str().as_bytes() >= name.as_str().as_bytes() {
+                            return Err(EntryParseError::OutOfOrder {
+                                line: number,
+                                name: name.to_string(),
+                            });
+                        }
+                    }
+                    tags.push((name, moved));
+                }
+                ["head" | "working-copy" | "branch" | "tag", ..] => {
                     return Err(malformed(number, EntryMalformed::WrongValueCount));
                 }
                 _ => return Err(malformed(number, EntryMalformed::UnknownPointer)),
@@ -1223,6 +1308,7 @@ impl Entry {
         if head.is_none()
             && working_copy.is_none()
             && branches.is_empty()
+            && tags.is_empty()
             && operation.as_str() != TAKE_OVER
         {
             return Err(malformed(lines.len() + 1, EntryMalformed::ExpectedPointer));
@@ -1230,7 +1316,7 @@ impl Entry {
         // The rules of a change live in one place. The lines have been checked one by one above, to
         // report the line; this builds the value through the constructor, so that a reader cannot
         // return a change that the constructor would reject.
-        Change::try_new(time, actor, operation, head, working_copy, branches)
+        Change::try_new_with_tags(time, actor, operation, head, working_copy, branches, tags)
             .and_then(|change| Entry::linked(number, chain, Record::Change(change)))
             .map_err(EntryParseError::Entry)
     }
@@ -2988,6 +3074,8 @@ pub struct Current {
     head: Head,
     working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
+    /// The tags that exist; empty until [`Current::with_tags`] gave them.
+    tags: Option<BTreeMap<BranchName, CommitId>>,
     /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
     /// `Some(None)` for a working copy without an owner.
     owner: Option<Option<Actor>>,
@@ -3019,6 +3107,7 @@ impl Current {
             head,
             working_copy: WorkingCopy::Unknown,
             branches: branches.into_iter().collect(),
+            tags: None,
             owner: None,
             settled,
         }
@@ -3029,6 +3118,14 @@ impl Current {
     #[must_use]
     pub fn with_working_copy(mut self, working_copy: Option<CommitId>) -> Self {
         self.working_copy = working_copy.map_or(WorkingCopy::Absent, WorkingCopy::At);
+        self
+    }
+
+    /// Adds the tags that exist. Without them, the outcome of an entry that made a tag stays
+    /// unknown.
+    #[must_use]
+    pub fn with_tags(mut self, tags: impl IntoIterator<Item = (BranchName, CommitId)>) -> Self {
+        self.tags = Some(tags.into_iter().collect());
         self
     }
 
@@ -3136,6 +3233,7 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     let mut next_head: Option<&Moved<Head>> = None;
     let mut next_working_copy: Option<&Moved<CommitId>> = None;
     let mut next_branch: HashMap<&BranchName, &Moved<CommitId>> = HashMap::new();
+    let mut next_tag: HashMap<&BranchName, &Moved<CommitId>> = HashMap::new();
     let mut result = vec![Outcome::Unknown; entries.len()];
     // A stub replaced a change that moved pointers which can no longer be seen, so nothing after
     // it is evidence for an entry before it: such an entry is unknown (ADR-014). A purge entry
@@ -3184,6 +3282,14 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
             });
             judged.push(judge(moved, next_branch.get(name).copied(), now, settled));
         }
+        for (name, moved) in change.tags() {
+            let now = current
+                .and_then(|current| current.tags.as_ref())
+                .map_or(Now::Unknown, |tags| {
+                    tags.get(name).map_or(Now::Absent, Now::Is)
+                });
+            judged.push(judge(moved, next_tag.get(name).copied(), now, settled));
+        }
         result[index] = if judged.contains(&Outcome::NotTaken) {
             Outcome::NotTaken
         } else if judged.iter().all(|outcome| *outcome == Outcome::Took) {
@@ -3196,6 +3302,9 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
         next_working_copy = change.working_copy().or(next_working_copy);
         for (name, moved) in change.branches() {
             next_branch.insert(name, moved);
+        }
+        for (name, moved) in change.tags() {
+            next_tag.insert(name, moved);
         }
     }
     result
@@ -3739,6 +3848,134 @@ mod tests {
         );
     }
 
+    fn tag_change(
+        operation: &str,
+        branches: Vec<(BranchName, Moved<CommitId>)>,
+        tags: Vec<(BranchName, Moved<CommitId>)>,
+    ) -> Result<Change, EntryError> {
+        Change::try_new_with_tags(
+            TIME,
+            human(),
+            self::operation(operation),
+            None,
+            None,
+            branches,
+            tags,
+        )
+    }
+
+    #[test]
+    fn a_tag_is_written_below_the_branches_and_read_back() {
+        let change = tag_change(
+            "tag",
+            vec![(branch("main"), moved(Some(A), Some(B)))],
+            vec![
+                (branch("v2"), moved(None, Some(B))),
+                (branch("v1"), moved(None, Some(A))),
+            ],
+        )
+        .unwrap();
+        // The tags are sorted by name, as the branches are.
+        let names: Vec<&str> = change.tags().iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["v1", "v2"]);
+        let entry = Entry::try_new(7, change).unwrap();
+        let text = String::from_utf8(entry.encode()).unwrap();
+        assert!(
+            text.ends_with(&format!(
+                "branch main {A} {B}\ntag v1 - {A}\ntag v2 - {B}\n"
+            )),
+            "{text}"
+        );
+        assert_eq!(Entry::parse(text.as_bytes()).unwrap(), entry);
+    }
+
+    #[test]
+    fn a_tag_alone_is_a_change_and_its_commit_is_one_that_the_entry_keeps_alive() {
+        let change = tag_change("tag", vec![], vec![(branch("v1"), moved(None, Some(A)))]).unwrap();
+        assert_eq!(change.commits(), vec![commit(A)]);
+        let entry = Entry::try_new(2, change).unwrap();
+        assert_eq!(Entry::parse(&entry.encode()).unwrap(), entry);
+    }
+
+    #[test]
+    fn a_tag_and_a_branch_may_have_the_same_name() {
+        let change = tag_change(
+            "tag",
+            vec![(branch("v1"), moved(None, Some(A)))],
+            vec![(branch("v1"), moved(None, Some(A)))],
+        );
+        assert!(change.is_ok());
+    }
+
+    #[test]
+    fn a_tag_that_is_listed_twice_or_unchanged_is_rejected() {
+        let twice = tag_change(
+            "tag",
+            vec![],
+            vec![
+                (branch("v1"), moved(None, Some(A))),
+                (branch("v1"), moved(None, Some(B))),
+            ],
+        );
+        assert_eq!(twice, Err(EntryError::DuplicateTag(branch("v1"))));
+        let unchanged = tag_change("tag", vec![], vec![(branch("v1"), moved(Some(A), Some(A)))]);
+        assert_eq!(
+            unchanged,
+            Err(EntryError::Unchanged(Pointer::Tag(branch("v1"))))
+        );
+        assert_eq!(tag_change("tag", vec![], vec![]), Err(EntryError::NoChange));
+    }
+
+    #[test]
+    fn the_lines_of_tags_must_be_sorted_unique_and_after_the_branches() {
+        let head =
+            format!("stemma-oplog 1\nnumber 1\ntime {TIME}\nactor human daniel\noperation tag\n");
+        let tags_out_of_order = format!("{head}tag b - {A}\ntag a - {A}\n");
+        assert!(matches!(
+            Entry::parse(tags_out_of_order.as_bytes()),
+            Err(EntryParseError::OutOfOrder { line: 7, .. })
+        ));
+        let branch_after_tag = format!("{head}tag a - {A}\nbranch b - {A}\n");
+        assert!(matches!(
+            Entry::parse(branch_after_tag.as_bytes()),
+            Err(EntryParseError::Malformed {
+                reason: EntryMalformed::PointerOutOfOrder,
+                ..
+            })
+        ));
+        let head_after_tag = format!("{head}tag a - {A}\nhead - branch:main\n");
+        assert!(matches!(
+            Entry::parse(head_after_tag.as_bytes()),
+            Err(EntryParseError::Malformed {
+                reason: EntryMalformed::PointerOutOfOrder,
+                ..
+            })
+        ));
+        let unchanged = format!("{head}tag a {A} {A}\n");
+        assert!(matches!(
+            Entry::parse(unchanged.as_bytes()),
+            Err(EntryParseError::Unchanged { line: 6 })
+        ));
+    }
+
+    #[test]
+    fn the_outcome_of_a_tag_is_judged_from_the_tags_that_exist() {
+        let change = tag_change("tag", vec![], vec![(branch("v1"), moved(None, Some(A)))]).unwrap();
+        let entries = [Entry::try_new(1, change).unwrap()];
+        let head = Head::Branch(branch("main"));
+        let with = |tags: Vec<(BranchName, CommitId)>, settled| {
+            let current = Current::new(head.clone(), [], settled).with_tags(tags);
+            outcomes(&entries, Some(&current))
+        };
+        assert_eq!(with(vec![(branch("v1"), commit(A))], true), [Outcome::Took]);
+        assert_eq!(with(vec![], true), [Outcome::NotTaken]);
+        // A writer may be between its entry and its move.
+        assert_eq!(with(vec![], false), [Outcome::Unknown]);
+        // Without the tags the outcome is not known.
+        let current = Current::new(head, [], true);
+        assert_eq!(outcomes(&entries, Some(&current)), [Outcome::Unknown]);
+    }
+
     #[test]
     fn the_smallest_and_the_largest_entries_are_read_back() {
         let smallest = Entry::try_new(
@@ -4033,7 +4270,7 @@ mod tests {
             malformed(6, EntryMalformed::WrongValueCount)
         );
         assert_eq!(
-            at("tag a - -\n".to_owned()),
+            at("note a - -\n".to_owned()),
             malformed(6, EntryMalformed::UnknownPointer)
         );
         assert_eq!(

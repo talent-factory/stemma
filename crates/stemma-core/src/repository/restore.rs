@@ -431,9 +431,21 @@ impl Repository {
                 branches.push((name.clone(), commit));
             }
         }
+        let tag_names: BTreeSet<&BranchName> = entries
+            .iter()
+            .filter_map(Entry::change)
+            .flat_map(|change| change.tags().iter().map(|(name, _)| name))
+            .collect();
+        let mut tags = Vec::new();
+        for name in tag_names {
+            if let Some(commit) = refs.tag(name).map_err(RestoreError::Refs)? {
+                tags.push((name.clone(), commit));
+            }
+        }
         let locked_after = refs.is_locked().map_err(RestoreError::Refs)?;
         let current = Current::new(head, branches, !(locked_before || locked_after))
             .with_working_copy(Some(working_copy))
+            .with_tags(tags)
             .with_owner(owner);
         Ok(outcomes(entries, Some(&current))[position])
     }

@@ -129,14 +129,16 @@ fn the_json_form_is_one_object_per_line() {
             "{{\"schema\":1,\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
-             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\
+             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\"tags\":[],\
              \"purge_pending\":false,\"took_effect\":false}}"
         )
     );
     assert!(
         lines[1].starts_with("{\"schema\":1,\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
-            && lines[1].ends_with("\"branches\":[],\"purge_pending\":false,\"took_effect\":true}"),
+            && lines[1].ends_with(
+                "\"branches\":[],\"tags\":[],\"purge_pending\":false,\"took_effect\":true}",
+            ),
         "{}",
         lines[1]
     );
