@@ -28,7 +28,8 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 
 - **A restore puts back the old values of one entry** *(confirmed)*. `stemma op restore NUMBER`
   brings every pointer that the entry names to the value it had before the entry: HEAD, the
-  working-copy commit, and the branches; tags are not part of it (ADR-008). A value that the
+  working-copy commit, and the branches; tags are not part of it (ADR-008), so an entry that
+  only made tags is refused (`TagsOnly`). A value that the
   entry records as missing (`-`) means
   that the pointer does not exist afterwards. Pointers that the entry does not name stay as they
   are. The restore writes an entry of its own, the operation `restore`, like every operation that

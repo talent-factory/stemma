@@ -4,7 +4,7 @@
 //! the directory `.stemma/oplog/`, and each entry is a file of its own, named by its number: twelve
 //! decimal digits, zero-padded, starting with 1. An entry holds the actor, the time, the name of
 //! the operation, and for each pointer that the operation changes (HEAD, the working-copy commit,
-//! branches) its old and its new value. The old values are the commits that stop being reachable,
+//! branches, tags) its old and its new value. The old values are the commits that stop being reachable,
 //! so the log keeps them (ADR-010).
 //!
 //! An entry is written, and flushed, *before* the pointer moves. It is therefore an intent: the
@@ -29,11 +29,15 @@
 //! branch main b3:8cb4…b3e8 b3:b5f2…e662
 //! ```
 //!
+//! An entry of the operation `tag` has a line `tag v1 - b3:4feb…b32c` instead (see below).
+//!
 //! The `…` stands for digits that are left out here; a real ID has all 64. The first five lines come
 //! in this order, each once. Then come the lines of the pointers that changed, at least one (but
 //! see the change of the owner below): `head`, then `working-copy`, then one `branch <name>` for
-//! each branch, sorted by name in UTF-8 byte order and each name once. Each has the old and the
-//! new value, which differ. `-` means that the pointer did not exist, or does not exist any more.
+//! each branch, sorted by name in UTF-8 byte order and each name once, then one `tag <name>` for
+//! each tag, sorted and unique in the same way. A tag never moves (ADR-008), so a tag line made by
+//! the writer has the old value `-`; the reader does not enforce that. Each line has the old and
+//! the new value, which differ. `-` means that the pointer did not exist, or does not exist any more.
 //! A branch and the working-copy commit have a commit ID or `-`; HEAD has `branch:<name>`,
 //! `commit:<id>`, or `-`. The file ends with a newline and has nothing after the last pointer.
 //!
@@ -330,7 +334,8 @@ impl<T> Moved<T> {
 }
 
 /// The pointer of a change, for a message: HEAD, the working-copy commit, a branch, or a tag.
-/// A tag never moves, so an entry only creates one (the operation `tag`, ADR-011).
+/// A tag never moves, so the only operation that writes one (`tag`, ADR-011) creates it; `verify`
+/// names a tag too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pointer {
@@ -469,7 +474,8 @@ pub struct Change {
 impl Change {
     /// Builds a change. Branches are kept sorted by name, so the order of the input does not
     /// matter. The time is the one that the writer claims, in seconds since the Unix epoch (UTC),
-    /// as in a commit (ADR-005).
+    /// as in a commit (ADR-005). The change names no tag; [`try_new_with_tags`](Self::try_new_with_tags)
+    /// does.
     ///
     /// # Errors
     ///
@@ -592,7 +598,7 @@ impl Change {
     }
 
     /// The tags that the operation made, sorted by name. A tag never moves (ADR-008), so the old
-    /// value of each is `None` until the deletion of a tag exists.
+    /// value of each is `None` in every entry that the code writes today.
     pub fn tags(&self) -> &[(BranchName, Moved<CommitId>)] {
         &self.tags
     }
@@ -3074,7 +3080,8 @@ pub struct Current {
     head: Head,
     working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
-    /// The tags that exist; empty until [`Current::with_tags`] gave them.
+    /// The tags that exist: `None` until [`Current::with_tags`] gave them, so that the outcome of
+    /// an entry that made a tag stays unknown; `Some` of an empty map means that no tag exists.
     tags: Option<BTreeMap<BranchName, CommitId>>,
     /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
     /// `Some(None)` for a working copy without an owner.

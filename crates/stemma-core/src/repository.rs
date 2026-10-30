@@ -659,7 +659,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, UpdateError> {
         // A claim only: the store confirms the kind under the lock, and an ID that names no commit
-        // is refused there ([`RefError::MissingCommit`], [`RefError::NotACommit`]).
+        // is refused there (`RefError::MissingCommit`, `RefError::NotACommit`).
         let commit = CommitId::new(commit);
         let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
         let lock = self.refs.lock_writer(&allowed)?;
@@ -678,15 +678,10 @@ impl Repository {
                 .map_err(OpLogError::Entry)?;
                 self.append(&lock, &change)
             })?;
-        match outcome.into_result()? {
-            Some(entry) => Ok(entry),
-            // `create_tag_after` refuses an existing tag and never reports "unchanged"; if it did,
-            // the tag would exist at `commit` already.
-            None => Err(UpdateError::Refs(RefError::TagExists {
-                name: name.clone(),
-                found: commit,
-            })),
-        }
+        // `create_tag_after` refuses an existing tag and never reports "unchanged".
+        Ok(outcome
+            .into_result()?
+            .expect("create_tag_after never reports an unchanged tag"))
     }
 
     /// Points HEAD to a branch, which need not exist yet, or to a commit, if HEAD still is
@@ -4164,6 +4159,80 @@ mod tests {
         assert_eq!(name, &branch("main"));
         assert_eq!((pair.before(), pair.after()), (None, Some(&a)));
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
+        use crate::oplog::{outcomes, Current, Outcome};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let tags = dir.path().join(".stemma").join("refs").join("tags");
+        fs::create_dir_all(&tags).unwrap();
+        fs::set_permissions(&tags, fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = fs::File::create(tags.join("probe")).is_ok();
+        let tag = || {
+            repository.create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+        };
+        let result = tag();
+        fs::set_permissions(&tags, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_file(tags.join("probe"));
+        if writable {
+            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
+            return;
+        }
+        // The entry is written first; the file is not, and the error carries the entry.
+        let error = result.unwrap_err();
+        assert!(matches!(&error, UpdateError::MoveFailed { .. }), "{error}");
+        assert_eq!(error.entry().map(Entry::number), Some(2));
+        assert_eq!(numbers(&repository), [1, 2]);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), None);
+
+        // The log says that the tag was not made, and a retry makes it with a second entry.
+        let judge = |entries: &[Entry]| {
+            let current = Current::new(Head::Branch(branch("main")), [], true)
+                .with_tags(repository.refs().tags().unwrap());
+            outcomes(entries, Some(&current))
+        };
+        let entries = repository.oplog().entries().unwrap();
+        assert_eq!(judge(&entries[1..]), [Outcome::NotTaken]);
+        let retry = tag().unwrap();
+        assert_eq!(retry.number(), 3);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+        let entries = repository.oplog().entries().unwrap();
+        assert_eq!(judge(&entries[1..]), [Outcome::NotTaken, Outcome::Took]);
+    }
+
+    #[test]
+    fn a_tag_name_in_the_way_is_refused_without_an_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let tag = |name: &str| {
+            repository.create_tag(
+                &op("tag"),
+                &branch(name),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+        };
+        tag("release/1").unwrap();
+        let before = numbers(&repository);
+        let error = tag("release").unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::Conflict { .. })),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().tag(&branch("release")).unwrap(), None);
     }
 
     #[test]

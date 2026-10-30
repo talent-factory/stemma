@@ -376,7 +376,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   The operation `tag` is level 2 (ADR-004). Who set a tag and when is the actor and the time of
   its entry. The outcome of the entry is read from the tag as it is now: the tag exists with the
   commit of the entry (took effect), or it does not exist and no writer is at work (did not).
-  A restore does not touch tags (ADR-013), so the entry of a tag is no state to restore.
+  A restore does not touch tags (ADR-013), so `op restore` refuses an entry that only made
+  tags.
 - The file ends with a newline and has no message and no further lines.
 - Version 2 of the encoding is written only for a stub and for the entry of a purge (ADR-014,
   STEMMA-47). A stub has the header, `number`, `time`, `actor`, and the line `stub`. A `purge`

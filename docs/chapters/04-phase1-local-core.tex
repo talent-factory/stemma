@@ -870,7 +870,7 @@ Ein Eintrag ist eine Textdatei, deren Name seine fortlaufende Nummer ist,
 zwölf Ziffern mit führenden Nullen (\type{000000000001});
 das Log hält damit höchstens 999'999'999'999 Einträge.
 Ein Eintrag nennt den Akteur, die Zeit, den Namen der Operation
-und für jeden geänderten Zeiger (HEAD, Working-Copy-Commit, Branches)
+und für jeden geänderten Zeiger (HEAD, Working-Copy-Commit, Branches, Tags)
 den alten und den neuen Wert:
 
 \starttyping
@@ -1124,8 +1124,8 @@ Das Format bekommt dafür keine neue Version. Ein Leser, der die Zeile \type{tag
 lehnt den Eintrag als unbekannten Zeiger ab; das ist richtig, denn er könnte nicht sagen, was der
 Eintrag tat. Den Ausgang liest \type{op log} am Tag, wie er jetzt ist (siehe
 \in{Abschnitt}[sec:outcome]). Eine Wiederherstellung rührt Tags nicht an (ADR-013): Sie gehören
-nicht zum Zustand, den \type{op restore} zurückbringt, und der Eintrag eines Tags
-gibt keinen Zustand her, den es wiederherzustellen gäbe. Ein Purge lehnt einen Commit ab, auf den
+nicht zum Zustand, den \type{op restore} zurückbringt, und der Befehl lehnt darum einen Eintrag
+ab, der nur Tags gesetzt hat. Ein Purge lehnt einen Commit ab, auf den
 ein Tag zeigt (ADR-014).
 
 \subsection[sec:oplog-tip]{Nummern und die Datei \type{oplog-tip}}

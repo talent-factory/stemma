@@ -3,8 +3,8 @@
 //! Exit codes: 0 for success, 1 for a command that fails, 2 for arguments that are wrong (the code
 //! of the argument parser), 4 for `diff --exit-code` when a file differs, 5 for damage, 6 for a
 //! held lock (both below), and 3 for a command that has done its work but could not finish: the
-//! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`, and
-//! `op restore`) writing the result failed after the work was made, or a `commit` moved one of
+//! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`,
+//! `tag`, and `op restore`) writing the result failed after the work was made, or a `commit` moved one of
 //! its two pointers and not the other. A script must not remove or repeat what such a command
 //! made; only the next `commit` after a half-made one finishes it, and the message of that call is
 //! not used. The exception is an `op restore` that moved some pointers and not all: it is code 3,
@@ -19,7 +19,8 @@
 //! no failure there, as the log names the entry of a purge, an abort leaves the repository as it
 //! was before the purge, and nothing can undo either.
 //!
-//! A command that only reads (`log`, `op log`, `status`, `op restore --dry-run`, and `purge` without
+//! A command that only reads (`log`, `op log`, `status`, `tag` without a name, `op restore
+//! --dry-run`, and `purge` without
 //! `--apply`, `--resume`, or `--abort`) has made nothing by its output, so a failed write of its
 //! output is code 1; some of the output may already be written, and a script discards it. A
 //! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
@@ -39,7 +40,7 @@
 //! at 1.
 //!
 //! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
-//! log (`track`, `commit`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
+//! log (`track`, `commit`, `tag`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
@@ -132,8 +133,8 @@ struct TagArgs {
     #[arg(value_name = "NAME")]
     name: Option<BranchName>,
 
-    /// The ID of the commit to tag, `b3:` and 64 hexadecimal digits; by default the commit at the
-    /// tip of the branch of HEAD
+    /// The ID of the commit to tag, `b3:` and 64 hexadecimal digits; by default the commit that
+    /// HEAD leads to (the tip of its branch)
     #[arg(value_name = "COMMIT", requires = "name")]
     commit: Option<ObjectId>,
 
@@ -628,10 +629,18 @@ enum CliError {
     TagRefs(RefError),
     /// `tag` has no commit to tag: no commit is given and the branch of HEAD has none yet.
     NoCommitToTag,
-    /// The tag was made or the tags were read, but the output could not be written.
+    /// The tags were read, but the output could not be written.
     TagWrite {
         /// The tag that was being written.
         name: String,
+        /// The error of the output.
+        source: io::Error,
+    },
+    /// The tag is made and recorded in the log, but the result could not be written to the output.
+    /// A script must not repeat the command: the tag exists and never moves.
+    TagOutput {
+        /// The tag and its commit, as the output would have named them.
+        made: String,
         /// The error of the output.
         source: io::Error,
     },
@@ -735,6 +744,7 @@ impl CliError {
             | Self::TrackOutput { .. }
             | Self::CommitNotDurable { .. }
             | Self::CommitOutput { .. }
+            | Self::TagOutput { .. }
             | Self::StatusNotDurable { .. }
             | Self::PurgedOutput { .. }
             | Self::RestoreOutput {
@@ -1027,6 +1037,11 @@ impl fmt::Display for CliError {
             Self::TagRefs(error) => write!(f, "could not read the references: {error}"),
             Self::NoCommitToTag => f.write_str(
                 "there is no commit to tag: the branch of HEAD has none yet; name a commit",
+            ),
+            Self::TagOutput { made, source } => write!(
+                f,
+                "the tag {made} is made, but the result could not be written to standard output: \
+                 {source}"
             ),
             Self::TagWrite { name, source } => {
                 write!(
@@ -1984,8 +1999,8 @@ fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Resul
 }
 
 /// Creates the tag `NAME` at a commit, or lists the tags if no name is given (ADR-008). Creating
-/// asks the authorizer for the operation `tag` and writes it to the operation log; listing only
-/// reads. A tag that exists is refused, at this commit or at another, because a tag never moves.
+/// writes the operation `tag` to the operation log (the core asks the authorizer for it, and the
+/// command passes `AllowAll` until the policy of phase 4 exists); listing only reads. A tag that exists is refused, at this commit or at another, because a tag never moves.
 fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let Some(name) = args.name else {
         return list_tags(&args.repository, args.json, out);
@@ -2013,8 +2028,8 @@ fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
     match out.write_all(text.as_bytes()) {
         // The reader of a pipe, such as `head`, has had enough: that is not a failure.
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(source) => Err(CliError::TagWrite {
-            name: name.to_string(),
+        Err(source) => Err(CliError::TagOutput {
+            made: format!("{name} at {commit}"),
             source,
         }),
         Ok(()) => Ok(()),
