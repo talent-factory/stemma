@@ -30,6 +30,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use crate::actor::ActorParseError;
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
@@ -1123,15 +1124,27 @@ fn usable_host(name: &str) -> bool {
 /// Runs `open` on a file or directory that another change may be deleting or replacing. On
 /// Windows, an entry whose deletion or replacement has begun but not ended cannot be opened, and
 /// the open fails with "access is denied" for a short moment; it is then repeated until the entry
-/// is gone or can be opened, and only a denial that lasts is an error. Elsewhere a denial is final.
-fn settled<T>(mut open: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    const ATTEMPTS: u32 = if cfg!(windows) { 50 } else { 1 };
-    let mut attempt = 1;
+/// is gone or can be opened, and only a denial that lasts longer than [`SETTLE_LIMIT`] is an
+/// error. Elsewhere a denial is final.
+fn settled<T>(open: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    settled_within(SETTLE_LIMIT, open)
+}
+
+/// How long a denied open is repeated on Windows. A runner under load can hold a deletion open
+/// for much longer than an idle machine, so the limit is a time and not a number of tries.
+const SETTLE_LIMIT: Duration = Duration::from_secs(5);
+
+/// [`settled`] with the limit given, so that a test does not wait for [`SETTLE_LIMIT`].
+fn settled_within<T>(limit: Duration, mut open: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let start = Instant::now();
     loop {
         match open() {
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied && attempt < ATTEMPTS => {
-                attempt += 1;
-                std::thread::sleep(std::time::Duration::from_millis(2));
+            Err(error)
+                if cfg!(windows)
+                    && error.kind() == io::ErrorKind::PermissionDenied
+                    && start.elapsed() < limit =>
+            {
+                std::thread::sleep(Duration::from_millis(2));
             }
             result => return result,
         }
@@ -1149,7 +1162,7 @@ fn exists(path: &Path) -> Result<bool, RefError> {
 
 /// Makes the lock file with "create new": `None` if something is at the path already.
 fn create_lock_file(path: &Path) -> Result<Option<fs::File>, RefError> {
-    match OpenOptions::new().write(true).create_new(true).open(path) {
+    match settled(|| OpenOptions::new().write(true).create_new(true).open(path)) {
         Ok(file) => Ok(Some(file)),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
         Err(error) => Err(io_error("create the lock file", path)(error)),
@@ -4095,6 +4108,52 @@ mod tests {
         refs.update_branch(&name("main"), None, id, &objects, &Allowed::granted())
             .unwrap();
         assert!(neighbour.is_dir());
+    }
+
+    #[test]
+    fn a_denial_is_repeated_on_windows_only_and_a_success_ends_the_repeat() {
+        let mut calls = 0;
+        let result = settled_within(Duration::from_secs(5), || {
+            calls += 1;
+            if calls < 3 {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(calls)
+            }
+        });
+        if cfg!(windows) {
+            assert_eq!(result.unwrap(), 3);
+        } else {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn a_denial_that_lasts_longer_than_the_limit_is_an_error() {
+        let result: io::Result<()> = settled_within(Duration::from_millis(20), || {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn another_error_is_not_repeated() {
+        let mut calls = 0;
+        let result: io::Result<()> = settled_within(Duration::from_secs(5), || {
+            calls += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn a_lock_file_that_exists_is_no_error_of_the_creation() {
+        let dir = TempDir::new();
+        let path = dir.path().join("lock");
+        assert!(create_lock_file(&path).unwrap().is_some());
+        assert!(create_lock_file(&path).unwrap().is_none());
     }
 
     #[cfg(unix)]

@@ -140,3 +140,68 @@ impl ObjectStore for FaultyStore {
         self.inner.contains(id)
     }
 }
+
+/// A directory that refuses new entries and the removal of entries for as long as the guard lives.
+/// The permission is restored when the guard is dropped, so that the temporary directory can be
+/// removed.
+///
+/// On Unix this is the mode `0o555`. On Windows the read-only attribute of a directory does not
+/// keep a file out, so the guard denies the rights to *Everyone* with `icacls`. A user that may
+/// bypass the permission (root) is not kept out; a test asks [`Denied::enforced`] first.
+pub(crate) struct Denied(PathBuf);
+
+impl Denied {
+    /// Whether denying writing to a directory keeps a file out. It does not for root.
+    pub(crate) fn enforced(scratch: &Path) -> bool {
+        let probe = scratch.join("denied-probe");
+        fs::create_dir(&probe).expect("create the probe directory");
+        let guard = Self::writing(&probe);
+        let enforced = fs::File::create(probe.join("file")).is_err();
+        drop(guard);
+        let _ = fs::remove_dir_all(&probe);
+        enforced
+    }
+
+    /// Denies writing to a directory.
+    #[cfg(unix)]
+    pub(crate) fn writing(dir: &Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).expect("deny the directory");
+        Self(dir.to_owned())
+    }
+
+    /// Denies writing to a directory.
+    #[cfg(windows)]
+    pub(crate) fn writing(dir: &Path) -> Self {
+        icacls(dir, &["/deny", "*S-1-1-0:(WD,AD,DC)"]);
+        Self(dir.to_owned())
+    }
+}
+
+impl Drop for Denied {
+    #[cfg(unix)]
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+    }
+
+    #[cfg(windows)]
+    fn drop(&mut self) {
+        icacls(&self.0, &["/remove:d", "*S-1-1-0"]);
+    }
+}
+
+#[cfg(windows)]
+fn icacls(path: &Path, args: &[&str]) {
+    let status = std::process::Command::new("icacls")
+        .arg(path)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .expect("run icacls");
+    assert!(
+        status.success(),
+        "icacls {args:?} failed for {}",
+        path.display()
+    );
+}
