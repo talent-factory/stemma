@@ -1163,6 +1163,8 @@ fn paths_follow_a_commit_with_or_without_the_separator() {
     }
 }
 
+// A colon is not allowed in the name of a file on Windows.
+#[cfg(unix)]
 #[test]
 fn a_path_that_looks_like_an_identifier_needs_the_separator() {
     let dir = three_edited_files();
