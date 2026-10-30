@@ -4,7 +4,8 @@
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
 Pack files, streaming, and the cheaper flush move to a later phase; garbage collection comes with
 the retention of snapshot entries in a later phase (ADR-011). The flush of directories on Windows
-was decided on 2026-10-24 (STEMMA-84); the other guarantees on Windows stay open.
+was decided on 2026-10-24 (STEMMA-84), and the replacement of a damaged object on 2026-10-30
+(STEMMA-85); the other guarantees on Windows stay open.
 
 ## Context
 
@@ -53,10 +54,10 @@ server will later keep objects elsewhere (API-first). The implementation is
   name the object in a log entry or a pointer (ADR-011). The call returns when the object is stored,
   readable, and durable. If the directory has vanished meanwhile, the object is not there after
   all and is written again. A damaged file, for example the rest of a failed write, is replaced
-  when the same object is stored again, where a rename replaces an existing file (Unix). An entry
-  that is not a regular file blocks the path and is reported as `Corrupt`. When two writers race,
-  the second rename replaces the file with one of identical content, which no reader can tell
-  apart. After an error an object may or may not be stored; storing it again is safe.
+  when the same object is stored again: on Unix by the rename, on Windows after the store removes
+  the damaged file and renames again (STEMMA-85). An entry that is not a regular file blocks the
+  path and is reported as `Corrupt`. When two writers race on Unix, the second rename replaces
+  the file with one of identical content, which no reader can tell apart. After an error an object may or may not be stored; storing it again is safe.
   The flush covers the directories above the fan-out directory up to `objects/` as well
   (STEMMA-131): a call that created `objects/<alg>/` and failed to flush it leaves a retry that
   finds the directory and creates nothing, so the retry flushes the chain itself. `init` has
@@ -161,7 +162,7 @@ server will later keep objects elsewhere (API-first). The implementation is
 - [ ] Windows and other platforms: the code builds and its tests pass on Windows (a CI run,
       ADR-006),
       but several tests run on Unix only, and the behavior there is not known: a rename over an
-      existing or read-only file. Decide what the store promises on each platform and test it.
+      existing file that reads back correctly. Decide what the store promises on each platform and test it.
       Flushing directory entries is decided (STEMMA-84): Windows flushes them as Unix does, and a
       test that runs on every platform flushes a directory and fails on one that cannot be
       opened. Replacing a damaged object is decided (STEMMA-85): on Windows the rename onto the

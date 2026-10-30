@@ -58,6 +58,15 @@ pub(crate) fn overwrite(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).expect("write object");
 }
 
+/// Damages an object file the way a fault does: other content, and still read-only, because the
+/// store wrote the file read-only. A rename onto it fails on Windows.
+pub(crate) fn damage(path: &Path, bytes: &[u8]) {
+    overwrite(path, bytes);
+    let mut permissions = fs::metadata(path).expect("inspect object").permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions).expect("make object read-only");
+}
+
 /// The deepest link of the chain that [`FaultyStore`] makes: it is the cause of [`DiskError`].
 #[derive(Debug)]
 pub(crate) struct DeepCause;

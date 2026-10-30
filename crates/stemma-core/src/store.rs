@@ -459,8 +459,8 @@ const TEMP_ATTEMPTS: usize = 16;
 
 /// Whether a damaged object file is replaced when the same object is stored again. A rename
 /// replaces an existing file on Unix. On Windows it fails onto a read-only file, so `place`
-/// clears the flag and removes the damaged file first. Elsewhere the result is not known, so the
-/// error is reported instead (ADR-007).
+/// removes the damaged file (clearing the flag) and renames again. Elsewhere the result is not
+/// known, so the error is reported instead (ADR-007).
 const REPLACE_DAMAGED: bool = cfg!(any(unix, windows));
 
 /// Loose objects in a directory tree (ADR-007).
@@ -809,8 +809,11 @@ impl FsObjectStore {
     ///
     /// If the rename fails but another writer has stored the same object meanwhile, the call
     /// succeeds, because the content is the same by construction. Any other failure is reported
-    /// with the original error. On Unix a rename replaces a file that is already there, so two
-    /// writers that race leave one file with identical content.
+    /// with the error of the first rename. On Unix a rename replaces a file that is already
+    /// there, so two writers that race leave one file with identical content. On Windows the
+    /// rename fails onto the read-only file, so a damaged one is removed by
+    /// [`remove_damaged`](Self::remove_damaged) and the rename is tried once more. A file that
+    /// reads back correctly is never removed.
     fn place(&self, id: &ObjectId, file: File, mut temp: TempFile) -> Result<PathBuf, StoreError> {
         let path = self.object_path(id);
         let fan_out = self.fan_out_path(id)?;
@@ -828,7 +831,10 @@ impl FsObjectStore {
 
         let mut renamed = fs::rename(&temp.path, &path);
         if renamed.is_err() && cfg!(windows) && self.remove_damaged(id, &path) {
-            renamed = fs::rename(&temp.path, &path);
+            // The error of the first rename is the one to report, so a failed retry drops its own.
+            if fs::rename(&temp.path, &path).is_ok() {
+                renamed = Ok(());
+            }
         }
         match renamed {
             Ok(()) => temp.disarm(),
@@ -850,21 +856,33 @@ impl FsObjectStore {
         Ok(fan_out)
     }
 
-    /// Removes the file of an object that does not read back correctly, so that a rename can
-    /// take its place. Windows refuses to rename onto a read-only file, and every object file is
-    /// read-only, so the flag is cleared first. Returns whether a file was removed. A file that
-    /// reads back correctly, a missing file, and an entry that is not a regular file stay as they
-    /// are. The caller holds the lock of the references (ADR-011), so no remover or reader of
-    /// the same object runs meanwhile.
+    /// Removes the file of an object that is damaged, so that a rename can take its place.
+    /// Windows refuses to rename onto a read-only file, and every object file is read-only, so
+    /// the flag is cleared first. Returns whether the file is gone afterwards.
+    ///
+    /// Only a file that reads back as [`StoreError::Corrupt`] is removed, as [`present`] decides
+    /// it. A file that reads back correctly, a missing file, an entry that is not a regular
+    /// file, and a file that cannot be read for another reason (a sharing violation, say) stay as
+    /// they are. The removal is best effort; if it fails, the caller reports the rename error.
+    ///
+    /// Writers hold the lock of the references (ADR-011), so no other writer removes or replaces
+    /// the object meanwhile. A reader does not take it and may find the object missing between
+    /// the removal and the rename, where it would have found it damaged.
+    ///
+    /// [`present`]: Self::present
     fn remove_damaged(&self, id: &ObjectId, path: &Path) -> bool {
-        let Ok(metadata) = fs::symlink_metadata(path) else {
-            return false;
-        };
-        if !metadata.is_file() || matches!(self.read_checked(id, path), Ok(Some(_))) {
+        let damaged = matches!(
+            self.read_checked(id, path),
+            Err(StoreError::Corrupt { ref reason, .. }) if *reason != CorruptReason::NotARegularFile
+        );
+        if !damaged {
             return false;
         }
         remove_scratch_file(path);
-        !path.exists()
+        matches!(
+            fs::symlink_metadata(path),
+            Err(ref error) if error.kind() == io::ErrorKind::NotFound
+        )
     }
 
     /// Reads the file at `path` as the object with the ID and checks it, as [`get`] does for
@@ -1201,7 +1219,7 @@ pub(crate) fn remove_scratch(root: &Path) {
     }
 }
 
-/// Removes one scratch file, best effort. An object is made read-only before its rename, and
+/// Removes one scratch file or damaged object file, best effort. An object is made read-only before its rename, and
 /// Windows may refuse to remove a read-only file, so the flag is cleared there first, as the purge
 /// does for an object. On Unix the permission of the directory decides.
 fn remove_scratch_file(path: &Path) {
@@ -2707,7 +2725,9 @@ mod tests {
             let dir = TempDir::new();
             let store = dir.store();
             let stored = store.put_blob(&Blob::new("hello")).unwrap();
-            overwrite(&store.object_path(&ObjectId::from(stored)), damage);
+            let path = store.object_path(&ObjectId::from(stored));
+            crate::testutil::damage(&path, damage);
+            assert!(fs::metadata(&path).unwrap().permissions().readonly());
             assert!(store.get(&ObjectId::from(stored)).is_err());
             assert_eq!(store.put_blob(&Blob::new("hello")).unwrap(), stored);
             assert_eq!(
@@ -2718,6 +2738,41 @@ mod tests {
             assert!(metadata.permissions().readonly());
             assert_eq!(temp_entries(&dir), 0);
         }
+    }
+
+    #[test]
+    fn remove_damaged_removes_only_a_file_that_reads_back_as_corrupt() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let stored = store.put_blob(&Blob::new("hello")).unwrap();
+        let id = ObjectId::from(stored);
+        let path = store.object_path(&id);
+
+        assert!(!store.remove_damaged(&id, &path), "a good file stays");
+        assert!(path.is_file());
+
+        crate::testutil::damage(&path, b"garbage");
+        assert!(store.remove_damaged(&id, &path), "a damaged file goes");
+        assert!(!path.exists());
+
+        assert!(
+            !store.remove_damaged(&id, &path),
+            "a missing file is not removed"
+        );
+    }
+
+    #[test]
+    fn remove_damaged_leaves_an_entry_that_is_not_a_regular_file() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let stored = store.put_blob(&Blob::new("hello")).unwrap();
+        let id = ObjectId::from(stored);
+        let path = store.object_path(&id);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir_all(path.join("inner")).unwrap();
+
+        assert!(!store.remove_damaged(&id, &path));
+        assert!(path.join("inner").exists());
     }
 
     // Batch
@@ -2794,7 +2849,7 @@ mod tests {
         let dir = TempDir::new();
         let store = dir.store();
         let stored = store.put_blob(&Blob::new("hello")).unwrap();
-        overwrite(&store.object_path(&stored.object_id()), b"garbage");
+        crate::testutil::damage(&store.object_path(&stored.object_id()), b"garbage");
         let batch = store.batch();
         let result = batch.put_blob(&Blob::new("hello"));
         if REPLACE_DAMAGED {
