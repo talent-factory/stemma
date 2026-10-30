@@ -3338,6 +3338,8 @@ mod tests {
     use std::thread;
 
     use super::*;
+    #[cfg(unix)]
+    use crate::testutil::Denied;
     use crate::testutil::TempDir;
 
     const A: &str = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
@@ -4749,15 +4751,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failing_write_of_the_tip_is_no_error_of_the_entry() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let log = four_entries(&dir);
         // The tip is renamed into the root, which may be entered but not written. The entry goes
         // to `oplog/`, which stays writable, and the temporary file to `tmp/`.
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = Denied::writing(dir.path());
         let enforced = fs::File::create(dir.path().join("probe")).is_err();
         let result = log.append(&change("main", Some(B), A));
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         if !enforced {
             eprintln!("skipped: the permission of a directory is not enforced here (root?)");
             return;
@@ -5207,28 +5208,27 @@ mod tests {
         assert_eq!(files(&dir.path().join("oplog")), Vec::<String>::new());
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_oplog_directory_that_cannot_be_written_fails_at_the_link_and_leaves_nothing() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let log = log_in(&dir);
-        let oplog = dir.path().join("oplog");
-        fs::set_permissions(&oplog, fs::Permissions::from_mode(0o555)).unwrap();
-        let writable = fs::File::create(oplog.join("probe")).is_ok();
-        let error = log.append(&change("main", None, A));
-        fs::set_permissions(&oplog, fs::Permissions::from_mode(0o755)).unwrap();
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
-        let error = error.unwrap_err();
+        // The link is refused the way a directory without write permission refuses it.
+        let refuse = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let error = log
+            .publish(
+                &Record::Change(change("main", None, A)),
+                1,
+                &mut |_| {},
+                &refuse,
+                &sync,
+            )
+            .unwrap_err();
         assert!(
             matches!(&error, OpLogError::Io { operation, .. } if operation.contains("hard link")),
             "{error}"
         );
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
-        assert_eq!(files(&oplog), Vec::<String>::new());
+        assert_eq!(files(&dir.path().join("oplog")), Vec::<String>::new());
     }
 
     #[cfg(unix)]
@@ -5236,24 +5236,15 @@ mod tests {
     fn a_temporary_name_that_cannot_be_removed_does_not_stop_a_whole_entry() {
         // `tmp/` holds scratch files. If the name cannot be removed after the link, the entry is
         // still whole and flushed, and the write succeeds: a cleanup must not stop a move.
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let log = log_in(&dir);
         let tmp = dir.path().join("tmp");
-        let probe = {
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
-            let writable = fs::File::create(tmp.join("probe")).is_ok();
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
-            let _ = fs::remove_file(tmp.join("probe"));
-            writable
-        };
-        if probe {
+        if !Denied::enforced(dir.path()) {
             eprintln!("skipped: the permission of a directory is not enforced here (root?)");
             return;
         }
-        let mut make_tmp_read_only = |_: u64| {
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o555)).unwrap();
-        };
+        let mut denied = None;
+        let mut make_tmp_read_only = |_: u64| denied = Some(Denied::writing(&tmp));
         let result = log.publish(
             &Record::Change(change("main", None, A)),
             1,
@@ -5262,7 +5253,7 @@ mod tests {
             &sync,
         );
         let left = files(&tmp);
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         let entry = result.expect("the entry is whole, so the write succeeds");
         assert_eq!(entry.number(), 1);
         assert_eq!(log.numbers().unwrap(), [1]);

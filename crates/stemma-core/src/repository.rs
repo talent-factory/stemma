@@ -1873,6 +1873,8 @@ mod tests {
     use crate::change::ChangeId;
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
+    #[cfg(unix)]
+    use crate::testutil::Denied;
     use crate::testutil::TempDir;
     use crate::AllowAll;
     use crate::Decision;
@@ -4161,16 +4163,16 @@ mod tests {
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
         use crate::oplog::{outcomes, Current, Outcome};
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
         let tags = dir.path().join(".stemma").join("refs").join("tags");
         fs::create_dir_all(&tags).unwrap();
-        fs::set_permissions(&tags, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = Denied::writing(&tags);
         let writable = fs::File::create(tags.join("probe")).is_ok();
         let tag = || {
             repository.create_tag(
@@ -4182,7 +4184,7 @@ mod tests {
             )
         };
         let result = tag();
-        fs::set_permissions(&tags, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         let _ = fs::remove_file(tags.join("probe"));
         if writable {
             eprintln!("skipped: the permission of a directory is not enforced here (root?)");
