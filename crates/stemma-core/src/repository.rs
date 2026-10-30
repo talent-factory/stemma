@@ -1873,7 +1873,9 @@ mod tests {
     use crate::change::ChangeId;
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
-    use crate::testutil::{Denied, TempDir};
+    #[cfg(unix)]
+    use crate::testutil::Denied;
+    use crate::testutil::TempDir;
     use crate::AllowAll;
     use crate::Decision;
 
@@ -4161,6 +4163,7 @@ mod tests {
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
         use crate::oplog::{outcomes, Current, Outcome};

@@ -141,15 +141,18 @@ impl ObjectStore for FaultyStore {
     }
 }
 
-/// A directory that refuses new entries and the removal of entries for as long as the guard lives.
-/// The permission is restored when the guard is dropped, so that the temporary directory can be
-/// removed.
+/// A directory that refuses new entries and the removal of entries for as long as the guard lives
+/// (the mode `0o555`). The permission is restored when the guard is dropped, so that the temporary
+/// directory can be removed.
 ///
-/// On Unix this is the mode `0o555`. On Windows the read-only attribute of a directory does not
-/// keep a file out, so the guard denies the rights to *Everyone* with `icacls`. A user that may
-/// bypass the permission (root) is not kept out; a test asks [`Denied::enforced`] first.
+/// Only Unix has it. On Windows a deny rule keeps `File::create` out of a directory, but a rename
+/// or a hard link into it still succeeds (CI run 41071667805), so a test that needs a refused
+/// write there injects the failure instead, as the tests of `publish` do. A user that may bypass
+/// the permission (root) is not kept out; a test asks [`Denied::enforced`] first.
+#[cfg(unix)]
 pub(crate) struct Denied(PathBuf);
 
+#[cfg(unix)]
 impl Denied {
     /// Whether denying writing to a directory keeps a file out. It does not for root.
     pub(crate) fn enforced(scratch: &Path) -> bool {
@@ -163,45 +166,17 @@ impl Denied {
     }
 
     /// Denies writing to a directory.
-    #[cfg(unix)]
     pub(crate) fn writing(dir: &Path) -> Self {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).expect("deny the directory");
         Self(dir.to_owned())
     }
-
-    /// Denies writing to a directory.
-    #[cfg(windows)]
-    pub(crate) fn writing(dir: &Path) -> Self {
-        icacls(dir, &["/deny", "*S-1-1-0:(WD,AD,DC)"]);
-        Self(dir.to_owned())
-    }
 }
 
+#[cfg(unix)]
 impl Drop for Denied {
-    #[cfg(unix)]
     fn drop(&mut self) {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
     }
-
-    #[cfg(windows)]
-    fn drop(&mut self) {
-        icacls(&self.0, &["/remove:d", "*S-1-1-0"]);
-    }
-}
-
-#[cfg(windows)]
-fn icacls(path: &Path, args: &[&str]) {
-    let status = std::process::Command::new("icacls")
-        .arg(path)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .status()
-        .expect("run icacls");
-    assert!(
-        status.success(),
-        "icacls {args:?} failed for {}",
-        path.display()
-    );
 }

@@ -3338,7 +3338,9 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::testutil::{Denied, TempDir};
+    #[cfg(unix)]
+    use crate::testutil::Denied;
+    use crate::testutil::TempDir;
 
     const A: &str = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
     const B: &str = "b3:4feb2d73a2c706e33c2a71f6f03cbfb48f0a20b48567936fca293159e7e3b32c";
@@ -4746,6 +4748,7 @@ mod tests {
         assert_eq!(files(&dir.path().join("oplog")).len(), 4);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failing_write_of_the_tip_is_no_error_of_the_entry() {
         let dir = TempDir::new();
@@ -5209,24 +5212,26 @@ mod tests {
     fn an_oplog_directory_that_cannot_be_written_fails_at_the_link_and_leaves_nothing() {
         let dir = TempDir::new();
         let log = log_in(&dir);
-        let oplog = dir.path().join("oplog");
-        let denied = Denied::writing(&oplog);
-        let writable = fs::File::create(oplog.join("probe")).is_ok();
-        let error = log.append(&change("main", None, A));
-        drop(denied);
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
-        let error = error.unwrap_err();
+        // The link is refused the way a directory without write permission refuses it.
+        let refuse = |_: &Path, _: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let error = log
+            .publish(
+                &Record::Change(change("main", None, A)),
+                1,
+                &mut |_| {},
+                &refuse,
+                &sync,
+            )
+            .unwrap_err();
         assert!(
             matches!(&error, OpLogError::Io { operation, .. } if operation.contains("hard link")),
             "{error}"
         );
         assert_eq!(files(&dir.path().join("tmp")), Vec::<String>::new());
-        assert_eq!(files(&oplog), Vec::<String>::new());
+        assert_eq!(files(&dir.path().join("oplog")), Vec::<String>::new());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_temporary_name_that_cannot_be_removed_does_not_stop_a_whole_entry() {
         // `tmp/` holds scratch files. If the name cannot be removed after the link, the entry is
