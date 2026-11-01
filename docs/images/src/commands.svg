@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 502" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 590" font-family="Helvetica, Arial, sans-serif">
   <title>Welcher Befehl berührt welche Zone</title>
-  <rect x="0" y="0" width="740" height="502" fill="#FFFFFF"/>
+  <rect x="0" y="0" width="740" height="590" fill="#FFFFFF"/>
 
   <!-- Zone headers: one colour per zone, dark enough for print -->
   <g font-size="12" font-weight="bold" text-anchor="middle">
@@ -27,6 +27,8 @@
     <line x1="20" y1="370" x2="730" y2="370"/>
     <line x1="20" y1="414" x2="730" y2="414"/>
     <line x1="20" y1="458" x2="730" y2="458"/>
+    <line x1="20" y1="502" x2="730" y2="502"/>
+    <line x1="20" y1="546" x2="730" y2="546"/>
   </g>
 
   <!-- Commands -->
@@ -40,6 +42,8 @@
     <text x="20" y="345" font-family="Courier, monospace" font-size="15" font-weight="bold">op restore</text>
     <text x="20" y="389" font-family="Courier, monospace" font-size="15" font-weight="bold">purge --apply</text>
     <text x="20" y="433" font-family="Courier, monospace" font-size="15" font-weight="bold">diff</text>
+    <text x="20" y="477" font-family="Courier, monospace" font-size="15" font-weight="bold">log</text>
+    <text x="20" y="521" font-family="Courier, monospace" font-size="15" font-weight="bold">tag</text>
   </g>
   <g fill="#0F172A" font-size="12">
     <text x="20" y="97">legt das Repository an</text>
@@ -51,6 +55,8 @@
     <text x="20" y="361">setzt die Werte vor einem Eintrag zurück</text>
     <text x="20" y="405">entfernt ein Geheimnis aus Verlauf und Log</text>
     <text x="20" y="449">zeigt Änderungen zwischen Commits oder zur Arbeitskopie</text>
+    <text x="20" y="493">zeigt die Commits, Kinder vor Eltern</text>
+    <text x="20" y="537">setzt einen Tag auf einen Commit oder listet die Tags</text>
   </g>
 
   <!-- init: changes working-copy commit, HEAD, log -->
@@ -113,16 +119,29 @@
   <circle cx="680" cy="436" r="8" fill="none" stroke="#6B46C1" stroke-width="2"/>
   <path d="M680,428 A8,8 0 0 0 680,444 Z" fill="#6B46C1"/>
 
+  <!-- log: only reads the commits from the working-copy commit on; no snapshot, no actor -->
+  <text x="380" y="485" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+  <circle cx="480" cy="480" r="8" fill="none" stroke="#B45309" stroke-width="2"/>
+  <text x="580" y="485" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+  <text x="680" y="485" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+
+  <!-- tag: reads HEAD for the default commit; creating a tag writes the tag pointer and an entry
+       in the log, listing writes nothing; no snapshot, no change of the working copy -->
+  <text x="380" y="529" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+  <text x="480" y="529" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+  <circle cx="580" cy="524" r="9" fill="#2F7D32"/>
+  <circle cx="680" cy="524" r="9" fill="#6B46C1"/>
+
   <!-- Legend -->
   <g fill="#0F172A" font-size="12">
-    <circle cx="28" cy="481" r="8" fill="#0F172A"/>
-    <text x="44" y="485">ändert</text>
-    <circle cx="116" cy="481" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <text x="132" y="485">liest nur</text>
-    <circle cx="220" cy="481" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <path d="M220,474 A7,7 0 0 0 220,488 Z" fill="#0F172A"/>
-    <text x="236" y="485">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
-    <text x="568" y="485" font-size="14" fill="#64748B">–</text>
-    <text x="584" y="485">unberührt</text>
+    <circle cx="28" cy="569" r="8" fill="#0F172A"/>
+    <text x="44" y="573">ändert</text>
+    <circle cx="116" cy="569" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <text x="132" y="573">liest nur</text>
+    <circle cx="220" cy="569" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <path d="M220,562 A7,7 0 0 0 220,576 Z" fill="#0F172A"/>
+    <text x="236" y="573">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
+    <text x="568" y="573" font-size="14" fill="#64748B">–</text>
+    <text x="584" y="573">unberührt</text>
   </g>
 </svg>

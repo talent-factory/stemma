@@ -15,6 +15,11 @@ Bei \type{op restore} hängt es vom Eintrag ab, welche Zeiger und Dateien sich b
 die Zeile zeigt den Höchstfall. Bei \type{diff} ist der Working-Copy-Commit als Seite der
 Höchstfall: Der Snapshot ändert nur dann etwas, wenn sich eine verfolgte Datei geändert hat,
 und bei zwei Commits ändert der Befehl nichts.
+Bei \type{log} liest der Befehl nur die Commits ab dem Working-Copy-Commit;
+er macht keinen Snapshot und berührt weder Branch noch HEAD noch das Log.
+Ein Tag zählt zu den Zeigern: \type{tag} schreibt beim Setzen den Zeiger und einen Eintrag ins Log,
+bewegt aber weder HEAD noch einen Branch und ändert weder Arbeitsverzeichnis noch
+Working-Copy-Commit. Beim Auflisten ändert der Befehl nichts; die Zeile zeigt den Höchstfall.
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]
