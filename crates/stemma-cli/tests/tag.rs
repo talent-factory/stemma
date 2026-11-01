@@ -22,7 +22,7 @@ fn commit(dir: &Dir, message: &str) -> String {
 }
 
 #[test]
-fn a_tag_names_the_tip_of_the_branch_by_default_and_the_log_says_who_and_when() {
+fn a_tag_names_the_tip_of_the_branch_by_default_and_the_log_says_who_set_it_and_when() {
     let dir = repository();
     let first = commit(&dir, "first");
     let result = run(dir.path(), &["tag", "v1", "--actor", ACTOR]);
@@ -62,6 +62,8 @@ fn a_tag_names_the_tip_of_the_branch_by_default_and_the_log_says_who_and_when() 
         "{}",
         json.stdout
     );
+    assert!(newest.contains("human daniel"), "{}", log.stdout);
+    assert!(json.stdout.contains("\"time\":"), "{}", json.stdout);
 }
 
 #[test]
@@ -260,7 +262,7 @@ fn restoring_an_entry_that_only_made_a_tag_is_refused_and_the_tag_stays() {
     let result = run(dir.path(), &["op", "restore", &number, "--actor", ACTOR]);
     assert_eq!(result.code, 1, "{}{}", result.stdout, result.stderr);
     assert!(
-        result.stderr.contains("only made tags"),
+        result.stderr.contains("only made or deleted tags"),
         "{}",
         result.stderr
     );
@@ -268,5 +270,205 @@ fn restoring_an_entry_that_only_made_a_tag_is_refused_and_the_tag_stays() {
         fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap(),
         format!("{first}\n")
     );
+    assert_eq!(entry_count(&dir), before);
+}
+
+#[test]
+fn a_tag_is_deleted_and_set_again_and_the_log_says_who_deleted_it_and_when() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let second = commit(&dir, "second");
+
+    let result = run(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(result.stdout, format!("Deleted v1, which was at {first}\n"));
+    assert!(!dir.path().join(".stemma/refs/tags/v1").exists());
+    assert_eq!(ok(dir.path(), &["tag"]).stdout, "");
+
+    let log = ok(dir.path(), &["op", "log"]);
+    let newest = log.stdout.lines().next().unwrap();
+    assert!(newest.contains("untag"), "{}", log.stdout);
+    assert!(
+        log.stdout.contains(&format!("tag v1  {first} -> -")),
+        "{}",
+        log.stdout
+    );
+    assert!(!log.stdout.contains("! "), "{}", log.stdout);
+    assert!(!log.stdout.contains("? "), "{}", log.stdout);
+    let json = ok(dir.path(), &["op", "log", "--json", "--limit", "1"]);
+    assert!(
+        json.stdout.contains("\"operation\":\"untag\"")
+            && json.stdout.contains(&format!(
+                "\"tags\":[{{\"name\":\"v1\",\"old\":\"{first}\",\"new\":null}}]"
+            ))
+            && json.stdout.contains("\"took_effect\":true"),
+        "{}",
+        json.stdout
+    );
+    // The newest line names the actor who deleted the tag.
+    assert!(newest.contains("human daniel"), "{}", log.stdout);
+    assert!(json.stdout.contains("\"time\":"), "{}", json.stdout);
+    ok(dir.path(), &["op", "verify"]);
+
+    // The name is free again.
+    ok(dir.path(), &["tag", "v1", &second, "--actor", ACTOR]);
+    assert_eq!(ok(dir.path(), &["tag"]).stdout, format!("v1 {second}\n"));
+    // Setting, deleting, and setting again all took effect.
+    let log = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    for line in log.lines().filter(|line| line.contains("\"tags\":[{")) {
+        assert!(line.contains("\"took_effect\":true"), "{line}");
+    }
+    assert_eq!(log.matches("\"tags\":[{").count(), 3, "{log}");
+}
+
+#[test]
+fn a_nested_tag_is_deleted_but_a_name_that_is_only_a_directory_is_not_a_tag() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "rel/v1", "--actor", ACTOR]);
+
+    // `rel` is a directory with a tag below it, not a tag.
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    let result = run(dir.path(), &["tag", "--delete", "rel", "--actor", ACTOR]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("no tag `rel` to delete"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+
+    let result = run(
+        dir.path(),
+        &["tag", "-d", "rel/v1", "--json", "--actor", ACTOR],
+    );
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        format!("{{\"schema\":1,\"tag\":\"rel/v1\",\"commit\":\"{first}\",\"deleted\":true}}\n")
+    );
+    // The directory that the deletion emptied goes with it.
+    assert!(!dir.path().join(".stemma/refs/tags/rel").exists());
+}
+
+#[test]
+fn deleting_a_tag_can_write_json_and_short_d_does_the_same() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let result = run(dir.path(), &["tag", "-d", "v1", "--json", "--actor", ACTOR]);
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert_eq!(
+        result.stdout,
+        format!("{{\"schema\":1,\"tag\":\"v1\",\"commit\":\"{first}\",\"deleted\":true}}\n")
+    );
+}
+
+#[test]
+fn deleting_a_tag_that_does_not_exist_is_refused_without_an_entry() {
+    let dir = repository();
+    commit(&dir, "first");
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    let result = run(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("no tag `v1` to delete"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}
+
+#[test]
+fn deleting_a_tag_needs_an_actor_and_a_name_and_no_commit() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+
+    let result = run(dir.path(), &["tag", "--delete", "v1"]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(result.stderr.contains("actor"), "{}", result.stderr);
+    // A usage error: no name, or a commit that a deletion does not take.
+    let nameless = run(dir.path(), &["tag", "--delete", "--actor", ACTOR]);
+    assert_eq!(nameless.code, 2, "{}", nameless.stderr);
+    let with_commit = run(
+        dir.path(),
+        &["tag", "--delete", "v1", &first, "--actor", ACTOR],
+    );
+    assert_eq!(with_commit.code, 2, "{}", with_commit.stderr);
+
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}
+
+#[test]
+fn a_held_lock_ends_setting_and_deleting_a_tag_with_code_6_and_changes_nothing() {
+    let dir = repository();
+    let first = commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    common::hold_the_lock(dir.path());
+
+    for args in [
+        vec!["tag", "v2", "--actor", ACTOR],
+        vec!["tag", "--delete", "v1", "--actor", ACTOR],
+    ] {
+        let result = run(dir.path(), &args);
+        assert_eq!(result.code, 6, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "", "{args:?}");
+    }
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap(),
+        format!("{first}\n")
+    );
+    assert!(!dir.path().join(".stemma/refs/tags/v2").exists());
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}
+
+#[test]
+fn a_pending_purge_refuses_the_deletion_of_a_tag_and_names_resume() {
+    let dir = repository();
+    commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let before = ok(dir.path(), &["op", "log", "--json"]).stdout;
+    fs::write(dir.path().join(".stemma/purge-pending"), "damaged").unwrap();
+
+    let result = run(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("stemma purge --resume"),
+        "{}",
+        result.stderr
+    );
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+    assert_eq!(ok(dir.path(), &["op", "log", "--json"]).stdout, before);
+}
+
+#[test]
+fn restoring_an_entry_that_only_deleted_a_tag_is_refused_and_the_tag_stays_deleted() {
+    let dir = repository();
+    commit(&dir, "first");
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    ok(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+    let number = ok(dir.path(), &["op", "log", "--json", "--limit", "1"])
+        .stdout
+        .split("\"number\":")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .unwrap()
+        .to_owned();
+    let before = entry_count(&dir);
+    let result = run(dir.path(), &["op", "restore", &number, "--actor", ACTOR]);
+    assert_eq!(result.code, 1, "{}{}", result.stdout, result.stderr);
+    assert!(
+        result.stderr.contains("only made or deleted tags"),
+        "{}",
+        result.stderr
+    );
+    assert!(!dir.path().join(".stemma/refs/tags/v1").exists());
     assert_eq!(entry_count(&dir), before);
 }

@@ -70,6 +70,7 @@ Er wird einmal gesetzt und nie verschoben; ein vorhandener Tag ist ein Fehler,
 auch wenn er auf denselben Commit zeigt (ADR-008).
 \type{stemma tag} setzt ihn und schreibt zuvor einen Eintrag ins Operation Log
 (siehe \in{Abschnitt}[sec:tag-entry]).
+Ein Tag, der falsch gesetzt wurde, wird mit \type{stemma tag --delete} gelöscht und neu gesetzt.
 
 Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 4,
 die das Log mit der Hash-Kette kennzeichnet (siehe unten). Ein Repository der Version 2 oder 3
@@ -1104,7 +1105,7 @@ Ohne Journal ist sie von Hand zu entfernen, wenn kein Befehl mehr läuft.
 \stopitemize
 \stopinfobox
 
-\subsection[sec:tag-entry]{Der Eintrag eines Tags}
+\subsection[sec:tag-entry]{Die Einträge von tag und untag}
 
 Ein Tag ist ein Zeiger wie ein Branch, aber er bewegt sich nie. Die Operation \type{tag}
 folgt darum derselben Regel wie jede andere (siehe \in{Abschnitt}[sec:pointer-move]):
@@ -1134,8 +1135,28 @@ lehnt den Eintrag als unbekannten Zeiger ab; das ist richtig, denn er könnte ni
 Eintrag tat. Den Ausgang liest \type{op log} am Tag, wie er jetzt ist (siehe
 \in{Abschnitt}[sec:outcome]). Eine Wiederherstellung rührt Tags nicht an (ADR-013): Sie gehören
 nicht zum Zustand, den \type{op restore} zurückbringt, und der Befehl lehnt darum einen Eintrag
-ab, der nur Tags gesetzt hat. Ein Purge lehnt einen Commit ab, auf den
-ein Tag zeigt (ADR-014).
+ab, der nur Tags gesetzt oder gelöscht hat. Ein Purge lehnt einen Commit ab, auf den
+ein Tag zeigt (ADR-014); die Meldung nennt den Befehl, der den Tag löscht.
+
+Ein Tag, der falsch gesetzt wurde, lässt sich nicht verschieben, denn er bewegt sich nie;
+man löscht ihn und setzt ihn neu. Die Operation \type{untag} folgt derselben Regel wie \type{tag}:
+Unter der Sperre prüft sie, ob der Tag noch auf dem Commit steht, den der Aufrufer gesehen hat,
+schreibt und flusht den Eintrag, und erst dann löscht sie die Datei. Der Aufrufer übergibt den
+Commit mit, weil er sonst einen Tag löschen könnte, der inzwischen gelöscht und auf einen
+anderen Commit neu gesetzt wurde. Der Eintrag trägt dieselbe Zeile \type{tag NAME} wie der des
+Setzens, mit dem Commit als altem Wert und \type{-} als neuem:
+
+\starttyping
+operation untag
+tag v1 b3:4feb…b32c -
+\stoptyping
+
+Das Format bekommt auch dafür keine neue Version, denn die Zeile erlaubt für beide Werte einen
+Commit oder \type{-}. Den Ausgang liest \type{op log} wieder am Tag, wie er jetzt ist: Ein Eintrag
+von \type{untag} hat gewirkt, wenn es den Tag nicht mehr gibt; er hat nicht gewirkt, wenn der
+Tag noch auf dem Commit des Eintrags steht und kein Schreiber am Werk ist.
+Der Eintrag des Setzens bleibt im Log. Wer einen Tag gesetzt und wer ihn gelöscht hat, steht also
+beides im Log.
 
 \subsection[sec:oplog-tip]{Nummern und die Datei \type{oplog-tip}}
 
