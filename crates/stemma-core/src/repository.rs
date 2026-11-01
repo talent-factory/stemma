@@ -5353,6 +5353,36 @@ mod tests {
     }
 
     #[test]
+    fn names_in_each_others_way_are_a_conflict_for_a_rename_and_a_delete() {
+        let (_dir, repository, a) = with_main_and_topic();
+        create(&repository, "a/b", a).unwrap();
+        let before = numbers(&repository);
+        for (old, new) in [("a/b", "a"), ("main", "a/b/c")] {
+            let error = rename(&repository, old, new, a, &AllowAll).unwrap_err();
+            assert!(
+                matches!(&error, UpdateError::Refs(RefError::Conflict { .. })),
+                "{old} to {new}: {error}"
+            );
+        }
+        // `a` is only a directory of branches: there is nothing to delete under that name.
+        let error = delete(&repository, "a", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::Conflict { .. })),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+    }
+
+    #[test]
+    fn an_empty_directory_where_the_new_branch_goes_is_removed_by_a_rename() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let leftover = repository.metadata_dir().join("refs/heads/trunk");
+        fs::create_dir_all(&leftover).unwrap();
+        rename(&repository, "main", "trunk", a, &AllowAll).unwrap();
+        assert_eq!(repository.refs().branch(&branch("trunk")).unwrap(), Some(a));
+    }
+
+    #[test]
     fn a_rename_that_stops_before_the_last_move_keeps_the_commit_under_the_new_name() {
         use crate::fault;
         use crate::oplog::{outcomes, Current, Outcome};

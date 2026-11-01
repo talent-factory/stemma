@@ -184,6 +184,7 @@ struct BranchArgs {
         short = 'm',
         long = "move",
         num_args = 2,
+        action = clap::ArgAction::Set,
         value_names = ["OLD", "NEW"],
         conflicts_with = "delete"
     )]
@@ -4700,9 +4701,11 @@ mod tests {
         assert!(matches!(error, CliError::NoCommitToBranch), "{error}");
         assert_eq!(error.exit_code(), ExitCode::FAILURE);
         // Listing needs no actor, and an empty repository lists nothing.
-        let list = run(parse(&["branch", "-C", path]), &mut Vec::new());
+        let mut listed = Vec::new();
+        let list = run(parse(&["branch", "-C", path]), &mut listed);
         let _ = std::fs::remove_dir_all(&dir);
         list.unwrap();
+        assert!(listed.is_empty(), "{}", String::from_utf8_lossy(&listed));
     }
 
     #[test]
@@ -4716,6 +4719,7 @@ mod tests {
             &["branch", "-d", "a", "-m", "b", "c"][..],
             &["branch", "x", "-d", "a"],
             &["branch", "x", "-m", "a", "b"],
+            &["branch", "-m", "a", "b", "-m", "c", "d"],
             &["branch", "-m", "a"],
             &["branch", "-d"],
             &["branch", "bad name~"],
