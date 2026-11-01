@@ -15,7 +15,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{now, Repository, UpdateError};
-#[cfg(test)]
 use crate::fault;
 use crate::index::{Index, IndexError, WriteTreeError};
 use crate::object::{
