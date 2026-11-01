@@ -9,15 +9,18 @@
 //! names. The queries of metadata (`metadata`, `symlink_metadata`, `canonicalize`) are not routed:
 //! none of the three kinds could make them fail.
 //!
-//! The functions by the kind of injection that gates them:
+//! There are three kinds of injection, and each gates these functions (with the exceptions that
+//! the first kind names below):
 //!
-//! - `write`: `rename`, `hard_link`, `symlink`, `remove_file`, `remove_dir`, `remove_dir_all`,
-//!   `create_dir`, and `create_new`; `write` and `open_or_create` for a name that is not there.
+//! - `write`: `rename`, `hard_link`, `symlink` (Unix only), `remove_file`, `remove_dir`,
+//!   `remove_dir_all`, `create_dir`, and `create_new`; `write` and `open_or_create` for a name
+//!   that is not there.
 //! - `modify`: `open_for_write` and `set_permissions`; `write` and `open_or_create` for a name
 //!   that is there.
-//! - `read`: `read`, `open`, `read_dir`, `read_link`, and `open_or_create`.
+//! - `read`: `read`, `open`, `read_dir`, `read_link`, `open_or_create`, and the flush of a
+//!   directory in the store.
 //!
-//! There are three kinds of injection:
+//! The kinds:
 //!
 //! - `deny_writes_in(dir)`: every call that adds, moves, or removes a name directly in `dir`
 //!   fails. It stands for a directory with the mode `0o555`, so removing a name that is not
@@ -30,10 +33,11 @@
 //!   so does changing its permissions. It stands for files with the mode `0o444`; adding or
 //!   removing a name there still works. A real `0o444` file would not refuse a change of its
 //!   permissions to its owner: that part stands for a failed `chmod`. On Windows, where the store
-//!   clears the read-only flag before it removes an object, such a removal fails as well.
+//!   clears the read-only flag before it removes an object, the removal of an object fails as
+//!   well.
 //! - `deny_reads_of(path)`: reading, opening, or listing `path`, reading the target of the
-//!   link at `path`, or flushing it as a directory, fails. It matches that one path; a read of a name below it still works, which the mode
-//!   `0o000` of a directory would stop.
+//!   link at `path`, or flushing it as a directory, fails. It matches that one path; a read of a
+//!   name below it still works, which the mode `0o000` of a directory would stop.
 //!
 //! A path in a rule is compared as it is and, if that fails, as the file system names it
 //! (`fs::canonicalize`), so `/var/...` and `/private/var/...` on macOS meet. A path that does not
@@ -295,14 +299,14 @@ mod armed {
         arm(Rule::Write(named(dir)))
     }
 
-    /// Makes opening an existing file directly in `dir` for writing fail with `PermissionDenied`
-    /// on this thread, until the guard is dropped.
+    /// Makes opening an existing file directly in `dir` for writing, and changing its
+    /// permissions, fail with `PermissionDenied` on this thread, until the guard is dropped.
     pub fn deny_modifying_in(dir: &Path) -> Guard {
         arm(Rule::Modify(named(dir)))
     }
 
-    /// Makes reading, opening, listing, and flushing `path` as a directory fail with
-    /// `PermissionDenied` on this thread, until the guard is dropped.
+    /// Makes reading, opening, listing, reading the link target of, and flushing `path` as a
+    /// directory fail with `PermissionDenied` on this thread, until the guard is dropped.
     pub fn deny_reads_of(path: &Path) -> Guard {
         arm(Rule::Read(named(path)))
     }
@@ -507,8 +511,9 @@ pub(crate) fn read_link(path: &Path) -> io::Result<std::path::PathBuf> {
 }
 
 /// [`fs::write`], failing if the injection denies modifying files in the directory of `path` when
-/// the name is there, and denies writes in that directory when it is not. A link that points
-/// nowhere counts as a name that is not there, as in [`open_or_create`].
+/// the name is there, and denies writes in that directory when it is not. `Path::exists` follows
+/// links, so a link that points nowhere counts as a name that is not there; [`open_or_create`]
+/// does the same.
 pub(crate) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
     if path.exists() {
         check_modify(path)?;
@@ -892,7 +897,7 @@ mod tests {
             set_permissions(&file, readonly).unwrap();
         }
         assert!(fs::metadata(&file).unwrap().permissions().readonly());
-        #[expect(
+        #[allow(
             clippy::permissions_set_readonly_false,
             reason = "the temporary directory is removed next"
         )]
