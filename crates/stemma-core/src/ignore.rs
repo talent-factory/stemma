@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, Metadata};
+use std::fs::{self, Metadata};
 use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -218,7 +218,7 @@ impl IgnoreRules {
                 FileProblem::TooLarge,
             )));
         }
-        let file = match open_without_following(&path) {
+        let file = match crate::open_without_following(&path) {
             Ok(file) => file,
             // Removed since the inspection: a rule that is gone is not "no rules".
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -338,38 +338,14 @@ fn describe(metadata: &Metadata) -> &'static str {
     }
 }
 
-/// Opens the exclusion file. On Windows a reparse point is opened itself and not what it names,
-/// and [`same_file`] refuses it.
-fn open_without_following(path: &Path) -> io::Result<File> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
-    }
-    #[cfg(not(windows))]
-    {
-        File::open(path)
-    }
-}
-
-/// Whether two descriptions are of the same file. Where the platform gives no identity, they are,
-/// except on Windows, where a reparse point in the place of the file is another file.
+/// Whether two descriptions are of the same file. Where the platform gives no identity, they are.
 fn same_file(first: &Metadata, second: &Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         first.dev() == second.dev() && first.ino() == second.ino()
     }
-    #[cfg(windows)]
-    {
-        let _ = first;
-        !crate::is_reparse_point(second)
-    }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     {
         let _ = (first, second);
         true
@@ -1294,6 +1270,30 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_link_is_not_an_exclusion_file_on_windows() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("rules"), "a\n").unwrap();
+        let link = dir.path().join(FILE_NAME);
+        // Creating a symbolic link needs a privilege, so the test skips without it.
+        if std::os::windows::fs::symlink_file(dir.path().join("rules"), &link).is_err() {
+            eprintln!("skipped: no right to create symbolic links");
+            return;
+        }
+        let error = IgnoreRules::read(dir.path()).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                IgnoreError::NotAFile {
+                    found: "a link",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_link_is_not_an_exclusion_file_whatever_it_leads_to() {
@@ -1345,7 +1345,7 @@ mod tests {
         let path = dir.path().join(FILE_NAME);
         std::fs::write(&path, "a\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let readable = File::open(&path).is_ok();
+        let readable = std::fs::File::open(&path).is_ok();
         let result = IgnoreRules::read(dir.path());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         if readable {

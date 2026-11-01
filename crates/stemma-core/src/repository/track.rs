@@ -125,10 +125,17 @@ fn with_slashes(path: &str, windows: bool) -> std::borrow::Cow<'_, str> {
 /// path that is only dots and slashes with at least one `.` part (`.`, `./`) is `.`. Nothing
 /// else changes: `..` stays, so does an absolute path, and an empty argument or one of slashes
 /// only (`""`, `//`) stays as it is, so that the core refuses it. A script with an empty
-/// variable must not track the whole directory. On Windows, where `\` separates names as `/`
-/// does, every `\` is read as `/` first.
+/// variable must not track the whole directory.
+///
+/// On Windows, where `\` separates names as `/` does, every `\` is read as `/` first, so that
+/// `\x` is the absolute path `/x` and `src\a.txt` is `src/a.txt`; the result has `/` only.
 pub fn normalize_path(path: &str) -> String {
-    let path = &*with_slashes(path, cfg!(windows));
+    normalize_path_for(path, cfg!(windows))
+}
+
+/// [`normalize_path`] for a platform: `windows` says whether `\` separates names.
+fn normalize_path_for(path: &str, windows: bool) -> String {
+    let path = &*with_slashes(path, windows);
     if path.starts_with('/') {
         return path.to_owned();
     }
@@ -153,9 +160,14 @@ pub fn normalize_path(path: &str) -> String {
 /// does not lead where the name says. An absolute path stays as it is, and so
 /// does an empty argument or one of slashes only, as in [`normalize_path`], so that a script with
 /// an empty variable does not track the whole subdirectory. With an empty `subdirectory`, this is
-/// [`normalize_path`]. On Windows, every `\` in `path` is read as `/` first.
+/// [`normalize_path`]. On Windows, every `\` in `path` is read as `/` first, as there.
 pub fn normalize_path_in(subdirectory: &str, path: &str) -> String {
-    let path = &*with_slashes(path, cfg!(windows));
+    normalize_path_in_for(subdirectory, path, cfg!(windows))
+}
+
+/// [`normalize_path_in`] for a platform: `windows` says whether `\` separates names.
+fn normalize_path_in_for(subdirectory: &str, path: &str, windows: bool) -> String {
+    let path = &*with_slashes(path, windows);
     if path.starts_with('/') || path.split('/').all(str::is_empty) {
         return path.to_owned();
     }
@@ -868,16 +880,30 @@ mod tests {
     #[test]
     fn backslashes_separate_names_only_where_the_platform_says_so() {
         assert_eq!(with_slashes("sub\\a.txt", true), "sub/a.txt");
-        assert_eq!(with_slashes("..\\x\\", true), "../x/");
         assert_eq!(with_slashes("sub\\a.txt", false), "sub\\a.txt");
         assert_eq!(with_slashes("a/b", true), "a/b");
-        #[cfg(windows)]
-        {
-            assert_eq!(normalize_path(".\\sub\\a.txt"), "sub/a.txt");
-            assert_eq!(normalize_path_in("src", "..\\a.txt"), "a.txt");
+        // The rules of Windows, on every host.
+        for (given, expected) in [
+            (".\\sub\\a.txt", "sub/a.txt"),
+            ("sub\\", "sub"),
+            ("sub/a\\b.txt", "sub/a/b.txt"),
+            (".\\", "."),
+            // Absolute for the core, which refuses it, and not "as given".
+            ("\\x", "/x"),
+            ("\\\\server\\share", "//server/share"),
+            // Only separators: stays refused, as `//` does.
+            ("\\", "/"),
+            ("", ""),
+        ] {
+            assert_eq!(normalize_path_for(given, true), expected, "{given:?}");
         }
-        #[cfg(unix)]
-        assert_eq!(normalize_path("sub\\a.txt"), "sub\\a.txt");
+        assert_eq!(normalize_path_in_for("src", "..\\a.txt", true), "a.txt");
+        // A second `..` would leave the repository: it stays, and the core refuses it.
+        assert_eq!(normalize_path_in_for("src", "..\\..\\x", true), "../x");
+        assert_eq!(normalize_path_in_for("src", "b\\c", true), "src/b/c");
+        // The rules of Unix: a backslash is a character of the name.
+        assert_eq!(normalize_path_for("sub\\a.txt", false), "sub\\a.txt");
+        assert_eq!(normalize_path_in_for("src", "..\\a", false), "src/..\\a");
     }
 
     #[test]

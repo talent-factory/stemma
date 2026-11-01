@@ -433,10 +433,14 @@ soweit sich das Argument umwandeln lässt: \type{a/../b} in \type{src} erscheint
 nennt sie so, wie sie übergeben wurden.
 Unter Windows trennt auch der Backslash die Namen eines Pfades, den eine Person übergibt:
 \type{src\a.txt} ist \type{src/a.txt}.
+Das geschieht zuerst: Ein absoluter Pfad wie \type{\x} erscheint daher als \type{/x}.
 Unter Unix ist der Backslash ein Zeichen des Namens und bleibt es.
-Eine Datei, die eine Junction oder ein symbolischer Link unter Windows vertritt,
-liest \type{track} nicht durch: Sie erscheint als Fehler, und der Inhalt, auf den sie zeigt,
-wird nicht gespeichert.
+Ein symbolischer Link oder eine Junction unter Windows, die am Ende eines Pfades steht,
+speichert \type{track} als Link, mit seinem Ziel und ohne den Inhalt, auf den er zeigt.
+Tritt ein solcher Eintrag erst während des Lesens an die Stelle einer Datei,
+bricht der Befehl mit einem Fehler ab.
+Ein Verzeichnis oberhalb der Datei, das in dieser Zeit durch eine Junction ersetzt wird,
+erkennt Windows nicht; der Befehl liest dann die Datei, auf die sie zeigt.
 
 \section{init}
 

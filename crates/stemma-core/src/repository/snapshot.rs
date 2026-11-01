@@ -414,12 +414,17 @@ fn is_link_target(content: &[u8]) -> bool {
 /// Reads the file that `lookup` saw, or returns `None` if it is gone. `fs::read` follows links, so
 /// a process that swaps the file or a directory above it for a link between the lookup and the read
 /// could lead it out of the working directory; the file that was opened must be the one that was
-/// looked at, which is checked by its device and inode where the file system has them. On Windows
-/// the file is opened without following a reparse point, and one that has taken its place is
-/// refused, as a link on Unix is by the inode.
+/// looked at, which is checked by its device and inode where the file system has them.
+///
+/// Windows gives less. The file is opened without following a reparse point, and the handle must
+/// be a regular file, so a link or a junction that has taken the place of the file is refused. A
+/// directory above the file that was swapped for a junction is followed, and so is another
+/// regular file in the place of the file: the identity of a file (the serial number of the
+/// volume and the index of the file) is not compared with the lookup, since the lookup gives no
+/// handle.
 fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotError> {
     use std::io::Read;
-    let mut file = match open_without_following(path) {
+    let mut file = match crate::open_without_following(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(SnapshotError::io("read the file", path, source)),
@@ -443,7 +448,7 @@ fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotEr
         let opened = file
             .metadata()
             .map_err(|source| SnapshotError::io("read the file", path, source))?;
-        if crate::is_reparse_point(&opened) || !opened.is_file() {
+        if !opened.is_file() {
             return Err(SnapshotError::io(
                 "read the file",
                 path,
@@ -451,32 +456,12 @@ fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotEr
             ));
         }
     }
-    #[cfg(not(any(unix, windows)))]
-    let _ = seen;
-    #[cfg(windows)]
+    #[cfg(not(unix))]
     let _ = seen;
     let mut content = Vec::new();
     file.read_to_end(&mut content)
         .map_err(|source| SnapshotError::io("read the file", path, source))?;
     Ok(Some(content))
-}
-
-/// Opens a file for reading. On Windows a reparse point (a symbolic link or a junction) is opened
-/// itself and not what it names, so that [`read_file`] can see it; elsewhere this is `File::open`.
-fn open_without_following(path: &Path) -> io::Result<fs::File> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
-    }
-    #[cfg(not(windows))]
-    {
-        fs::File::open(path)
-    }
 }
 
 /// Stores the content of a tracked file as a blob, or returns `None` if the file is gone or a
@@ -1384,6 +1369,50 @@ mod tests {
             "{error}"
         );
         assert_eq!(repository.refs().working_copy().unwrap(), before);
+    }
+
+    /// Makes a symbolic link, or says that the test must stop: it needs a right that a process
+    /// without developer mode does not have.
+    #[cfg(windows)]
+    fn symbolic_link(target: &Path, link: &Path) -> bool {
+        let made = std::os::windows::fs::symlink_file(target, link).is_ok();
+        if !made {
+            eprintln!("skipped: no right to create symbolic links");
+        }
+        made
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_in_the_place_of_a_file_is_not_read_through() {
+        let dir = TempDir::new();
+        write(&dir, "file", "one");
+        write(&dir, "target", "secret");
+        let seen = fs::symlink_metadata(dir.path().join("file")).unwrap();
+        fs::remove_file(dir.path().join("file")).unwrap();
+        if !symbolic_link(&dir.path().join("target"), &dir.path().join("file")) {
+            return;
+        }
+        let error = read_file(&dir.path().join("file"), &seen).unwrap_err();
+        assert!(error.to_string().contains("replaced"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_on_windows_is_saved_as_a_link_and_not_read_through() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a.txt", "one")]);
+        write(&dir, "target.txt", "secret");
+        fs::remove_file(dir.path().join("a.txt")).unwrap();
+        if !symbolic_link(Path::new("target.txt"), &dir.path().join("a.txt")) {
+            return;
+        }
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(
+            tracked(&repository),
+            [("a.txt".to_owned(), FileMode::Symlink)]
+        );
     }
 
     #[cfg(windows)]
