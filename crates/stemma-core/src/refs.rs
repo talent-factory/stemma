@@ -1243,8 +1243,8 @@ fn held_locks() -> MutexGuard<'static, Vec<(PathBuf, String)>> {
 
 /// Removes the lock file if it still holds the token.
 fn remove_if_own(path: &Path, token: &str) {
-    if fs::read(path).is_ok_and(|content| content == token.as_bytes()) {
-        let _ = fs::remove_file(path);
+    if fault::read(path).is_ok_and(|content| content == token.as_bytes()) {
+        let _ = fault::remove_file(path);
     }
 }
 
@@ -1305,7 +1305,8 @@ impl PurgeLock {
                 "{LOCK_HEADER}\nhost {host}\npid 0\ntoken {}\n",
                 unique_temp_name()
             );
-            let _ = fs::write(&self._lock.path, left);
+            // Best effort, as a crash is: an injected failure leaves the lock file as it was.
+            let _ = fault::write(&self._lock.path, left);
         }
         std::mem::forget(self);
     }
@@ -1631,7 +1632,7 @@ impl FsRefStore {
         // The lock exists now. If the token cannot be written, the lock is removed again, and the
         // error is reported.
         if let Err(error) = file.write_all(token.as_bytes()) {
-            let _ = fs::remove_file(&path);
+            let _ = fault::remove_file(&path);
             return Err(io_error("write the lock file", &path)(error));
         }
         held.push((path.clone(), token.clone()));
@@ -1968,7 +1969,7 @@ fn has_files_below(dir: &Path) -> Result<bool, RefError> {
 fn remove_empty_directories(dir: &Path, top: &Path) {
     let mut dir = dir;
     while dir != top && dir.starts_with(top) {
-        if fs::remove_dir(dir).is_err() {
+        if fault::remove_dir(dir).is_err() {
             return;
         }
         match dir.parent() {
@@ -2124,7 +2125,7 @@ impl FsRefStore {
         if let Some(empty) = &current.empty_directory {
             // Nothing is below it, and the lock is held, so no branch is lost. It goes before the
             // step, so that a failure here leaves no entry that names a move that cannot be made.
-            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+            fault::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
         }
         let done = match step() {
             Ok(done) => done,
@@ -2177,7 +2178,7 @@ impl FsRefStore {
         if let Some(empty) = &current.empty_directory {
             // Nothing is below it, and the lock is held, so no tag is lost. It goes before the
             // step, so that a failure here leaves no entry that names a tag that cannot be made.
-            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+            fault::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
         }
         let done = match step() {
             Ok(done) => done,
@@ -2584,7 +2585,7 @@ impl FsRefStore {
             });
         }
         if let Some(empty) = &current.empty_directory {
-            fs::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+            fault::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
         }
         let done = match step() {
             Ok(done) => done,
@@ -2732,7 +2733,7 @@ impl FsRefStore {
             return Ok(Logged::Unchanged);
         }
         for empty in &empty_directories {
-            match fs::remove_dir_all(empty) {
+            match fault::remove_dir_all(empty) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(io_error("remove the empty directory", empty)(error)),
@@ -2833,7 +2834,7 @@ impl FsRefStore {
                     // branch where the name goes (`a/` after `a/b`, with a dot file or an empty
                     // directory in it), which a plain removal of the parents does not clear.
                     if let Some(empty) = self.current(RefKind::Branch, name)?.empty_directory {
-                        fs::remove_dir_all(&empty)
+                        fault::remove_dir_all(&empty)
                             .map_err(io_error("remove the empty directory", &empty))?;
                     }
                     self.write_replacing(
@@ -2902,7 +2903,7 @@ impl FsRefStore {
         let mut changed = path
             .parent()
             .map_or_else(|| heads.clone(), Path::to_path_buf);
-        while changed != heads && fs::remove_dir(&changed).is_ok() {
+        while changed != heads && fault::remove_dir(&changed).is_ok() {
             match changed.parent() {
                 Some(parent) => changed = parent.to_path_buf(),
                 None => break,
@@ -3099,7 +3100,8 @@ impl RefStore for FsRefStore {
         }
         if let Some(empty) = current.empty_directory {
             // Nothing is below it, and the lock is held, so no tag is lost.
-            fs::remove_dir_all(&empty).map_err(io_error("remove the empty directory", &empty))?;
+            fault::remove_dir_all(&empty)
+                .map_err(io_error("remove the empty directory", &empty))?;
         }
         self.write_replacing(
             &self.reference_path(RefKind::Tag, name),
@@ -3161,7 +3163,8 @@ impl RefStore for FsRefStore {
         }
         if let Some(empty) = current.empty_directory {
             // Nothing is below it, and the lock is held, so no branch is lost.
-            fs::remove_dir_all(&empty).map_err(io_error("remove the empty directory", &empty))?;
+            fault::remove_dir_all(&empty)
+                .map_err(io_error("remove the empty directory", &empty))?;
         }
         self.write_replacing(
             &self.branch_path(name),

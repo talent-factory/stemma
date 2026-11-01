@@ -479,7 +479,7 @@ fn save(
     };
     let kind = metadata.file_type();
     let (mode, content) = if kind.is_symlink() {
-        let target = fs::read_link(&full)
+        let target = fault::read_link(&full)
             .map_err(|source| SnapshotError::io("read the link", &full, source))?;
         let target = target.to_str().ok_or_else(|| SnapshotError::Unsupported {
             path: file.path.clone(),
@@ -1090,6 +1090,34 @@ mod tests {
             tracked(&repository),
             [("target.txt".to_owned(), FileMode::Symlink)]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_cannot_be_read_is_an_error_and_not_an_empty_target() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("target.txt", "one")]);
+        fs::remove_file(dir.path().join("target.txt")).unwrap();
+        let link = dir.path().join("target.txt");
+        symlink("elsewhere", &link).unwrap();
+        let before = repository.refs().working_copy().unwrap();
+        let denied = fault::deny_reads_of(&link);
+        let result = repository.snapshot(&actor(), &AllowAll);
+        drop(denied);
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                SnapshotError::Io {
+                    operation: "read the link",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(repository.refs().working_copy().unwrap(), before);
     }
 
     #[cfg(unix)]

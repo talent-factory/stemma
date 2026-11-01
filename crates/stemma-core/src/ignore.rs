@@ -285,7 +285,7 @@ impl IgnoreRules {
 /// A missing directory has none. The whole directory is listed, so the answer does not depend on
 /// the order of the entries.
 fn misspelled_file(root: &Path) -> Result<Option<(String, bool)>, IgnoreError> {
-    let entries = match fs::read_dir(root) {
+    let entries = match fault::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(IgnoreError::io("list", root, source)),
@@ -1382,6 +1382,27 @@ mod tests {
         );
         assert!(error.io_error().is_some());
         assert!(error.to_string().contains("could not open"), "{error}");
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_listed_is_an_io_error_and_a_missing_one_has_no_rules() {
+        let dir = TempDir::new();
+        {
+            let _denied = fault::deny_reads_of(dir.path());
+            let error = IgnoreRules::read(dir.path()).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    IgnoreError::Io {
+                        operation: "list",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+        }
+        let missing = dir.path().join("missing");
+        assert_eq!(IgnoreRules::read(&missing).unwrap(), IgnoreRules::empty());
     }
 
     #[test]

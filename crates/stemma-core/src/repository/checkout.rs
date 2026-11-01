@@ -350,8 +350,9 @@ impl Repository {
             #[cfg(unix)]
             {
                 use std::os::unix::ffi::OsStrExt;
+                // A link that cannot be read counts as different, and the checkout writes it again.
                 return Ok(metadata.file_type().is_symlink()
-                    && fs::read_link(&full)
+                    && fault::read_link(&full)
                         .is_ok_and(|target| target.as_os_str().as_bytes() == expected.body()));
             }
         }
@@ -1891,6 +1892,24 @@ mod tests {
         let plan = repository.plan_checkout(None, to).unwrap();
         assert!(plan.is_empty(), "{plan:?}");
         assert_eq!(read(&dir, "same"), "1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_untracked_link_that_cannot_be_read_is_not_taken_for_done() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        let to = tree(&repository, &[("link", FileMode::Symlink, "target")]);
+        let plan = repository.plan_checkout(None, to).unwrap();
+        assert!(plan.is_empty(), "the link is there already: {plan:?}");
+        let _denied = fault::deny_reads_of(&link);
+        let error = repository.plan_checkout(None, to).unwrap_err();
+        assert!(
+            matches!(&error, CheckoutError::InTheWay { path } if path == "link"),
+            "{error}"
+        );
     }
 
     #[test]
