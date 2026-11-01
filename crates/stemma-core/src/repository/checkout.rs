@@ -560,7 +560,7 @@ impl TempFile {
         #[cfg(unix)]
         if mode == FileMode::Symlink {
             use std::os::unix::ffi::OsStrExt;
-            std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(content), &temp.full)
+            fault::symlink(std::ffi::OsStr::from_bytes(content), &temp.full)
                 .map_err(|source| io_error("create the link", &temp.full, source))?;
             pending.push(temp.full.clone());
             temp.armed = true;
@@ -1985,7 +1985,7 @@ mod tests {
         let directory = dir.path().join("d");
         let temp = temp_file(directory.join(LEFTOVER), &format!("d/{LEFTOVER}"));
         let error = {
-            let _mode = fault::deny_writes_in(&directory);
+            let _denied = fault::deny_writes_in(&directory);
             CheckoutError::Interrupted {
                 removed: 0,
                 written: 1,
@@ -2034,9 +2034,9 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         // Creating and removing a name fail alike, also for a file that is not there.
         let error = {
-            let _mode = fault::deny_writes_in(&directory);
+            let _denied = fault::deny_writes_in(&directory);
             match TempFile::create(&directory, "d/new", FileMode::File, b"new") {
-                Ok(_) => panic!("a file was created in a directory that cannot be searched"),
+                Ok(_) => panic!("a file was created in a directory that refuses new names"),
                 Err(error) => error,
             }
         };
@@ -2090,7 +2090,7 @@ mod tests {
         let discarded = TempFile::create(&directory, "d/a", FileMode::File, b"a").unwrap();
         let full = discarded.full.clone();
         let error = {
-            let _mode = fault::deny_writes_in(&directory);
+            let _denied = fault::deny_writes_in(&directory);
             discarded.discard(CheckoutError::ChangedSincePlan {
                 path: "d/a".to_owned(),
             })
@@ -2103,7 +2103,7 @@ mod tests {
         let dropped = TempFile::create(&directory, "d/b", FileMode::File, b"b").unwrap();
         let other = dropped.full.clone();
         {
-            let _mode = fault::deny_writes_in(&directory);
+            let _denied = fault::deny_writes_in(&directory);
             drop(dropped);
         }
         assert!(listed(&other));
@@ -2123,7 +2123,7 @@ mod tests {
             directory.join(LEFTOVER),
         ];
         let left = {
-            let _mode = fault::deny_writes_in(&directory);
+            let _denied = fault::deny_writes_in(&directory);
             remove_temp_files(&mut pending)
         };
         assert!(pending.is_empty());

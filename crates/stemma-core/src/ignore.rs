@@ -1315,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_that_cannot_be_opened_is_an_io_error_from_the_real_call() {
+    fn a_file_that_cannot_be_opened_is_an_io_error() {
         let dir = TempDir::new();
         let path = dir.path().join(FILE_NAME);
         std::fs::write(&path, "a\n").unwrap();

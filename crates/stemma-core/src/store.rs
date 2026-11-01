@@ -516,7 +516,7 @@ impl FsObjectStore {
         self.require_root()?;
         let algorithm = self.root.join("objects").join(PREFIX.trim_end_matches(':'));
         let mut ids = Vec::new();
-        let fan_outs = match fs::read_dir(&algorithm) {
+        let fan_outs = match fault::read_dir(&algorithm) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ids),
             Err(error) => return Err(io_error("list the objects in", &algorithm)(error)),
@@ -539,7 +539,7 @@ impl FsObjectStore {
                 continue;
             }
             let prefix = fan_out.file_name();
-            for object in fs::read_dir(&path).map_err(io_error("list the objects in", &path))? {
+            for object in fault::read_dir(&path).map_err(io_error("list the objects in", &path))? {
                 let object = object.map_err(io_error("list the objects in", &path))?;
                 let name = object.file_name();
                 let (Some(prefix), Some(rest)) = (prefix.to_str(), name.to_str()) else {
@@ -595,7 +595,7 @@ impl FsObjectStore {
             return Err(corrupt(CorruptReason::NotARegularFile));
         }
         let mut head = Vec::new();
-        match File::open(&path) {
+        match fault::open(&path) {
             Ok(file) => file
                 .take(MAX_HEADER)
                 .read_to_end(&mut head)
@@ -679,7 +679,7 @@ impl FsObjectStore {
             fs::set_permissions(&path, permissions)
                 .map_err(io_error("make the object file writable", &path))?;
         }
-        match fs::remove_file(&path) {
+        match fault::remove_file(&path) {
             Ok(()) => {}
             // Another remover was faster; it may not have flushed yet.
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -907,7 +907,7 @@ impl FsObjectStore {
         if !metadata.is_file() {
             return Err(corrupt(CorruptReason::NotARegularFile));
         }
-        let mut bytes = match fs::read(path) {
+        let mut bytes = match fault::read(path) {
             Ok(bytes) => bytes,
             // The object was removed after the check above.
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

@@ -2773,6 +2773,9 @@ mod tests {
         let sealed = stale.join("objects");
         fs::create_dir_all(&sealed).unwrap();
         fs::write(sealed.join("object"), b"x").unwrap();
+        // A second stale directory shows that the cleanup ran and went on after the first.
+        let free = dir.path().join(".stemma-init-2-0-0123456789abcdef");
+        fs::create_dir_all(free.join("objects")).unwrap();
         let denied = fault::deny_writes_in(&sealed);
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");
@@ -2783,6 +2786,7 @@ mod tests {
         result.unwrap();
         assert_eq!(repository.refs().working_copy().unwrap(), new);
         assert!(left, "what cannot be removed stays");
+        assert!(!free.exists(), "the cleanup ran and removed what it could");
     }
 
     #[cfg(unix)]
@@ -4549,7 +4553,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
-        let heads = dir.path().join(".stemma").join("refs").join("heads");
+        let heads = repository.metadata_dir().join("refs").join("heads");
         let denied = fault::deny_writes_in(&heads);
         let result = update(&repository, "main", None, a);
         drop(denied);
@@ -4584,7 +4588,7 @@ mod tests {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
-        let tags = dir.path().join(".stemma").join("refs").join("tags");
+        let tags = repository.metadata_dir().join("refs").join("tags");
         fs::create_dir_all(&tags).unwrap();
         let denied = fault::deny_writes_in(&tags);
         let tag = || {
