@@ -47,7 +47,16 @@ Prozesses und mit der des Standardbesitzers im Token, wie Git für Windows bei
 \type{safe.directory}; bei erhöhten Rechten ist das die Gruppe der Administratoren.
 Ein \type{.stemma} oberhalb im Wurzelverzeichnis eines Laufwerks lehnt Stemma dort
 zusätzlich ab, auch wenn es dem Konto gehört.
-Die Prüfung ist nicht frei von Wettläufen (ADR-009).
+Unter Unix prüft Stemma den Besitzer zusätzlich an dem Handle, das \type{open} hält,
+und liest \type{format} über dieses Handle.
+Ein \type{.stemma}, das nach dem Blick auf den Pfad ausgetauscht wird,
+lehnt die Suche so ab, bevor sie \type{format} liest.
+Einem Link an der Stelle von \type{.stemma} oder \type{format} folgt die Suche unter Unix
+nicht, auch wenn er dem Konto gehört, und ein \type{format}, das keine reguläre Datei ist,
+liest Stemma nicht: Eine FIFO blockiert den Befehl also nicht.
+Unter Windows bleibt die Prüfung auf dem Pfad, und auch unter Unix arbeiten die Speicher
+danach wieder über den Pfad; ein spätes Austauschen von \type{.stemma}
+bleibt ein offener Punkt (ADR-009).
 
 \starttyping
 .stemma/
@@ -2584,8 +2593,9 @@ Offen für spätere Phasen bleiben diese Punkte:
 \item Aufbewahrung und Garbage Collection kommen in einem Schritt,
 gemessen an einer echten Sitzung eines Agenten (ADR-007, ADR-011);
 bis dahin wächst der Speicher nur.
-\item Die Prüfung des Besitzers von \type{.stemma} ist nicht frei von Wettläufen,
-und \type{init} ersetzt unter Unix ein leeres \type{.stemma},
+\item Die Prüfung des Besitzers von \type{.stemma} ist unter Windows nicht frei von Wettläufen,
+und unter Unix arbeiten die Speicher nach dem Öffnen wieder über den Pfad (STEMMA-193).
+Dazu ersetzt \type{init} unter Unix ein leeres \type{.stemma},
 das ein anderer Prozess im falschen Augenblick anlegt (ADR-009).
 \item Die Regel, dass jeder Akteur in einer eigenen Arbeitskopie arbeitet,
 setzt der Kern noch nicht durch; das kommt mit der zweiten Arbeitskopie in Phase~3 (ADR-010).

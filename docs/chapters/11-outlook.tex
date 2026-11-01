@@ -20,7 +20,8 @@ und einen Befehl, der eine gebrochene Hash-Kette repariert, gibt es nicht (ADR-0
 Die Arbeitskopie gehört einem Akteur, doch diese Regel wird noch nicht erzwungen (ADR-010).
 Ein Repository ohne die Datei \type{working-copy} lässt sich nicht reparieren,
 und eine verfolgte Datei, die zu einer Spezialdatei wurde, blockiert jeden Snapshot.
-Die Prüfung des Besitzers von \type{.stemma} ist nicht frei von Wettläufen,
+Die Prüfung des Besitzers von \type{.stemma} ist unter Windows nicht frei von Wettläufen,
+unter Unix arbeiten die Speicher nach dem Öffnen wieder über den Pfad (STEMMA-193),
 und eine Liste vertrauenswürdiger Verzeichnisse wie bei Git fehlt (ADR-009).
 Die Ausschlussdatei vergleicht Namen ohne Rücksicht darauf,
 ob das Dateisystem Gross- und Kleinschreibung oder Unicode-Formen gleichsetzt,

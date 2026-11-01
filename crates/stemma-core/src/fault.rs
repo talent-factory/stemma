@@ -376,6 +376,12 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
     File::open(path)
 }
 
+/// Opens `path` with `options` for reading, failing if the injection denies reads of `path`.
+pub(crate) fn open_with(options: &OpenOptions, path: &Path) -> io::Result<File> {
+    check_read(path)?;
+    options.open(path)
+}
+
 /// Opens the guard file at `path` for reading and writing, creating it, and falls back to
 /// reading only, as the lock does. Fails if the injection denies reads of `path`; a file that is
 /// not there is created only if the injection does not deny writes in its directory, and one that

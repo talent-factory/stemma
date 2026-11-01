@@ -150,11 +150,31 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       Consequences.
 - [x] The owner of a `.stemma` at the start: checked on Unix as well, so `cd /tmp` does not
       open a `/tmp/.stemma` of another user (STEMMA-77), see Consequences.
-- [ ] The owner is checked on the path, before `open` and, at the start, after it too, and not
-      on a handle that `open` holds. A `.stemma` that appears or is swapped between the checks
-      and the open is therefore read before it is refused, and a `format` that is a FIFO would
-      block that read. Closing it needs `O_NOFOLLOW`, the owner of that handle (`fstat`), and a
-      `read_format` that refuses anything but a regular file (STEMMA-88).
+- [x] On Unix the owner is checked on the handle that `open` holds (STEMMA-88): `discover` opens
+      `.stemma` with `O_NOFOLLOW`, reads its owner from that handle (`fstat`), and opens `format`
+      relative to it, also without following a link, so a `.stemma` that is swapped after the
+      look at its path is refused before `format` is read. The look at the path stays as the
+      first, cheap refusal and is repeated after the open, above the start as at it. A link in
+      the place of `.stemma` or `format` is not followed by `discover`, even when the user
+      made it (`NotADirectory`, `FormatNotRegular`), as a link is refused on Windows
+      (`ReparsePoint`). `Repository::open` checks no owner and follows both links. Both read
+      `format` only if it is a regular file, and open it without waiting for a writer, so on
+      Unix a FIFO or a device fails with `FormatNotRegular` at once and does not block (the
+      error of a directory in its place changed from `Io` to it; on Windows a directory still
+      gives `Io`). A link that leads nowhere is in the way and not a missing `format`.
+      Where the system has no `O_PATH` (Linux, Android, and FreeBSD have it; macOS and the
+      other systems do not) a `.stemma` that the user may search but not read cannot be held.
+      The directory is then looked at by its path and must belong to the user, `format` is
+      opened by its path and must belong to the user (`FormatOwner`) and have no other name
+      (`FormatShared`: a hard link in the directory of another user would pass the owner
+      test), and the directory must still be the same one afterwards (`Changed`). This is
+      weaker than the handle: a swap to another directory and back between the looks is not
+      seen.
+      Windows checks the owner on the path, between the look and the call.
+- [ ] The stores of a repository work by path. The handle ends once `format` is read, so a
+      `.stemma` that is swapped after the open is used without a check, in the search above
+      the start as at it. Closing it needs the stores to work relative to a held directory
+      handle (`openat`); that is a change to every store (STEMMA-193).
 - [ ] A list of trusted directories, as Git's `safe.directory`, for a repository that several
       users share on one machine; it needs the configuration file below.
 - [x] On Windows the owner of a `.stemma` is checked by its SID, so places that all users may
