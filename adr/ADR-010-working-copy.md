@@ -108,6 +108,43 @@ art, not a template (ADR-015).
     commit), and when the branch is not at the parent of the working-copy commit: a commit on
     top of that parent would drop what the branch has. A rebase (phase 3) brings the two
     together.
+- **`switch` changes the branch while the working-copy commit is empty** *(confirmed, implemented
+  in `Repository::switch` and `stemma switch`; STEMMA-167)*. `switch <name>` makes HEAD name an
+  existing branch, `switch -c <name> [<start>]` makes the branch (at `<start>`, a branch or a
+  commit, by default at the commit that HEAD leads to) and switches to it, and
+  `switch --detach <commit-or-branch>` makes HEAD name a commit (`Head::Detached`). A name that
+  does not exist is an error without `-c`, and a name that exists is an error with it. Details:
+  - **A snapshot comes first**, as for every command that changes something. Then the
+    working-copy commit `W` must be *empty* (the tree of its first parent, or the empty tree if it
+    has none, as for `commit` and `status`). If it is not, the command is refused with a message
+    to commit first; the snapshot stays, so nothing is lost. A switch that carries the changes
+    over replaces the refusal later.
+  - **A new, empty working-copy commit** `W'` starts on the tip `T` of the target: the tree of
+    `T`, the only parent `T`, an empty message, and a change ID of its own. `W` stays reachable
+    through the log only (ADR-011), as the old working-copy commit does after a `commit`.
+  - **One entry holds all moves** (operation `switch`): HEAD, the working-copy commit `W` to
+    `W'`, and for `-c` the branch from nothing to `T`. The order is that of a restore
+    (ADR-013): the checks and the plan, the entry, the files, then the pointers (the branch, the
+    working-copy commit, HEAD last). The checkout layer of ADR-013 is used unchanged, from the
+    tree of `W` to the tree of `T`; equal trees move only the pointers. A file that is not
+    tracked and in the way of a path of `T` is found by the plan, which runs before the snapshot
+    when `W` is empty, so that nothing is written, not even a snapshot; the plan is made again
+    under the lock.
+  - **Switching to the branch that HEAD names is not a change**: the command ends with code 0 and
+    the line `Already on <name>`, with no snapshot and no entry.
+  - **A stop after the files is repeated by the same command.** The entry is written before the
+    files, so a stop leaves the files of `T` in the directory and the pointers old, as for a
+    restore. A snapshot would save those files as changes of `W` and `W` would then be refused as
+    not empty, so the repeat is recognised before it takes a snapshot: the newest entry is a
+    `switch` whose pointers are all at their old values and whose result is the one asked for
+    (the same HEAD, the same new branch, and a working-copy commit that is a child of `T`). The
+    repeat takes no snapshot and uses that working-copy commit again, so its change ID is kept,
+    and writes an entry of its own. The error of a stop after the entry says to run the same
+    switch again before any other command.
+  - **`commit` stays refused on a detached HEAD**, and its message points to `switch -c <name>`.
+  - **The level** of `switch` is 2, like `restore` (ADR-004): it moves refs and writes files in
+    the working copy. The command has the option `--take-over` of the other commands that take a
+    snapshot, and no `--json`.
 - **`status` takes the snapshot and compares the commit with its parent** *(confirmed,
   implemented in `Repository::status` and `stemma status`)*.
   Like every command that does not only read the log,
@@ -206,8 +243,8 @@ art, not a template (ADR-015).
   (`status` checks before it reads the exclusion file, and the snapshot again under the lock).
   The message names the owner and, for a human, the option `--take-over`; an agent is told to
   ask a human. The option is on the commands that take a snapshot (`track`, `commit`,
-  `status`, `diff`, `op restore`); `purge --apply` has none, and a person who has to take over
-  runs `status --take-over` first. The take-over is part of the snapshot of the command
+  `status`, `diff`, `op restore`, `switch`); `purge --apply` has none, and a person who has to
+  take over runs `status --take-over` first. The take-over is part of the snapshot of the command
   (`Repository::taking_over`): it is decided before a file is read (an agent is refused, and
   the authorizer is asked for the operation `take-over`) and made after the files are read and
   the tree is written, just before the move. A command whose own checks fail first, such as a
@@ -236,15 +273,18 @@ art, not a template (ADR-015).
 - [x] A branch that someone moved to an older version of the working-copy commit that has a
       message, or a working-copy commit that `op restore` put back, looked like a `commit` that
       stopped, and the next `commit` finished it. The log decides it now (STEMMA-76).
-- [ ] A commit with an empty tree as an allowed empty commit, a commit while HEAD names a commit,
-      and a commit while the branch has moved (a rebase, phase 3) are refused today.
+- [ ] A commit with an empty tree as an allowed empty commit, a commit while HEAD names a commit
+      (its message points to `switch -c`), and a commit while the branch has moved (a rebase,
+      phase 3) are refused today.
+- [ ] `switch` refuses a working-copy commit that holds changes. Carrying them to the target is a
+      slice of its own (phase 3).
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
       does when the working-copy commit has one (phase 3).
 
 - [x] Which commands take a snapshot. The commands that change something take one first:
-      `track`, `commit`, `op restore` (ADR-013), and `purge --apply` (ADR-014); `status` takes
-      one, as it reports the state of the files. The commands that only read take none, as a
-      snapshot adds an entry and would change what they are about to show: `op log`,
+      `track`, `commit`, `switch`, `op restore` (ADR-013), and `purge --apply` (ADR-014);
+      `status` takes one, as it reports the state of the files. The commands that only read take
+      none, as a snapshot adds an entry and would change what they are about to show: `op log`,
       `op verify`, the plan of `purge`, and `op restore --dry-run` (STEMMA-77). The path `.` of
       `track` tracks every file of the repository directory, secrets included, unless
       `.stemmaignore` excludes them (ADR-012).

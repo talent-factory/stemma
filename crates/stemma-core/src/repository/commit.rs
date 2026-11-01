@@ -465,7 +465,8 @@ impl fmt::Display for CommitError {
             Self::EmptyMessage => f.write_str("the message of a commit must not be empty"),
             Self::DetachedHead(commit) => write!(
                 f,
-                "HEAD names the commit {commit} and not a branch, so there is no branch to commit to"
+                "HEAD names the commit {commit} and not a branch, so there is no branch to commit to; \
+                 `stemma switch -c <name>` starts a branch here"
             ),
             Self::NothingToCommit => {
                 f.write_str("there is nothing to commit: no tracked file changed")

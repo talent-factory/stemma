@@ -83,8 +83,8 @@ use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, InitError, InitOptions, OpenError, PurgeError, PurgePlan, Purged,
-    Repository, RestoreError, RestorePlan, SnapshotError, Status, StatusError, TrackError,
-    Tracking, UpdateError,
+    Repository, RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError,
+    SwitchError, SwitchTarget, Switched, TrackError, Tracking, UpdateError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -110,6 +110,8 @@ enum Command {
     Track(TrackArgs),
     /// Name the working-copy commit and start a new one
     Commit(CommitArgs),
+    /// Change the branch that HEAD names, or detach HEAD, while the working-copy commit is empty
+    Switch(SwitchArgs),
     /// Show what the working copy changes and which files are not tracked
     Status(StatusArgs),
     /// Show the changes between two commits, or between a commit and the working copy
@@ -404,6 +406,61 @@ struct CommitArgs {
 }
 
 #[derive(Debug, Args)]
+struct SwitchArgs {
+    /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch
+    /// or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at
+    #[arg(value_name = "NAME", value_parser = parse_revision)]
+    target: Revision,
+
+    /// With `-c`: where the new branch starts, a branch or a commit (`b3:` and 64 hexadecimal
+    /// digits); by default the commit that HEAD leads to
+    #[arg(value_name = "START", value_parser = parse_revision, requires = "create")]
+    start: Option<Revision>,
+
+    /// Make the branch NAME and change to it
+    #[arg(short = 'c', long = "create", conflicts_with = "detach")]
+    create: bool,
+
+    /// Detach HEAD at the commit, so that it names the commit and not a branch
+    #[arg(long)]
+    detach: bool,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. The snapshot and the switch are made by this actor
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
+}
+
+/// Reads a branch name, or a commit by its ID if the text starts with `b3:` (a branch name cannot
+/// hold a colon).
+fn parse_revision(text: &str) -> Result<Revision, String> {
+    if text.starts_with("b3:") {
+        text.parse::<ObjectId>()
+            .map(Revision::Commit)
+            .map_err(|error| format!("invalid commit ID: {error}"))
+    } else {
+        text.parse::<BranchName>()
+            .map(Revision::Branch)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug, Args)]
 struct StatusArgs {
     /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
@@ -604,6 +661,18 @@ enum CliError {
     /// The restore was refused or stopped. [`RestoreError::pointer_moved`] says whether a pointer
     /// moved; the error says what is in the log and what state the files are in.
     Restore(RestoreError),
+    /// The switch was refused or stopped. [`SwitchError::pointer_moved`] says whether a pointer
+    /// moved; the error says what is in the log and what state the files are in.
+    Switch(SwitchError),
+    /// The switch was made or was not needed, but the result could not be written to the output.
+    SwitchOutput {
+        /// The entry of the switch, if one was made.
+        switched: Option<u64>,
+        /// The entry of the snapshot that came first, if one was made.
+        snapshot: Option<u64>,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The restore was made or planned, but the result could not be written to the output.
     RestoreOutput {
         /// The entry of the restore, if one was made.
@@ -743,6 +812,7 @@ impl CliError {
             | Self::Status(StatusError::Snapshot(error))
             | Self::Diff(DiffError::Snapshot(error))
             | Self::Restore(RestoreError::Snapshot(error))
+            | Self::Switch(SwitchError::Snapshot(error))
             | Self::ApplyPurge(ApplyPurgeError::Snapshot(error)) => Some(error),
             _ => None,
         }
@@ -769,6 +839,12 @@ impl CliError {
             }
             | Self::RestoreOutput {
                 snapshot: Some(_), ..
+            }
+            | Self::SwitchOutput {
+                switched: Some(_), ..
+            }
+            | Self::SwitchOutput {
+                snapshot: Some(_), ..
             } => ExitCode::from(3),
             // The take-over is made, but not flushed; the command stopped there.
             error
@@ -781,6 +857,7 @@ impl CliError {
                 ExitCode::from(3)
             }
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
+            Self::Switch(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
@@ -799,6 +876,7 @@ impl CliError {
             Self::Status(error) => by_kind(error.kind()),
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
+            Self::Switch(error) => by_kind(error.kind()),
             Self::History(error) => by_kind(error.kind()),
             Self::Tag(error) => by_kind(error.kind()),
             Self::TagRefs(error) => by_kind(error.kind()),
@@ -823,6 +901,7 @@ impl CliError {
             | Self::Tui { .. }
             | Self::DiffOutput { .. }
             | Self::RestoreOutput { .. }
+            | Self::SwitchOutput { .. }
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
             | Self::LogWrite { .. }
@@ -997,6 +1076,25 @@ impl fmt::Display for CliError {
                 }
             }
             Self::Restore(error) => error.fmt(f),
+            Self::Switch(error) => error.fmt(f),
+            Self::SwitchOutput {
+                switched,
+                snapshot,
+                source,
+            } => {
+                match switched {
+                    Some(entry) => write!(f, "switched as entry {entry} of the operation log")?,
+                    None => write!(f, "nothing was switched")?,
+                }
+                if let Some(saved) = snapshot {
+                    write!(f, " (the working copy was saved first as entry {saved})")?;
+                }
+                write!(f, ", but the result could not be written: {source}")?;
+                match switched {
+                    Some(entry) => write!(f, "; to undo it run `stemma op restore {entry}`"),
+                    None => Ok(()),
+                }
+            }
             Self::RestoreOutput {
                 restored,
                 snapshot,
@@ -1142,6 +1240,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Init(args) => init(args, out).map(|()| ExitCode::SUCCESS),
         Command::Track(args) => track(args, out).map(|()| ExitCode::SUCCESS),
         Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Switch(args) => switch(args, out).map(|()| ExitCode::SUCCESS),
         Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
         Command::Diff(args) => diff(args, out),
         Command::Log(args) => show_log(args, out).map(|()| ExitCode::SUCCESS),
@@ -1186,6 +1285,106 @@ impl Drop for TakeOverNote<'_> {
             );
         }
     }
+}
+
+/// Changes the branch that HEAD names, makes a branch and changes to it (`-c`), or detaches HEAD
+/// (`--detach`), while the working-copy commit is empty (ADR-010). The core takes the snapshot
+/// first and refuses a working-copy commit that holds changes. The result is written before an
+/// error that follows a switch that was made (exit code 3), so that a script finds the entry that
+/// undoes it. A closed pipe is no failure for "already on", and it is one after a switch, because
+/// the output is the only place that names the entry.
+fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    // A usage error comes first, as for the errors of the parser: before the actor is read or the
+    // repository is looked for.
+    let target = match (args.detach, args.create, args.target) {
+        (true, _, revision) => SwitchTarget::Detach(revision),
+        (false, true, Revision::Branch(name)) => SwitchTarget::Create {
+            name,
+            start: args.start,
+        },
+        (false, false, Revision::Branch(name)) => SwitchTarget::Existing(name),
+        (false, _, Revision::Commit(id)) => Cli::command()
+            .bin_name("stemma")
+            .find_subcommand_mut("switch")
+            .expect("the switch command exists")
+            .error(
+                ErrorKind::ValueValidation,
+                format!("{id} is a commit and not a branch name; `--detach` detaches HEAD at it"),
+            )
+            .exit(),
+    };
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
+    match repository.switch(&target, &actor, &AllowAll) {
+        Ok(Switched::AlreadyOn(name)) => {
+            write_switch(out, &format!("Already on {name}\n"), None, None)
+        }
+        Ok(Switched::Done {
+            snapshot, entry, ..
+        }) => write_switch(
+            out,
+            &switched_text(&target, snapshot.as_deref(), &entry),
+            Some(entry.number()),
+            snapshot.as_deref().map(oplog::Entry::number),
+        ),
+        Err(error) => {
+            if error.made() {
+                if let Some(entry) = error.entry() {
+                    // The message of the error names the entries too, so a failure to write is
+                    // not reported on top of it.
+                    let _ =
+                        out.write_all(switched_text(&target, error.snapshot(), entry).as_bytes());
+                }
+            }
+            Err(CliError::Switch(error))
+        }
+    }
+}
+
+/// Writes the result of a switch. `switched` and `snapshot` are the entries that the call made.
+fn write_switch(
+    out: &mut dyn Write,
+    text: &str,
+    switched: Option<u64>,
+    snapshot: Option<u64>,
+) -> Result<(), CliError> {
+    match out.write_all(text.as_bytes()) {
+        Ok(()) => Ok(()),
+        // The reader of a pipe has had enough, and nothing was made that only this text names.
+        Err(error)
+            if error.kind() == io::ErrorKind::BrokenPipe
+                && switched.is_none()
+                && snapshot.is_none() =>
+        {
+            Ok(())
+        }
+        Err(source) => Err(CliError::SwitchOutput {
+            switched,
+            snapshot,
+            source,
+        }),
+    }
+}
+
+/// What a switch did: the snapshot, the move, and how to undo it.
+fn switched_text(
+    target: &SwitchTarget,
+    snapshot: Option<&oplog::Entry>,
+    entry: &oplog::Entry,
+) -> String {
+    let what = match target {
+        SwitchTarget::Existing(name) => format!("Switched to branch {name}"),
+        SwitchTarget::Create { name, .. } => format!("Switched to a new branch {name}"),
+        SwitchTarget::Detach(revision) => format!("Detached HEAD at {revision}"),
+    };
+    format!(
+        "{}{what} as entry {}\nTo undo it: stemma op restore {}\n",
+        saved_text(snapshot),
+        entry.number(),
+        entry.number()
+    )
 }
 
 /// Purges a blob (ADR-014), or shows what that would do. The core refuses an agent before it

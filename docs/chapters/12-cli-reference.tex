@@ -13,7 +13,9 @@ ein Befehl berührt: das Arbeitsverzeichnis, den Working-Copy-Commit,
 die Zeiger (Branch, HEAD und Tags) oder das Operation Log.
 Der Zeiger auf den Working-Copy-Commit gehört zur Zone des Working-Copy-Commits.
 Bei \type{op restore} hängt es vom Eintrag ab, welche Zeiger und Dateien sich bewegen;
-die Zeile zeigt den Höchstfall. Bei \type{diff} ist der Working-Copy-Commit als Seite der
+die Zeile zeigt den Höchstfall. Bei \type{switch} bewegt sich ein neuer Branch nur mit
+\type{-c}, und die Dateien nur, wenn sich die Bäume unterscheiden; auch hier zeigt die Zeile
+den Höchstfall. Bei \type{diff} ist der Working-Copy-Commit als Seite der
 Höchstfall: Der Snapshot ändert nur dann etwas, wenn sich eine verfolgte Datei geändert hat,
 und bei zwei Commits ändert der Befehl nichts.
 Bei \type{log} liest der Befehl nur die Commits ab dem Working-Copy-Commit;
@@ -126,8 +128,8 @@ command again with `--take-over` to make `human bob` its owner
 
 Einem Agenten rät die Meldung stattdessen, einen Menschen zu fragen.
 
-Die Option \type{--take-over} von \type{track}, \type{commit}, \type{status}, \type{diff} und
-\type{op restore} übernimmt die Arbeitskopie im Snapshot des Befehls.
+Die Option \type{--take-over} von \type{track}, \type{commit}, \type{switch}, \type{status},
+\type{diff} und \type{op restore} übernimmt die Arbeitskopie im Snapshot des Befehls.
 Entschieden wird vor der ersten gelesenen Datei: Ein Agent wird abgewiesen, und der Autorisierer
 wird nach der Operation \type{take-over} mit dem Ziel \type{working-copy} gefragt.
 Gemacht wird die Übernahme erst, wenn der Snapshot die Dateien gelesen hat, direkt vor seiner
@@ -216,7 +218,7 @@ gehört auch dazu: Der Befehl kann ein falsches Argument nicht von einem Schaden
 Meist hat der Befehl nichts geändert. Zwei Spuren können die Codes 1, 5 und 6 hinterlassen:
 einen Eintrag für eine Zeigerbewegung,
 die nicht stattfand (\type{op log} markiert ihn mit \type{!}),
-und bei den Befehlen \type{commit}, \type{status}, \type{diff}, \type{op restore}
+und bei den Befehlen \type{commit}, \type{switch}, \type{status}, \type{diff}, \type{op restore}
 und \type{purge --apply}
 den Eintrag des
 Snapshots, den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein erneuter
@@ -339,6 +341,20 @@ aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesic
 \startxcell Nicht wiederholen; \type{stemma tag} zeigt, welche Tags es gibt. \stopxcell
 \stopxrow
 \startxrow
+\startxcell[width=0.19\textwidth] \type{switch} \stopxcell
+\startxcell[width=0.41\textwidth] Der Wechsel ist gemacht,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen;
+die Ausgabe oder die Meldung nennt den Eintrag, der den Wechsel zurücksetzt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{switch} \stopxcell
+\startxcell[width=0.41\textwidth] Der Eintrag steht, die Dateien liegen auf dem Stand des Ziels,
+aber kein Zeiger oder nur ein Teil hat sich bewegt. \stopxcell
+\startxcell Denselben Aufruf wiederholen, bevor ein anderer Befehl läuft;
+er nimmt dann keinen Snapshot. \stopxcell
+\stopxrow
+\startxrow
 \startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
 \startxcell[width=0.41\textwidth] Nur ein Teil der Zeiger hat sich bewegt
 (\type{Half made}). \stopxcell
@@ -391,8 +407,8 @@ und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
 \stopxtable
 \stopplacetable
 
-{\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{status},
-\type{op restore}, \type{diff} mit dem Working-Copy-Commit),
+{\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{switch},
+\type{status}, \type{op restore}, \type{diff} mit dem Working-Copy-Commit),
 nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
 und hält sie bis zu seiner letzten Zeigerbewegung, also mindestens so lange, wie sein Snapshot
 dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
@@ -424,7 +440,8 @@ Was sich nicht entfernen lässt, bleibt, ohne dass der Befehl scheitert;
 der nächste versucht es wieder.
 
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
-lehnen \type{track}, \type{commit}, \type{status}, \type{op restore} und \type{diff} mit
+lehnen \type{track}, \type{commit}, \type{switch}, \type{status}, \type{op restore} und
+\type{diff} mit
 dem Working-Copy-Commit ab, wenn sie die Sperre nehmen,
 also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
 nennt das Journal, \type{stemma purge --resume} und \type{--abort}.
@@ -775,6 +792,106 @@ das bringt die alten Dateien und lässt den Branch stehen.
 \starttyping
 stemma commit -m "Add the parser" --actor "human daniel"
 stemma commit -C projekt -m "Fix the build"
+\stoptyping
+
+\section{switch}
+
+Wechselt den Branch, auf den HEAD zeigt, oder löst HEAD vom Branch (ADR-010).
+
+\starttyping
+stemma switch NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+stemma switch -c NAME [START] [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+stemma switch --detach COMMIT-ODER-BRANCH [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+\stoptyping
+
+\startitemize
+\item {\bf NAME:} Ohne Option der Branch, zu dem HEAD wechselt; er muss bestehen.
+Mit \type{-c} der Name des neuen Branchs, der noch nicht bestehen darf.
+Eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) ist hier kein Name und ein Aufruffehler
+(Exit-Code 2).
+\item {\bf START:} Nur mit \type{-c}. Ein Branch oder ein Commit (\type{b3:} und 64
+Hexadezimalziffern), auf dem der neue Branch beginnt. Ohne START beginnt er auf dem Commit,
+zu dem HEAD führt: auf der Spitze des Branchs von HEAD oder auf dem abgekoppelten Commit.
+\item {\bf \type{-c}, \type{--create}:} Legt den Branch an und wechselt zu ihm.
+Besteht der Name schon, ist es ein Fehler (Exit-Code 1).
+\item {\bf \type{--detach} COMMIT-ODER-BRANCH:} Löst HEAD vom Branch, sodass er den Commit nennt,
+auf den der Branch zeigt, oder den angegebenen Commit. Mit \type{-c} zusammen ist es ein
+Aufruffehler (Exit-Code 2).
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot und der
+Eintrag des Wechsels tragen diesen Akteur.
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie im Snapshot des Befehls
+(siehe {\bf Eigentümer der Arbeitskopie} oben).
+\stopitemize
+
+Der Befehl hat keine JSON-Form.
+
+{\bf Verhalten.} Der Befehl löst das Ziel auf und prüft alles, was nichts schreibt;
+dazu gehört, dass keine Datei im Weg steht, die kein Commit verfolgt.
+Dann speichert er die verfolgten Dateien wie ein Snapshot
+(Operation \type{snapshot}, eigener Eintrag).
+Ist der Working-Copy-Commit danach leer, sein Baum also der seines ersten Elternteils,
+entsteht auf der Spitze des Ziels ein neuer, leerer Working-Copy-Commit mit dem Baum der Spitze
+und einer neuen Change-ID.
+Die Checkout-Schicht bringt das Arbeitsverzeichnis auf diesen Baum (ADR-013);
+sind die Bäume gleich, schreibt sie nichts.
+Im Eintrag \type{switch} stehen alle Bewegungen: HEAD, der Working-Copy-Commit und bei \type{-c}
+der neue Branch. Die Reihenfolge ist wie beim \type{op restore}: erst der Eintrag, dann die
+Dateien, dann die Zeiger (der Branch, der Working-Copy-Commit, zuletzt HEAD).
+
+Hat der Working-Copy-Commit Änderungen, lehnt der Befehl ab und nimmt sie nicht mit.
+Die Änderungen stehen im Snapshot, und die Meldung nennt dessen Eintrag.
+
+Die Ausgabe nennt den Eintrag und wie sich der Wechsel zurücksetzen lässt:
+
+\starttyping
+Switched to a new branch feature as entry 14
+To undo it: stemma op restore 14
+\stoptyping
+
+Die erste Zeile heisst \type{Switched to branch NAME} bei einem bestehenden Branch,
+\type{Switched to a new branch NAME} bei \type{-c} und \type{Detached HEAD at ZIEL} bei
+\type{--detach}. Hat der Snapshot einen Eintrag geschrieben, steht davor die Zeile
+\type{Saved the working copy first as entry N}.
+Zeigt HEAD schon auf den Branch, schreibt der Befehl \type{Already on NAME}, endet mit
+Exit-Code 0 und schreibt weder einen Snapshot noch einen Eintrag.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem unbekannten Branch (die Meldung nennt
+\type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Commit, den der
+Objektspeicher nicht hat, bei einem Branch von HEAD ohne Commit, wenn \type{-c} keinen START hat,
+und bei einem offenen Purge.
+Ebenso endet er, wenn eine Datei im Weg steht, die kein Commit verfolgt: Die Meldung nennt den Pfad,
+und der Befehl schreibt nichts, auch keinen Snapshot.
+Mit Exit-Code 1 endet er auch bei einem Working-Copy-Commit mit Änderungen;
+das lässt den Snapshot zurück, und die Meldung nennt dessen Eintrag.
+Ein erneuter Aufruf ist unbedenklich, sobald die Änderungen committet sind.
+Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
+
+Scheitert das Schreiben der Dateien oder die erste Zeigerbewegung, nachdem der Eintrag im Log
+steht, endet der Befehl mit Exit-Code 1 (bei einer gehaltenen Sperre mit 6).
+Die Dateien liegen dann ganz oder zum Teil auf dem Stand des Ziels, die Zeiger sind alt,
+und der Eintrag steht für einen Wechsel, der nicht stattfand.
+Ein Snapshot würde diese Dateien als Änderung des alten Working-Copy-Commits speichern.
+Darum nennt die Meldung den Aufruf: Derselbe Wechsel ist noch einmal zu machen, bevor ein
+anderer Befehl läuft. Der zweite Aufruf erkennt den Eintrag, nimmt keinen Snapshot und
+benutzt den Working-Copy-Commit des Eintrags weiter.
+Hat sich nur ein Teil der Zeiger bewegt, endet der Befehl mit Exit-Code 3, und derselbe
+Aufruf bewegt die übrigen.
+
+Mit Exit-Code 3 endet der Befehl auch, wenn der Wechsel gemacht ist,
+aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
+Ein Skript wiederholt ihn dann nicht; die Zeile mit dem Eintrag steht, wenn möglich, vor dem
+Fehler auf der Standardausgabe. Schliesst der Leser der Ausgabe die Pipe früh,
+endet der Befehl bei \type{Already on} mit Exit-Code 0 und nach einem Wechsel mit Exit-Code 3.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma switch -c feature --actor "human daniel"
+stemma switch main --actor "human daniel"
+stemma switch -c fix b3:4a0b66... --actor "human daniel"
+stemma switch --detach main -C projekt --actor "human daniel"
 \stoptyping
 
 \section{status}

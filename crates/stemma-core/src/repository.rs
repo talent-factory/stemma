@@ -35,6 +35,7 @@ pub(crate) use purge::fuzz_journal;
 mod restore;
 mod snapshot;
 mod status;
+mod switch;
 mod track;
 
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};
@@ -46,6 +47,7 @@ pub use purge::{
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
+pub use switch::{Revision, SwitchError, SwitchTarget, Switched};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
