@@ -338,7 +338,9 @@ fn describe(metadata: &Metadata) -> &'static str {
     }
 }
 
-/// Whether two descriptions are of the same file. Where the platform gives no identity, they are.
+/// Whether two descriptions are of the same file. Where the platform gives no identity, they are:
+/// on Windows, only `is_file` of the opened handle in [`IgnoreRules::read`] refuses a link that
+/// has taken the place of the file, and another regular file in its place is not seen.
 fn same_file(first: &Metadata, second: &Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -1273,12 +1275,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_link_is_not_an_exclusion_file_on_windows() {
+        // This is the check of the description before the open; the check of the handle after
+        // it (`is_file` in `read`) needs a swap in between and has no test.
         let dir = TempDir::new();
         std::fs::write(dir.path().join("rules"), "a\n").unwrap();
         let link = dir.path().join(FILE_NAME);
-        // Creating a symbolic link needs a privilege, so the test skips without it.
-        if std::os::windows::fs::symlink_file(dir.path().join("rules"), &link).is_err() {
-            eprintln!("skipped: no right to create symbolic links");
+        if !crate::testutil::symbolic_link(&dir.path().join("rules"), &link) {
             return;
         }
         let error = IgnoreRules::read(dir.path()).unwrap_err();

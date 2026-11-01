@@ -125,7 +125,8 @@ fn with_slashes(path: &str, windows: bool) -> std::borrow::Cow<'_, str> {
 /// path that is only dots and slashes with at least one `.` part (`.`, `./`) is `.`. Nothing
 /// else changes: `..` stays, so does an absolute path, and an empty argument or one of slashes
 /// only (`""`, `//`) stays as it is, so that the core refuses it. A script with an empty
-/// variable must not track the whole directory.
+/// variable must not track the whole directory. All of this holds for the path as it is after
+/// the first step on Windows.
 ///
 /// On Windows, where `\` separates names as `/` does, every `\` is read as `/` first, so that
 /// `\x` is the absolute path `/x` and `src\a.txt` is `src/a.txt`; the result has `/` only.
@@ -160,7 +161,8 @@ fn normalize_path_for(path: &str, windows: bool) -> String {
 /// does not lead where the name says. An absolute path stays as it is, and so
 /// does an empty argument or one of slashes only, as in [`normalize_path`], so that a script with
 /// an empty variable does not track the whole subdirectory. With an empty `subdirectory`, this is
-/// [`normalize_path`]. On Windows, every `\` in `path` is read as `/` first, as there.
+/// [`normalize_path`]. On Windows, every `\` in `path` is read as `/` first, as there, before
+/// any of this.
 pub fn normalize_path_in(subdirectory: &str, path: &str) -> String {
     normalize_path_in_for(subdirectory, path, cfg!(windows))
 }
@@ -910,7 +912,14 @@ mod tests {
     fn a_path_is_plain_if_every_part_is_one_name() {
         assert!(is_plain("a/b.txt") && is_plain("a"));
         #[cfg(windows)]
-        for path in ["a\\..\\b", "C:x", "C:\\x", "\\\\server\\share"] {
+        for path in [
+            "a\\..\\b",
+            "C:x",
+            "C:\\x",
+            "C:/x",
+            "\\\\server\\share",
+            "//server/share",
+        ] {
             assert!(!is_plain(path), "{path}");
         }
         #[cfg(unix)]

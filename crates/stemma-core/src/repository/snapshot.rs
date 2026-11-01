@@ -411,8 +411,8 @@ fn is_link_target(content: &[u8]) -> bool {
         && std::str::from_utf8(content).is_ok()
 }
 
-/// Reads the file that `lookup` saw, or returns `None` if it is gone. `fs::read` follows links, so
-/// a process that swaps the file or a directory above it for a link between the lookup and the read
+/// Reads the file that `lookup` saw, or returns `None` if it is gone. Opening a file follows
+/// links, so a process that swaps the file or a directory above it for a link between the lookup and the read
 /// could lead it out of the working directory; the file that was opened must be the one that was
 /// looked at, which is checked by its device and inode where the file system has them.
 ///
@@ -1371,17 +1371,6 @@ mod tests {
         assert_eq!(repository.refs().working_copy().unwrap(), before);
     }
 
-    /// Makes a symbolic link, or says that the test must stop: it needs a right that a process
-    /// without developer mode does not have.
-    #[cfg(windows)]
-    fn symbolic_link(target: &Path, link: &Path) -> bool {
-        let made = std::os::windows::fs::symlink_file(target, link).is_ok();
-        if !made {
-            eprintln!("skipped: no right to create symbolic links");
-        }
-        made
-    }
-
     #[cfg(windows)]
     #[test]
     fn a_link_in_the_place_of_a_file_is_not_read_through() {
@@ -1390,11 +1379,34 @@ mod tests {
         write(&dir, "target", "secret");
         let seen = fs::symlink_metadata(dir.path().join("file")).unwrap();
         fs::remove_file(dir.path().join("file")).unwrap();
-        if !symbolic_link(&dir.path().join("target"), &dir.path().join("file")) {
+        if !crate::testutil::symbolic_link(&dir.path().join("target"), &dir.path().join("file")) {
             return;
         }
         let error = read_file(&dir.path().join("file"), &seen).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                SnapshotError::Io {
+                    operation: "read the file",
+                    ..
+                }
+            ),
+            "{error}"
+        );
         assert!(error.to_string().contains("replaced"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_directory_above_the_file_that_is_a_junction_is_followed() {
+        // The gap that the doc of `read_file` names: Windows gives no identity to compare, so a
+        // directory above the file that was swapped for a junction leads the read elsewhere.
+        let dir = TempDir::new();
+        write(&dir, "real/x.txt", "data");
+        let seen = fs::symlink_metadata(dir.path().join("real").join("x.txt")).unwrap();
+        crate::testutil::junction(&dir.path().join("real"), &dir.path().join("j"));
+        let content = read_file(&dir.path().join("j").join("x.txt"), &seen).unwrap();
+        assert_eq!(content.as_deref(), Some(b"data".as_slice()));
     }
 
     #[cfg(windows)]
@@ -1405,7 +1417,7 @@ mod tests {
         track(&repository, &dir, &[("a.txt", "one")]);
         write(&dir, "target.txt", "secret");
         fs::remove_file(dir.path().join("a.txt")).unwrap();
-        if !symbolic_link(Path::new("target.txt"), &dir.path().join("a.txt")) {
+        if !crate::testutil::symbolic_link(Path::new("target.txt"), &dir.path().join("a.txt")) {
             return;
         }
         assert!(snapshot(&repository).is_some());
@@ -1413,6 +1425,12 @@ mod tests {
             tracked(&repository),
             [("a.txt".to_owned(), FileMode::Symlink)]
         );
+        // The blob holds the target of the link, and the content it leads to was never stored.
+        let objects = repository.objects();
+        let target = Blob::new("target.txt").id().object_id();
+        let secret = Blob::new("secret").id().object_id();
+        assert!(objects.contains(&target).unwrap());
+        assert!(!objects.contains(&secret).unwrap());
     }
 
     #[cfg(windows)]

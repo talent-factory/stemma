@@ -430,17 +430,21 @@ Repositories, auch wenn sie in einem Unterverzeichnis laufen, und maskiert wie b
 \type{status}. Auch eine Meldung nennt einen Pfad relativ zur Wurzel, einen ungültigen ebenso,
 soweit sich das Argument umwandeln lässt: \type{a/../b} in \type{src} erscheint als
 \type{src/a/../b}. Nur einen absoluten oder leeren Pfad und das Verzeichnis von \type{-C}
-nennt sie so, wie sie übergeben wurden.
+nennt sie so, wie sie übergeben wurden (unter Windows mit der Einschränkung unten).
 Unter Windows trennt auch der Backslash die Namen eines Pfades, den eine Person übergibt:
 \type{src\a.txt} ist \type{src/a.txt}.
-Das geschieht zuerst: Ein absoluter Pfad wie \type{\x} erscheint daher als \type{/x}.
+Das geschieht zuerst, daher erscheint ein absoluter Pfad mit \type{/}:
+\type{\x} als \type{/x} und \type{C:\x} als \type{C:/x}.
 Unter Unix ist der Backslash ein Zeichen des Namens und bleibt es.
 Ein symbolischer Link oder eine Junction unter Windows, die am Ende eines Pfades steht,
 speichert \type{track} als Link, mit seinem Ziel und ohne den Inhalt, auf den er zeigt.
-Tritt ein solcher Eintrag erst während des Lesens an die Stelle einer Datei,
+Tritt ein solcher Link erst während des Lesens an die Stelle einer Datei,
 bricht der Befehl mit einem Fehler ab.
-Ein Verzeichnis oberhalb der Datei, das in dieser Zeit durch eine Junction ersetzt wird,
-erkennt Windows nicht; der Befehl liest dann die Datei, auf die sie zeigt.
+Zwei Fälle erkennt Stemma unter Windows dabei nicht, weil es die Identität der Datei nicht
+vergleicht: ein Verzeichnis oberhalb der Datei, das durch eine Junction ersetzt wird, und
+eine andere reguläre Datei an der Stelle der Datei.
+Der Befehl liest dann die Datei, auf die der Pfad nun zeigt.
+Das gilt ebenso für \type{.stemmaignore}.
 
 \section{init}
 

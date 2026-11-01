@@ -55,19 +55,28 @@ pub mod verify;
 use oplog::OperationName;
 
 /// Opens a file for reading. On Windows the last part of the path is opened itself when it is a
-/// reparse point (a symbolic link or a junction), and what it names is not opened. The handle
+/// reparse point, and what it names is not opened. For a symbolic link or a junction the handle
 /// then describes the link, which is not a file for `Metadata::is_file`, so that a reader that
-/// checks the handle refuses a link that has taken the place of a file. A part above the last
-/// is followed on every platform. Elsewhere this is `File::open`.
+/// checks the handle refuses a link that has taken the place of a file. Another reparse point
+/// is no link and holds data that a filter driver supplies (a placeholder of a cloud service, a
+/// deduplicated file): opened itself it would give the stub, so it is opened again in the
+/// ordinary way. A swap of the file for a link in that short time is not seen then. A part above
+/// the last is followed on every platform. Elsewhere this is `File::open`.
 pub(crate) fn open_without_following(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        std::fs::OpenOptions::new()
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
+            .open(path)?;
+        let opened = file.metadata()?;
+        if opened.is_file() && opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return std::fs::File::open(path);
+        }
+        Ok(file)
     }
     #[cfg(not(windows))]
     {
