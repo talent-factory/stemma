@@ -34,6 +34,7 @@ pub mod change;
 pub mod conflict;
 pub mod diff;
 pub mod failure;
+mod fault;
 #[cfg(any(fuzzing, test))]
 #[doc(hidden)]
 pub mod fuzz;

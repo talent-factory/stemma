@@ -155,11 +155,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
 use crate::refs::{BranchName, BranchNameError, Head};
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
@@ -2264,7 +2264,7 @@ impl FsOpLog {
     fn scan(&self) -> Result<Vec<u64>, OpLogError> {
         let dir = self.dir();
         let mut numbers = Vec::new();
-        for item in fs::read_dir(&dir).map_err(OpLogError::io("read the directory", &dir))? {
+        for item in fault::read_dir(&dir).map_err(OpLogError::io("read the directory", &dir))? {
             let item = item.map_err(OpLogError::io("read the directory", &dir))?;
             let name = item.file_name();
             // Names with a dot: file managers and editors leave them. The first byte is looked at,
@@ -2338,7 +2338,7 @@ impl FsOpLog {
     /// [`OpLogError::Io`] if it cannot be read.
     fn read_tip(&self) -> Result<Option<Tip>, OpLogError> {
         let path = self.tip_path();
-        let bytes = match fs::read(&path) {
+        let bytes = match fault::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(OpLogError::io("read the tip file", &path)(error)),
@@ -2389,7 +2389,7 @@ impl FsOpLog {
             .map_err(OpLogError::io("flush the temporary file", &temp.path))?;
         drop(file);
         let path = self.tip_path();
-        fs::rename(&temp.path, &path).map_err(OpLogError::io("replace the tip file", &path))?;
+        fault::rename(&temp.path, &path).map_err(OpLogError::io("replace the tip file", &path))?;
         // The name is gone after the rename.
         temp.disarm();
         let _ = sync_directory(&self.root);
@@ -2448,7 +2448,7 @@ impl FsOpLog {
     /// inside is not the one of the name, and [`OpLogError::Io`] if the storage fails.
     pub fn read(&self, number: u64) -> Result<Entry, OpLogError> {
         let path = self.path_of(number);
-        let file = match fs::File::open(&path) {
+        let file = match fault::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(OpLogError::Missing { number });
@@ -2768,7 +2768,7 @@ impl FsOpLog {
             .map_err(OpLogError::io("flush the temporary file", &temp.path))?;
         drop(file);
         let path = self.path_of(number);
-        fs::rename(&temp.path, &path).map_err(OpLogError::io("replace the entry", &path))?;
+        fault::rename(&temp.path, &path).map_err(OpLogError::io("replace the entry", &path))?;
         temp.disarm();
         let dir = self.dir();
         match sync_directory(&dir) {
@@ -2812,7 +2812,7 @@ impl FsOpLog {
             record,
             last + 1,
             &mut |_| {},
-            &|from, to| fs::hard_link(from, to),
+            &|from, to| fault::hard_link(from, to),
             &|dir| match sync_directory(dir) {
                 Ok(()) => Ok(()),
                 Err(StoreError::Io { source, .. }) => Err(source),
@@ -3337,12 +3337,12 @@ mod tests {
         assert!(message.contains("a\\u{1b}[2Jb\\n"), "{message}");
     }
 
+    use std::fs;
     use std::sync::Barrier;
     use std::thread;
 
     use super::*;
     #[cfg(unix)]
-    use crate::testutil::Denied;
     use crate::testutil::TempDir;
 
     const A: &str = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
@@ -4824,21 +4824,15 @@ mod tests {
         assert_eq!(files(&dir.path().join("oplog")).len(), 4);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failing_write_of_the_tip_is_no_error_of_the_entry() {
         let dir = TempDir::new();
         let log = four_entries(&dir);
         // The tip is renamed into the root, which may be entered but not written. The entry goes
         // to `oplog/`, which stays writable, and the temporary file to `tmp/`.
-        let denied = Denied::writing(dir.path());
-        let enforced = fs::File::create(dir.path().join("probe")).is_err();
+        let denied = fault::deny_writes_in(dir.path());
         let result = log.append(&change("main", Some(B), A));
         drop(denied);
-        if !enforced {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
 
         assert_eq!(result.unwrap().number(), 5);
         // The tip is one behind, which the reader and the next writer accept.
@@ -5307,7 +5301,6 @@ mod tests {
         assert_eq!(files(&dir.path().join("oplog")), Vec::<String>::new());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_temporary_name_that_cannot_be_removed_does_not_stop_a_whole_entry() {
         // `tmp/` holds scratch files. If the name cannot be removed after the link, the entry is
@@ -5315,12 +5308,10 @@ mod tests {
         let dir = TempDir::new();
         let log = log_in(&dir);
         let tmp = dir.path().join("tmp");
-        if !Denied::enforced(dir.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         let mut denied = None;
-        let mut make_tmp_read_only = |_: u64| denied = Some(Denied::writing(&tmp));
+        let mut make_tmp_read_only = |_: u64| {
+            denied = Some(fault::deny_writes_in(&tmp));
+        };
         let result = log.publish(
             &Record::Change(change("main", None, A)),
             1,

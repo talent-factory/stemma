@@ -2108,7 +2108,6 @@ mod tests {
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
     #[cfg(unix)]
-    use crate::testutil::Denied;
     use crate::testutil::TempDir;
     use crate::AllowAll;
     use crate::Decision;
@@ -4616,17 +4615,16 @@ mod tests {
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
+        use crate::fault;
         use crate::oplog::{outcomes, Current, Outcome};
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
         let tags = dir.path().join(".stemma").join("refs").join("tags");
         fs::create_dir_all(&tags).unwrap();
-        let denied = Denied::writing(&tags);
-        let writable = fs::File::create(tags.join("probe")).is_ok();
+        let denied = fault::deny_writes_in(&tags);
         let tag = || {
             repository.create_tag(
                 &op("tag"),
@@ -4638,11 +4636,6 @@ mod tests {
         };
         let result = tag();
         drop(denied);
-        let _ = fs::remove_file(tags.join("probe"));
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         // The entry is written first; the file is not, and the error carries the entry.
         let error = result.unwrap_err();
         assert!(matches!(&error, UpdateError::MoveFailed { .. }), "{error}");
