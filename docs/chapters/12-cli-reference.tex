@@ -10,11 +10,17 @@ Verhalten und Fehlerfälle. Wo beide abweichen, gilt das Programm.
 
 Die Übersicht (\in{Abbildung}[fig:commands]) zeigt auf einen Blick, welche Zone von Stemma
 ein Befehl berührt: das Arbeitsverzeichnis, den Working-Copy-Commit,
-die Zeiger (Branch und HEAD) oder das Operation Log.
+die Zeiger (Branch, HEAD und Tags) oder das Operation Log.
+Der Zeiger auf den Working-Copy-Commit gehört zur Zone des Working-Copy-Commits.
 Bei \type{op restore} hängt es vom Eintrag ab, welche Zeiger und Dateien sich bewegen;
 die Zeile zeigt den Höchstfall. Bei \type{diff} ist der Working-Copy-Commit als Seite der
 Höchstfall: Der Snapshot ändert nur dann etwas, wenn sich eine verfolgte Datei geändert hat,
 und bei zwei Commits ändert der Befehl nichts.
+Bei \type{log} liest der Befehl nur die Commits ab dem Working-Copy-Commit;
+er macht keinen Snapshot und berührt weder Branch noch HEAD noch das Log.
+Beim Setzen schreibt \type{tag} den Tag-Zeiger und einen Eintrag ins Log,
+bewegt aber weder HEAD noch einen Branch und ändert weder Arbeitsverzeichnis noch
+Working-Copy-Commit. Beim Auflisten ändert der Befehl nichts; die Zeile zeigt den Höchstfall.
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]

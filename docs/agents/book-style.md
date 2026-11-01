@@ -128,7 +128,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Criss-Cross-Merge | | A history in which two merges each take in the other side, so that there are several merge bases |
 | Konflikt | Merge-Konflikt (alone) | An open conflict, kept as data in the commit (ADR-005) |
 | Summe von Trees | | The list of trees of a conflict: add, remove, add, ... (ADR-005) |
-| Zeiger | | A branch, HEAD, or the working-copy reference |
+| Zeiger | | A branch, HEAD, a tag, or the working-copy reference |
 | Zeigerbewegung | Zug | Setting a pointer from an old to a new value |
 | Operation Log, Eintrag | Operationslog, Logeintrag | ADR-011 |
 | nach bestem Bemühen | auf Verdacht | Best effort: a failure does not fail the command |
@@ -193,7 +193,7 @@ Rules:
   |---|---|
   | Arbeitsverzeichnis | `#2B6CB0` |
   | Working-Copy-Commit | `#B45309` |
-  | Branch und HEAD | `#2F7D32` |
+  | Branch, HEAD und Tags | `#2F7D32` |
   | Operation Log | `#6B46C1` |
   | Text | `#0F172A` |
   | Secondary text, frames | `#64748B` |
