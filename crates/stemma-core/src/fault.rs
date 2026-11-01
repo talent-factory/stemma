@@ -19,18 +19,24 @@
 //!   removed, as with the real call.
 //! - `deny_modifying_in(dir)`: opening an existing file directly in `dir` for writing fails. It
 //!   stands for files with the mode `0o444`; adding or removing a name there still works.
-//! - `deny_reads_of(path)`: reading, opening, or listing `path` fails. It matches that one path; a
-//!   read of a name below it still works, which the mode `0o000` of a directory would stop.
+//! - `deny_reads_of(path)`: reading, opening, or listing `path`, or flushing it as a directory,
+//!   fails. It matches that one path; a read of a name below it still works, which the mode
+//!   `0o000` of a directory would stop.
 //!
 //! A path in a rule is compared as it is and, if that fails, as the file system names it
-//! (`fs::canonicalize`), so `/var/...` and `/private/var/...` on macOS meet.
+//! (`fs::canonicalize`), so `/var/...` and `/private/var/...` on macOS meet. A path that does not
+//! exist yet is named by its longest existing prefix, so a rule may name a directory that the
+//! command creates. A rule that matches nothing is not reported: a test asserts the effect of
+//! the failure, not only that the command ran.
 //!
 //! In a unit test, a guard arms the injection for the thread until it is dropped. A test of the
 //! program as a whole starts a process that no guard reaches; for it, the feature
 //! `fault-injection` reads the variable `STEMMA_FAULT` once, as entries `write=<dir>`,
 //! `modify=<dir>`, or `read=<path>`, separated by the path-list separator of the platform (`:` on
-//! Unix, `;` on Windows). An entry that does not parse makes the first file system call panic
-//! with a message: a harness that does not inject must not look like one that does. A build without the feature and outside of tests
+//! Unix, `;` on Windows). An entry that does not parse, or has an empty path, makes the first
+//! file system call panic with a message (`STEMMA_FAULT: ...`): a harness that does not inject
+//! must not look like one that does. The check is lazy, so a command that touches no file does
+//! not see it. A build without the feature and outside of tests
 //! has neither the functions of injection nor the variable: the wrappers are the calls of the
 //! standard library.
 
@@ -62,9 +68,33 @@ mod armed {
         static RULES: RefCell<Vec<(u64, Rule)>> = const { RefCell::new(Vec::new()) };
     }
 
-    /// The path as the file system names it, or as given if it does not exist (yet).
+    /// The path as the file system names it. If it does not exist (yet), the longest existing
+    /// prefix is named and the rest is kept, so `/var/...` meets `/private/var/...` also for a
+    /// directory that a command creates later. An empty path is the current directory.
     fn named(path: &Path) -> PathBuf {
-        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        let path = if path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            path
+        };
+        let mut rest = Vec::new();
+        let mut head = path;
+        loop {
+            if let Ok(real) = fs::canonicalize(head) {
+                return rest.iter().rev().fold(real, |named, name| named.join(name));
+            }
+            match (head.parent(), head.file_name()) {
+                (Some(parent), Some(name)) => {
+                    rest.push(name);
+                    head = if parent.as_os_str().is_empty() {
+                        Path::new(".")
+                    } else {
+                        parent
+                    };
+                }
+                _ => return path.to_path_buf(),
+            }
+        }
     }
 
     /// Reads the rules of the variable `STEMMA_FAULT`: entries `write=<dir>`, `modify=<dir>`, and
@@ -81,6 +111,9 @@ mod armed {
                         "`{text}` has no `=`; use `write=<dir>`, `modify=<dir>`, or `read=<path>`"
                     )
                 })?;
+                if path.is_empty() {
+                    return Err(format!("`{text}` names no path"));
+                }
                 match kind {
                     "write" => Ok(Rule::Write(named(Path::new(path)))),
                     "modify" => Ok(Rule::Modify(named(Path::new(path)))),
@@ -105,9 +138,11 @@ mod armed {
         io::Error::new(io::ErrorKind::PermissionDenied, "injected failure")
     }
 
-    /// Whether a rule matches `actual`, where `wanted` says how a rule names its path.
+    /// Whether a rule of one kind matches `actual`, among the guards of this thread and the rules
+    /// of the variable. `wanted` returns the path of a rule of that kind and `None` for the others.
     fn any(wanted: impl Fn(&Rule) -> Option<&Path>, actual: &Path) -> bool {
-        let same = |rule: &Path| rule == actual || named(actual) == rule;
+        let canonical = std::cell::OnceCell::new();
+        let same = |rule: &Path| rule == actual || rule == canonical.get_or_init(|| named(actual));
         RULES.with(|rules| {
             rules
                 .borrow()
@@ -331,12 +366,13 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
 
 /// Opens the guard file at `path` for reading and writing, creating it, and falls back to
 /// reading only, as the lock does. Fails if the injection denies reads of `path`; a file that is
-/// not there is created only if the injection does not deny writes in its directory. A refused
-/// creation surfaces as the `NotFound` of the read-only fallback, as it does for the real lock.
+/// not there is created only if the injection does not deny writes in its directory, and one that
+/// is there is opened for writing only if it does not deny modifying files in its directory. A
+/// refused creation surfaces as the `NotFound` of the read-only fallback, as for the real lock.
 pub(crate) fn open_or_create(path: &Path) -> io::Result<File> {
     check_read(path)?;
     let allowed = if path.exists() {
-        Ok(())
+        check_modify(path)
     } else {
         check_write(path)
     };
@@ -671,6 +707,44 @@ mod tests {
             ]
         );
         assert_eq!(parse("".as_ref()).unwrap(), []);
+    }
+
+    #[test]
+    fn a_rule_without_a_path_is_an_error_and_a_missing_path_is_named_by_its_prefix() {
+        for bad in ["write=", "read=", "modify="] {
+            assert!(parse(bad.as_ref()).is_err(), "{bad}");
+        }
+        let dir = TempDir::new();
+        let later = dir.path().join("later");
+        let rules = parse(format!("write={}", later.display()).as_ref()).unwrap();
+        fs::create_dir(&later).unwrap();
+        assert_eq!(rules, [Rule::Write(fs::canonicalize(&later).unwrap())]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rules_with_drive_letters_are_split_at_the_semicolon() {
+        let rules = parse(r"write=C:\a;read=D:\b".as_ref()).unwrap();
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn a_rule_for_a_missing_directory_meets_the_names_created_in_it() {
+        let dir = TempDir::new();
+        let later = dir.path().join("later");
+        let _guard = deny_writes_in(&later);
+        fs::create_dir(&later).unwrap();
+        assert!(create_new(&later.join("a")).is_err());
+    }
+
+    #[test]
+    fn a_denied_modification_makes_an_existing_guard_file_read_only() {
+        let dir = TempDir::new();
+        let guard = dir.path().join("guard");
+        fs::write(&guard, b"").unwrap();
+        let _denied = deny_modifying_in(dir.path());
+        let mut file = open_or_create(&guard).unwrap();
+        assert!(io::Write::write_all(&mut file, b"x").is_err());
     }
 
     #[test]

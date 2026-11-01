@@ -3466,8 +3466,8 @@ mod tests {
     }
 
     /// A status whose snapshot moved the pointer and could not be flushed: the metadata directory
-    /// may be written and entered, but not read: an injected failure stands for that, on every
-    /// platform and for a privileged user.
+    /// may be written and entered, but not read: the injected failure of reading it stands for
+    /// that, on every platform and for a privileged user.
     fn a_status_not_durable(name: &str) -> (PathBuf, Status) {
         let (dir, _) = repository_with_entry(name);
         let repository = Repository::open(&dir).unwrap();

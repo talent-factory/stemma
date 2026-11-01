@@ -538,7 +538,47 @@ fn a_tracked_file_that_cannot_be_read_fails_and_saves_nothing() {
 
     assert_eq!(result.code, 1, "{}", result.stdout);
     assert_eq!(result.stdout, "");
-    assert!(result.stderr.contains("a.txt"), "{}", result.stderr);
+    assert!(
+        result.stderr.contains("a.txt") && result.stderr.contains("injected failure"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn a_rule_of_the_environment_that_does_not_parse_stops_the_command() {
+    let dir = repository();
+
+    let result = stemma(dir.path(), &["status", "--actor", ACTOR], |command| {
+        command.env("STEMMA_FAULT", "bogus");
+    });
+
+    assert_ne!(result.code, 0, "{}", result.stdout);
+    assert!(result.stderr.contains("STEMMA_FAULT"), "{}", result.stderr);
+}
+
+#[test]
+fn a_file_that_cannot_be_opened_for_writing_again_stops_the_snapshot_of_a_status() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    write(dir.path(), "a.txt", "two");
+    let entries = operations(dir.path()).len();
+    let tmp = dir.path().join(".stemma").join("tmp");
+
+    let result = run_failing(
+        dir.path(),
+        &["status", "--actor", ACTOR],
+        &[("modify", &tmp)],
+    );
+
+    assert_ne!(result.code, 0, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("open the temporary file"),
+        "{}",
+        result.stderr
+    );
     assert_eq!(operations(dir.path()).len(), entries);
 }
 
@@ -556,6 +596,7 @@ fn a_status_that_cannot_be_written_ends_with_code_1() {
     let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .args(["status", "--actor", "human daniel"])
         .stdout(full)
         .output()
@@ -578,7 +619,8 @@ fn a_snapshot_that_cannot_be_flushed_gives_the_status_and_code_3() {
     track_ok(dir.path(), "a.txt");
     commit(dir.path(), "base");
     write(dir.path(), "a.txt", "two");
-    // The metadata directory may be written and entered, but not read: the flush of it fails.
+    // Opening the metadata directory is denied, which is all the flush of it does; the rest of
+    // the repository stays usable.
     let metadata = dir.path().join(".stemma");
     let result = status_failing(dir.path(), &[("read", &metadata)]);
 

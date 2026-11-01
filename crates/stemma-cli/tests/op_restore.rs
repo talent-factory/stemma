@@ -519,6 +519,7 @@ fn the_actor_comes_from_the_environment_and_the_flag_wins() {
     let number = snapshot.to_string();
     let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
+        .env_remove("STEMMA_FAULT")
         .env("STEMMA_ACTOR", ACTOR)
         .args(["op", "restore", &number])
         .output()
@@ -532,6 +533,7 @@ fn the_actor_comes_from_the_environment_and_the_flag_wins() {
 
     let again = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
+        .env_remove("STEMMA_FAULT")
         .env("STEMMA_ACTOR", "human erika")
         .args([
             "op",

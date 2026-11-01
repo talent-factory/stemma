@@ -191,6 +191,14 @@ release-check tag:
         echo "stemma --version prints '$shown', expected 'stemma {{version}}'" >&2
         exit 1
     }
+    # The release has no fault injection: a rule that does not parse would stop a program that has it.
+    scratch=$(mktemp -d)
+    (cd "$scratch" && STEMMA_FAULT=bogus "$OLDPWD/target/debug/stemma" init --actor "human release" > /dev/null) || {
+        echo "stemma reads STEMMA_FAULT: the fault injection is part of the build" >&2
+        rm -rf "$scratch"
+        exit 1
+    }
+    rm -rf "$scratch"
     echo "ok: {{tag}} = Cargo.toml = $shown"
 
 # ─────────────────────────── Documentation ─────────────────────────────────

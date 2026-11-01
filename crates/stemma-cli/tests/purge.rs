@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 
 use stemma_core::object::Blob;
 
-#[cfg(unix)]
-use common::Run;
-use common::{ok, run, run_failing, Dir, ACTOR};
+use common::{ok, run, run_failing, Dir, Run, ACTOR};
 
 const AGENT: &str = "agent bot model=m session=s sponsor=daniel";
 const SECRET: &str = "key=hunter2";

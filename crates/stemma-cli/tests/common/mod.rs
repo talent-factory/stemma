@@ -64,6 +64,7 @@ pub fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Ru
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .args(args);
     extra(&mut command);
     let output = command.output().unwrap();
@@ -80,7 +81,8 @@ pub fn run(dir: &Path, args: &[&str]) -> Run {
 }
 
 /// Runs `stemma` like [`run`] with injected file system failures (STEMMA-187) instead of
-/// directories whose mode was changed, which only Unix has and a privileged user ignores. Each
+/// directories whose Unix mode was changed, which has no effect on Windows and none for a
+/// privileged user. Each
 /// rule is `("write", dir)`, `("modify", dir)`, or `("read", path)`; see `stemma_core::fault`.
 pub fn run_failing(dir: &Path, args: &[&str], rules: &[(&str, &Path)]) -> Run {
     let rules: Vec<_> = rules
