@@ -676,7 +676,7 @@ impl FsObjectStore {
                 reason = "Windows has no other bits, and the file is removed next"
             )]
             permissions.set_readonly(false);
-            fs::set_permissions(&path, permissions)
+            fault::set_permissions(&path, permissions)
                 .map_err(io_error("make the object file writable", &path))?;
         }
         match fault::remove_file(&path) {
@@ -1231,7 +1231,7 @@ fn remove_scratch_file(path: &Path) {
                     reason = "Windows has no other bits, and the file is removed next"
                 )]
                 permissions.set_readonly(false);
-                let _ = fs::set_permissions(path, permissions);
+                let _ = fault::set_permissions(path, permissions);
             }
         }
     }

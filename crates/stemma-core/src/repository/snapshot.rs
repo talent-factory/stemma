@@ -457,7 +457,7 @@ fn save(
     };
     let kind = metadata.file_type();
     let (mode, content) = if kind.is_symlink() {
-        let target = fs::read_link(&full)
+        let target = fault::read_link(&full)
             .map_err(|source| SnapshotError::io("read the link", &full, source))?;
         let target = target.to_str().ok_or_else(|| SnapshotError::Unsupported {
             path: file.path.clone(),

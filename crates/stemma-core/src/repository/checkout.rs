@@ -351,7 +351,7 @@ impl Repository {
             {
                 use std::os::unix::ffi::OsStrExt;
                 return Ok(metadata.file_type().is_symlink()
-                    && fs::read_link(&full)
+                    && fault::read_link(&full)
                         .is_ok_and(|target| target.as_os_str().as_bytes() == expected.body()));
             }
         }

@@ -283,7 +283,7 @@ impl IgnoreRules {
 /// A missing directory has none. The whole directory is listed, so the answer does not depend on
 /// the order of the entries.
 fn misspelled_file(root: &Path) -> Result<Option<(String, bool)>, IgnoreError> {
-    let entries = match fs::read_dir(root) {
+    let entries = match fault::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(IgnoreError::io("list", root, source)),

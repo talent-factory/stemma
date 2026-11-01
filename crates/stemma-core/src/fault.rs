@@ -488,6 +488,30 @@ pub(crate) fn read_dir(path: &Path) -> io::Result<fs::ReadDir> {
     fs::read_dir(path)
 }
 
+/// [`fs::read_link`], failing if the injection denies reads of `path`.
+pub(crate) fn read_link(path: &Path) -> io::Result<std::path::PathBuf> {
+    check_read(path)?;
+    fs::read_link(path)
+}
+
+/// [`fs::write`], failing if the injection denies modifying files in the directory of `path` when
+/// the name is there, or writes in it when the name is not.
+pub(crate) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    if path.exists() {
+        check_modify(path)?;
+    } else {
+        check_write(path)?;
+    }
+    fs::write(path, contents)
+}
+
+/// [`fs::set_permissions`], failing if the injection denies modifying files in the directory of
+/// `path`.
+pub(crate) fn set_permissions(path: &Path, permissions: fs::Permissions) -> io::Result<()> {
+    check_modify(path)?;
+    fs::set_permissions(path, permissions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::armed::{parse, Rule};
