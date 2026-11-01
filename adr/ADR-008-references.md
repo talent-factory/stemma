@@ -4,6 +4,7 @@
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1. The decision on
 tags (STEMMA-54) was taken on 2026-10-29 and implemented in the store; the operation `tag` and
 the command followed on 2026-10-30 (STEMMA-183), and so did the deletion of a tag (STEMMA-184).
+The command `branch` (create, list, rename, delete) was added in Phase 3 (STEMMA-166).
 The open items move to Phase 5 (remote references); packed references have no phase yet, and the
 rename on Windows waits for the CI run (STEMMA-33).
 
@@ -62,6 +63,24 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   `Expected { Absent, At(commit) }` would change over a hundred call sites for no failure seen.
   `delete_branch(name, expected)` is the same swap with a required `expected`; a missing branch is
   `Stale` with `found` `None`.
+- **Create, rename, and delete a branch are one operation, `branch`** *(confirmed, STEMMA-166)*.
+  `Repository::create_branch`, `rename_branch`, and `delete_branch` each write one entry of the
+  operation `branch` (level 2, ADR-004) before they move a pointer, under the lock, in the order of
+  `update_branch`; the authorizer gets the branch name as the target (for a rename it is asked for
+  the old and then for the new name, and both must allow). The rules that the store leaves to the
+  layer above are decided there, under the same lock as the change:
+  - The branch that HEAD names is not deleted (`HeadBranch`). It is checked after `expected`, so a
+    branch that does not exist is `Stale`, and a detached HEAD protects no branch. There is no check
+    that the commits of the branch are reachable from another branch, and no force flag: the entry
+    holds the tip as its old value, so `op restore` of the entry brings the branch back (ADR-013).
+  - A rename moves up to three pointers in one entry: the new branch, HEAD if it names the old
+    branch, and the old branch, in this order. A stop between two moves leaves the commit under at
+    least one name and HEAD on a branch that exists, and the call is `PartlyMoved` (exit code 3).
+    The new name must not exist (`BranchExists`): a taken name is no lost race, as for a tag, so it
+    has no `expected`. A name held by another entry is `Conflict`, which includes the rename of `a`
+    to `a/b` and the other way round: the file of the old name is in the way until it is deleted.
+  - `create_branch` creates a branch with `expected` `None`. Only this function passes `None` for a
+    command, so the question of `Expected { Absent, At(commit) }` (STEMMA-53) stays closed.
 - **One lock for all changes** *(confirmed)*. The check, the comparison, and the write happen while
   the file `<metadata directory>/refs.lock` exists. It is created with "create new" and holds a
   token that only the process that made it knows; it is removed when the change ends, but only if it
@@ -207,7 +226,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 
 - [x] Deleting a branch: `delete_branch(name, expected)` with the same compare-and-swap
       (STEMMA-52); a missing branch or another tip is `Stale`, a name held by another entry is
-      `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above.
+      `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above: it is
+      `Repository::delete_branch`, with the entry of the operation `branch` and the command
+      `stemma branch -d` (STEMMA-166), see the decision above.
 - [ ] Packed references, when there are many branches.
 - [x] Tags: layout, plain pointer, never moves (STEMMA-54), see the decision above. The store
       has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. The operation
@@ -221,7 +242,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.
 - [x] A compare-and-swap for HEAD (`replace_head`, `Repository::set_head` with `expected`,
       `StaleHead`, STEMMA-53), see the decision above. `Expected { Absent, At(commit) }` in place
-      of `Option` for `update_branch` is not made; open it again if `None` is misread.
+      of `Option` for `update_branch` is not made. `stemma branch` is the one command that creates
+      a branch, and it does so through `create_branch`, which fixes `None`; no caller has misread
+      it, so the item is closed (STEMMA-166).
 - [x] A lock that a crashed process left behind: the guard of the lock (STEMMA-51), see the
       decision above.
 - [ ] The behavior of the replacing rename on Windows is tested only by the CI workflow run by

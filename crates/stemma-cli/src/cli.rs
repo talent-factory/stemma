@@ -4,7 +4,7 @@
 //! of the argument parser), 4 for `diff --exit-code` when a file differs, 5 for damage, 6 for a
 //! held lock (both below), and 3 for a command that has done its work but could not finish: the
 //! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`,
-//! `tag`, and `op restore`) writing the result failed after the work was made, or a `commit` moved one of
+//! `tag`, `branch`, and `op restore`) writing the result failed after the work was made, or a `commit` moved one of
 //! its two pointers and not the other. A script must not remove or repeat what such a command
 //! made; only the next `commit` after a half-made one finishes it, and the message of that call is
 //! not used. The exception is an `op restore` that moved some pointers and not all: it is code 3,
@@ -19,8 +19,8 @@
 //! no failure there, as the log names the entry of a purge, an abort leaves the repository as it
 //! was before the purge, and nothing can undo either.
 //!
-//! A command that only reads (`log`, `op log`, `status`, `tag` without a name, `op restore
-//! --dry-run`, and `purge` without
+//! A command that only reads (`log`, `op log`, `status`, `tag` and `branch` without a name, `op
+//! restore --dry-run`, and `purge` without
 //! `--apply`, `--resume`, or `--abort`) has made nothing by its output, so a failed write of its
 //! output is code 1; some of the output may already be written, and a script discards it. A
 //! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
@@ -40,7 +40,7 @@
 //! at 1.
 //!
 //! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
-//! log (`track`, `commit`, `tag`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
+//! log (`track`, `commit`, `tag`, `branch`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
 //! and no pointer moved: the same call run again completes it. And a command that saves the
 //! tracked files first leaves that entry (`snapshot`) when it fails afterwards: `commit` when it
@@ -79,7 +79,7 @@ use stemma_core::failure::{Classify, FailureKind};
 use stemma_core::history::{self, HistoryError, Parents};
 use stemma_core::object::{Commit, CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
-use stemma_core::refs::{BranchName, RefError};
+use stemma_core::refs::{BranchName, Head, RefError};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, InitError, InitOptions, OpenError, PurgeError, PurgePlan, Purged,
@@ -119,6 +119,8 @@ enum Command {
     /// Create a tag, a name for a commit that never moves, or delete one; without a name, list the
     /// tags
     Tag(TagArgs),
+    /// Create a branch, rename one, or delete one; without arguments, list the branches
+    Branch(BranchArgs),
     /// Show the operation log
     Op {
         #[command(subcommand)]
@@ -162,6 +164,50 @@ struct TagArgs {
     /// Write JSON objects instead of text (the schema of ADR-018)
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct BranchArgs {
+    /// The name of the branch to create, with the rules of a branch name; without it, the
+    /// branches are listed. The new branch is not switched to
+    #[arg(value_name = "NAME", conflicts_with_all = ["rename", "delete"])]
+    name: Option<BranchName>,
+
+    /// The ID of the commit where the new branch starts, `b3:` and 64 hexadecimal digits; by
+    /// default the commit that HEAD leads to (the tip of its branch)
+    #[arg(value_name = "START", requires = "name")]
+    start: Option<ObjectId>,
+
+    /// Rename the branch OLD to NEW. A HEAD that names OLD names NEW afterwards; NEW must not
+    /// exist
+    #[arg(
+        short = 'm',
+        long = "move",
+        num_args = 2,
+        value_names = ["OLD", "NEW"],
+        conflicts_with = "delete"
+    )]
+    rename: Option<Vec<BranchName>>,
+
+    /// Delete the branch NAME, whether it is merged or not; never the branch that HEAD names.
+    /// `op restore` brings the branch back
+    #[arg(short = 'd', long, value_name = "NAME")]
+    delete: Option<BranchName>,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required to create,
+    /// rename, or delete a branch unless the environment sets STEMMA_ACTOR
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -660,6 +706,32 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The core refused the branch or could not create, rename, or delete it. An entry of the log
+    /// can name a move that was not made ([`UpdateError::MoveFailed`]) or made in part
+    /// ([`UpdateError::PartlyMoved`]).
+    Branch(UpdateError),
+    /// `branch` could not read the references.
+    BranchRefs(RefError),
+    /// `branch` has no commit to start from: no start is given and the branch of HEAD has none yet.
+    NoCommitToBranch,
+    /// `branch -d` or `branch -m` names a branch that does not exist, or a name that is only a
+    /// directory of branches.
+    NoSuchBranch(BranchName),
+    /// The branches were read, but the output could not be written.
+    BranchWrite {
+        /// The branch that was being written.
+        name: String,
+        /// The error of the output.
+        source: io::Error,
+    },
+    /// The branch is created, renamed, or deleted and recorded in the log, but the result could
+    /// not be written to the output. A script must not repeat the command.
+    BranchOutput {
+        /// What was made, as the output would have said it.
+        made: String,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The history cannot be read: a commit is absent, damaged, or the store failed.
     History(HistoryError),
     /// `log` could not read the working-copy pointer.
@@ -762,6 +834,7 @@ impl CliError {
             | Self::CommitOutput { .. }
             | Self::TagOutput { .. }
             | Self::TagDeleteOutput { .. }
+            | Self::BranchOutput { .. }
             | Self::StatusNotDurable { .. }
             | Self::PurgedOutput { .. }
             | Self::RestoreOutput {
@@ -782,6 +855,7 @@ impl CliError {
             }
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
+            Self::Branch(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
             Self::Diff(error) if error.not_durable() => ExitCode::from(3),
@@ -802,6 +876,8 @@ impl CliError {
             Self::History(error) => by_kind(error.kind()),
             Self::Tag(error) => by_kind(error.kind()),
             Self::TagRefs(error) => by_kind(error.kind()),
+            Self::Branch(error) => by_kind(error.kind()),
+            Self::BranchRefs(error) => by_kind(error.kind()),
             // `init` writes the file, so a repository without it lost it: damage, as for `op log`.
             Self::LogRefs(RefError::NoWorkingCopy { .. }) => ExitCode::from(5),
             Self::LogRefs(error) => by_kind(error.kind()),
@@ -829,6 +905,9 @@ impl CliError {
             | Self::NoCommitToTag
             | Self::NoSuchTag(_)
             | Self::TagWrite { .. }
+            | Self::NoCommitToBranch
+            | Self::NoSuchBranch(_)
+            | Self::BranchWrite { .. }
             | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
@@ -1067,6 +1146,22 @@ impl fmt::Display for CliError {
                  output: {source}"
             ),
             Self::NoSuchTag(name) => write!(f, "there is no tag `{name}` to delete"),
+            Self::Branch(error) => error.fmt(f),
+            Self::BranchRefs(error) => write!(f, "could not read the references: {error}"),
+            Self::NoCommitToBranch => f.write_str(
+                "there is no commit to start the branch from: the branch of HEAD has none yet; \
+                 name a commit",
+            ),
+            Self::NoSuchBranch(name) => write!(f, "there is no branch `{name}`"),
+            Self::BranchOutput { made, source } => write!(
+                f,
+                "the branch change is made ({made}), but the result could not be written to \
+                 standard output: {source}"
+            ),
+            Self::BranchWrite { name, source } => write!(
+                f,
+                "could not write the branch {name} to standard output: {source}"
+            ),
             Self::TagWrite { name, source } => {
                 write!(
                     f,
@@ -1155,6 +1250,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
             command: OpCommand::Verify(args),
         } => verify_op_log(args, out).map(|()| ExitCode::SUCCESS),
         Command::Tag(args) => tag(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Branch(args) => branch(args, out).map(|()| ExitCode::SUCCESS),
         Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
     }
 }
@@ -2128,6 +2224,149 @@ fn list_tags(dir: &Path, json: bool, out: &mut dyn Write) -> Result<(), CliError
             Err(source) => {
                 return Err(CliError::TagWrite {
                     name: name.to_string(),
+                    source,
+                })
+            }
+            Ok(()) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Creates the branch `NAME` without switching to it, renames one with `--move`, deletes one with
+/// `--delete`, or lists the branches if no argument is given (ADR-008). Every change writes one
+/// entry with the operation `branch` to the operation log (the core asks the authorizer for it,
+/// and the command passes `AllowAll` until the policy of phase 4 exists); listing only reads.
+fn branch(args: BranchArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let operation =
+        || oplog::OperationName::try_new("branch").expect("`branch` is an operation name");
+    if let Some(name) = &args.delete {
+        let actor = actor(args.actor)?;
+        let repository = open(&args.repository)?;
+        let tip = repository
+            .refs()
+            .branch(name)
+            .map_err(CliError::BranchRefs)?
+            .ok_or_else(|| CliError::NoSuchBranch(name.clone()))?;
+        // The tip goes to the core as the value that the branch is expected to have, so a branch
+        // that moved since is not deleted by mistake.
+        let entry = repository
+            .delete_branch(&operation(), name, tip.object_id(), &actor, &AllowAll)
+            .map_err(CliError::Branch)?;
+        let text = format!(
+            "Deleted branch {name}, which was at {tip}\nTo bring it back: stemma op restore {}\n",
+            entry.number()
+        );
+        return finish_branch(&text, &format!("{name}, which was at {tip}"), out);
+    }
+    if let Some([old, new]) = args.rename.as_deref() {
+        let actor = actor(args.actor)?;
+        let repository = open(&args.repository)?;
+        let tip = repository
+            .refs()
+            .branch(old)
+            .map_err(CliError::BranchRefs)?
+            .ok_or_else(|| CliError::NoSuchBranch(old.clone()))?;
+        let entry = repository
+            .rename_branch(&operation(), old, new, tip.object_id(), &actor, &AllowAll)
+            .map_err(CliError::Branch)?;
+        let text = format!(
+            "Renamed branch {old} to {new}, at {tip}\nTo undo it: stemma op restore {}\n",
+            entry.number()
+        );
+        return finish_branch(&text, &format!("{old} to {new}, at {tip}"), out);
+    }
+    let Some(name) = args.name else {
+        return list_branches(&args.repository, out);
+    };
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let start = match args.start {
+        Some(id) => id,
+        None => repository
+            .refs()
+            .resolve_head()
+            .map_err(CliError::BranchRefs)?
+            .ok_or(CliError::NoCommitToBranch)?
+            .object_id(),
+    };
+    // A branch that exists is a taken name, not a moved branch: say so before the core does.
+    if let Some(found) = repository
+        .refs()
+        .branch(&name)
+        .map_err(CliError::BranchRefs)?
+    {
+        return Err(CliError::Branch(UpdateError::Refs(
+            RefError::BranchExists { name, found },
+        )));
+    }
+    repository
+        .create_branch(&operation(), &name, start, &actor, &AllowAll)
+        .map_err(CliError::Branch)?;
+    finish_branch(
+        &format!("Created branch {name} at {start}\n"),
+        &format!("{name} at {start}"),
+        out,
+    )
+}
+
+/// Writes the result of a change of a branch. The change is made and recorded already, so a
+/// failed write is code 3; a closed pipe is no failure.
+fn finish_branch(text: &str, made: &str, out: &mut dyn Write) -> Result<(), CliError> {
+    match out.write_all(text.as_bytes()) {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(CliError::BranchOutput {
+            made: made.to_owned(),
+            source,
+        }),
+        Ok(()) => Ok(()),
+    }
+}
+
+/// The first 12 hexadecimal digits of a commit ID, for a list that a person reads.
+fn short_id(id: CommitId) -> String {
+    let text = id.to_string();
+    let digits = text.split_once(':').map_or(text.as_str(), |(_, rest)| rest);
+    digits.chars().take(12).collect()
+}
+
+/// Lists the branches, sorted by name, one line each: `*` for the branch of HEAD and a space for
+/// the others, the name, the short ID of the commit, and the first line of its message. A detached
+/// HEAD is a first line `(detached <short id>)`, in the place of a name, for the commit that HEAD
+/// names. The names are padded to the longest one.
+fn list_branches(dir: &Path, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = open(dir)?;
+    let refs = repository.refs();
+    let head = refs.head().map_err(CliError::BranchRefs)?;
+    let mut rows: Vec<(bool, String, CommitId)> = Vec::new();
+    if let Head::Detached(commit) = &head {
+        rows.push((true, format!("(detached {})", short_id(*commit)), *commit));
+    }
+    for (name, commit) in refs.branches().map_err(CliError::BranchRefs)? {
+        let current = head == Head::Branch(name.clone());
+        rows.push((current, name.to_string(), commit));
+    }
+    let width = rows
+        .iter()
+        .map(|(_, label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (current, label, commit) in rows {
+        let commits = history::ancestors(repository.objects(), commit, Parents::First, Some(1))
+            .map_err(CliError::History)?;
+        let message = commits.first().map_or("", |(_, found)| found.message());
+        let subject = mask_controls(message.lines().next().unwrap_or(""));
+        let text = format!(
+            "{} {label:<width$} {} {subject}",
+            if current { '*' } else { ' ' },
+            short_id(commit)
+        );
+        let text = format!("{}\n", text.trim_end());
+        match out.write_all(text.as_bytes()) {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(source) => {
+                return Err(CliError::BranchWrite {
+                    name: label,
                     source,
                 })
             }
@@ -4315,6 +4554,197 @@ mod tests {
         run(call(&["tag", "v2"]), &mut Closed).unwrap();
         run(call(&["tag", "--delete", "v2"]), &mut Closed).unwrap();
         assert!(!dir.join(".stemma/refs/tags/v2").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A repository in a new directory with one commit on `main`, and a way to run commands in it.
+    fn branch_repository(tag: &str) -> (PathBuf, impl Fn(&[&str]) -> Cli) {
+        let dir =
+            std::env::temp_dir().join(format!("stemma-cli-unit-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.to_str().unwrap().to_owned();
+        let call = move |args: &[&str]| {
+            let mut all = args.to_vec();
+            all.extend(["-C", path.as_str(), "--actor", "human daniel"]);
+            parse(&all)
+        };
+        run(call(&["init"]), &mut Vec::new()).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        run(call(&["track", "a.txt"]), &mut Vec::new()).unwrap();
+        run(
+            call(&["commit", "-m", "first\nsecond line"]),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        (dir, call)
+    }
+
+    fn output(call: &impl Fn(&[&str]) -> Cli, args: &[&str]) -> Result<String, CliError> {
+        let mut out = Vec::new();
+        run(call(args), &mut out)?;
+        Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn branch_creates_lists_renames_and_deletes() {
+        let (dir, call) = branch_repository("branch");
+        let tip = tip_of_main(&dir);
+        let short: String = tip.trim_start_matches("b3:").chars().take(12).collect();
+
+        // Created at the tip of HEAD, without switching to it.
+        let made = output(&call, &["branch", "topic"]).unwrap();
+        assert_eq!(made, format!("Created branch topic at {tip}\n"));
+        let list = output(&call, &["branch"]).unwrap();
+        assert_eq!(
+            list,
+            format!("* main  {short} first\n  topic {short} first\n"),
+            "sorted, `*` for the branch of HEAD, short ID, first line of the message"
+        );
+        let error = output(&call, &["branch", "topic"]).unwrap_err();
+        assert!(matches!(error, CliError::Branch(_)), "{error}");
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert!(error.to_string().contains("exists already"), "{error}");
+
+        // Renamed: HEAD follows its branch, and the output names the entry that undoes it.
+        let renamed = output(&call, &["branch", "-m", "main", "trunk"]).unwrap();
+        assert!(
+            renamed.starts_with(&format!("Renamed branch main to trunk, at {tip}\n")),
+            "{renamed}"
+        );
+        assert!(
+            renamed.contains("To undo it: stemma op restore "),
+            "{renamed}"
+        );
+        let list = output(&call, &["branch"]).unwrap();
+        assert!(list.starts_with("  topic"), "{list}");
+        assert!(list.contains(&format!("* trunk {short}")), "{list}");
+        let error = output(&call, &["branch", "-m", "topic", "trunk"]).unwrap_err();
+        assert!(error.to_string().contains("exists already"), "{error}");
+        let error = output(&call, &["branch", "-m", "gone", "x"]).unwrap_err();
+        assert!(matches!(error, CliError::NoSuchBranch(_)), "{error}");
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+
+        // Deleted: never the branch of HEAD; the output names the tip and the entry that undoes it.
+        let error = output(&call, &["branch", "-d", "trunk"]).unwrap_err();
+        assert!(error.to_string().contains("branch of HEAD"), "{error}");
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        let deleted = output(&call, &["branch", "-d", "topic"]).unwrap();
+        assert!(
+            deleted.starts_with(&format!("Deleted branch topic, which was at {tip}\n")),
+            "{deleted}"
+        );
+        let number: String = deleted
+            .rsplit("op restore ")
+            .next()
+            .unwrap()
+            .trim()
+            .to_owned();
+        let error = output(&call, &["branch", "-d", "topic"]).unwrap_err();
+        assert!(matches!(error, CliError::NoSuchBranch(_)), "{error}");
+        output(&call, &["op", "restore", &number]).unwrap();
+        assert!(output(&call, &["branch"]).unwrap().contains("topic"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The ID that the file of the branch `main` holds.
+    fn tip_of_main(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join(".stemma/refs/heads/main"))
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    #[test]
+    fn branch_lists_a_detached_head_first_and_creates_at_a_given_commit() {
+        let (dir, call) = branch_repository("branch-detached");
+        let tip = tip_of_main(&dir);
+        let short: String = tip.trim_start_matches("b3:").chars().take(12).collect();
+        // A branch at a commit that is given, which need not be the tip of HEAD.
+        let made = output(&call, &["branch", "old", &tip]).unwrap();
+        assert_eq!(made, format!("Created branch old at {tip}\n"));
+        // An ID that is no commit is refused.
+        let bogus = format!("b3:{}", "0".repeat(64));
+        let error = output(&call, &["branch", "bogus", &bogus]).unwrap_err();
+        assert!(matches!(error, CliError::Branch(_)), "{error}");
+        assert!(!dir.join(".stemma/refs/heads/bogus").exists());
+
+        // Detach HEAD: the file names a commit, and the list starts with it.
+        std::fs::write(dir.join(".stemma/HEAD"), format!("commit {tip}\n")).unwrap();
+        let list = output(&call, &["branch"]).unwrap();
+        assert!(
+            list.starts_with(&format!("* (detached {short}) {short} first\n")),
+            "{list}"
+        );
+        // A detached HEAD protects no branch, and a new branch starts at the commit of HEAD.
+        output(&call, &["branch", "-d", "main"]).unwrap();
+        output(&call, &["branch", "again"]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn branch_without_a_commit_to_start_from_says_so() {
+        let dir =
+            std::env::temp_dir().join(format!("stemma-cli-unit-branch-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.to_str().unwrap();
+        run(
+            parse(&["init", "-C", path, "--actor", "human daniel"]),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let error = run(
+            parse(&["branch", "topic", "-C", path, "--actor", "human daniel"]),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::NoCommitToBranch), "{error}");
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        // Listing needs no actor, and an empty repository lists nothing.
+        let list = run(parse(&["branch", "-C", path]), &mut Vec::new());
+        let _ = std::fs::remove_dir_all(&dir);
+        list.unwrap();
+    }
+
+    #[test]
+    fn branch_arguments_that_do_not_go_together_are_usage_errors() {
+        let refused = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("stemma").chain(args.iter().copied()))
+                .unwrap_err()
+                .exit_code()
+        };
+        for args in [
+            &["branch", "-d", "a", "-m", "b", "c"][..],
+            &["branch", "x", "-d", "a"],
+            &["branch", "x", "-m", "a", "b"],
+            &["branch", "-m", "a"],
+            &["branch", "-d"],
+            &["branch", "bad name~"],
+            &["branch", "x", "not-an-id"],
+        ] {
+            assert_eq!(refused(args), 2, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_branch_change_whose_result_cannot_be_written_is_code_3_and_a_closed_pipe_is_quiet() {
+        let (dir, call) = branch_repository("branch-out");
+        let made = run(call(&["branch", "a"]), &mut Full).unwrap_err();
+        assert!(matches!(made, CliError::BranchOutput { .. }), "{made}");
+        assert_eq!(made.exit_code(), ExitCode::from(3));
+        assert!(dir.join(".stemma/refs/heads/a").is_file());
+        let renamed = run(call(&["branch", "-m", "a", "b"]), &mut Full).unwrap_err();
+        assert_eq!(renamed.exit_code(), ExitCode::from(3));
+        assert!(dir.join(".stemma/refs/heads/b").is_file());
+        assert!(!dir.join(".stemma/refs/heads/a").exists());
+        let deleted = run(call(&["branch", "-d", "b"]), &mut Full).unwrap_err();
+        assert_eq!(deleted.exit_code(), ExitCode::from(3));
+        assert!(!dir.join(".stemma/refs/heads/b").exists());
+        run(call(&["branch", "c"]), &mut Closed).unwrap();
+        // Listing only reads: a failed write is code 1, and a closed pipe is quiet.
+        let listed = run(call(&["branch"]), &mut Full).unwrap_err();
+        assert!(matches!(listed, CliError::BranchWrite { .. }), "{listed}");
+        assert_eq!(listed.exit_code(), ExitCode::FAILURE);
+        run(call(&["branch"]), &mut Closed).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

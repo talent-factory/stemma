@@ -674,6 +674,31 @@ impl Repository {
         outcome.into_result()
     }
 
+    /// Creates the branch `name` at `start` and records it in the log, as
+    /// [`update_branch`](Self::update_branch) does for a branch that must not exist yet; HEAD
+    /// stays where it is. The ID is a claim only, as for [`create_tag`](Self::create_tag): the
+    /// store confirms under the lock that it names a commit.
+    ///
+    /// Returns the entry.
+    ///
+    /// # Errors
+    ///
+    /// As [`update_branch`](Self::update_branch); a branch that exists is
+    /// [`RefError::Stale`] with `expected` `None`. A refusal writes no entry.
+    pub fn create_branch(
+        &self,
+        operation: &OperationName,
+        name: &BranchName,
+        start: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        let start = CommitId::new(start);
+        Ok(self
+            .update_branch(operation, name, None, start, actor, authorizer)?
+            .expect("a branch that is created is a change"))
+    }
+
     /// Creates the tag `name` at `commit` and records it in the log, in the order of
     /// [`update_branch`](Self::update_branch) and under the same lock: the tag is checked (a name
     /// that is in the way, a tag that exists, a commit that is not in the object store), the entry
@@ -772,6 +797,123 @@ impl Repository {
         Ok(outcome
             .into_result()?
             .expect("delete_tag_after never reports an unchanged tag"))
+    }
+
+    /// Deletes the branch `name` if it still is at `expected`, and records it in the log, in the
+    /// order of [`update_branch`](Self::update_branch) and under the same lock: the branch is
+    /// checked (a name that is in the way, a branch that is not at `expected`, the branch that
+    /// HEAD names), the entry is written and flushed, and only then is the branch deleted
+    /// (ADR-008, ADR-011). There is no check that the commits of the branch are reachable from
+    /// another branch, and no force flag: the entry has the commit as its old value and `-` as
+    /// its new one, so `op restore` brings the branch back.
+    ///
+    /// Returns the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
+    /// the checks find ([`RefError::HeadBranch`] for the branch of HEAD, [`RefError::Stale`] for
+    /// a branch that is not at `expected` or does not exist, [`RefError::Conflict`],
+    /// [`RefError::Locked`], [`RefError::PurgePending`], and [`RefError::Corrupt`]), and
+    /// [`UpdateError::Log`], [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
+    /// [`update_branch`](Self::update_branch). A refusal writes no entry.
+    pub fn delete_branch(
+        &self,
+        operation: &OperationName,
+        name: &BranchName,
+        expected: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        // A claim only: a branch is at `expected` or the call is `Stale`, so an ID that names no
+        // commit finds no branch.
+        let expected = CommitId::new(expected);
+        let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
+        let lock = self.refs.lock_writer(&allowed)?;
+        let outcome = self.refs.delete_branch_after(&lock, name, expected, || {
+            let change = Change::try_new(
+                now(),
+                actor.clone(),
+                operation.clone(),
+                None,
+                None,
+                vec![(name.clone(), Moved::from_to(Some(expected), None))],
+            )
+            .map_err(OpLogError::Entry)?;
+            self.append(&lock, &change)
+        })?;
+        // `delete_branch_after` refuses a branch that is not at `expected`, so it never reports
+        // "unchanged".
+        Ok(outcome
+            .into_result()?
+            .expect("delete_branch_after never reports an unchanged branch"))
+    }
+
+    /// Renames the branch `old` to `new` if `old` still is at `expected`, and records it in one
+    /// entry of the log, in the order of [`update_branch`](Self::update_branch) and under the same
+    /// lock. A HEAD that names `old` follows in the same entry. The new name must not exist.
+    ///
+    /// The moves are made in this order: the branch `new` is created, HEAD follows, and the
+    /// branch `old` is deleted, so that a stop between two moves loses no commit
+    /// ([`UpdateError::PartlyMoved`]). The authorizer is asked for both names, `old` first, and
+    /// both have to be allowed: the rename takes a branch away from one name and gives it to
+    /// another.
+    ///
+    /// Returns the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
+    /// the checks find ([`RefError::Stale`] for an `old` that is not at `expected` or does not
+    /// exist, [`RefError::BranchExists`] for a `new` that exists, [`RefError::Conflict`] for a
+    /// name that another entry holds, among them `a` and `a/b` renamed into each other,
+    /// [`RefError::Locked`], [`RefError::PurgePending`], and [`RefError::Corrupt`]), and
+    /// [`UpdateError::Log`], [`UpdateError::MoveFailed`], [`UpdateError::PartlyMoved`], and
+    /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
+    /// writes no entry.
+    pub fn rename_branch(
+        &self,
+        operation: &OperationName,
+        old: &BranchName,
+        new: &BranchName,
+        expected: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        let expected = CommitId::new(expected);
+        let allowed = self.authorize(actor, authorizer, operation, old.as_str())?;
+        // The proof of the second question is not needed: the lock takes one, and the first
+        // stands for both once both are allowed.
+        let _second = self.authorize(actor, authorizer, operation, new.as_str())?;
+        let lock = self.refs.lock_writer(&allowed)?;
+        let outcome = self
+            .refs
+            .rename_branch_after(&lock, old, new, expected, |follows| {
+                let head = follows.then(|| {
+                    Moved::from_to(
+                        Some(Head::Branch(old.clone())),
+                        Some(Head::Branch(new.clone())),
+                    )
+                });
+                let change = Change::try_new(
+                    now(),
+                    actor.clone(),
+                    operation.clone(),
+                    head,
+                    None,
+                    vec![
+                        (new.clone(), Moved::from_to(None, Some(expected))),
+                        (old.clone(), Moved::from_to(Some(expected), None)),
+                    ],
+                )
+                .map_err(OpLogError::Entry)?;
+                self.append(&lock, &change)
+            })?;
+        // `rename_branch_after` refuses an `old` that is not at `expected`, so it never reports
+        // "unchanged".
+        Ok(outcome
+            .into_result()?
+            .expect("rename_branch_after never reports an unchanged branch"))
     }
 
     /// Points HEAD to a branch, which need not exist yet, or to a commit, if HEAD still is
@@ -1109,8 +1251,8 @@ fn now() -> i64 {
 /// Reasons why [`Repository::update_branch`], [`Repository::set_head`], and the operations that
 /// build on them (`snapshot`, `track`, `commit`) fail. Two questions tell them apart: is there an
 /// entry in the log (`entry()`), and did a pointer move? An entry exists for
-/// [`MoveFailed`](Self::MoveFailed) (no pointer moved), [`PartlyMoved`](Self::PartlyMoved) (one of
-/// two moved), [`NotDurable`](Self::NotDurable) (the pointers moved), and a [`Log`](Self::Log)
+/// [`MoveFailed`](Self::MoveFailed) (no pointer moved), [`PartlyMoved`](Self::PartlyMoved) (some of
+/// the pointers moved, not all), [`NotDurable`](Self::NotDurable) (the pointers moved), and a [`Log`](Self::Log)
 /// error with [`OpLogError::NotFlushed`] (none moved). [`pointer_moved`](Self::pointer_moved)
 /// answers the second question.
 #[derive(Debug)]
@@ -1143,14 +1285,16 @@ pub enum UpdateError {
         /// Why the pointer did not move.
         source: RefError,
     },
-    /// The entry was written and the first of two pointers moved, but the second did not: the file
-    /// system failed between the moves. `op log` shows the entry as not taken (`!`), although the
-    /// first pointer did move. Do not repeat the change; read the pointers. After a `commit` that
-    /// stopped here, the next `commit` finishes it.
+    /// The entry was written and the first pointer moved, but a later one did not: the file
+    /// system failed between the moves (a `commit` has two pointers, a rename of a branch three).
+    /// `op log` shows the entry as not taken (`!`), although the first pointer did move. Do not
+    /// repeat the change; read the pointers. After a `commit` that stopped here, the next
+    /// `commit` finishes it; a rename that stopped here has the commit under both names or under
+    /// the new one, and `op restore` of its entry puts the old state back.
     PartlyMoved {
         /// The entry that is in the log.
         entry: Box<Entry>,
-        /// Why the second pointer did not move.
+        /// Why the next pointer did not move.
         source: RefError,
     },
     /// The entry was written and the pointer moved, but a directory could not be flushed to disk, so
@@ -1178,7 +1322,7 @@ impl UpdateError {
     }
 
     /// Whether a pointer moved although the call failed. [`NotDurable`](Self::NotDurable) and
-    /// [`PartlyMoved`](Self::PartlyMoved) moved one; in every other case the pointers are where they
+    /// [`PartlyMoved`](Self::PartlyMoved) moved at least one; in every other case the pointers are where they
     /// were, and the change can be repeated (with a second entry if the first one stays). The one
     /// exception is a tag whose file vanished after the check ([`MoveFailed`](Self::MoveFailed)
     /// with [`RefError::StaleTag`] and no `found`): the tag is gone, and a repeat finds nothing.
@@ -1269,8 +1413,8 @@ impl fmt::Display for UpdateError {
             }
             Self::PartlyMoved { entry, source } => write!(
                 f,
-                "entry {} of the operation log was written and the first pointer moved, but the \
-                 second did not: {source}; do not repeat the change, read the pointers",
+                "entry {} of the operation log was written and the first pointer moved, but a \
+                 later one did not: {source}; do not repeat the change, read the pointers",
                 entry.number()
             ),
             Self::NotDurable { entry, source } => write!(
@@ -4904,6 +5048,368 @@ mod tests {
         assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
         assert_eq!(numbers(&repository), before);
         assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+    }
+
+    // The branches: create, delete, rename (STEMMA-166)
+
+    /// The change that an entry records.
+    fn change_of(entry: &Entry) -> &Change {
+        let crate::oplog::Record::Change(change) = entry.record() else {
+            panic!("a change: {entry:?}");
+        };
+        change
+    }
+
+    fn create(repository: &Repository, name: &str, start: CommitId) -> Result<Entry, UpdateError> {
+        repository.create_branch(
+            &op("branch"),
+            &branch(name),
+            start.object_id(),
+            &actor(),
+            &AllowAll,
+        )
+    }
+
+    fn delete(
+        repository: &Repository,
+        name: &str,
+        expected: CommitId,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        repository.delete_branch(
+            &op("branch"),
+            &branch(name),
+            expected.object_id(),
+            &actor(),
+            authorizer,
+        )
+    }
+
+    fn rename(
+        repository: &Repository,
+        old: &str,
+        new: &str,
+        expected: CommitId,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        repository.rename_branch(
+            &op("branch"),
+            &branch(old),
+            &branch(new),
+            expected.object_id(),
+            &actor(),
+            authorizer,
+        )
+    }
+
+    /// A repository whose branch `main` is at a commit, with the branch `topic` at the same one.
+    fn with_main_and_topic() -> (TempDir, Repository, CommitId) {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        update(&repository, "main", None, a).unwrap();
+        (dir, repository, a)
+    }
+
+    #[test]
+    fn a_branch_is_created_without_switching_and_its_entry_names_the_branch_only() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let head = repository.refs().head().unwrap();
+        let entry = create(&repository, "topic", a).unwrap();
+        assert_eq!(change_of(&entry).operation().as_str(), "branch");
+        assert!(change_of(&entry).head().is_none());
+        assert_eq!(
+            change_of(&entry).branches(),
+            [(branch("topic"), Moved::from_to(None, Some(a)))]
+        );
+        assert_eq!(repository.refs().branch(&branch("topic")).unwrap(), Some(a));
+        assert_eq!(repository.refs().head().unwrap(), head);
+
+        // A branch that exists is stale: it has to be new.
+        let before = numbers(&repository);
+        let error = create(&repository, "topic", a).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::Stale { expected: None, found: Some(found), .. }) if *found == a),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+    }
+
+    #[test]
+    fn deleting_a_branch_writes_one_entry_and_restore_brings_it_back() {
+        let (_dir, repository, a) = with_main_and_topic();
+        create(&repository, "topic", a).unwrap();
+
+        let entry = delete(&repository, "topic", a, &AllowAll).unwrap();
+        assert_eq!(change_of(&entry).operation().as_str(), "branch");
+        assert_eq!(
+            change_of(&entry).branches(),
+            [(branch("topic"), Moved::from_to(Some(a), None))]
+        );
+        assert_eq!(repository.refs().branch(&branch("topic")).unwrap(), None);
+
+        // The delete has no force flag and no check of merging; `op restore` is the way back.
+        repository
+            .restore(entry.number(), false, &actor(), &AllowAll)
+            .unwrap();
+        assert_eq!(repository.refs().branch(&branch("topic")).unwrap(), Some(a));
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+    }
+
+    #[test]
+    fn the_branch_of_head_is_not_deleted_and_a_refusal_writes_no_entry() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let b = store_commit(&repository, "b");
+        create(&repository, "topic", a).unwrap();
+        let before = numbers(&repository);
+
+        let error = delete(&repository, "main", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::HeadBranch { name }) if name.as_str() == "main"),
+            "{error}"
+        );
+        // A stale tip and a missing branch are stale, before the rule about HEAD.
+        let error = delete(&repository, "topic", b, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::Stale { found: Some(found), .. }) if *found == a),
+            "{error}"
+        );
+        let error = delete(&repository, "gone", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                UpdateError::Refs(RefError::Stale { found: None, .. })
+            ),
+            "{error}"
+        );
+        let error = delete(&repository, "topic", a, &DenyAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Denied { target, .. } if target == "topic"),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+        assert_eq!(repository.refs().branch(&branch("topic")).unwrap(), Some(a));
+        assert!(!error.pointer_moved());
+    }
+
+    #[test]
+    fn a_branch_that_head_names_but_that_has_no_commit_is_stale_and_not_the_branch_of_head() {
+        // `init` leaves HEAD on `main` with no commit: there is nothing to delete.
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        let error = delete(&repository, "main", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                UpdateError::Refs(RefError::Stale { found: None, .. })
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_detached_head_does_not_protect_a_branch() {
+        let (_dir, repository, a) = with_main_and_topic();
+        repository
+            .set_head(
+                &op("checkout"),
+                &repository.refs().head().unwrap(),
+                &Head::Detached(a),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        delete(&repository, "main", a, &AllowAll).unwrap();
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+    }
+
+    #[test]
+    fn renaming_the_branch_of_head_moves_head_in_the_same_entry() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let entry = rename(&repository, "main", "trunk", a, &AllowAll).unwrap();
+        assert_eq!(change_of(&entry).operation().as_str(), "branch");
+        assert_eq!(
+            change_of(&entry).head(),
+            Some(&Moved::from_to(
+                Some(Head::Branch(branch("main"))),
+                Some(Head::Branch(branch("trunk")))
+            ))
+        );
+        assert_eq!(
+            change_of(&entry).branches(),
+            [
+                (branch("main"), Moved::from_to(Some(a), None)),
+                (branch("trunk"), Moved::from_to(None, Some(a))),
+            ]
+        );
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("trunk"))
+        );
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
+        assert_eq!(repository.refs().branch(&branch("trunk")).unwrap(), Some(a));
+        assert_eq!(numbers(&repository).len(), 3);
+
+        // The restore puts all three pointers back with one entry of its own.
+        repository
+            .restore(entry.number(), false, &actor(), &AllowAll)
+            .unwrap();
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("main"))
+        );
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+        assert_eq!(repository.refs().branch(&branch("trunk")).unwrap(), None);
+    }
+
+    #[test]
+    fn renaming_another_branch_leaves_head_alone() {
+        let (_dir, repository, a) = with_main_and_topic();
+        create(&repository, "topic", a).unwrap();
+        let entry = rename(&repository, "topic", "feature/x", a, &AllowAll).unwrap();
+        assert!(change_of(&entry).head().is_none());
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("main"))
+        );
+        assert_eq!(repository.refs().branch(&branch("topic")).unwrap(), None);
+        assert_eq!(
+            repository.refs().branch(&branch("feature/x")).unwrap(),
+            Some(a)
+        );
+    }
+
+    #[test]
+    fn a_rename_that_cannot_be_made_is_refused_and_writes_no_entry() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let b = store_commit(&repository, "b");
+        create(&repository, "topic", b).unwrap();
+        create(&repository, "a/b", a).unwrap();
+        let before = numbers(&repository);
+
+        // The new name exists, at any commit; renaming a branch to itself is the same case.
+        let error = rename(&repository, "main", "topic", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::BranchExists { name, found }) if name.as_str() == "topic" && *found == b),
+            "{error}"
+        );
+        let error = rename(&repository, "main", "main", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::BranchExists { .. })),
+            "{error}"
+        );
+        // A stale tip and a missing branch are stale.
+        let error = rename(&repository, "main", "x", b, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::Stale { found: Some(found), .. }) if *found == a),
+            "{error}"
+        );
+        let error = rename(&repository, "gone", "x", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                UpdateError::Refs(RefError::Stale { found: None, .. })
+            ),
+            "{error}"
+        );
+        // A name in the way of the new one: `a/b` is below the directory `a`, and `topic` is a
+        // file where a directory of `topic/y` would go.
+        for new in ["a", "topic/y"] {
+            let error = rename(&repository, "main", new, a, &AllowAll).unwrap_err();
+            assert!(
+                matches!(&error, UpdateError::Refs(RefError::Conflict { .. })),
+                "{new}: {error}"
+            );
+        }
+        // The authorizer is asked for both names, and either refusal stops the rename.
+        let error = rename(&repository, "main", "x", a, &DenyAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Denied { target, .. } if target == "main"),
+            "{error}"
+        );
+        struct DenyNew;
+        impl Authorizer for DenyNew {
+            fn authorize(&self, _: &Actor, _: &OperationName, target: &str) -> Decision {
+                if target == "x" {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                }
+            }
+        }
+        let error = rename(&repository, "main", "x", a, &DenyNew).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Denied { target, .. } if target == "x"),
+            "{error}"
+        );
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("main"))
+        );
+    }
+
+    #[test]
+    fn a_rename_that_stops_before_the_last_move_keeps_the_commit_under_the_new_name() {
+        use crate::fault;
+        use crate::oplog::{outcomes, Current, Outcome};
+        let (_dir, repository, a) = with_main_and_topic();
+        create(&repository, "dir/old", a).unwrap();
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        // The file of `dir/old` cannot be removed, which is the last of the moves.
+        let denied = fault::deny_writes_in(&heads.join("dir"));
+        let error = rename(&repository, "dir/old", "new", a, &AllowAll).unwrap_err();
+        drop(denied);
+        assert!(matches!(&error, UpdateError::PartlyMoved { .. }), "{error}");
+        assert!(error.pointer_moved());
+        assert_eq!(error.entry().map(Entry::number), Some(4));
+        // The new branch exists and the old one is still there: no commit is lost.
+        assert_eq!(repository.refs().branch(&branch("new")).unwrap(), Some(a));
+        assert_eq!(
+            repository.refs().branch(&branch("dir/old")).unwrap(),
+            Some(a)
+        );
+
+        // The log judges the entry as not taken while the old branch is still there, and as taken
+        // once the old branch is gone.
+        let judge = |branches: Vec<(BranchName, CommitId)>| {
+            let entries = repository.oplog().entries().unwrap();
+            let current = Current::new(Head::Branch(branch("main")), branches, true);
+            outcomes(&entries[3..], Some(&current))
+        };
+        let both = vec![
+            (branch("main"), a),
+            (branch("dir/old"), a),
+            (branch("new"), a),
+            (branch("topic"), a),
+        ];
+        assert_eq!(judge(both), [Outcome::NotTaken]);
+        let settled = vec![
+            (branch("main"), a),
+            (branch("new"), a),
+            (branch("topic"), a),
+        ];
+        assert_eq!(judge(settled), [Outcome::Took]);
+    }
+
+    #[test]
+    fn a_rename_that_cannot_make_the_new_branch_moves_nothing() {
+        use crate::fault;
+        let (_dir, repository, a) = with_main_and_topic();
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        let denied = fault::deny_writes_in(&heads);
+        let error = rename(&repository, "main", "trunk", a, &AllowAll).unwrap_err();
+        drop(denied);
+        assert!(matches!(&error, UpdateError::MoveFailed { .. }), "{error}");
+        assert!(!error.pointer_moved());
+        assert_eq!(repository.refs().branch(&branch("main")).unwrap(), Some(a));
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(branch("main"))
+        );
     }
 
     #[test]
