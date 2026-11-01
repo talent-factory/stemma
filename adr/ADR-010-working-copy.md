@@ -136,8 +136,11 @@ art, not a template (ADR-015).
     files, so a stop leaves the files of `T` in the directory and the pointers old, as for a
     restore. A snapshot would save those files as changes of `W` and `W` would then be refused as
     not empty, so the repeat is recognised before it takes a snapshot: the newest entry is a
-    `switch` whose pointers are all at their old values and whose result is the one asked for
-    (the same HEAD, the same new branch, and a working-copy commit that is a child of `T`). The
+    `switch` whose result is the one asked for (the same HEAD, the same new branch, and a
+    working-copy commit that is a child of `T`) and whose pointers are each at the old or the new
+    value of the entry, with at least one not moved yet. This holds after a stop between two
+    moves as well, when the new branch exists already. The target is read again under the lock,
+    and a branch that `-c` would make is refused only if no such entry explains it. The
     repeat takes no snapshot and uses that working-copy commit again, so its change ID is kept,
     and writes an entry of its own. The error of a stop after the entry says to run the same
     switch again before any other command.

@@ -155,8 +155,18 @@ impl Repository {
             .refs_store()
             .lock_writer(&allowed)
             .map_err(SwitchError::Refs)?;
+        // The target is read again under the lock: another command may have moved a branch since
+        // the first read, and the new working-copy commit is built on this tip.
+        let resolved = match self.resolve(target)? {
+            Ok(resolved) => resolved,
+            Err(already) => return Ok(Switched::AlreadyOn(already)),
+        };
         // A switch that stopped after its files is repeated without a snapshot (see above).
-        let (snapshot, mut snapshot_late, repeated) = match self.stopped_switch(&resolved)? {
+        let stopped = self.stopped_switch(&resolved)?;
+        if stopped.is_none() {
+            self.require_free(target)?;
+        }
+        let (snapshot, mut snapshot_late, repeated) = match stopped {
             Some(next) => (None, None, Some(next)),
             None => match self.snapshot_locked(&lock, actor, authorizer) {
                 Ok(entry) => (entry, None, None),
@@ -292,9 +302,6 @@ impl Repository {
                 }))
             }
             SwitchTarget::Create { name, start } => {
-                if refs.branch(name).map_err(SwitchError::Refs)?.is_some() {
-                    return Err(SwitchError::BranchExists(name.clone()));
-                }
                 let tip = match start {
                     Some(revision) => self.commit_of(revision)?,
                     None => match &head {
@@ -321,6 +328,22 @@ impl Repository {
                 }))
             }
         }
+    }
+
+    /// Refuses `switch -c` for a branch that exists. A switch that stopped after it made the
+    /// branch is not refused: [`stopped_switch`](Self::stopped_switch) is asked first.
+    fn require_free(&self, target: &SwitchTarget) -> Result<(), SwitchError> {
+        if let SwitchTarget::Create { name, .. } = target {
+            if self
+                .refs()
+                .branch(name)
+                .map_err(SwitchError::Refs)?
+                .is_some()
+            {
+                return Err(SwitchError::BranchExists(name.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// The commit that a revision names, which the store has.
@@ -411,10 +434,11 @@ impl Repository {
     }
 
     /// The working-copy commit of the newest entry if that entry is a switch with the result that
-    /// `resolved` asks for and no pointer of it moved: HEAD, the working-copy commit, and the
-    /// branch it made are all at their old values. Such an entry was written, and the files were
-    /// brought to the target, but a pointer did not move (a stop after the files). The caller holds
-    /// the lock of the references, so no writer is between its entry and its moves.
+    /// `resolved` asks for and that did not finish: every pointer it names is at its old or at its
+    /// new value, and at least one is at its old value. Such an entry was written, and the files
+    /// were brought to the target, but a pointer did not move (a stop after the files, or after
+    /// some of the pointers). The caller holds the lock of the references, so no writer is between
+    /// its entry and its moves.
     fn stopped_switch(&self, resolved: &Resolved) -> Result<Option<CommitId>, SwitchError> {
         let entries = self.oplog().entries().map_err(SwitchError::Log)?;
         let Some(change) = entries.last().and_then(Entry::change) else {
@@ -432,28 +456,47 @@ impl Repository {
         let (Some(&old), Some(&next)) = (moved.before(), moved.after()) else {
             return Ok(None);
         };
-        let head_before = change.head().map_or(Some(&head), Moved::before);
-        let head_after = change.head().map_or(Some(&head), Moved::after);
-        let mut untouched =
-            current == old && head_before == Some(&head) && head_after == Some(&resolved.head);
-        for (name, moved) in change.branches() {
-            untouched &= refs.branch(name).map_err(SwitchError::Refs)? == moved.before().copied();
+        // The result of the entry must be the one that is asked for.
+        if change.head().map_or(Some(&head), Moved::after) != Some(&resolved.head) {
+            return Ok(None);
         }
         let created: Vec<_> = change
             .branches()
             .iter()
             .map(|(name, moved)| (name.clone(), moved.after().copied()))
             .collect();
-        untouched &= created == resolved.branches();
-        if !untouched {
+        if created != resolved.branches() {
             return Ok(None);
         }
-        // The commit is in the store, as the entry was written after it; a commit that is not a
-        // child of the tip is not the result that is asked for.
-        match read_commit(self.objects(), next) {
-            Ok(commit) if commit.parents() == [resolved.tip] => Ok(Some(next)),
-            _ => Ok(None),
+        // Each pointer is at its old or its new value, and one is not at the new one yet.
+        let mut unfinished = false;
+        if current == old {
+            unfinished = true;
+        } else if current != next {
+            return Ok(None);
         }
+        if let Some(moved) = change.head() {
+            if Some(&head) == moved.before() {
+                unfinished = true;
+            } else if Some(&head) != moved.after() {
+                return Ok(None);
+            }
+        }
+        for (name, moved) in change.branches() {
+            let found = refs.branch(name).map_err(SwitchError::Refs)?;
+            if found == moved.before().copied() {
+                unfinished = true;
+            } else if found != moved.after().copied() {
+                return Ok(None);
+            }
+        }
+        if !unfinished {
+            return Ok(None);
+        }
+        // The commit is in the store, as the entry was written after it, so a failure to read it
+        // is damage and not "no repeat": going on would take the snapshot that a repeat avoids.
+        let commit = read_commit(self.objects(), next).map_err(SwitchError::Snapshot)?;
+        Ok((commit.parents() == [resolved.tip]).then_some(next))
     }
 
     /// The plan of the files for the moves under the lock, or `None` if the working-copy commit
@@ -1202,5 +1245,148 @@ mod tests {
         assert_eq!(repository.refs().head().unwrap(), head);
         assert_eq!(read(&dir, "a.txt"), "two");
         assert!(!dir.path().join("new.rs").exists());
+    }
+    /// Runs a switch to a new branch `old` at the first commit that stops after the files
+    /// (`refs/heads` refuses the new name). Returns the first commit.
+    fn stopped_switch_to_old(dir: &TempDir, repository: &Repository) -> (CommitId, SwitchTarget) {
+        let first = two_commits(dir, repository);
+        let target = SwitchTarget::Create {
+            name: name("old"),
+            start: Some(Revision::Commit(first.object_id())),
+        };
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        let denied = Rc::new(RefCell::new(None));
+        let arm = Rc::clone(&denied);
+        super::super::snapshot::pause::at_next(
+            super::super::snapshot::pause::Stage::Moves,
+            move || {
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&heads));
+            },
+        );
+        let error = switch(repository, &target).unwrap_err();
+        drop(denied);
+        assert!(matches!(error, SwitchError::MoveFailed { .. }), "{error}");
+        (first, target)
+    }
+
+    #[test]
+    fn a_different_switch_after_a_stop_is_no_repeat_and_takes_a_snapshot() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (first, _) = stopped_switch_to_old(&dir, &repository);
+        let count = entries(&repository);
+
+        // Another name for the same start: not the result of the stopped entry.
+        let other = SwitchTarget::Create {
+            name: name("other"),
+            start: Some(Revision::Commit(first.object_id())),
+        };
+        let error = switch(&repository, &other).unwrap_err();
+
+        assert!(error.snapshot().is_some(), "a snapshot was taken: {error}");
+        assert!(
+            matches!(&error, SwitchError::AfterSnapshot { source, .. }
+                if matches!(**source, SwitchError::NotEmpty { .. })),
+            "{error}"
+        );
+        assert_eq!(entries(&repository), count + 1);
+    }
+
+    #[test]
+    fn a_stopped_switch_is_no_repeat_once_another_entry_follows_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, target) = stopped_switch_to_old(&dir, &repository);
+        // Any later entry, here a snapshot of the files of the target, ends the repeat.
+        repository.snapshot(&actor(), &AllowAll).unwrap();
+
+        let error = switch(&repository, &target).unwrap_err();
+
+        assert!(matches!(error, SwitchError::NotEmpty { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_stopped_switch_whose_working_copy_commit_cannot_be_read_is_damage_and_no_repeat() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, target) = stopped_switch_to_old(&dir, &repository);
+        let planned = repository
+            .oplog()
+            .entries()
+            .unwrap()
+            .last()
+            .and_then(|entry| entry.change().and_then(Change::working_copy).cloned())
+            .and_then(|moved| moved.after().copied())
+            .unwrap();
+        let path = dir.path().join(".stemma").join("objects");
+        let hex = planned.to_string().replace(':', "");
+        let object = walk(&path, &hex[hex.len() - 12..]);
+        fs::remove_file(object).unwrap();
+        let count = entries(&repository);
+
+        let error = switch(&repository, &target).unwrap_err();
+
+        assert!(matches!(error, SwitchError::Snapshot(_)), "{error}");
+        assert_eq!(entries(&repository), count, "no snapshot was taken");
+    }
+
+    #[test]
+    fn a_switch_that_stopped_after_the_branch_moved_is_finished_by_the_same_switch() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (first, target) = stopped_switch_to_old(&dir, &repository);
+        let planned = repository
+            .oplog()
+            .entries()
+            .unwrap()
+            .last()
+            .and_then(|entry| entry.change().and_then(Change::working_copy).cloned())
+            .and_then(|moved| moved.after().copied())
+            .unwrap();
+        // The state after a stop that came after the first move: the branch is made.
+        let branch = repository
+            .metadata_dir()
+            .join("refs")
+            .join("heads")
+            .join("old");
+        fs::write(branch, format!("{first}\n")).unwrap();
+
+        let (saved, _, next) = done(switch(&repository, &target));
+
+        assert!(saved.is_none());
+        assert_eq!(next, planned);
+        assert_eq!(repository.refs().working_copy().unwrap(), next);
+        assert_eq!(repository.refs().head().unwrap(), Head::Branch(name("old")));
+    }
+
+    #[test]
+    fn a_switch_that_finished_is_no_repeat_and_a_new_branch_of_that_name_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, target) = stopped_switch_to_old(&dir, &repository);
+        done(switch(&repository, &target));
+        done(switch(&repository, &existing("main")));
+
+        let error = switch(&repository, &target).unwrap_err();
+
+        assert!(matches!(error, SwitchError::BranchExists(_)), "{error}");
+    }
+
+    /// The file below `dir` whose name ends with `suffix`.
+    fn walk(dir: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+        fn find(dir: &std::path::Path, suffix: &str) -> Option<std::path::PathBuf> {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if let Some(found) = find(&path, suffix) {
+                        return Some(found);
+                    }
+                } else if path.to_string_lossy().ends_with(suffix) {
+                    return Some(path);
+                }
+            }
+            None
+        }
+        find(dir, suffix).unwrap_or_else(|| panic!("no file ending with {suffix}"))
     }
 }
