@@ -8,8 +8,8 @@ use std::path::Path;
 use std::process::Command;
 
 use common::{
-    entry_count, hold_the_lock, operations, repository, run, stemma, track_ok, write, Dir, Run,
-    ACTOR,
+    entry_count, hold_the_lock, operations, repository, run, run_failing, stemma, track_ok, write,
+    Dir, Run, ACTOR,
 };
 
 fn commit(dir: &Path, message: &str) {
@@ -21,21 +21,8 @@ fn status(dir: &Path) -> Run {
     run(dir, &["status", "--actor", "human daniel"])
 }
 
-/// Whether a user is bound by permissions: root is not, and a test that needs a failure of the
-/// file system through a mode must fail there and not pass without having tested anything.
-#[cfg(unix)]
-fn assert_permissions_bind(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let probe = dir.join("probe");
-    fs::create_dir(&probe).unwrap();
-    fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).unwrap();
-    let binds = fs::read_dir(&probe).is_err();
-    fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::remove_dir(&probe).unwrap();
-    assert!(
-        binds,
-        "permissions do not bind this user; do not run the tests as root"
-    );
+fn status_failing(dir: &Path, rules: &[(&str, &Path)]) -> Run {
+    run_failing(dir, &["status", "--actor", "human daniel"], rules)
 }
 
 #[test]
@@ -517,22 +504,17 @@ fn a_special_file_is_listed_as_untracked_and_track_refuses_it() {
     drop(socket);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_directory_that_cannot_be_listed_stops_the_command_before_anything_is_saved() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = repository();
-    assert_permissions_bind(dir.path());
     write(dir.path(), "a.txt", "one");
     track_ok(dir.path(), "a.txt");
     write(dir.path(), "a.txt", "two");
     write(dir.path(), "closed/x.txt", "x");
     let closed = dir.path().join("closed");
-    fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
     let entries = operations(dir.path()).len();
 
-    let result = status(dir.path());
-    fs::set_permissions(&closed, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = status_failing(dir.path(), &[("read", &closed)]);
 
     assert_eq!(result.code, 1, "{}", result.stdout);
     assert_eq!(result.stdout, "");
@@ -545,23 +527,69 @@ fn a_directory_that_cannot_be_listed_stops_the_command_before_anything_is_saved(
     assert_eq!(operations(dir.path()).len(), entries);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_tracked_file_that_cannot_be_read_fails_and_saves_nothing() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = repository();
-    assert_permissions_bind(dir.path());
     write(dir.path(), "a.txt", "one");
     track_ok(dir.path(), "a.txt");
     let entries = operations(dir.path()).len();
-    fs::set_permissions(dir.path().join("a.txt"), fs::Permissions::from_mode(0o000)).unwrap();
 
-    let result = status(dir.path());
-    fs::set_permissions(dir.path().join("a.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+    let result = status_failing(dir.path(), &[("read", &dir.path().join("a.txt"))]);
 
     assert_eq!(result.code, 1, "{}", result.stdout);
     assert_eq!(result.stdout, "");
-    assert!(result.stderr.contains("a.txt"), "{}", result.stderr);
+    assert!(
+        result.stderr.contains("a.txt") && result.stderr.contains("injected failure"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(dir.path()).len(), entries);
+}
+
+#[test]
+fn a_rule_of_the_environment_that_does_not_parse_stops_the_command() {
+    let dir = repository();
+
+    let result = stemma(dir.path(), &["status", "--actor", ACTOR], |command| {
+        command.env("STEMMA_FAULT", "bogus");
+    });
+
+    assert_eq!(result.code, 101, "{}", result.stdout);
+    assert!(result.stderr.contains("STEMMA_FAULT"), "{}", result.stderr);
+}
+
+#[test]
+fn a_command_that_touches_no_file_does_not_see_a_rule_that_does_not_parse() {
+    let dir = repository();
+
+    let result = stemma(dir.path(), &["--version"], |command| {
+        command.env("STEMMA_FAULT", "bogus");
+    });
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+}
+
+#[test]
+fn a_file_that_cannot_be_opened_for_writing_again_stops_the_snapshot_of_a_status() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "one");
+    track_ok(dir.path(), "a.txt");
+    write(dir.path(), "a.txt", "two");
+    let entries = operations(dir.path()).len();
+    let tmp = dir.path().join(".stemma").join("tmp");
+
+    let result = run_failing(
+        dir.path(),
+        &["status", "--actor", ACTOR],
+        &[("modify", &tmp)],
+    );
+
+    assert_ne!(result.code, 0, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("open the temporary file"),
+        "{}",
+        result.stderr
+    );
     assert_eq!(operations(dir.path()).len(), entries);
 }
 
@@ -579,6 +607,7 @@ fn a_status_that_cannot_be_written_ends_with_code_1() {
     let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .args(["status", "--actor", "human daniel"])
         .stdout(full)
         .output()
@@ -594,24 +623,17 @@ fn a_status_that_cannot_be_written_ends_with_code_1() {
 
 /// A snapshot whose pointer moves and whose directory cannot be flushed: the status is written
 /// first, then the error, and the code is 3.
-#[cfg(unix)]
 #[test]
 fn a_snapshot_that_cannot_be_flushed_gives_the_status_and_code_3() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = repository();
     write(dir.path(), "a.txt", "one");
     track_ok(dir.path(), "a.txt");
     commit(dir.path(), "base");
     write(dir.path(), "a.txt", "two");
+    // Opening the metadata directory is denied, which is all the flush of it does; the rest of
+    // the repository stays usable.
     let metadata = dir.path().join(".stemma");
-    fs::set_permissions(&metadata, fs::Permissions::from_mode(0o300)).unwrap();
-    let binds = fs::read_dir(&metadata).is_err();
-    let result = status(dir.path());
-    fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(
-        binds,
-        "permissions do not bind this user; do not run the tests as root"
-    );
+    let result = status_failing(dir.path(), &[("read", &metadata)]);
 
     assert_eq!(result.code, 3, "{}", result.stderr);
     assert_eq!(result.stdout, "Working copy changes:\nM a.txt\n");

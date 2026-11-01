@@ -34,6 +34,13 @@ pub mod change;
 pub mod conflict;
 pub mod diff;
 pub mod failure;
+// Public only with the feature `fault-injection`, so that the tests of other crates can arm a
+// guard; hidden from the documentation.
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+pub mod fault;
+#[cfg(not(feature = "fault-injection"))]
+mod fault;
 #[cfg(any(fuzzing, test))]
 #[doc(hidden)]
 pub mod fuzz;
@@ -83,10 +90,11 @@ pub(crate) fn open_without_following(path: &std::path::Path) -> std::io::Result<
     {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        let file = std::fs::OpenOptions::new()
+        let mut options = std::fs::OpenOptions::new();
+        options
             .read(true)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = fault::open_with(&options, path)?;
         let opened = file.metadata().map_err(|error| {
             std::io::Error::new(
                 error.kind(),
@@ -94,7 +102,7 @@ pub(crate) fn open_without_following(path: &std::path::Path) -> std::io::Result<
             )
         })?;
         if needs_ordinary_open(opened.is_file(), opened.file_attributes()) {
-            return std::fs::File::open(path).map_err(|error| {
+            return fault::open(path).map_err(|error| {
                 let kind = match error.kind() {
                     std::io::ErrorKind::NotFound => std::io::ErrorKind::Other,
                     kind => kind,
@@ -109,7 +117,7 @@ pub(crate) fn open_without_following(path: &std::path::Path) -> std::io::Result<
     }
     #[cfg(not(windows))]
     {
-        std::fs::File::open(path)
+        fault::open(path)
     }
 }
 

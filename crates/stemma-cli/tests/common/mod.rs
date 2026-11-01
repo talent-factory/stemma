@@ -13,6 +13,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use stemma_core::oplog::Entry;
+use stemma_core::repository::Repository;
 
 /// The actor that the tests run the commands as, unless a test names another.
 pub const ACTOR: &str = "human daniel";
@@ -56,13 +57,15 @@ pub struct Run {
     pub stderr: String,
 }
 
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR` in the environment; `extra` can adjust the
-/// command before it runs, for example to set the actor through the environment.
+/// Runs `stemma` in `dir` without `STEMMA_ACTOR` and `STEMMA_FAULT` in the environment (a rule of
+/// the caller's own environment must not leak in); `extra` can adjust the command before it runs,
+/// for example to set the actor through the environment.
 pub fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .args(args);
     extra(&mut command);
     let output = command.output().unwrap();
@@ -73,9 +76,26 @@ pub fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Ru
     }
 }
 
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`.
+/// Runs `stemma` in `dir` without `STEMMA_ACTOR` and `STEMMA_FAULT`.
 pub fn run(dir: &Path, args: &[&str]) -> Run {
     stemma(dir, args, |_| {})
+}
+
+/// Runs `stemma` like [`run`] with injected file system failures (STEMMA-187) instead of
+/// directories whose Unix mode was changed, which has no effect on Windows and none for a
+/// privileged user. Each rule is `("write", dir)`, `("modify", dir)`, or `("read", path)`; see
+/// `stemma_core::fault`. A rule that names nothing that the command touches does nothing, so a
+/// test asserts the effect of the failure.
+pub fn run_failing(dir: &Path, args: &[&str], rules: &[(&str, &Path)]) -> Run {
+    assert!(!rules.is_empty(), "a run without a rule injects nothing");
+    let rules: Vec<_> = rules
+        .iter()
+        .map(|(kind, path)| format!("{kind}={}", path.display()))
+        .collect();
+    let value = std::env::join_paths(rules).unwrap();
+    stemma(dir, args, |command| {
+        command.env("STEMMA_FAULT", value);
+    })
 }
 
 /// Runs `stemma` like [`run`] and asserts that it succeeds.
@@ -171,4 +191,81 @@ pub fn hold_the_lock(dir: &Path) {
 /// lists nothing when one of them is damaged.
 pub fn entry_count(dir: &Path) -> usize {
     fs::read_dir(dir.join(".stemma/oplog")).unwrap().count()
+}
+
+/// The numbers of the entries of the log.
+pub fn numbers(dir: &Path) -> Vec<u64> {
+    let repository = Repository::open(dir).unwrap();
+    repository
+        .oplog()
+        .entries()
+        .unwrap()
+        .iter()
+        .map(Entry::number)
+        .collect()
+}
+
+/// The temporary files of a checkout below `dir`, outside `.stemma`.
+pub fn temporary_files(dir: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        // A directory that is gone or busy in the meantime is looked at again by the caller.
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // An entry that the restore renamed in the meantime is gone.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if name != ".stemma" {
+                    pending.push(entry.path());
+                }
+            } else if name.starts_with(".stemma-checkout-") {
+                found.push(entry.path().display().to_string());
+            }
+        }
+    }
+    found
+}
+
+/// The number and the size of the files that [`prepare_restore`] writes. Each file spends a while
+/// in its temporary file, and after an interrupt the restore may still finish the file it is on
+/// before the handler ends the process; with several files, some are left to restore then, which
+/// tells an interrupt in the middle from a restore that was done already.
+const RESTORE_FILES: usize = 20;
+const RESTORE_FILE_SIZE: usize = 2 * 1024 * 1024;
+
+/// The names of the files that [`prepare_restore`] writes.
+pub fn restore_files() -> Vec<String> {
+    (0..RESTORE_FILES)
+        .map(|number| format!("large{number}.bin"))
+        .collect()
+}
+
+/// A repository in `dir` whose last snapshot removed the files of [`restore_files`] that an
+/// earlier snapshot held. Returns the number of the snapshot that removed them, which `op restore`
+/// brings back.
+pub fn prepare_restore(dir: &Path) -> String {
+    ok(dir, &["init", "--actor", ACTOR]);
+    let files = restore_files();
+    for (number, name) in files.iter().enumerate() {
+        // Bytes that differ from file to file, so that no file is a run of one value.
+        let content: Vec<u8> = (0..RESTORE_FILE_SIZE)
+            .map(|index| ((index + number) % 251) as u8)
+            .collect();
+        fs::write(dir.join(name), content).unwrap();
+    }
+    ok(dir, &["track", "--actor", ACTOR, "."]);
+    ok(dir, &["commit", "-m", "files", "--actor", ACTOR]);
+    for name in &files {
+        fs::remove_file(dir.join(name)).unwrap();
+    }
+    let before = numbers(dir).len();
+    ok(dir, &["commit", "-m", "none", "--actor", ACTOR]);
+    // The snapshot that saw the files removed.
+    numbers(dir)[before].to_string()
 }

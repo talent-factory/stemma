@@ -565,6 +565,7 @@ fn spawn_on_terminal(dir: &Path, setup: impl FnOnce(&mut Command)) -> (OnTermina
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .env_remove("LESS")
         .args(["diff", "--actor", "human daniel"])
         // The input is the terminal too, so that the interface of `--tui` reads its keys there and

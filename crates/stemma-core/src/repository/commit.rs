@@ -535,6 +535,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::fault;
     use crate::object::Tree;
     use crate::oplog::OpLogError;
     use crate::repository::InitOptions;
@@ -901,19 +902,6 @@ mod tests {
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);
     }
 
-    /// Whether permissions have an effect: root may write into a directory without the permission.
-    #[cfg(unix)]
-    fn permissions_hold(dir: &std::path::Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = dir.join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
-        let held = fs::write(probe.join("file"), b"").is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::remove_dir_all(&probe).unwrap();
-        held
-    }
-
     /// A repository that has one file with a first commit not made yet, and the commits and
     /// moves that a `commit` would make, for the tests that stop it half way.
     struct Pending {
@@ -987,22 +975,18 @@ mod tests {
     }
 
     /// A commit that stopped between its moves: the entry is written and the branch has moved, but
-    /// the working-copy file could not be replaced. `None` where permissions do not hold.
-    #[cfg(unix)]
-    fn stopped(repository: &Repository, dir: &TempDir) -> Option<Pending> {
-        use std::os::unix::fs::PermissionsExt;
-        if !permissions_hold(dir.path()) {
-            return None;
-        }
+    /// the working-copy file could not be replaced.
+    fn stopped(repository: &Repository, dir: &TempDir) -> Pending {
         let pending = pending(repository, dir);
         let metadata = repository.metadata_dir();
         // The branch can move, and the working-copy file cannot be replaced: the metadata
-        // directory is read-only once the entry is written.
+        // directory refuses a new name once the entry is written.
+        let denied = std::cell::RefCell::new(None);
         let outcome = moves_with(repository, &pending, || {
-            fs::set_permissions(&metadata, fs::Permissions::from_mode(0o555)).unwrap();
+            *denied.borrow_mut() = Some(fault::deny_writes_in(&metadata));
         })
         .unwrap();
-        fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         let _ = fs::remove_file(metadata.join("refs.lock"));
         let Logged::PartlyMoved(entry, source) = outcome else {
             panic!("the second move should fail");
@@ -1014,17 +998,14 @@ mod tests {
             Some(pending.named)
         );
         assert_eq!(repository.refs().working_copy().unwrap(), pending.working);
-        Some(pending)
+        pending
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_stop_between_the_moves_is_finished_by_the_next_commit() {
         let dir = TempDir::new();
         let repository = repository(&dir);
-        let Some(pending) = stopped(&repository, &dir) else {
-            return;
-        };
+        let pending = stopped(&repository, &dir);
 
         let done = commit(&repository, "ignored").unwrap();
 
@@ -1047,16 +1028,13 @@ mod tests {
         assert_eq!(read(&repository, after.commit).parents(), [pending.named]);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_change_since_a_stop_is_saved_and_the_stop_is_still_finished() {
         // The snapshot of the change gives the working-copy commit a new ID; its move starts from
         // the old value of the entry, so the log still reads the entry as not taken.
         let dir = TempDir::new();
         let repository = repository(&dir);
-        let Some(pending) = stopped(&repository, &dir) else {
-            return;
-        };
+        let pending = stopped(&repository, &dir);
         write(&dir, "a.txt", "two");
 
         let done = commit(&repository, "ignored").unwrap();
@@ -1077,15 +1055,12 @@ mod tests {
         assert_eq!(read(&repository, after.commit).tree(), next.tree());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_stop_behind_a_stub_is_not_finished() {
         // The stub took the move that showed the stop: the log does not decide it any more.
         let dir = TempDir::new();
         let repository = repository(&dir);
-        let Some(pending) = stopped(&repository, &dir) else {
-            return;
-        };
+        let pending = stopped(&repository, &dir);
         write(&dir, "a.txt", "two");
         let snapshot = repository
             .snapshot(&actor(), &AllowAll)
@@ -1107,16 +1082,13 @@ mod tests {
         assert_eq!(repository.refs().working_copy().unwrap(), working);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_tip_that_the_newest_commit_did_not_set_is_no_stop() {
         // Another commit of the same shape at the tip, set by another operation: the newest entry
         // of a commit moved the branch elsewhere, so this tip is not the commit that stopped.
         let dir = TempDir::new();
         let repository = repository(&dir);
-        let Some(pending) = stopped(&repository, &dir) else {
-            return;
-        };
+        let pending = stopped(&repository, &dir);
         let old = read(&repository, pending.working);
         let other = repository
             .put(&old.rewrite(old.tree(), actor(), now(), "other"))
@@ -1268,23 +1240,18 @@ mod tests {
         assert_eq!(repository.refs().working_copy().unwrap(), pending.working);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failure_of_the_first_move_leaves_both_pointers_and_tries_no_second() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = repository(&dir);
-        if !permissions_hold(dir.path()) {
-            return;
-        }
         let pending = pending(&repository, &dir);
         let heads = repository.metadata_dir().join("refs");
         fs::create_dir_all(heads.join("heads")).unwrap();
-        fs::set_permissions(heads.join("heads"), fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&heads.join("heads"));
 
         let outcome = moves(&repository, &pending).unwrap();
 
-        fs::set_permissions(heads.join("heads"), fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         assert!(matches!(
             outcome,
             Logged::MoveFailed(_, RefError::Io { .. })

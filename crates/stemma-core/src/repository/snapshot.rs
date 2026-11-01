@@ -15,6 +15,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{now, Repository, UpdateError};
+#[cfg(test)]
+use crate::fault;
 use crate::index::{Index, IndexError, WriteTreeError};
 use crate::object::{
     Blob, BlobId, Commit, CommitId, CommitParseError, FileMode, Kind, ObjectId, Tree, TreeId,
@@ -1561,10 +1563,8 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_unreadable_file_is_an_io_error_and_nothing_moves() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = repository(&dir);
         track(&repository, &dir, &[("a.txt", "one"), ("secret", "two")]);
@@ -1572,14 +1572,9 @@ mod tests {
         let numbers = repository.oplog().numbers().unwrap();
         write(&dir, "a.txt", "changed");
         let secret = dir.path().join("secret");
-        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
-        let readable = fs::read(&secret).is_ok();
+        let denied = fault::deny_reads_of(&secret);
         let result = repository.snapshot(&actor(), &AllowAll);
-        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
-        if readable {
-            eprintln!("skipped: the permission of a file is not enforced here (root?)");
-            return;
-        }
+        drop(denied);
         let error = result.unwrap_err();
         assert!(matches!(error, SnapshotError::Io { .. }), "{error}");
         assert!(error.io_error().is_some());

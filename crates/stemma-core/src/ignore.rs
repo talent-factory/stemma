@@ -30,6 +30,8 @@ use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use crate::fault;
 use crate::object::{name_problem, NameProblem};
 
 /// The name of the exclusion file, in the root of the working directory.
@@ -1359,20 +1361,14 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn a_file_that_cannot_be_opened_is_an_io_error_from_the_real_call() {
-        use std::os::unix::fs::PermissionsExt;
+    fn a_file_that_cannot_be_opened_is_an_io_error() {
         let dir = TempDir::new();
         let path = dir.path().join(FILE_NAME);
         std::fs::write(&path, "a\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let readable = std::fs::File::open(&path).is_ok();
+        let denied = fault::deny_reads_of(&path);
         let result = IgnoreRules::read(dir.path());
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        if readable {
-            return;
-        }
+        drop(denied);
         let error = result.unwrap_err();
         assert!(
             matches!(

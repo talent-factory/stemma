@@ -56,9 +56,10 @@ impl Classify for OpenError {
         match self {
             // The file is there but not in canonical form.
             Self::MalformedFormat { .. } => FailureKind::Damaged,
-            // A missing `format`, another version, and a `.stemma` that is not a directory are
-            // not a form the code wrote, but the caller cannot tell them from a wrong directory or
-            // a newer program, so they stay with the other failures.
+            // A missing `format`, one that is not a regular file or not shown to be ours, another
+            // version, and a `.stemma` that is not a directory are not a form the code wrote, but
+            // the caller cannot tell them from a wrong directory or a newer program, so they stay
+            // with the other failures.
             Self::NotARepository { .. }
             | Self::NoRepositoryAbove { .. }
             | Self::Missing { .. }
@@ -69,6 +70,10 @@ impl Classify for OpenError {
             | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
+            | Self::FormatNotRegular { .. }
+            | Self::FormatOwner { .. }
+            | Self::FormatShared { .. }
+            | Self::Changed { .. }
             | Self::UnsupportedFormat { .. }
             | Self::Io { .. } => FailureKind::Other,
         }
@@ -110,9 +115,12 @@ impl Classify for RefError {
             // a held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at
             // 1). `StaleHead` and `StaleWorkingCopy` are the same case for HEAD and the
             // working-copy commit.
-            Self::Stale { .. } | Self::StaleHead { .. } | Self::StaleWorkingCopy { .. } => {
-                FailureKind::Other
-            }
+            // A tag that was deleted, or deleted and set again, since the caller looked is the
+            // same stale view.
+            Self::Stale { .. }
+            | Self::StaleTag { .. }
+            | Self::StaleHead { .. }
+            | Self::StaleWorkingCopy { .. } => FailureKind::Other,
             // A tag that exists is a name that is taken; it never moves, so there is nothing to
             // read again and retry.
             Self::TagExists { .. } => FailureKind::Other,
@@ -427,6 +435,17 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn a_stale_tag_is_no_damage_and_no_held_lock() {
+        let stale = RefError::StaleTag {
+            name: "v1".parse().unwrap(),
+            expected: crate::object::CommitId::new(id()),
+            found: None,
+        };
+        assert_eq!(stale.kind(), FailureKind::Other);
+        assert_eq!(locked().kind(), FailureKind::Locked);
     }
 
     #[test]

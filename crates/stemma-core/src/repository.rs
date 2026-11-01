@@ -49,6 +49,7 @@ pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
+use crate::fault;
 use crate::object::{Commit, CommitId, ObjectId, Tree, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge, TAKE_OVER};
 use crate::refs::{
@@ -125,7 +126,7 @@ fn raise_format_with(
     flush: &dyn Fn(&Path) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let path = dir.join("format");
-    let current = fs::read(&path).map_err(|source| StoreError::Io {
+    let current = fault::read(&path).map_err(|source| StoreError::Io {
         operation: "read the format file",
         path: path.clone(),
         source,
@@ -170,7 +171,7 @@ fn replace_format(
     file.sync_all()
         .map_err(io("flush the temporary file", &temp.path))?;
     drop(file);
-    fs::rename(&temp.path, path).map_err(io(operation, path))?;
+    fault::rename(&temp.path, path).map_err(io(operation, path))?;
     temp.disarm();
     Ok(())
 }
@@ -314,11 +315,24 @@ impl Repository {
     ///
     /// Returns [`OpenError::NotARepository`] if there is no `.stemma`,
     /// [`OpenError::NotADirectory`] if `.stemma` is a file or a link that leads nowhere,
-    /// [`OpenError::MissingFormat`], [`OpenError::MalformedFormat`], or
-    /// [`OpenError::UnsupportedFormat`] if the file `format` is missing, not in canonical form, or
-    /// of another version, and [`OpenError::Io`] if the storage fails.
+    /// [`OpenError::MissingFormat`], [`OpenError::FormatNotRegular`],
+    /// [`OpenError::MalformedFormat`], or [`OpenError::UnsupportedFormat`] if the file `format`
+    /// is missing, is not a regular file (a directory, a FIFO, or a device, on Unix), is not in
+    /// canonical form, or is of another version, and [`OpenError::Io`] if the storage fails.
+    ///
+    /// It checks no owner and follows a link at `.stemma` or at `format`;
+    /// [`discover`](Self::discover) is the call that checks who owns the repository.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, OpenError> {
-        let path = path.as_ref();
+        Self::open_with(path.as_ref(), false)
+    }
+
+    /// Opens as [`open`](Self::open) does. With `owned` (Unix), it also holds `.stemma` as a
+    /// handle without following a link, checks the owner of that handle, and reads `format`
+    /// through it (ADR-009), so a `.stemma` that was swapped after the look at its path is
+    /// refused before `format` is read. Only `format` is read through the handle: the stores of
+    /// the result work by path, and a swap after this call is not seen. Without Unix, `owned`
+    /// changes nothing.
+    fn open_with(path: &Path, owned: bool) -> Result<Self, OpenError> {
         let metadata_dir = path.join(METADATA_DIR);
         match fs::metadata(&metadata_dir) {
             Ok(metadata) if metadata.is_dir() => {}
@@ -341,7 +355,17 @@ impl Repository {
             Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
         }
         let format_path = metadata_dir.join("format");
-        let bytes = read_format(&format_path)?;
+        #[cfg(unix)]
+        let bytes = if owned {
+            read_format_owned(&metadata_dir, &format_path)?
+        } else {
+            read_format(&format_path)?
+        };
+        #[cfg(not(unix))]
+        let bytes = {
+            let _ = owned;
+            read_format(&format_path)?
+        };
         match parse_format(&bytes) {
             Some(version)
                 if READ_VERSIONS
@@ -387,6 +411,12 @@ impl Repository {
     /// at `start` is opened there, as the root of a volume is only reached by naming it
     /// (ADR-009).
     ///
+    /// On Unix the owner is also checked on the handle that the open holds, and `format` is read
+    /// through it, so a `.stemma` that is swapped after the look at its path is refused before
+    /// `format` is read. A link in the place of `.stemma` or `format` is not followed, even when
+    /// the user made it ([`OpenError::NotADirectory`], [`OpenError::FormatNotRegular`]).
+    /// The stores of the result work by path again.
+    ///
     /// # Errors
     ///
     /// Returns [`OpenError::Missing`] if `start` does not exist,
@@ -407,16 +437,17 @@ impl Repository {
         trusted: &dyn Fn(&Path) -> Result<(), OpenError>,
     ) -> Result<Discovered, OpenError> {
         let at_start = start.join(METADATA_DIR);
-        // Before the open, so that nothing of another user's `.stemma` is read, such as a
-        // `format` that is a FIFO and would block. Anything else in the way is the error of `open`.
+        // A first, cheap refusal on the path. `open_with` checks the owner again on the handle
+        // that it holds (Unix). Anything else in the way is the error of `open`.
         if fs::symlink_metadata(&at_start).is_ok() {
             trusted(&at_start)?;
         }
-        match Self::open(start) {
+        match Self::open_with(start, true) {
             Err(OpenError::NotARepository { .. }) => {}
             opened => {
-                // And after an open that succeeded, so that a `.stemma` that appeared after the
-                // first look, or one that the first look could not inspect, is not used unchecked.
+                // And on the path after an open that succeeded, so that a `.stemma` that appeared
+                // after the first look, or one that the first look could not inspect, is not used
+                // unchecked; on Unix the handle was checked as well.
                 if opened.is_ok() {
                     trusted(&at_start)?;
                 }
@@ -473,7 +504,9 @@ impl Repository {
                 .map(|component| component.as_os_str().to_str())
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| OpenError::NotUtf8 { path: real.clone() })?;
-            let repository = Self::open(root)?;
+            let repository = Self::open_with(root, true)?;
+            // As at the start: the path again after the open.
+            trusted(&metadata_dir)?;
             return Ok(Discovered {
                 repository,
                 subdirectory: parts.join("/"),
@@ -689,6 +722,56 @@ impl Repository {
         Ok(outcome
             .into_result()?
             .expect("create_tag_after never reports an unchanged tag"))
+    }
+
+    /// Deletes the tag `name` if it still is at `expected`, and records it in the log, in the
+    /// order of [`create_tag`](Self::create_tag) and under the same lock: the tag is checked (a
+    /// name that is in the way, a tag that is not at `expected`), the entry is written and
+    /// flushed, and only then is the tag deleted (ADR-008, ADR-011). A tag never moves, so a tag
+    /// that was set wrongly is deleted and set again; the entry has the commit of the tag as its
+    /// old value and `-` as its new one, and says who deleted the tag and when.
+    ///
+    /// Returns the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
+    /// the checks find ([`RefError::StaleTag`] for a tag that is not at `expected` or does not
+    /// exist, [`RefError::Conflict`] for a name that another entry holds, [`RefError::Locked`],
+    /// [`RefError::PurgePending`], and [`RefError::Corrupt`]), and [`UpdateError::Log`],
+    /// [`UpdateError::MoveFailed`], and
+    /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
+    /// writes no entry.
+    pub fn delete_tag(
+        &self,
+        operation: &OperationName,
+        name: &BranchName,
+        expected: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        // A claim only: a tag is at `expected` or the call is `StaleTag`, so an ID that names no
+        // commit finds no tag.
+        let expected = CommitId::new(expected);
+        let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
+        let lock = self.refs.lock_writer(&allowed)?;
+        let outcome = self.refs.delete_tag_after(&lock, name, expected, || {
+            let change = Change::try_new_with_tags(
+                now(),
+                actor.clone(),
+                operation.clone(),
+                None,
+                None,
+                vec![],
+                vec![(name.clone(), Moved::from_to(Some(expected), None))],
+            )
+            .map_err(OpLogError::Entry)?;
+            self.append(&lock, &change)
+        })?;
+        // `delete_tag_after` refuses a tag that is not at `expected` and never reports "unchanged".
+        Ok(outcome
+            .into_result()?
+            .expect("delete_tag_after never reports an unchanged tag"))
     }
 
     /// Points HEAD to a branch, which need not exist yet, or to a commit, if HEAD still is
@@ -1051,6 +1134,9 @@ pub enum UpdateError {
     Log(OpLogError),
     /// The entry was written, but the move failed. The file system failed after the checks, so the
     /// entry names a move that did not happen; the old value in it was true when it was written.
+    /// The exception is the deletion of a tag that a process without the lock removed after the
+    /// checks ([`RefError::StaleTag`] with `found` `None`): the tag is gone, as the entry says.
+    /// Read the pointer before a retry in any case.
     MoveFailed {
         /// The entry that is in the log.
         entry: Box<Entry>,
@@ -1093,7 +1179,9 @@ impl UpdateError {
 
     /// Whether a pointer moved although the call failed. [`NotDurable`](Self::NotDurable) and
     /// [`PartlyMoved`](Self::PartlyMoved) moved one; in every other case the pointers are where they
-    /// were, and the change can be repeated (with a second entry if the first one stays).
+    /// were, and the change can be repeated (with a second entry if the first one stays). The one
+    /// exception is a tag whose file vanished after the check ([`MoveFailed`](Self::MoveFailed)
+    /// with [`RefError::StaleTag`] and no `found`): the tag is gone, and a repeat finds nothing.
     pub fn pointer_moved(&self) -> bool {
         matches!(self, Self::NotDurable { .. } | Self::PartlyMoved { .. })
     }
@@ -1165,12 +1253,20 @@ impl fmt::Display for UpdateError {
                 path.display()
             ),
             Self::Log(error) => error.fmt(f),
-            Self::MoveFailed { entry, source } => write!(
-                f,
-                "entry {} of the operation log was written, but the move failed: {source}; the \
-                 entry names a move that did not happen",
-                entry.number()
-            ),
+            Self::MoveFailed { entry, source } => {
+                // A tag that vanished after the checks is where the entry puts it.
+                let tail = if matches!(source, RefError::StaleTag { found: None, .. }) {
+                    "the tag is gone, so the entry is true"
+                } else {
+                    "the entry names a move that did not happen"
+                };
+                write!(
+                    f,
+                    "entry {} of the operation log was written, but the move failed: {source}; \
+                     {tail}",
+                    entry.number()
+                )
+            }
             Self::PartlyMoved { entry, source } => write!(
                 f,
                 "entry {} of the operation log was written and the first pointer moved, but the \
@@ -1200,17 +1296,208 @@ impl Error for UpdateError {
     }
 }
 
-/// Reads the file `format`, at most [`FORMAT_MAX_LEN`] bytes of it.
+/// Reads the file `format`, at most [`FORMAT_MAX_LEN`] bytes of it. It must be a regular file or
+/// a link to one; anything else is [`OpenError::FormatNotRegular`].
 fn read_format(path: &Path) -> Result<Vec<u8>, OpenError> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(OpenError::MissingFormat {
+    read_format_file(open_format(path, false)?, path)
+}
+
+/// Opens `format` for reading without waiting for a writer, so that a FIFO in its place cannot
+/// block the open, and without taking a terminal as the controlling one (Unix). With `no_follow`
+/// a link in its place is refused (Unix).
+fn open_format(path: &Path, no_follow: bool) -> Result<fs::File, OpenError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut flags = rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::NOCTTY;
+        if no_follow {
+            flags |= rustix::fs::OFlags::NOFOLLOW;
+        }
+        options.custom_flags(flags.bits() as i32);
+    }
+    #[cfg(not(unix))]
+    let _ = no_follow;
+    fault::open_with(&options, path).map_err(|error| format_open_error(error, path, no_follow))
+}
+
+/// The error for a `format` that cannot be opened. An entry that is there but leads nowhere is in
+/// the way and not missing, as for `.stemma`. A link that `no_follow` refused is not a regular
+/// file; the system says so by `ELOOP`, or `EMLINK` on FreeBSD. Any other failure keeps its cause.
+fn format_open_error(error: io::Error, path: &Path, no_follow: bool) -> OpenError {
+    let not_regular = || OpenError::FormatNotRegular {
+        path: path.to_path_buf(),
+    };
+    if error.kind() == io::ErrorKind::NotFound {
+        return if fs::symlink_metadata(path).is_ok() {
+            not_regular()
+        } else {
+            OpenError::MissingFormat {
                 path: path.to_path_buf(),
+            }
+        };
+    }
+    #[cfg(unix)]
+    if no_follow
+        && error.raw_os_error().is_some_and(|code| {
+            code == rustix::io::Errno::LOOP.raw_os_error()
+                || code == rustix::io::Errno::MLINK.raw_os_error()
+        })
+    {
+        return not_regular();
+    }
+    #[cfg(not(unix))]
+    let _ = no_follow;
+    OpenError::io("open the format file", path)(error)
+}
+
+/// Reads `format` through the handle of `.stemma` that is checked for its owner: the handle is
+/// opened without following a link, its owner must be the effective user of the process, and
+/// `format` is opened relative to it, without following a link (Unix, ADR-009). `path` names
+/// `format` in errors and is opened only where the directory cannot be held.
+#[cfg(unix)]
+fn read_format_owned(metadata_dir: &Path, path: &Path) -> Result<Vec<u8>, OpenError> {
+    use rustix::fs::OFlags;
+    use std::os::unix::fs::OpenOptionsExt;
+    let user = rustix::process::geteuid().as_raw();
+    // `O_PATH` holds a directory that the user may search but not read, which a read-only open
+    // cannot, where the system has it.
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+    let flags = OFlags::NOFOLLOW | OFlags::DIRECTORY | OFlags::PATH;
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "freebsd")))]
+    let flags = OFlags::NOFOLLOW | OFlags::DIRECTORY;
+    let directory = match OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits() as i32)
+        .open(metadata_dir)
+    {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(OpenError::NotARepository {
+                path: metadata_dir.parent().unwrap_or(metadata_dir).to_path_buf(),
             });
         }
-        Err(error) => return Err(OpenError::io("open the format file", path)(error)),
+        // A directory that can be searched but not read, where the system has no `O_PATH`.
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            return read_format_searchable(metadata_dir, path, user);
+        }
+        // `ENOTDIR` for a file in the place of `.stemma`, `ELOOP` (`EMLINK` on FreeBSD) for a
+        // link that `O_NOFOLLOW` refused. Any other failure keeps its cause.
+        Err(error)
+            if error.raw_os_error().is_some_and(|code| {
+                [
+                    rustix::io::Errno::NOTDIR,
+                    rustix::io::Errno::LOOP,
+                    rustix::io::Errno::MLINK,
+                ]
+                .iter()
+                .any(|errno| code == errno.raw_os_error())
+            }) =>
+        {
+            return Err(OpenError::NotADirectory {
+                path: metadata_dir.to_path_buf(),
+            });
+        }
+        Err(error) => {
+            return Err(OpenError::io("open the metadata directory", metadata_dir)(
+                error,
+            ))
+        }
     };
+    read_format_from(&directory, user, metadata_dir, path)
+}
+
+/// The part of [`read_format_owned`] after the open: the owner is read from `directory`, the
+/// handle, and not from the path, and `user` is the owner that is trusted.
+#[cfg(unix)]
+fn read_format_from(
+    directory: &fs::File,
+    user: u32,
+    metadata_dir: &Path,
+    path: &Path,
+) -> Result<Vec<u8>, OpenError> {
+    use rustix::fs::{openat, Mode, OFlags};
+    use std::os::unix::fs::MetadataExt;
+    let owner = directory
+        .metadata()
+        .map_err(OpenError::io("inspect", metadata_dir))?
+        .uid();
+    if owner != user {
+        return Err(OpenError::OtherOwner {
+            found: metadata_dir.to_path_buf(),
+        });
+    }
+    let flags =
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::CLOEXEC;
+    match openat(directory, "format", flags, Mode::empty()) {
+        Ok(fd) => read_format_file(fs::File::from(fd), path),
+        Err(errno) => Err(format_open_error(errno.into(), path, true)),
+    }
+}
+
+/// [`read_format_owned`] for a `.stemma` that the user may search but not read, which a system
+/// without `O_PATH` cannot hold. The directory is looked at by its path and must belong to
+/// `user`; `format` is opened by its path without following a link and must belong to `user` and
+/// have no other name (a hard link in a directory of another user would pass the owner test);
+/// and the directory must still be the one that was looked at once `format` is read. This is
+/// weaker than the handle, which no swap can escape: a swap to another directory and back
+/// between the looks is not seen (Unix, ADR-009).
+#[cfg(unix)]
+fn read_format_searchable(
+    metadata_dir: &Path,
+    path: &Path,
+    user: u32,
+) -> Result<Vec<u8>, OpenError> {
+    use std::os::unix::fs::MetadataExt;
+    let look =
+        || fs::symlink_metadata(metadata_dir).map_err(OpenError::io("inspect", metadata_dir));
+    let before = look()?;
+    if !before.is_dir() {
+        return Err(OpenError::NotADirectory {
+            path: metadata_dir.to_path_buf(),
+        });
+    }
+    if before.uid() != user {
+        return Err(OpenError::OtherOwner {
+            found: metadata_dir.to_path_buf(),
+        });
+    }
+    let file = open_format(path, true)?;
+    let metadata = file
+        .metadata()
+        .map_err(OpenError::io("inspect the format file", path))?;
+    if metadata.uid() != user {
+        return Err(OpenError::FormatOwner {
+            path: path.to_path_buf(),
+        });
+    }
+    if metadata.nlink() != 1 {
+        return Err(OpenError::FormatShared {
+            path: path.to_path_buf(),
+        });
+    }
+    let bytes = read_format_file(file, path)?;
+    let after = look()?;
+    if (after.dev(), after.ino(), after.uid()) != (before.dev(), before.ino(), before.uid()) {
+        return Err(OpenError::Changed {
+            found: metadata_dir.to_path_buf(),
+        });
+    }
+    Ok(bytes)
+}
+
+/// Reads an opened `format`: a regular file, at most [`FORMAT_MAX_LEN`] bytes of it. Anything
+/// else, such as a directory, a FIFO, or a device, is not read.
+fn read_format_file(file: fs::File, path: &Path) -> Result<Vec<u8>, OpenError> {
+    let metadata = file
+        .metadata()
+        .map_err(OpenError::io("inspect the format file", path))?;
+    if !metadata.is_file() {
+        return Err(OpenError::FormatNotRegular {
+            path: path.to_path_buf(),
+        });
+    }
     let mut bytes = Vec::new();
     file.take(FORMAT_MAX_LEN + 1)
         .read_to_end(&mut bytes)
@@ -1241,7 +1528,7 @@ fn create_dirs_synced(dir: &Path) -> Result<(), InitError> {
         }
     }
     for created in missing.iter().rev() {
-        match fs::create_dir(created) {
+        match fault::create_dir(created) {
             Ok(()) => {}
             // Another process was faster. Whether it is a directory shows when it is used.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1271,7 +1558,7 @@ fn create_staging(dir: &Path, next_name: &mut dyn FnMut() -> String) -> Result<P
     let mut last = dir.to_path_buf();
     for _ in 0..STAGING_ATTEMPTS {
         let staging = dir.join(next_name());
-        match fs::create_dir(&staging) {
+        match fault::create_dir(&staging) {
             Ok(()) => return Ok(staging),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = staging,
             Err(error) => return Err(InitError::io(operation, &staging)(error)),
@@ -1296,7 +1583,7 @@ fn install(
     let result = fill(staging, options, actor).and_then(|()| move_into_place(staging, target));
     match result {
         Ok(()) => Ok(()),
-        Err(error) => match fs::remove_dir_all(staging) {
+        Err(error) => match fault::remove_dir_all(staging) {
             Ok(()) => Err(error),
             // The directory is gone already: a writer of a repository that another `init` made
             // here in the meantime removed it as stale (ADR-009). Nothing is left behind.
@@ -1320,7 +1607,7 @@ fn move_into_place(staging: &Path, target: &Path) -> Result<(), InitError> {
             path: target.to_path_buf(),
         });
     }
-    match fs::rename(staging, target) {
+    match fault::rename(staging, target) {
         Ok(()) => Ok(()),
         Err(error) => match exists(target) {
             Ok(true) => Err(InitError::AlreadyExists {
@@ -1358,7 +1645,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
     let refs = dir.join("refs");
     let heads = refs.join("heads");
     for created in [&objects, &tmp, &oplog, &refs, &heads] {
-        fs::create_dir(created).map_err(InitError::io("create the directory", created))?;
+        fault::create_dir(created).map_err(InitError::io("create the directory", created))?;
     }
     let head = Head::Branch(options.initial_branch.clone());
     // The working copy starts as an empty commit with a change ID of its own (ADR-010): no file is
@@ -1398,7 +1685,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
 /// Writes a file that must not exist yet, and flushes it to disk.
 fn write_new(path: &Path, content: &[u8]) -> Result<(), InitError> {
     let write = || -> io::Result<()> {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut file = fault::create_new(path)?;
         file.write_all(content)?;
         file.sync_all()
     };
@@ -1852,7 +2139,8 @@ pub enum OpenError {
         path: PathBuf,
     },
     /// The search found a `.stemma` in the directory where it started or above it, but the user
-    /// who runs the command does not own it, so it is not opened (Unix and Windows,
+    /// who runs the command does not own it, or on Unix cannot be shown to (a `format` with
+    /// another owner or a second name), so it is not opened (Unix and Windows,
     /// [`Repository::discover`]).
     OtherOwner {
         /// The `.stemma` that was found.
@@ -1880,6 +2168,32 @@ pub enum OpenError {
     MissingFormat {
         /// The file that is missing.
         path: PathBuf,
+    },
+    /// The file `format` is not a regular file: on Unix it is a directory, a FIFO, a device, a
+    /// link that leads nowhere, or, for [`Repository::discover`], a link. It is not read, so a
+    /// FIFO cannot block the open.
+    FormatNotRegular {
+        /// The file.
+        path: PathBuf,
+    },
+    /// The file `format` belongs to another user than the one who runs the command, in a `.stemma`
+    /// that the user may search but not read (Unix without `O_PATH`, [`Repository::discover`]).
+    FormatOwner {
+        /// The file.
+        path: PathBuf,
+    },
+    /// The file `format` has another name too, in a `.stemma` that the user may search but not
+    /// read (Unix without `O_PATH`, [`Repository::discover`]): a hard link in a directory of
+    /// another user would pass the test of the owner, so it cannot be shown to belong here.
+    FormatShared {
+        /// The file.
+        path: PathBuf,
+    },
+    /// The `.stemma` was replaced while it was opened, so it is not used (Unix without `O_PATH`,
+    /// [`Repository::discover`]).
+    Changed {
+        /// The `.stemma` that was found.
+        found: PathBuf,
     },
     /// The file `format` is not in canonical form: not UTF-8, longer than 64 bytes, or not the
     /// name, one version in decimal digits without a leading zero, and a newline.
@@ -1931,6 +2245,10 @@ impl OpenError {
             | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
+            | Self::FormatNotRegular { .. }
+            | Self::FormatOwner { .. }
+            | Self::FormatShared { .. }
+            | Self::Changed { .. }
             | Self::MalformedFormat { .. }
             | Self::UnsupportedFormat { .. } => None,
         }
@@ -1990,6 +2308,28 @@ impl fmt::Display for OpenError {
             Self::MissingFormat { path } => {
                 write!(f, "the repository has no format file `{}`", path.display())
             }
+            Self::FormatNotRegular { path } => write!(
+                f,
+                "the format file `{}` is not a regular file, so it is not read",
+                path.display()
+            ),
+            Self::FormatOwner { path } => write!(
+                f,
+                "the format file `{}` belongs to another user than the one who runs the command, \
+                 so it is not used; run the command as the user who owns it",
+                path.display()
+            ),
+            Self::FormatShared { path } => write!(
+                f,
+                "the format file `{}` has another name too, so it cannot be shown to belong to \
+                 this repository; give its directory read permission to open it anyway",
+                path.display()
+            ),
+            Self::Changed { found } => write!(
+                f,
+                "`{}` was replaced while it was opened, so it is not used; run the command again",
+                found.display()
+            ),
             Self::MalformedFormat { path } => write!(
                 f,
                 "the format file `{}` is not in canonical form (expected `{}`)",
@@ -2028,6 +2368,10 @@ impl Error for OpenError {
             | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
+            | Self::FormatNotRegular { .. }
+            | Self::FormatOwner { .. }
+            | Self::FormatShared { .. }
+            | Self::Changed { .. }
             | Self::MalformedFormat { .. }
             | Self::UnsupportedFormat { .. } => None,
         }
@@ -2045,7 +2389,6 @@ mod tests {
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
     #[cfg(unix)]
-    use crate::testutil::Denied;
     use crate::testutil::TempDir;
     use crate::AllowAll;
     use crate::Decision;
@@ -2077,18 +2420,6 @@ mod tests {
 
     fn set_format(dir: &Path, content: impl AsRef<[u8]>) {
         fs::write(dir.join(".stemma").join("format"), content).unwrap();
-    }
-
-    /// Whether a directory without write permission keeps a file out. It does not for root.
-    #[cfg(unix)]
-    fn permissions_are_enforced(scratch: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = scratch.join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
-        let enforced = fs::File::create(probe.join("file")).is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        enforced
     }
 
     #[test]
@@ -2422,20 +2753,14 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"x");
     }
 
-    #[cfg(unix)]
     #[test]
     fn init_in_a_directory_that_cannot_be_written_reports_the_cause() {
-        use std::os::unix::fs::PermissionsExt;
         let scratch = TempDir::new();
-        if !permissions_are_enforced(scratch.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
-        let parent = scratch.path().join("readonly");
+        let parent = scratch.path().join("sealed");
         fs::create_dir(&parent).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&parent);
         let error = init(&parent).unwrap_err();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         assert!(
             matches!(error, InitError::Io { operation, .. } if operation == "create the new directory"),
             "{error}"
@@ -2623,21 +2948,15 @@ mod tests {
         assert!(!staging.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_staging_directory_that_cannot_be_removed_is_reported() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
-        if !permissions_are_enforced(dir.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         let staging = dir.path().join("staging");
         let stuck = staging.join("stuck");
         fs::create_dir_all(&stuck).unwrap();
         fs::write(stuck.join("file"), b"x").unwrap();
         fs::write(staging.join("format"), b"x").unwrap();
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&stuck);
         let error = install(
             &staging,
             &dir.path().join(".stemma"),
@@ -2646,7 +2965,7 @@ mod tests {
             &Allowed::granted(),
         )
         .unwrap_err();
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         match &error {
             InitError::Leftover { path, error, .. } => {
                 assert_eq!(path, &staging);
@@ -2659,6 +2978,9 @@ mod tests {
         assert!(message.contains("could not be removed either"), "{message}");
         assert!(message.contains(staging.to_str().unwrap()), "{message}");
         assert!(error.io_error().is_some());
+        // The removal stopped at the denied name: what came before it went, the rest stays.
+        assert!(!staging.join("format").exists());
+        assert!(stuck.join("file").exists());
     }
 
     #[test]
@@ -2725,32 +3047,29 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_cleanup_that_cannot_remove_a_directory_does_not_stop_the_change() {
         // The cleanup is best effort (ADR-011): what cannot be removed stays, and the move is made.
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let stale = dir.path().join(".stemma-init-1-0-0123456789abcdef");
         let sealed = stale.join("objects");
         fs::create_dir_all(&sealed).unwrap();
         fs::write(sealed.join("object"), b"x").unwrap();
-        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
-        if fs::remove_file(sealed.join("object")).is_ok() {
-            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        // A second stale directory shows that the cleanup ran and went on after the first.
+        let free = dir.path().join(".stemma-init-2-0-0123456789abcdef");
+        fs::create_dir_all(free.join("objects")).unwrap();
+        let denied = fault::deny_writes_in(&sealed);
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");
         let result =
             repository.update_working_copy(&operation("snapshot"), old, new, &actor(), &AllowAll);
         let left = sealed.join("object").exists();
-        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         result.unwrap();
         assert_eq!(repository.refs().working_copy().unwrap(), new);
         assert!(left, "what cannot be removed stays");
+        assert!(!free.exists(), "the cleanup ran and removed what it could");
     }
 
     #[cfg(unix)]
@@ -3236,22 +3555,219 @@ mod tests {
         assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn open_and_discover_refuse_a_format_that_is_a_fifo_without_waiting_for_a_writer() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.path().join(".stemma")).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(dir.path().join(".stemma").join("format"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        // A call that waits for a writer would hang the test, so it runs in a thread that the
+        // test gives up on.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let path = dir.path().to_path_buf();
+        thread::spawn(move || {
+            let _ = sender.send((Repository::open(&path), Repository::discover(&path)));
+        });
+        let (opened, discovered) = receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the open of a FIFO as `format` did not return");
+        for error in [opened.unwrap_err(), discovered.unwrap_err()] {
+            assert!(
+                matches!(error, OpenError::FormatNotRegular { .. }),
+                "{error}"
+            );
+            assert!(error.to_string().contains("not a regular file"), "{error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_as_format_is_not_a_regular_file() {
+        let dir = TempDir::new();
+        fs::create_dir_all(dir.path().join(".stemma").join("format")).unwrap();
+        let error = Repository::open(dir.path()).unwrap_err();
+        assert!(
+            matches!(error, OpenError::FormatNotRegular { .. }),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_device_as_format_is_not_read() {
+        let error = read_format(Path::new("/dev/null")).unwrap_err();
+        assert!(
+            matches!(error, OpenError::FormatNotRegular { .. }),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_refuses_a_link_as_format_and_open_follows_it() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let format = dir.path().join(".stemma").join("format");
+        let elsewhere = dir.path().join("elsewhere");
+        fs::rename(&format, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &format).unwrap();
+        let error = Repository::discover(dir.path()).unwrap_err();
+        assert!(
+            matches!(error, OpenError::FormatNotRegular { .. }),
+            "{error}"
+        );
+        Repository::open(dir.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_reports_a_missing_format() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        fs::remove_file(dir.path().join(".stemma").join("format")).unwrap();
+        let error = Repository::discover(dir.path()).unwrap_err();
+        assert!(matches!(error, OpenError::MissingFormat { .. }), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_as_format_is_in_the_way_and_not_missing() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let format = dir.path().join(".stemma").join("format");
+        fs::remove_file(&format).unwrap();
+        std::os::unix::fs::symlink("nowhere", &format).unwrap();
+        for error in [
+            Repository::open(dir.path()).unwrap_err(),
+            Repository::discover(dir.path()).unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, OpenError::FormatNotRegular { .. }),
+                "{error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_owner_of_the_handle_is_trusted_and_no_other() {
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let metadata_dir = dir.path().join(METADATA_DIR);
+        let format = metadata_dir.join("format");
+        let user = rustix::process::geteuid().as_raw();
+        let handle = fs::File::open(&metadata_dir).unwrap();
+        let bytes = read_format_from(&handle, user, &metadata_dir, &format).unwrap();
+        assert_eq!(bytes, fs::read(&format).unwrap());
+        // Another user is trusted: the handle belongs to somebody else.
+        let error =
+            read_format_from(&handle, user.wrapping_add(1), &metadata_dir, &format).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::OtherOwner { found } if *found == metadata_dir),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_owner_is_read_from_the_handle_and_not_from_the_path() {
+        use std::os::unix::fs::MetadataExt;
+        let user = rustix::process::geteuid().as_raw();
+        if fs::metadata("/").unwrap().uid() == user {
+            eprintln!("skipped: `/` belongs to the user who runs the tests (root)");
+            return;
+        }
+        // The handle is `/`, which belongs to root; the path names a directory of the user.
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let metadata_dir = dir.path().join(METADATA_DIR);
+        let format = metadata_dir.join("format");
+        let root = fs::File::open("/").unwrap();
+        let error = read_format_from(&root, user, &metadata_dir, &format).unwrap_err();
+        assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_metadata_directory_that_is_searched_but_not_read_is_read_by_its_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        let metadata_dir = dir.path().join(METADATA_DIR);
+        let format = metadata_dir.join("format");
+        let user = rustix::process::geteuid().as_raw();
+        assert_eq!(
+            read_format_searchable(&metadata_dir, &format, user).unwrap(),
+            fs::read(&format).unwrap()
+        );
+        // The directory of another user is refused, and so is the format of another user.
+        let error =
+            read_format_searchable(&metadata_dir, &format, user.wrapping_add(1)).unwrap_err();
+        assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+        // A second name for `format`, as another user could make with a hard link, is refused.
+        let alias = dir.path().join("alias");
+        fs::hard_link(&format, &alias).unwrap();
+        let error = read_format_searchable(&metadata_dir, &format, user).unwrap_err();
+        assert!(matches!(error, OpenError::FormatShared { .. }), "{error}");
+        fs::remove_file(&alias).unwrap();
+        // `discover` reaches the same result with the directory closed for reading, by the
+        // handle (`O_PATH`) or by the path, by system.
+        fs::set_permissions(&metadata_dir, fs::Permissions::from_mode(0o300)).unwrap();
+        let found = Repository::discover(dir.path());
+        fs::set_permissions(&metadata_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        found.unwrap();
+    }
+
+    #[test]
+    fn the_path_is_looked_at_again_after_the_open_at_the_start_and_above_it() {
+        use std::cell::Cell;
+        let dir = TempDir::new();
+        init(dir.path()).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        // The first look passes and the second refuses, as for a `.stemma` that was swapped
+        // between the look and the open.
+        for start in [dir.path().to_path_buf(), dir.path().join("sub")] {
+            let calls = Cell::new(0);
+            let second_refuses = |found: &Path| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    Ok(())
+                } else {
+                    Err(OpenError::OtherOwner {
+                        found: found.to_path_buf(),
+                    })
+                }
+            };
+            let error = Repository::discover_with(&start, &second_refuses).unwrap_err();
+            assert!(matches!(error, OpenError::OtherOwner { .. }), "{error}");
+            assert_eq!(calls.get(), 2, "{}", start.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_does_not_follow_a_link_in_the_place_of_the_metadata_directory() {
+        let real = TempDir::new();
+        init(real.path()).unwrap();
+        let dir = TempDir::new();
+        std::os::unix::fs::symlink(real.path().join(".stemma"), dir.path().join(".stemma"))
+            .unwrap();
+        let error = Repository::discover(dir.path()).unwrap_err();
+        assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
+        // `open` stays as it was: it does not check owners, and follows the link.
+        Repository::open(dir.path()).unwrap();
+    }
+
     #[test]
     fn open_without_a_format_file_fails() {
         let dir = TempDir::new();
         fs::create_dir(dir.path().join(".stemma")).unwrap();
         let error = Repository::open(dir.path()).unwrap_err();
         assert!(matches!(error, OpenError::MissingFormat { .. }), "{error}");
-    }
-
-    #[test]
-    fn open_reports_the_error_of_the_file_system_for_a_format_that_cannot_be_read() {
-        let dir = TempDir::new();
-        fs::create_dir_all(dir.path().join(".stemma").join("format")).unwrap();
-        let error = Repository::open(dir.path()).unwrap_err();
-        assert!(matches!(error, OpenError::Io { .. }), "{error}");
-        assert!(error.io_error().is_some());
-        assert!(error.to_string().contains("format"), "{error}");
     }
 
     #[test]
@@ -4126,7 +4642,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_is_made_after_its_entry_and_the_entry_says_who_set_it() {
+    fn a_tag_is_made_and_the_entry_says_who_set_it() {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
@@ -4212,6 +4728,183 @@ mod tests {
         assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
         assert_eq!(numbers(&repository), before);
         assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_tag_is_deleted_and_the_entry_says_who_deleted_it() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let entry = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), None);
+        assert_eq!(numbers(&repository).len(), before.len() + 1);
+        let change = entry.change().unwrap();
+        assert_eq!(change.operation().as_str(), "untag");
+        assert_eq!(change.actor(), &actor());
+        assert!(change.head().is_none() && change.working_copy().is_none());
+        assert!(change.branches().is_empty());
+        let [(name, moved)] = change.tags() else {
+            panic!("one tag expected");
+        };
+        assert_eq!(name, &branch("v1"));
+        assert_eq!((moved.before(), moved.after()), (Some(&a), None));
+        assert_eq!(repository.oplog().entries().unwrap().last(), Some(&entry));
+        // The name is free again, and the tag can be set at another commit.
+        let b = store_commit(&repository, "b");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                b.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(b));
+    }
+
+    #[test]
+    fn an_authorizer_that_allows_tag_but_not_untag_keeps_the_tag() {
+        struct DenyUntag;
+
+        impl Authorizer for DenyUntag {
+            fn authorize(
+                &self,
+                _actor: &Actor,
+                operation: &OperationName,
+                _target: &str,
+            ) -> Decision {
+                if operation.as_str() == "untag" {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                }
+            }
+        }
+
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &DenyUntag,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let error = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &DenyUntag,
+            )
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+    }
+
+    #[test]
+    fn a_tag_stays_if_the_entry_of_its_deletion_cannot_be_written() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        // The entry of the tag is lost; the tip file still names it.
+        fs::remove_file(dir.path().join(".stemma/oplog/000000000002")).unwrap();
+
+        let error = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Log(OpLogError::TipAhead { .. })),
+            "{error}"
+        );
+        assert!(!error.pointer_moved());
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+    }
+
+    #[test]
+    fn a_tag_that_is_not_where_the_caller_saw_it_is_not_deleted_and_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let (a, b) = (
+            store_commit(&repository, "a"),
+            store_commit(&repository, "b"),
+        );
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let delete = |name: &str, expected: CommitId, authorizer: &dyn Authorizer| {
+            repository.delete_tag(
+                &op("untag"),
+                &branch(name),
+                expected.object_id(),
+                &actor(),
+                authorizer,
+            )
+        };
+        let error = delete("v1", b, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::StaleTag { found: Some(found), .. }) if *found == a),
+            "{error}"
+        );
+        let error = delete("other", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                UpdateError::Refs(RefError::StaleTag { found: None, .. })
+            ),
+            "{error}"
+        );
+        let error = delete("v1", a, &DenyAll).unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
     }
 
     #[test]
@@ -4333,25 +5026,17 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_move_that_fails_after_the_entry_leaves_the_entry_and_says_so() {
-        // The entry comes first: with the directory of the branches read-only, the entry is
-        // written and the move fails. If the order were the other one, nothing would be written.
-        use std::os::unix::fs::PermissionsExt;
+        // The entry comes first: with the directory of the branches refusing new names, the entry
+        // is written and the move fails. If the order were the other one, nothing would be written.
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
-        let heads = dir.path().join(".stemma").join("refs").join("heads");
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
-        let writable = fs::File::create(heads.join("probe")).is_ok();
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        let denied = fault::deny_writes_in(&heads);
         let result = update(&repository, "main", None, a);
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = fs::remove_file(heads.join("probe"));
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        drop(denied);
         let error = result.unwrap_err();
         let UpdateError::MoveFailed { entry, source } = &error else {
             panic!("not a failed move: {error}");
@@ -4376,17 +5061,16 @@ mod tests {
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
+        use crate::fault;
         use crate::oplog::{outcomes, Current, Outcome};
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
-        let tags = dir.path().join(".stemma").join("refs").join("tags");
+        let tags = repository.metadata_dir().join("refs").join("tags");
         fs::create_dir_all(&tags).unwrap();
-        let denied = Denied::writing(&tags);
-        let writable = fs::File::create(tags.join("probe")).is_ok();
+        let denied = fault::deny_writes_in(&tags);
         let tag = || {
             repository.create_tag(
                 &op("tag"),
@@ -4398,11 +5082,6 @@ mod tests {
         };
         let result = tag();
         drop(denied);
-        let _ = fs::remove_file(tags.join("probe"));
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         // The entry is written first; the file is not, and the error carries the entry.
         let error = result.unwrap_err();
         assert!(matches!(&error, UpdateError::MoveFailed { .. }), "{error}");
