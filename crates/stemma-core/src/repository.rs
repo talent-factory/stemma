@@ -318,7 +318,14 @@ impl Repository {
     /// [`OpenError::UnsupportedFormat`] if the file `format` is missing, not in canonical form, or
     /// of another version, and [`OpenError::Io`] if the storage fails.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, OpenError> {
-        let path = path.as_ref();
+        Self::open_with(path.as_ref(), false)
+    }
+
+    /// [`open`](Self::open), and with `owned` on Unix the owner is checked on the handle of
+    /// `.stemma` that the open holds, and `format` is read through that handle (ADR-009), so a
+    /// `.stemma` that was swapped after the look at its path is refused before anything in it
+    /// is read. Where owners are checked on the path only, `owned` changes nothing.
+    fn open_with(path: &Path, owned: bool) -> Result<Self, OpenError> {
         let metadata_dir = path.join(METADATA_DIR);
         match fs::metadata(&metadata_dir) {
             Ok(metadata) if metadata.is_dir() => {}
@@ -341,7 +348,17 @@ impl Repository {
             Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
         }
         let format_path = metadata_dir.join("format");
-        let bytes = read_format(&format_path)?;
+        #[cfg(unix)]
+        let bytes = if owned {
+            read_format_owned(&metadata_dir, &format_path)?
+        } else {
+            read_format(&format_path)?
+        };
+        #[cfg(not(unix))]
+        let bytes = {
+            let _ = owned;
+            read_format(&format_path)?
+        };
         match parse_format(&bytes) {
             Some(version)
                 if READ_VERSIONS
@@ -412,7 +429,7 @@ impl Repository {
         if fs::symlink_metadata(&at_start).is_ok() {
             trusted(&at_start)?;
         }
-        match Self::open(start) {
+        match Self::open_with(start, true) {
             Err(OpenError::NotARepository { .. }) => {}
             opened => {
                 // And after an open that succeeded, so that a `.stemma` that appeared after the
@@ -473,7 +490,7 @@ impl Repository {
                 .map(|component| component.as_os_str().to_str())
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| OpenError::NotUtf8 { path: real.clone() })?;
-            let repository = Self::open(root)?;
+            let repository = Self::open_with(root, true)?;
             return Ok(Discovered {
                 repository,
                 subdirectory: parts.join("/"),
@@ -1202,15 +1219,111 @@ impl Error for UpdateError {
 
 /// Reads the file `format`, at most [`FORMAT_MAX_LEN`] bytes of it.
 fn read_format(path: &Path) -> Result<Vec<u8>, OpenError> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(OpenError::MissingFormat {
-                path: path.to_path_buf(),
+    read_format_at(path, false)
+}
+
+/// [`read_format`]; with `own` the file must also belong to the effective user (Unix), which is
+/// the owner check on the handle of the file when the directory cannot be held.
+fn read_format_at(path: &Path, own: bool) -> Result<Vec<u8>, OpenError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Without `O_NONBLOCK` the open of a FIFO waits for a writer. A link is not followed.
+        let flags = rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::NOFOLLOW;
+        options.custom_flags(flags.bits() as i32);
+    }
+    match options.open(path) {
+        Ok(file) => read_format_file(file, path, own),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(OpenError::MissingFormat {
+            path: path.to_path_buf(),
+        }),
+        Err(error) => Err(OpenError::io("open the format file", path)(error)),
+    }
+}
+
+/// Reads the file `format` through the handle of `.stemma` that is checked for its owner: the
+/// handle is opened without following a link, its owner is the effective user of the process,
+/// and `format` is opened relative to it (Unix, ADR-009).
+#[cfg(unix)]
+fn read_format_owned(metadata_dir: &Path, path: &Path) -> Result<Vec<u8>, OpenError> {
+    use rustix::fs::{openat, Mode, OFlags};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // `O_PATH` holds a directory that the user may search but not read, which a read-only open
+    // cannot, where the system has it.
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+    let flags = OFlags::NOFOLLOW | OFlags::DIRECTORY | OFlags::PATH;
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "freebsd")))]
+    let flags = OFlags::NOFOLLOW | OFlags::DIRECTORY;
+    let directory = match OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits() as i32)
+        .open(metadata_dir)
+    {
+        Ok(directory) => directory,
+        // A link in the place of `.stemma` fails with `ELOOP` or `ENOTDIR`, by system.
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(code) if code == rustix::io::Errno::LOOP.raw_os_error()
+                    || code == rustix::io::Errno::NOTDIR.raw_os_error()
+            ) =>
+        {
+            return Err(OpenError::NotADirectory {
+                path: metadata_dir.to_path_buf(),
             });
         }
-        Err(error) => return Err(OpenError::io("open the format file", path)(error)),
+        // A directory that can be searched but not held: `format` is opened by its path, and
+        // the owner is read from its handle, since a file in another user's directory is the
+        // one of that user, unless it is a link, which is not followed.
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            return read_format_at(path, true);
+        }
+        Err(error) => return Err(OpenError::io("open", metadata_dir)(error)),
     };
+    let owner = directory
+        .metadata()
+        .map_err(OpenError::io("inspect", metadata_dir))?
+        .uid();
+    if owner != rustix::process::geteuid().as_raw() {
+        return Err(OpenError::OtherOwner {
+            found: metadata_dir.to_path_buf(),
+        });
+    }
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    match openat(&directory, "format", flags, Mode::empty()) {
+        Ok(fd) => read_format_file(fs::File::from(fd), path, false),
+        Err(rustix::io::Errno::NOENT) => Err(OpenError::MissingFormat {
+            path: path.to_path_buf(),
+        }),
+        Err(errno) => Err(OpenError::io("open the format file", path)(errno.into())),
+    }
+}
+
+/// Reads an opened `format`: a regular file, at most [`FORMAT_MAX_LEN`] bytes of it. Anything
+/// else, such as a FIFO or a device, is not read.
+fn read_format_file(file: fs::File, path: &Path, own: bool) -> Result<Vec<u8>, OpenError> {
+    let metadata = file
+        .metadata()
+        .map_err(OpenError::io("inspect the format file", path))?;
+    if !metadata.is_file() {
+        return Err(OpenError::io("read the format file", path)(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )));
+    }
+    #[cfg(unix)]
+    if own {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(OpenError::OtherOwner {
+                found: path.parent().unwrap_or(path).to_path_buf(),
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = own;
     let mut bytes = Vec::new();
     file.take(FORMAT_MAX_LEN + 1)
         .read_to_end(&mut bytes)
@@ -1661,7 +1774,7 @@ fn trusted(metadata_dir: &Path) -> Result<(), OpenError> {
     // counts the reparse points that name another path (symbolic links, junctions) as links, and
     // not those of a cloud service or of deduplication. The entry may still be swapped between
     // this look and the owner call, as the owner is checked on the path and not on a handle
-    // (ADR-009).
+    // (ADR-009; on Unix the handle is checked, STEMMA-88).
     let is_link = fs::symlink_metadata(metadata_dir)
         .map_err(OpenError::io("inspect", metadata_dir))?
         .file_type()
@@ -3234,6 +3347,38 @@ mod tests {
         std::os::unix::fs::symlink("nowhere", dir.path().join(".stemma")).unwrap();
         let error = Repository::open(dir.path()).unwrap_err();
         assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_and_discover_refuse_a_format_that_is_a_fifo_without_waiting_for_a_writer() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.path().join(".stemma")).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(dir.path().join(".stemma").join("format"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let error = Repository::open(dir.path()).unwrap_err();
+        assert!(matches!(error, OpenError::Io { .. }), "{error}");
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        let error = Repository::discover(dir.path()).unwrap_err();
+        assert!(matches!(error, OpenError::Io { .. }), "{error}");
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_does_not_follow_a_link_in_the_place_of_the_metadata_directory() {
+        let real = TempDir::new();
+        init(real.path()).unwrap();
+        let dir = TempDir::new();
+        std::os::unix::fs::symlink(real.path().join(".stemma"), dir.path().join(".stemma"))
+            .unwrap();
+        let error = Repository::discover(dir.path()).unwrap_err();
+        assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
+        // `open` stays as it was: it does not check owners, and follows the link.
+        Repository::open(dir.path()).unwrap();
     }
 
     #[test]

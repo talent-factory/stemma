@@ -150,11 +150,18 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       Consequences.
 - [x] The owner of a `.stemma` at the start: checked on Unix as well, so `cd /tmp` does not
       open a `/tmp/.stemma` of another user (STEMMA-77), see Consequences.
-- [ ] The owner is checked on the path, before `open` and, at the start, after it too, and not
-      on a handle that `open` holds. A `.stemma` that appears or is swapped between the checks
-      and the open is therefore read before it is refused, and a `format` that is a FIFO would
-      block that read. Closing it needs `O_NOFOLLOW`, the owner of that handle (`fstat`), and a
-      `read_format` that refuses anything but a regular file (STEMMA-88).
+- [x] On Unix the owner is checked on the handle that `open` holds (STEMMA-88): `.stemma` is
+      opened with `O_NOFOLLOW`, its owner is read from that handle (`fstat`), and `format` is
+      opened relative to it, so a `.stemma` that is swapped after the look at its path is
+      refused before anything in it is read. `read_format` reads regular files only, so a
+      `format` that is a FIFO or a device fails at once and does not block. The look at the
+      path stays as the first, cheap refusal. A link in the place of `.stemma` is not followed
+      by the search (`NotADirectory`), even when the user made it, as on Windows
+      (`ReparsePoint`); `Repository::open`, which checks no owner, still follows it. On Windows
+      the owner is still checked on the path, between the look and the call. A `.stemma` that
+      the user may search but not read cannot be held on every system (`O_PATH` exists on Linux
+      and FreeBSD only); `format` is then opened by its path, without following a link, and
+      the owner is read from the handle of that file.
 - [ ] A list of trusted directories, as Git's `safe.directory`, for a repository that several
       users share on one machine; it needs the configuration file below.
 - [x] On Windows the owner of a `.stemma` is checked by its SID, so places that all users may
