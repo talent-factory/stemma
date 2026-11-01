@@ -30,7 +30,6 @@ use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
 use crate::fault;
 use crate::object::{name_problem, NameProblem};
 
