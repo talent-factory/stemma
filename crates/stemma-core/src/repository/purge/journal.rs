@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::PurgePlan;
+use crate::fault;
 use crate::object::{BlobId, CommitId, ObjectId, TreeId};
 use crate::oplog::{parse_ranges, ranges_text, Moved};
 use crate::refs::{BranchName, Head, PURGE_JOURNAL};
@@ -274,7 +275,7 @@ pub(super) fn write(dir: &Path, journal: &Journal) -> Result<(), JournalError> {
         .map_err(io_error("flush the temporary file", &temp.path))?;
     drop(file);
     let path = path(dir);
-    fs::rename(&temp.path, &path).map_err(io_error("move the journal into place at", &path))?;
+    fault::rename(&temp.path, &path).map_err(io_error("move the journal into place at", &path))?;
     temp.disarm();
     flush(dir)
 }
@@ -289,7 +290,7 @@ pub(super) fn read(dir: &Path) -> Result<Option<Journal>, JournalError> {
     let path = path(dir);
     let bytes = match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_LEN => {
-            fs::read(&path).map_err(io_error("read the journal", &path))?
+            fault::read(&path).map_err(io_error("read the journal", &path))?
         }
         Ok(_) => return Err(JournalError::Malformed { path }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -308,7 +309,7 @@ pub(super) fn read(dir: &Path) -> Result<Option<Journal>, JournalError> {
 /// if it is gone but the directory could not be flushed.
 pub(super) fn remove(dir: &Path) -> Result<(), JournalError> {
     let path = path(dir);
-    match fs::remove_file(&path) {
+    match fault::remove_file(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(io_error("remove the journal", &path)(error)),

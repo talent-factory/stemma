@@ -803,6 +803,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::fault;
     use crate::repository::InitOptions;
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
@@ -1478,24 +1479,8 @@ mod tests {
         assert_eq!(entry.change().unwrap().operation().as_str(), "restore");
     }
 
-    /// Whether a read-only directory refuses a new file; it does not for a user who is root.
-    #[cfg(unix)]
-    fn permissions_hold(dir: &TempDir) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = dir.path().join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
-        let held = fs::write(probe.join("file"), b"").is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        if !held {
-            eprintln!("skipped: permissions have no effect for this user");
-        }
-        held
-    }
-
     /// What a restore left that wrote `new.rs`, which only the target tree has, and whose move of
     /// the pointers then failed.
-    #[cfg(unix)]
     struct Stopped {
         /// The entry that was restored.
         entry: u64,
@@ -1508,13 +1493,8 @@ mod tests {
     }
 
     /// Runs a restore whose checkout wrote `new.rs` and whose move of the first pointer fails
-    /// (a read-only `refs/heads`). Returns `None` if permissions have no effect for this user.
-    #[cfg(unix)]
-    fn stopped_after_the_files(dir: &TempDir, repository: &Repository) -> Option<Stopped> {
-        use std::os::unix::fs::PermissionsExt;
-        if !permissions_hold(dir) {
-            return None;
-        }
+    /// (a `refs/heads` that refuses a new name).
+    fn stopped_after_the_files(dir: &TempDir, repository: &Repository) -> Stopped {
         write(dir, "a.txt", "one");
         write(dir, "new.rs", "fn main() {}");
         repository
@@ -1549,40 +1529,37 @@ mod tests {
         .unwrap();
         let commit = repository.oplog().append(&change).unwrap().number();
         let heads = repository.metadata_dir().join("refs").join("heads");
-        let read_only = heads.clone();
+        let denied = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let arm = std::rc::Rc::clone(&denied);
         super::super::snapshot::pause::at_next(
             super::super::snapshot::pause::Stage::Moves,
             move || {
-                fs::set_permissions(&read_only, fs::Permissions::from_mode(0o555)).unwrap();
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&heads));
             },
         );
         let before = repository.refs().working_copy().unwrap();
         let error = restore(repository, commit).unwrap_err();
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
-        Some(Stopped {
+        drop(denied);
+        Stopped {
             entry: commit,
             target: first,
             before,
             error,
-        })
+        }
     }
 
     /// The checkout ran, but the working-copy commit is the old one and lacks `new.rs`. A
     /// repeated restore must finish the job.
-    #[cfg(unix)]
     #[test]
     fn a_restore_whose_move_failed_after_the_files_is_finished_by_a_repeat() {
         let dir = TempDir::new();
         let repository = repository(&dir);
-        let Some(Stopped {
+        let Stopped {
             entry,
             before,
             error,
             ..
-        }) = stopped_after_the_files(&dir, &repository)
-        else {
-            return;
-        };
+        } = stopped_after_the_files(&dir, &repository);
         assert!(matches!(error, RestoreError::MoveFailed { .. }), "{error}");
         assert!(!error.pointer_moved());
         assert!(
@@ -1602,15 +1579,11 @@ mod tests {
 
     /// The reason for the advice: a snapshot between the failure and the repeat saves the edits of
     /// the target but not `new.rs`, a tree that is neither the old state nor the target.
-    #[cfg(unix)]
     #[test]
     fn a_snapshot_after_a_failed_move_misses_the_file_that_only_the_target_has() {
         let dir = TempDir::new();
         let repository = repository(&dir);
-        let Some(Stopped { target, before, .. }) = stopped_after_the_files(&dir, &repository)
-        else {
-            return;
-        };
+        let Stopped { target, before, .. } = stopped_after_the_files(&dir, &repository);
         let snapshot = repository.snapshot(&actor(), &AllowAll).unwrap();
         assert!(snapshot.is_some(), "the files differ from the old commit");
         let saved = repository.refs().working_copy().unwrap();
@@ -1622,15 +1595,10 @@ mod tests {
     /// A checkout that stops after `new.rs`, because it cannot write `sub/x.rs`: the entry is in
     /// the log, no pointer moved, and `new.rs` is on disk but not tracked by the old
     /// working-copy commit. The repeat, once the cause is gone, finishes the restore.
-    #[cfg(unix)]
     #[test]
     fn a_checkout_that_stops_half_way_is_finished_by_a_repeat() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = repository(&dir);
-        if !permissions_hold(&dir) {
-            return;
-        }
         write(&dir, "a.txt", "one");
         write(&dir, "new.rs", "fn main() {}");
         fs::create_dir(dir.path().join("sub")).unwrap();
@@ -1663,9 +1631,9 @@ mod tests {
         // A directory the checkout cannot write into: `new.rs` comes first, `sub/x.rs` fails.
         let sub = dir.path().join("sub");
         fs::create_dir(&sub).unwrap();
-        fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&sub);
         let error = restore(&repository, entry).unwrap_err();
-        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         assert!(
             matches!(error, RestoreError::CheckoutFailed { .. }),
             "{error}"

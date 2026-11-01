@@ -20,7 +20,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -516,7 +516,7 @@ impl FsObjectStore {
         self.require_root()?;
         let algorithm = self.root.join("objects").join(PREFIX.trim_end_matches(':'));
         let mut ids = Vec::new();
-        let fan_outs = match fs::read_dir(&algorithm) {
+        let fan_outs = match fault::read_dir(&algorithm) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ids),
             Err(error) => return Err(io_error("list the objects in", &algorithm)(error)),
@@ -539,7 +539,7 @@ impl FsObjectStore {
                 continue;
             }
             let prefix = fan_out.file_name();
-            for object in fs::read_dir(&path).map_err(io_error("list the objects in", &path))? {
+            for object in fault::read_dir(&path).map_err(io_error("list the objects in", &path))? {
                 let object = object.map_err(io_error("list the objects in", &path))?;
                 let name = object.file_name();
                 let (Some(prefix), Some(rest)) = (prefix.to_str(), name.to_str()) else {
@@ -595,7 +595,7 @@ impl FsObjectStore {
             return Err(corrupt(CorruptReason::NotARegularFile));
         }
         let mut head = Vec::new();
-        match File::open(&path) {
+        match fault::open(&path) {
             Ok(file) => file
                 .take(MAX_HEADER)
                 .read_to_end(&mut head)
@@ -679,7 +679,7 @@ impl FsObjectStore {
             fs::set_permissions(&path, permissions)
                 .map_err(io_error("make the object file writable", &path))?;
         }
-        match fs::remove_file(&path) {
+        match fault::remove_file(&path) {
             Ok(()) => {}
             // Another remover was faster; it may not have flushed yet.
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -907,7 +907,7 @@ impl FsObjectStore {
         if !metadata.is_file() {
             return Err(corrupt(CorruptReason::NotARegularFile));
         }
-        let mut bytes = match fs::read(path) {
+        let mut bytes = match fault::read(path) {
             Ok(bytes) => bytes,
             // The object was removed after the check above.
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1068,9 +1068,7 @@ impl Batch<'_> {
         };
         for (id, temp) in self.pending.into_inner() {
             // The file is opened again to flush it, so that a large batch keeps no file open.
-            let file = OpenOptions::new()
-                .write(true)
-                .open(&temp.path)
+            let file = fault::open_for_write(&temp.path)
                 .map_err(io_error("open the temporary file", &temp.path))?;
             directories.insert(self.store.place(&id, file, temp)?);
         }
@@ -1215,7 +1213,7 @@ pub(crate) fn remove_scratch(root: &Path) {
     for entry in entries.flatten() {
         let named = entry.file_name().to_str().is_some_and(is_init_staging_name);
         if named && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            let _ = fs::remove_dir_all(entry.path());
+            let _ = fault::remove_dir_all(&entry.path());
         }
     }
 }
@@ -1978,6 +1976,30 @@ mod tests {
         let batch = store.batch();
         batch.put_blob(&blob).unwrap();
         batch.finish().unwrap();
+    }
+
+    #[test]
+    fn a_temporary_file_that_cannot_be_opened_again_fails_the_batch_and_is_removed() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let id = blob.id().object_id();
+        let denied = fault::deny_modifying_in(&dir.path().join("tmp"));
+        let batch = store.batch();
+        batch.put_blob(&blob).unwrap();
+        let result = batch.finish();
+        drop(denied);
+        match result {
+            Err(StoreError::Io {
+                operation, source, ..
+            }) => {
+                assert_eq!(operation, "open the temporary file");
+                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected an I/O error, got {other:?}"),
+        }
+        assert_eq!(temp_entries(&dir), 0, "no temporary file is left");
+        assert!(!store.object_path(&id).exists());
     }
 
     #[test]

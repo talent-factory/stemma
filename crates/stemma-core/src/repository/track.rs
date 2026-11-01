@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use super::snapshot::{lookup, Tracked};
 use super::{Repository, SnapshotError, Unsupported, UpdateError};
+use crate::fault;
 use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::index::path_problem;
 use crate::object::{name_problem, FileMode, NameProblem, GIT_DIR};
@@ -256,7 +257,7 @@ fn check_spelling(root: &Path, path: &str) -> Result<(), TrackError> {
     for part in path.split('/') {
         let mut exact = false;
         let mut other = None;
-        for entry in fs::read_dir(&dir).map_err(|source| io_error("list", &dir, source))? {
+        for entry in fault::read_dir(&dir).map_err(|source| io_error("list", &dir, source))? {
             let name = entry
                 .map_err(|source| io_error("list", &dir, source))?
                 .file_name();
@@ -320,7 +321,7 @@ pub(super) fn walk(
     let mut pending = vec![(dir, prefix.to_owned())];
     while let Some((dir, prefix)) = pending.pop() {
         let mut names = Vec::new();
-        for entry in fs::read_dir(&dir).map_err(|source| io_error("list", &dir, source))? {
+        for entry in fault::read_dir(&dir).map_err(|source| io_error("list", &dir, source))? {
             let entry = entry.map_err(|source| io_error("list", &dir, source))?;
             names.push(entry.file_name());
         }
