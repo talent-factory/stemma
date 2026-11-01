@@ -193,7 +193,7 @@ Rules:
   |---|---|
   | Arbeitsverzeichnis | `#2B6CB0` |
   | Working-Copy-Commit | `#B45309` |
-  | Branch und HEAD | `#2F7D32` |
+  | Branch, HEAD und Tags | `#2F7D32` |
   | Operation Log | `#6B46C1` |
   | Text | `#0F172A` |
   | Secondary text, frames | `#64748B` |
