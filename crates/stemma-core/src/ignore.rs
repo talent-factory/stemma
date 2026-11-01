@@ -1338,6 +1338,27 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_that_cannot_be_listed_is_an_io_error_and_a_missing_one_has_no_rules() {
+        let dir = TempDir::new();
+        {
+            let _denied = fault::deny_reads_of(dir.path());
+            let error = IgnoreRules::read(dir.path()).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    IgnoreError::Io {
+                        operation: "list",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+        }
+        let missing = dir.path().join("missing");
+        assert_eq!(IgnoreRules::read(&missing).unwrap(), IgnoreRules::empty());
+    }
+
+    #[test]
     fn a_file_above_the_limit_is_refused() {
         let dir = TempDir::new();
         std::fs::write(dir.path().join(FILE_NAME), vec![b'a'; MAX_FILE_BYTES + 1]).unwrap();

@@ -9,6 +9,14 @@
 //! names. The queries of metadata (`metadata`, `symlink_metadata`, `canonicalize`) are not routed:
 //! none of the three kinds could make them fail.
 //!
+//! The functions by the kind of injection that gates them:
+//!
+//! - `write`: `rename`, `hard_link`, `symlink`, `remove_file`, `remove_dir`, `remove_dir_all`,
+//!   `create_dir`, and `create_new`; `write` and `open_or_create` for a name that is not there.
+//! - `modify`: `open_for_write` and `set_permissions`; `write` and `open_or_create` for a name
+//!   that is there.
+//! - `read`: `read`, `open`, `read_dir`, `read_link`, and `open_or_create`.
+//!
 //! There are three kinds of injection:
 //!
 //! - `deny_writes_in(dir)`: every call that adds, moves, or removes a name directly in `dir`
