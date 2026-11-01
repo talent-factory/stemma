@@ -167,11 +167,44 @@ them.
   the sum it came from does). The padding belongs to the sums of the paths, not to the list of trees
   of a `commit2`, which is stored simplified. The rule that two sides which made the same change
   resolve at once is not part of the algebra: it loses information when the result is merged again,
-  and the merge decides whether to apply it. The text with markers that shows a conflicted file is
+  and the merge decides whether to apply it (see "Merge of trees"). The text with markers that
+  shows a conflicted file is
   one function of the sum (`marker_text`), a pure function of the list of the contents of the terms,
   in order. The working copy and `diff` are to show it, and the snapshot is to compare the bytes of
   a file with it and not to parse markers. Nothing calls it yet, and no command writes a `commit2`
   yet.
+- **Merge of trees** *(confirmed)*. The module `merge` of the core merges two commits into a sum of
+  trees (STEMMA-170), at level 2 of ADR-004. It writes blobs and trees and no commit, and reads
+  only commits without a conflict until a `CommitId` resolves to either kind (STEMMA-179). The rules
+  are these.
+  - *The sum.* One merge base gives `ours + (theirs - base)`. Several bases are neither merged into
+    a virtual commit nor merged recursively. They are one flat sum, as in Jujutsu: the first base,
+    plus the change from the common ancestors of the first and each further base to that base.
+    The result may have more than three sides, and it follows from the bases, which `merge_bases`
+    returns sorted by ID, so the order in which a caller names them does not matter. Histories
+    without a common ancestor have the empty tree as their base.
+  - *Per name.* Cancelling terms come first (the changed value wins over the unchanged one). If all
+    sides are equal, that value is the result, for content and for mode, per path; there is no
+    setting for it in phase 3. If every term is a directory or absent, the trees are merged one
+    level down, so that a directory deleted on one side and changed on the other conflicts only at
+    the paths that the changed side touched, and a directory without entries is absent. If every
+    term is a file, the mode and the content are merged independently, and a conflict of one keeps
+    the decided value of the other in every term. A symbolic link is one value and is never merged
+    by line. Everything else is a conflict of the path: a deleted file against a changed one, and
+    different types (a file against a directory or a link).
+  - *No rename detection.* A rename is a delete and an add, so an edit of the old name on the other
+    side is a conflict of a deleted against a changed file. A later slice can add detection without
+    a change of the format.
+  - *Lines.* The lines of a file are compared with the first base by `diff_byte_lines`, the
+    function of `diff`, so that merge and `diff` see the same hunks. The lines of the base that all
+    comparisons match divide the file, and each piece between two of them is decided as a sum of
+    its own. Changes that touch each other without overlapping are one piece and a conflict, unless
+    both sides made the same change. A binary file and a file that is not UTF-8 are a conflict as a
+    whole. A file is merged only if every piece is decided; otherwise the conflict of the path holds
+    the whole blobs, and markers exist only as the text of `marker_text` on disk.
+  - *The result* is the simplified sum of trees. All paths are padded to the widest sum, and a
+    result that cancels down to one tree is that tree, with the ID of a tree that never had a
+    conflict.
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
   repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
   other non-canonical form. Otherwise one logical object could have several encodings and several

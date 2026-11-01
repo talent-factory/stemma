@@ -74,6 +74,18 @@ the change from each removed tree to the added tree after it. Equal added and re
 cancel, so a conflict never nests. One tree is no conflict. (Summe von Trees)
 _Avoid_: Merge list, tree list (for the algebra)
 
+**Tree merge**:
+The merge of two commits as a function on their trees: it sums the trees of the two commits and of
+their merge bases, decides every path, and returns a sum of trees, which is one tree if nothing
+conflicts. It writes blobs and trees, and no commit and no pointer. (Tree-Merge)
+_Avoid_: Merge (alone, for this function)
+
+**Line merge**:
+The merge of the contents of one file. The lines of the base that every comparison with the base
+matches (_fixed lines_, Fixzeilen) divide the file into pieces (_Zwischenstücke_), and each piece
+is decided as a sum of its own. One undecided piece makes the whole file a conflict. (Zeilen-Merge)
+_Avoid_: Text merge, anchor (the anchor is a number and a hash of the log)
+
 ## Working copy
 
 **Working directory**:

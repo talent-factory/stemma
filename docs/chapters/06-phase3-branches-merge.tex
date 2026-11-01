@@ -15,6 +15,8 @@ Die Funktion \type{merge_bases} liefert alle Merge-Basen zweier Commits.
 Nach einem Criss-Cross-Merge, bei dem sich zwei Seiten gegenseitig einmischen,
 sind es mehrere, und der Merge muss sie zusammenführen.
 Die Funktion liest kein Commit-Datum, sondern geht die ganze Vorfahrenmenge beider Seiten durch.
+Der Kern führt die Trees zweier Commits über ihre Merge-Basen zusammen
+(\in{Abschnitt}[sec:tree-merge]); der Befehl, der daraus einen Merge-Commit macht, folgt später.
 \item Konflikte als Daten im Commit, nicht als Markierung in der Arbeitskopie.
 Kapitel 2 beschreibt das Vorbild Jujutsu.
 Ein Konflikt ist eine Summe von Trees: Der erste Tree wird genommen, und die Änderung von jedem
@@ -39,6 +41,144 @@ Noch schreibt kein Befehl einen solchen Commit.
 mit \type{--take-over} (Risikostufe 3). Umgesetzt; Kapitel 4 beschreibt die Regel,
 der Anhang die Befehle. Die zweite Arbeitskopie baut darauf auf.
 \stopitemize
+
+\section[sec:tree-merge]{Der Merge von Trees}
+
+Der Merge zweier Commits ist eine Funktion auf ihren Trees
+(\type{merge_commits}, \type{merge.rs}).
+Sie findet die Merge-Basen, bildet aus den Trees eine Summe
+und führt diese Pfad für Pfad zusammen.
+Das Ergebnis ist wieder eine Summe von Trees: ein einzelner Tree, wenn nichts in Konflikt steht,
+sonst die Trees eines Commits mit Konflikt (Summe von Trees, ADR-005).
+Die Funktion schreibt Blobs und Trees in den Speicher, aber weder einen Commit noch einen Zeiger.
+Wer sie aufruft, entscheidet also allein, was aus dem Ergebnis wird.
+Ein Absturz mitten im Merge lässt höchstens unerreichbare Objekte zurück,
+und ein zweiter Aufruf mit denselben Commits schreibt dieselben Objekte noch einmal.
+
+\subsection{Die Summe}
+
+Mit einer Merge-Basis $B$ ist die Summe $O + (T - B)$, wenn $O$ der Tree der eigenen Seite
+und $T$ der der anderen ist. Nach einem Criss-Cross-Merge gibt es mehrere Merge-Basen.
+Stemma bildet daraus keinen virtuellen Commit und merged nicht rekursiv, wie git es tut.
+Die Basen gehen als flache Summe in den Merge ein, wie bei Jujutsu \cite[jujutsu].
+Die Summe der Basen ist die erste Basis, plus die Änderung von den gemeinsamen Vorfahren
+der ersten und jeder weiteren Basis zu dieser weiteren Basis; diese Vorfahren
+bestimmt dieselbe Regel noch einmal.
+Haben $L$ und $R$ den gemeinsamen Vorfahren $W$, so ist die Summe der Basen $L + (R - W)$
+und die des Merges $O + T - L - R + W$.
+Sie hat drei Seiten und zwei Basen.
+Was sich aufhebt, fällt weg: Ein Pfad, den nur ein Zweig geändert hat, trägt nur diese Änderung.
+Die Basen kommen von \type{merge_bases} nach ID sortiert,
+die Reihenfolge, in der ein Aufrufer sie nennt, spielt also keine Rolle.
+Haben zwei Verläufe keinen gemeinsamen Vorfahren, ist der leere Tree die Basis.
+
+Ist ein Commit Vorfahr des anderen, ist er selbst die Basis,
+und die Summe $O + (T - O)$ hebt sich zu $T$ auf, ohne dass ein Tree gelesen wird.
+Ebenso hebt sich jeder Teilbaum auf, den eine Seite nicht angefasst hat:
+Der Merge vergleicht seine ID und liest ihn nicht.
+
+\subsection{Der Ablauf eines Namens}
+
+Jeder Name in den Trees der Summe hat einen Wert je Term:
+Er fehlt, oder er ist eine Datei mit Modus, ein symbolischer Link oder ein Verzeichnis.
+Der Merge geht die Namen in sortierter Reihenfolge durch.
+Für jeden gilt die erste Regel, die zutrifft.
+
+\startitemize[n]
+\item Gleiche hinzugefügte und entfernte Terme heben sich auf.
+Hat nur eine Seite einen Pfad geändert, gilt ihr Wert.
+\item Sind alle Seiten gleich, gilt dieser Wert, für Inhalt und Modus.
+Die Algebra kennt diese Regel nicht, weil sie beim erneuten Zusammenführen Information kostet;
+der Merge wendet sie an, und in Phase~3 lässt sie sich nicht abschalten.
+\item Sind alle Terme Verzeichnisse oder fehlen sie, wird die Summe ihrer Trees eine Ebene tiefer
+mit denselben Regeln zusammengeführt. Ein fehlender Term zählt als leerer Tree.
+Ein Verzeichnis ohne Einträge fehlt im Ergebnis.
+\item Sind alle Terme Dateien, werden Modus und Inhalt unabhängig voneinander entschieden.
+Der Inhalt wird zeilenweise zusammengeführt (\in{Abschnitt}[sec:line-merge]).
+Bleibt eines der beiden offen, trägt jeder Term des Pfades den entschiedenen Wert
+und für den offenen Teil die Werte der Seiten.
+\item Das Ziel eines symbolischen Links ist ein einziger Wert und wird nie zeilenweise
+zusammengeführt.
+\item Alles andere ist ein Konflikt des Pfades. Dazu gehören eine gelöschte Datei gegen eine
+geänderte und verschiedene Typen, etwa eine Datei gegen ein Verzeichnis
+oder einen symbolischen Link.
+\stopitemize
+
+Stemma erkennt keine Umbenennungen. Eine Umbenennung ist eine Löschung und eine neue Datei,
+und eine Änderung der alten Datei auf der anderen Seite ist deshalb ein Konflikt
+\quotation{gelöscht gegen geändert}. Eine spätere Erkennung braucht keine Änderung des Formats.
+Ein Verzeichnis, das die eine Seite löscht und die andere ändert, ist kein einzelner Konflikt.
+Der Konflikt liegt an jedem Pfad, den die ändernde Seite berührt hat;
+die Dateien, die sie nicht angefasst hat, sind einfach gelöscht.
+
+Die Pfade eines Verzeichnisses können verschieden viele Seiten haben.
+Der Merge füllt sie auf die Zahl des breitesten Pfades auf, mit Paaren gleicher Terme,
+und baut aus dem $k$-ten Term aller Pfade den $k$-ten Tree des Ergebnisses.
+Die Summe wird danach vereinfacht.
+Löst sich der ganze Merge auf, ist das Ergebnis ein einziger Tree
+mit der ID eines Trees, der nie einen Konflikt hatte.
+
+\section[sec:line-merge]{Der Merge der Zeilen}
+
+Zwei Seiten haben dieselbe Datei an verschiedenen Stellen geändert.
+Bestimmte Zeilen der Basis teilen die Datei in Zwischenstücke,
+und jedes Zwischenstück ist für sich
+eine Summe, die sich aufhebt oder nicht.
+Die Funktion (\type{merge_lines}) verwendet dafür denselben Diff wie der Befehl \type{diff}
+(\in{Abschnitt}[sec:myers] und \in{Abschnitt}[sec:slide]),
+damit Merge und Diff dieselben Hunks sehen.
+
+\subsection{Definition}
+
+Die Eingabe ist eine Summe von Inhalten. Die erste entfernte Basis ist der Bezug,
+und jeder andere Term wird mit ihr verglichen (\type{diff_byte_lines}).
+Eine Zeile des Bezugs ist eine Fixzeile, wenn jeder Vergleich sie einer gleichen Zeile zuordnet.
+Zwischen zwei Fixzeilen steht in jedem Term ein Teil des Textes, möglicherweise leer.
+Die Teile zwischen denselben Fixzeilen bilden eine Summe von Zeilenfolgen, ein Zwischenstück.
+Hebt sie sich auf oder sind alle Seiten gleich, ist ihr Wert der Text des Zwischenstücks.
+Sonst ist die Datei als Ganzes ein Konflikt, und der Konflikt des Pfades enthält die ganzen Blobs.
+Marken stehen nur auf der Platte, als Text von \type{marker_text}.
+
+Zwei Änderungen, die sich berühren, ohne sich zu überlappen, liegen im selben Zwischenstück
+und sind ein Konflikt, wenn sie nicht gleich sind.
+Das gilt auch für zwei Einfügungen an derselben Stelle.
+Eine Binärdatei und eine Datei, die kein UTF-8 ist, werden nie zeilenweise zusammengeführt.
+
+\subsection{Invariante und Korrektheit}
+
+Das Ergebnis eines Merges enthält nur Zeilen, die einer der Terme hat,
+und es hängt nicht davon ab, welche Seite die eigene ist: Vertauscht man die beiden Seiten,
+kommt derselbe Text heraus. Ist eine Seite gleich der Basis, ist das Ergebnis die andere Seite.
+Der Beweis liegt in den Zwischenstücken: In jedem gilt der Satz für die Summe der Teile,
+und die Fixzeilen stehen in allen Termen in derselben Reihenfolge,
+weil der Diff sie monoton zuordnet.
+Ein Test erzeugt Dateien mit Änderungen an zufälligen Zeilen
+und prüft, dass der Merge genau dann gelingt, wenn keine zwei Änderungen aneinanderstossen,
+und dass sein Text dann beide Änderungen enthält.
+Ein Fuzz-Ziel (\type{merge_lines}) prüft die Regeln auf beliebigen Eingaben.
+
+\subsection{Komplexität}
+
+Der Merge liest je Term einen Diff gegen die Basis, der $O((N+M)\,D)$ kostet
+(\in{Abschnitt}[sec:myers]), und geht dann einmal linear durch die Zeilen.
+Mit $n$ Einträgen in den Verzeichnissen, die sich unterscheiden, liest und schreibt der Merge
+der Trees $O(n)$ Objekte. Die Rekursion über die gemeinsamen Vorfahren mehrerer Basen
+ist im schlimmsten Fall so tief wie der Verlauf; tiefe Gitter solcher Merges
+sind in der Praxis nicht zu erwarten.
+
+\startinfobox
+{\bf Grenzfälle des Merges.}
+\startitemize
+\item Die Regel \quotation{gleiche Änderung auf beiden Seiten} löst Inhalt und Modus je Pfad auf.
+Beim erneuten Zusammenführen kann das Information kosten; deshalb gehört sie nicht zur Algebra.
+\item Eine Datei wird nur zusammengeführt, wenn alle Zwischenstücke entschieden sind.
+Ein Konflikt in einem Zwischenstück macht die ganze Datei zum Konflikt.
+\item Der Modus wird unabhängig vom Inhalt entschieden. Wird er auf einer Seite geändert
+und der Inhalt auf der anderen, gelten beide Änderungen.
+\item Einen offenen Konflikt als Operanden liest der Merge noch nicht.
+Dazu muss eine \type{CommitId} auf beide Arten von Commits zeigen können.
+\stopitemize
+\stopinfobox
 
 \section{Offene Fragen}
 
