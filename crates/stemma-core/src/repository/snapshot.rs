@@ -411,17 +411,18 @@ fn is_link_target(content: &[u8]) -> bool {
         && std::str::from_utf8(content).is_ok()
 }
 
-/// Reads the file that `lookup` saw, or returns `None` if it is gone. Opening a file follows
-/// links, so a process that swaps the file or a directory above it for a link between the lookup and the read
-/// could lead it out of the working directory; the file that was opened must be the one that was
-/// looked at, which is checked by its device and inode where the file system has them.
+/// Reads the file that `lookup` saw, or returns `None` if it is gone. On Unix, opening a file
+/// follows links, so a process that swaps the file or a directory above it for a link between
+/// the lookup and the read could lead it out of the working directory; the file that was opened
+/// must be the one that was looked at, which is checked by its device and inode.
 ///
-/// Windows gives less. The file is opened without following a reparse point, and the handle must
-/// be a regular file, so a link or a junction that has taken the place of the file is refused. A
-/// directory above the file that was swapped for a junction is followed, and so is another
-/// regular file in the place of the file: the identity of a file (the serial number of the
-/// volume and the index of the file) is not compared with the lookup, since the lookup gives no
-/// handle.
+/// Windows gives less. The file is opened without following a reparse point (see
+/// [`crate::open_without_following`], which also says how a reparse point that is no link is
+/// opened), and the handle must be a regular file, so a link or a junction that has taken the
+/// place of the file is refused. A directory above the file that was swapped for a junction is
+/// followed, and so is another regular file in the place of the file: the identity of a file
+/// (the serial number of the volume and the index of the file) is not compared with the lookup,
+/// since the lookup gives no handle.
 fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotError> {
     use std::io::Read;
     let mut file = match crate::open_without_following(path) {
@@ -1430,6 +1431,28 @@ mod tests {
         let target = Blob::new("target.txt").id().object_id();
         let secret = Blob::new("secret").id().object_id();
         assert!(objects.contains(&target).unwrap());
+        assert!(!objects.contains(&secret).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_on_windows_is_saved_as_a_link_and_not_read_through() {
+        // A junction needs no right to create, so this runs without developer mode too.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a", "one")]);
+        write(&dir, "real/secret.txt", "secret");
+        fs::remove_file(dir.path().join("a")).unwrap();
+        crate::testutil::junction(&dir.path().join("real"), &dir.path().join("a"));
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(tracked(&repository), [("a".to_owned(), FileMode::Symlink)]);
+        // The blob holds the target of the junction as `read_link` gives it, and nothing that
+        // lies below the directory it leads to was stored.
+        let target = fs::read_link(dir.path().join("a")).unwrap();
+        let objects = repository.objects();
+        let link = Blob::new(target.to_str().unwrap()).id().object_id();
+        let secret = Blob::new("secret").id().object_id();
+        assert!(objects.contains(&link).unwrap());
         assert!(!objects.contains(&secret).unwrap());
     }
 

@@ -11,33 +11,42 @@ use crate::object::{Blob, BlobId, Commit, CommitId, ObjectId, Tree, TreeId};
 use crate::store::{sealed, FsObjectStore, ObjectStore, RawObject, StoreError};
 
 /// Makes a symbolic link to a file and says whether it did. Without the right to create one
-/// (a process without developer mode), the test must stop, and prints that it did. On a CI run
-/// (`CI` is set) the right is there, so a failure is a failure and not a skip.
+/// (a process without developer mode: the error `ERROR_PRIVILEGE_NOT_HELD`), the test must stop,
+/// and prints that it did. On a CI run (`CI` is set) the right is there, so a failure is a
+/// failure and not a skip. Any other error is a failure everywhere.
 #[cfg(windows)]
 pub(crate) fn symbolic_link(target: &Path, link: &Path) -> bool {
+    const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
     match std::os::windows::fs::symlink_file(target, link) {
         Ok(()) => true,
-        Err(error) if std::env::var_os("CI").is_none() => {
+        Err(error)
+            if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
+                && std::env::var_os("CI").is_none() =>
+        {
             eprintln!("skipped: no right to create symbolic links ({error})");
             false
         }
-        Err(error) => panic!("cannot create a symbolic link on CI: {error}"),
+        Err(error) => panic!("cannot create a symbolic link: {error}"),
     }
 }
 
 /// Makes a junction to a directory, which needs no right.
 #[cfg(windows)]
 pub(crate) fn junction(target: &Path, link: &Path) {
-    let status = std::process::Command::new("cmd")
+    let output = std::process::Command::new("cmd")
         .arg("/C")
         .arg("mklink")
         .arg("/J")
         .arg(link)
         .arg(target)
         .output()
-        .unwrap()
-        .status;
-    assert!(status.success(), "mklink /J failed");
+        .expect("cannot start cmd");
+    assert!(
+        output.status.success(),
+        "mklink /J failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// A directory below the system temp directory that is removed on drop. A directory left by an

@@ -54,33 +54,116 @@ pub mod verify;
 
 use oplog::OperationName;
 
+/// The attribute of a file that is a reparse point of any kind.
+#[cfg(any(windows, test))]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+
+/// Whether a handle that was opened as a reparse point itself must be opened again in the
+/// ordinary way: it is a file (`is_file` of its metadata, which is false for a symbolic link or a
+/// junction) that carries the reparse attribute, so it is a reparse point that is no link.
+#[cfg(any(windows, test))]
+fn needs_ordinary_open(is_file: bool, attributes: u32) -> bool {
+    is_file && attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
 /// Opens a file for reading. On Windows the last part of the path is opened itself when it is a
-/// reparse point, and what it names is not opened. For a symbolic link or a junction the handle
-/// then describes the link, which is not a file for `Metadata::is_file`, so that a reader that
-/// checks the handle refuses a link that has taken the place of a file. Another reparse point
-/// is no link and holds data that a filter driver supplies (a placeholder of a cloud service, a
-/// deduplicated file): opened itself it would give the stub, so it is opened again in the
-/// ordinary way. A swap of the file for a link in that short time is not seen then. A part above
-/// the last is followed on every platform. Elsewhere this is `File::open`.
+/// reparse point, and what it names is not opened. A symbolic link or a junction is refused
+/// either because the open fails (a junction is a directory) or because the handle describes the
+/// link, which is not a file for `Metadata::is_file`, so that a reader that checks the handle
+/// refuses a link that has taken the place of a file. Another reparse point is no link and holds
+/// data that a filter driver supplies (a placeholder of a cloud service, a deduplicated file):
+/// opened itself it would give the stub, so it is opened again in the ordinary way. A swap of the
+/// file for a link between the first open and the second is not seen. A part above the last is
+/// followed on every platform. Elsewhere this is `File::open`.
+///
+/// A file that is gone at the second open is not reported as missing: the first open found it, so
+/// the caller must not take it for a file that was never there.
 pub(crate) fn open_without_following(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
-        let opened = file.metadata()?;
-        if opened.is_file() && opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return std::fs::File::open(path);
+        let opened = file.metadata().map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot inspect the opened file: {error}"),
+            )
+        })?;
+        if needs_ordinary_open(opened.is_file(), opened.file_attributes()) {
+            return std::fs::File::open(path).map_err(|error| {
+                let kind = match error.kind() {
+                    std::io::ErrorKind::NotFound => std::io::ErrorKind::Other,
+                    kind => kind,
+                };
+                std::io::Error::new(
+                    kind,
+                    format!("cannot open the reparse point in the ordinary way: {error}"),
+                )
+            });
         }
         Ok(file)
     }
     #[cfg(not(windows))]
     {
         std::fs::File::open(path)
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_file_with_the_reparse_attribute_is_opened_again() {
+        // A cloud placeholder or a deduplicated file: a file, and a reparse point.
+        assert!(needs_ordinary_open(true, FILE_ATTRIBUTE_REPARSE_POINT));
+        assert!(needs_ordinary_open(
+            true,
+            FILE_ATTRIBUTE_REPARSE_POINT | 0x20
+        ));
+        // A plain file has nothing to open again.
+        assert!(!needs_ordinary_open(true, 0x20));
+        // A symbolic link or a junction is no file for `is_file`: it must never be opened again,
+        // or the read would lead through it.
+        assert!(!needs_ordinary_open(false, FILE_ATTRIBUTE_REPARSE_POINT));
+        assert!(!needs_ordinary_open(false, 0));
+    }
+
+    #[test]
+    fn a_missing_file_is_not_found() {
+        let dir = crate::testutil::TempDir::new();
+        let error = open_without_following(&dir.path().join("none")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_plain_file_is_opened() {
+        use std::io::Read;
+        let dir = crate::testutil::TempDir::new();
+        std::fs::write(dir.path().join("a"), "data").unwrap();
+        let mut content = String::new();
+        open_without_following(&dir.path().join("a"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "data");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_symbolic_link_is_opened_as_a_link_and_not_as_a_file() {
+        let dir = crate::testutil::TempDir::new();
+        std::fs::write(dir.path().join("target"), "data").unwrap();
+        let link = dir.path().join("link");
+        if !crate::testutil::symbolic_link(&dir.path().join("target"), &link) {
+            return;
+        }
+        let file = open_without_following(&link).unwrap();
+        assert!(!file.metadata().unwrap().is_file());
     }
 }
 

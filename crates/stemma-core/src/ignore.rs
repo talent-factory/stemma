@@ -182,7 +182,8 @@ impl IgnoreRules {
     ///
     /// The path is inspected without following a link, then opened, and the open file is checked
     /// to be the one that was inspected (same device and inode on Unix) and a regular file, so
-    /// that a file replaced in between is an error and not a read through a link. The bytes that
+    /// that a file replaced in between is an error and not a read through a link. On Windows
+    /// only the check for a regular file applies (see `same_file`). The bytes that
     /// were read have to be as many as the file has, so a file that is written while it is read is
     /// an error and not a prefix. One window is left: a file replaced by a pipe between the
     /// inspection and the open blocks the open (open item of ADR-012).
@@ -1283,6 +1284,25 @@ mod tests {
         if !crate::testutil::symbolic_link(&dir.path().join("rules"), &link) {
             return;
         }
+        let error = IgnoreRules::read(dir.path()).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                IgnoreError::NotAFile {
+                    found: "a link",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_is_not_an_exclusion_file_on_windows() {
+        let dir = TempDir::new();
+        std::fs::create_dir(dir.path().join("rules")).unwrap();
+        crate::testutil::junction(&dir.path().join("rules"), &dir.path().join(FILE_NAME));
         let error = IgnoreRules::read(dir.path()).unwrap_err();
         assert!(
             matches!(
