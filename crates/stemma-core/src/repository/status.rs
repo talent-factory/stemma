@@ -1221,27 +1221,18 @@ mod tests {
         assert_eq!(repository.oplog().entries().unwrap().len(), entries);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_snapshot_that_cannot_be_flushed_is_a_result_with_its_entry_and_the_flush_error() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = repository(&dir);
         write(&dir, "a.txt", "one");
         track(&repository, "a.txt");
         commit(&repository, "base");
         write(&dir, "a.txt", "two");
-        // The metadata directory may be written and entered, but not read: the pointer moves, and
-        // the flush of the directory cannot open it.
-        let metadata = repository.metadata_dir();
-        fs::set_permissions(&metadata, fs::Permissions::from_mode(0o300)).unwrap();
-        let probe = fs::read_dir(&metadata).is_err();
+        // The pointer moves, and the flush of the metadata directory fails.
+        let failing = crate::store::fail_flush_of(&repository.metadata_dir());
         let result = repository.status(&actor(), &AllowAll);
-        fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(
-            probe,
-            "permissions do not bind this user; do not run the tests as root"
-        );
+        drop(failing);
 
         let status = result.unwrap();
 
@@ -1296,10 +1287,8 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failure_of_reading_after_a_snapshot_that_was_not_flushed_keeps_the_flush_error() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = repository(&dir);
         write(&dir, "a.txt", "one");
@@ -1308,15 +1297,9 @@ mod tests {
         write(&dir, "a.txt", "two");
         let parent = repository.refs().resolve_head().unwrap().unwrap();
         fs::remove_file(repository.objects().object_path(&parent.object_id())).unwrap();
-        let metadata = repository.metadata_dir();
-        fs::set_permissions(&metadata, fs::Permissions::from_mode(0o300)).unwrap();
-        let works = fs::read_dir(&metadata).is_ok();
+        let failing = crate::store::fail_flush_of(&repository.metadata_dir());
         let result = repository.status(&actor(), &AllowAll);
-        fs::set_permissions(&metadata, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(
-            !works,
-            "permissions do not bind this user; do not run the tests as root"
-        );
+        drop(failing);
 
         let error = result.unwrap_err();
 

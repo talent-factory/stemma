@@ -1215,7 +1215,7 @@ pub(crate) fn remove_scratch(root: &Path) {
     for entry in entries.flatten() {
         let named = entry.file_name().to_str().is_some_and(is_init_staging_name);
         if named && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            let _ = fs::remove_dir_all(entry.path());
+            let _ = fault::remove_dir_all(&entry.path());
         }
     }
 }

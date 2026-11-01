@@ -184,6 +184,41 @@ pub(crate) fn remove_file(path: &Path) -> io::Result<()> {
     fs::remove_file(path)
 }
 
+/// [`fs::remove_dir`], failing if the injection denies writes in the parent of `path`.
+pub(crate) fn remove_dir(path: &Path) -> io::Result<()> {
+    check_write(path)?;
+    fs::remove_dir(path)
+}
+
+/// [`fs::remove_dir_all`], failing before it removes anything if the injection denies writes in
+/// the parent of any name below `path` (or of `path` itself).
+pub(crate) fn remove_dir_all(path: &Path) -> io::Result<()> {
+    check_write(path)?;
+    check_tree(path)?;
+    fs::remove_dir_all(path)
+}
+
+/// Checks every name below `path` for a denied write. Without an injection it reads nothing.
+#[cfg(any(test, feature = "fault-injection"))]
+fn check_tree(path: &Path) -> io::Result<()> {
+    let Ok(entries) = fs::read_dir(path) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        check_write(&child)?;
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            check_tree(&child)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(test, feature = "fault-injection")))]
+fn check_tree(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 /// [`fs::create_dir`], failing if the injection denies writes in the parent of `path`.
 pub(crate) fn create_dir(path: &Path) -> io::Result<()> {
     check_write(path)?;

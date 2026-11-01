@@ -19,7 +19,7 @@
 
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -49,6 +49,7 @@ pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
+use crate::fault;
 use crate::object::{Commit, CommitId, ObjectId, Tree, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge, TAKE_OVER};
 use crate::refs::{
@@ -125,7 +126,7 @@ fn raise_format_with(
     flush: &dyn Fn(&Path) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let path = dir.join("format");
-    let current = fs::read(&path).map_err(|source| StoreError::Io {
+    let current = fault::read(&path).map_err(|source| StoreError::Io {
         operation: "read the format file",
         path: path.clone(),
         source,
@@ -170,7 +171,7 @@ fn replace_format(
     file.sync_all()
         .map_err(io("flush the temporary file", &temp.path))?;
     drop(file);
-    fs::rename(&temp.path, path).map_err(io(operation, path))?;
+    fault::rename(&temp.path, path).map_err(io(operation, path))?;
     temp.disarm();
     Ok(())
 }
@@ -1265,7 +1266,7 @@ impl Error for UpdateError {
 
 /// Reads the file `format`, at most [`FORMAT_MAX_LEN`] bytes of it.
 fn read_format(path: &Path) -> Result<Vec<u8>, OpenError> {
-    let file = match fs::File::open(path) {
+    let file = match fault::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(OpenError::MissingFormat {
@@ -1304,7 +1305,7 @@ fn create_dirs_synced(dir: &Path) -> Result<(), InitError> {
         }
     }
     for created in missing.iter().rev() {
-        match fs::create_dir(created) {
+        match fault::create_dir(created) {
             Ok(()) => {}
             // Another process was faster. Whether it is a directory shows when it is used.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1334,7 +1335,7 @@ fn create_staging(dir: &Path, next_name: &mut dyn FnMut() -> String) -> Result<P
     let mut last = dir.to_path_buf();
     for _ in 0..STAGING_ATTEMPTS {
         let staging = dir.join(next_name());
-        match fs::create_dir(&staging) {
+        match fault::create_dir(&staging) {
             Ok(()) => return Ok(staging),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = staging,
             Err(error) => return Err(InitError::io(operation, &staging)(error)),
@@ -1359,7 +1360,7 @@ fn install(
     let result = fill(staging, options, actor).and_then(|()| move_into_place(staging, target));
     match result {
         Ok(()) => Ok(()),
-        Err(error) => match fs::remove_dir_all(staging) {
+        Err(error) => match fault::remove_dir_all(staging) {
             Ok(()) => Err(error),
             // The directory is gone already: a writer of a repository that another `init` made
             // here in the meantime removed it as stale (ADR-009). Nothing is left behind.
@@ -1383,7 +1384,7 @@ fn move_into_place(staging: &Path, target: &Path) -> Result<(), InitError> {
             path: target.to_path_buf(),
         });
     }
-    match fs::rename(staging, target) {
+    match fault::rename(staging, target) {
         Ok(()) => Ok(()),
         Err(error) => match exists(target) {
             Ok(true) => Err(InitError::AlreadyExists {
@@ -1421,7 +1422,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
     let refs = dir.join("refs");
     let heads = refs.join("heads");
     for created in [&objects, &tmp, &oplog, &refs, &heads] {
-        fs::create_dir(created).map_err(InitError::io("create the directory", created))?;
+        fault::create_dir(created).map_err(InitError::io("create the directory", created))?;
     }
     let head = Head::Branch(options.initial_branch.clone());
     // The working copy starts as an empty commit with a change ID of its own (ADR-010): no file is
@@ -1461,7 +1462,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
 /// Writes a file that must not exist yet, and flushes it to disk.
 fn write_new(path: &Path, content: &[u8]) -> Result<(), InitError> {
     let write = || -> io::Result<()> {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut file = fault::create_new(path)?;
         file.write_all(content)?;
         file.sync_all()
     };
@@ -2141,18 +2142,6 @@ mod tests {
         fs::write(dir.join(".stemma").join("format"), content).unwrap();
     }
 
-    /// Whether a directory without write permission keeps a file out. It does not for root.
-    #[cfg(unix)]
-    fn permissions_are_enforced(scratch: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = scratch.join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
-        let enforced = fs::File::create(probe.join("file")).is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        enforced
-    }
-
     #[test]
     fn init_creates_the_layout() {
         let dir = TempDir::new();
@@ -2484,20 +2473,14 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"x");
     }
 
-    #[cfg(unix)]
     #[test]
     fn init_in_a_directory_that_cannot_be_written_reports_the_cause() {
-        use std::os::unix::fs::PermissionsExt;
         let scratch = TempDir::new();
-        if !permissions_are_enforced(scratch.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         let parent = scratch.path().join("readonly");
         fs::create_dir(&parent).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&parent);
         let error = init(&parent).unwrap_err();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         assert!(
             matches!(error, InitError::Io { operation, .. } if operation == "create the new directory"),
             "{error}"
@@ -2685,21 +2668,15 @@ mod tests {
         assert!(!staging.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_staging_directory_that_cannot_be_removed_is_reported() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
-        if !permissions_are_enforced(dir.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         let staging = dir.path().join("staging");
         let stuck = staging.join("stuck");
         fs::create_dir_all(&stuck).unwrap();
         fs::write(stuck.join("file"), b"x").unwrap();
         fs::write(staging.join("format"), b"x").unwrap();
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&stuck);
         let error = install(
             &staging,
             &dir.path().join(".stemma"),
@@ -2708,7 +2685,7 @@ mod tests {
             &Allowed::granted(),
         )
         .unwrap_err();
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         match &error {
             InitError::Leftover { path, error, .. } => {
                 assert_eq!(path, &staging);
@@ -2787,29 +2764,22 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_cleanup_that_cannot_remove_a_directory_does_not_stop_the_change() {
         // The cleanup is best effort (ADR-011): what cannot be removed stays, and the move is made.
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let stale = dir.path().join(".stemma-init-1-0-0123456789abcdef");
         let sealed = stale.join("objects");
         fs::create_dir_all(&sealed).unwrap();
         fs::write(sealed.join("object"), b"x").unwrap();
-        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
-        if fs::remove_file(sealed.join("object")).is_ok() {
-            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        let denied = fault::deny_writes_in(&sealed);
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");
         let result =
             repository.update_working_copy(&operation("snapshot"), old, new, &actor(), &AllowAll);
         let left = sealed.join("object").exists();
-        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         result.unwrap();
         assert_eq!(repository.refs().working_copy().unwrap(), new);
         assert!(left, "what cannot be removed stays");
@@ -4572,25 +4542,17 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_move_that_fails_after_the_entry_leaves_the_entry_and_says_so() {
         // The entry comes first: with the directory of the branches read-only, the entry is
         // written and the move fails. If the order were the other one, nothing would be written.
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
         let heads = dir.path().join(".stemma").join("refs").join("heads");
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
-        let writable = fs::File::create(heads.join("probe")).is_ok();
+        let denied = fault::deny_writes_in(&heads);
         let result = update(&repository, "main", None, a);
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = fs::remove_file(heads.join("probe"));
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        drop(denied);
         let error = result.unwrap_err();
         let UpdateError::MoveFailed { entry, source } = &error else {
             panic!("not a failed move: {error}");
