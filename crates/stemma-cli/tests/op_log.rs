@@ -3,11 +3,9 @@
 mod common;
 
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use common::{entry_file, previous, repository, run, write_stub_entry, Dir};
+use common::{entry_file, previous, repository, run, run_failing, write_stub_entry, Dir};
 
 const A: &str = "b3:1111111111111111111111111111111111111111111111111111111111111111";
 const C: &str = "b3:3333333333333333333333333333333333333333333333333333333333333333";
@@ -460,7 +458,6 @@ fn the_limit_does_not_change_the_outcome_of_a_shown_entry() {
     assert_eq!(flags(dir.path(), &["-n", "2"]), ["true", "false"]);
 }
 
-#[cfg(unix)]
 #[test]
 fn references_that_cannot_be_read_give_a_warning_and_the_outcome_of_the_chain() {
     let dir = repository();
@@ -470,8 +467,7 @@ fn references_that_cannot_be_read_give_a_warning_and_the_outcome_of_the_chain() 
     // file that is not in canonical form).
     let branch = dir.path().join(".stemma/refs/heads/main");
     fs::write(&branch, A).unwrap();
-    fs::set_permissions(&branch, fs::Permissions::from_mode(0o000)).unwrap();
-    let result = run(dir.path(), &["op", "log", "--json"]);
+    let result = run_failing(dir.path(), &["op", "log", "--json"], &[("read", &branch)]);
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
         result
@@ -495,7 +491,7 @@ fn references_that_cannot_be_read_give_a_warning_and_the_outcome_of_the_chain() 
     // Entry 2 is confirmed by entry 3; entry 3 and the entry of `init` need the references.
     assert_eq!(flags, ["null", "true", "null"]);
     // The text form has the question mark on the same entries.
-    let text = run(dir.path(), &["op", "log"]);
+    let text = run_failing(dir.path(), &["op", "log"], &[("read", &branch)]);
     assert_eq!(text.code, 0, "{}", text.stderr);
     assert_eq!(text.stdout.matches("    ? it is not known").count(), 2);
 }

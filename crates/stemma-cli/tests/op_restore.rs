@@ -8,7 +8,7 @@ use std::process::Command;
 
 use stemma_core::repository::Repository;
 
-use common::{ok, run, write, write_stub_entry, Dir, ACTOR};
+use common::{ok, run, run_failing, write, write_stub_entry, Dir, ACTOR};
 
 fn read(dir: &Path, path: &str) -> String {
     fs::read_to_string(dir.join(path)).unwrap()
@@ -591,10 +591,8 @@ fn a_directory_without_a_repository_is_an_error_that_names_the_flag() {
     assert!(result.stderr.contains("-C"), "{}", result.stderr);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_restore_whose_pointers_cannot_move_names_the_way_on_and_the_same_call_finishes_it() {
-    use std::os::unix::fs::PermissionsExt;
     let (dir, snapshot) = two_commits();
     let commit = (snapshot + 1).to_string();
     let branch = |dir: &Path| {
@@ -606,19 +604,15 @@ fn a_restore_whose_pointers_cannot_move_names_the_way_on_and_the_same_call_finis
     };
     let tip = branch(dir.path());
     // The branch is written through a temporary file that is renamed into `refs/heads`, which
-    // a directory that cannot be written stops. The entry comes before the move.
+    // a directory that refuses a new name stops. The entry comes before the move.
     let heads = dir.path().join(".stemma").join("refs").join("heads");
-    fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
-    // A process that runs as root ignores the permission; the test needs a real failure.
-    if fs::File::create(heads.join("probe")).is_ok() {
-        let _ = fs::remove_file(heads.join("probe"));
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
-        return;
-    }
 
-    let result = run(dir.path(), &["op", "restore", &commit, "--actor", ACTOR]);
+    let result = run_failing(
+        dir.path(),
+        &["op", "restore", &commit, "--actor", ACTOR],
+        &[("write", &heads)],
+    );
 
-    fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(result.code, 1, "{}", result.stdout);
     assert!(
         result

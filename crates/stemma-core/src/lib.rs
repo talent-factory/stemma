@@ -34,6 +34,10 @@ pub mod change;
 pub mod conflict;
 pub mod diff;
 pub mod failure;
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+pub mod fault;
+#[cfg(not(feature = "fault-injection"))]
 mod fault;
 #[cfg(any(fuzzing, test))]
 #[doc(hidden)]

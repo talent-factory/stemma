@@ -79,6 +79,20 @@ pub fn run(dir: &Path, args: &[&str]) -> Run {
     stemma(dir, args, |_| {})
 }
 
+/// Runs `stemma` like [`run`] with injected file system failures (STEMMA-187) instead of
+/// directories whose mode was changed, which only Unix has and a privileged user ignores. Each
+/// rule is `("write", dir)`, `("modify", dir)`, or `("read", path)`; see `stemma_core::fault`.
+pub fn run_failing(dir: &Path, args: &[&str], rules: &[(&str, &Path)]) -> Run {
+    let rules: Vec<_> = rules
+        .iter()
+        .map(|(kind, path)| format!("{kind}={}", path.display()))
+        .collect();
+    let value = std::env::join_paths(rules).unwrap();
+    stemma(dir, args, |command| {
+        command.env("STEMMA_FAULT", value);
+    })
+}
+
 /// Runs `stemma` like [`run`] and asserts that it succeeds.
 pub fn ok(dir: &Path, args: &[&str]) -> Run {
     let result = run(dir, args);

@@ -205,7 +205,6 @@ mod armed {
 
     /// Ends the injection that created it when it is dropped, also when a test panics, and in
     /// any order of several guards. It belongs to the thread that armed it.
-    #[cfg(test)]
     #[must_use = "the injection ends when the guard is dropped"]
     pub struct Guard {
         number: u64,
@@ -213,7 +212,6 @@ mod armed {
         _thread: std::marker::PhantomData<*const ()>,
     }
 
-    #[cfg(test)]
     fn arm(rule: Rule) -> Guard {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -225,7 +223,6 @@ mod armed {
         }
     }
 
-    #[cfg(test)]
     impl Drop for Guard {
         fn drop(&mut self) {
             RULES.with(|rules| {
@@ -238,33 +235,30 @@ mod armed {
 
     /// Makes every call that adds, moves, or removes an existing name directly in `dir` fail with
     /// `PermissionDenied` on this thread, until the guard is dropped.
-    #[cfg(test)]
     pub fn deny_writes_in(dir: &Path) -> Guard {
         arm(Rule::Write(named(dir)))
     }
 
     /// Makes opening an existing file directly in `dir` for writing fail with `PermissionDenied`
     /// on this thread, until the guard is dropped.
-    #[cfg(test)]
     pub fn deny_modifying_in(dir: &Path) -> Guard {
         arm(Rule::Modify(named(dir)))
     }
 
     /// Makes opening and listing `path` fail with `PermissionDenied` on this thread, until the
     /// guard is dropped.
-    #[cfg(test)]
     pub fn deny_reads_of(path: &Path) -> Guard {
         arm(Rule::Read(named(path)))
     }
 }
 
-#[cfg(test)]
-pub(crate) use armed::{deny_modifying_in, deny_reads_of, deny_writes_in};
+#[cfg(any(test, feature = "fault-injection"))]
+pub use armed::{deny_modifying_in, deny_reads_of, deny_writes_in, Guard};
 
 #[cfg(any(test, feature = "fault-injection"))]
-use armed::{
-    active, check_creation, check_modify, check_read, check_removal, check_rename, check_write,
-};
+pub(crate) use armed::check_read;
+#[cfg(any(test, feature = "fault-injection"))]
+use armed::{active, check_creation, check_modify, check_removal, check_rename, check_write};
 
 #[cfg(not(any(test, feature = "fault-injection")))]
 fn check_write(_: &Path) -> io::Result<()> {
@@ -297,7 +291,7 @@ fn active() -> bool {
 }
 
 #[cfg(not(any(test, feature = "fault-injection")))]
-fn check_read(_: &Path) -> io::Result<()> {
+pub(crate) fn check_read(_: &Path) -> io::Result<()> {
     Ok(())
 }
 

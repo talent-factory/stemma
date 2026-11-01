@@ -1388,6 +1388,7 @@ fn already_removed(fan_out: &Path) -> Result<bool, StoreError> {
 /// test, a failure can be injected for one directory (`fail_flush_of`), and the flushes are counted
 /// (`flush_count`).
 pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
+    fault::check_read(dir)?;
     #[cfg(test)]
     {
         FLUSHES.with(|flushes| flushes.borrow_mut().push(dir.to_path_buf()));
