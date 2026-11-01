@@ -1163,7 +1163,7 @@ fn paths_follow_a_commit_with_or_without_the_separator() {
     }
 }
 
-// A colon is not allowed in the name of a file on Windows.
+// Windows cannot hold the colon of the name: `b3:0…` would name a stream of the file `b3`.
 #[cfg(unix)]
 #[test]
 fn a_path_that_looks_like_an_identifier_needs_the_separator() {

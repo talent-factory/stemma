@@ -38,11 +38,15 @@ Er nimmt das Repository im Startverzeichnis oder sonst das nächste darüber, wi
 
 Ein \type{.stemma}, das die Suche findet, muss dem Konto gehören, unter dem der Befehl läuft,
 damit niemand mit einem \type{.stemma} in einem geteilten Verzeichnis die Befehle
-anderer abfängt. Unter Unix gilt das auch für ein \type{.stemma} im Startverzeichnis,
+anderer abfängt. Das gilt auch für ein \type{.stemma} im Startverzeichnis,
 denn \type{-C} ist ohne Angabe das aktuelle Verzeichnis: Nach \type{cd /tmp} öffnet ein
 Befehl kein \type{/tmp/.stemma} eines anderen Kontos.
-Unter Windows, wo die Standardbibliothek von Rust keinen Besitzer liefert,
-wird nur ein \type{.stemma} oberhalb im Wurzelverzeichnis eines Laufwerks abgelehnt.
+Unter Unix vergleicht Stemma den Besitzer mit dem effektiven Benutzer des Prozesses.
+Unter Windows vergleicht es die SID des Besitzers mit der SID des Benutzers im Token des
+Prozesses und mit der des Standardbesitzers im Token, wie Git für Windows bei
+\type{safe.directory}; bei erhöhten Rechten ist das die Gruppe der Administratoren.
+Ein \type{.stemma} oberhalb im Wurzelverzeichnis eines Laufwerks lehnt Stemma dort
+zusätzlich ab, auch wenn es dem Konto gehört.
 Die Prüfung ist nicht frei von Wettläufen (ADR-009).
 
 \starttyping
@@ -2560,7 +2564,6 @@ Offen für spätere Phasen bleiben diese Punkte:
 gemessen an einer echten Sitzung eines Agenten (ADR-007, ADR-011);
 bis dahin wächst der Speicher nur.
 \item Die Prüfung des Besitzers von \type{.stemma} ist nicht frei von Wettläufen,
-unter Windows lehnt sie nur ein \type{.stemma} im Wurzelverzeichnis eines Laufwerks ab,
 und \type{init} ersetzt unter Unix ein leeres \type{.stemma},
 das ein anderer Prozess im falschen Augenblick anlegt (ADR-009).
 \item Die Regel, dass jeder Akteur in einer eigenen Arbeitskopie arbeitet,

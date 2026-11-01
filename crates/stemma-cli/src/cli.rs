@@ -2699,8 +2699,9 @@ fn install_interrupt_handler() {
     }
 }
 
-/// Windows has no termination signals for this process: the handler covers Ctrl-C only and
-/// reports it as `SIGINT`, so that the command ends with 130.
+/// Windows has no termination signals for this process: the handler of `ctrlc` covers every
+/// console event (Ctrl-C, Ctrl-Break, closing the console) and reports each as `SIGINT`, so that
+/// the command ends with 130.
 #[cfg(not(unix))]
 fn install_interrupt_handler() {
     if let Err(error) = ctrlc::set_handler(|| handle_interrupt(SIGINT)) {

@@ -66,6 +66,7 @@ impl Classify for OpenError {
             | Self::NotUtf8 { .. }
             | Self::OtherOwner { .. }
             | Self::AtVolumeRoot { .. }
+            | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
             | Self::UnsupportedFormat { .. }
