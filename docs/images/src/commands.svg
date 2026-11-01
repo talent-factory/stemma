@@ -8,8 +8,8 @@
     <text x="380" y="43" fill="#2B6CB0">verzeichnis</text>
     <text x="480" y="28" fill="#B45309">Working-Copy-</text>
     <text x="480" y="43" fill="#B45309">Commit</text>
-    <text x="580" y="28" fill="#2F7D32">Branch und</text>
-    <text x="580" y="43" fill="#2F7D32">HEAD</text>
+    <text x="580" y="28" fill="#2F7D32">Branch, HEAD</text>
+    <text x="580" y="43" fill="#2F7D32">und Tags</text>
     <text x="680" y="28" fill="#6B46C1">Operation</text>
     <text x="680" y="43" fill="#6B46C1">Log</text>
   </g>
@@ -125,8 +125,8 @@
   <text x="580" y="485" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <text x="680" y="485" font-size="14" fill="#64748B" text-anchor="middle">–</text>
 
-  <!-- tag: reads HEAD for the default commit; creating a tag writes the tag pointer and an entry
-       in the log, listing writes nothing; no snapshot, no change of the working copy -->
+  <!-- tag: creating a tag writes the tag pointer and an entry in the log (HEAD is read only when
+       no commit is given), listing writes nothing; no snapshot, no change of the working copy -->
   <text x="380" y="529" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <text x="480" y="529" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <circle cx="580" cy="524" r="9" fill="#2F7D32"/>
