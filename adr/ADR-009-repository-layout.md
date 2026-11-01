@@ -171,10 +171,21 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       weaker than the handle: a swap to another directory and back between the looks is not
       seen.
       Windows checks the owner on the path, between the look and the call.
-- [ ] The stores of a repository work by path. The handle ends once `format` is read, so a
-      `.stemma` that is swapped after the open is used without a check, in the search above
-      the start as at it. Closing it needs the stores to work relative to a held directory
-      handle (`openat`); that is a change to every store (STEMMA-193).
+- [x] The stores of a repository work by path, and stay so (STEMMA-193, decided: not worth the
+      change now). The handle ends once `format` is read, so a `.stemma` that is swapped after
+      the open is used without a check, in the search above the start as at it. Closing it needs
+      the stores to work relative to a held directory handle (`openat`), in the object store,
+      the references, and the operation log, with their locks, renames, flushes, the purge, and
+      the injected failures (about 17,000 lines with their tests), and a second implementation
+      for Windows, where `std` has no call relative to a handle.
+      The gain is small. The owner is checked on the handle before anything is read, so a
+      `.stemma` of another user is refused; what stays is a swap during the run of one command.
+      It needs write access to the directory that holds `.stemma`, and whoever has that access
+      can already change the working tree that the command saves, and can replace `.stemma`
+      before the next command, where the check refuses it again if the new one is not the
+      user's own. A replacement owned by the user is no attack. Revisit the decision if a
+      repository is served to several users on one machine (phase 5, the list of trusted
+      directories below) or if a command runs for long enough that the window matters.
 - [ ] A list of trusted directories, as Git's `safe.directory`, for a repository that several
       users share on one machine; it needs the configuration file below.
 - [x] On Windows the owner of a `.stemma` is checked by its SID, so places that all users may
