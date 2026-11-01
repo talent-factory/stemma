@@ -2476,7 +2476,7 @@ mod tests {
     #[test]
     fn init_in_a_directory_that_cannot_be_written_reports_the_cause() {
         let scratch = TempDir::new();
-        let parent = scratch.path().join("readonly");
+        let parent = scratch.path().join("sealed");
         fs::create_dir(&parent).unwrap();
         let denied = fault::deny_writes_in(&parent);
         let error = init(&parent).unwrap_err();
@@ -2698,6 +2698,9 @@ mod tests {
         assert!(message.contains("could not be removed either"), "{message}");
         assert!(message.contains(staging.to_str().unwrap()), "{message}");
         assert!(error.io_error().is_some());
+        // The removal stopped at the denied name: what came before it went, the rest stays.
+        assert!(!staging.join("format").exists());
+        assert!(stuck.join("file").exists());
     }
 
     #[test]
@@ -4548,8 +4551,8 @@ mod tests {
 
     #[test]
     fn a_move_that_fails_after_the_entry_leaves_the_entry_and_says_so() {
-        // The entry comes first: with the directory of the branches read-only, the entry is
-        // written and the move fails. If the order were the other one, nothing would be written.
+        // The entry comes first: with the directory of the branches refusing new names, the entry
+        // is written and the move fails. If the order were the other one, nothing would be written.
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");

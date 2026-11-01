@@ -2032,7 +2032,8 @@ mod tests {
         let dir = TempDir::new();
         let directory = dir.path().join("d");
         fs::create_dir(&directory).unwrap();
-        // Creating and removing a name fail alike, also for a file that is not there.
+        // The creation is refused before the file is listed, so no removal follows: the error of
+        // the creation is the one reported, and nothing is left to clean up.
         let error = {
             let _denied = fault::deny_writes_in(&directory);
             match TempFile::create(&directory, "d/new", FileMode::File, b"new") {
@@ -2045,6 +2046,10 @@ mod tests {
             error.io_error().map(io::Error::kind),
             Some(io::ErrorKind::PermissionDenied)
         );
+        assert!(!pending_temp_files()
+            .iter()
+            .any(|pending| pending.starts_with(&directory)));
+        assert!(!directory.join("new").exists());
     }
 
     #[test]
