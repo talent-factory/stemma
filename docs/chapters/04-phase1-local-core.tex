@@ -2594,7 +2594,9 @@ Offen für spätere Phasen bleiben diese Punkte:
 gemessen an einer echten Sitzung eines Agenten (ADR-007, ADR-011);
 bis dahin wächst der Speicher nur.
 \item Die Prüfung des Besitzers von \type{.stemma} ist unter Windows nicht frei von Wettläufen,
-und unter Unix arbeiten die Speicher nach dem Öffnen wieder über den Pfad (STEMMA-193).
+und unter Unix arbeiten die Speicher nach dem Öffnen wieder über den Pfad.
+Das bleibt so, denn die Umstellung auf ein gehaltenes Handle wäre gross und der Gewinn klein
+(STEMMA-193, ADR-009).
 Dazu ersetzt \type{init} unter Unix ein leeres \type{.stemma},
 das ein anderer Prozess im falschen Augenblick anlegt (ADR-009).
 \item Die Regel, dass jeder Akteur in einer eigenen Arbeitskopie arbeitet,
