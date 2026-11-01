@@ -60,6 +60,9 @@ test:
 [group('Quality')]
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
+    # Without the dev-dependency that turns on `fault-injection`, as `cargo install` builds them.
+    cargo clippy -p stemma-core --all-targets -- -D warnings
+    cargo clippy -p stemma-cli -- -D warnings
 
 # Format code (rustfmt).
 [group('Quality')]
@@ -177,7 +180,8 @@ norma:
     git ls-files -z '*.rs' ':!:**/tests/**' | xargs -0 -r norma validate --language rust --db target/norma.db
 
 # Check before a release that the tag, `Cargo.toml`, and the program name the same version (the
-# book takes it from `Cargo.toml` as well). Call it with the tag: `just release-check v0.2.0`.
+# book takes it from `Cargo.toml` as well), and that the program has no fault injection. Call it
+# with the tag: `just release-check v0.2.0`.
 [group('Release')]
 release-check tag:
     #!/usr/bin/env bash
@@ -191,13 +195,20 @@ release-check tag:
         echo "stemma --version prints '$shown', expected 'stemma {{version}}'" >&2
         exit 1
     }
-    # The release has no fault injection: a rule that does not parse would stop a program that has it.
+    # `cargo run` builds the program without the feature `fault-injection`, so it must ignore
+    # `STEMMA_FAULT`; with the feature, the value `bogus` makes its first file system call panic
+    # (tests/status.rs proves that a build with the feature does).
+    manifest="$PWD/Cargo.toml"
     scratch=$(mktemp -d)
-    (cd "$scratch" && STEMMA_FAULT=bogus "$OLDPWD/target/debug/stemma" init --actor "human release" > /dev/null) || {
-        echo "stemma reads STEMMA_FAULT: the fault injection is part of the build" >&2
+    if ! output=$(cd "$scratch" && STEMMA_FAULT=bogus cargo run --quiet --manifest-path "$manifest" \
+        -p stemma-cli -- init --actor "human release" 2>&1); then
         rm -rf "$scratch"
+        case "$output" in
+            *STEMMA_FAULT:*) echo "the program reads STEMMA_FAULT: it has fault injection" >&2 ;;
+            *) echo "stemma init failed with STEMMA_FAULT=bogus: $output" >&2 ;;
+        esac
         exit 1
-    }
+    fi
     rm -rf "$scratch"
     echo "ok: {{tag}} = Cargo.toml = $shown"
 

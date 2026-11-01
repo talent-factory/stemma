@@ -554,8 +554,19 @@ fn a_rule_of_the_environment_that_does_not_parse_stops_the_command() {
         command.env("STEMMA_FAULT", "bogus");
     });
 
-    assert_ne!(result.code, 0, "{}", result.stdout);
+    assert_eq!(result.code, 101, "{}", result.stdout);
     assert!(result.stderr.contains("STEMMA_FAULT"), "{}", result.stderr);
+}
+
+#[test]
+fn a_command_that_touches_no_file_does_not_see_a_rule_that_does_not_parse() {
+    let dir = repository();
+
+    let result = stemma(dir.path(), &["--version"], |command| {
+        command.env("STEMMA_FAULT", "bogus");
+    });
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
 }
 
 #[test]
