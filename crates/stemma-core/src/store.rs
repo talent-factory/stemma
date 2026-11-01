@@ -1422,7 +1422,7 @@ fn flush_directory_of_platform(dir: &Path) -> io::Result<()> {
     const FILE_APPEND_DATA: u32 = 0x0004;
     const FILE_WRITE_DATA: u32 = 0x0002;
     let open = |access| {
-        OpenOptions::new()
+        std::fs::OpenOptions::new()
             .access_mode(access)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(dir)
