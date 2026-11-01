@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 
-use common::{a_temporary_file_is_being_written, ok, prepare_restore, temporary_files, Dir, ACTOR};
+use common::{ok, prepare_restore, restore_files, temporary_files, Dir, ACTOR};
 
 /// An unstarted `stemma` in `dir` without `STEMMA_ACTOR` and with its output discarded. Unlike
 /// `common::stemma`, which runs the process to its end, it returns the `Command`, so that the test
@@ -160,15 +160,15 @@ fn a_command_that_is_killed_leaves_a_lock_that_the_next_command_takes_over() {
 /// not interrupt the restore there, which the caller tries again.
 fn interrupt_a_restore(signal: Signal, code: i32) -> Result<(), &'static str> {
     let dir = Dir::new();
-    let (name, removal) = prepare_restore(dir.path());
+    let removal = prepare_restore(dir.path());
     let lock = dir.path().join(".stemma").join("refs.lock");
     let mut child = stemma(dir.path(), &["op", "restore", &removal, "--actor", ACTOR])
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // The signal is sent once a temporary file with content is seen, so it finds one to remove.
+    // The signal is sent once a temporary file is seen, so it likely finds one to remove.
     let start = Instant::now();
-    while !a_temporary_file_is_being_written(dir.path()) {
+    while temporary_files(dir.path()).is_empty() {
         if child.try_wait().unwrap().is_some() {
             return Err("the restore ended before a temporary file was seen");
         }
@@ -183,9 +183,13 @@ fn interrupt_a_restore(signal: Signal, code: i32) -> Result<(), &'static str> {
     let process = Pid::from_raw(i32::try_from(child.id()).unwrap());
     signal::kill(process, signal).unwrap();
     let output = child.wait_with_output().unwrap();
-    // The file is there once the restore has renamed its temporary file onto it.
-    if output.status.success() || dir.path().join(&name).exists() {
-        return Err("the restore had written the file before the signal");
+    // A file is there once the restore has renamed its temporary file onto it.
+    let restored = restore_files()
+        .iter()
+        .filter(|name| dir.path().join(name).exists())
+        .count();
+    if output.status.success() || restored == restore_files().len() {
+        return Err("the restore had written every file before the signal");
     }
     assert_eq!(
         output.status.code(),
@@ -193,7 +197,7 @@ fn interrupt_a_restore(signal: Signal, code: i32) -> Result<(), &'static str> {
         "{signal:?} {:?}",
         output.status
     );
-    assert_eq!(temporary_files(dir.path()), Vec::<(String, u64)>::new());
+    assert_eq!(temporary_files(dir.path()), Vec::<String>::new());
     assert!(!lock.exists(), "the interrupted restore removed its lock");
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),

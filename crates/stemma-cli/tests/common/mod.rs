@@ -186,8 +186,8 @@ pub fn numbers(dir: &Path) -> Vec<u64> {
         .collect()
 }
 
-/// The temporary files of a checkout below `dir`, outside `.stemma`, with their sizes.
-pub fn temporary_files(dir: &Path) -> Vec<(String, u64)> {
+/// The temporary files of a checkout below `dir`, outside `.stemma`.
+pub fn temporary_files(dir: &Path) -> Vec<String> {
     let mut found = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -206,41 +206,47 @@ pub fn temporary_files(dir: &Path) -> Vec<(String, u64)> {
                     pending.push(entry.path());
                 }
             } else if name.starts_with(".stemma-checkout-") {
-                let size = entry.metadata().map_or(0, |metadata| metadata.len());
-                found.push((entry.path().display().to_string(), size));
+                found.push(entry.path().display().to_string());
             }
         }
     }
     found
 }
 
-/// Whether a restore is writing a temporary file with content in it. Only then does an interrupt
-/// find a file that it has to remove, and not a file that is renamed already or not yet written.
-pub fn a_temporary_file_is_being_written(dir: &Path) -> bool {
-    temporary_files(dir).iter().any(|(_, size)| *size > 0)
+/// The number and the size of the files that [`prepare_restore`] writes. Each file spends a while
+/// in its temporary file, and after an interrupt the restore may still finish the file it is on
+/// before the handler ends the process; with several files, some are left to restore then, which
+/// tells an interrupt in the middle from a restore that was done already.
+const RESTORE_FILES: usize = 20;
+const RESTORE_FILE_SIZE: usize = 2 * 1024 * 1024;
+
+/// The names of the files that [`prepare_restore`] writes.
+pub fn restore_files() -> Vec<String> {
+    (0..RESTORE_FILES)
+        .map(|number| format!("large{number}.bin"))
+        .collect()
 }
 
-/// The size of the file that [`prepare_restore`] writes. One large file keeps the restore in the
-/// temporary file for a long time, so that an interrupt finds it there.
-const RESTORE_FILE_SIZE: usize = 16 * 1024 * 1024;
-
-/// A repository in `dir` whose last snapshot removed a large file that an earlier snapshot held.
-/// Returns the name of the file and the number of the snapshot that removed it, which
-/// `op restore` brings back.
-pub fn prepare_restore(dir: &Path) -> (String, String) {
+/// A repository in `dir` whose last snapshot removed the files of [`restore_files`] that an
+/// earlier snapshot held. Returns the number of the snapshot that removed them, which `op restore`
+/// brings back.
+pub fn prepare_restore(dir: &Path) -> String {
     ok(dir, &["init", "--actor", ACTOR]);
-    let name = "large.bin".to_owned();
-    // Bytes that differ, so that the file is no run of one value.
-    let content: Vec<u8> = (0..RESTORE_FILE_SIZE)
-        .map(|index| (index % 251) as u8)
-        .collect();
-    fs::write(dir.join(&name), content).unwrap();
+    let files = restore_files();
+    for (number, name) in files.iter().enumerate() {
+        // Bytes that differ from file to file, so that no file is a run of one value.
+        let content: Vec<u8> = (0..RESTORE_FILE_SIZE)
+            .map(|index| ((index + number) % 251) as u8)
+            .collect();
+        fs::write(dir.join(name), content).unwrap();
+    }
     ok(dir, &["track", "--actor", ACTOR, "."]);
-    ok(dir, &["commit", "-m", "file", "--actor", ACTOR]);
-    fs::remove_file(dir.join(&name)).unwrap();
+    ok(dir, &["commit", "-m", "files", "--actor", ACTOR]);
+    for name in &files {
+        fs::remove_file(dir.join(name)).unwrap();
+    }
     let before = numbers(dir).len();
     ok(dir, &["commit", "-m", "none", "--actor", ACTOR]);
-    // The snapshot that saw the file removed.
-    let removal = numbers(dir)[before].to_string();
-    (name, removal)
+    // The snapshot that saw the files removed.
+    numbers(dir)[before].to_string()
 }

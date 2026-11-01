@@ -19,7 +19,7 @@ use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{a_temporary_file_is_being_written, ok, prepare_restore, temporary_files, Dir, ACTOR};
+use common::{ok, prepare_restore, restore_files, temporary_files, Dir, ACTOR};
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CTRL_BREAK_EVENT: u32 = 1;
@@ -170,15 +170,15 @@ fn a_break_during_a_restore_removes_the_temporary_file_and_the_lock() {
 /// not interrupt the restore there, which the caller tries again.
 fn interrupt_a_restore() -> Result<(), &'static str> {
     let dir = Dir::new();
-    let (name, removal) = prepare_restore(dir.path());
+    let removal = prepare_restore(dir.path());
     let lock = dir.path().join(".stemma").join("refs.lock");
     let mut child = stemma(dir.path(), &["op", "restore", &removal, "--actor", ACTOR])
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // The event is sent once a temporary file with content is seen, so it finds one to remove.
+    // The event is sent once a temporary file is seen, so it likely finds one to remove.
     let start = Instant::now();
-    while !a_temporary_file_is_being_written(dir.path()) {
+    while temporary_files(dir.path()).is_empty() {
         if child.try_wait().unwrap().is_some() {
             return Err("the restore ended before a temporary file was seen");
         }
@@ -190,12 +190,16 @@ fn interrupt_a_restore() -> Result<(), &'static str> {
         std::thread::sleep(Duration::from_millis(1));
     }
     let (status, stderr) = break_and_wait(&mut child)?;
-    // The file is there once the restore has renamed its temporary file onto it.
-    if dir.path().join(&name).exists() {
-        return Err("the restore had written the file before the event");
+    // A file is there once the restore has renamed its temporary file onto it.
+    let restored = restore_files()
+        .iter()
+        .filter(|name| dir.path().join(name).exists())
+        .count();
+    if restored == restore_files().len() {
+        return Err("the restore had written every file before the event");
     }
     assert_eq!(status.code(), Some(130), "{status:?}, stderr: {stderr:?}");
-    assert_eq!(temporary_files(dir.path()), Vec::<(String, u64)>::new());
+    assert_eq!(temporary_files(dir.path()), Vec::<String>::new());
     assert!(!lock.exists(), "the interrupted restore removed its lock");
     assert_eq!(stderr, "", "nothing stayed, so nothing named");
     // The repository is usable: the next command runs and lists nothing left over.

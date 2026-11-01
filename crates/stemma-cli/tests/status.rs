@@ -673,6 +673,8 @@ fn json_of_a_clean_working_copy() {
     );
 }
 
+// A quote in a file name is valid on Unix only; Windows refuses to create the file.
+#[cfg(unix)]
 #[test]
 fn json_lists_changes_and_untracked_files_with_plain_paths() {
     let dir = repository();
