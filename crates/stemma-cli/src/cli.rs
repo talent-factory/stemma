@@ -1701,7 +1701,8 @@ fn show_log(args: LogArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// One commit for a person: the mark and the ID, then the change, the parents (`-` for none), the
 /// author, and the time. A message follows after a blank line, every line indented by four spaces.
 /// A blank line ends the block, so a commit with an empty message, such as the working-copy commit
-/// after `init`, has the header and one blank line.
+/// after `init`, has the header and one blank line. A `commit2` (an open conflict) is listed like a
+/// commit; marking it is left to the conflict commands of phase 3 (STEMMA-19).
 fn log_text(id: CommitId, commit: &AnyCommit, current: bool) -> String {
     let parents = commit
         .parents()

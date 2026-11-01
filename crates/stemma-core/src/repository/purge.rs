@@ -1,8 +1,9 @@
 //! The plan of a purge: removing a secret from the history and the operation log (ADR-014).
 //!
 //! A purge takes the ID of a blob. Every commit whose tree holds the blob, at any depth, is
-//! rewritten with a tree without it, and every commit after it with the new parents; the change ID
-//! stays. The entries of the log that name a rewritten commit are replaced by stubs. The objects
+//! rewritten with a tree without it (for a `commit2`, every tree of its list, in the form that its
+//! sum has afterwards), and every commit after it with the new parents; the change ID stays.
+//! The entries of the log that name a rewritten commit are replaced by stubs. The objects
 //! that the rewrite replaced are deleted, and so are leftovers in the store that hold the blob or
 //! come after a commit that does. The plan fails if anything that is kept still reaches them.
 //!
@@ -344,7 +345,8 @@ struct Planner<'a> {
     /// Every commit that was looked at, with the ID of its new version (the same ID if it does
     /// not change).
     commits: HashMap<CommitId, CommitId>,
-    /// The tree and the parents of every commit, old and new.
+    /// The trees (one for a `commit`, the list for a `commit2`) and the parents of every commit,
+    /// old and new.
     commit_links: HashMap<CommitId, (Vec<TreeId>, Vec<CommitId>)>,
     /// The new commits, by their IDs.
     new_commits: HashMap<CommitId, AnyCommit>,
@@ -418,7 +420,7 @@ impl<'a> Planner<'a> {
                 continue;
             }
             let terms = Merge::try_from_terms(terms).expect("a rewrite keeps the number of trees");
-            // The form of the result follows from the sum: two trees that the rewrite makes equal
+            // The form of the result follows from the sum: a base and a side that the rewrite makes equal
             // cancel, so that a conflict can end up as a `commit`.
             let rewritten = commit
                 .reparent(&terms, parents)

@@ -581,6 +581,19 @@ mod tests {
     }
 
     #[test]
+    fn a_conflict_that_a_command_cannot_read_as_one_tree_is_no_damage() {
+        use crate::object::{Blob, CommitId};
+        let id = CommitId::new(Blob::new("conflict").id().object_id());
+        // A stored `commit2` is valid, so the repository is not told to be damaged.
+        assert_eq!(SnapshotError::Conflicted { id }.kind(), FailureKind::Other);
+        assert_eq!(DiffError::Conflicted { id }.kind(), FailureKind::Other);
+        assert_eq!(
+            StatusError::Snapshot(SnapshotError::Conflicted { id }).kind(),
+            FailureKind::Other
+        );
+    }
+
+    #[test]
     fn an_object_that_the_index_names_and_the_store_lacks_is_damage() {
         let missing: WriteTreeError = WriteTreeError::Verify(VerifyError::Missing {
             at: crate::verify::EntryPath("a.txt".to_owned()),

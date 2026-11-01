@@ -343,7 +343,7 @@ impl AnyCommit {
     ///
     /// # Errors
     ///
-    /// Returns the error of [`Commit::parse`] or [`Commit2::parse`].
+    /// Returns the [`CommitParseError`] of [`Commit::parse`] or [`Commit2::parse`].
     pub fn parse(kind: Kind, body: &[u8]) -> Option<Result<Self, CommitParseError>> {
         match kind {
             Kind::Commit => Some(Commit::parse(body).map(Self::Commit)),

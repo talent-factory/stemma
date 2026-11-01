@@ -166,7 +166,8 @@ impl Error for StoreError {
     }
 }
 
-/// Why [`ObjectStore::get_tree`] or [`ObjectStore::get_commit`] fails.
+/// Why [`ObjectStore::get_tree`], [`ObjectStore::get_commit`], or
+/// [`ObjectStore::get_any_commit`] fails.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ReadError {
@@ -182,7 +183,8 @@ pub enum ReadError {
         /// What is wrong with the body.
         source: TreeParseError,
     },
-    /// The object is a commit and its content is intact, but its body is not in canonical form.
+    /// The object is a commit of either kind and its content is intact, but its body is not in
+    /// canonical form.
     /// The writers of this crate always produce canonical bodies.
     Commit {
         /// The ID the commit was requested by.
@@ -450,8 +452,9 @@ pub trait ObjectStore: sealed::Sealed {
         Ok(Some(tree))
     }
 
-    /// Like [`get_tree`](Self::get_tree), for a commit. The IDs of the tree and of the parents in
-    /// the result are claims; see [`Commit::verify`].
+    /// Like [`get_tree`](Self::get_tree), for a `commit` of one tree. A `commit2` is a mismatch
+    /// here; [`get_any_commit`](Self::get_any_commit) reads either kind. The IDs of the tree and
+    /// of the parents in the result are claims; see [`Commit::verify`].
     ///
     /// # Errors
     ///
