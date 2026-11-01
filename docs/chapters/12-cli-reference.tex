@@ -431,6 +431,12 @@ Repositories, auch wenn sie in einem Unterverzeichnis laufen, und maskiert wie b
 soweit sich das Argument umwandeln lässt: \type{a/../b} in \type{src} erscheint als
 \type{src/a/../b}. Nur einen absoluten oder leeren Pfad und das Verzeichnis von \type{-C}
 nennt sie so, wie sie übergeben wurden.
+Unter Windows trennt auch der Backslash die Namen eines Pfades, den eine Person übergibt:
+\type{src\a.txt} ist \type{src/a.txt}.
+Unter Unix ist der Backslash ein Zeichen des Namens und bleibt es.
+Eine Datei, die eine Junction oder ein symbolischer Link unter Windows vertritt,
+liest \type{track} nicht durch: Sie erscheint als Fehler, und der Inhalt, auf den sie zeigt,
+wird nicht gespeichert.
 
 \section{init}
 

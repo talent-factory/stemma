@@ -54,6 +54,15 @@ pub mod verify;
 
 use oplog::OperationName;
 
+/// Whether the description is of a reparse point on Windows: a symbolic link, a junction, or
+/// another entry that names a path. Elsewhere there are none.
+#[cfg(windows)]
+pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
 pub use actor::{Actor, ActorError, ActorField, ActorMalformed, ActorParseError, ActorRef};
 pub use allowed::Allowed;
 

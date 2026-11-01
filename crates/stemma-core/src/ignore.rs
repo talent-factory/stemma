@@ -218,7 +218,7 @@ impl IgnoreRules {
                 FileProblem::TooLarge,
             )));
         }
-        let file = match File::open(&path) {
+        let file = match open_without_following(&path) {
             Ok(file) => file,
             // Removed since the inspection: a rule that is gone is not "no rules".
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -338,14 +338,38 @@ fn describe(metadata: &Metadata) -> &'static str {
     }
 }
 
-/// Whether two descriptions are of the same file. Where the platform gives no identity, they are.
+/// Opens the exclusion file. On Windows a reparse point is opened itself and not what it names,
+/// and [`same_file`] refuses it.
+fn open_without_following(path: &Path) -> io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        File::open(path)
+    }
+}
+
+/// Whether two descriptions are of the same file. Where the platform gives no identity, they are,
+/// except on Windows, where a reparse point in the place of the file is another file.
 fn same_file(first: &Metadata, second: &Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         first.dev() == second.dev() && first.ino() == second.ino()
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let _ = first;
+        !crate::is_reparse_point(second)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (first, second);
         true

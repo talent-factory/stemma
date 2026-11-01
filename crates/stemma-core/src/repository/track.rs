@@ -110,13 +110,25 @@ impl Repository {
     }
 }
 
+/// The path with `/` for every `\` if `windows` says that `\` separates names. Elsewhere a
+/// backslash is a character of a name and stays.
+fn with_slashes(path: &str, windows: bool) -> std::borrow::Cow<'_, str> {
+    if windows && path.contains('\\') {
+        path.replace('\\', "/").into()
+    } else {
+        path.into()
+    }
+}
+
 /// Turns a path as a person types it into the form of [`Repository::track`]: `./a.txt` and `dir/`
 /// are `a.txt` and `dir`, an empty part (`a//b`) and a part `.` (`a/./b`) are dropped, and a
 /// path that is only dots and slashes with at least one `.` part (`.`, `./`) is `.`. Nothing
 /// else changes: `..` stays, so does an absolute path, and an empty argument or one of slashes
 /// only (`""`, `//`) stays as it is, so that the core refuses it. A script with an empty
-/// variable must not track the whole directory.
+/// variable must not track the whole directory. On Windows, where `\` separates names as `/`
+/// does, every `\` is read as `/` first.
 pub fn normalize_path(path: &str) -> String {
+    let path = &*with_slashes(path, cfg!(windows));
     if path.starts_with('/') {
         return path.to_owned();
     }
@@ -141,8 +153,9 @@ pub fn normalize_path(path: &str) -> String {
 /// does not lead where the name says. An absolute path stays as it is, and so
 /// does an empty argument or one of slashes only, as in [`normalize_path`], so that a script with
 /// an empty variable does not track the whole subdirectory. With an empty `subdirectory`, this is
-/// [`normalize_path`].
+/// [`normalize_path`]. On Windows, every `\` in `path` is read as `/` first.
 pub fn normalize_path_in(subdirectory: &str, path: &str) -> String {
+    let path = &*with_slashes(path, cfg!(windows));
     if path.starts_with('/') || path.split('/').all(str::is_empty) {
         return path.to_owned();
     }
@@ -850,6 +863,21 @@ mod tests {
             not_refused.is_empty(),
             "not refused as invalid: {not_refused:?}"
         );
+    }
+
+    #[test]
+    fn backslashes_separate_names_only_where_the_platform_says_so() {
+        assert_eq!(with_slashes("sub\\a.txt", true), "sub/a.txt");
+        assert_eq!(with_slashes("..\\x\\", true), "../x/");
+        assert_eq!(with_slashes("sub\\a.txt", false), "sub\\a.txt");
+        assert_eq!(with_slashes("a/b", true), "a/b");
+        #[cfg(windows)]
+        {
+            assert_eq!(normalize_path(".\\sub\\a.txt"), "sub/a.txt");
+            assert_eq!(normalize_path_in("src", "..\\a.txt"), "a.txt");
+        }
+        #[cfg(unix)]
+        assert_eq!(normalize_path("sub\\a.txt"), "sub\\a.txt");
     }
 
     #[test]

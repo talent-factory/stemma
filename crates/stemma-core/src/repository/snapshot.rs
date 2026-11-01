@@ -414,10 +414,12 @@ fn is_link_target(content: &[u8]) -> bool {
 /// Reads the file that `lookup` saw, or returns `None` if it is gone. `fs::read` follows links, so
 /// a process that swaps the file or a directory above it for a link between the lookup and the read
 /// could lead it out of the working directory; the file that was opened must be the one that was
-/// looked at, which is checked by its device and inode where the file system has them.
+/// looked at, which is checked by its device and inode where the file system has them. On Windows
+/// the file is opened without following a reparse point, and one that has taken its place is
+/// refused, as a link on Unix is by the inode.
 fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotError> {
     use std::io::Read;
-    let mut file = match fs::File::open(path) {
+    let mut file = match open_without_following(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(SnapshotError::io("read the file", path, source)),
@@ -436,12 +438,45 @@ fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotEr
             ));
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let opened = file
+            .metadata()
+            .map_err(|source| SnapshotError::io("read the file", path, source))?;
+        if crate::is_reparse_point(&opened) || !opened.is_file() {
+            return Err(SnapshotError::io(
+                "read the file",
+                path,
+                io::Error::other("the file was replaced while it was read"),
+            ));
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = seen;
+    #[cfg(windows)]
     let _ = seen;
     let mut content = Vec::new();
     file.read_to_end(&mut content)
         .map_err(|source| SnapshotError::io("read the file", path, source))?;
     Ok(Some(content))
+}
+
+/// Opens a file for reading. On Windows a reparse point (a symbolic link or a junction) is opened
+/// itself and not what it names, so that [`read_file`] can see it; elsewhere this is `File::open`.
+fn open_without_following(path: &Path) -> io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)
+    }
 }
 
 /// Stores the content of a tracked file as a blob, or returns `None` if the file is gone or a
