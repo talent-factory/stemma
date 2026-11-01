@@ -13,6 +13,11 @@ getrandom = { version = "0.4.3", features = ["std"] }
 unicode-general-category = "=1.1.0"
 unicode-normalization = "0.1.26"
 
+# Lets a process read injected file system failures from the variable `STEMMA_FAULT` and exports
+# the guards of `src/fault.rs`, for the tests of other crates. Never part of a release build.
+[features]
+fault-injection = []
+
 # The effective user of the process, for the owner check of `Repository::discover` (ADR-009).
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.5", default-features = false, features = ["std", "process", "fs"] }

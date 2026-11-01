@@ -20,13 +20,14 @@ use std::collections::hash_map::RandomState;
 use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::fault;
 use crate::object::{
     hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
     TreeParseError, METADATA_DIR, PREFIX,
@@ -515,7 +516,7 @@ impl FsObjectStore {
         self.require_root()?;
         let algorithm = self.root.join("objects").join(PREFIX.trim_end_matches(':'));
         let mut ids = Vec::new();
-        let fan_outs = match fs::read_dir(&algorithm) {
+        let fan_outs = match fault::read_dir(&algorithm) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ids),
             Err(error) => return Err(io_error("list the objects in", &algorithm)(error)),
@@ -538,7 +539,7 @@ impl FsObjectStore {
                 continue;
             }
             let prefix = fan_out.file_name();
-            for object in fs::read_dir(&path).map_err(io_error("list the objects in", &path))? {
+            for object in fault::read_dir(&path).map_err(io_error("list the objects in", &path))? {
                 let object = object.map_err(io_error("list the objects in", &path))?;
                 let name = object.file_name();
                 let (Some(prefix), Some(rest)) = (prefix.to_str(), name.to_str()) else {
@@ -594,7 +595,7 @@ impl FsObjectStore {
             return Err(corrupt(CorruptReason::NotARegularFile));
         }
         let mut head = Vec::new();
-        match File::open(&path) {
+        match fault::open(&path) {
             Ok(file) => file
                 .take(MAX_HEADER)
                 .read_to_end(&mut head)
@@ -678,7 +679,7 @@ impl FsObjectStore {
             fs::set_permissions(&path, permissions)
                 .map_err(io_error("make the object file writable", &path))?;
         }
-        match fs::remove_file(&path) {
+        match fault::remove_file(&path) {
             Ok(()) => {}
             // Another remover was faster; it may not have flushed yet.
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -829,10 +830,10 @@ impl FsObjectStore {
             .map_err(io_error("flush the temporary file", &temp.path))?;
         drop(file);
 
-        let mut renamed = fs::rename(&temp.path, &path);
+        let mut renamed = fault::rename(&temp.path, &path);
         if renamed.is_err() && cfg!(windows) && self.remove_damaged(id, &path) {
             // The error of the first rename is the one to report, so a failed retry drops its own.
-            if fs::rename(&temp.path, &path).is_ok() {
+            if fault::rename(&temp.path, &path).is_ok() {
                 renamed = Ok(());
             }
         }
@@ -906,7 +907,7 @@ impl FsObjectStore {
         if !metadata.is_file() {
             return Err(corrupt(CorruptReason::NotARegularFile));
         }
-        let mut bytes = match fs::read(path) {
+        let mut bytes = match fault::read(path) {
             Ok(bytes) => bytes,
             // The object was removed after the check above.
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1067,9 +1068,7 @@ impl Batch<'_> {
         };
         for (id, temp) in self.pending.into_inner() {
             // The file is opened again to flush it, so that a large batch keeps no file open.
-            let file = OpenOptions::new()
-                .write(true)
-                .open(&temp.path)
+            let file = fault::open_for_write(&temp.path)
                 .map_err(io_error("open the temporary file", &temp.path))?;
             directories.insert(self.store.place(&id, file, temp)?);
         }
@@ -1140,7 +1139,7 @@ impl Drop for TempFile {
         if self.armed {
             // Best effort: a file that stays behind is harmless, because temporary names are
             // never reused, and the next writer that takes the lock removes it (ADR-011).
-            let _ = fs::remove_file(&self.path);
+            let _ = fault::remove_file(&self.path);
         }
     }
 }
@@ -1167,7 +1166,7 @@ pub(crate) fn create_temp(
     let mut last = dir.to_path_buf();
     for _ in 0..TEMP_ATTEMPTS {
         let path = dir.join(next_name());
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        match fault::create_new(&path) {
             Ok(file) => return Ok((file, TempFile { path, armed: true })),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = path,
             Err(error) => return Err(io_error(operation, &path)(error)),
@@ -1198,7 +1197,7 @@ pub(crate) fn create_temp(
 /// `tmp/`, which no writer makes, stays. A directory of the working copy whose name only starts
 /// like the one of `init` is content and stays.
 pub(crate) fn remove_scratch(root: &Path) {
-    if let Ok(entries) = fs::read_dir(root.join("tmp")) {
+    if let Ok(entries) = fault::read_dir(&root.join("tmp")) {
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|kind| !kind.is_dir()) {
                 remove_scratch_file(&entry.path());
@@ -1214,7 +1213,7 @@ pub(crate) fn remove_scratch(root: &Path) {
     for entry in entries.flatten() {
         let named = entry.file_name().to_str().is_some_and(is_init_staging_name);
         if named && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            let _ = fs::remove_dir_all(entry.path());
+            let _ = fault::remove_dir_all(&entry.path());
         }
     }
 }
@@ -1236,7 +1235,7 @@ fn remove_scratch_file(path: &Path) {
             }
         }
     }
-    let _ = fs::remove_file(path);
+    let _ = fault::remove_file(path);
 }
 
 /// The names in `<root>/tmp/` that are not directories, sorted: what [`remove_scratch`] could not
@@ -1244,7 +1243,7 @@ fn remove_scratch_file(path: &Path) {
 /// one that cannot be read is reported as itself, so the caller does not take it for empty.
 pub(crate) fn scratch_left(root: &Path) -> Vec<PathBuf> {
     let tmp = root.join("tmp");
-    let entries = match fs::read_dir(&tmp) {
+    let entries = match fault::read_dir(&tmp) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Err(_) => return vec![tmp],
@@ -1324,7 +1323,7 @@ pub(crate) fn create_dirs_synced(root: &Path, dir: &Path) -> Result<(), StoreErr
         }
     }
     for created in missing.iter().rev() {
-        match fs::create_dir(created) {
+        match fault::create_dir(created) {
             Ok(()) => {}
             // Another writer was faster. Whether it is a directory shows when it is used.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1385,10 +1384,12 @@ fn already_removed(fan_out: &Path) -> Result<bool, StoreError> {
     Ok(false)
 }
 
-/// Flushes a directory with the error of the file system as it is (see [`sync_directory`]). In a
-/// test, a failure can be injected for one directory (`fail_flush_of`), and the flushes are counted
-/// (`flush_count`).
+/// Flushes a directory with the error of the file system as it is (see [`sync_directory`]). The
+/// fault injection can make it fail (`deny_reads_of`), because a flush opens the directory as a
+/// read does; that failure comes before the count. In a test, a failure can also be injected for
+/// one directory (`fail_flush_of`), and the flushes that get that far are counted (`flush_count`).
 pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
+    fault::check_read(dir)?;
     #[cfg(test)]
     {
         FLUSHES.with(|flushes| flushes.borrow_mut().push(dir.to_path_buf()));
@@ -1603,23 +1604,16 @@ mod tests {
         assert!(tmp.join("directory").is_dir());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_scratch_directory_that_cannot_be_read_is_named_and_not_taken_for_empty() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let tmp = dir.path().join("tmp");
         fs::create_dir(&tmp).unwrap();
         fs::write(tmp.join("a"), b"").unwrap();
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o000)).unwrap();
-        let readable = fs::read_dir(&tmp).is_ok();
+        let denied = fault::deny_reads_of(&tmp);
         let left = scratch_left(dir.path());
         remove_scratch(dir.path());
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).unwrap();
-        if readable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        drop(denied);
         assert_eq!(left, std::slice::from_ref(&tmp));
         assert!(tmp.join("a").exists(), "what cannot be reached stays");
     }
@@ -1984,6 +1978,30 @@ mod tests {
         let batch = store.batch();
         batch.put_blob(&blob).unwrap();
         batch.finish().unwrap();
+    }
+
+    #[test]
+    fn a_temporary_file_that_cannot_be_opened_again_fails_the_batch_and_is_removed() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let id = blob.id().object_id();
+        let denied = fault::deny_modifying_in(&dir.path().join("tmp"));
+        let batch = store.batch();
+        batch.put_blob(&blob).unwrap();
+        let result = batch.finish();
+        drop(denied);
+        match result {
+            Err(StoreError::Io {
+                operation, source, ..
+            }) => {
+                assert_eq!(operation, "open the temporary file");
+                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected an I/O error, got {other:?}"),
+        }
+        assert_eq!(temp_entries(&dir), 0, "no temporary file is left");
+        assert!(!store.object_path(&id).exists());
     }
 
     #[test]
@@ -2941,10 +2959,8 @@ mod tests {
             .unwrap());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failed_rename_is_reported_with_its_error_and_the_temporary_file_is_removed() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let store = dir.store();
         let stored = Blob::new("hello").id();
@@ -2954,14 +2970,9 @@ mod tests {
             .unwrap()
             .to_path_buf();
         fs::create_dir_all(&fan_out).unwrap();
-        fs::set_permissions(&fan_out, fs::Permissions::from_mode(0o555)).unwrap();
-        // A process with the right to write anyway (root) cannot provoke the failure.
-        let writable = fs::write(fan_out.join("probe"), b"x").is_ok();
+        let denied = fault::deny_writes_in(&fan_out);
         let result = store.put_blob(&Blob::new("hello"));
-        fs::set_permissions(&fan_out, fs::Permissions::from_mode(0o755)).unwrap();
-        if writable {
-            return;
-        }
+        drop(denied);
         match result {
             Err(StoreError::Io {
                 operation, source, ..

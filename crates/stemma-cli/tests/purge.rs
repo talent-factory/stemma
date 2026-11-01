@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 
 use stemma_core::object::Blob;
 
-#[cfg(unix)]
-use common::Run;
-use common::{ok, run, Dir, ACTOR};
+use common::{ok, run, run_failing, Dir, Run, ACTOR};
 
 const AGENT: &str = "agent bot model=m session=s sponsor=daniel";
 const SECRET: &str = "key=hunter2";
@@ -132,6 +130,32 @@ fn object_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(".stemma/objects/b3")
         .join(&hex[..2])
         .join(&hex[2..])
+}
+
+#[test]
+fn a_tag_stops_the_purge_and_the_advice_of_the_refusal_works() {
+    let dir = with_secret();
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+
+    // The plan names the tag and the command that deletes it, and writes nothing.
+    let refused = run(dir.path(), &["purge", &secret(), "--actor", ACTOR]);
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("the tag `v1`") && refused.stderr.contains("stemma tag --delete"),
+        "{}",
+        refused.stderr
+    );
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+
+    // Follow the advice: delete the tag, purge, and set the tag again at the tip that is left.
+    ok(dir.path(), &["tag", "--delete", "v1", "--actor", ACTOR]);
+    ok(
+        dir.path(),
+        &["purge", &secret(), "--apply", "--actor", ACTOR],
+    );
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    assert!(dir.path().join(".stemma/refs/tags/v1").is_file());
+    ok(dir.path(), &["op", "verify"]);
 }
 
 #[test]
@@ -288,19 +312,17 @@ fn a_writer_refuses_while_a_journal_exists_and_names_resume() {
     );
 }
 
-/// Makes the directory of the log read-only, so that the purge stops at its entry after the new
-/// objects are written, and returns the stopped run.
-#[cfg(unix)]
+/// Lets the directory of the log refuse a new entry, so that the purge stops at its entry after
+/// the new objects are written, and returns the stopped run.
 fn stop_at_the_entry(dir: &Path) -> Run {
-    use std::os::unix::fs::PermissionsExt;
     let oplog = dir.join(".stemma/oplog");
-    fs::set_permissions(&oplog, fs::Permissions::from_mode(0o555)).unwrap();
-    let result = run(dir, &["purge", &secret(), "--apply", "--actor", ACTOR]);
-    fs::set_permissions(&oplog, fs::Permissions::from_mode(0o755)).unwrap();
-    result
+    run_failing(
+        dir,
+        &["purge", &secret(), "--apply", "--actor", ACTOR],
+        &[("write", &oplog)],
+    )
 }
 
-#[cfg(unix)]
 #[test]
 fn a_purge_that_stopped_is_finished_by_resume() {
     let dir = with_secret();
@@ -334,7 +356,6 @@ fn a_purge_that_stopped_is_finished_by_resume() {
     assert!(!dir.path().join(".stemma/purge-pending").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn a_purge_that_stopped_before_its_entry_is_undone_by_abort() {
     let dir = with_secret();

@@ -115,9 +115,12 @@ impl Classify for RefError {
             // a held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at
             // 1). `StaleHead` and `StaleWorkingCopy` are the same case for HEAD and the
             // working-copy commit.
-            Self::Stale { .. } | Self::StaleHead { .. } | Self::StaleWorkingCopy { .. } => {
-                FailureKind::Other
-            }
+            // A tag that was deleted, or deleted and set again, since the caller looked is the
+            // same stale view.
+            Self::Stale { .. }
+            | Self::StaleTag { .. }
+            | Self::StaleHead { .. }
+            | Self::StaleWorkingCopy { .. } => FailureKind::Other,
             // A tag that exists is a name that is taken; it never moves, so there is nothing to
             // read again and retry.
             Self::TagExists { .. } => FailureKind::Other,
@@ -432,6 +435,17 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn a_stale_tag_is_no_damage_and_no_held_lock() {
+        let stale = RefError::StaleTag {
+            name: "v1".parse().unwrap(),
+            expected: crate::object::CommitId::new(id()),
+            found: None,
+        };
+        assert_eq!(stale.kind(), FailureKind::Other);
+        assert_eq!(locked().kind(), FailureKind::Locked);
     }
 
     #[test]

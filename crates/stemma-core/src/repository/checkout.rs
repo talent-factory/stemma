@@ -26,6 +26,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use super::snapshot::{lookup, read_object, SnapshotError};
 use super::Repository;
+use crate::fault;
 use crate::ignore::{IgnoreError, IgnoreRules};
 use crate::object::{BlobId, FileMode, Kind, Tree, TreeId, GIT_DIR, METADATA_DIR};
 use crate::store::{
@@ -332,7 +333,7 @@ impl Repository {
             .parent()
             .zip(full.file_name())
             .map(|(parent, name)| {
-                fs::read_dir(parent).map(|entries| {
+                fault::read_dir(parent).map(|entries| {
                     entries
                         .filter_map(Result::ok)
                         .any(|entry| entry.file_name() == name)
@@ -365,7 +366,7 @@ impl Repository {
                 return Ok(false);
             }
         }
-        Ok(fs::read(&full).is_ok_and(|content| content == expected.body()))
+        Ok(fault::read(&full).is_ok_and(|content| content == expected.body()))
     }
 
     /// Checks the place of a path that is written: no link on the way, nothing untracked in it.
@@ -465,7 +466,7 @@ impl Repository {
                 }
                 Ok(_) => return Err(CheckoutError::InTheWay { path: so_far }),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    fs::create_dir(&full)
+                    fault::create_dir(&full)
                         .map_err(|source| io_error("create the directory", &full, source))?;
                 }
                 Err(source) => return Err(io_error("inspect", &full, source)),
@@ -530,7 +531,7 @@ pub fn remove_temp_files_for_exit() -> Vec<(PathBuf, io::Error)> {
 fn remove_temp_files(pending: &mut Vec<PathBuf>) -> Vec<(PathBuf, io::Error)> {
     pending
         .drain(..)
-        .filter_map(|full| match fs::remove_file(&full) {
+        .filter_map(|full| match fault::remove_file(&full) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Some((full, error)),
             _ => None,
         })
@@ -559,7 +560,7 @@ impl TempFile {
         #[cfg(unix)]
         if mode == FileMode::Symlink {
             use std::os::unix::ffi::OsStrExt;
-            std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(content), &temp.full)
+            fault::symlink(std::ffi::OsStr::from_bytes(content), &temp.full)
                 .map_err(|source| io_error("create the link", &temp.full, source))?;
             pending.push(temp.full.clone());
             temp.armed = true;
@@ -567,10 +568,7 @@ impl TempFile {
         }
         // Outside Unix a link is written as a plain file that holds its target, as Git does with
         // `core.symlinks=false`; the snapshot reads the file back as the target of the link.
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp.full)
+        let mut file = fault::create_new(&temp.full)
             .map_err(|source| io_error("create", &temp.full, source))?;
         pending.push(temp.full.clone());
         temp.armed = true;
@@ -592,7 +590,7 @@ impl TempFile {
 
     /// Renames the file to the target.
     fn rename_to(mut self, target: &Path) -> Result<(), CheckoutError> {
-        match fs::rename(&self.full, target) {
+        match fault::rename(&self.full, target) {
             Ok(()) => {
                 self.disarm();
                 Ok(())
@@ -625,7 +623,7 @@ impl TempFile {
     /// cannot be removed stays listed: an interruption before the error that names it is
     /// reported removes it or names it, and the drop does not try again.
     fn remove(&mut self) -> io::Result<()> {
-        match fs::remove_file(&self.full) {
+        match fault::remove_file(&self.full) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => {
                 self.armed = false;
                 Err(error)
@@ -700,7 +698,8 @@ fn blocker(
     path: &str,
     removed: &Removed,
 ) -> Result<Option<String>, CheckoutError> {
-    let entries = fs::read_dir(directory).map_err(|source| io_error("list", directory, source))?;
+    let entries =
+        fault::read_dir(directory).map_err(|source| io_error("list", directory, source))?;
     for entry in entries {
         let entry = entry.map_err(|source| io_error("list", directory, source))?;
         let child = format!("{path}/{}", entry.file_name().to_string_lossy());
@@ -719,7 +718,8 @@ fn blocker(
 
 /// Removes the directory and the directories below it, which must hold no file.
 fn remove_empty_directories(directory: &Path, path: &str) -> Result<(), CheckoutError> {
-    let entries = fs::read_dir(directory).map_err(|source| io_error("list", directory, source))?;
+    let entries =
+        fault::read_dir(directory).map_err(|source| io_error("list", directory, source))?;
     for entry in entries {
         let entry = entry.map_err(|source| io_error("list", directory, source))?;
         let child = format!("{path}/{}", entry.file_name().to_string_lossy());
@@ -730,7 +730,8 @@ fn remove_empty_directories(directory: &Path, path: &str) -> Result<(), Checkout
         }
         remove_empty_directories(&entry.path(), &child)?;
     }
-    fs::remove_dir(directory).map_err(|source| io_error("remove the directory", directory, source))
+    fault::remove_dir(directory)
+        .map_err(|source| io_error("remove the directory", directory, source))
 }
 
 /// Removes a directory of the old tree if it is empty. It walks down from the root one part at a
@@ -745,9 +746,9 @@ fn remove_directory_if_empty(root: &Path, directory: &str) -> Result<(), Checkou
             _ => return Ok(()),
         }
     }
-    match fs::remove_dir(&full) {
+    match fault::remove_dir(&full) {
         Ok(()) => Ok(()),
-        Err(source) => match fs::read_dir(&full) {
+        Err(source) => match fault::read_dir(&full) {
             Ok(entries) => {
                 if entries.count() > 0 {
                     Ok(())
@@ -921,7 +922,7 @@ fn set_mode(file: &fs::File, mode: FileMode) -> io::Result<()> {
 }
 
 fn remove_file(path: &Path) -> Result<(), CheckoutError> {
-    match fs::remove_file(path) {
+    match fault::remove_file(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => {
             Err(io_error("remove", path, error))
         }
@@ -1977,57 +1978,14 @@ mod tests {
         );
     }
 
-    /// Whether permissions have an effect: root may write into a directory without the permission.
-    /// A test that needs them says so when it is skipped.
-    #[cfg(unix)]
-    fn permissions_hold(dir: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = dir.join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
-        let held = fs::write(probe.join("file"), b"").is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::remove_dir_all(&probe).unwrap();
-        if !held {
-            eprintln!("skipped: permissions have no effect for this user");
-        }
-        held
-    }
-
-    /// Sets the permissions of a directory and restores 0o755 when it goes out of scope, also
-    /// when an assertion fails, so that the directory of the test can be removed.
-    #[cfg(unix)]
-    struct Mode<'a>(&'a Path);
-
-    #[cfg(unix)]
-    impl<'a> Mode<'a> {
-        fn set(path: &'a Path, bits: u32) -> Self {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(bits)).unwrap();
-            Self(path)
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for Mode<'_> {
-        fn drop(&mut self) {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
-        }
-    }
-
-    #[cfg(unix)]
     #[test]
     fn a_temporary_file_that_cannot_be_removed_is_named_with_the_error_of_the_write() {
         let dir = TempDir::new();
-        if !permissions_hold(dir.path()) {
-            return;
-        }
         write(&dir, &format!("d/{LEFTOVER}"), "old");
         let directory = dir.path().join("d");
         let temp = temp_file(directory.join(LEFTOVER), &format!("d/{LEFTOVER}"));
         let error = {
-            let _mode = Mode::set(&directory, 0o555);
+            let _denied = fault::deny_writes_in(&directory);
             CheckoutError::Interrupted {
                 removed: 0,
                 written: 1,
@@ -2069,21 +2027,17 @@ mod tests {
         assert!(exists(&dir, &format!("d/{LEFTOVER}")), "the file stays");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_temporary_file_that_could_not_be_created_is_not_reported() {
         let dir = TempDir::new();
-        if !permissions_hold(dir.path()) {
-            return;
-        }
         let directory = dir.path().join("d");
         fs::create_dir(&directory).unwrap();
-        // Without the search bit, creating and removing a file fail alike, also for a file that
-        // is not there.
+        // The creation is refused before the file is listed, so no removal follows: the error of
+        // the creation is the one reported, and nothing is left to clean up.
         let error = {
-            let _mode = Mode::set(&directory, 0o644);
+            let _denied = fault::deny_writes_in(&directory);
             match TempFile::create(&directory, "d/new", FileMode::File, b"new") {
-                Ok(_) => panic!("a file was created in a directory that cannot be searched"),
+                Ok(_) => panic!("a file was created in a directory that refuses new names"),
                 Err(error) => error,
             }
         };
@@ -2092,6 +2046,10 @@ mod tests {
             error.io_error().map(io::Error::kind),
             Some(io::ErrorKind::PermissionDenied)
         );
+        assert!(!pending_temp_files()
+            .iter()
+            .any(|pending| pending.starts_with(&directory)));
+        assert!(!directory.join("new").exists());
     }
 
     #[test]
@@ -2128,20 +2086,16 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_temporary_file_that_cannot_be_removed_stays_listed_for_an_interruption() {
         let dir = TempDir::new();
-        if !permissions_hold(dir.path()) {
-            return;
-        }
         let directory = dir.path().join("d");
         fs::create_dir(&directory).unwrap();
         let listed = |full: &Path| pending_temp_files().iter().any(|pending| pending == full);
         let discarded = TempFile::create(&directory, "d/a", FileMode::File, b"a").unwrap();
         let full = discarded.full.clone();
         let error = {
-            let _mode = Mode::set(&directory, 0o555);
+            let _denied = fault::deny_writes_in(&directory);
             discarded.discard(CheckoutError::ChangedSincePlan {
                 path: "d/a".to_owned(),
             })
@@ -2154,20 +2108,16 @@ mod tests {
         let dropped = TempFile::create(&directory, "d/b", FileMode::File, b"b").unwrap();
         let other = dropped.full.clone();
         {
-            let _mode = Mode::set(&directory, 0o555);
+            let _denied = fault::deny_writes_in(&directory);
             drop(dropped);
         }
         assert!(listed(&other));
         pending_temp_files().retain(|pending| pending != &full && pending != &other);
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_interruption_removes_the_temporary_files_and_names_those_that_stay() {
         let dir = TempDir::new();
-        if !permissions_hold(dir.path()) {
-            return;
-        }
         write(&dir, LEFTOVER, "old");
         write(&dir, &format!("d/{LEFTOVER}"), "old");
         let directory = dir.path().join("d");
@@ -2178,7 +2128,7 @@ mod tests {
             directory.join(LEFTOVER),
         ];
         let left = {
-            let _mode = Mode::set(&directory, 0o555);
+            let _denied = fault::deny_writes_in(&directory);
             remove_temp_files(&mut pending)
         };
         assert!(pending.is_empty());

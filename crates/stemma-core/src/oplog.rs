@@ -29,14 +29,16 @@
 //! branch main b3:8cb4…b3e8 b3:b5f2…e662
 //! ```
 //!
-//! An entry of the operation `tag` has a line `tag v1 - b3:4feb…b32c` instead (see below).
+//! An entry of the operation `tag` has a line `tag v1 - b3:4feb…b32c` instead, and one of the
+//! operation `untag` a line `tag v1 b3:4feb…b32c -` (see below).
 //!
 //! The `…` stands for digits that are left out here; a real ID has all 64. The first five lines come
 //! in this order, each once. Then come the lines of the pointers that changed, at least one (but
 //! see the change of the owner below): `head`, then `working-copy`, then one `branch <name>` for
 //! each branch, sorted by name in UTF-8 byte order and each name once, then one `tag <name>` for
 //! each tag, sorted and unique in the same way. A tag never moves (ADR-008), so a tag line made by
-//! the writer has the old value `-`; the reader does not enforce that. Each line has the old and
+//! the writer has the old value `-` (a tag is made) or the new value `-` (a tag is deleted); the
+//! reader does not enforce that. Each line has the old and
 //! the new value, which differ. `-` means that the pointer did not exist, or does not exist any more.
 //! A branch and the working-copy commit have a commit ID or `-`; HEAD has `branch:<name>`,
 //! `commit:<id>`, or `-`. The file ends with a newline and has nothing after the last pointer.
@@ -153,11 +155,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
 use crate::refs::{BranchName, BranchNameError, Head};
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
@@ -334,8 +336,8 @@ impl<T> Moved<T> {
 }
 
 /// The pointer of a change, for a message: HEAD, the working-copy commit, a branch, or a tag.
-/// A tag never moves, so the only operation that writes one (`tag`, ADR-011) creates it; `verify`
-/// names a tag too.
+/// A tag never moves, so an entry creates one (the operation `tag`) or deletes one (the
+/// operation `untag`), and none moves one (ADR-011); `verify` names a tag too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pointer {
@@ -597,8 +599,8 @@ impl Change {
         &self.branches
     }
 
-    /// The tags that the operation made, sorted by name. A tag never moves (ADR-008), so the old
-    /// value of each is `None` in every entry that the code writes today.
+    /// The tags that the operation made or deleted, sorted by name. A tag never moves (ADR-008), so
+    /// each is made (the old value is `None`) or deleted (the new value is `None`).
     pub fn tags(&self) -> &[(BranchName, Moved<CommitId>)] {
         &self.tags
     }
@@ -2262,7 +2264,7 @@ impl FsOpLog {
     fn scan(&self) -> Result<Vec<u64>, OpLogError> {
         let dir = self.dir();
         let mut numbers = Vec::new();
-        for item in fs::read_dir(&dir).map_err(OpLogError::io("read the directory", &dir))? {
+        for item in fault::read_dir(&dir).map_err(OpLogError::io("read the directory", &dir))? {
             let item = item.map_err(OpLogError::io("read the directory", &dir))?;
             let name = item.file_name();
             // Names with a dot: file managers and editors leave them. The first byte is looked at,
@@ -2336,7 +2338,7 @@ impl FsOpLog {
     /// [`OpLogError::Io`] if it cannot be read.
     fn read_tip(&self) -> Result<Option<Tip>, OpLogError> {
         let path = self.tip_path();
-        let bytes = match fs::read(&path) {
+        let bytes = match fault::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(OpLogError::io("read the tip file", &path)(error)),
@@ -2387,7 +2389,7 @@ impl FsOpLog {
             .map_err(OpLogError::io("flush the temporary file", &temp.path))?;
         drop(file);
         let path = self.tip_path();
-        fs::rename(&temp.path, &path).map_err(OpLogError::io("replace the tip file", &path))?;
+        fault::rename(&temp.path, &path).map_err(OpLogError::io("replace the tip file", &path))?;
         // The name is gone after the rename.
         temp.disarm();
         let _ = sync_directory(&self.root);
@@ -2446,7 +2448,7 @@ impl FsOpLog {
     /// inside is not the one of the name, and [`OpLogError::Io`] if the storage fails.
     pub fn read(&self, number: u64) -> Result<Entry, OpLogError> {
         let path = self.path_of(number);
-        let file = match fs::File::open(&path) {
+        let file = match fault::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(OpLogError::Missing { number });
@@ -2766,7 +2768,7 @@ impl FsOpLog {
             .map_err(OpLogError::io("flush the temporary file", &temp.path))?;
         drop(file);
         let path = self.path_of(number);
-        fs::rename(&temp.path, &path).map_err(OpLogError::io("replace the entry", &path))?;
+        fault::rename(&temp.path, &path).map_err(OpLogError::io("replace the entry", &path))?;
         temp.disarm();
         let dir = self.dir();
         match sync_directory(&dir) {
@@ -2810,7 +2812,7 @@ impl FsOpLog {
             record,
             last + 1,
             &mut |_| {},
-            &|from, to| fs::hard_link(from, to),
+            &|from, to| fault::hard_link(from, to),
             &|dir| match sync_directory(dir) {
                 Ok(()) => Ok(()),
                 Err(StoreError::Io { source, .. }) => Err(source),
@@ -3081,7 +3083,8 @@ pub struct Current {
     working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
     /// The tags that exist: `None` until [`Current::with_tags`] gave them, so that the outcome of
-    /// an entry that made a tag stays unknown; `Some` of an empty map means that no tag exists.
+    /// an entry that made or deleted a tag stays unknown; `Some` of an empty map means that no tag
+    /// exists.
     tags: Option<BTreeMap<BranchName, CommitId>>,
     /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
     /// `Some(None)` for a working copy without an owner.
@@ -3128,8 +3131,8 @@ impl Current {
         self
     }
 
-    /// Adds the tags that exist. Without them, the outcome of an entry that made a tag stays
-    /// unknown.
+    /// Adds the tags that exist. Without them, the outcome of an entry that made or deleted a tag
+    /// stays unknown.
     #[must_use]
     pub fn with_tags(mut self, tags: impl IntoIterator<Item = (BranchName, CommitId)>) -> Self {
         self.tags = Some(tags.into_iter().collect());
@@ -3334,12 +3337,12 @@ mod tests {
         assert!(message.contains("a\\u{1b}[2Jb\\n"), "{message}");
     }
 
+    use std::fs;
     use std::sync::Barrier;
     use std::thread;
 
     use super::*;
     #[cfg(unix)]
-    use crate::testutil::Denied;
     use crate::testutil::TempDir;
 
     const A: &str = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
@@ -3983,6 +3986,79 @@ mod tests {
         // Without the tags the outcome is not known.
         let current = Current::new(head, [], true);
         assert_eq!(outcomes(&entries, Some(&current)), [Outcome::Unknown]);
+    }
+
+    #[test]
+    fn the_deletion_of_a_tag_is_a_line_with_the_commit_and_a_dash_and_is_judged_by_the_tags() {
+        let change =
+            tag_change("untag", vec![], vec![(branch("v1"), moved(Some(A), None))]).unwrap();
+        let entry = Entry::try_new(2, change).unwrap();
+        assert!(String::from_utf8(entry.encode())
+            .unwrap()
+            .ends_with(&format!("operation untag\ntag v1 {A} -\n")));
+        assert_eq!(Entry::parse(&entry.encode()).unwrap(), entry);
+        let set = Entry::try_new(
+            1,
+            tag_change("tag", vec![], vec![(branch("v1"), moved(None, Some(A)))]).unwrap(),
+        )
+        .unwrap();
+        let entries = [set, entry];
+        let head = Head::Branch(branch("main"));
+        let with = |tags: Vec<(BranchName, CommitId)>, settled| {
+            let current = Current::new(head.clone(), [], settled).with_tags(tags);
+            outcomes(&entries, Some(&current))
+        };
+        // The tag is gone: the deletion took effect, and so did the entry that set the tag, which
+        // the deletion followed.
+        assert_eq!(with(vec![], true), [Outcome::Took, Outcome::Took]);
+        // The tag is still there: the deletion did not take effect.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(A))], true),
+            [Outcome::Took, Outcome::NotTaken]
+        );
+        // A writer may be between its entry and its deletion.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(A))], false),
+            [Outcome::Took, Outcome::Unknown]
+        );
+        // A tag at a commit that neither entry names was changed outside the log.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(B))], true),
+            [Outcome::Took, Outcome::Unknown]
+        );
+        // Without the tags the deletion is not known; the setting is, because the deletion that
+        // follows it starts from the commit that it set.
+        let current = Current::new(head, [], true);
+        assert_eq!(
+            outcomes(&entries, Some(&current)),
+            [Outcome::Took, Outcome::Unknown]
+        );
+    }
+
+    #[test]
+    fn a_tag_that_is_deleted_and_set_again_is_judged_by_the_entries_that_follow() {
+        let entry = |number: u64, old: Option<&str>, new: Option<&str>| {
+            let operation = if new.is_some() { "tag" } else { "untag" };
+            let change =
+                tag_change(operation, vec![], vec![(branch("v1"), moved(old, new))]).unwrap();
+            Entry::try_new(number, change).unwrap()
+        };
+        let head = Head::Branch(branch("main"));
+        for again in [A, B] {
+            // set at A, deleted, set again (at the same commit or at another)
+            let entries = [
+                entry(1, None, Some(A)),
+                entry(2, Some(A), None),
+                entry(3, None, Some(again)),
+            ];
+            let current =
+                Current::new(head.clone(), [], true).with_tags([(branch("v1"), commit(again))]);
+            assert_eq!(
+                outcomes(&entries, Some(&current)),
+                [Outcome::Took, Outcome::Took, Outcome::Took],
+                "set again at {again}"
+            );
+        }
     }
 
     #[test]
@@ -4748,21 +4824,15 @@ mod tests {
         assert_eq!(files(&dir.path().join("oplog")).len(), 4);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failing_write_of_the_tip_is_no_error_of_the_entry() {
         let dir = TempDir::new();
         let log = four_entries(&dir);
         // The tip is renamed into the root, which may be entered but not written. The entry goes
         // to `oplog/`, which stays writable, and the temporary file to `tmp/`.
-        let denied = Denied::writing(dir.path());
-        let enforced = fs::File::create(dir.path().join("probe")).is_err();
+        let denied = fault::deny_writes_in(dir.path());
         let result = log.append(&change("main", Some(B), A));
         drop(denied);
-        if !enforced {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
 
         assert_eq!(result.unwrap().number(), 5);
         // The tip is one behind, which the reader and the next writer accept.
@@ -5231,7 +5301,6 @@ mod tests {
         assert_eq!(files(&dir.path().join("oplog")), Vec::<String>::new());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_temporary_name_that_cannot_be_removed_does_not_stop_a_whole_entry() {
         // `tmp/` holds scratch files. If the name cannot be removed after the link, the entry is
@@ -5239,12 +5308,10 @@ mod tests {
         let dir = TempDir::new();
         let log = log_in(&dir);
         let tmp = dir.path().join("tmp");
-        if !Denied::enforced(dir.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         let mut denied = None;
-        let mut make_tmp_read_only = |_: u64| denied = Some(Denied::writing(&tmp));
+        let mut make_tmp_read_only = |_: u64| {
+            denied = Some(fault::deny_writes_in(&tmp));
+        };
         let result = log.publish(
             &Record::Change(change("main", None, A)),
             1,

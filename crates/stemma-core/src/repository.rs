@@ -49,6 +49,7 @@ pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 
 use crate::change::{ChangeId, GenerateError};
+use crate::fault;
 use crate::object::{Commit, CommitId, ObjectId, Tree, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge, TAKE_OVER};
 use crate::refs::{
@@ -125,7 +126,7 @@ fn raise_format_with(
     flush: &dyn Fn(&Path) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let path = dir.join("format");
-    let current = fs::read(&path).map_err(|source| StoreError::Io {
+    let current = fault::read(&path).map_err(|source| StoreError::Io {
         operation: "read the format file",
         path: path.clone(),
         source,
@@ -170,7 +171,7 @@ fn replace_format(
     file.sync_all()
         .map_err(io("flush the temporary file", &temp.path))?;
     drop(file);
-    fs::rename(&temp.path, path).map_err(io(operation, path))?;
+    fault::rename(&temp.path, path).map_err(io(operation, path))?;
     temp.disarm();
     Ok(())
 }
@@ -723,6 +724,56 @@ impl Repository {
             .expect("create_tag_after never reports an unchanged tag"))
     }
 
+    /// Deletes the tag `name` if it still is at `expected`, and records it in the log, in the
+    /// order of [`create_tag`](Self::create_tag) and under the same lock: the tag is checked (a
+    /// name that is in the way, a tag that is not at `expected`), the entry is written and
+    /// flushed, and only then is the tag deleted (ADR-008, ADR-011). A tag never moves, so a tag
+    /// that was set wrongly is deleted and set again; the entry has the commit of the tag as its
+    /// old value and `-` as its new one, and says who deleted the tag and when.
+    ///
+    /// Returns the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
+    /// the checks find ([`RefError::StaleTag`] for a tag that is not at `expected` or does not
+    /// exist, [`RefError::Conflict`] for a name that another entry holds, [`RefError::Locked`],
+    /// [`RefError::PurgePending`], and [`RefError::Corrupt`]), and [`UpdateError::Log`],
+    /// [`UpdateError::MoveFailed`], and
+    /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
+    /// writes no entry.
+    pub fn delete_tag(
+        &self,
+        operation: &OperationName,
+        name: &BranchName,
+        expected: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        // A claim only: a tag is at `expected` or the call is `StaleTag`, so an ID that names no
+        // commit finds no tag.
+        let expected = CommitId::new(expected);
+        let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
+        let lock = self.refs.lock_writer(&allowed)?;
+        let outcome = self.refs.delete_tag_after(&lock, name, expected, || {
+            let change = Change::try_new_with_tags(
+                now(),
+                actor.clone(),
+                operation.clone(),
+                None,
+                None,
+                vec![],
+                vec![(name.clone(), Moved::from_to(Some(expected), None))],
+            )
+            .map_err(OpLogError::Entry)?;
+            self.append(&lock, &change)
+        })?;
+        // `delete_tag_after` refuses a tag that is not at `expected` and never reports "unchanged".
+        Ok(outcome
+            .into_result()?
+            .expect("delete_tag_after never reports an unchanged tag"))
+    }
+
     /// Points HEAD to a branch, which need not exist yet, or to a commit, if HEAD still is
     /// `expected`, and records the change in the log, in the order of
     /// [`update_branch`](Self::update_branch) and under the same lock. The old value in the entry
@@ -1083,6 +1134,9 @@ pub enum UpdateError {
     Log(OpLogError),
     /// The entry was written, but the move failed. The file system failed after the checks, so the
     /// entry names a move that did not happen; the old value in it was true when it was written.
+    /// The exception is the deletion of a tag that a process without the lock removed after the
+    /// checks ([`RefError::StaleTag`] with `found` `None`): the tag is gone, as the entry says.
+    /// Read the pointer before a retry in any case.
     MoveFailed {
         /// The entry that is in the log.
         entry: Box<Entry>,
@@ -1125,7 +1179,9 @@ impl UpdateError {
 
     /// Whether a pointer moved although the call failed. [`NotDurable`](Self::NotDurable) and
     /// [`PartlyMoved`](Self::PartlyMoved) moved one; in every other case the pointers are where they
-    /// were, and the change can be repeated (with a second entry if the first one stays).
+    /// were, and the change can be repeated (with a second entry if the first one stays). The one
+    /// exception is a tag whose file vanished after the check ([`MoveFailed`](Self::MoveFailed)
+    /// with [`RefError::StaleTag`] and no `found`): the tag is gone, and a repeat finds nothing.
     pub fn pointer_moved(&self) -> bool {
         matches!(self, Self::NotDurable { .. } | Self::PartlyMoved { .. })
     }
@@ -1197,12 +1253,20 @@ impl fmt::Display for UpdateError {
                 path.display()
             ),
             Self::Log(error) => error.fmt(f),
-            Self::MoveFailed { entry, source } => write!(
-                f,
-                "entry {} of the operation log was written, but the move failed: {source}; the \
-                 entry names a move that did not happen",
-                entry.number()
-            ),
+            Self::MoveFailed { entry, source } => {
+                // A tag that vanished after the checks is where the entry puts it.
+                let tail = if matches!(source, RefError::StaleTag { found: None, .. }) {
+                    "the tag is gone, so the entry is true"
+                } else {
+                    "the entry names a move that did not happen"
+                };
+                write!(
+                    f,
+                    "entry {} of the operation log was written, but the move failed: {source}; \
+                     {tail}",
+                    entry.number()
+                )
+            }
             Self::PartlyMoved { entry, source } => write!(
                 f,
                 "entry {} of the operation log was written and the first pointer moved, but the \
@@ -1255,9 +1319,7 @@ fn open_format(path: &Path, no_follow: bool) -> Result<fs::File, OpenError> {
     }
     #[cfg(not(unix))]
     let _ = no_follow;
-    options
-        .open(path)
-        .map_err(|error| format_open_error(error, path, no_follow))
+    fault::open_with(&options, path).map_err(|error| format_open_error(error, path, no_follow))
 }
 
 /// The error for a `format` that cannot be opened. An entry that is there but leads nowhere is in
@@ -1466,7 +1528,7 @@ fn create_dirs_synced(dir: &Path) -> Result<(), InitError> {
         }
     }
     for created in missing.iter().rev() {
-        match fs::create_dir(created) {
+        match fault::create_dir(created) {
             Ok(()) => {}
             // Another process was faster. Whether it is a directory shows when it is used.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1496,7 +1558,7 @@ fn create_staging(dir: &Path, next_name: &mut dyn FnMut() -> String) -> Result<P
     let mut last = dir.to_path_buf();
     for _ in 0..STAGING_ATTEMPTS {
         let staging = dir.join(next_name());
-        match fs::create_dir(&staging) {
+        match fault::create_dir(&staging) {
             Ok(()) => return Ok(staging),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = staging,
             Err(error) => return Err(InitError::io(operation, &staging)(error)),
@@ -1521,7 +1583,7 @@ fn install(
     let result = fill(staging, options, actor).and_then(|()| move_into_place(staging, target));
     match result {
         Ok(()) => Ok(()),
-        Err(error) => match fs::remove_dir_all(staging) {
+        Err(error) => match fault::remove_dir_all(staging) {
             Ok(()) => Err(error),
             // The directory is gone already: a writer of a repository that another `init` made
             // here in the meantime removed it as stale (ADR-009). Nothing is left behind.
@@ -1545,7 +1607,7 @@ fn move_into_place(staging: &Path, target: &Path) -> Result<(), InitError> {
             path: target.to_path_buf(),
         });
     }
-    match fs::rename(staging, target) {
+    match fault::rename(staging, target) {
         Ok(()) => Ok(()),
         Err(error) => match exists(target) {
             Ok(true) => Err(InitError::AlreadyExists {
@@ -1583,7 +1645,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
     let refs = dir.join("refs");
     let heads = refs.join("heads");
     for created in [&objects, &tmp, &oplog, &refs, &heads] {
-        fs::create_dir(created).map_err(InitError::io("create the directory", created))?;
+        fault::create_dir(created).map_err(InitError::io("create the directory", created))?;
     }
     let head = Head::Branch(options.initial_branch.clone());
     // The working copy starts as an empty commit with a change ID of its own (ADR-010): no file is
@@ -1623,7 +1685,7 @@ fn fill(dir: &Path, options: &InitOptions, actor: &Actor) -> Result<(), InitErro
 /// Writes a file that must not exist yet, and flushes it to disk.
 fn write_new(path: &Path, content: &[u8]) -> Result<(), InitError> {
     let write = || -> io::Result<()> {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut file = fault::create_new(path)?;
         file.write_all(content)?;
         file.sync_all()
     };
@@ -2327,7 +2389,6 @@ mod tests {
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
     #[cfg(unix)]
-    use crate::testutil::Denied;
     use crate::testutil::TempDir;
     use crate::AllowAll;
     use crate::Decision;
@@ -2359,18 +2420,6 @@ mod tests {
 
     fn set_format(dir: &Path, content: impl AsRef<[u8]>) {
         fs::write(dir.join(".stemma").join("format"), content).unwrap();
-    }
-
-    /// Whether a directory without write permission keeps a file out. It does not for root.
-    #[cfg(unix)]
-    fn permissions_are_enforced(scratch: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        let probe = scratch.join("probe");
-        fs::create_dir(&probe).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
-        let enforced = fs::File::create(probe.join("file")).is_err();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
-        enforced
     }
 
     #[test]
@@ -2704,20 +2753,14 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"x");
     }
 
-    #[cfg(unix)]
     #[test]
     fn init_in_a_directory_that_cannot_be_written_reports_the_cause() {
-        use std::os::unix::fs::PermissionsExt;
         let scratch = TempDir::new();
-        if !permissions_are_enforced(scratch.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
-        let parent = scratch.path().join("readonly");
+        let parent = scratch.path().join("sealed");
         fs::create_dir(&parent).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&parent);
         let error = init(&parent).unwrap_err();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         assert!(
             matches!(error, InitError::Io { operation, .. } if operation == "create the new directory"),
             "{error}"
@@ -2905,21 +2948,15 @@ mod tests {
         assert!(!staging.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_staging_directory_that_cannot_be_removed_is_reported() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
-        if !permissions_are_enforced(dir.path()) {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         let staging = dir.path().join("staging");
         let stuck = staging.join("stuck");
         fs::create_dir_all(&stuck).unwrap();
         fs::write(stuck.join("file"), b"x").unwrap();
         fs::write(staging.join("format"), b"x").unwrap();
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = fault::deny_writes_in(&stuck);
         let error = install(
             &staging,
             &dir.path().join(".stemma"),
@@ -2928,7 +2965,7 @@ mod tests {
             &Allowed::granted(),
         )
         .unwrap_err();
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         match &error {
             InitError::Leftover { path, error, .. } => {
                 assert_eq!(path, &staging);
@@ -2941,6 +2978,9 @@ mod tests {
         assert!(message.contains("could not be removed either"), "{message}");
         assert!(message.contains(staging.to_str().unwrap()), "{message}");
         assert!(error.io_error().is_some());
+        // The removal stopped at the denied name: what came before it went, the rest stays.
+        assert!(!staging.join("format").exists());
+        assert!(stuck.join("file").exists());
     }
 
     #[test]
@@ -3007,32 +3047,29 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_cleanup_that_cannot_remove_a_directory_does_not_stop_the_change() {
         // The cleanup is best effort (ADR-011): what cannot be removed stays, and the move is made.
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let stale = dir.path().join(".stemma-init-1-0-0123456789abcdef");
         let sealed = stale.join("objects");
         fs::create_dir_all(&sealed).unwrap();
         fs::write(sealed.join("object"), b"x").unwrap();
-        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
-        if fs::remove_file(sealed.join("object")).is_ok() {
-            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        // A second stale directory shows that the cleanup ran and went on after the first.
+        let free = dir.path().join(".stemma-init-2-0-0123456789abcdef");
+        fs::create_dir_all(free.join("objects")).unwrap();
+        let denied = fault::deny_writes_in(&sealed);
         let old = repository.refs().working_copy().unwrap();
         let new = next_commit(&repository, "x");
         let result =
             repository.update_working_copy(&operation("snapshot"), old, new, &actor(), &AllowAll);
         let left = sealed.join("object").exists();
-        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+        drop(denied);
         result.unwrap();
         assert_eq!(repository.refs().working_copy().unwrap(), new);
         assert!(left, "what cannot be removed stays");
+        assert!(!free.exists(), "the cleanup ran and removed what it could");
     }
 
     #[cfg(unix)]
@@ -4605,7 +4642,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_is_made_after_its_entry_and_the_entry_says_who_set_it() {
+    fn a_tag_is_made_and_the_entry_says_who_set_it() {
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
@@ -4691,6 +4728,183 @@ mod tests {
         assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
         assert_eq!(numbers(&repository), before);
         assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_tag_is_deleted_and_the_entry_says_who_deleted_it() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let entry = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), None);
+        assert_eq!(numbers(&repository).len(), before.len() + 1);
+        let change = entry.change().unwrap();
+        assert_eq!(change.operation().as_str(), "untag");
+        assert_eq!(change.actor(), &actor());
+        assert!(change.head().is_none() && change.working_copy().is_none());
+        assert!(change.branches().is_empty());
+        let [(name, moved)] = change.tags() else {
+            panic!("one tag expected");
+        };
+        assert_eq!(name, &branch("v1"));
+        assert_eq!((moved.before(), moved.after()), (Some(&a), None));
+        assert_eq!(repository.oplog().entries().unwrap().last(), Some(&entry));
+        // The name is free again, and the tag can be set at another commit.
+        let b = store_commit(&repository, "b");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                b.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(b));
+    }
+
+    #[test]
+    fn an_authorizer_that_allows_tag_but_not_untag_keeps_the_tag() {
+        struct DenyUntag;
+
+        impl Authorizer for DenyUntag {
+            fn authorize(
+                &self,
+                _actor: &Actor,
+                operation: &OperationName,
+                _target: &str,
+            ) -> Decision {
+                if operation.as_str() == "untag" {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                }
+            }
+        }
+
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &DenyUntag,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let error = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &DenyUntag,
+            )
+            .unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+    }
+
+    #[test]
+    fn a_tag_stays_if_the_entry_of_its_deletion_cannot_be_written() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let a = store_commit(&repository, "a");
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        // The entry of the tag is lost; the tip file still names it.
+        fs::remove_file(dir.path().join(".stemma/oplog/000000000002")).unwrap();
+
+        let error = repository
+            .delete_tag(
+                &op("untag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Log(OpLogError::TipAhead { .. })),
+            "{error}"
+        );
+        assert!(!error.pointer_moved());
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
+    }
+
+    #[test]
+    fn a_tag_that_is_not_where_the_caller_saw_it_is_not_deleted_and_writes_no_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        let (a, b) = (
+            store_commit(&repository, "a"),
+            store_commit(&repository, "b"),
+        );
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("v1"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = numbers(&repository);
+        let delete = |name: &str, expected: CommitId, authorizer: &dyn Authorizer| {
+            repository.delete_tag(
+                &op("untag"),
+                &branch(name),
+                expected.object_id(),
+                &actor(),
+                authorizer,
+            )
+        };
+        let error = delete("v1", b, &AllowAll).unwrap_err();
+        assert!(
+            matches!(&error, UpdateError::Refs(RefError::StaleTag { found: Some(found), .. }) if *found == a),
+            "{error}"
+        );
+        let error = delete("other", a, &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                UpdateError::Refs(RefError::StaleTag { found: None, .. })
+            ),
+            "{error}"
+        );
+        let error = delete("v1", a, &DenyAll).unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().tag(&branch("v1")).unwrap(), Some(a));
     }
 
     #[test]
@@ -4812,25 +5026,17 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_move_that_fails_after_the_entry_leaves_the_entry_and_says_so() {
-        // The entry comes first: with the directory of the branches read-only, the entry is
-        // written and the move fails. If the order were the other one, nothing would be written.
-        use std::os::unix::fs::PermissionsExt;
+        // The entry comes first: with the directory of the branches refusing new names, the entry
+        // is written and the move fails. If the order were the other one, nothing would be written.
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
-        let heads = dir.path().join(".stemma").join("refs").join("heads");
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o555)).unwrap();
-        let writable = fs::File::create(heads.join("probe")).is_ok();
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        let denied = fault::deny_writes_in(&heads);
         let result = update(&repository, "main", None, a);
-        fs::set_permissions(&heads, fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = fs::remove_file(heads.join("probe"));
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
+        drop(denied);
         let error = result.unwrap_err();
         let UpdateError::MoveFailed { entry, source } = &error else {
             panic!("not a failed move: {error}");
@@ -4855,17 +5061,16 @@ mod tests {
         assert_eq!(repository.refs().branch(&branch("main")).unwrap(), None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_tag_that_fails_after_the_entry_leaves_the_entry_and_a_retry_makes_the_tag() {
+        use crate::fault;
         use crate::oplog::{outcomes, Current, Outcome};
         let dir = TempDir::new();
         let repository = init(dir.path()).unwrap();
         let a = store_commit(&repository, "a");
-        let tags = dir.path().join(".stemma").join("refs").join("tags");
+        let tags = repository.metadata_dir().join("refs").join("tags");
         fs::create_dir_all(&tags).unwrap();
-        let denied = Denied::writing(&tags);
-        let writable = fs::File::create(tags.join("probe")).is_ok();
+        let denied = fault::deny_writes_in(&tags);
         let tag = || {
             repository.create_tag(
                 &op("tag"),
@@ -4877,11 +5082,6 @@ mod tests {
         };
         let result = tag();
         drop(denied);
-        let _ = fs::remove_file(tags.join("probe"));
-        if writable {
-            eprintln!("skipped: the permission of a directory is not enforced here (root?)");
-            return;
-        }
         // The entry is written first; the file is not, and the error carries the entry.
         let error = result.unwrap_err();
         assert!(matches!(&error, UpdateError::MoveFailed { .. }), "{error}");
