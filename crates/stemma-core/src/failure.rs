@@ -282,13 +282,21 @@ impl Classify for DiffError {
 impl Classify for MergeError {
     fn kind(&self) -> FailureKind {
         match self {
+            // A commit that the caller named and the store lacks is an argument error. Any other
+            // commit that the walk reaches is damage, as for `HistoryError`.
+            Self::History(HistoryError::Missing { child: None, .. }) => FailureKind::Other,
             Self::History(error) => error.kind(),
-            // A tree that a commit of the repository names is not there, is damaged, or does not
-            // parse. Nobody named these objects as an argument, so only a failing disk is other.
+            // A tree that a commit of the repository names is damaged or does not parse; a missing
+            // one is `Missing`. Nobody named these objects as an argument, so only a failing disk
+            // is another kind.
             Self::Tree(error) => match error.store_error() {
                 Some(StoreError::Io { .. }) => FailureKind::Other,
-                _ => FailureKind::Damaged,
+                Some(StoreError::Corrupt { .. } | StoreError::KindMismatch { .. }) | None => {
+                    FailureKind::Damaged
+                }
             },
+            // Unlike `StoreError::kind`, a kind mismatch is damage here: it comes from an entry
+            // of a tree, and the caller named no object.
             Self::Store(error) => match error {
                 StoreError::Io { .. } => FailureKind::Other,
                 StoreError::Corrupt { .. } | StoreError::KindMismatch { .. } => {
@@ -470,6 +478,76 @@ mod tests {
         };
         assert_eq!(stale.kind(), FailureKind::Other);
         assert_eq!(locked().kind(), FailureKind::Locked);
+    }
+
+    #[test]
+    fn the_errors_of_a_merge_are_classified_by_their_cause() {
+        use crate::merge::MergeError;
+        use crate::object::{CommitParseError, TreeError};
+        use crate::store::ReadError;
+
+        let io = || StoreError::Io {
+            operation: "read the object file",
+            path: path(),
+            source: std::io::Error::other("the disk failed"),
+        };
+        let mismatch = || StoreError::KindMismatch {
+            id: id(),
+            expected: Kind::Tree,
+            found: Kind::Blob,
+        };
+        let commit = crate::object::CommitId::new(id());
+        let tree = crate::object::TreeId::new(id());
+        assert_eq!(MergeError::Store(io()).kind(), FailureKind::Other);
+        assert_eq!(MergeError::Store(mismatch()).kind(), FailureKind::Damaged);
+        assert_eq!(
+            MergeError::Tree(ReadError::Store(Box::new(io()))).kind(),
+            FailureKind::Other
+        );
+        assert_eq!(
+            MergeError::Tree(ReadError::Store(Box::new(mismatch()))).kind(),
+            FailureKind::Damaged
+        );
+        // A body that is not canonical has no store error and is damage.
+        assert_eq!(
+            MergeError::Tree(ReadError::Commit {
+                id: commit,
+                source: CommitParseError::NotUtf8 { valid_up_to: 0 }
+            })
+            .kind(),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            MergeError::Missing {
+                id: id(),
+                kind: Kind::Tree
+            }
+            .kind(),
+            FailureKind::Damaged
+        );
+        let _ = tree;
+        assert_eq!(
+            MergeError::Entries(TreeError::DuplicateName("n".into())).kind(),
+            FailureKind::Other
+        );
+        // A start commit that the caller named is an argument error; a parent that is missing is
+        // damage.
+        assert_eq!(
+            MergeError::History(HistoryError::Missing {
+                id: commit,
+                child: None
+            })
+            .kind(),
+            FailureKind::Other
+        );
+        assert_eq!(
+            MergeError::History(HistoryError::Missing {
+                id: commit,
+                child: Some(commit)
+            })
+            .kind(),
+            FailureKind::Damaged
+        );
     }
 
     #[test]

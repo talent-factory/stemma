@@ -11,11 +11,12 @@
 //! One merge base `B` of the commits `O` (ours) and `T` (theirs) gives `O + (T - B)`. Several
 //! best common ancestors, as after a criss-cross merge, are not merged into a virtual commit, and
 //! no recursive merge runs: they are combined as a flat sum (Jujutsu does the same). The sum of a
-//! set of bases is the first base, plus the change from the common ancestors of the first and each
-//! further base to that further base, found the same way. Terms that two parts have in common
+//! set of bases is the first base, plus the change from the common ancestors of all earlier bases
+//! and each further base to that further base, found the same way. Terms that two parts have in common
 //! cancel. The sum may therefore have more than three sides. The bases come sorted by ID from
-//! [`merge_bases`], so the sum depends on the histories alone and not on the order in which a
-//! caller names them. A merge of histories that share nothing has the empty tree as its base.
+//! [`merge_bases`], which fixes the sum: it depends on the histories alone. With three or more
+//! bases the choice of the first one is arbitrary, but it is the same every time. A merge of
+//! histories that share nothing has the empty tree as its base.
 //!
 //! # The merge of a name
 //!
@@ -39,33 +40,38 @@
 //!    term, the value that was decided, and the competing values for the rest.
 //! 5. **Symbolic links.** The target is one value and is never merged by line.
 //! 6. **Everything else is a conflict of the path.** That covers a deleted file against a changed
-//!    one (renames are not detected, so a rename is a delete and an add), and different types,
-//!    such as a file against a directory or a symbolic link.
+//!    one (renames are not detected, so a rename is a delete and an add), two sides that add the
+//!    same path with different content (the base is absent, so there is nothing to merge by line),
+//!    and different types, such as a file against a directory or a symbolic link.
 //!
 //! # The merge of lines
 //!
-//! [`merge_lines`] compares every term with the first base by the same function as `diff`
-//! ([`diff_byte_lines`], with the indent heuristic), so the merge sees the hunks that `diff` shows
-//! for the base and each side. The lines of the base that all comparisons match divide the file;
-//! the text between two such lines is a hunk with one piece per term, and the pieces are a sum of
-//! their own that is decided by cancelling or by agreement. Changes of two sides that touch each
-//! other, even if they share no line, fall into one hunk and conflict, except when both sides made
-//! the same change. A binary file and a file that is not UTF-8 are never merged by line. A file is
-//! merged only if all of its hunks are decided. Otherwise the conflict of the path holds the whole
+//! [`merge_lines`] compares every term with the first removed term of the simplified sum, the base,
+//! by the same function as `diff` ([`diff_byte_lines`], with the indent heuristic), so the merge
+//! uses the edit script that `diff` shows for the base and each side. The lines of the base that
+//! all comparisons match are the fixed lines and divide the file; the text between two of them is
+//! a piece with one part per term, and the parts are a sum of their own that is decided by
+//! cancelling or by agreement. Changes of two sides that touch each other, even if they share no
+//! line, fall into one piece and conflict, except when both sides made the same change. A binary
+//! file and a file that is not UTF-8 are never merged by line. A file is merged only if all of its
+//! pieces are decided. Otherwise the conflict of the path holds the whole
 //! blobs: markers exist only as the text of [`marker_text`](crate::conflict::marker_text), on
 //! disk.
 //!
 //! # Cost
 //!
-//! For trees with `n` entries in all directories that differ, the merge reads and writes `O(n)`
-//! trees and entries; a subtree that cancels is not read. The merge of lines costs one diff of
-//! `O((N+M)·D)` per term against the base, plus a linear pass. Finding the bases is the cost of
-//! [`merge_bases`]. The recursion over the common ancestors of several bases is as deep as the
-//! history is in the worst case; criss-cross lattices that are deeper than a few levels are not
-//! expected in practice.
+//! For a sum of `k` terms and `n` entries in all directories that differ, the merge reads `k`
+//! trees per such directory, looks every name up in each by binary search, and writes `2s - 1`
+//! trees for `s` sides, so the cost is `O(n·k)` up to log factors; a tree that cancels is not read.
+//! The merge of lines costs one diff of `O((N+M)·D)` per term against the base, plus a linear pass
+//! and the `simplify` of each piece, which is quadratic in `k`. Finding the bases is the cost of
+//! [`merge_bases`], a walk of the whole ancestry. With several bases that walk runs once more for
+//! every further base, and again in every level of the recursion over their common ancestors, so
+//! both the depth and the number of calls grow with the history in the worst case; criss-cross
+//! lattices that are deeper than a few levels are not expected in practice.
 //!
-//! Only commits without a conflict are read: an open conflict as an operand needs the form of
-//! the commit ID that is still open (ADR-005).
+//! Only commits without a conflict are meant as operands. A `CommitId` does not resolve to a
+//! `commit2` yet (ADR-005, STEMMA-179), so one that names it is reported as an error of the store.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -91,7 +97,7 @@ pub enum MergeError {
     Tree(ReadError),
     /// A blob could not be read, or a tree or a blob could not be written.
     Store(StoreError),
-    /// A tree or a blob that a tree names is not in the store.
+    /// A tree or a blob that a commit or a tree names is not in the store.
     Missing {
         /// The ID of the object.
         id: ObjectId,
@@ -185,8 +191,8 @@ pub fn merge_commits(
 /// # Errors
 ///
 /// Returns [`MergeError::History`] if the store lacks a commit that the walk reaches or cannot
-/// return one intact, and [`MergeError::Store`] if the empty tree cannot be written for histories
-/// without a common ancestor.
+/// return one intact, and [`MergeError::Store`] or [`MergeError::Entries`] if the empty tree cannot
+/// be written for histories without a common ancestor.
 pub fn tree_sum(
     store: &dyn ObjectStore,
     ours: CommitId,
@@ -206,15 +212,16 @@ pub fn tree_sum(
 }
 
 /// The sum that stands for the common ancestors: the empty tree if there are none, the tree of
-/// the only one, and for several the first plus the change from the common ancestors of the first
-/// and each further one to that further one.
+/// the only one, and for several the first plus the change from the common ancestors of all
+/// earlier ones and each further one to that further one.
 fn base_sum(store: &dyn ObjectStore, bases: &[CommitId]) -> Result<Merge<TreeId>, MergeError> {
     let Some((&first, rest)) = bases.split_first() else {
         return Ok(Merge::resolved(store.put_tree(&Tree::try_new(vec![])?)?));
     };
     let mut sum = Merge::resolved(read_commit(store, first, None)?.tree());
+    let mut done = vec![first];
     for &other in rest {
-        let common = base_sum(store, &merge_bases(store, first, other)?)?;
+        let common = base_sum(store, &common_ancestors(store, &done, other)?)?;
         let other_tree = read_commit(store, other, None)?.tree();
         // `sum + other - common`.
         let mut adds: Vec<TreeId> = sum.adds().copied().collect();
@@ -223,8 +230,40 @@ fn base_sum(store: &dyn ObjectStore, bases: &[CommitId]) -> Result<Merge<TreeId>
         let mut removes: Vec<TreeId> = sum.removes().copied().collect();
         removes.extend(common.adds().copied());
         sum = Merge::from_parts(adds, removes);
+        done.push(other);
     }
     Ok(sum)
+}
+
+/// The best common ancestors of a set of commits and one more commit: the commits that are an
+/// ancestor of the commit and of at least one of the set, and of no other such commit. Sorted by
+/// ID. For a set of one commit these are its merge bases with the commit.
+fn common_ancestors(
+    store: &dyn ObjectStore,
+    set: &[CommitId],
+    commit: CommitId,
+) -> Result<Vec<CommitId>, MergeError> {
+    let mut candidates: Vec<CommitId> = Vec::new();
+    for &member in set {
+        candidates.extend(merge_bases(store, member, commit)?);
+    }
+    candidates.sort();
+    candidates.dedup();
+    let mut best = Vec::new();
+    for &candidate in &candidates {
+        // A candidate that is an ancestor of another one is not a best ancestor.
+        let mut shadowed = false;
+        for &other in &candidates {
+            if other != candidate && merge_bases(store, candidate, other)? == [candidate] {
+                shadowed = true;
+                break;
+            }
+        }
+        if !shadowed {
+            best.push(candidate);
+        }
+    }
+    Ok(best)
 }
 
 impl From<TreeError> for MergeError {
@@ -461,12 +500,14 @@ fn decided<T: Clone + Eq>(sum: &Merge<T>) -> Option<T> {
 /// conflicts (see the module documentation): a binary file, a file that is not UTF-8, or a place
 /// where the terms do not cancel and the sides do not agree.
 ///
-/// The first removed term, the base, is the reference. Each other term is compared with it by the
-/// same function as `diff` ([`diff_byte_lines`]). The lines of the base that every comparison
-/// matches are the anchors, and the text between two anchors is a hunk with one piece per term.
-/// The pieces of a hunk are a sum of their own and are decided like any sum: cancelling, or all
-/// sides equal. Changes of two sides that touch or overlap fall into one hunk, where they are a
-/// conflict unless they are the same change. For a sum of one term the text is that term.
+/// A sum of one term is that text, if it is text. Otherwise the first removed term, the base, is
+/// the reference; the caller passes the sum simplified, so that this is the first base that did
+/// not cancel. Each other term is compared with it by the same function as `diff`
+/// ([`diff_byte_lines`]). The lines of the base that every comparison matches are the fixed lines,
+/// and the text between two of them is a piece with one part per term. The parts of a piece are a
+/// sum of their own and are decided like any sum: cancelling, or all sides equal. Changes of two
+/// sides that touch or overlap fall into one piece, where they are a conflict unless they are the
+/// same change.
 pub fn merge_lines(sum: &Merge<&[u8]>) -> Option<Vec<u8>> {
     if sum
         .terms()
@@ -503,27 +544,29 @@ pub fn merge_lines(sum: &Merge<&[u8]>) -> Option<Vec<u8>> {
     let mut merged: Vec<u8> = Vec::new();
     // The first line of each term that no hunk has taken yet.
     let mut taken = vec![0; texts.len()];
-    let anchors = (0..reference.len())
+    let fixed_lines = (0..reference.len())
         .filter(|&line| matched.iter().all(|term| term[line].is_some()))
         .map(Some)
         .chain(std::iter::once(None));
-    for anchor in anchors {
-        // The hunk ends where the anchor is in each term, or at the end of the term.
+    for fixed_line in fixed_lines {
+        // The piece ends where the fixed line is in each term, or at the end of the term.
         let ends: Vec<usize> = texts
             .iter()
             .zip(&matched)
-            .map(|(text, term)| anchor.map_or(text.len(), |line| term[line].expect("an anchor")))
+            .map(|(text, term)| {
+                fixed_line.map_or(text.len(), |line| term[line].expect("a fixed line"))
+            })
             .collect();
         let pieces: Vec<Vec<&[u8]>> = texts
             .iter()
             .zip(taken.iter().zip(&ends))
             .map(|(text, (&from, &to))| text[from..to].to_vec())
             .collect();
-        let hunk = Merge::try_from_terms(pieces).expect("the terms of a sum");
-        decided(&hunk)?
+        let piece = Merge::try_from_terms(pieces).expect("the terms of a sum");
+        decided(&piece)?
             .iter()
             .for_each(|line| merged.extend_from_slice(line));
-        if let Some(line) = anchor {
+        if let Some(line) = fixed_line {
             merged.extend_from_slice(reference[line]);
             for (taken, end) in taken.iter_mut().zip(&ends) {
                 *taken = end + 1;
@@ -949,12 +992,12 @@ mod tests {
     }
 
     #[test]
-    fn a_subtree_that_cancels_is_not_read() {
+    fn a_sum_that_cancels_reads_no_tree() {
         let dir = TempDir::new();
         let store = dir.store();
         let base = build(&store, &[("d/a", "1\n")]);
         let ours = build(&store, &[("d/a", "2\n")]);
-        // The tree of `theirs` is the base, so the sum cancels without a read of any tree.
+        // The tree of `theirs` is the base, so the sum cancels without a read or a write.
         let failing = FaultyStore::new(dir.store(), true, true);
         let merged = merge_trees(
             &failing,
@@ -1443,5 +1486,164 @@ mod tests {
             let result = std::panic::catch_unwind(|| crate::fuzz::merge_lines(&input));
             assert!(result.is_ok(), "case {case}, seed {seed}: {input:?}");
         }
+    }
+
+    /// Merges `ours` and `theirs` over the given bases, in the given order.
+    fn merge_over(
+        store: &dyn ObjectStore,
+        ours: CommitId,
+        theirs: CommitId,
+        bases: &[CommitId],
+    ) -> Merge<TreeId> {
+        let base = base_sum(store, bases).unwrap();
+        let mut adds = vec![
+            read_commit(store, ours, None).unwrap().tree(),
+            read_commit(store, theirs, None).unwrap().tree(),
+        ];
+        adds.extend(base.removes().copied());
+        let removes = base.adds().copied().collect();
+        merge_trees(store, &Merge::from_parts(adds, removes)).unwrap()
+    }
+
+    #[test]
+    fn a_change_that_two_of_three_bases_share_is_counted_once_in_every_order() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let files = |x: &str, a: &str, b: &str, c: &str, o: &str| {
+            build(&store, &[("x", x), ("a", a), ("b", b), ("c", c), ("o", o)])
+        };
+        let w = commit(&store, files("0", "0", "0", "0", "0"), &[], 1);
+        let x = commit(&store, files("1", "0", "0", "0", "0"), &[w], 2);
+        let b1 = commit(&store, files("0", "1", "0", "0", "0"), &[w], 3);
+        let b2 = commit(&store, files("1", "0", "1", "0", "0"), &[x], 4);
+        let b3 = commit(&store, files("1", "0", "0", "1", "0"), &[x], 5);
+        let m12 = commit(&store, files("1", "1", "1", "0", "0"), &[b1, b2], 6);
+        let ours = commit(&store, files("1", "1", "1", "1", "1"), &[m12, b3], 7);
+        let m23 = commit(&store, files("1", "0", "1", "1", "0"), &[b2, b3], 8);
+        let theirs = commit(&store, files("1", "1", "1", "1", "0"), &[m23, b1], 9);
+
+        let mut found = merge_bases(&store, ours, theirs).unwrap();
+        found.sort();
+        let mut want = vec![b1, b2, b3];
+        want.sort();
+        assert_eq!(found, want);
+
+        let result = files("1", "1", "1", "1", "1");
+        for order in [
+            [b1, b2, b3],
+            [b1, b3, b2],
+            [b2, b1, b3],
+            [b2, b3, b1],
+            [b3, b1, b2],
+            [b3, b2, b1],
+        ] {
+            let merged = merge_over(&store, ours, theirs, &order);
+            assert_eq!(merged.resolution(), Some(result), "order {order:?}");
+        }
+    }
+
+    #[test]
+    fn a_link_against_a_file_is_a_conflict_and_a_link_changed_the_same_way_is_taken() {
+        let base = [("p", "file\n")];
+        let link = [("p", "l:target")];
+        assert_eq!(
+            merge3(&base, &link, &base.map(|(n, _)| (n, "other\n"))).len(),
+            3
+        );
+        assert_eq!(clean(&base, &link, &link), expected(&link));
+    }
+
+    #[test]
+    fn a_missing_blob_is_reported_with_its_kind() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let absent = Blob::new("absent").id();
+        let tree = |blob: BlobId| {
+            let entry = TreeEntry::file("f", FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let present = store.put_blob(&Blob::new("a\nb\nc\nd\ne\n")).unwrap();
+        let other = store.put_blob(&Blob::new("A\nb\nc\nd\ne\n")).unwrap();
+        let sum = Merge::try_from_terms(vec![tree(other), tree(present), tree(absent)]).unwrap();
+        let error = merge_trees(&store, &sum).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                MergeError::Missing {
+                    kind: Kind::Blob,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("blob"), "{error}");
+        assert!(error.store_error().is_none());
+    }
+
+    #[test]
+    fn a_store_that_cannot_write_fails_the_merge_with_a_store_error() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let (b, o, t) = (
+            build(&store, &[("a", "1\n")]),
+            build(&store, &[("a", "2\n")]),
+            build(&store, &[("b", "3\n")]),
+        );
+        let failing = FaultyStore::new(dir.store(), false, true);
+        let error =
+            merge_trees(&failing, &Merge::try_from_terms(vec![o, b, t]).unwrap()).unwrap_err();
+        assert!(matches!(error, MergeError::Store(_)), "{error:?}");
+        assert!(error.store_error().is_some());
+    }
+
+    #[test]
+    fn the_errors_print_their_cause_once_and_expose_the_cause_of_the_cause() {
+        let io = || StoreError::Io {
+            operation: "read the object file",
+            path: std::path::PathBuf::from("objects/b3/00/x"),
+            source: std::io::Error::other("the disk failed"),
+        };
+        let store = MergeError::Store(io());
+        assert!(store.to_string().contains("the disk failed"));
+        // The message holds the cause already, and the I/O error has no cause of its own.
+        assert!(store.source().is_none());
+        let tree = MergeError::Tree(ReadError::Store(Box::new(io())));
+        assert!(tree.store_error().is_some());
+        assert!(tree.to_string().contains("the disk failed"));
+        let missing = MergeError::Missing {
+            id: Blob::new("x").id().object_id(),
+            kind: Kind::Tree,
+        };
+        assert!(missing.to_string().starts_with("the tree "));
+        assert!(missing.source().is_none() && missing.store_error().is_none());
+        let entries = MergeError::Entries(TreeError::DuplicateName("n".into()));
+        assert!(entries.to_string().contains("duplicate tree entry name"));
+        assert!(entries.store_error().is_none());
+        let history = MergeError::History(HistoryError::Missing {
+            id: CommitId::new(Blob::new("c").id().object_id()),
+            child: None,
+        });
+        assert!(history.store_error().is_none());
+    }
+
+    #[test]
+    fn a_sum_of_five_texts_is_merged_by_line_over_the_first_base_that_did_not_cancel() {
+        // `ours + theirs - left - right + root`, with the changes in different places.
+        let root = text(&["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+        let left = text(&["1", "L", "3", "4", "5", "6", "7", "8", "9"]);
+        let right = text(&["1", "2", "3", "4", "5", "6", "7", "R", "9"]);
+        let ours = text(&["1", "L", "3", "4", "O", "6", "7", "R", "9"]);
+        let theirs = text(&["1", "L", "3", "4", "5", "6", "7", "R", "9"]);
+        let sum = Merge::try_from_terms(vec![
+            ours.as_bytes(),
+            left.as_bytes(),
+            theirs.as_bytes(),
+            right.as_bytes(),
+            root.as_bytes(),
+        ])
+        .unwrap();
+        assert_eq!(merge_lines(&sum), Some(ours.clone().into_bytes()));
     }
 }

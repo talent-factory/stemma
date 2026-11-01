@@ -179,10 +179,11 @@ them.
   are these.
   - *The sum.* One merge base gives `ours + (theirs - base)`. Several bases are neither merged into
     a virtual commit nor merged recursively. They are one flat sum, as in Jujutsu: the first base,
-    plus the change from the common ancestors of the first and each further base to that base.
+    plus the change from the common ancestors of all earlier bases and each further base to it.
     The result may have more than three sides, and it follows from the bases, which `merge_bases`
-    returns sorted by ID, so the order in which a caller names them does not matter. Histories
-    without a common ancestor have the empty tree as their base.
+    returns sorted by ID, which fixes the sum. With three or more bases the choice of the first is
+    arbitrary, but always the same. Histories without a common ancestor have the empty tree as
+    their base.
   - *Per name.* Cancelling terms come first (the changed value wins over the unchanged one). If all
     sides are equal, that value is the result, for content and for mode, per path; there is no
     setting for it in phase 3. If every term is a directory or absent, the trees are merged one
@@ -190,13 +191,14 @@ them.
     the paths that the changed side touched, and a directory without entries is absent. If every
     term is a file, the mode and the content are merged independently, and a conflict of one keeps
     the decided value of the other in every term. A symbolic link is one value and is never merged
-    by line. Everything else is a conflict of the path: a deleted file against a changed one, and
-    different types (a file against a directory or a link).
+    by line. Everything else is a conflict of the path: a deleted file against a changed one, two
+    sides that add the same path with different content, and different types (a file against a
+    directory or a link).
   - *No rename detection.* A rename is a delete and an add, so an edit of the old name on the other
     side is a conflict of a deleted against a changed file. A later slice can add detection without
     a change of the format.
-  - *Lines.* The lines of a file are compared with the first base by `diff_byte_lines`, the
-    function of `diff`, so that merge and `diff` see the same hunks. The lines of the base that all
+  - *Lines.* The lines of a file are compared with the first base that did not cancel by `diff_byte_lines`, the
+    function of `diff`, so that merge and `diff` use the same edit script. The lines of the base that all
     comparisons match divide the file, and each piece between two of them is decided as a sum of
     its own. Changes that touch each other without overlapping are one piece and a conflict, unless
     both sides made the same change. A binary file and a file that is not UTF-8 are a conflict as a

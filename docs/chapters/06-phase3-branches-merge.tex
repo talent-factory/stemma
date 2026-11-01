@@ -62,14 +62,14 @@ und $T$ der der anderen ist. Nach einem Criss-Cross-Merge gibt es mehrere Merge-
 Stemma bildet daraus keinen virtuellen Commit und merged nicht rekursiv, wie git es tut.
 Die Basen gehen als flache Summe in den Merge ein, wie bei Jujutsu \cite[jujutsu].
 Die Summe der Basen ist die erste Basis, plus die Änderung von den gemeinsamen Vorfahren
-der ersten und jeder weiteren Basis zu dieser weiteren Basis; diese Vorfahren
+aller früheren Basen und einer weiteren Basis zu dieser weiteren Basis; diese Vorfahren
 bestimmt dieselbe Regel noch einmal.
 Haben $L$ und $R$ den gemeinsamen Vorfahren $W$, so ist die Summe der Basen $L + (R - W)$
 und die des Merges $O + T - L - R + W$.
 Sie hat drei Seiten und zwei Basen.
 Was sich aufhebt, fällt weg: Ein Pfad, den nur ein Zweig geändert hat, trägt nur diese Änderung.
-Die Basen kommen von \type{merge_bases} nach ID sortiert,
-die Reihenfolge, in der ein Aufrufer sie nennt, spielt also keine Rolle.
+Die Basen kommen von \type{merge_bases} nach ID sortiert, und das legt die Summe fest.
+Bei drei oder mehr Basen ist die Wahl der ersten willkürlich, aber jedes Mal dieselbe.
 Haben zwei Verläufe keinen gemeinsamen Vorfahren, ist der leere Tree die Basis.
 
 Ist ein Commit Vorfahr des anderen, ist er selbst die Basis,
@@ -100,7 +100,8 @@ und für den offenen Teil die Werte der Seiten.
 \item Das Ziel eines symbolischen Links ist ein einziger Wert und wird nie zeilenweise
 zusammengeführt.
 \item Alles andere ist ein Konflikt des Pfades. Dazu gehören eine gelöschte Datei gegen eine
-geänderte und verschiedene Typen, etwa eine Datei gegen ein Verzeichnis
+geänderte, zwei Seiten, die denselben Pfad mit verschiedenem Inhalt hinzufügen,
+und verschiedene Typen, etwa eine Datei gegen ein Verzeichnis
 oder einen symbolischen Link.
 \stopitemize
 
@@ -126,11 +127,11 @@ und jedes Zwischenstück ist für sich
 eine Summe, die sich aufhebt oder nicht.
 Die Funktion (\type{merge_lines}) verwendet dafür denselben Diff wie der Befehl \type{diff}
 (\in{Abschnitt}[sec:myers] und \in{Abschnitt}[sec:slide]),
-damit Merge und Diff dieselben Hunks sehen.
+damit Merge und Diff dasselbe Edit-Skript sehen.
 
 \subsection{Definition}
 
-Die Eingabe ist eine Summe von Inhalten. Die erste entfernte Basis ist der Bezug,
+Die Eingabe ist eine Summe von Inhalten. Die erste entfernte Basis nach dem Aufheben ist der Bezug,
 und jeder andere Term wird mit ihr verglichen (\type{diff_byte_lines}).
 Eine Zeile des Bezugs ist eine Fixzeile, wenn jeder Vergleich sie einer gleichen Zeile zuordnet.
 Zwischen zwei Fixzeilen steht in jedem Term ein Teil des Textes, möglicherweise leer.
@@ -160,11 +161,15 @@ Ein Fuzz-Ziel (\type{merge_lines}) prüft die Regeln auf beliebigen Eingaben.
 \subsection{Komplexität}
 
 Der Merge liest je Term einen Diff gegen die Basis, der $O((N+M)\,D)$ kostet
-(\in{Abschnitt}[sec:myers]), und geht dann einmal linear durch die Zeilen.
-Mit $n$ Einträgen in den Verzeichnissen, die sich unterscheiden, liest und schreibt der Merge
-der Trees $O(n)$ Objekte. Die Rekursion über die gemeinsamen Vorfahren mehrerer Basen
-ist im schlimmsten Fall so tief wie der Verlauf; tiefe Gitter solcher Merges
-sind in der Praxis nicht zu erwarten.
+(\in{Abschnitt}[sec:myers]), und geht dann einmal linear durch die Zeilen;
+das Aufheben jedes Zwischenstücks ist quadratisch in $k$.
+Bei einer Summe aus $k$ Termen und $n$ Einträgen in den Verzeichnissen, die sich unterscheiden,
+kostet der Merge der Trees $O(n \cdot k)$ bis auf logarithmische Faktoren;
+ein Tree, der sich aufhebt, wird nicht gelesen.
+Dazu kommt die Suche nach den Merge-Basen, die den ganzen Verlauf durchgeht.
+Mit mehreren Basen läuft sie für jede weitere Basis noch einmal, und in jeder Ebene der Rekursion
+über die gemeinsamen Vorfahren wieder; im schlimmsten Fall wachsen Tiefe und Zahl der Aufrufe
+mit dem Verlauf. Tiefe Gitter solcher Merges sind in der Praxis nicht zu erwarten.
 
 \startinfobox
 {\bf Grenzfälle des Merges.}
