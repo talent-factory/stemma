@@ -204,7 +204,9 @@ impl Classify for SnapshotError {
             Self::Refs(error) => error.kind(),
             Self::Store(error) => error.kind(),
             Self::WriteTree(error) => error.kind(),
-            Self::NotOwner { .. } | Self::AgentTakeOver => FailureKind::Other,
+            Self::NotOwner { .. } | Self::AgentTakeOver | Self::Conflicted { .. } => {
+                FailureKind::Other
+            }
             // The working-copy commit names an object that is not there or does not parse.
             Self::Missing { .. } | Self::Commit { .. } | Self::Tree { .. } => FailureKind::Damaged,
             Self::Unsupported { .. } | Self::Gone { .. } | Self::Index(_) | Self::Io { .. } => {
@@ -271,9 +273,10 @@ impl Classify for DiffError {
             Self::AfterSnapshot { source, .. } => source.kind(),
             // An object that a commit of the repository names is not there or does not parse.
             Self::Missing { .. } | Self::Damaged { .. } => FailureKind::Damaged,
-            Self::UnknownCommit { .. } | Self::InvalidPath { .. } | Self::NoSuchPath { .. } => {
-                FailureKind::Other
-            }
+            Self::Conflicted { .. }
+            | Self::UnknownCommit { .. }
+            | Self::InvalidPath { .. }
+            | Self::NoSuchPath { .. } => FailureKind::Other,
         }
     }
 }
@@ -358,12 +361,10 @@ impl Classify for PurgeError {
             Self::Read(error) => error.kind(),
             Self::Store(error) | Self::BlobUnreadable { source: error, .. } => error.kind(),
             Self::Leftover { source, .. } => source.kind(),
-            // No command writes a `commit2` yet, so one in the store is reported as damage, as an
-            // unknown kind was before.
-            Self::UnsupportedKind { .. } => FailureKind::Damaged,
             Self::Agent
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
+            | Self::Rewrite { .. }
             | Self::TooManyEntries { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,

@@ -15,6 +15,7 @@ use std::error::Error;
 use std::fmt;
 
 use super::{Repository, SnapshotError, UpdateError};
+use crate::conflict::AnyCommit;
 use crate::diff::{diff_byte_lines, hunks, is_binary, Hunk};
 use crate::object::{Commit, CommitId, EntryMode, Kind, ObjectId, Tree, TreeId};
 use crate::refs::RefError;
@@ -208,6 +209,12 @@ pub enum DiffError {
         /// Why the object does not parse.
         reason: String,
     },
+    /// A commit that the diff needs is a `commit2`: it records an open conflict and has no one tree
+    /// to compare. What a diff of a conflict shows is not decided yet (STEMMA-19).
+    Conflicted {
+        /// The commit.
+        id: CommitId,
+    },
     /// An operand is not the identifier of a commit in the store: it is not an identifier, or it
     /// names no object, or it names an object of another kind.
     UnknownCommit {
@@ -245,6 +252,10 @@ impl fmt::Display for DiffError {
             Self::Store(error) => write!(f, "an object could not be read from the store: {error}"),
             Self::Missing { id } => write!(f, "object {id} is missing from the store"),
             Self::Damaged { id, reason } => write!(f, "object {id} is damaged: {reason}"),
+            Self::Conflicted { id } => write!(
+                f,
+                "the commit {id} records an open conflict, which a diff cannot compare as one tree"
+            ),
             Self::UnknownCommit { operand } => {
                 write!(
                     f,
@@ -280,6 +291,7 @@ impl Error for DiffError {
             Self::Store(error) => Some(error),
             Self::Missing { .. }
             | Self::Damaged { .. }
+            | Self::Conflicted { .. }
             | Self::UnknownCommit { .. }
             | Self::InvalidPath { .. }
             | Self::NoSuchPath { .. } => None,
@@ -451,14 +463,14 @@ impl Repository {
         Ok(Side::WorkingCopy(id))
     }
 
-    /// Reads an operand as the identifier of a commit. Only an object of the commit kind counts;
-    /// a tree or a blob, and an absent object, are [`DiffError::UnknownCommit`].
+    /// Reads an operand as the identifier of a commit. Only an object of the kind `commit` or
+    /// `commit2` counts; a tree or a blob, and an absent object, are [`DiffError::UnknownCommit`].
     fn commit_operand(&self, operand: &str) -> Result<CommitId, DiffError> {
         let unknown = || DiffError::UnknownCommit {
             operand: operand.to_owned(),
         };
         let id: ObjectId = operand.parse().map_err(|_| unknown())?;
-        match self.objects().get_expecting(&id, Kind::Commit) {
+        match self.objects().get_commit_object(&id) {
             Ok(Some(_)) => Ok(CommitId::new(id)),
             Ok(None) | Err(StoreError::KindMismatch { .. }) => Err(unknown()),
             Err(error) => Err(DiffError::Store(error)),
@@ -509,13 +521,22 @@ fn read_raw(objects: &dyn ObjectStore, id: ObjectId, kind: Kind) -> Result<RawOb
         .ok_or(DiffError::Missing { id })
 }
 
-/// Reads and parses a commit.
+/// Reads and parses a commit of one tree. A `commit2` is [`DiffError::Conflicted`].
 fn commit_of(objects: &dyn ObjectStore, id: CommitId) -> Result<Commit, DiffError> {
-    let raw = read_raw(objects, id.object_id(), Kind::Commit)?;
-    Commit::parse(raw.body()).map_err(|error| DiffError::Damaged {
-        id: id.object_id(),
-        reason: error.to_string(),
-    })
+    let raw = objects
+        .get_commit_object(&id.object_id())
+        .map_err(DiffError::Store)?
+        .ok_or(DiffError::Missing { id: id.object_id() })?;
+    let commit = AnyCommit::parse(raw.kind(), raw.body())
+        .expect("the kind is a commit or a commit2")
+        .map_err(|error| DiffError::Damaged {
+            id: id.object_id(),
+            reason: error.to_string(),
+        })?;
+    match commit {
+        AnyCommit::Commit(commit) => Ok(commit),
+        AnyCommit::Commit2(_) => Err(DiffError::Conflicted { id }),
+    }
 }
 
 /// Lists the files of a tree, depth first, with the IDs of their blobs. A directory is read and
@@ -594,5 +615,49 @@ mod tests {
             "{error}"
         );
         assert_eq!(repository.oplog().numbers().unwrap(), numbers);
+    }
+
+    #[test]
+    fn a_commit2_is_an_operand_that_the_diff_cannot_compare_as_one_tree() {
+        use crate::object::{Commit2, FileMode, Tree, TreeEntry};
+        use crate::store::ObjectStore;
+        let dir = TempDir::new();
+        let actor = Actor::human("daniel").unwrap();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor, &AllowAll).unwrap();
+        let store = repository.objects();
+        let blob = store.put_blob(&crate::object::Blob::new("x")).unwrap();
+        let tree = |name: &str| {
+            let entry = TreeEntry::file(name, FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let conflict = Commit2::try_new(
+            vec![tree("a"), tree("b"), tree("c")],
+            vec![],
+            crate::change::ChangeId::generate().unwrap(),
+            actor.clone(),
+            1,
+            "conflict",
+        )
+        .unwrap();
+        let id = CommitId::new(store.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
+        // The operand is a commit identifier, so it is not `UnknownCommit`; it has no one tree.
+        let operand = id.to_string();
+        let error = repository
+            .diff(&actor, &AllowAll, Comparison::WithWorkingCopy(&operand))
+            .unwrap_err();
+        assert!(
+            matches!(error, DiffError::Conflicted { id: found } if found == id),
+            "{error}"
+        );
+        assert!(error.to_string().contains("open conflict"), "{error}");
+        // A tree is no commit of either kind.
+        let operand = tree("a").to_string();
+        let error = repository
+            .diff(&actor, &AllowAll, Comparison::WithWorkingCopy(&operand))
+            .unwrap_err();
+        assert!(matches!(error, DiffError::UnknownCommit { .. }), "{error}");
     }
 }

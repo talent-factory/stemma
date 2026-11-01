@@ -15,7 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{now, Repository, UpdateError};
-#[cfg(test)]
+use crate::conflict::AnyCommit;
 use crate::fault;
 use crate::index::{Index, IndexError, WriteTreeError};
 use crate::object::{
@@ -280,13 +280,34 @@ fn finish_new(objects: Batch<'_>) -> Result<(), SnapshotError> {
         .map_err(|error| SnapshotError::Store(Box::new(error)))
 }
 
-/// Reads and parses the commit.
+/// Reads and parses the commit of the one tree that a command works on. A `commit2` holds a
+/// conflict and has no one tree, so it is [`SnapshotError::Conflicted`]: what a command does with
+/// a conflict is not decided yet (STEMMA-19).
 pub(super) fn read_commit(
     objects: &dyn ObjectStore,
     id: CommitId,
 ) -> Result<Commit, SnapshotError> {
-    let raw = read_object(objects, id.object_id(), Kind::Commit)?;
-    Commit::parse(raw.body()).map_err(|source| SnapshotError::Commit { id, source })
+    match read_any_commit(objects, id)? {
+        AnyCommit::Commit(commit) => Ok(commit),
+        AnyCommit::Commit2(_) => Err(SnapshotError::Conflicted { id }),
+    }
+}
+
+/// Reads and parses the commit in either of its kinds, `commit` or `commit2`.
+pub(super) fn read_any_commit(
+    objects: &dyn ObjectStore,
+    id: CommitId,
+) -> Result<AnyCommit, SnapshotError> {
+    let object = objects
+        .get_commit_object(&id.object_id())
+        .map_err(|error| SnapshotError::Store(Box::new(error)))?
+        .ok_or(SnapshotError::Missing {
+            id: id.object_id(),
+            kind: Kind::Commit,
+        })?;
+    AnyCommit::parse(object.kind(), object.body())
+        .expect("the kind is a commit or a commit2")
+        .map_err(|source| SnapshotError::Commit { id, source })
 }
 
 /// Reads an object of the kind, or fails if the store lacks it.
@@ -555,6 +576,12 @@ pub enum SnapshotError {
         /// What is wrong with it.
         source: CommitParseError,
     },
+    /// The commit is a `commit2`, which records an open conflict, and the command needs one tree.
+    /// Nothing was changed.
+    Conflicted {
+        /// The commit.
+        id: CommitId,
+    },
     /// A tree of the working-copy commit is not valid.
     Tree {
         /// The tree.
@@ -651,6 +678,7 @@ impl SnapshotError {
             Self::WriteTree(error) => error.store_error().and_then(StoreError::io_error),
             Self::Missing { .. }
             | Self::Commit { .. }
+            | Self::Conflicted { .. }
             | Self::Tree { .. }
             | Self::Unsupported { .. }
             | Self::Gone { .. }
@@ -713,6 +741,11 @@ impl fmt::Display for SnapshotError {
             Self::Commit { id, source } => {
                 write!(f, "the commit {id} is not valid: {source}")
             }
+            Self::Conflicted { id } => write!(
+                f,
+                "the commit {id} records an open conflict, which this command cannot read as one \
+                 tree"
+            ),
             Self::Tree { id, source } => write!(f, "the tree {id} is not valid: {source}"),
             Self::Unsupported { path, what } => write!(
                 f,
@@ -1719,5 +1752,50 @@ mod tests {
             (moves.before(), moves.after()),
             (Some(&before), Some(&after))
         );
+    }
+
+    #[test]
+    fn a_commit2_is_read_as_a_commit_of_its_own_form_and_not_as_one_tree() {
+        use crate::object::{Commit2, FileMode, TreeEntry};
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = store.put_blob(&Blob::new("x")).unwrap();
+        let tree = |name: &str| {
+            let entry = TreeEntry::file(name, FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let conflict = Commit2::try_new(
+            vec![tree("a"), tree("b"), tree("c")],
+            vec![],
+            crate::change::ChangeId::generate().unwrap(),
+            Actor::human("daniel").unwrap(),
+            1,
+            "conflict",
+        )
+        .unwrap();
+        let id = CommitId::new(store.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
+        assert_eq!(
+            read_any_commit(&store, id).unwrap(),
+            AnyCommit::Commit2(conflict)
+        );
+        let error = read_commit(&store, id).unwrap_err();
+        assert!(matches!(error, SnapshotError::Conflicted { id: found } if found == id));
+        assert!(error.to_string().contains("open conflict"), "{error}");
+        // An object that is no commit of either kind is still a store error.
+        let as_commit = CommitId::new(blob.object_id());
+        assert!(matches!(
+            read_any_commit(&store, as_commit),
+            Err(SnapshotError::Store(_))
+        ));
+        let absent = CommitId::new(Blob::new("absent").id().object_id());
+        assert!(matches!(
+            read_any_commit(&store, absent),
+            Err(SnapshotError::Missing {
+                kind: Kind::Commit,
+                ..
+            })
+        ));
     }
 }

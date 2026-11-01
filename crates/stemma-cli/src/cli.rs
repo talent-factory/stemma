@@ -74,10 +74,11 @@ use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use crate::op_log::{self, JSON_SCHEMA};
+use stemma_core::conflict::AnyCommit;
 use stemma_core::diff::Edit;
 use stemma_core::failure::{Classify, FailureKind};
 use stemma_core::history::{self, HistoryError, Parents};
-use stemma_core::object::{Commit, CommitId, ObjectId, METADATA_DIR};
+use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, RefError};
 use stemma_core::repository::{
@@ -1701,7 +1702,7 @@ fn show_log(args: LogArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// author, and the time. A message follows after a blank line, every line indented by four spaces.
 /// A blank line ends the block, so a commit with an empty message, such as the working-copy commit
 /// after `init`, has the header and one blank line.
-fn log_text(id: CommitId, commit: &Commit, current: bool) -> String {
+fn log_text(id: CommitId, commit: &AnyCommit, current: bool) -> String {
     let parents = commit
         .parents()
         .iter()
@@ -1763,7 +1764,7 @@ fn mask_controls(text: &str) -> String {
 /// One commit as one JSON object and a newline (`schema`, ADR-018): `commit`, `working_copy`
 /// (true for `@`), `parents` (a list of IDs), `change`, `author`, `time` (seconds since the Unix
 /// epoch, as the commit claims), and `message` (verbatim).
-fn log_json(id: CommitId, commit: &Commit, current: bool) -> String {
+fn log_json(id: CommitId, commit: &AnyCommit, current: bool) -> String {
     let parents: Vec<String> = commit
         .parents()
         .iter()
@@ -2868,6 +2869,7 @@ fn temp_left_message(path: &Path, error: &io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stemma_core::object::Commit;
     use stemma_core::repository::{SnapshotError, UpdateError};
 
     /// A repository made by `init` below the temp directory, and its first entry.
@@ -4463,7 +4465,7 @@ mod tests {
     fn a_commit_with_two_parents_lists_both_in_the_text_and_the_json() {
         let (dir, first_id, first, merge_id, merge) = merge_commit("log-two-parents");
         let second_id = merge.parents()[1];
-        let text = log_text(merge_id, &merge, false);
+        let text = log_text(merge_id, &AnyCommit::Commit(merge.clone()), false);
         assert!(
             text.contains(&format!("  parents  {first_id} {second_id}\n")),
             "{text}"
@@ -4475,7 +4477,7 @@ mod tests {
         );
         assert!(text.starts_with(&format!("o {merge_id}\n")), "{text}");
 
-        let json = log_json(merge_id, &merge, false);
+        let json = log_json(merge_id, &AnyCommit::Commit(merge.clone()), false);
         assert!(
             json.contains(&format!("\"parents\":[\"{first_id}\",\"{second_id}\"]")),
             "{json}"
@@ -4498,7 +4500,7 @@ mod tests {
     #[test]
     fn an_empty_message_leaves_the_header_and_one_blank_line() {
         let (dir, first_id, first, _, _) = merge_commit("log-empty-message");
-        let text = log_text(first_id, &first, true);
+        let text = log_text(first_id, &AnyCommit::Commit(first.clone()), true);
         assert!(text.starts_with(&format!("@ {first_id}\n")), "{text}");
         assert!(text.ends_with("Z\n\n"), "{text:?}");
         assert_eq!(text.matches("\n\n").count(), 1, "{text:?}");

@@ -38,7 +38,9 @@ use std::error::Error;
 use std::fmt;
 
 use crate::change::ChangeId;
-use crate::object::{Commit, Commit2, Commit2Error, CommitError, CommitId, TreeId};
+use crate::object::{
+    Commit, Commit2, Commit2Error, CommitError, CommitId, CommitParseError, Kind, TreeId,
+};
 use crate::Actor;
 
 /// A sum of values: `terms[0] - terms[1] + terms[2] - terms[3] + ... + terms[n - 1]`.
@@ -334,6 +336,82 @@ impl AnyCommit {
             Self::Commit(commit) => commit.into(),
             Self::Commit2(commit) => commit.into(),
         }
+    }
+
+    /// Reads the body of an object of the kind `commit` or `commit2` in its own form. Returns
+    /// `None` for another kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of [`Commit::parse`] or [`Commit2::parse`].
+    pub fn parse(kind: Kind, body: &[u8]) -> Option<Result<Self, CommitParseError>> {
+        match kind {
+            Kind::Commit => Some(Commit::parse(body).map(Self::Commit)),
+            Kind::Commit2 => Some(Commit2::parse(body).map(Self::Commit2)),
+            _ => None,
+        }
+    }
+
+    /// Returns the parents in the order given at creation.
+    pub fn parents(&self) -> &[CommitId] {
+        match self {
+            Self::Commit(commit) => commit.parents(),
+            Self::Commit2(commit) => commit.parents(),
+        }
+    }
+
+    /// Returns the change ID, which a rewrite of the commit keeps.
+    pub fn change(&self) -> ChangeId {
+        match self {
+            Self::Commit(commit) => commit.change(),
+            Self::Commit2(commit) => commit.change(),
+        }
+    }
+
+    /// Returns the author.
+    pub fn author(&self) -> &Actor {
+        match self {
+            Self::Commit(commit) => commit.author(),
+            Self::Commit2(commit) => commit.author(),
+        }
+    }
+
+    /// Returns the claimed time in seconds since the Unix epoch (UTC).
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Commit(commit) => commit.timestamp(),
+            Self::Commit2(commit) => commit.timestamp(),
+        }
+    }
+
+    /// Returns the message.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Commit(commit) => commit.message(),
+            Self::Commit2(commit) => commit.message(),
+        }
+    }
+
+    /// Returns a commit with the same change, author, time, and message, and the given trees and
+    /// parents. The form follows from the sum (see [`from_sum`](Self::from_sum)), so a rewrite
+    /// that makes two terms equal can turn a `commit2` into a `commit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`from_sum`](Self::from_sum).
+    pub fn reparent(
+        &self,
+        trees: &Merge<TreeId>,
+        parents: Vec<CommitId>,
+    ) -> Result<Self, FromSumError> {
+        Self::from_sum(
+            trees,
+            parents,
+            self.change(),
+            self.author().clone(),
+            self.timestamp(),
+            self.message(),
+        )
     }
 
     /// Returns true if the commit records an open conflict.
