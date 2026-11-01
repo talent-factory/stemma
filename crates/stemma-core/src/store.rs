@@ -20,7 +20,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -1068,9 +1068,7 @@ impl Batch<'_> {
         };
         for (id, temp) in self.pending.into_inner() {
             // The file is opened again to flush it, so that a large batch keeps no file open.
-            let file = OpenOptions::new()
-                .write(true)
-                .open(&temp.path)
+            let file = fault::open_for_write(&temp.path)
                 .map_err(io_error("open the temporary file", &temp.path))?;
             directories.insert(self.store.place(&id, file, temp)?);
         }
@@ -1978,6 +1976,30 @@ mod tests {
         let batch = store.batch();
         batch.put_blob(&blob).unwrap();
         batch.finish().unwrap();
+    }
+
+    #[test]
+    fn a_temporary_file_that_cannot_be_opened_again_fails_the_batch_and_is_removed() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let blob = Blob::new("hello");
+        let id = blob.id().object_id();
+        let denied = fault::deny_modifying_in(&dir.path().join("tmp"));
+        let batch = store.batch();
+        batch.put_blob(&blob).unwrap();
+        let result = batch.finish();
+        drop(denied);
+        match result {
+            Err(StoreError::Io {
+                operation, source, ..
+            }) => {
+                assert_eq!(operation, "open the temporary file");
+                assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected an I/O error, got {other:?}"),
+        }
+        assert_eq!(temp_entries(&dir), 0, "no temporary file is left");
+        assert!(!store.object_path(&id).exists());
     }
 
     #[test]

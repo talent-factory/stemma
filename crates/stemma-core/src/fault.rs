@@ -11,7 +11,10 @@
 //! - `deny_writes_in(dir)`: every call that adds, moves, or removes an existing name directly in
 //!   `dir` fails. It stands for a directory with the mode `0o555`, so removing a name that is not
 //!   there reports `NotFound`, as the file system does. The directory itself and the names below
-//!   a subdirectory are not covered, except by `remove_dir_all`, which looks at the whole tree.
+//!   a subdirectory are not covered, except by `remove_dir_all`, which removes the tree name by
+//!   name in the order of the names and stops at the first denied one, as the file system does.
+//! - `deny_modifying_in(dir)`: opening an existing file directly in `dir` for writing fails. It
+//!   stands for files with the mode `0o444`; adding or removing a name there still works.
 //! - `deny_reads_of(path)`: opening `path` or listing it fails. It matches that one path; a read
 //!   of a name below it still works, which the mode `0o000` of a directory would stop.
 //!
@@ -20,8 +23,8 @@
 //!
 //! In a unit test, a guard arms the injection for the thread until it is dropped. A test of the
 //! program as a whole starts a process that no guard reaches; for it, the feature
-//! `fault-injection` reads the variable `STEMMA_FAULT` once, as entries `write=<dir>` or
-//! `read=<path>`, separated by the path-list separator of the platform (`:` on Unix, `;` on
+//! `fault-injection` reads the variable `STEMMA_FAULT` once, as entries `write=<dir>`,
+//! `modify=<dir>`, or `read=<path>`, separated by the path-list separator of the platform (`:` on Unix, `;` on
 //! Windows). An entry that does not parse stops the process with a message: a harness that does
 //! not inject must not look like one that does. A build without the feature and outside of tests
 //! has neither the functions of injection nor the variable: the wrappers are the calls of the
@@ -47,6 +50,7 @@ mod armed {
     pub(super) enum Rule {
         Write(PathBuf),
         Read(PathBuf),
+        Modify(PathBuf),
     }
 
     thread_local! {
@@ -59,8 +63,8 @@ mod armed {
         fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     }
 
-    /// Reads the rules of the variable `STEMMA_FAULT`: entries `write=<dir>` and `read=<path>`,
-    /// separated like the entries of `PATH`.
+    /// Reads the rules of the variable `STEMMA_FAULT`: entries `write=<dir>`, `modify=<dir>`, and
+    /// `read=<path>`, separated like the entries of `PATH`.
     pub(super) fn parse(value: &OsStr) -> Result<Vec<Rule>, String> {
         std::env::split_paths(value)
             .filter(|item| !item.as_os_str().is_empty())
@@ -69,12 +73,17 @@ mod armed {
                     .to_str()
                     .ok_or_else(|| format!("{item:?} is not UTF-8"))?;
                 let (kind, path) = text.split_once('=').ok_or_else(|| {
-                    format!("`{text}` has no `=`; use `write=<dir>` or `read=<path>`")
+                    format!(
+                        "`{text}` has no `=`; use `write=<dir>`, `modify=<dir>`, or `read=<path>`"
+                    )
                 })?;
                 match kind {
                     "write" => Ok(Rule::Write(named(Path::new(path)))),
+                    "modify" => Ok(Rule::Modify(named(Path::new(path)))),
                     "read" => Ok(Rule::Read(named(Path::new(path)))),
-                    other => Err(format!("`{other}` is neither `write` nor `read`")),
+                    other => Err(format!(
+                        "`{other}` is none of `write`, `modify`, and `read`"
+                    )),
                 }
             })
             .collect()
@@ -106,15 +115,27 @@ mod armed {
     fn write_dir(rule: &Rule) -> Option<&Path> {
         match rule {
             Rule::Write(dir) => Some(dir),
-            Rule::Read(_) => None,
+            Rule::Read(_) | Rule::Modify(_) => None,
+        }
+    }
+
+    fn modify_dir(rule: &Rule) -> Option<&Path> {
+        match rule {
+            Rule::Modify(dir) => Some(dir),
+            Rule::Read(_) | Rule::Write(_) => None,
         }
     }
 
     fn read_path(rule: &Rule) -> Option<&Path> {
         match rule {
             Rule::Read(path) => Some(path),
-            Rule::Write(_) => None,
+            Rule::Write(_) | Rule::Modify(_) => None,
         }
+    }
+
+    /// Whether any injection is armed for this thread or the process.
+    pub fn active() -> bool {
+        RULES.with(|rules| !rules.borrow().is_empty()) || !from_env().is_empty()
     }
 
     pub fn check_write(path: &Path) -> io::Result<()> {
@@ -139,6 +160,17 @@ mod armed {
             }
             checked => checked,
         }
+    }
+
+    /// For opening the existing file `path` for writing.
+    pub fn check_modify(path: &Path) -> io::Result<()> {
+        let Some(parent) = path.parent() else {
+            return Ok(());
+        };
+        if any(modify_dir, parent) {
+            return Err(denied());
+        }
+        Ok(())
     }
 
     pub fn check_read(path: &Path) -> io::Result<()> {
@@ -188,6 +220,13 @@ mod armed {
         arm(Rule::Write(named(dir)))
     }
 
+    /// Makes opening an existing file directly in `dir` for writing fail with `PermissionDenied`
+    /// on this thread, until the guard is dropped.
+    #[cfg(test)]
+    pub fn deny_modifying_in(dir: &Path) -> Guard {
+        arm(Rule::Modify(named(dir)))
+    }
+
     /// Makes opening and listing `path` fail with `PermissionDenied` on this thread, until the
     /// guard is dropped.
     #[cfg(test)]
@@ -197,10 +236,10 @@ mod armed {
 }
 
 #[cfg(test)]
-pub(crate) use armed::{deny_reads_of, deny_writes_in};
+pub(crate) use armed::{deny_modifying_in, deny_reads_of, deny_writes_in};
 
 #[cfg(any(test, feature = "fault-injection"))]
-use armed::{check_read, check_removal, check_write};
+use armed::{active, check_modify, check_read, check_removal, check_write};
 
 #[cfg(not(any(test, feature = "fault-injection")))]
 fn check_write(_: &Path) -> io::Result<()> {
@@ -210,6 +249,16 @@ fn check_write(_: &Path) -> io::Result<()> {
 #[cfg(not(any(test, feature = "fault-injection")))]
 fn check_removal(_: &Path) -> io::Result<()> {
     Ok(())
+}
+
+#[cfg(not(any(test, feature = "fault-injection")))]
+fn check_modify(_: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(test, feature = "fault-injection")))]
+fn active() -> bool {
+    false
 }
 
 #[cfg(not(any(test, feature = "fault-injection")))]
@@ -272,6 +321,13 @@ pub(crate) fn open_or_create(path: &Path) -> io::Result<File> {
         .or_else(|_| File::open(path))
 }
 
+/// Opens the existing file at `path` for writing without changing it, as the flush of a temporary
+/// file does, failing if the injection denies modifying files in its directory.
+pub(crate) fn open_for_write(path: &Path) -> io::Result<File> {
+    check_modify(path)?;
+    OpenOptions::new().write(true).open(path)
+}
+
 /// [`fs::remove_file`], failing if the injection denies writes in the directory of `path` and the
 /// name is there.
 pub(crate) fn remove_file(path: &Path) -> io::Result<()> {
@@ -287,31 +343,38 @@ pub(crate) fn remove_dir(path: &Path) -> io::Result<()> {
 }
 
 /// [`fs::remove_dir_all`], failing if the injection denies writes in the parent of `path` or of
-/// any name below it. The check comes first, so an injected failure removes nothing; the real
-/// call may remove a part before it fails.
+/// any name below it. With an injection armed, the tree goes name by name, in the order of the
+/// names, and stops at the first denied one: what came before stays removed, as with the real
+/// call.
 pub(crate) fn remove_dir_all(path: &Path) -> io::Result<()> {
     check_removal(path)?;
-    check_tree(path)?;
-    fs::remove_dir_all(path)
+    if active() {
+        remove_tree(path)
+    } else {
+        fs::remove_dir_all(path)
+    }
 }
 
-/// Checks every name below `path` for a denied write. It reads nothing without an injection.
+/// Removes the content of `path` and then `path`, checking every name before it goes.
 #[cfg(any(test, feature = "fault-injection"))]
-fn check_tree(path: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
+fn remove_tree(path: &Path) -> io::Result<()> {
+    let mut children = fs::read_dir(path)?.collect::<io::Result<Vec<_>>>()?;
+    children.sort_by_key(fs::DirEntry::file_name);
+    for entry in children {
         let child = entry.path();
-        check_write(&child)?;
         if entry.file_type()?.is_dir() {
-            check_tree(&child)?;
+            remove_tree(&child)?;
+        } else {
+            check_write(&child)?;
+            fs::remove_file(&child)?;
         }
     }
-    Ok(())
+    fs::remove_dir(path)
 }
 
 #[cfg(not(any(test, feature = "fault-injection")))]
-fn check_tree(_: &Path) -> io::Result<()> {
-    Ok(())
+fn remove_tree(_: &Path) -> io::Result<()> {
+    unreachable!("no injection is armed")
 }
 
 /// [`fs::create_dir`], failing if the injection denies writes in the parent of `path`.
@@ -410,31 +473,56 @@ mod tests {
     }
 
     #[test]
-    fn a_denied_tree_is_refused_before_any_removal_and_a_missing_one_is_not_found() {
+    fn a_denied_tree_is_removed_as_far_as_the_file_system_would_and_a_missing_one_is_not_found() {
         let dir = TempDir::new();
         let tree = dir.path().join("tree");
         let inner = tree.join("inner");
         fs::create_dir_all(&inner).unwrap();
-        fs::write(tree.join("kept"), b"").unwrap();
+        fs::write(tree.join("a"), b"").unwrap();
+        fs::write(tree.join("z"), b"").unwrap();
         fs::write(inner.join("stuck"), b"").unwrap();
         let guard = deny_writes_in(&inner);
         let error = remove_dir_all(&tree).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(
-            tree.join("kept").exists(),
-            "the check comes before any removal"
+            !tree.join("a").exists(),
+            "the names before the denied one went"
         );
+        assert!(inner.join("stuck").exists());
+        assert!(tree.join("z").exists(), "the names after it stay");
         drop(guard);
+        remove_dir_all(&tree).unwrap();
+        assert!(!tree.exists());
         let missing = remove_dir_all(&dir.path().join("gone")).unwrap_err();
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
+    fn a_denied_modification_refuses_opening_an_existing_file_for_writing_only() {
+        let dir = TempDir::new();
+        let file = dir.path().join("file");
+        fs::write(&file, b"kept").unwrap();
+        {
+            let _guard = deny_modifying_in(dir.path());
+            let error = open_for_write(&file).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            create_new(&dir.path().join("new")).unwrap();
+            remove_file(&file).unwrap();
+        }
+        fs::write(&file, b"kept").unwrap();
+        assert!(open_for_write(&file).is_ok());
+    }
+
+    #[test]
     fn the_rules_of_the_variable_are_read_with_the_separator_of_the_platform() {
-        let value = std::env::join_paths(["write=/a/b", "read=/c"]).unwrap();
+        let value = std::env::join_paths(["write=/a/b", "read=/c", "modify=/d"]).unwrap();
         assert_eq!(
             parse(&value).unwrap(),
-            [Rule::Write("/a/b".into()), Rule::Read("/c".into())]
+            [
+                Rule::Write("/a/b".into()),
+                Rule::Read("/c".into()),
+                Rule::Modify("/d".into())
+            ]
         );
         assert_eq!(parse("".as_ref()).unwrap(), []);
     }
