@@ -117,7 +117,8 @@ _Avoid_: Ignore list
 ## Pointers and the operation log
 
 **Pointer**:
-A mutable name for a commit: a branch, HEAD, or the reference to the working-copy commit.
+A name for a commit: a branch, HEAD, a tag (which never moves), or the reference to the
+working-copy commit.
 (Zeiger)
 _Avoid_: Ref (in prose)
 

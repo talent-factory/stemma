@@ -44,8 +44,27 @@ impl Drop for TempDir {
 
 /// Replaces a read-only object file with other content.
 pub(crate) fn overwrite(path: &Path, bytes: &[u8]) {
+    if cfg!(windows) {
+        // Windows refuses to remove a read-only file.
+        let mut permissions = fs::metadata(path).expect("inspect object").permissions();
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows has no other bits, and the file is removed next"
+        )]
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions).expect("make object writable");
+    }
     fs::remove_file(path).expect("remove object");
     fs::write(path, bytes).expect("write object");
+}
+
+/// Damages an object file the way a fault does: other content, and still read-only, because the
+/// store wrote the file read-only. A rename onto it fails on Windows.
+pub(crate) fn damage(path: &Path, bytes: &[u8]) {
+    overwrite(path, bytes);
+    let mut permissions = fs::metadata(path).expect("inspect object").permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions).expect("make object read-only");
 }
 
 /// The deepest link of the chain that [`FaultyStore`] makes: it is the cause of [`DiskError`].

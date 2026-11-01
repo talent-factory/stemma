@@ -13,9 +13,8 @@ use std::time::{Duration, Instant};
 
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
-use stemma_core::repository::Repository;
 
-use common::{ok, Dir, ACTOR};
+use common::{ok, prepare_restore, restore_files, temporary_files, Dir, ACTOR};
 
 /// An unstarted `stemma` in `dir` without `STEMMA_ACTOR` and with its output discarded. Unlike
 /// `common::stemma`, which runs the process to its end, it returns the `Command`, so that the test
@@ -157,89 +156,39 @@ fn a_command_that_is_killed_leaves_a_lock_that_the_next_command_takes_over() {
     assert!(!lock.exists());
 }
 
-/// The numbers of the entries of the log.
-fn numbers(dir: &Path) -> Vec<u64> {
-    let repository = Repository::open(dir).unwrap();
-    repository
-        .oplog()
-        .entries()
-        .unwrap()
-        .iter()
-        .map(stemma_core::oplog::Entry::number)
-        .collect()
-}
-
-/// The temporary files of a checkout below `dir`, outside `.stemma`.
-fn temporary_files(dir: &Path) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory).unwrap() {
-            let entry = entry.unwrap();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // An entry that the restore renamed in the meantime is gone.
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                if name != ".stemma" {
-                    pending.push(entry.path());
-                }
-            } else if name.starts_with(".stemma-checkout-") {
-                found.push(entry.path().display().to_string());
-            }
-        }
-    }
-    found
-}
-
-/// Interrupts a restore of many files while it writes one, and checks what it leaves. Returns
-/// why it could not interrupt the restore while it was writing, which the caller tries again.
+/// Interrupts a restore while it writes a file, and checks what it leaves. Returns why it could
+/// not interrupt the restore there, which the caller tries again.
 fn interrupt_a_restore(signal: Signal, code: i32) -> Result<(), &'static str> {
     let dir = Dir::new();
-    ok(dir.path(), &["init", "--actor", ACTOR]);
-    // A restore that brings back many files writes long enough to be interrupted, and it spends
-    // much of that time in a temporary file, which it flushes.
-    let files: Vec<String> = (0..500).map(|number| format!("f{number}.txt")).collect();
-    for name in &files {
-        fs::write(dir.path().join(name), name).unwrap();
-    }
-    ok(dir.path(), &["track", "--actor", ACTOR, "."]);
-    ok(dir.path(), &["commit", "-m", "files", "--actor", ACTOR]);
-    for name in &files {
-        fs::remove_file(dir.path().join(name)).unwrap();
-    }
-    let before = numbers(dir.path()).len();
-    ok(dir.path(), &["commit", "-m", "none", "--actor", ACTOR]);
-    // The snapshot that saw the files removed.
-    let removal = numbers(dir.path())[before].to_string();
+    let removal = prepare_restore(dir.path());
     let lock = dir.path().join(".stemma").join("refs.lock");
     let mut child = stemma(dir.path(), &["op", "restore", &removal, "--actor", ACTOR])
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // The signal is sent once a temporary file was seen, so that it likely finds one.
-    let writing = || !temporary_files(dir.path()).is_empty();
+    // The signal is sent once a temporary file is seen, so it likely finds one to remove.
     let start = Instant::now();
-    while !writing() {
+    while temporary_files(dir.path()).is_empty() {
         if child.try_wait().unwrap().is_some() {
             return Err("the restore ended before a temporary file was seen");
         }
         if start.elapsed() > Duration::from_secs(30) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("no temporary file was seen in 30 seconds");
+            return Err("no temporary file seen in 30 seconds");
         }
+        std::thread::sleep(Duration::from_millis(1));
     }
-    // Directly, not through a `kill` process, which would take longer than one write.
+    // Directly, not through `kill` process, which would take longer than one write.
     let process = Pid::from_raw(i32::try_from(child.id()).unwrap());
     signal::kill(process, signal).unwrap();
     let output = child.wait_with_output().unwrap();
-    let restored = files
+    // A file is there once the restore has renamed its temporary file onto it.
+    let restored = restore_files()
         .iter()
         .filter(|name| dir.path().join(name).exists())
         .count();
-    if output.status.success() || restored == files.len() {
+    if output.status.success() || restored == restore_files().len() {
         return Err("the restore had written every file before the signal");
     }
     assert_eq!(
@@ -253,8 +202,10 @@ fn interrupt_a_restore(signal: Signal, code: i32) -> Result<(), &'static str> {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         "",
-        "nothing stayed, so nothing is named"
+        "nothing stayed, so nothing named"
     );
+    // The repository is usable: the next command runs and lists nothing left over.
+    ok(dir.path(), &["status", "--actor", ACTOR]);
     Ok(())
 }
 
