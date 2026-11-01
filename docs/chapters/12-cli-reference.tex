@@ -442,7 +442,27 @@ Repositories, auch wenn sie in einem Unterverzeichnis laufen, und maskiert wie b
 \type{status}. Auch eine Meldung nennt einen Pfad relativ zur Wurzel, einen ungültigen ebenso,
 soweit sich das Argument umwandeln lässt: \type{a/../b} in \type{src} erscheint als
 \type{src/a/../b}. Nur einen absoluten oder leeren Pfad und das Verzeichnis von \type{-C}
-nennt sie so, wie sie übergeben wurden.
+nennt sie so, wie sie übergeben wurden (unter Windows mit der Einschränkung unten).
+Unter Windows trennt auch der Backslash die Namen eines Pfades, den eine Person übergibt:
+\type{src\a.txt} ist \type{src/a.txt}.
+Das geschieht zuerst, daher erscheint ein absoluter Pfad mit \type{/}:
+\type{\x} als \type{/x} und \type{C:\x} als \type{C:/x}.
+Auch ein Pfad mit Laufwerk gilt als absolut, wenn er in einem Unterverzeichnis übergeben wird.
+Unter Unix ist der Backslash ein Zeichen des Namens und bleibt es.
+Ein symbolischer Link oder eine Junction unter Windows, die am Ende eines Pfades steht,
+speichert \type{track} als Link, mit seinem Ziel und ohne den Inhalt, auf den er zeigt.
+Tritt ein solcher Link erst während des Lesens an die Stelle einer Datei,
+bricht der Befehl mit einem Fehler ab.
+Drei Fälle erkennt Stemma unter Windows dabei nicht.
+Zwei folgen daraus, dass es die Identität der Datei nicht vergleicht:
+ein Verzeichnis oberhalb der Datei, das durch eine Junction ersetzt wird, und
+eine andere reguläre Datei an der Stelle der Datei.
+Der dritte betrifft eine Datei, die ein anderer Reparse-Punkt als ein Link ist,
+etwa der Platzhalter eines Cloud-Dienstes oder eine deduplizierte Datei.
+Stemma öffnet sie wie eine gewöhnliche Datei, und ein Austausch gegen einen Link
+im kurzen Moment zwischen den beiden Öffnungen fällt nicht auf.
+Der Befehl liest in allen drei Fällen die Datei, auf die der Pfad nun zeigt.
+Das gilt ebenso für \type{.stemmaignore}.
 
 \section{init}
 

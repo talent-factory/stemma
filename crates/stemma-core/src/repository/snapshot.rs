@@ -15,6 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{now, Repository, UpdateError};
+#[cfg(test)]
 use crate::fault;
 use crate::index::{Index, IndexError, WriteTreeError};
 use crate::object::{
@@ -412,13 +413,21 @@ fn is_link_target(content: &[u8]) -> bool {
         && std::str::from_utf8(content).is_ok()
 }
 
-/// Reads the file that `lookup` saw, or returns `None` if it is gone. `fs::read` follows links, so
-/// a process that swaps the file or a directory above it for a link between the lookup and the read
-/// could lead it out of the working directory; the file that was opened must be the one that was
-/// looked at, which is checked by its device and inode where the file system has them.
+/// Reads the file that `lookup` saw, or returns `None` if it is gone. On Unix, opening a file
+/// follows links, so a process that swaps the file or a directory above it for a link between
+/// the lookup and the read could lead it out of the working directory; the file that was opened
+/// must be the one that was looked at, which is checked by its device and inode.
+///
+/// Windows gives less. The file is opened without following a reparse point (see
+/// [`crate::open_without_following`], which also says how a reparse point that is no link is
+/// opened), and the handle must be a regular file, so a link or a junction that has taken the
+/// place of the file is refused. A directory above the file that was swapped for a junction is
+/// followed, and so is another regular file in the place of the file: the identity of a file
+/// (the serial number of the volume and the index of the file) is not compared with the lookup,
+/// since the lookup gives no handle.
 fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotError> {
     use std::io::Read;
-    let mut file = match fault::open(path) {
+    let mut file = match crate::open_without_following(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(SnapshotError::io("read the file", path, source)),
@@ -430,6 +439,19 @@ fn read_file(path: &Path, seen: &Metadata) -> Result<Option<Vec<u8>>, SnapshotEr
             .metadata()
             .map_err(|source| SnapshotError::io("read the file", path, source))?;
         if (opened.dev(), opened.ino()) != (seen.dev(), seen.ino()) {
+            return Err(SnapshotError::io(
+                "read the file",
+                path,
+                io::Error::other("the file was replaced while it was read"),
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        let opened = file
+            .metadata()
+            .map_err(|source| SnapshotError::io("read the file", path, source))?;
+        if !opened.is_file() {
             return Err(SnapshotError::io(
                 "read the file",
                 path,
@@ -1350,6 +1372,90 @@ mod tests {
             "{error}"
         );
         assert_eq!(repository.refs().working_copy().unwrap(), before);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_in_the_place_of_a_file_is_not_read_through() {
+        let dir = TempDir::new();
+        write(&dir, "file", "one");
+        write(&dir, "target", "secret");
+        let seen = fs::symlink_metadata(dir.path().join("file")).unwrap();
+        fs::remove_file(dir.path().join("file")).unwrap();
+        if !crate::testutil::symbolic_link(&dir.path().join("target"), &dir.path().join("file")) {
+            return;
+        }
+        let error = read_file(&dir.path().join("file"), &seen).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                SnapshotError::Io {
+                    operation: "read the file",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("replaced"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_directory_above_the_file_that_is_a_junction_is_followed() {
+        // The gap that the doc of `read_file` names: Windows gives no identity to compare, so a
+        // directory above the file that was swapped for a junction leads the read elsewhere.
+        let dir = TempDir::new();
+        write(&dir, "real/x.txt", "data");
+        let seen = fs::symlink_metadata(dir.path().join("real").join("x.txt")).unwrap();
+        crate::testutil::junction(&dir.path().join("real"), &dir.path().join("j"));
+        let content = read_file(&dir.path().join("j").join("x.txt"), &seen).unwrap();
+        assert_eq!(content.as_deref(), Some(b"data".as_slice()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_on_windows_is_saved_as_a_link_and_not_read_through() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a.txt", "one")]);
+        write(&dir, "target.txt", "secret");
+        fs::remove_file(dir.path().join("a.txt")).unwrap();
+        if !crate::testutil::symbolic_link(Path::new("target.txt"), &dir.path().join("a.txt")) {
+            return;
+        }
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(
+            tracked(&repository),
+            [("a.txt".to_owned(), FileMode::Symlink)]
+        );
+        // The blob holds the target of the link, and the content it leads to was never stored.
+        let objects = repository.objects();
+        let target = Blob::new("target.txt").id().object_id();
+        let secret = Blob::new("secret").id().object_id();
+        assert!(objects.contains(&target).unwrap());
+        assert!(!objects.contains(&secret).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_on_windows_is_saved_as_a_link_and_not_read_through() {
+        // A junction needs no right to create, so this runs without developer mode too.
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        track(&repository, &dir, &[("a", "one")]);
+        write(&dir, "real/secret.txt", "secret");
+        fs::remove_file(dir.path().join("a")).unwrap();
+        crate::testutil::junction(&dir.path().join("real"), &dir.path().join("a"));
+        assert!(snapshot(&repository).is_some());
+        assert_eq!(tracked(&repository), [("a".to_owned(), FileMode::Symlink)]);
+        // The blob holds the target of the junction as `read_link` gives it, and nothing that
+        // lies below the directory it leads to was stored.
+        let target = fs::read_link(dir.path().join("a")).unwrap();
+        let objects = repository.objects();
+        let link = Blob::new(target.to_str().unwrap()).id().object_id();
+        let secret = Blob::new("secret").id().object_id();
+        assert!(objects.contains(&link).unwrap());
+        assert!(!objects.contains(&secret).unwrap());
     }
 
     #[cfg(windows)]

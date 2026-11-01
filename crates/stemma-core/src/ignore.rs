@@ -30,6 +30,7 @@ use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use crate::fault;
 use crate::object::{name_problem, NameProblem};
 
@@ -183,7 +184,8 @@ impl IgnoreRules {
     ///
     /// The path is inspected without following a link, then opened, and the open file is checked
     /// to be the one that was inspected (same device and inode on Unix) and a regular file, so
-    /// that a file replaced in between is an error and not a read through a link. The bytes that
+    /// that a file replaced in between is an error and not a read through a link. On Windows
+    /// only the check for a regular file applies (see `same_file`). The bytes that
     /// were read have to be as many as the file has, so a file that is written while it is read is
     /// an error and not a prefix. One window is left: a file replaced by a pipe between the
     /// inspection and the open blocks the open (open item of ADR-012).
@@ -219,7 +221,7 @@ impl IgnoreRules {
                 FileProblem::TooLarge,
             )));
         }
-        let file = match fault::open(&path) {
+        let file = match crate::open_without_following(&path) {
             Ok(file) => file,
             // Removed since the inspection: a rule that is gone is not "no rules".
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -339,7 +341,9 @@ fn describe(metadata: &Metadata) -> &'static str {
     }
 }
 
-/// Whether two descriptions are of the same file. Where the platform gives no identity, they are.
+/// Whether two descriptions are of the same file. Where the platform gives no identity, they are:
+/// on Windows, only `is_file` of the opened handle in [`IgnoreRules::read`] refuses a link that
+/// has taken the place of the file, and another regular file in its place is not seen.
 fn same_file(first: &Metadata, second: &Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -1267,6 +1271,49 @@ mod tests {
             error
                 .to_string()
                 .contains("is a directory, not a regular file"),
+            "{error}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_is_not_an_exclusion_file_on_windows() {
+        // This is the check of the description before the open; the check of the handle after
+        // it (`is_file` in `read`) needs a swap in between and has no test.
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("rules"), "a\n").unwrap();
+        let link = dir.path().join(FILE_NAME);
+        if !crate::testutil::symbolic_link(&dir.path().join("rules"), &link) {
+            return;
+        }
+        let error = IgnoreRules::read(dir.path()).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                IgnoreError::NotAFile {
+                    found: "a link",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_is_not_an_exclusion_file_on_windows() {
+        let dir = TempDir::new();
+        std::fs::create_dir(dir.path().join("rules")).unwrap();
+        crate::testutil::junction(&dir.path().join("rules"), &dir.path().join(FILE_NAME));
+        let error = IgnoreRules::read(dir.path()).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                IgnoreError::NotAFile {
+                    found: "a link",
+                    ..
+                }
+            ),
             "{error}"
         );
     }

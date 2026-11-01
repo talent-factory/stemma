@@ -2388,7 +2388,6 @@ mod tests {
     use crate::change::ChangeId;
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
-    #[cfg(unix)]
     use crate::testutil::TempDir;
     use crate::AllowAll;
     use crate::Decision;

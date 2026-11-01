@@ -111,14 +111,42 @@ impl Repository {
     }
 }
 
+/// The path with `/` for every `\` if `windows` says that `\` separates names. Elsewhere a
+/// backslash is a character of a name and stays.
+fn with_slashes(path: &str, windows: bool) -> std::borrow::Cow<'_, str> {
+    if windows && path.contains('\\') {
+        path.replace('\\', "/").into()
+    } else {
+        path.into()
+    }
+}
+
 /// Turns a path as a person types it into the form of [`Repository::track`]: `./a.txt` and `dir/`
 /// are `a.txt` and `dir`, an empty part (`a//b`) and a part `.` (`a/./b`) are dropped, and a
 /// path that is only dots and slashes with at least one `.` part (`.`, `./`) is `.`. Nothing
 /// else changes: `..` stays, so does an absolute path, and an empty argument or one of slashes
 /// only (`""`, `//`) stays as it is, so that the core refuses it. A script with an empty
 /// variable must not track the whole directory.
+///
+/// On Windows, where `\` separates names as `/` does, every `\` is read as `/` first, so that
+/// `\x` is the absolute path `/x` and `src\a.txt` is `src/a.txt`; `/` is then the only separator
+/// of the result. All of the above holds for the path as it is after this step. A path that
+/// starts with a drive (`C:\x`, `C:x`) is absolute there too and stays as it is.
 pub fn normalize_path(path: &str) -> String {
-    if path.starts_with('/') {
+    normalize_path_for(path, cfg!(windows))
+}
+
+/// Whether a path starts with a drive letter and a colon (`C:`), which is a prefix on Windows and
+/// leads out of the working directory, whatever follows it.
+fn starts_with_drive(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// [`normalize_path`] for a platform: `windows` says whether `\` separates names.
+fn normalize_path_for(path: &str, windows: bool) -> String {
+    let path = &*with_slashes(path, windows);
+    if path.starts_with('/') || (windows && starts_with_drive(path)) {
         return path.to_owned();
     }
     let parts: Vec<&str> = path
@@ -142,9 +170,19 @@ pub fn normalize_path(path: &str) -> String {
 /// does not lead where the name says. An absolute path stays as it is, and so
 /// does an empty argument or one of slashes only, as in [`normalize_path`], so that a script with
 /// an empty variable does not track the whole subdirectory. With an empty `subdirectory`, this is
-/// [`normalize_path`].
+/// [`normalize_path`]. On Windows, every `\` in `path` is read as `/` first, as there, before
+/// any of this, and a path that starts with a drive is absolute.
 pub fn normalize_path_in(subdirectory: &str, path: &str) -> String {
-    if path.starts_with('/') || path.split('/').all(str::is_empty) {
+    normalize_path_in_for(subdirectory, path, cfg!(windows))
+}
+
+/// [`normalize_path_in`] for a platform: `windows` says whether `\` separates names.
+fn normalize_path_in_for(subdirectory: &str, path: &str, windows: bool) -> String {
+    let path = &*with_slashes(path, windows);
+    if path.starts_with('/')
+        || (windows && starts_with_drive(path))
+        || path.split('/').all(str::is_empty)
+    {
         return path.to_owned();
     }
     let mut base: Vec<&str> = subdirectory
@@ -854,10 +892,56 @@ mod tests {
     }
 
     #[test]
+    fn backslashes_separate_names_only_where_the_platform_says_so() {
+        assert_eq!(with_slashes("sub\\a.txt", true), "sub/a.txt");
+        assert_eq!(with_slashes("sub\\a.txt", false), "sub\\a.txt");
+        assert_eq!(with_slashes("a/b", true), "a/b");
+        // The rules of Windows, on every host.
+        for (given, expected) in [
+            (".\\sub\\a.txt", "sub/a.txt"),
+            ("sub\\", "sub"),
+            ("sub/a\\b.txt", "sub/a/b.txt"),
+            (".\\", "."),
+            // Absolute for the core, which refuses it, and not "as given".
+            ("\\x", "/x"),
+            ("\\\\server\\share", "//server/share"),
+            // A drive is absolute too, so it stays refused and is not made relative.
+            ("C:\\x", "C:/x"),
+            ("C:x", "C:x"),
+            ("C:\\.\\x", "C:/./x"),
+            // Only separators: stays refused, as `//` does.
+            ("\\", "/"),
+            // Empty: stays refused, a script with an empty variable must not track everything.
+            ("", ""),
+        ] {
+            assert_eq!(normalize_path_for(given, true), expected, "{given:?}");
+        }
+        assert_eq!(normalize_path_in_for("src", "..\\a.txt", true), "a.txt");
+        // A second `..` would leave the repository: it stays, and the core refuses it.
+        assert_eq!(normalize_path_in_for("src", "..\\..\\x", true), "../x");
+        assert_eq!(normalize_path_in_for("src", "b\\c", true), "src/b/c");
+        // A drive is absolute from a subdirectory too, not a name below it.
+        assert_eq!(normalize_path_in_for("src", "C:\\x", true), "C:/x");
+        assert_eq!(normalize_path_in_for("src", "C:x", true), "C:x");
+        assert_eq!(normalize_path_in_for("src", "C:x", false), "src/C:x");
+        assert_eq!(normalize_path_for("C:x", false), "C:x");
+        // The rules of Unix: a backslash is a character of the name.
+        assert_eq!(normalize_path_for("sub\\a.txt", false), "sub\\a.txt");
+        assert_eq!(normalize_path_in_for("src", "..\\a", false), "src/..\\a");
+    }
+
+    #[test]
     fn a_path_is_plain_if_every_part_is_one_name() {
         assert!(is_plain("a/b.txt") && is_plain("a"));
         #[cfg(windows)]
-        for path in ["a\\..\\b", "C:x", "C:\\x", "\\\\server\\share"] {
+        for path in [
+            "a\\..\\b",
+            "C:x",
+            "C:\\x",
+            "C:/x",
+            "\\\\server\\share",
+            "//server/share",
+        ] {
             assert!(!is_plain(path), "{path}");
         }
         #[cfg(unix)]

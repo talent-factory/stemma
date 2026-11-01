@@ -3342,7 +3342,6 @@ mod tests {
     use std::thread;
 
     use super::*;
-    #[cfg(unix)]
     use crate::testutil::TempDir;
 
     const A: &str = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
