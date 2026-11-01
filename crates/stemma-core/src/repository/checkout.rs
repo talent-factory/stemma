@@ -350,6 +350,7 @@ impl Repository {
             #[cfg(unix)]
             {
                 use std::os::unix::ffi::OsStrExt;
+                // A link that cannot be read counts as different, and the checkout writes it again.
                 return Ok(metadata.file_type().is_symlink()
                     && fault::read_link(&full)
                         .is_ok_and(|target| target.as_os_str().as_bytes() == expected.body()));

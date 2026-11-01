@@ -1207,7 +1207,7 @@ pub(crate) fn remove_scratch(root: &Path) {
     if root.file_name() != Some(METADATA_DIR.as_ref()) {
         return;
     }
-    let Some(Ok(entries)) = root.parent().map(fs::read_dir) else {
+    let Some(Ok(entries)) = root.parent().map(fault::read_dir) else {
         return;
     };
     for entry in entries.flatten() {

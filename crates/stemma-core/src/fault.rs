@@ -6,7 +6,8 @@
 //! the checkout, the snapshot, the walk of the working copy, the ignore file, and the journal of a
 //! purge) go through the functions of this module. Without an injection they are the calls of the
 //! standard library; with one, they fail with `PermissionDenied` for the paths that the injection
-//! names.
+//! names. The queries of metadata (`metadata`, `symlink_metadata`, `canonicalize`) are not routed:
+//! none of the three kinds could make them fail.
 //!
 //! There are three kinds of injection:
 //!
@@ -17,10 +18,13 @@
 //!   except by `remove_dir_all`, which removes the tree name by name in the order of the names
 //!   (the real order is unspecified) and stops at the first denied one: what came before stays
 //!   removed, as with the real call.
-//! - `deny_modifying_in(dir)`: opening an existing file directly in `dir` for writing fails. It
-//!   stands for files with the mode `0o444`; adding or removing a name there still works.
-//! - `deny_reads_of(path)`: reading, opening, or listing `path`, or flushing it as a directory,
-//!   fails. It matches that one path; a read of a name below it still works, which the mode
+//! - `deny_modifying_in(dir)`: opening an existing file directly in `dir` for writing fails, and
+//!   so does changing its permissions. It stands for files with the mode `0o444`; adding or
+//!   removing a name there still works. A real `0o444` file would not refuse a change of its
+//!   permissions to its owner: that part stands for a failed `chmod`. On Windows, where the store
+//!   clears the read-only flag before it removes an object, such a removal fails as well.
+//! - `deny_reads_of(path)`: reading, opening, or listing `path`, reading the target of the
+//!   link at `path`, or flushing it as a directory, fails. It matches that one path; a read of a name below it still works, which the mode
 //!   `0o000` of a directory would stop.
 //!
 //! A path in a rule is compared as it is and, if that fails, as the file system names it
@@ -495,7 +499,8 @@ pub(crate) fn read_link(path: &Path) -> io::Result<std::path::PathBuf> {
 }
 
 /// [`fs::write`], failing if the injection denies modifying files in the directory of `path` when
-/// the name is there, or writes in it when the name is not.
+/// the name is there, and denies writes in that directory when it is not. A link that points
+/// nowhere counts as a name that is not there, as in [`open_or_create`].
 pub(crate) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
     if path.exists() {
         check_modify(path)?;
@@ -506,7 +511,7 @@ pub(crate) fn write(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
 }
 
 /// [`fs::set_permissions`], failing if the injection denies modifying files in the directory of
-/// `path`.
+/// `path`. It stands for a failed `chmod`; a real file with the mode `0o444` would not refuse it.
 pub(crate) fn set_permissions(path: &Path, permissions: fs::Permissions) -> io::Result<()> {
     check_modify(path)?;
     fs::set_permissions(path, permissions)
@@ -810,6 +815,84 @@ mod tests {
         assert_eq!(linked.kind(), io::ErrorKind::AlreadyExists);
         let moved = rename(&dir.path().join("a"), &dir.path().join("c")).unwrap_err();
         assert_eq!(moved.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_denied_read_refuses_reading_a_link_and_ends_with_the_guard() {
+        let dir = TempDir::new();
+        let link = dir.path().join("link");
+        let other = dir.path().join("other");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        std::os::unix::fs::symlink("target", &other).unwrap();
+        {
+            let _guard = deny_reads_of(&link);
+            assert_eq!(
+                read_link(&link).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(read_link(&other).is_ok());
+        }
+        assert_eq!(read_link(&link).unwrap(), Path::new("target"));
+    }
+
+    #[test]
+    fn a_write_to_an_existing_name_is_a_modification_and_to_a_new_name_a_write() {
+        let dir = TempDir::new();
+        let there = dir.path().join("there");
+        let fresh = dir.path().join("fresh");
+        fs::write(&there, b"kept").unwrap();
+        {
+            let _guard = deny_modifying_in(dir.path());
+            assert_eq!(
+                write(&there, b"changed").unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(fs::read(&there).unwrap(), b"kept");
+            write(&fresh, b"new").unwrap();
+        }
+        fs::remove_file(&fresh).unwrap();
+        {
+            let _guard = deny_writes_in(dir.path());
+            assert_eq!(
+                write(&fresh, b"new").unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(!fresh.exists());
+            write(&there, b"changed").unwrap();
+        }
+        assert_eq!(fs::read(&there).unwrap(), b"changed");
+    }
+
+    #[test]
+    fn a_denied_modification_refuses_changing_permissions_and_a_denied_write_does_not() {
+        let dir = TempDir::new();
+        let file = dir.path().join("file");
+        fs::write(&file, b"").unwrap();
+        let mut readonly = fs::metadata(&file).unwrap().permissions();
+        readonly.set_readonly(true);
+        {
+            let _guard = deny_modifying_in(dir.path());
+            assert_eq!(
+                set_permissions(&file, readonly.clone()).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(!fs::metadata(&file).unwrap().permissions().readonly());
+        }
+        {
+            let _guard = deny_writes_in(dir.path());
+            set_permissions(&file, readonly).unwrap();
+        }
+        assert!(fs::metadata(&file).unwrap().permissions().readonly());
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "the temporary directory is removed next"
+        )]
+        {
+            let mut writable = fs::metadata(&file).unwrap().permissions();
+            writable.set_readonly(false);
+            fs::set_permissions(&file, writable).unwrap();
+        }
     }
 
     #[test]

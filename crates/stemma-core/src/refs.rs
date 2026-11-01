@@ -1305,6 +1305,7 @@ impl PurgeLock {
                 "{LOCK_HEADER}\nhost {host}\npid 0\ntoken {}\n",
                 unique_temp_name()
             );
+            // Best effort, as a crash is: an injected failure leaves the lock file as it was.
             let _ = fault::write(&self._lock.path, left);
         }
         std::mem::forget(self);
