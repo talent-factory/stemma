@@ -125,7 +125,8 @@ doc-lines:
 [group('Quality')]
 ci: format-check lint doc-check doc-lines test
 
-# Fuzz one strict reader for SECONDS seconds: tree, commit, commit2, actor, index, entry, or journal.
+# Fuzz one strict reader, or the line merge, for SECONDS seconds: tree, commit, commit2, actor, index,
+# entry, journal, or merge_lines.
 # Needs nightly and cargo-fuzz (rustup toolchain install nightly; cargo install cargo-fuzz
 # --locked), so it is not part of `ci`. New inputs go to fuzz/corpus/TARGET, a finding to
 # fuzz/artifacts/TARGET; fuzz/seeds/TARGET holds the valid encodings that the fuzzer starts from.
@@ -136,7 +137,7 @@ fuzz target seconds="300":
     cargo +nightly fuzz run {{target}} fuzz/corpus/{{target}} fuzz/seeds/{{target}} -- \
         -max_total_time={{seconds}} -timeout=10
 
-# Fuzz every strict reader in turn, SECONDS seconds each (see `fuzz`). Every target runs; the
+# Fuzz every target in turn, SECONDS seconds each (see `fuzz`). Every target runs; the
 # recipe fails at the end if one of them failed, and names those.
 [group('Quality')]
 fuzz-all seconds="60":
@@ -144,7 +145,7 @@ fuzz-all seconds="60":
     set -uo pipefail
     trap 'exit 130' INT
     failed=()
-    for target in tree commit commit2 actor index entry journal; do
+    for target in tree commit commit2 actor index entry journal merge_lines; do
         "{{just_executable()}}" fuzz "$target" {{seconds}} || failed+=("$target")
     done
     if (( ${#failed[@]} > 0 )); then

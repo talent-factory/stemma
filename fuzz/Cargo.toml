@@ -65,3 +65,10 @@ path = "fuzz_targets/journal.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "merge_lines"
+path = "fuzz_targets/merge_lines.rs"
+test = false
+doc = false
+bench = false

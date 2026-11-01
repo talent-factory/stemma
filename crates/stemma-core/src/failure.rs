@@ -11,6 +11,7 @@
 
 use crate::history::HistoryError;
 use crate::index::WriteTreeError;
+use crate::merge::MergeError;
 use crate::oplog::OpLogError;
 use crate::refs::RefError;
 use crate::repository::{
@@ -274,6 +275,29 @@ impl Classify for DiffError {
             Self::UnknownCommit { .. } | Self::InvalidPath { .. } | Self::NoSuchPath { .. } => {
                 FailureKind::Other
             }
+        }
+    }
+}
+
+impl Classify for MergeError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::History(error) => error.kind(),
+            // A tree that a commit of the repository names is not there, is damaged, or does not
+            // parse. Nobody named these objects as an argument, so only a failing disk is other.
+            Self::Tree(error) => match error.store_error() {
+                Some(StoreError::Io { .. }) => FailureKind::Other,
+                _ => FailureKind::Damaged,
+            },
+            Self::Store(error) => match error {
+                StoreError::Io { .. } => FailureKind::Other,
+                StoreError::Corrupt { .. } | StoreError::KindMismatch { .. } => {
+                    FailureKind::Damaged
+                }
+            },
+            Self::Missing { .. } => FailureKind::Damaged,
+            // The names come from trees that were valid; a rejection is a defect, not input.
+            Self::Entries(_) => FailureKind::Other,
         }
     }
 }

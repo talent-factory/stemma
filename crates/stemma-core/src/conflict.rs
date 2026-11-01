@@ -102,6 +102,28 @@ impl<T: Clone + Eq> Merge<T> {
         self.terms
     }
 
+    /// Builds a sum from its added and its removed terms. The caller guarantees that there is one
+    /// added term more than there are removed terms; the terms are interleaved as side, base,
+    /// side, base, ..., side.
+    pub(crate) fn from_parts(adds: Vec<T>, removes: Vec<T>) -> Self {
+        debug_assert_eq!(adds.len(), removes.len() + 1, "a sum has one side more");
+        let mut terms = Vec::with_capacity(adds.len() + removes.len());
+        let mut removes = removes.into_iter();
+        for add in adds {
+            terms.push(add);
+            terms.extend(removes.next());
+        }
+        Self { terms }
+    }
+
+    /// Applies `f` to every term, in order. The result has the same shape: the same number of
+    /// sides, the same positions of the added and the removed terms.
+    pub fn map<U>(&self, f: impl FnMut(&T) -> U) -> Merge<U> {
+        Merge {
+            terms: self.terms.iter().map(f).collect(),
+        }
+    }
+
     /// Returns the number of sides: one more than the number of bases.
     pub fn sides(&self) -> usize {
         self.terms.len() / 2 + 1
