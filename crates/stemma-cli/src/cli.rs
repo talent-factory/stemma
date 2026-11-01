@@ -3466,12 +3466,9 @@ mod tests {
     }
 
     /// A status whose snapshot moved the pointer and could not be flushed: the metadata directory
-    /// may be written and entered, but not read. It fails where the permissions have no effect
-    /// (the tests must not run as root), and a test that skipped itself there would pass without
-    /// having tested anything.
-    #[cfg(unix)]
+    /// may be written and entered, but not read: the injected failure of reading it stands for
+    /// that, on every platform and for a privileged user.
     fn a_status_not_durable(name: &str) -> (PathBuf, Status) {
-        use std::os::unix::fs::PermissionsExt;
         let (dir, _) = repository_with_entry(name);
         let repository = Repository::open(&dir).unwrap();
         let actor: Actor = "human daniel".parse().unwrap();
@@ -3482,14 +3479,9 @@ mod tests {
         let _ = repository.commit("base", &actor, &AllowAll).unwrap();
         std::fs::write(dir.join("a.txt"), "two").unwrap();
         let metadata = dir.join(".stemma");
-        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o300)).unwrap();
-        let binds = std::fs::read_dir(&metadata).is_err();
+        let denied = stemma_core::fault::deny_reads_of(&metadata);
         let result = repository.status(&actor, &AllowAll);
-        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(
-            binds,
-            "permissions do not bind this user; do not run the tests as root"
-        );
+        drop(denied);
         (dir, result.unwrap())
     }
 
@@ -3509,7 +3501,6 @@ mod tests {
         (dir, status)
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_status_is_written_and_a_snapshot_that_is_not_durable_follows_with_code_3() {
         let (dir, status) = a_status_not_durable("status-late");
@@ -3648,10 +3639,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_failure_of_reading_after_a_snapshot_that_was_not_flushed_is_code_3() {
-        use std::os::unix::fs::PermissionsExt;
         let (dir, _) = repository_with_entry("status-read-late");
         let repository = Repository::open(&dir).unwrap();
         let actor: Actor = "human daniel".parse().unwrap();
@@ -3675,14 +3664,9 @@ mod tests {
         )
         .unwrap();
         let metadata = dir.join(".stemma");
-        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o300)).unwrap();
-        let binds = std::fs::read_dir(&metadata).is_err();
+        let denied = stemma_core::fault::deny_reads_of(&metadata);
         let result = repository.status(&actor, &AllowAll);
-        std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(
-            binds,
-            "permissions do not bind this user; do not run the tests as root"
-        );
+        drop(denied);
 
         let error = CliError::Status(result.unwrap_err());
 

@@ -57,13 +57,15 @@ pub struct Run {
     pub stderr: String,
 }
 
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR` in the environment; `extra` can adjust the
-/// command before it runs, for example to set the actor through the environment.
+/// Runs `stemma` in `dir` without `STEMMA_ACTOR` and `STEMMA_FAULT` in the environment (a rule of
+/// the caller's own environment must not leak in); `extra` can adjust the command before it runs,
+/// for example to set the actor through the environment.
 pub fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Run {
     let mut command = Command::new(env!("CARGO_BIN_EXE_stemma"));
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .args(args);
     extra(&mut command);
     let output = command.output().unwrap();
@@ -74,9 +76,26 @@ pub fn stemma(dir: &Path, args: &[&str], extra: impl FnOnce(&mut Command)) -> Ru
     }
 }
 
-/// Runs `stemma` in `dir` without `STEMMA_ACTOR`.
+/// Runs `stemma` in `dir` without `STEMMA_ACTOR` and `STEMMA_FAULT`.
 pub fn run(dir: &Path, args: &[&str]) -> Run {
     stemma(dir, args, |_| {})
+}
+
+/// Runs `stemma` like [`run`] with injected file system failures (STEMMA-187) instead of
+/// directories whose Unix mode was changed, which has no effect on Windows and none for a
+/// privileged user. Each rule is `("write", dir)`, `("modify", dir)`, or `("read", path)`; see
+/// `stemma_core::fault`. A rule that names nothing that the command touches does nothing, so a
+/// test asserts the effect of the failure.
+pub fn run_failing(dir: &Path, args: &[&str], rules: &[(&str, &Path)]) -> Run {
+    assert!(!rules.is_empty(), "a run without a rule injects nothing");
+    let rules: Vec<_> = rules
+        .iter()
+        .map(|(kind, path)| format!("{kind}={}", path.display()))
+        .collect();
+    let value = std::env::join_paths(rules).unwrap();
+    stemma(dir, args, |command| {
+        command.env("STEMMA_FAULT", value);
+    })
 }
 
 /// Runs `stemma` like [`run`] and asserts that it succeeds.

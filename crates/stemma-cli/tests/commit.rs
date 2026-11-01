@@ -436,6 +436,7 @@ fn a_result_that_cannot_be_written_ends_with_code_3_after_the_commit() {
     let output = Command::new(env!("CARGO_BIN_EXE_stemma"))
         .current_dir(dir.path())
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .args(["commit", "-m", "Add a", "--actor", "human daniel"])
         .stdout(full)
         .output()

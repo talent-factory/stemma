@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 
 use stemma_core::object::Blob;
 
-#[cfg(unix)]
-use common::Run;
-use common::{ok, run, Dir, ACTOR};
+use common::{ok, run, run_failing, Dir, Run, ACTOR};
 
 const AGENT: &str = "agent bot model=m session=s sponsor=daniel";
 const SECRET: &str = "key=hunter2";
@@ -314,19 +312,17 @@ fn a_writer_refuses_while_a_journal_exists_and_names_resume() {
     );
 }
 
-/// Makes the directory of the log read-only, so that the purge stops at its entry after the new
-/// objects are written, and returns the stopped run.
-#[cfg(unix)]
+/// Lets the directory of the log refuse a new entry, so that the purge stops at its entry after
+/// the new objects are written, and returns the stopped run.
 fn stop_at_the_entry(dir: &Path) -> Run {
-    use std::os::unix::fs::PermissionsExt;
     let oplog = dir.join(".stemma/oplog");
-    fs::set_permissions(&oplog, fs::Permissions::from_mode(0o555)).unwrap();
-    let result = run(dir, &["purge", &secret(), "--apply", "--actor", ACTOR]);
-    fs::set_permissions(&oplog, fs::Permissions::from_mode(0o755)).unwrap();
-    result
+    run_failing(
+        dir,
+        &["purge", &secret(), "--apply", "--actor", ACTOR],
+        &[("write", &oplog)],
+    )
 }
 
-#[cfg(unix)]
 #[test]
 fn a_purge_that_stopped_is_finished_by_resume() {
     let dir = with_secret();
@@ -360,7 +356,6 @@ fn a_purge_that_stopped_is_finished_by_resume() {
     assert!(!dir.path().join(".stemma/purge-pending").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn a_purge_that_stopped_before_its_entry_is_undone_by_abort() {
     let dir = with_secret();

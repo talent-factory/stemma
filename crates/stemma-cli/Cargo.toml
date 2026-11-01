@@ -31,3 +31,11 @@ ctrlc = "3.5.2"
 # whose output the test waits for with a time limit (`poll`).
 [target.'cfg(unix)'.dev-dependencies]
 nix = { version = "0.31.3", features = ["poll", "signal", "term"] }
+
+# The tests inject file system failures instead of changing modes (STEMMA-187): the feature makes
+# the library read `STEMMA_FAULT` and export the guards (`stemma_core::fault`) for the unit tests.
+# A dev-dependency turns it on for builds of test targets only, which includes the `stemma` binary
+# that the integration tests start. `cargo build` and `cargo install` have neither the feature
+# nor the variable.
+[dev-dependencies]
+stemma-core = { path = "../stemma-core", features = ["fault-injection"] }

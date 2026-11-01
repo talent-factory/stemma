@@ -36,6 +36,7 @@ fn stemma(dir: &Path, args: &[&str]) -> Command {
     command
         .current_dir(dir)
         .env_remove("STEMMA_ACTOR")
+        .env_remove("STEMMA_FAULT")
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -1384,10 +1384,12 @@ fn already_removed(fan_out: &Path) -> Result<bool, StoreError> {
     Ok(false)
 }
 
-/// Flushes a directory with the error of the file system as it is (see [`sync_directory`]). In a
-/// test, a failure can be injected for one directory (`fail_flush_of`), and the flushes are counted
-/// (`flush_count`).
+/// Flushes a directory with the error of the file system as it is (see [`sync_directory`]). The
+/// fault injection can make it fail (`deny_reads_of`), because a flush opens the directory as a
+/// read does; that failure comes before the count. In a test, a failure can also be injected for
+/// one directory (`fail_flush_of`), and the flushes that get that far are counted (`flush_count`).
 pub(crate) fn flush_directory(dir: &Path) -> io::Result<()> {
+    fault::check_read(dir)?;
     #[cfg(test)]
     {
         FLUSHES.with(|flushes| flushes.borrow_mut().push(dir.to_path_buf()));
