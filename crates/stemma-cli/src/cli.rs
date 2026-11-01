@@ -4297,6 +4297,44 @@ mod tests {
     }
 
     #[test]
+    fn a_tag_whose_result_cannot_be_written_is_code_3_and_a_closed_pipe_is_quiet() {
+        let dir = std::env::temp_dir().join(format!("stemma-cli-unit-tag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.to_str().unwrap();
+        let actor = ["--actor", "human daniel"];
+        let call = |args: &[&str]| {
+            let mut all = args.to_vec();
+            all.extend(["-C", path]);
+            all.extend(actor);
+            parse(&all)
+        };
+        run(call(&["init"]), &mut Vec::new()).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        run(call(&["track", "a.txt"]), &mut Vec::new()).unwrap();
+        run(call(&["commit", "-m", "first"]), &mut Vec::new()).unwrap();
+
+        // A tag that is made although the result was not written: the command must not be repeated.
+        let made = run(call(&["tag", "v1"]), &mut Full).unwrap_err();
+        assert!(matches!(made, CliError::TagOutput { .. }), "{made}");
+        assert_eq!(made.exit_code(), ExitCode::from(3));
+        assert!(dir.join(".stemma/refs/tags/v1").is_file());
+        // The same for a tag that is deleted.
+        let deleted = run(call(&["tag", "--delete", "v1"]), &mut Full).unwrap_err();
+        assert!(
+            matches!(deleted, CliError::TagDeleteOutput { .. }),
+            "{deleted}"
+        );
+        assert_eq!(deleted.exit_code(), ExitCode::from(3));
+        assert!(deleted.to_string().contains("is deleted, but"), "{deleted}");
+        assert!(!dir.join(".stemma/refs/tags/v1").exists());
+        // A reader that has had enough is not a failure; the change is made.
+        run(call(&["tag", "v2"]), &mut Closed).unwrap();
+        run(call(&["tag", "--delete", "v2"]), &mut Closed).unwrap();
+        assert!(!dir.join(".stemma/refs/tags/v2").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_closed_pipe_ends_the_list_quietly_and_another_write_error_fails() {
         let dir = std::env::temp_dir().join(format!("stemma-cli-unit-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

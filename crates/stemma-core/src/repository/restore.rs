@@ -490,9 +490,9 @@ pub enum RestoreError {
         /// The number.
         number: u64,
     },
-    /// The entry only made or deleted tags. A restore puts back HEAD, the working-copy commit, and the
-    /// branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so the
-    /// restore is refused and no file is written.
+    /// The entry only made or deleted tags. A restore puts back HEAD, the working-copy commit, and
+    /// the branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so
+    /// the restore is refused and no file is written.
     TagsOnly {
         /// The number.
         number: u64,
@@ -676,8 +676,8 @@ impl fmt::Display for RestoreError {
             ),
             Self::TagsOnly { number } => write!(
                 f,
-                "entry {number} only made or deleted tags, which a restore does not touch (a tag never \
-                 moves), so there is nothing to restore"
+                "entry {number} only made or deleted tags, which a restore does not touch (a tag \
+                 never moves), so there is nothing to restore"
             ),
             Self::PurgePending { number } => write!(
                 f,

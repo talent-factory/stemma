@@ -735,19 +735,10 @@ impl Repository {
             .map_err(OpLogError::Entry)?;
             self.append(&lock, &change)
         })?;
-        match outcome.into_result()? {
-            Some(entry) => Ok(entry),
-            // `delete_tag_after` refuses a tag that is not at `expected` and never reports
-            // "unchanged"; if it did, the tag would be gone already.
-            None => {
-                debug_assert!(false, "delete_tag_after reported an unchanged tag");
-                Err(UpdateError::Refs(RefError::StaleTag {
-                    name: name.clone(),
-                    expected,
-                    found: None,
-                }))
-            }
-        }
+        // `delete_tag_after` refuses a tag that is not at `expected` and never reports "unchanged".
+        Ok(outcome
+            .into_result()?
+            .expect("delete_tag_after never reports an unchanged tag"))
     }
 
     /// Points HEAD to a branch, which need not exist yet, or to a commit, if HEAD still is
@@ -1229,12 +1220,20 @@ impl fmt::Display for UpdateError {
                 path.display()
             ),
             Self::Log(error) => error.fmt(f),
-            Self::MoveFailed { entry, source } => write!(
-                f,
-                "entry {} of the operation log was written, but the move failed: {source}; the \
-                 entry may name a move that did not happen",
-                entry.number()
-            ),
+            Self::MoveFailed { entry, source } => {
+                // A tag that vanished after the checks is where the entry puts it.
+                let tail = if matches!(source, RefError::StaleTag { found: None, .. }) {
+                    "the tag is gone, so the entry is true"
+                } else {
+                    "the entry names a move that did not happen"
+                };
+                write!(
+                    f,
+                    "entry {} of the operation log was written, but the move failed: {source}; \
+                     {tail}",
+                    entry.number()
+                )
+            }
             Self::PartlyMoved { entry, source } => write!(
                 f,
                 "entry {} of the operation log was written and the first pointer moved, but the \
@@ -4602,7 +4601,7 @@ mod tests {
         assert_eq!(error.entry().map(Entry::number), Some(2));
         let message = error.to_string();
         assert!(
-            message.contains("entry 2") && message.contains("name a move that did not happen"),
+            message.contains("entry 2") && message.contains("names a move that did not happen"),
             "{message}"
         );
         assert!(error.io_error().is_some());

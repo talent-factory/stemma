@@ -9,7 +9,7 @@
 //! ```text
 //! <root>/HEAD                    branch main\n   or   commit b3:<64 hex digits>\n
 //! <root>/refs/heads/<name>       b3:<64 hex digits>\n
-//! <root>/refs/tags/<name>        b3:<64 hex digits>\n   (created once, never moved, deleted)
+//! <root>/refs/tags/<name>        b3:<64 hex digits>\n   (created once, never moved, deleted at its commit)
 //! <root>/refs.lock               exists while a command writes (ADR-014)
 //! <root>/refs.lock.guard         stays; its holder holds a lock of the system on it (ADR-008)
 //! ```
@@ -396,7 +396,7 @@ pub enum RefError {
     },
     /// The branch is not where the caller saw it: another change came first.
     ///
-    /// Only a branch is stale when it is moved or created. A tag never moves, so a tag that exists
+    /// Only a branch is stale when it is moved, created, or deleted. A tag never moves, so a tag that exists
     /// is [`RefError::TagExists`] when it is created, and a tag that is not where the caller saw
     /// it is [`RefError::StaleTag`] when it is deleted.
     Stale {
@@ -435,13 +435,13 @@ pub enum RefError {
         found: Head,
     },
     /// The name cannot be created, or a tag cannot be deleted under it, because of another entry:
-    /// a reference is a file, so a name cannot be a reference and the start of other names, and on a file system that ignores case
-    /// two names that differ only in case are one file. Branches and tags are checked each among
-    /// themselves.
+    /// a reference is a file, so a name cannot be a reference and the start of other names, and
+    /// on a file system that ignores case two names that differ only in case are one file.
+    /// Branches and tags are checked each among themselves.
     Conflict {
-        /// Whether a branch or a tag was to be created.
+        /// Whether a branch or a tag was to be created or deleted.
         reference: RefKind,
-        /// The name that was to be created.
+        /// The name that was to be created or deleted.
         name: BranchName,
         /// The entry that is in the way, as a name below the branches or the tags. It is not
         /// always a reference; `kind` says what it is.
@@ -963,10 +963,10 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ///
     /// Returns [`RefError::Locked`] if another change is in progress, [`RefError::PurgePending`]
     /// if the journal of a purge exists (ADR-014), [`RefError::Conflict`] if the name is held by
-    /// another tag (checked before `expected`), [`RefError::StaleTag`] if the tag is not at
+    /// another entry (checked before `expected`), [`RefError::StaleTag`] if the tag is not at
     /// `expected` or does not exist, [`RefError::Io`] if the storage fails,
-    /// [`RefError::NotFlushed`], and [`RefError::Corrupt`] as for [`tag`](Self::tag). Nothing is changed in any of these cases,
-    /// except for [`RefError::NotFlushed`]: the tag is gone, but may come back after a crash. A
+    /// [`RefError::NotFlushed`], and [`RefError::Corrupt`] as for [`tag`](Self::tag). Nothing is
+    /// changed in any of these cases, except for [`RefError::NotFlushed`]: the tag is gone, but may come back after a crash. A
     /// repeat of the delete is `StaleTag` with `found` `None`, so the caller reads the tag first.
     ///
     /// This changes the pointer without an entry in the operation log. A command that deletes a

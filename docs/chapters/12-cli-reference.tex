@@ -327,6 +327,12 @@ aber nicht gesichert. \stopxcell
 sichert den Eintrag aber nicht. \stopxcell
 \stopxrow
 \startxrow
+\startxcell[width=0.19\textwidth] \type{tag} \stopxcell
+\startxcell[width=0.41\textwidth] Der Tag ist gesetzt oder gelöscht,
+aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen; \type{stemma tag} zeigt, welche Tags es gibt. \stopxcell
+\stopxrow
+\startxrow
 \startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
 \startxcell[width=0.41\textwidth] Nur ein Teil der Zeiger hat sich bewegt
 (\type{Half made}). \stopxcell
@@ -1207,7 +1213,7 @@ Befehl die Tags.
 \item {\bf COMMIT:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern. Ohne sie nimmt der
 Befehl den Commit, zu dem HEAD führt: die Spitze des Branches von HEAD, bei einem abgekoppelten
 HEAD dessen Commit. Hat der Branch noch keinen Commit, ist das ein Fehler. Zusammen mit
-\type{--delete} ist ein COMMIT ein Aufruffehler.
+\type{--delete} ist ein COMMIT ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{-d}, \type{--delete}:} Löscht den Tag NAME, statt ihn zu setzen. Er ist für einen
 Tag gedacht, der falsch gesetzt wurde; danach lässt sich der Name neu setzen. Ohne NAME ist die
 Option ein Aufruffehler (Exit-Code 2).
@@ -1267,7 +1273,8 @@ den Tag zwischen dem Lesen und der Sperre gelöscht oder auf einen anderen Commi
 endet der Befehl mit Exit-Code 1 und der Meldung, dass sich der Tag geändert hat; er schreibt
 keinen Eintrag. Verschwindet die Datei erst nach der Prüfung, steht der Eintrag schon im Log
 und stimmt: Der Tag ist weg. Der Befehl endet dann mit Exit-Code 1 und der Meldung, dass sich
-der Tag geändert hat. Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6.
+der Tag geändert hat; sie fügt an, dass der Tag weg und der Eintrag damit wahr ist.
+Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6.
 Besteht das Journal eines Purge, lehnt der Befehl das Löschen mit Exit-Code 1 ab; ein fehlender
 \type{--actor} endet mit Exit-Code 1. Ist der Tag gelöscht, aber die Ausgabe lässt sich nicht
 schreiben (die Meldung nennt den Tag), endet der Befehl mit Exit-Code 3, wie beim Setzen.

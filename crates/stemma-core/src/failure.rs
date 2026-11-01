@@ -110,7 +110,8 @@ impl Classify for RefError {
             // a held lock: the caller reads again and decides (ADR-018 keeps "a moved branch" at
             // 1). `StaleHead` and `StaleWorkingCopy` are the same case for HEAD and the
             // working-copy commit.
-            // A tag that was deleted and set again since the caller looked is the same stale view.
+            // A tag that was deleted, or deleted and set again, since the caller looked is the
+            // same stale view.
             Self::Stale { .. }
             | Self::StaleTag { .. }
             | Self::StaleHead { .. }

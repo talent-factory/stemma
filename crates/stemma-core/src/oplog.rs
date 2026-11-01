@@ -29,14 +29,16 @@
 //! branch main b3:8cb4…b3e8 b3:b5f2…e662
 //! ```
 //!
-//! An entry of the operation `tag` has a line `tag v1 - b3:4feb…b32c` instead (see below).
+//! An entry of the operation `tag` has a line `tag v1 - b3:4feb…b32c` instead, and one of the
+//! operation `untag` a line `tag v1 b3:4feb…b32c -` (see below).
 //!
 //! The `…` stands for digits that are left out here; a real ID has all 64. The first five lines come
 //! in this order, each once. Then come the lines of the pointers that changed, at least one (but
 //! see the change of the owner below): `head`, then `working-copy`, then one `branch <name>` for
 //! each branch, sorted by name in UTF-8 byte order and each name once, then one `tag <name>` for
 //! each tag, sorted and unique in the same way. A tag never moves (ADR-008), so a tag line made by
-//! the writer has the old value `-`; the reader does not enforce that. Each line has the old and
+//! the writer has the old value `-` (a tag is made) or the new value `-` (a tag is deleted); the
+//! reader does not enforce that. Each line has the old and
 //! the new value, which differ. `-` means that the pointer did not exist, or does not exist any more.
 //! A branch and the working-copy commit have a commit ID or `-`; HEAD has `branch:<name>`,
 //! `commit:<id>`, or `-`. The file ends with a newline and has nothing after the last pointer.

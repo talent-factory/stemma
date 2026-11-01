@@ -87,8 +87,8 @@ Facts that bound the design:
   appeared after the plan, or before a resume, is refused as well. The message names the command
   that removes a tag, `stemma tag --delete <name>` (STEMMA-184). While a purge is pending the
   command is refused, so a refusal under the lock, or on a resume, needs `--abort` first. A person
-  who still needs the tag sets it again at the commit that the purge leaves. Everything else stays, also an object that
-  only a replaced entry named and that holds no secret: it may become unreachable, but the purge
+  who still needs the tag sets it again at the commit that the purge leaves. Everything else
+  stays, also an object that only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
   does not make ADR-007's collection necessary. The plan also scans the store for trees that name
   the blob, for the commits of such trees, and for the commits after them. One that no kept root
