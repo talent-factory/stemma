@@ -56,7 +56,7 @@ impl Classify for OpenError {
         match self {
             // The file is there but not in canonical form.
             Self::MalformedFormat { .. } => FailureKind::Damaged,
-            // A missing `format`, another version, and a `.stemma` that is not a directory are
+            // A missing `format`, one that is not a regular file, another version, and a `.stemma` that is not a directory are
             // not a form the code wrote, but the caller cannot tell them from a wrong directory or
             // a newer program, so they stay with the other failures.
             Self::NotARepository { .. }
@@ -69,6 +69,7 @@ impl Classify for OpenError {
             | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
             | Self::MissingFormat { .. }
+            | Self::FormatNotRegular { .. }
             | Self::UnsupportedFormat { .. }
             | Self::Io { .. } => FailureKind::Other,
         }
