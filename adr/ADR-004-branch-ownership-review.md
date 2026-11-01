@@ -49,6 +49,10 @@ The machine-readable policy file, which enforces it, is part of phase 4.
   change that implements it, and the command itself asks the authorizer, not the review.
   The same holds for `tag` (ADR-008, ADR-011): it is level 2, because it sets a name that never
   moves and a release may rely on it, and it asks the authorizer for the operation `tag`.
+  Deleting a tag (STEMMA-184) is the operation `untag` and level 2 as well: it removes a name
+  that a release may rely on, so it is no lighter than setting one, and an authorizer can
+  grant it apart from `tag`. A tag that was set wrongly is deleted and set again, which is two
+  operations with two entries.
 
 ## Open Points
 

@@ -334,7 +334,8 @@ impl Repository {
             Record::Purge(_) => return Err(RestoreError::IsPurge { number }),
         };
         // A restore puts back head, working copy, and branches (ADR-013). An entry that only made
-        // tags has nothing of that, and its tags stay, so the restore says so and is refused.
+        // or deleted tags has nothing of that, and its tags stay as they are, so the restore says
+        // so and is refused.
         if change.head().is_none()
             && change.working_copy().is_none()
             && change.branches().is_empty()
@@ -489,7 +490,7 @@ pub enum RestoreError {
         /// The number.
         number: u64,
     },
-    /// The entry only made tags. A restore puts back HEAD, the working-copy commit, and the
+    /// The entry only made or deleted tags. A restore puts back HEAD, the working-copy commit, and the
     /// branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so the
     /// restore is refused and no file is written.
     TagsOnly {
@@ -675,8 +676,8 @@ impl fmt::Display for RestoreError {
             ),
             Self::TagsOnly { number } => write!(
                 f,
-                "entry {number} only made tags, which a restore does not touch (a tag never moves), \
-                 so there is nothing to restore"
+                "entry {number} only made or deleted tags, which a restore does not touch (a tag never \
+                 moves), so there is nothing to restore"
             ),
             Self::PurgePending { number } => write!(
                 f,

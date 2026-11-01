@@ -334,8 +334,8 @@ impl<T> Moved<T> {
 }
 
 /// The pointer of a change, for a message: HEAD, the working-copy commit, a branch, or a tag.
-/// A tag never moves, so the only operation that writes one (`tag`, ADR-011) creates it; `verify`
-/// names a tag too.
+/// A tag never moves, so an entry creates one (the operation `tag`) or deletes one (the
+/// operation `untag`), and none moves one (ADR-011); `verify` names a tag too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pointer {
@@ -597,8 +597,8 @@ impl Change {
         &self.branches
     }
 
-    /// The tags that the operation made, sorted by name. A tag never moves (ADR-008), so the old
-    /// value of each is `None` in every entry that the code writes today.
+    /// The tags that the operation made or deleted, sorted by name. A tag never moves (ADR-008), so
+    /// each is made (the old value is `None`) or deleted (the new value is `None`).
     pub fn tags(&self) -> &[(BranchName, Moved<CommitId>)] {
         &self.tags
     }
@@ -3081,7 +3081,8 @@ pub struct Current {
     working_copy: WorkingCopy,
     branches: BTreeMap<BranchName, CommitId>,
     /// The tags that exist: `None` until [`Current::with_tags`] gave them, so that the outcome of
-    /// an entry that made a tag stays unknown; `Some` of an empty map means that no tag exists.
+    /// an entry that made or deleted a tag stays unknown; `Some` of an empty map means that no tag
+    /// exists.
     tags: Option<BTreeMap<BranchName, CommitId>>,
     /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
     /// `Some(None)` for a working copy without an owner.
@@ -3128,8 +3129,8 @@ impl Current {
         self
     }
 
-    /// Adds the tags that exist. Without them, the outcome of an entry that made a tag stays
-    /// unknown.
+    /// Adds the tags that exist. Without them, the outcome of an entry that made or deleted a tag
+    /// stays unknown.
     #[must_use]
     pub fn with_tags(mut self, tags: impl IntoIterator<Item = (BranchName, CommitId)>) -> Self {
         self.tags = Some(tags.into_iter().collect());
@@ -3983,6 +3984,79 @@ mod tests {
         // Without the tags the outcome is not known.
         let current = Current::new(head, [], true);
         assert_eq!(outcomes(&entries, Some(&current)), [Outcome::Unknown]);
+    }
+
+    #[test]
+    fn the_deletion_of_a_tag_is_a_line_with_the_commit_and_a_dash_and_is_judged_by_the_tags() {
+        let change =
+            tag_change("untag", vec![], vec![(branch("v1"), moved(Some(A), None))]).unwrap();
+        let entry = Entry::try_new(2, change).unwrap();
+        assert!(String::from_utf8(entry.encode())
+            .unwrap()
+            .ends_with(&format!("operation untag\ntag v1 {A} -\n")));
+        assert_eq!(Entry::parse(&entry.encode()).unwrap(), entry);
+        let set = Entry::try_new(
+            1,
+            tag_change("tag", vec![], vec![(branch("v1"), moved(None, Some(A)))]).unwrap(),
+        )
+        .unwrap();
+        let entries = [set, entry];
+        let head = Head::Branch(branch("main"));
+        let with = |tags: Vec<(BranchName, CommitId)>, settled| {
+            let current = Current::new(head.clone(), [], settled).with_tags(tags);
+            outcomes(&entries, Some(&current))
+        };
+        // The tag is gone: the deletion took effect, and so did the entry that set the tag, which
+        // the deletion followed.
+        assert_eq!(with(vec![], true), [Outcome::Took, Outcome::Took]);
+        // The tag is still there: the deletion did not take effect.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(A))], true),
+            [Outcome::Took, Outcome::NotTaken]
+        );
+        // A writer may be between its entry and its deletion.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(A))], false),
+            [Outcome::Took, Outcome::Unknown]
+        );
+        // A tag at a commit that neither entry names was changed outside the log.
+        assert_eq!(
+            with(vec![(branch("v1"), commit(B))], true),
+            [Outcome::Took, Outcome::Unknown]
+        );
+        // Without the tags the deletion is not known; the setting is, because the deletion that
+        // follows it starts from the commit that it set.
+        let current = Current::new(head, [], true);
+        assert_eq!(
+            outcomes(&entries, Some(&current)),
+            [Outcome::Took, Outcome::Unknown]
+        );
+    }
+
+    #[test]
+    fn a_tag_that_is_deleted_and_set_again_is_judged_by_the_entries_that_follow() {
+        let entry = |number: u64, old: Option<&str>, new: Option<&str>| {
+            let operation = if new.is_some() { "tag" } else { "untag" };
+            let change =
+                tag_change(operation, vec![], vec![(branch("v1"), moved(old, new))]).unwrap();
+            Entry::try_new(number, change).unwrap()
+        };
+        let head = Head::Branch(branch("main"));
+        for again in [A, B] {
+            // set at A, deleted, set again (at the same commit or at another)
+            let entries = [
+                entry(1, None, Some(A)),
+                entry(2, Some(A), None),
+                entry(3, None, Some(again)),
+            ];
+            let current =
+                Current::new(head.clone(), [], true).with_tags([(branch("v1"), commit(again))]);
+            assert_eq!(
+                outcomes(&entries, Some(&current)),
+                [Outcome::Took, Outcome::Took, Outcome::Took],
+                "set again at {again}"
+            );
+        }
     }
 
     #[test]

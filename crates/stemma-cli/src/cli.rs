@@ -116,7 +116,8 @@ enum Command {
     Diff(DiffArgs),
     /// Show the commits that lead to the working-copy commit, children before parents
     Log(LogArgs),
-    /// Create a tag, a name for a commit that never moves; without a name, list the tags
+    /// Create a tag, a name for a commit that never moves, or delete one; without a name, list the
+    /// tags
     Tag(TagArgs),
     /// Show the operation log
     Op {
@@ -133,6 +134,11 @@ struct TagArgs {
     #[arg(value_name = "NAME")]
     name: Option<BranchName>,
 
+    /// Delete the tag NAME instead of creating it, for a tag that was set wrongly; the tag can be
+    /// set again afterwards
+    #[arg(short = 'd', long, requires = "name", conflicts_with = "commit")]
+    delete: bool,
+
     /// The ID of the commit to tag, `b3:` and 64 hexadecimal digits; by default the commit that
     /// HEAD leads to (the tip of its branch)
     #[arg(value_name = "COMMIT", requires = "name")]
@@ -148,8 +154,8 @@ struct TagArgs {
     repository: PathBuf,
 
     /// Who runs the command: `human <id>` or
-    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required to create a tag
-    /// unless the environment sets STEMMA_ACTOR
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required to create or
+    /// delete a tag unless the environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
 
@@ -622,17 +628,27 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
-    /// The core refused the tag or could not make it. An entry of the log can name a tag that
-    /// was not made ([`UpdateError::MoveFailed`]).
+    /// The core refused the tag or could not make or delete it. An entry of the log can name a
+    /// tag that was not made or not deleted ([`UpdateError::MoveFailed`]).
     Tag(UpdateError),
     /// `tag` could not read the references.
     TagRefs(RefError),
     /// `tag` has no commit to tag: no commit is given and the branch of HEAD has none yet.
     NoCommitToTag,
+    /// `tag --delete` names a tag that does not exist, or a name that is only a directory of tags.
+    NoSuchTag(BranchName),
     /// The tags were read, but the output could not be written.
     TagWrite {
         /// The tag that was being written.
         name: String,
+        /// The error of the output.
+        source: io::Error,
+    },
+    /// The tag is deleted and recorded in the log, but the result could not be written to the
+    /// output. A script must not repeat the command: the tag is gone.
+    TagDeleteOutput {
+        /// The tag and its commit, as the output would have named them.
+        deleted: String,
         /// The error of the output.
         source: io::Error,
     },
@@ -745,6 +761,7 @@ impl CliError {
             | Self::CommitNotDurable { .. }
             | Self::CommitOutput { .. }
             | Self::TagOutput { .. }
+            | Self::TagDeleteOutput { .. }
             | Self::StatusNotDurable { .. }
             | Self::PurgedOutput { .. }
             | Self::RestoreOutput {
@@ -810,6 +827,7 @@ impl CliError {
             | Self::VerifyOutput(_)
             | Self::LogWrite { .. }
             | Self::NoCommitToTag
+            | Self::NoSuchTag(_)
             | Self::TagWrite { .. }
             | Self::Write { .. } => ExitCode::FAILURE,
         }
@@ -1043,6 +1061,12 @@ impl fmt::Display for CliError {
                 "the tag {made} is made, but the result could not be written to standard output: \
                  {source}"
             ),
+            Self::TagDeleteOutput { deleted, source } => write!(
+                f,
+                "the tag {deleted} is deleted, but the result could not be written to standard \
+                 output: {source}"
+            ),
+            Self::NoSuchTag(name) => write!(f, "there is no tag `{name}` to delete"),
             Self::TagWrite { name, source } => {
                 write!(
                     f,
@@ -1998,15 +2022,20 @@ fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Resul
     }
 }
 
-/// Creates the tag `NAME` at a commit, or lists the tags if no name is given (ADR-008). Creating
-/// writes the operation `tag` to the operation log (the core asks the authorizer for it, and the
-/// command passes `AllowAll` until the policy of phase 4 exists); listing only reads. A tag that exists is refused, at this commit or at another, because a tag never moves.
+/// Creates the tag `NAME` at a commit, deletes it with `--delete`, or lists the tags if no name is
+/// given (ADR-008). Creating writes the operation `tag` and deleting the operation `untag` to the
+/// operation log (the core asks the authorizer for it, and the command passes `AllowAll` until the
+/// policy of phase 4 exists); listing only reads. A tag that exists is refused, at this commit or
+/// at another, because a tag never moves: a tag that was set wrongly is deleted and set again.
 fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let Some(name) = args.name else {
         return list_tags(&args.repository, args.json, out);
     };
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
+    if args.delete {
+        return delete_tag(&repository, &name, &actor, args.json, out);
+    }
     let commit = match args.commit {
         Some(id) => id,
         None => repository
@@ -2030,6 +2059,45 @@ fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(source) => Err(CliError::TagOutput {
             made: format!("{name} at {commit}"),
+            source,
+        }),
+        Ok(()) => Ok(()),
+    }
+}
+
+/// Deletes the tag `name` at the commit that it has now. The commit goes to the core as the value
+/// that the tag is expected to have, so a tag that was deleted and set again at another commit
+/// since is not deleted by mistake.
+fn delete_tag(
+    repository: &Repository,
+    name: &BranchName,
+    actor: &Actor,
+    json: bool,
+    out: &mut dyn Write,
+) -> Result<(), CliError> {
+    let commit = repository
+        .refs()
+        .tag(name)
+        .map_err(CliError::TagRefs)?
+        .ok_or_else(|| CliError::NoSuchTag(name.clone()))?;
+    let operation = oplog::OperationName::try_new("untag").expect("`untag` is an operation name");
+    repository
+        .delete_tag(&operation, name, commit.object_id(), actor, &AllowAll)
+        .map_err(CliError::Tag)?;
+    let text = if json {
+        format!(
+            "{{\"schema\":{JSON_SCHEMA},\"tag\":{},\"commit\":{},\"deleted\":true}}\n",
+            op_log::quote(name.as_str()),
+            op_log::quote(&commit.to_string())
+        )
+    } else {
+        format!("Deleted {name}, which was at {commit}\n")
+    };
+    match out.write_all(text.as_bytes()) {
+        // The reader of a pipe, such as `head`, has had enough: that is not a failure.
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(CliError::TagDeleteOutput {
+            deleted: format!("{name}, which was at {commit}"),
             source,
         }),
         Ok(()) => Ok(()),
