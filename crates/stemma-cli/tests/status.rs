@@ -673,7 +673,7 @@ fn json_of_a_clean_working_copy() {
     );
 }
 
-// A quote in a file name is valid on Unix only; Windows refuses to create the file.
+// Windows does not allow a double quote in a file name, so the file cannot be created there.
 #[cfg(unix)]
 #[test]
 fn json_lists_changes_and_untracked_files_with_plain_paths() {

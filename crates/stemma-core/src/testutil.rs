@@ -44,8 +44,27 @@ impl Drop for TempDir {
 
 /// Replaces a read-only object file with other content.
 pub(crate) fn overwrite(path: &Path, bytes: &[u8]) {
+    if cfg!(windows) {
+        // Windows refuses to remove a read-only file.
+        let mut permissions = fs::metadata(path).expect("inspect object").permissions();
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows has no other bits, and the file is removed next"
+        )]
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions).expect("make object writable");
+    }
     fs::remove_file(path).expect("remove object");
     fs::write(path, bytes).expect("write object");
+}
+
+/// Damages an object file the way a fault does: other content, and still read-only, because the
+/// store wrote the file read-only. A rename onto it fails on Windows.
+pub(crate) fn damage(path: &Path, bytes: &[u8]) {
+    overwrite(path, bytes);
+    let mut permissions = fs::metadata(path).expect("inspect object").permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions).expect("make object read-only");
 }
 
 /// The deepest link of the chain that [`FaultyStore`] makes: it is the cause of [`DiskError`].
@@ -138,5 +157,45 @@ impl ObjectStore for FaultyStore {
 
     fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
         self.inner.contains(id)
+    }
+}
+
+/// A directory that refuses new entries and the removal of entries for as long as the guard lives
+/// (the mode `0o555`). The permission is restored when the guard is dropped, so that the temporary
+/// directory can be removed.
+///
+/// Only Unix has it. On Windows a deny rule keeps `File::create` out of a directory, but a rename
+/// or a hard link into it still succeeds (CI run 41071667805), so a test that needs a refused
+/// write there injects the failure instead, as the tests of `publish` do. A user that may bypass
+/// the permission (root) is not kept out; a test asks [`Denied::enforced`] first.
+#[cfg(unix)]
+pub(crate) struct Denied(PathBuf);
+
+#[cfg(unix)]
+impl Denied {
+    /// Whether denying writing to a directory keeps a file out. It does not for root.
+    pub(crate) fn enforced(scratch: &Path) -> bool {
+        let probe = scratch.join("denied-probe");
+        fs::create_dir(&probe).expect("create the probe directory");
+        let guard = Self::writing(&probe);
+        let enforced = fs::File::create(probe.join("file")).is_err();
+        drop(guard);
+        let _ = fs::remove_dir_all(&probe);
+        enforced
+    }
+
+    /// Denies writing to a directory.
+    pub(crate) fn writing(dir: &Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).expect("deny the directory");
+        Self(dir.to_owned())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Denied {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
     }
 }
