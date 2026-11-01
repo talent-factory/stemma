@@ -158,15 +158,18 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       the place of `.stemma` or `format` is not followed by `discover`, even when the user
       made it (`NotADirectory`, `FormatNotRegular`), as a link is refused on Windows
       (`ReparsePoint`). `Repository::open` checks no owner and follows both links. Both read
-      `format` only if it is a regular file, and open it without waiting for a writer, so a
-      FIFO or a device fails with `FormatNotRegular` at once and does not block (the error of a
-      directory in its place changed from `Io` to it).
-      Where the system has no `O_PATH` (macOS) a `.stemma` that the user may search but not
-      read cannot be held. The directory is then looked at by its path and must belong to the
-      user, `format` is opened by its path and must belong to the user and have no other name
-      (a hard link in the directory of another user would pass the owner test), and the
-      directory must still be the same one afterwards. This is weaker than the handle: a swap
-      to another directory and back between the looks is not seen.
+      `format` only if it is a regular file, and open it without waiting for a writer, so on
+      Unix a FIFO or a device fails with `FormatNotRegular` at once and does not block (the
+      error of a directory in its place changed from `Io` to it; on Windows a directory still
+      gives `Io`). A link that leads nowhere is in the way and not a missing `format`.
+      Where the system has no `O_PATH` (Linux, Android, and FreeBSD have it; macOS and the
+      other systems do not) a `.stemma` that the user may search but not read cannot be held.
+      The directory is then looked at by its path and must belong to the user, `format` is
+      opened by its path and must belong to the user (`FormatOwner`) and have no other name
+      (`FormatShared`: a hard link in the directory of another user would pass the owner
+      test), and the directory must still be the same one afterwards (`Changed`). This is
+      weaker than the handle: a swap to another directory and back between the looks is not
+      seen.
       Windows checks the owner on the path, between the look and the call.
 - [ ] The stores of a repository work by path. The handle ends once `format` is read, so a
       `.stemma` that is swapped after the open is used without a check, in the search above

@@ -51,8 +51,8 @@ Unter Unix prüft Stemma den Besitzer zusätzlich an dem Handle, das \type{open}
 und liest \type{format} über dieses Handle.
 Ein \type{.stemma}, das nach dem Blick auf den Pfad ausgetauscht wird,
 lehnt die Suche so ab, bevor sie \type{format} liest.
-Einen Link an der Stelle von \type{.stemma} oder \type{format} folgt die Suche nicht,
-auch wenn er dem Konto gehört, und ein \type{format}, das keine reguläre Datei ist,
+Einem Link an der Stelle von \type{.stemma} oder \type{format} folgt die Suche unter Unix
+nicht, auch wenn er dem Konto gehört, und ein \type{format}, das keine reguläre Datei ist,
 liest Stemma nicht: Eine FIFO blockiert den Befehl also nicht.
 Unter Windows bleibt die Prüfung auf dem Pfad, und auch unter Unix arbeiten die Speicher
 danach wieder über den Pfad; ein spätes Austauschen von \type{.stemma}
