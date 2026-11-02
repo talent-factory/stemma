@@ -212,6 +212,14 @@ Die neue Art heisst \type{commit2}, weil eine geänderte Kodierung von \type{com
 gespeicherten Commits ändern würde (ADR-005). Weil die Art zum gehashten Kopf gehört, ergeben
 dieselben Bytes als \type{commit} ein anderes Objekt. In Phase 1 schreibt noch kein Befehl
 ein solches Objekt; was ein Konflikt bedeutet und wie er aufgelöst wird, beschreibt Phase 3.
+Eine \type{CommitId} nennt beide Arten, damit ein Konflikt dort stehen kann, wo ein Commit steht:
+Der Speicher löst sie nach der Art des gespeicherten Objekts zu einem \type{commit} oder
+einem \type{commit2} auf.
+Ein \type{commit2} ist deshalb ein Elter, der \type{verify} besteht, ein Schritt der Geschichte
+und das Ziel eines Zweigs oder der Arbeitskopie.
+Wer einen einzigen Baum braucht, etwa \type{status}, \type{diff}, \type{restore} und
+\type{commit}, findet in einem \type{commit2} keinen und meldet einen offenen Konflikt,
+statt eine falsche Art zu beklagen; was diese Befehle damit tun, entscheidet Phase 3.
 
 Zum Graphen gehören weitere Invarianten.
 {\em Jedes Objekt hat genau eine Kodierung.}
@@ -2442,10 +2450,13 @@ weil jeder Stub den Hash des Rumpfs behält, den er ersetzt (\in{Abschnitt}[sec:
 und die Meldung nennt ihn, denn ein Commit darf keinen Elter zweimal nennen.
 \item Ein beschädigter Baum oder Commit hält den Plan an, denn er könnte den Blob nennen.
 Ein Rest, dessen Elter fehlt, hält ihn ebenfalls an, und die Meldung nennt den Rest.
-\item Einem Commit mit einer Liste von Bäumen (\type{commit2}) kann der Plan noch nicht folgen.
-Findet er einen im Speicher, hält er an und meldet ihn als Schaden, statt ihn zu überspringen,
-denn einer seiner Bäume könnte den Blob nennen.
-In Phase~1 schreibt kein Befehl ein solches Objekt.
+\item Bei einem Commit mit einer Liste von Bäumen (\type{commit2}) folgt der Plan jedem Baum
+der Liste und ersetzt jeden, der den Blob enthält.
+Der Commit wird in der Form neu geschrieben, die seine Summe danach hat:
+Wird ein weggenommener Baum der Liste einem hinzugefügten gleich, heben sich beide auf,
+und aus dem Konflikt kann ein \type{commit} mit derselben Änderungs-ID werden.
+Das Anwenden eines Purge kann nicht laufen, solange die Arbeitskopie ein \type{commit2} ist,
+denn sein Schnappschuss meldet den offenen Konflikt; der Plan selbst schreibt nichts.
 \item Ein Objekt, das zwischen dem Auflisten des Speichers und dem Lesen seines Kopfs verschwindet,
 nennt nichts mehr und wird übersprungen.
 Verschwindet es erst danach, hält der Plan an.

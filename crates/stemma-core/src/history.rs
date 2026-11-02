@@ -17,7 +17,8 @@ use std::collections::{BinaryHeap, HashMap};
 use std::error::Error;
 use std::fmt;
 
-use crate::object::{Commit, CommitId};
+use crate::conflict::AnyCommit;
+use crate::object::CommitId;
 use crate::store::{ObjectStore, ReadError, StoreError};
 
 /// Which parents of a commit [`ancestors`] follows.
@@ -44,7 +45,7 @@ pub fn ancestors(
     start: CommitId,
     parents: Parents,
     limit: Option<usize>,
-) -> Result<Vec<(CommitId, Commit)>, HistoryError> {
+) -> Result<Vec<(CommitId, AnyCommit)>, HistoryError> {
     match parents {
         Parents::First => first_parent_chain(store, start, limit),
         Parents::All => topological(store, start, limit),
@@ -58,11 +59,11 @@ pub(crate) fn read_commit(
     store: &dyn ObjectStore,
     id: CommitId,
     child: Option<CommitId>,
-) -> Result<Commit, HistoryError> {
+) -> Result<AnyCommit, HistoryError> {
     // A commit that a reachable commit names must exist, so `None` is an error here, while the
     // store returns it as a normal answer.
     store
-        .get_commit(&id)?
+        .get_any_commit(&id)?
         .ok_or(HistoryError::Missing { id, child })
 }
 
@@ -70,7 +71,7 @@ fn first_parent_chain(
     store: &dyn ObjectStore,
     start: CommitId,
     limit: Option<usize>,
-) -> Result<Vec<(CommitId, Commit)>, HistoryError> {
+) -> Result<Vec<(CommitId, AnyCommit)>, HistoryError> {
     let mut chain = Vec::new();
     let mut next = Some((start, None));
     while let Some((id, child)) = next {
@@ -88,11 +89,11 @@ fn topological(
     store: &dyn ObjectStore,
     start: CommitId,
     limit: Option<usize>,
-) -> Result<Vec<(CommitId, Commit)>, HistoryError> {
+) -> Result<Vec<(CommitId, AnyCommit)>, HistoryError> {
     // The first pass reads every reachable commit once and counts, for each commit, the edges from
     // its children that are reachable too (a commit names each parent once, so an edge is a
     // child). A commit is ready when all of them are listed.
-    let mut commits: HashMap<CommitId, Commit> = HashMap::new();
+    let mut commits: HashMap<CommitId, AnyCommit> = HashMap::new();
     let mut waiting: HashMap<CommitId, usize> = HashMap::new();
     let mut pending = vec![(start, None)];
     while let Some((id, child)) = pending.pop() {
@@ -197,6 +198,7 @@ mod tests {
     use super::*;
     use crate::change::sample_change;
     use crate::failure::{Classify, FailureKind};
+    use crate::object::Commit;
     use crate::object::Tree;
     use crate::testutil::{FaultyStore, TempDir};
     use crate::Actor;
@@ -226,8 +228,40 @@ mod tests {
         store.put_commit(&commit).unwrap()
     }
 
-    fn ids(listed: Vec<(CommitId, Commit)>) -> Vec<CommitId> {
+    fn ids(listed: Vec<(CommitId, AnyCommit)>) -> Vec<CommitId> {
         listed.into_iter().map(|(id, _)| id).collect()
+    }
+
+    #[test]
+    fn the_walk_passes_through_a_commit2() {
+        use crate::object::{Commit2, FileMode, Kind, TreeEntry};
+        let dir = TempDir::new();
+        let store = dir.store();
+        let root = commit(&store, &[], 0);
+        let blob = store.put_blob(&crate::object::Blob::new("x")).unwrap();
+        let tree = |name: &str| {
+            let entry = TreeEntry::file(name, FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let conflict = Commit2::try_new(
+            vec![tree("a"), tree("b"), tree("c")],
+            vec![root],
+            sample_change(),
+            Actor::human("daniel").unwrap(),
+            1,
+            "conflict",
+        )
+        .unwrap();
+        let conflict_id = CommitId::new(store.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
+        let tip = commit(&store, &[conflict_id], 2);
+        let listed = ancestors(&store, tip, Parents::All, None).unwrap();
+        assert!(listed[1].1.is_conflicted());
+        assert_eq!(listed[1].1.message(), "conflict");
+        assert_eq!(ids(listed), vec![tip, conflict_id, root]);
+        let first_parent = ancestors(&store, tip, Parents::First, None).unwrap();
+        assert_eq!(ids(first_parent), vec![tip, conflict_id, root]);
     }
 
     #[test]

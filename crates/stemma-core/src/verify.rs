@@ -216,7 +216,8 @@ impl fmt::Display for CommitReference {
 }
 
 impl Commit {
-    /// Checks that the tree is a tree and every parent is a commit that the store has. See the
+    /// Checks that the tree is a tree and every parent is a commit, of the kind `commit` or
+    /// `commit2`, that the store has. See the
     /// module documentation for what the check covers. A store that holds only part of the
     /// history, such as a shallow copy, fails for the parents it lacks.
     ///
@@ -233,7 +234,8 @@ impl Commit {
 }
 
 impl Commit2 {
-    /// Checks that every tree of the list is a tree and every parent is a commit that the store
+    /// Checks that every tree of the list is a tree and every parent is a commit (of either kind)
+    /// that the store
     /// has, as [`Commit::verify`] does for one tree. The trees are checked in the order of the
     /// list, before the parents.
     ///
@@ -261,7 +263,7 @@ fn parent_references(
 }
 
 /// Checks each reference of a commit in the given order and returns the first problem. A tree is
-/// resolved as a tree and a parent as a commit.
+/// resolved as a tree and a parent as a commit of either kind.
 fn verify_references(
     store: &dyn ObjectStore,
     references: impl Iterator<Item = (CommitReference, ObjectId)>,
@@ -284,7 +286,7 @@ fn verify_references(
 mod tests {
     use super::*;
     use crate::change::sample_change;
-    use crate::object::{Blob, BlobId, CommitId, FileMode, TreeEntry, TreeId};
+    use crate::object::{Blob, BlobId, CommitId, FileMode, Kind, TreeEntry, TreeId};
     use crate::store::FsObjectStore;
     use crate::testutil::{overwrite, TempDir};
     use crate::Actor;
@@ -665,6 +667,42 @@ mod tests {
                 other => panic!("unexpected error: {other}"),
             }
         }
+    }
+
+    #[test]
+    fn a_commit2_is_a_parent_that_verifies_and_so_is_a_chain_of_them() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let tree = empty_tree(&store);
+        let other = store
+            .put_tree(
+                &Tree::try_new(vec![
+                    TreeEntry::file("y", FileMode::File, absent_blob()).unwrap()
+                ])
+                .unwrap(),
+            )
+            .unwrap();
+        let conflict = |parents: Vec<CommitId>| {
+            Commit2::try_new(
+                vec![tree, other, tree],
+                parents,
+                crate::change::sample_change(),
+                Actor::human("daniel").unwrap(),
+                0,
+                "m",
+            )
+            .unwrap()
+        };
+        let first = conflict(vec![]);
+        let first_id = CommitId::new(store.put_raw(Kind::Commit2, &first.encode()).unwrap());
+        // A conflict on top of a conflict, and the commit that resolves one.
+        let second = conflict(vec![first_id]);
+        assert!(second.verify(&store).is_ok());
+        let second_id = CommitId::new(store.put_raw(Kind::Commit2, &second.encode()).unwrap());
+        assert!(commit(tree, vec![second_id]).verify(&store).is_ok());
+        // A tree is still not a parent, of either kind.
+        let as_parent = CommitId::new(tree.object_id());
+        assert!(conflict(vec![as_parent]).verify(&store).is_err());
     }
 
     #[test]

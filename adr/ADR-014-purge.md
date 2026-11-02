@@ -38,7 +38,8 @@ Facts that bound the design:
 ## Decision
 
 - **The purge rewrites the affected commits** *(confirmed)*. The input is the ID of a blob. Every
-  commit whose tree holds that blob (in any depth) gets a new tree without the entry, and the same
+  commit whose tree holds that blob (in any depth; for a `commit2`, any tree of its list) gets a
+  new tree without the entry, and the same
   author, time, message, and change ID. Its descendants get new IDs because their parent
   changed. Branches, HEAD (when it names a commit), and the working-copy commit move to the new
   commits. The change ID stays, so a person can still follow a change across the purge.
@@ -94,9 +95,13 @@ Facts that bound the design:
   the blob, for the commits of such trees, and for the commits after them. One that no kept root
   reaches (the leftover of a crash before its entry) is deleted with them and not rewritten, so
   that no tree is left that names a missing blob and no commit that names a deleted parent. A
-  leftover that holds no secret and follows no such commit stays. The plan cannot follow a
-  `commit2` (ADR-005) yet: one that it finds in the store stops the plan and is reported as
-  damage, as one of its trees may name the blob. The plan checks at the end
+  leftover that holds no secret and follows no such commit stays. The plan follows a `commit2`
+  (ADR-005) through every tree of its list, as it follows the one tree of a `commit`: each tree
+  that holds the blob is replaced, and the commit is written again in the form that its sum has
+  afterwards. A base and a side that the purge makes equal cancel, so a conflict can end up as
+  a `commit` with the same change ID. Applying a purge (`apply_purge`) starts with a snapshot, so
+  it does not run while the working-copy commit is a `commit2`: the snapshot reports the open
+  conflict. The plan itself writes nothing and takes no snapshot. The plan checks at the end
   that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
   The scratch files of `tmp/` are removed when the purge takes the lock (ADR-011); see the
   limits.

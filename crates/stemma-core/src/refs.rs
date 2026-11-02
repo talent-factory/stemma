@@ -467,7 +467,7 @@ pub enum RefError {
     },
     /// The object store has no commit with this ID.
     MissingCommit(CommitId),
-    /// The object with this ID is not a commit.
+    /// The object with this ID is neither a `commit` nor a `commit2`.
     NotACommit {
         /// The ID that was given.
         id: ObjectId,
@@ -893,7 +893,8 @@ pub trait RefStore: crate::store::sealed::Sealed {
     /// # Errors
     ///
     /// Returns [`RefError::MissingCommit`] if the commit is not in the store,
-    /// [`RefError::NotACommit`] if the object is not a commit, [`RefError::Store`] and
+    /// [`RefError::NotACommit`] if the object is neither a `commit` nor a `commit2`,
+    /// [`RefError::Store`] and
     /// [`RefError::Io`] if the store or the storage fails, [`RefError::Locked`] if another change
     /// is in progress, and [`RefError::NotFlushed`] if the change was made but could not be
     /// flushed to disk. Nothing is changed in any other case.
@@ -4320,6 +4321,56 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, RefError::PurgePending { .. }), "{error}");
         assert_eq!(refs.tag(&v1).unwrap(), Some(first));
+    }
+
+    #[test]
+    fn a_branch_and_a_tag_may_name_a_commit2_and_a_tree_is_still_refused() {
+        use crate::object::{Commit2, FileMode, Kind, TreeEntry};
+        let (_dir, objects, refs) = setup();
+        let blob = objects.put_blob(&Blob::new("x")).unwrap();
+        let tree = |file: &str| {
+            let entry = TreeEntry::file(file, FileMode::File, blob).unwrap();
+            objects
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let conflict = Commit2::try_new(
+            vec![tree("a"), tree("b"), tree("c")],
+            vec![],
+            sample_change(),
+            Actor::human("daniel").unwrap(),
+            0,
+            "conflict",
+        )
+        .unwrap();
+        let id = CommitId::new(objects.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
+        let main = name("main");
+        refs.update_branch(&main, None, id, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.branch(&main).unwrap(), Some(id));
+        refs.create_tag(&name("v1"), id, &objects, &Allowed::granted())
+            .unwrap();
+        assert_eq!(refs.tag(&name("v1")).unwrap(), Some(id));
+        let tree_as_commit = CommitId::new(ObjectId::from(tree("a")));
+        let error = refs
+            .update_branch(
+                &main,
+                Some(id),
+                tree_as_commit,
+                &objects,
+                &Allowed::granted(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RefError::NotACommit {
+                    found: Kind::Tree,
+                    ..
+                }
+            ),
+            "{error}"
+        );
     }
 
     #[test]

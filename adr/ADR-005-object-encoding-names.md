@@ -149,12 +149,20 @@ them.
   and the version of the format stays. The kind name is hashed with the body, so the bytes of a
   `commit2` are another object under the kind `commit`. `Commit::parse` still rejects more than one
   `tree` line. The type is `Commit2`, separate from `Commit`. What a conflict means, and how it is
-  resolved, stays with phase 3 (STEMMA-19). The purge (ADR-014) does not follow a `commit2` yet and
-  reports one that it finds in the store as an error, instead of skipping a tree that may hold the
-  blob. `Commit2::id` returns a `CommitId`, so that a conflict can stand where a commit stands, but
-  the store, the reads of a snapshot and a difference, and `verify` still read a `CommitId` as the
-  kind `commit`. Until phase 3 decides how a `CommitId` resolves to either kind, a `commit2` cannot
-  be a parent that verifies, nor the target of a branch or of the working copy (STEMMA-179).
+  resolved, stays with phase 3 (STEMMA-19). `Commit2::id` returns a `CommitId`, so that a conflict
+  can stand where a commit stands, and **a `CommitId` names either kind**: the store resolves it to
+  a `commit` or to a `commit2` by the kind of the stored object (`resolve_commit`,
+  `get_any_commit`, which returns `AnyCommit`), so that a `commit2` is a parent that passes
+  `verify`, a step of the history, and the target of a branch or of the working copy. The reader
+  `get_commit` stays strict and returns a `Commit` only, since a caller that needs one tree has none
+  in a `commit2`: `status`, `diff`, `restore`, and `commit` report such a commit as a conflict
+  (`Conflicted`) and not as a kind mismatch, until phase 3 gives them a meaning for it (STEMMA-19).
+  The purge (ADR-014) follows the list of trees of a `commit2` and writes the new version of a
+  rewritten one in the form that its sum has. The kind is part of the ID, so the same bytes under
+  the kind `commit` and under the kind `commit2` are two objects (see above). The alternative, an
+  ID type of its own for a `commit2`, was rejected: every place that takes a parent or a pointer
+  would accept both types, the branch and the log would store two kinds of ID, and nothing would
+  gain, since the kind is already read from the object (STEMMA-179).
 - **Algebra of the sum of trees** *(confirmed)*. The list of a `commit2` is a sum, read as the first
   tree plus the change from each removed tree to the added tree after it. The module `conflict` of
   the core holds it: `Merge` is the sum over any value, and `AnyCommit::from_sum` writes the commit

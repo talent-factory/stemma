@@ -104,7 +104,8 @@ server will later keep objects elsewhere (API-first). The implementation is
   checked. `get` returns the kind and the encoded body of an object whose content hashes to the ID;
   `get_expecting` fails with a `KindMismatch` if the kind differs. The `resolve_*` methods return a
   typed ID for an object that exists and has the kind, `None` for a missing object, and a
-  `KindMismatch` for another kind. They check the content like `get` does, which means a full read,
+  `KindMismatch` for another kind; `resolve_commit` accepts a `commit` and a `commit2`
+  (ADR-005). They check the content like `get` does, which means a full read,
   because the kind is known only from the stored object, and a damaged object is reported as
   `Corrupt` whichever kind was asked for. A resolved ID says that the object existed with that kind
   when it was resolved, not that it stays in the store. `get_tree` and `get_commit` take a typed ID,

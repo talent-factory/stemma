@@ -38,7 +38,9 @@ use std::error::Error;
 use std::fmt;
 
 use crate::change::ChangeId;
-use crate::object::{Commit, Commit2, Commit2Error, CommitError, CommitId, TreeId};
+use crate::object::{
+    Commit, Commit2, Commit2Error, CommitError, CommitId, CommitParseError, Kind, TreeId,
+};
 use crate::Actor;
 
 /// A sum of values: `terms[0] - terms[1] + terms[2] - terms[3] + ... + terms[n - 1]`.
@@ -334,6 +336,82 @@ impl AnyCommit {
             Self::Commit(commit) => commit.into(),
             Self::Commit2(commit) => commit.into(),
         }
+    }
+
+    /// Reads the body of an object of the kind `commit` or `commit2` in its own form. Returns
+    /// `None` for another kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`CommitParseError`] of [`Commit::parse`] or [`Commit2::parse`].
+    pub fn parse(kind: Kind, body: &[u8]) -> Option<Result<Self, CommitParseError>> {
+        match kind {
+            Kind::Commit => Some(Commit::parse(body).map(Self::Commit)),
+            Kind::Commit2 => Some(Commit2::parse(body).map(Self::Commit2)),
+            _ => None,
+        }
+    }
+
+    /// Returns the parents in the order given at creation.
+    pub fn parents(&self) -> &[CommitId] {
+        match self {
+            Self::Commit(commit) => commit.parents(),
+            Self::Commit2(commit) => commit.parents(),
+        }
+    }
+
+    /// Returns the change ID, which a rewrite of the commit keeps.
+    pub fn change(&self) -> ChangeId {
+        match self {
+            Self::Commit(commit) => commit.change(),
+            Self::Commit2(commit) => commit.change(),
+        }
+    }
+
+    /// Returns the author.
+    pub fn author(&self) -> &Actor {
+        match self {
+            Self::Commit(commit) => commit.author(),
+            Self::Commit2(commit) => commit.author(),
+        }
+    }
+
+    /// Returns the claimed time in seconds since the Unix epoch (UTC).
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Commit(commit) => commit.timestamp(),
+            Self::Commit2(commit) => commit.timestamp(),
+        }
+    }
+
+    /// Returns the message.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Commit(commit) => commit.message(),
+            Self::Commit2(commit) => commit.message(),
+        }
+    }
+
+    /// Returns a commit with the same change, author, time, and message, and the given trees and
+    /// parents. The form follows from the sum (see [`from_sum`](Self::from_sum)), so a rewrite
+    /// that makes two terms equal can turn a `commit2` into a `commit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`from_sum`](Self::from_sum).
+    pub fn reparent(
+        &self,
+        trees: &Merge<TreeId>,
+        parents: Vec<CommitId>,
+    ) -> Result<Self, FromSumError> {
+        Self::from_sum(
+            trees,
+            parents,
+            self.change(),
+            self.author().clone(),
+            self.timestamp(),
+            self.message(),
+        )
     }
 
     /// Returns true if the commit records an open conflict.
@@ -1114,6 +1192,57 @@ mod tests {
             assert_eq!(got_time, 1_234, "{numbers:?}");
             assert_eq!(got_message, "the message", "{numbers:?}");
         }
+    }
+
+    #[test]
+    fn reparent_keeps_the_metadata_and_takes_its_form_from_the_new_sum() {
+        let (old_parent, new_parent) = (from_sum(&trees(&[8])).id(), from_sum(&trees(&[9])).id());
+        let change = sample_change();
+        let original = |numbers: &[u8]| {
+            AnyCommit::from_sum(
+                &trees(numbers),
+                vec![old_parent],
+                change,
+                human(),
+                1_234,
+                "the message",
+            )
+            .expect("valid commit")
+        };
+        // (original sum, new sum, new sum is a conflict)
+        let cases: [(&[u8], &[u8], bool); 4] = [
+            (&[1, 2, 3], &[4, 5, 6], true),
+            (&[1, 2, 3], &[4, 5, 5], false),
+            (&[1], &[4], false),
+            (&[1], &[4, 5, 6], true),
+        ];
+        for (before, after, conflicted) in cases {
+            let moved = original(before)
+                .reparent(&trees(after), vec![new_parent])
+                .expect("valid commit");
+            assert_eq!(moved.is_conflicted(), conflicted, "{before:?} -> {after:?}");
+            assert_eq!(moved.parents(), [new_parent], "{before:?} -> {after:?}");
+            assert_eq!(moved.change(), change, "{before:?} -> {after:?}");
+            assert_eq!(*moved.author(), human(), "{before:?} -> {after:?}");
+            assert_eq!(moved.timestamp(), 1_234, "{before:?} -> {after:?}");
+            assert_eq!(moved.message(), "the message", "{before:?} -> {after:?}");
+        }
+    }
+
+    #[test]
+    fn reparent_rejects_duplicate_parents_in_the_form_of_the_result() {
+        let parent = from_sum(&trees(&[8])).id();
+        let commit = from_sum(&trees(&[1]));
+        let moved = commit.reparent(&trees(&[1]), vec![parent, parent]);
+        assert!(matches!(
+            moved,
+            Err(FromSumError::Commit(CommitError::DuplicateParent(_)))
+        ));
+        let moved = commit.reparent(&trees(&[1, 2, 3]), vec![parent, parent]);
+        assert!(matches!(
+            moved,
+            Err(FromSumError::Commit2(Commit2Error::DuplicateParent(_)))
+        ));
     }
 
     #[test]
