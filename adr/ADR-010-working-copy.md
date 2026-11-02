@@ -142,7 +142,8 @@ art, not a template (ADR-015).
     moves as well, when the new branch exists already. The target is read again under the lock,
     and a branch that `-c` would make is refused only if no such entry explains it. The
     repeat takes no snapshot and uses that working-copy commit again, so its change ID is kept,
-    and writes an entry of its own. The error of a stop after the entry says to run the same
+    and writes an entry of its own. It still applies the rule of the owner: another actor is
+    refused without `--take-over`, and an agent never takes over. The error of a stop after the entry says to run the same
     switch again before any other command.
   - **`commit` stays refused on a detached HEAD**, and its message points to `switch -c <name>`.
   - **The level** of `switch` is 2, like `restore` (ADR-004): it moves refs and writes files in

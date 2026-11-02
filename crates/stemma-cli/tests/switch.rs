@@ -176,3 +176,47 @@ fn a_new_branch_can_start_at_a_commit_by_its_id() {
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(read(dir.path(), "a.txt"), "two");
 }
+
+#[test]
+fn a_detached_switch_takes_a_commit_id_and_an_unknown_id_is_refused() {
+    let dir = committed();
+    let log = ok(dir.path(), &["log", "--json"]);
+    let id = log
+        .stdout
+        .split('"')
+        .find(|part| part.starts_with("b3:"))
+        .unwrap()
+        .to_owned();
+    write(dir.path(), "a.txt", "two");
+    ok(dir.path(), &["commit", "-m", "second", "--actor", ACTOR]);
+    let before = newest(dir.path());
+
+    let unknown = run(
+        dir.path(),
+        &[
+            "switch",
+            "--detach",
+            &format!("b3:{}", "0".repeat(64)),
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(unknown.code, 1, "{}", unknown.stderr);
+    assert!(unknown.stderr.contains("no commit"), "{}", unknown.stderr);
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+
+    let detached = ok(dir.path(), &["switch", "--detach", &id, "--actor", ACTOR]);
+    assert!(
+        detached.stdout.starts_with("Detached HEAD at "),
+        "{}",
+        detached.stdout
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "one");
+    let back = ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    assert!(
+        back.stdout.starts_with("Switched to branch main"),
+        "{}",
+        back.stdout
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "two");
+}

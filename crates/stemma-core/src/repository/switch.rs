@@ -12,7 +12,7 @@ use std::io;
 
 use super::checkout::{CheckoutError, CheckoutPlan};
 use super::snapshot::{read_commit, SnapshotError};
-use super::{now, Repository, UpdateError};
+use super::{now, Repository, UpdateError, WriteLock};
 use crate::change::{ChangeId, GenerateError};
 use crate::index::Index;
 use crate::object::{Commit, CommitId, ObjectId, TreeId};
@@ -126,7 +126,7 @@ impl Repository {
     /// Before the snapshot: [`SwitchError::Update`] for a refusal of the question `switch`,
     /// [`SwitchError::NoSuchBranch`], [`SwitchError::NoSuchCommit`], [`SwitchError::BranchExists`],
     /// [`SwitchError::NoStart`], [`SwitchError::Refs`], [`SwitchError::Store`],
-    /// [`SwitchError::Snapshot`] for a commit that cannot be read, and [`SwitchError::Checkout`]
+    /// [`SwitchError::Read`] for a commit that cannot be read, and [`SwitchError::Checkout`]
     /// for a file in the way. Nothing is written then. After the snapshot, the same errors can
     /// come again, and [`SwitchError::NotEmpty`] if the working-copy commit holds changes; they are
     /// wrapped in [`SwitchError::AfterSnapshot`] when the snapshot wrote an entry. Then
@@ -167,7 +167,11 @@ impl Repository {
             self.require_free(target)?;
         }
         let (snapshot, mut snapshot_late, repeated) = match stopped {
-            Some(next) => (None, None, Some(next)),
+            // The repeat takes no snapshot, so the rule of the owner is applied here (ADR-010).
+            Some(next) => {
+                self.own_for_repeat(&lock, actor, authorizer)?;
+                (None, None, Some(next))
+            }
             None => match self.snapshot_locked(&lock, actor, authorizer) {
                 Ok(entry) => (entry, None, None),
                 // The snapshot was made and the pointer moved; only the flush is not known. The
@@ -377,7 +381,7 @@ impl Repository {
             .plan_restore(&targets, self.objects())
             .map_err(SwitchError::Refs)?;
         let current = self.refs().working_copy().map_err(SwitchError::Refs)?;
-        let working = read_commit(self.objects(), current).map_err(SwitchError::Snapshot)?;
+        let working = read_commit(self.objects(), current).map_err(SwitchError::Read)?;
         if self.is_empty(&working)? {
             let from = working.tree();
             let to = self.tip_tree(resolved.tip)?;
@@ -392,11 +396,11 @@ impl Repository {
     fn is_empty(&self, working: &Commit) -> Result<bool, SwitchError> {
         let before = match working.parents().first() {
             Some(parent) => read_commit(self.objects(), *parent)
-                .map_err(SwitchError::Snapshot)?
+                .map_err(SwitchError::Read)?
                 .tree(),
             None => Index::new()
                 .write_tree(self.objects())
-                .map_err(|error| SwitchError::Snapshot(SnapshotError::WriteTree(error)))?,
+                .map_err(|error| SwitchError::Read(SnapshotError::WriteTree(error)))?,
         };
         Ok(working.tree() == before)
     }
@@ -404,7 +408,7 @@ impl Repository {
     fn tip_tree(&self, commit: CommitId) -> Result<TreeId, SwitchError> {
         read_commit(self.objects(), commit)
             .map(|commit| commit.tree())
-            .map_err(SwitchError::Snapshot)
+            .map_err(SwitchError::Read)
     }
 
     /// The new working-copy commit: the tree of the tip, the tip as only parent, an empty
@@ -415,7 +419,7 @@ impl Repository {
         actor: &Actor,
     ) -> Result<CommitId, SwitchError> {
         let current = self.refs().working_copy().map_err(SwitchError::Refs)?;
-        let working = read_commit(self.objects(), current).map_err(SwitchError::Snapshot)?;
+        let working = read_commit(self.objects(), current).map_err(SwitchError::Read)?;
         if !self.is_empty(&working)? {
             return Err(SwitchError::NotEmpty { working: current });
         }
@@ -495,8 +499,34 @@ impl Repository {
         }
         // The commit is in the store, as the entry was written after it, so a failure to read it
         // is damage and not "no repeat": going on would take the snapshot that a repeat avoids.
-        let commit = read_commit(self.objects(), next).map_err(SwitchError::Snapshot)?;
+        let commit = read_commit(self.objects(), next).map_err(SwitchError::Read)?;
         Ok((commit.parents() == [resolved.tip]).then_some(next))
+    }
+
+    /// The check of the owner that the snapshot makes, for a repeat that takes none: another
+    /// actor does not finish the switch of an owner without `--take-over`, and an agent never
+    /// takes over.
+    fn own_for_repeat(
+        &self,
+        lock: &WriteLock,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<(), SwitchError> {
+        let (_, owner) = self
+            .refs_store()
+            .working_copy_and_owner()
+            .map_err(SwitchError::Refs)?;
+        if self
+            .check_owner(actor, owner.as_ref())
+            .map_err(SwitchError::Snapshot)?
+        {
+            let operation = self
+                .ask_take_over(actor, authorizer)
+                .map_err(SwitchError::Snapshot)?;
+            self.take_over_locked(lock, &operation, actor)
+                .map_err(SwitchError::Snapshot)?;
+        }
+        Ok(())
     }
 
     /// The plan of the files for the moves under the lock, or `None` if the working-copy commit
@@ -538,8 +568,10 @@ pub enum SwitchError {
     Log(OpLogError),
     /// A commit could not be looked up or stored.
     Store(Box<StoreError>),
-    /// The snapshot failed, or a commit or a tree could not be read.
+    /// The snapshot failed, or the owner of the working copy is not the actor.
     Snapshot(SnapshotError),
+    /// A commit or a tree could not be read or made. Nothing of the switch was written.
+    Read(SnapshotError),
     /// A file is in the way, or the files cannot be planned. Nothing was written.
     Checkout(CheckoutError),
     /// The operating system gave no random bytes for the change ID.
@@ -620,7 +652,7 @@ impl SwitchError {
             | Self::NotDurable { source: error, .. }
             | Self::SnapshotNotDurable { source: error, .. } => error.io_error(),
             Self::Store(error) => error.io_error(),
-            Self::Snapshot(error) => error.io_error(),
+            Self::Snapshot(error) | Self::Read(error) => error.io_error(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
             Self::AfterSnapshot { source, .. } => source.io_error(),
             Self::ChangeId(_)
@@ -692,6 +724,7 @@ impl fmt::Display for SwitchError {
                 f,
                 "could not save the working directory first, so the switch wrote nothing: {error}"
             ),
+            Self::Read(error) => write!(f, "could not read a commit or a tree: {error}"),
             Self::Checkout(error) => {
                 write!(f, "could not switch, nothing of it was written: {error}")
             }
@@ -796,7 +829,7 @@ impl Error for SwitchError {
             | Self::NotDurable { source: error, .. }
             | Self::SnapshotNotDurable { source: error, .. } => error.source(),
             Self::Store(error) => error.source(),
-            Self::Snapshot(error) => error.source(),
+            Self::Snapshot(error) | Self::Read(error) => error.source(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.source(),
             Self::ChangeId(error) => error.source(),
             Self::AfterSnapshot { source, .. } => source.source(),
@@ -1326,7 +1359,7 @@ mod tests {
 
         let error = switch(&repository, &target).unwrap_err();
 
-        assert!(matches!(error, SwitchError::Snapshot(_)), "{error}");
+        assert!(matches!(error, SwitchError::Read(_)), "{error}");
         assert_eq!(entries(&repository), count, "no snapshot was taken");
     }
 
@@ -1357,6 +1390,113 @@ mod tests {
         assert_eq!(next, planned);
         assert_eq!(repository.refs().working_copy().unwrap(), next);
         assert_eq!(repository.refs().head().unwrap(), Head::Branch(name("old")));
+    }
+
+    #[test]
+    fn a_repeat_is_refused_for_an_actor_that_does_not_own_the_working_copy() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, target) = stopped_switch_to_old(&dir, &repository);
+        let count = entries(&repository);
+        let other = Actor::human("mara").unwrap();
+
+        let error = repository.switch(&target, &other, &AllowAll).unwrap_err();
+
+        assert!(
+            matches!(error, SwitchError::Snapshot(SnapshotError::NotOwner { .. })),
+            "{error}"
+        );
+        assert_eq!(entries(&repository), count, "nothing was written");
+        // The owner finishes it.
+        done(switch(&repository, &target));
+    }
+
+    #[test]
+    fn a_stop_while_the_files_are_written_leaves_the_pointers_and_the_repeat_finishes_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let first = two_commits(&dir, &repository);
+        let target = existing_at(&first);
+        let before = repository.refs().working_copy().unwrap();
+        // Writing `new.rs` into the working directory fails.
+        let root = dir.path().to_path_buf();
+        let denied = Rc::new(RefCell::new(None));
+        let arm = Rc::clone(&denied);
+        super::super::snapshot::pause::at_next(
+            super::super::snapshot::pause::Stage::Moves,
+            move || {
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&root));
+            },
+        );
+
+        let error = switch(&repository, &target).unwrap_err();
+        drop(denied);
+
+        assert!(
+            matches!(error, SwitchError::CheckoutFailed { .. }),
+            "{error}"
+        );
+        assert!(!error.pointer_moved());
+        assert_eq!(repository.refs().working_copy().unwrap(), before);
+        let (saved, _, next) = done(switch(&repository, &target));
+        assert!(saved.is_none(), "no snapshot of half-written files");
+        assert_eq!(repository.refs().working_copy().unwrap(), next);
+        assert_eq!(read(&dir, "new.rs"), "fn main() {}");
+    }
+
+    /// A new branch `old` at `first`, as a detached switch would not name a branch.
+    fn existing_at(first: &CommitId) -> SwitchTarget {
+        SwitchTarget::Create {
+            name: name("old"),
+            start: Some(Revision::Commit(first.object_id())),
+        }
+    }
+
+    #[test]
+    fn a_switch_from_a_detached_head_to_a_branch_makes_commit_work_again() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let first = two_commits(&dir, &repository);
+        done(switch(
+            &repository,
+            &SwitchTarget::Detach(Revision::Commit(first.object_id())),
+        ));
+        assert_eq!(repository.refs().head().unwrap(), Head::Detached(first));
+
+        done(switch(&repository, &existing("main")));
+
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(name("main"))
+        );
+        assert!(!dir.path().join("new.rs").exists());
+        write(&dir, "a.txt", "three");
+        repository
+            .commit("third", &actor(), &AllowAll)
+            .map(drop)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_new_branch_from_a_detached_head_starts_at_the_detached_commit() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let first = two_commits(&dir, &repository);
+        done(switch(
+            &repository,
+            &SwitchTarget::Detach(Revision::Commit(first.object_id())),
+        ));
+
+        done(switch(&repository, &create("topic")));
+
+        assert_eq!(
+            repository.refs().branch(&name("topic")).unwrap(),
+            Some(first)
+        );
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(name("topic"))
+        );
     }
 
     #[test]

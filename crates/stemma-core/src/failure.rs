@@ -348,7 +348,7 @@ impl Classify for SwitchError {
             Self::Log(error) => error.kind(),
             Self::Refs(error) => error.kind(),
             Self::Store(error) => error.kind(),
-            Self::Snapshot(error) => error.kind(),
+            Self::Snapshot(error) | Self::Read(error) => error.kind(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.kind(),
             Self::MoveFailed { source, .. }
             | Self::PartlyMoved { source, .. }
