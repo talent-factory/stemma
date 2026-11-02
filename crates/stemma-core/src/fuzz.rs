@@ -1,5 +1,6 @@
 //! The checks of the fuzz targets in `fuzz/` (STEMMA-20), one for each of the strict readers of
-//! a tree, a commit, an actor line, the index, an entry of the log, and the journal of a purge.
+//! a tree, a commit, an actor line, the index, an entry of the log, and the journal of a purge,
+//! and one for the merge of the lines of a file ([`merge_lines`]), which is no reader.
 //! The readers of HEAD and of a branch file are a single line and have only the property tests.
 //! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, or
 //! for its tests, so it is not part of the interface. The tests run the checks on the seeds in
@@ -15,7 +16,10 @@
 
 use std::error::Error;
 
+use crate::conflict::Merge;
+use crate::diff::is_binary;
 use crate::index::Index;
+use crate::merge;
 use crate::object::{Commit, Commit2, Tree};
 use crate::oplog::Entry;
 use crate::Actor;
@@ -76,6 +80,66 @@ pub fn entry(input: &[u8]) {
 /// checked.
 pub fn journal(input: &[u8]) {
     crate::repository::fuzz_journal(input);
+}
+
+/// The byte that separates the three texts of an input of [`merge_lines`].
+pub const MERGE_SEPARATOR: u8 = 0x1e;
+
+/// The merge of the lines of a file (`merge::merge_lines`). The input is the base, ours, and
+/// theirs, separated by [`MERGE_SEPARATOR`] (further separators stay in theirs); a missing part is
+/// empty.
+///
+/// The merge has no encoding to round-trip, so the check holds the rules of the merge for one
+/// input. A binary text or a text that is not UTF-8 is never merged. For text, the sides can be
+/// swapped without a change of the result. Two equal sides give that side, a side that equals the
+/// base gives the other side, and a result is built only from lines that one of the three texts
+/// has. A panic, or a result that depends on which side is ours, is a finding.
+pub fn merge_lines(input: &[u8]) {
+    let mut parts = input.splitn(3, |&byte| byte == MERGE_SEPARATOR);
+    let mut next = || parts.next().unwrap_or_default();
+    let (base, ours, theirs) = (next(), next(), next());
+    let merged = |ours: &[u8], base: &[u8], theirs: &[u8]| {
+        merge::merge_lines(&Merge::try_from_terms(vec![ours, base, theirs]).expect("three terms"))
+    };
+
+    let result = merged(ours, base, theirs);
+    assert_eq!(
+        result,
+        merged(theirs, base, ours),
+        "the result depends on the side"
+    );
+    let is_text = |text: &[u8]| !is_binary(text) && std::str::from_utf8(text).is_ok();
+    if ![base, ours, theirs].into_iter().all(is_text) {
+        assert_eq!(
+            result, None,
+            "a binary file or a file that is not UTF-8 was merged"
+        );
+        return;
+    }
+    assert_eq!(
+        merged(ours, base, ours),
+        Some(ours.to_vec()),
+        "two equal sides"
+    );
+    assert_eq!(
+        merged(base, base, theirs),
+        Some(theirs.to_vec()),
+        "only theirs changed"
+    );
+    assert_eq!(
+        merged(ours, base, base),
+        Some(ours.to_vec()),
+        "only ours changed"
+    );
+    if let Some(text) = result {
+        let known: Vec<&[u8]> = [base, ours, theirs]
+            .into_iter()
+            .flat_map(|text| text.split_inclusive(|&byte| byte == b'\n'))
+            .collect();
+        for line in text.split_inclusive(|&byte| byte == b'\n') {
+            assert!(known.contains(&line), "a line that no text has");
+        }
+    }
 }
 
 /// A rejection has a message, and its chain of causes ends without an empty link and without a
@@ -152,6 +216,25 @@ pub(crate) mod tests {
                 for end in 0..=seed.len() {
                     check(&seed[..end]);
                 }
+            }
+        }
+    }
+
+    /// Every seed of the line merge is three texts that merge, and the check holds for it and for
+    /// each of its prefixes.
+    #[test]
+    fn every_seed_of_the_line_merge_merges_and_the_check_holds_for_its_prefixes() {
+        for (name, seed) in seeds("merge_lines") {
+            let mut parts = seed.splitn(3, |&byte| byte == super::MERGE_SEPARATOR);
+            let mut next = || parts.next().unwrap_or_default();
+            let (base, ours, theirs) = (next(), next(), next());
+            let sum = crate::conflict::Merge::try_from_terms(vec![ours, base, theirs]).unwrap();
+            assert!(
+                crate::merge::merge_lines(&sum).is_some(),
+                "{name} does not merge"
+            );
+            for end in 0..=seed.len() {
+                super::merge_lines(&seed[..end]);
             }
         }
     }

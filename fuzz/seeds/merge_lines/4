@@ -1,0 +1,11 @@
+  if x {
+    a
+  }
+  if x {
+    a
+    b
+  }
+  if x {
+    a
+  }
+  // end
