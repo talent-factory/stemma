@@ -67,7 +67,7 @@ alten Branch nennt, und den alten Branch. Die Reihenfolge ist Teil der Zusicheru
 (\in{Abbildung}[fig:branch-rename]). Zuerst entsteht der neue Name, dann folgt HEAD, zuletzt
 verschwindet der alte Name. Ein Absturz zwischen zwei Bewegungen lässt den Commit daher unter
 mindestens einem Namen und HEAD auf einem Branch, den es gibt; es geht nichts verloren. Der
-Eintrag steht schon im Log und nennt alle drei Bewegungen. \type{op log} zeigt ihn als nicht
+Eintrag steht schon im Log und nennt jede Bewegung. \type{op log} zeigt ihn als nicht
 genommen, solange der letzte Zeiger fehlt; ein \type{op restore} des Eintrags stellt den Zustand
 davor her, auch wenn nur ein Teil der Zeiger sich bewegt hat. Den neuen Namen darf es nicht geben;
 anders als beim Anlegen ist das keine verlorene Wette gegen einen anderen Befehl, sondern ein

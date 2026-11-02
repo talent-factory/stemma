@@ -1249,7 +1249,8 @@ fn now() -> i64 {
 }
 
 /// Reasons why [`Repository::update_branch`], [`Repository::set_head`], and the operations that
-/// build on them (`snapshot`, `track`, `commit`) fail. Two questions tell them apart: is there an
+/// build on them (`snapshot`, `track`, `commit`, `create_branch`, `rename_branch`,
+/// `delete_branch`) fail. Two questions tell them apart: is there an
 /// entry in the log (`entry()`), and did a pointer move? An entry exists for
 /// [`MoveFailed`](Self::MoveFailed) (no pointer moved), [`PartlyMoved`](Self::PartlyMoved) (some of
 /// the pointers moved, not all), [`NotDurable`](Self::NotDurable) (the pointers moved), and a [`Log`](Self::Log)
@@ -1289,8 +1290,8 @@ pub enum UpdateError {
     /// system failed between the moves (a `commit` has two pointers, a rename of a branch three).
     /// `op log` shows the entry as not taken (`!`), although the first pointer did move. Do not
     /// repeat the change; read the pointers. After a `commit` that stopped here, the next
-    /// `commit` finishes it; a rename that stopped here has the commit under both names or under
-    /// the new one, and `op restore` of its entry puts the old state back.
+    /// `commit` finishes it; a rename that stopped here has the commit under both names, and
+    /// `op restore` of its entry puts the old state back.
     PartlyMoved {
         /// The entry that is in the log.
         entry: Box<Entry>,
@@ -1323,9 +1324,10 @@ impl UpdateError {
 
     /// Whether a pointer moved although the call failed. [`NotDurable`](Self::NotDurable) and
     /// [`PartlyMoved`](Self::PartlyMoved) moved at least one; in every other case the pointers are where they
-    /// were, and the change can be repeated (with a second entry if the first one stays). The one
-    /// exception is a tag whose file vanished after the check ([`MoveFailed`](Self::MoveFailed)
-    /// with [`RefError::StaleTag`] and no `found`): the tag is gone, and a repeat finds nothing.
+    /// were, and the change can be repeated (with a second entry if the first one stays). The
+    /// exceptions are a tag or a branch whose file vanished after the check
+    /// ([`MoveFailed`](Self::MoveFailed) with [`RefError::StaleTag`] or [`RefError::Stale`] and
+    /// no `found`): it is gone, and a repeat finds nothing.
     pub fn pointer_moved(&self) -> bool {
         matches!(self, Self::NotDurable { .. } | Self::PartlyMoved { .. })
     }
@@ -5423,6 +5425,25 @@ mod tests {
             (branch("topic"), a),
         ];
         assert_eq!(judge(settled), [Outcome::Took]);
+    }
+
+    #[test]
+    fn a_delete_that_cannot_remove_the_file_keeps_the_branch_and_its_entry() {
+        use crate::fault;
+        let (_dir, repository, a) = with_main_and_topic();
+        create(&repository, "dir/old", a).unwrap();
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        let denied = fault::deny_writes_in(&heads.join("dir"));
+        let error = delete(&repository, "dir/old", a, &AllowAll).unwrap_err();
+        drop(denied);
+        assert!(matches!(&error, UpdateError::MoveFailed { .. }), "{error}");
+        assert!(!error.pointer_moved());
+        // The entry is written before the file is removed, and the branch is still there.
+        assert_eq!(error.entry().map(Entry::number), Some(4));
+        assert_eq!(
+            repository.refs().branch(&branch("dir/old")).unwrap(),
+            Some(a)
+        );
     }
 
     #[test]

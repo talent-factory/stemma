@@ -2089,9 +2089,10 @@ pub(crate) enum Logged<T, E> {
     /// which `E` says (a log entry that was written and is not known to be safe).
     StepFailed(E),
     /// The step ran, but the pointer did not move: the file system failed. The step stays done.
-    /// The deletion of a tag has one more case: the file was removed after the checks by a
-    /// process that ignores the lock ([`RefError::StaleTag`] with `found` `None`). The pointer is
-    /// gone then, so it has the new value of the entry, although this call did not move it.
+    /// The deletion of a tag or of a branch has one more case: the file was removed after the
+    /// checks by a process that ignores the lock ([`RefError::StaleTag`] or [`RefError::Stale`]
+    /// with `found` `None`). The pointer is gone then, so it has the new value of the entry,
+    /// although this call did not move it.
     MoveFailed(T, RefError),
     /// The step ran and the pointer moved, but the directory could not be flushed to disk
     /// ([`RefError::NotFlushed`]).
@@ -2355,8 +2356,9 @@ impl FsRefStore {
     /// # Errors
     ///
     /// Returns [`RefError::Conflict`] for a name that another entry holds (`old` is checked
-    /// first), among them the names `a` and `a/b` for a rename between the two, because the file
-    /// of `old` is in the way of the directory of `new` until it is deleted. Returns
+    /// first), among them the names `a` and `a/b` for a rename between the two, because one name
+    /// is the directory of the other: the file of `old` is in the way of the directory of `new`
+    /// until it is deleted, or `new` is the directory that holds `old`. Returns
     /// [`RefError::Stale`] if `old` is not at `expected` or does not exist,
     /// [`RefError::BranchExists`] if `new` exists, and the errors of reading HEAD. Once `step`
     /// has run, nothing is an error of this call; see

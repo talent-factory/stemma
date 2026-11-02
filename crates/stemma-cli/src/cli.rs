@@ -4,11 +4,12 @@
 //! of the argument parser), 4 for `diff --exit-code` when a file differs, 5 for damage, 6 for a
 //! held lock (both below), and 3 for a command that has done its work but could not finish: the
 //! repository or the change exists, but flushing it to disk failed, or (for `track`, `commit`,
-//! `tag`, `branch`, and `op restore`) writing the result failed after the work was made, or a `commit` moved one of
-//! its two pointers and not the other. A script must not remove or repeat what such a command
-//! made; only the next `commit` after a half-made one finishes it, and the message of that call is
-//! not used. The exception is an `op restore` that moved some pointers and not all: it is code 3,
-//! and the same `op restore` run again moves the rest. Running `status` again is safe, but it
+//! `tag`, `branch`, and `op restore`) writing the result failed after the work was made, or a
+//! `commit` moved one of its two pointers and not the other, or a `branch -m` moved some of its
+//! pointers and not all. A script must not remove or repeat what such a command made; only the
+//! next `commit` after a half-made one finishes it, and the message of that call is not used.
+//! The exception is an `op restore` that moved some pointers and not all: it is code 3, and the
+//! same `op restore` run again moves the rest. Running `status` again is safe, but it
 //! finds nothing to save and so does not make an unflushed snapshot durable.
 //!
 //! A `purge` that stopped after its journal was written is code 3 as well, and so is a
@@ -20,8 +21,8 @@
 //! was before the purge, and nothing can undo either.
 //!
 //! A command that only reads (`log`, `op log`, `status`, `tag` and `branch` without a name, `op
-//! restore --dry-run`, and `purge` without
-//! `--apply`, `--resume`, or `--abort`) has made nothing by its output, so a failed write of its
+//! restore --dry-run`, and `purge` without `--apply`, `--resume`, or `--abort`) has made
+//! nothing by its output, so a failed write of its
 //! output is code 1; some of the output may already be written, and a script discards it. A
 //! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
 //! output. The one exception is a closed pipe after an `op restore` that was made: the output is
@@ -2260,6 +2261,9 @@ fn branch(args: BranchArgs, out: &mut dyn Write) -> Result<(), CliError> {
         );
         return finish_branch(&text, &format!("{name}, which was at {tip}"), out);
     }
+    if args.rename.as_ref().is_some_and(|names| names.len() != 2) {
+        unreachable!("the argument parser takes exactly two names for --move");
+    }
     if let Some([old, new]) = args.rename.as_deref() {
         let actor = actor(args.actor)?;
         let repository = open(&args.repository)?;
@@ -3124,6 +3128,34 @@ mod tests {
         .unwrap();
         let entry = repository.oplog().read(1).unwrap();
         (dir, entry)
+    }
+
+    #[test]
+    fn a_branch_change_that_moved_a_pointer_ends_with_code_3_and_any_other_failure_with_code_1() {
+        let (dir, entry) = repository_with_entry("branch-codes");
+        let lock = || RefError::Locked {
+            path: dir.clone(),
+            holder: stemma_core::refs::LockHolder::Unknown,
+        };
+        let partly = UpdateError::PartlyMoved {
+            entry: Box::new(entry.clone()),
+            source: lock(),
+        };
+        assert_eq!(
+            CliError::Branch(partly).exit_code(),
+            ExitCode::from(3),
+            "a rename that stopped between its moves is not repeated"
+        );
+        let failed = UpdateError::MoveFailed {
+            entry: Box::new(entry),
+            source: lock(),
+        };
+        assert_ne!(
+            CliError::Branch(failed).exit_code(),
+            ExitCode::from(3),
+            "no pointer moved"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
