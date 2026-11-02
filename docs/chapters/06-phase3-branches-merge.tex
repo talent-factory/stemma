@@ -8,6 +8,8 @@ Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und 
 
 \startitemize
 \item Befehle \type{branch}, \type{checkout} und \type{log}.
+Der Befehl \type{branch} legt Branches an, benennt sie um, löscht sie und listet sie;
+\in{Abschnitt}[sec:branch-commands] beschreibt ihn.
 Der Befehl \type{log} zeigt die Vorfahren des Working-Copy-Commits ohne Cache,
 jeden Commit vor seinen Eltern, mit \type{-n}, \type{--first-parent} und \type{--json}.
 \item Drei-Wege-Merge über die Merge-Basis, den besten gemeinsamen Vorfahren der beiden Seiten.
@@ -39,6 +41,57 @@ Noch schreibt kein Befehl einen solchen Commit.
 mit \type{--take-over} (Risikostufe 3). Umgesetzt; Kapitel 4 beschreibt die Regel,
 der Anhang die Befehle. Die zweite Arbeitskopie baut darauf auf.
 \stopitemize
+
+\section[sec:branch-commands]{Branches anlegen, umbenennen und löschen}
+
+Ein Branch ist ein Zeiger auf einen Commit (ADR-008). Der Befehl \type{branch} bewegt nur solche
+Zeiger: Er legt einen Branch an, benennt einen um oder löscht einen und listet die Branches, wenn
+kein Argument folgt. Arbeitsverzeichnis und Working-Copy-Commit bleiben unberührt, und der Befehl
+macht keinen Snapshot. Jede Änderung ist ein Aufruf mit einem einzigen Eintrag im Operation Log,
+der Operation \type{branch}. Wer einen Branch angelegt, umbenannt oder gelöscht hat und wann,
+steht also im Log. Der Anhang beschreibt Aufruf, Ausgabe und Exit-Codes.
+
+Alle drei Änderungen folgen der Write-Ahead-Regel der Zeigerbewegung (Kapitel 4): Unter der Sperre
+der Referenzen prüft der Kern den Namen und den erwarteten Wert, schreibt dann den Eintrag und
+bewegt erst danach die Zeiger. Das Anlegen erwartet, dass es den Namen nicht gibt, und startet
+ohne Angabe an der Spitze des Branches von HEAD. Das Löschen übergibt dem Kern die Spitze, die der
+Befehl gelesen hat. Ein Branch, der inzwischen weitergerückt ist, wird nicht gelöscht. Das
+Löschen kennt weder eine Prüfung auf Zusammenführung noch eine Option zum Erzwingen, denn es ist
+umkehrbar: Der Eintrag nennt die Spitze als alten Wert, und \type{op restore} mit seiner Nummer
+bringt den Branch zurück (ADR-013). Den Branch, den HEAD nennt, löscht der Befehl nie; die Regel
+prüft der Kern unter derselben Sperre wie die Löschung, damit kein anderer Befehl HEAD dazwischen
+auf den Branch setzt.
+
+Das Umbenennen bewegt bis zu drei Zeiger in einem Eintrag: den neuen Branch, HEAD, wenn er den
+alten Branch nennt, und den alten Branch. Die Reihenfolge ist Teil der Zusicherung
+(\in{Abbildung}[fig:branch-rename]). Zuerst entsteht der neue Name, dann folgt HEAD, zuletzt
+verschwindet der alte Name. Ein Absturz zwischen zwei Bewegungen lässt den Commit daher unter
+mindestens einem Namen und HEAD auf einem Branch, den es gibt; es geht nichts verloren. Der
+Eintrag steht schon im Log und nennt jede Bewegung. \type{op log} zeigt ihn als nicht
+genommen, solange der letzte Zeiger fehlt; ein \type{op restore} des Eintrags stellt den Zustand
+davor her, auch wenn nur ein Teil der Zeiger sich bewegt hat. Den neuen Namen darf es nicht geben;
+anders als beim Anlegen ist das keine verlorene Wette gegen einen anderen Befehl, sondern ein
+vergebener Name, und der Aufruf endet ohne Eintrag.
+
+\startplacefigure[title={Zeiger beim Umbenennen von \type{main} in \type{trunk}, mit den
+    Zuständen nach einem Absturz},reference=fig:branch-rename,location=here]
+\externalfigure[images/branch-rename.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+\startinfobox
+{\bf Grenzfälle von \type{branch}.}
+\startitemize
+\item Ein abgekoppelter HEAD schützt keinen Branch vor dem Löschen. Die Liste zeigt ihn als erste
+Zeile mit der Marke \type{(detached KURZE-ID)}.
+\item Namen, die einander im Weg stehen, etwa \type{a} und \type{a/b}, lehnt der Befehl ab, auch
+beim Umbenennen von einem in den anderen: Die Datei des alten Namens steht dem Verzeichnis des
+neuen im Weg, bis sie gelöscht ist.
+\item Auf einem Dateisystem, das die Gross- und Kleinschreibung nicht unterscheidet, ist
+\type{main} in \type{Main} umzubenennen ein Namenskonflikt; der Befehl lehnt es ab, statt die
+Datei zu überschreiben.
+\item Besteht das Journal eines Purge, lehnt der Befehl jede Änderung ab (ADR-014).
+\stopitemize
+\stopinfobox
 
 \section{Offene Fragen}
 

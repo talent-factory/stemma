@@ -124,6 +124,9 @@ impl Classify for RefError {
             // A tag that exists is a name that is taken; it never moves, so there is nothing to
             // read again and retry.
             Self::TagExists { .. } => FailureKind::Other,
+            // A name that is taken, and the branch of HEAD: the caller picks another name or
+            // switches HEAD first, so a retry of the same call does not help.
+            Self::BranchExists { .. } | Self::HeadBranch { .. } => FailureKind::Other,
             // A pointer that a purge moves is at neither of its journal values. A person has to
             // look at it, but the variant also stands for a plain race after a lock removed by
             // hand, so it is not called damage here; `purge --resume` says what to do.

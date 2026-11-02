@@ -417,6 +417,21 @@ pub enum RefError {
         /// The commit it points to.
         found: CommitId,
     },
+    /// A branch exists already under the name that a rename was to give. Unlike a create, which
+    /// is stale when the branch is there, a rename has no `expected` for the new name: the name
+    /// is taken, whatever commit it points to, and the caller picks another.
+    BranchExists {
+        /// The branch that exists.
+        name: BranchName,
+        /// The commit it points to.
+        found: CommitId,
+    },
+    /// The branch cannot be deleted because HEAD names it. Deleting it would leave HEAD with a
+    /// branch that has no commit, so the caller switches HEAD to another branch first.
+    HeadBranch {
+        /// The branch that HEAD names.
+        name: BranchName,
+    },
     /// The tag is not where the caller saw it when it was to be deleted: it was deleted, or
     /// deleted and set again at another commit, since. Only the deletion of a tag is stale,
     /// because a tag never moves (ADR-008).
@@ -643,6 +658,14 @@ impl fmt::Display for RefError {
                 f,
                 "the tag `{name}` exists already at {found}; a tag never moves"
             ),
+            Self::BranchExists { name, found } => {
+                write!(f, "the branch `{name}` exists already, at {found}")
+            }
+            Self::HeadBranch { name } => write!(
+                f,
+                "the branch `{name}` is the branch of HEAD and cannot be deleted; switch to \
+                 another branch first"
+            ),
             Self::StaleTag {
                 name,
                 expected,
@@ -798,6 +821,8 @@ impl Error for RefError {
             Self::Store(source) => source.source(),
             Self::Stale { .. }
             | Self::TagExists { .. }
+            | Self::BranchExists { .. }
+            | Self::HeadBranch { .. }
             | Self::StaleTag { .. }
             | Self::StaleHead { .. }
             | Self::Conflict { .. }
@@ -2047,6 +2072,10 @@ impl RestoreMoves {
 
 impl crate::store::sealed::Sealed for FsRefStore {}
 
+/// One move of a pointer in a run of several: it returns whether the pointer changed (`false` for
+/// a branch whose file was gone already).
+type MoveStep<'s> = Box<dyn Fn() -> Result<bool, RefError> + 's>;
+
 /// The outcome of a change of a pointer that a step precedes, such as the entry of the operation
 /// log (ADR-011). `T` is what the step returned, `E` is how it can fail. Every variant is the only
 /// record of what happened, so a caller must look at it.
@@ -2061,9 +2090,10 @@ pub(crate) enum Logged<T, E> {
     /// which `E` says (a log entry that was written and is not known to be safe).
     StepFailed(E),
     /// The step ran, but the pointer did not move: the file system failed. The step stays done.
-    /// The deletion of a tag has one more case: the file was removed after the checks by a
-    /// process that ignores the lock ([`RefError::StaleTag`] with `found` `None`). The pointer is
-    /// gone then, so it has the new value of the entry, although this call did not move it.
+    /// The deletion of a tag or of a branch has one more case: the file was removed after the
+    /// checks by a process that ignores the lock ([`RefError::StaleTag`] or [`RefError::Stale`]
+    /// with `found` `None`). The pointer is gone then, so it has the new value of the entry,
+    /// although this call did not move it.
     MoveFailed(T, RefError),
     /// The step ran and the pointer moved, but the directory could not be flushed to disk
     /// ([`RefError::NotFlushed`]).
@@ -2251,6 +2281,158 @@ impl FsRefStore {
             Err(error) => Err(error),
         };
         Ok(Self::after_move(done, deleted))
+    }
+
+    /// Deletes the branch `name` if it is at `expected`, and runs `step` after the checks and
+    /// before the deletion, under the lock of the references that the caller holds (`_lock`). The
+    /// checks are the ones of [`RefStore::delete_branch`] and one more: the branch that HEAD
+    /// names is [`RefError::HeadBranch`], because the rule belongs to the layer that writes the
+    /// entry, and it has to be decided under the same lock as the deletion. So `step` runs only
+    /// for a branch that is going to be deleted, and this call never returns
+    /// [`Logged::Unchanged`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Conflict`] for a name that another entry holds, [`RefError::Stale`] if
+    /// the branch is not at `expected` or does not exist, [`RefError::HeadBranch`] if HEAD names
+    /// it (checked after `expected`, so a branch that is gone is stale), and the errors of
+    /// reading HEAD. Once `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after). A branch whose file is gone after the
+    /// checks was removed by a process that ignores the lock: the step stays done, and the result
+    /// is [`Logged::MoveFailed`] with [`RefError::Stale`] and no `found`.
+    pub(crate) fn delete_branch_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        name: &BranchName,
+        expected: CommitId,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let current = self.current(RefKind::Branch, name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                reference: RefKind::Branch,
+                name: name.clone(),
+                with,
+                kind,
+            });
+        }
+        if current.commit != Some(expected) {
+            return Err(RefError::Stale {
+                name: name.clone(),
+                expected: Some(expected),
+                found: current.commit,
+            });
+        }
+        if self.head()? == Head::Branch(name.clone()) {
+            return Err(RefError::HeadBranch { name: name.clone() });
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let deleted = match self.delete_reference_file(RefKind::Branch, name) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(RefError::Stale {
+                name: name.clone(),
+                expected: Some(expected),
+                found: None,
+            }),
+            Err(error) => Err(error),
+        };
+        Ok(Self::after_move(done, deleted))
+    }
+
+    /// Renames the branch `old` to `new` if `old` is at `expected`, and runs `step` after the
+    /// checks and before the first move, under the lock of the references that the caller holds
+    /// (`_lock`). `step` gets whether HEAD follows the branch: a HEAD that names `old` names `new`
+    /// afterwards, in the same entry.
+    ///
+    /// The moves are made in this order: the branch `new` is created, HEAD is pointed to it if
+    /// it follows, and the branch `old` is deleted. A stop between two moves therefore leaves the
+    /// commit under a name, and never loses it; the only trace is a pointer that did not move
+    /// ([`Logged::PartlyMoved`]). A name that is taken is no race but a refusal, so the new name
+    /// has no `expected`: it must not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Conflict`] for a name that another entry holds (`old` is checked
+    /// first), among them the names `a` and `a/b` for a rename between the two, because one name
+    /// is the directory of the other: the file of `old` is in the way of the directory of `new`
+    /// until it is deleted, or `new` is the directory that holds `old`. Returns
+    /// [`RefError::Stale`] if `old` is not at `expected` or does not exist,
+    /// [`RefError::BranchExists`] if `new` exists, and the errors of reading HEAD. Once `step`
+    /// has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn rename_branch_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        old: &BranchName,
+        new: &BranchName,
+        expected: CommitId,
+        step: impl FnOnce(bool) -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let current = self.current(RefKind::Branch, old)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                reference: RefKind::Branch,
+                name: old.clone(),
+                with,
+                kind,
+            });
+        }
+        if current.commit != Some(expected) {
+            return Err(RefError::Stale {
+                name: old.clone(),
+                expected: Some(expected),
+                found: current.commit,
+            });
+        }
+        let target = self.current(RefKind::Branch, new)?;
+        if let Some((with, kind)) = target.in_the_way {
+            return Err(RefError::Conflict {
+                reference: RefKind::Branch,
+                name: new.clone(),
+                with,
+                kind,
+            });
+        }
+        if let Some(found) = target.commit {
+            return Err(RefError::BranchExists {
+                name: new.clone(),
+                found,
+            });
+        }
+        let follows = self.head()? == Head::Branch(old.clone());
+        if let Some(empty) = &target.empty_directory {
+            // Nothing is below it, and the lock is held, so no branch is lost. It goes before the
+            // step, so that a failure here leaves no entry that names a move that cannot be made.
+            fault::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        let done = match step(follows) {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let mut steps: Vec<MoveStep<'_>> = vec![Box::new(|| {
+            self.write_replacing(
+                &self.branch_path(new),
+                &encode_branch(&expected),
+                &self.heads_dir(),
+            )
+            .map(|()| true)
+        })];
+        if follows {
+            let head = Head::Branch(new.clone());
+            steps.push(Box::new(move || {
+                self.write_replacing(&self.head_path(), &head.encode(), &self.root)
+                    .map(|()| true)
+            }));
+        }
+        steps.push(Box::new(|| {
+            self.delete_reference_file(RefKind::Branch, old)
+        }));
+        Ok(Self::run_steps(done, steps))
     }
 
     /// Points HEAD to `head` if it still is `expected`, and runs `step` with the value that HEAD
@@ -2812,10 +2994,7 @@ impl FsRefStore {
     /// the working-copy commit, then HEAD, one after the other. After a failure, the branches that
     /// did not move are therefore not the end of the list of the moves.
     fn apply_moves<T, E>(&self, done: T, moves: &RestoreMoves) -> Logged<T, E> {
-        // The steps run one after the other and stop at the first failure, so that the pointers
-        // after it are not moved.
-        type Step<'s> = Box<dyn Fn() -> Result<bool, RefError> + 's>;
-        let mut steps: Vec<Step<'_>> = Vec::new();
+        let mut steps: Vec<MoveStep<'_>> = Vec::new();
         // The deletions come before the creations, so that `a` can go before `a/b` comes, and
         // `a/b` before `a`.
         let deletions_first = moves
@@ -2861,6 +3040,14 @@ impl FsRefStore {
                     .map(|()| true)
             }));
         }
+        Self::run_steps(done, steps)
+    }
+
+    /// Runs the moves one after the other and stops at the first failure, so that the pointers
+    /// after it are not moved. A failure at the first move is [`Logged::MoveFailed`], a failure
+    /// after a pointer moved is [`Logged::PartlyMoved`], and a failure to flush a directory
+    /// ([`RefError::NotFlushed`]) does not stop the later moves.
+    fn run_steps<T, E>(done: T, steps: Vec<MoveStep<'_>>) -> Logged<T, E> {
         let mut moved_any = false;
         let mut unflushed: Option<RefError> = None;
         for step in steps {
