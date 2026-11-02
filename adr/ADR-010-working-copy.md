@@ -143,8 +143,9 @@ art, not a template (ADR-015).
     and a branch that `-c` would make is refused only if no such entry explains it. The
     repeat takes no snapshot and uses that working-copy commit again, so its change ID is kept,
     and writes an entry of its own. It still applies the rule of the owner: another actor is
-    refused without `--take-over`, and an agent never takes over. The error of a stop after the entry says to run the same
-    switch again before any other command.
+    refused without `--take-over`, and an agent never takes over. An entry of `take-over` names
+    no pointer and does not hide the stopped switch. The error of a stop after the entry says to
+    run the same switch again before any other command.
   - **`commit` stays refused on a detached HEAD**, and its message points to `switch -c <name>`.
   - **The level** of `switch` is 2, like `restore` (ADR-004): it moves refs and writes files in
     the working copy. The command has the option `--take-over` of the other commands that take a

@@ -77,6 +77,8 @@ Ein Snapshot würde die Dateien des Ziels als Änderung des alten Working-Copy-C
 darum sagt die Meldung, derselbe Aufruf sei noch einmal zu machen, bevor ein anderer Befehl läuft.
 Der zweite Aufruf erkennt den Eintrag des abgebrochenen, nimmt keinen Snapshot und benutzt den
 Working-Copy-Commit jenes Eintrags weiter.
+Auch der zweite Aufruf prüft den Eigentümer der Arbeitskopie:
+ein anderer Akteur braucht \type{--take-over}, ein Agent übernimmt nie.
 Der Befehl ist mit \type{op restore} umkehrbar; die Ausgabe nennt den Eintrag.
 
 \startinfobox

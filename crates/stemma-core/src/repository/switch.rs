@@ -16,7 +16,7 @@ use super::{now, Repository, UpdateError, WriteLock};
 use crate::change::{ChangeId, GenerateError};
 use crate::index::Index;
 use crate::object::{Commit, CommitId, ObjectId, TreeId};
-use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName};
+use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, TAKE_OVER};
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
@@ -445,7 +445,14 @@ impl Repository {
     /// its entry and its moves.
     fn stopped_switch(&self, resolved: &Resolved) -> Result<Option<CommitId>, SwitchError> {
         let entries = self.oplog().entries().map_err(SwitchError::Log)?;
-        let Some(change) = entries.last().and_then(Entry::change) else {
+        // A `take-over` names no pointer: the repeat of another actor writes one before its own
+        // entry, and it must not hide the stopped switch from a second repeat.
+        let Some(change) = entries
+            .iter()
+            .rev()
+            .filter_map(Entry::change)
+            .find(|change| change.operation().as_str() != TAKE_OVER)
+        else {
             return Ok(None);
         };
         if change.operation().as_str() != OPERATION {
@@ -1411,6 +1418,65 @@ mod tests {
         done(switch(&repository, &target));
     }
 
+    /// Writes the entry of a take-over by `other`, as a repeat does before its own entry.
+    fn take_over_by(repository: &Repository, other: &Actor) {
+        let taking = repository.taking_over();
+        let operation = taking.ask_take_over(other, &AllowAll).unwrap();
+        let allowed = taking
+            .authorize(other, &AllowAll, &operation, "working-copy")
+            .unwrap();
+        let lock = taking.refs_store().lock_writer(&allowed).unwrap();
+        taking.take_over_locked(&lock, &operation, other).unwrap();
+    }
+
+    #[test]
+    fn a_repeat_of_another_actor_needs_take_over_and_then_makes_the_actor_the_owner() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, target) = stopped_switch_to_old(&dir, &repository);
+        let other = Actor::human("mara").unwrap();
+
+        let (saved, _, next) = done(repository.taking_over().switch(&target, &other, &AllowAll));
+
+        assert!(saved.is_none());
+        assert_eq!(repository.refs().working_copy().unwrap(), next);
+        let (_, owner) = repository.refs_store().working_copy_and_owner().unwrap();
+        assert_eq!(owner, Some(other));
+    }
+
+    #[test]
+    fn an_agent_cannot_take_over_on_a_repeat() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, target) = stopped_switch_to_old(&dir, &repository);
+        let agent = Actor::agent("claude", "model", "session", "daniel").unwrap();
+        let count = entries(&repository);
+
+        let error = repository
+            .taking_over()
+            .switch(&target, &agent, &AllowAll)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, SwitchError::Snapshot(SnapshotError::AgentTakeOver)),
+            "{error}"
+        );
+        assert_eq!(entries(&repository), count);
+    }
+
+    #[test]
+    fn a_take_over_entry_does_not_hide_a_stopped_switch_from_its_repeat() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (_, target) = stopped_switch_to_old(&dir, &repository);
+        let other = Actor::human("mara").unwrap();
+        take_over_by(&repository, &other);
+
+        let (saved, _, _) = done(repository.switch(&target, &other, &AllowAll));
+
+        assert!(saved.is_none(), "still a repeat, so no snapshot");
+    }
+
     #[test]
     fn a_stop_while_the_files_are_written_leaves_the_pointers_and_the_repeat_finishes_it() {
         let dir = TempDir::new();
@@ -1438,8 +1504,19 @@ mod tests {
         );
         assert!(!error.pointer_moved());
         assert_eq!(repository.refs().working_copy().unwrap(), before);
+        let planned = error
+            .entry()
+            .and_then(|entry| entry.change())
+            .and_then(Change::working_copy)
+            .and_then(Moved::after)
+            .copied()
+            .unwrap();
         let (saved, _, next) = done(switch(&repository, &target));
         assert!(saved.is_none(), "no snapshot of half-written files");
+        assert_eq!(
+            next, planned,
+            "the repeat uses the working-copy commit of the stopped entry"
+        );
         assert_eq!(repository.refs().working_copy().unwrap(), next);
         assert_eq!(read(&dir, "new.rs"), "fn main() {}");
     }

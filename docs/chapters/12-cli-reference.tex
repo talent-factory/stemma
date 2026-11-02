@@ -821,8 +821,10 @@ Aufruffehler (Exit-Code 2).
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot und der
 Eintrag des Wechsels tragen diesen Akteur.
-\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie im Snapshot des Befehls
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie, im Snapshot des Befehls oder,
+bei der Wiederholung eines abgebrochenen Wechsels, vor den Dateien
 (siehe {\bf Eigentümer der Arbeitskopie} oben).
+Ohne die Option lehnt auch die Wiederholung einen anderen Akteur ab, und ein Agent übernimmt nie.
 \stopitemize
 
 Der Befehl hat keine JSON-Form.
