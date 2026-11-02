@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::conflict::AnyCommit;
 use crate::fault;
 use crate::object::{
     hash_encoding, Blob, BlobId, Commit, CommitId, CommitParseError, Kind, ObjectId, Tree, TreeId,
@@ -165,7 +166,8 @@ impl Error for StoreError {
     }
 }
 
-/// Why [`ObjectStore::get_tree`] or [`ObjectStore::get_commit`] fails.
+/// Why [`ObjectStore::get_tree`], [`ObjectStore::get_commit`], or
+/// [`ObjectStore::get_any_commit`] fails.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ReadError {
@@ -181,7 +183,8 @@ pub enum ReadError {
         /// What is wrong with the body.
         source: TreeParseError,
     },
-    /// The object is a commit and its content is intact, but its body is not in canonical form.
+    /// The object is a commit of either kind and its content is intact, but its body is not in
+    /// canonical form.
     /// The writers of this crate always produce canonical bodies.
     Commit {
         /// The ID the commit was requested by.
@@ -392,16 +395,36 @@ pub trait ObjectStore: sealed::Sealed {
             .map(|_| TreeId::new(*id)))
     }
 
-    /// Like [`resolve_blob`](Self::resolve_blob), for a commit.
+    /// Like [`resolve_blob`](Self::resolve_blob), for a commit of either kind: a `commit`, or a
+    /// `commit2` that records a conflict (ADR-005). A [`CommitId`] names both, so it is the one
+    /// way from an untyped ID to a typed one.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::KindMismatch`] if the object is not a commit, and the errors of
+    /// Returns [`StoreError::KindMismatch`] if the object is neither, and the errors of
     /// [`get`](Self::get).
     fn resolve_commit(&self, id: &ObjectId) -> Result<Option<CommitId>, StoreError> {
-        Ok(self
-            .get_expecting(id, Kind::Commit)?
-            .map(|_| CommitId::new(*id)))
+        Ok(self.get_commit_object(id)?.map(|_| CommitId::new(*id)))
+    }
+
+    /// Returns the stored object if it is a `commit` or a `commit2`, and `None` if the store does
+    /// not have it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::KindMismatch`] (expecting a `commit`) if the object has another
+    /// kind, and the errors of [`get`](Self::get).
+    fn get_commit_object(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
+        match self.get(id)? {
+            Some(object) if !matches!(object.kind(), Kind::Commit | Kind::Commit2) => {
+                Err(StoreError::KindMismatch {
+                    id: *id,
+                    expected: Kind::Commit,
+                    found: object.kind(),
+                })
+            }
+            other => Ok(other),
+        }
     }
 
     /// Returns the tree with the ID, or `None` if the store does not have it. The object is read
@@ -429,8 +452,9 @@ pub trait ObjectStore: sealed::Sealed {
         Ok(Some(tree))
     }
 
-    /// Like [`get_tree`](Self::get_tree), for a commit. The IDs of the tree and of the parents in
-    /// the result are claims; see [`Commit::verify`].
+    /// Like [`get_tree`](Self::get_tree), for a `commit` of one tree. A `commit2` is a mismatch
+    /// here; [`get_any_commit`](Self::get_any_commit) reads either kind. The IDs of the tree and
+    /// of the parents in the result are claims; see [`Commit::verify`].
     ///
     /// # Errors
     ///
@@ -447,6 +471,27 @@ pub trait ObjectStore: sealed::Sealed {
         };
         let commit =
             Commit::parse(object.body()).map_err(|source| ReadError::Commit { id: *id, source })?;
+        confirm_id(id.object_id(), commit.id().object_id())?;
+        Ok(Some(commit))
+    }
+
+    /// Like [`get_commit`](Self::get_commit), for a commit of either kind: the result is a
+    /// [`Commit`] or a [`Commit2`](crate::object::Commit2) by the kind of the stored object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError::Store`] with [`StoreError::KindMismatch`] if the object is neither,
+    /// and the other errors of [`get_commit`](Self::get_commit).
+    fn get_any_commit(&self, id: &CommitId) -> Result<Option<AnyCommit>, ReadError> {
+        let Some(object) = self
+            .get_commit_object(&id.object_id())
+            .map_err(|source| ReadError::Store(Box::new(source)))?
+        else {
+            return Ok(None);
+        };
+        let commit = AnyCommit::parse(object.kind(), object.body())
+            .expect("the kind is a commit or a commit2")
+            .map_err(|source| ReadError::Commit { id: *id, source })?;
         confirm_id(id.object_id(), commit.id().object_id())?;
         Ok(Some(commit))
     }
@@ -1013,7 +1058,7 @@ impl Batch<'_> {
     /// that the store has is flushed by [`finish`](Self::finish), but not by
     /// [`finish_new`](Self::finish_new). A damaged object in the store is replaced where the
     /// platform allows it, as [`FsObjectStore::put_raw`] does.
-    fn put_raw(&self, kind: Kind, body: &[u8]) -> Result<ObjectId, StoreError> {
+    pub(crate) fn put_raw(&self, kind: Kind, body: &[u8]) -> Result<ObjectId, StoreError> {
         let id = hash_encoding(kind, body);
         if self.pending.borrow().contains_key(&id) {
             return Ok(id);
@@ -2326,6 +2371,99 @@ mod tests {
             .get_expecting(&ObjectId::from(absent), Kind::Tree)
             .unwrap()
             .is_none());
+    }
+
+    /// A `commit2` with the trees `a`, `b`, `c` (all stored), and its ID.
+    fn stored_commit2(
+        store: &FsObjectStore,
+        parents: Vec<CommitId>,
+    ) -> (crate::object::Commit2, CommitId) {
+        let blob = store.put_blob(&Blob::new("hello")).unwrap();
+        let tree = |name: &str| {
+            let entry = crate::object::TreeEntry::file(name, crate::object::FileMode::File, blob);
+            store
+                .put_tree(&Tree::try_new(vec![entry.unwrap()]).unwrap())
+                .unwrap()
+        };
+        let commit = crate::object::Commit2::try_new(
+            vec![tree("a"), tree("b"), tree("c")],
+            parents,
+            sample_change(),
+            Actor::human("daniel").unwrap(),
+            1_700_000_000,
+            "conflict",
+        )
+        .unwrap();
+        let id = CommitId::new(store.put_raw(Kind::Commit2, &commit.encode()).unwrap());
+        (commit, id)
+    }
+
+    #[test]
+    fn a_commit_id_resolves_to_either_kind_of_commit() {
+        let dir = TempDir::new();
+        let store = dir.store();
+        let (_, id) = stored_commit2(&store, vec![]);
+        assert_eq!(store.resolve_commit(&id.object_id()).unwrap(), Some(id));
+        // A tree is still not a commit, and the error names the kind a commit has.
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
+        assert!(matches!(
+            store.resolve_commit(&tree.object_id()).unwrap_err(),
+            StoreError::KindMismatch {
+                expected: Kind::Commit,
+                found: Kind::Tree,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn get_any_commit_reads_a_commit_and_a_commit2_each_in_its_own_form() {
+        use crate::conflict::AnyCommit;
+        let dir = TempDir::new();
+        let store = dir.store();
+        let (commit2, id2) = stored_commit2(&store, vec![]);
+        assert_eq!(
+            store.get_any_commit(&id2).unwrap(),
+            Some(AnyCommit::Commit2(commit2))
+        );
+        let tree = store.put_tree(&Tree::try_new(vec![]).unwrap()).unwrap();
+        let commit = Commit::try_new(
+            tree,
+            vec![id2],
+            sample_change(),
+            Actor::human("daniel").unwrap(),
+            1,
+            "resolves",
+        )
+        .unwrap();
+        let id = store.put_commit(&commit).unwrap();
+        assert_eq!(
+            store.get_any_commit(&id).unwrap(),
+            Some(AnyCommit::Commit(commit))
+        );
+        let absent = CommitId::new(Blob::new("absent").id().object_id());
+        assert_eq!(store.get_any_commit(&absent).unwrap(), None);
+        // `get_commit` still reads one tree only: a `commit2` is a mismatch for it.
+        match store.get_commit(&id2).unwrap_err() {
+            ReadError::Store(error) => assert!(
+                matches!(
+                    *error,
+                    StoreError::KindMismatch {
+                        found: Kind::Commit2,
+                        ..
+                    }
+                ),
+                "{error}"
+            ),
+            other => panic!("expected a mismatch, got {other}"),
+        }
+        let tree_as_commit = CommitId::new(tree.object_id());
+        match store.get_any_commit(&tree_as_commit).unwrap_err() {
+            ReadError::Store(error) => {
+                assert!(matches!(*error, StoreError::KindMismatch { .. }), "{error}");
+            }
+            other => panic!("expected a mismatch, got {other}"),
+        }
     }
 
     #[test]

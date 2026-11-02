@@ -2103,6 +2103,11 @@ mod tests {
                     todo.push(commit.tree().object_id());
                     todo.extend(commit.parents().iter().map(|parent| parent.object_id()));
                 }
+                Some(Kind::Commit2) => {
+                    let commit = crate::object::Commit2::parse(raw.body()).unwrap();
+                    todo.extend(commit.trees().iter().map(|tree| tree.object_id()));
+                    todo.extend(commit.parents().iter().map(|parent| parent.object_id()));
+                }
                 Some(Kind::Tree) => {
                     let tree = Tree::parse(raw.body()).unwrap();
                     todo.extend(tree.entries().iter().map(|entry| entry.id()));

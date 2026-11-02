@@ -143,7 +143,10 @@ typed_id! {
 }
 
 typed_id! {
-    /// The ID of a [`Commit`].
+    /// The ID of a commit of either kind: a [`Commit`] or a [`Commit2`] (ADR-005). The kind is
+    /// part of the hashed header, so the same body under the two kinds has two IDs.
+    /// [`resolve_commit`](crate::store::ObjectStore::resolve_commit) turns an untyped ID into one,
+    /// and [`get_any_commit`](crate::store::ObjectStore::get_any_commit) reads either kind.
     CommitId
 }
 

@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 634" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 678" font-family="Helvetica, Arial, sans-serif">
   <title>Welcher Befehl berührt welche Zone</title>
-  <rect x="0" y="0" width="740" height="634" fill="#FFFFFF"/>
+  <rect x="0" y="0" width="740" height="678" fill="#FFFFFF"/>
 
   <!-- Zone headers: one colour per zone, dark enough for print -->
   <g font-size="12" font-weight="bold" text-anchor="middle">
@@ -30,6 +30,7 @@
     <line x1="20" y1="502" x2="730" y2="502"/>
     <line x1="20" y1="546" x2="730" y2="546"/>
     <line x1="20" y1="590" x2="730" y2="590"/>
+    <line x1="20" y1="634" x2="730" y2="634"/>
   </g>
 
   <!-- Commands -->
@@ -45,7 +46,8 @@
     <text x="20" y="433" font-family="Courier, monospace" font-size="15" font-weight="bold">diff</text>
     <text x="20" y="477" font-family="Courier, monospace" font-size="15" font-weight="bold">log</text>
     <text x="20" y="521" font-family="Courier, monospace" font-size="15" font-weight="bold">tag</text>
-    <text x="20" y="565" font-family="Courier, monospace" font-size="15" font-weight="bold">switch</text>
+    <text x="20" y="565" font-family="Courier, monospace" font-size="15" font-weight="bold">branch</text>
+    <text x="20" y="609" font-family="Courier, monospace" font-size="15" font-weight="bold">switch</text>
   </g>
   <g fill="#0F172A" font-size="12">
     <text x="20" y="97">legt das Repository an</text>
@@ -59,7 +61,8 @@
     <text x="20" y="449">zeigt Änderungen zwischen Commits oder zur Arbeitskopie</text>
     <text x="20" y="493">zeigt die Commits, Kinder vor Eltern</text>
     <text x="20" y="537">setzt einen Tag auf einen Commit oder listet die Tags</text>
-    <text x="20" y="581">wechselt den Branch oder löst HEAD vom Branch</text>
+    <text x="20" y="581">legt Branches an, benennt sie um, löscht sie oder listet sie</text>
+    <text x="20" y="625">wechselt den Branch oder löst HEAD vom Branch</text>
   </g>
 
   <!-- init: changes working-copy commit, HEAD, log -->
@@ -135,23 +138,31 @@
   <circle cx="580" cy="524" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="524" r="9" fill="#6B46C1"/>
 
-  <!-- switch: saves and rewrites the directory, moves the working-copy commit, HEAD and a new
-       branch, writes an entry -->
-  <circle cx="380" cy="568" r="9" fill="#2B6CB0"/>
-  <circle cx="480" cy="568" r="9" fill="#B45309"/>
+  <!-- branch: creating, renaming, and deleting write branch pointers (and HEAD when it names the
+       renamed branch) and an entry in the log; listing writes nothing; no snapshot, no change of
+       the working copy -->
+  <text x="380" y="573" font-size="14" fill="#64748B" text-anchor="middle">–</text>
+  <text x="480" y="573" font-size="14" fill="#64748B" text-anchor="middle">–</text>
   <circle cx="580" cy="568" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="568" r="9" fill="#6B46C1"/>
 
+  <!-- switch: saves and rewrites the directory, moves the working-copy commit, HEAD and a new
+       branch, writes an entry -->
+  <circle cx="380" cy="612" r="9" fill="#2B6CB0"/>
+  <circle cx="480" cy="612" r="9" fill="#B45309"/>
+  <circle cx="580" cy="612" r="9" fill="#2F7D32"/>
+  <circle cx="680" cy="612" r="9" fill="#6B46C1"/>
+
   <!-- Legend -->
   <g fill="#0F172A" font-size="12">
-    <circle cx="28" cy="613" r="8" fill="#0F172A"/>
-    <text x="44" y="617">ändert</text>
-    <circle cx="116" cy="613" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <text x="132" y="617">liest nur</text>
-    <circle cx="220" cy="613" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <circle cx="28" cy="657" r="8" fill="#0F172A"/>
+    <text x="44" y="661">ändert</text>
+    <circle cx="116" cy="657" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <text x="132" y="661">liest nur</text>
+    <circle cx="220" cy="657" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
     <path d="M220,606 A7,7 0 0 0 220,620 Z" fill="#0F172A"/>
-    <text x="236" y="617">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
-    <text x="568" y="617" font-size="14" fill="#64748B">–</text>
-    <text x="584" y="617">unberührt</text>
+    <text x="236" y="661">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
+    <text x="568" y="661" font-size="14" fill="#64748B">–</text>
+    <text x="584" y="661">unberührt</text>
   </g>
 </svg>

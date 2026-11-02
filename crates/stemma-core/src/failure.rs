@@ -11,6 +11,7 @@
 
 use crate::history::HistoryError;
 use crate::index::WriteTreeError;
+use crate::merge::MergeError;
 use crate::oplog::OpLogError;
 use crate::refs::RefError;
 use crate::repository::{
@@ -125,6 +126,9 @@ impl Classify for RefError {
             // A tag that exists is a name that is taken; it never moves, so there is nothing to
             // read again and retry.
             Self::TagExists { .. } => FailureKind::Other,
+            // A name that is taken, and the branch of HEAD: the caller picks another name or
+            // switches HEAD first, so a retry of the same call does not help.
+            Self::BranchExists { .. } | Self::HeadBranch { .. } => FailureKind::Other,
             // A pointer that a purge moves is at neither of its journal values. A person has to
             // look at it, but the variant also stands for a plain race after a lock removed by
             // hand, so it is not called damage here; `purge --resume` says what to do.
@@ -205,7 +209,9 @@ impl Classify for SnapshotError {
             Self::Refs(error) => error.kind(),
             Self::Store(error) => error.kind(),
             Self::WriteTree(error) => error.kind(),
-            Self::NotOwner { .. } | Self::AgentTakeOver => FailureKind::Other,
+            Self::NotOwner { .. } | Self::AgentTakeOver | Self::Conflicted { .. } => {
+                FailureKind::Other
+            }
             // The working-copy commit names an object that is not there or does not parse.
             Self::Missing { .. } | Self::Commit { .. } | Self::Tree { .. } => FailureKind::Damaged,
             Self::Unsupported { .. } | Self::Gone { .. } | Self::Index(_) | Self::Io { .. } => {
@@ -272,9 +278,41 @@ impl Classify for DiffError {
             Self::AfterSnapshot { source, .. } => source.kind(),
             // An object that a commit of the repository names is not there or does not parse.
             Self::Missing { .. } | Self::Damaged { .. } => FailureKind::Damaged,
-            Self::UnknownCommit { .. } | Self::InvalidPath { .. } | Self::NoSuchPath { .. } => {
-                FailureKind::Other
-            }
+            Self::Conflicted { .. }
+            | Self::UnknownCommit { .. }
+            | Self::InvalidPath { .. }
+            | Self::NoSuchPath { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for MergeError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // A commit that the caller named and the store lacks is an argument error. Any other
+            // commit that the walk reaches is damage, as for `HistoryError`.
+            Self::History(HistoryError::Missing { child: None, .. }) => FailureKind::Other,
+            Self::History(error) => error.kind(),
+            // A tree that a commit of the repository names is damaged or does not parse; a missing
+            // one is `Missing`. Nobody named these objects as an argument, so only a failing disk
+            // is another kind.
+            Self::Tree(error) => match error.store_error() {
+                Some(StoreError::Io { .. }) => FailureKind::Other,
+                Some(StoreError::Corrupt { .. } | StoreError::KindMismatch { .. }) | None => {
+                    FailureKind::Damaged
+                }
+            },
+            // Unlike `StoreError::kind`, a kind mismatch is damage here: it comes from an entry
+            // of a tree, and the caller named no object.
+            Self::Store(error) => match error {
+                StoreError::Io { .. } => FailureKind::Other,
+                StoreError::Corrupt { .. } | StoreError::KindMismatch { .. } => {
+                    FailureKind::Damaged
+                }
+            },
+            Self::Missing { .. } => FailureKind::Damaged,
+            // The names come from trees that were valid; a rejection is a defect, not input.
+            Self::Entries(_) => FailureKind::Other,
         }
     }
 }
@@ -383,12 +421,10 @@ impl Classify for PurgeError {
             Self::Read(error) => error.kind(),
             Self::Store(error) | Self::BlobUnreadable { source: error, .. } => error.kind(),
             Self::Leftover { source, .. } => source.kind(),
-            // No command writes a `commit2` yet, so one in the store is reported as damage, as an
-            // unknown kind was before.
-            Self::UnsupportedKind { .. } => FailureKind::Damaged,
             Self::Agent
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
+            | Self::Rewrite { .. }
             | Self::TooManyEntries { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,
@@ -471,6 +507,74 @@ mod tests {
         };
         assert_eq!(stale.kind(), FailureKind::Other);
         assert_eq!(locked().kind(), FailureKind::Locked);
+    }
+
+    #[test]
+    fn the_errors_of_a_merge_are_classified_by_their_cause() {
+        use crate::merge::MergeError;
+        use crate::object::{CommitParseError, TreeError};
+        use crate::store::ReadError;
+
+        let io = || StoreError::Io {
+            operation: "read the object file",
+            path: path(),
+            source: std::io::Error::other("the disk failed"),
+        };
+        let mismatch = || StoreError::KindMismatch {
+            id: id(),
+            expected: Kind::Tree,
+            found: Kind::Blob,
+        };
+        let commit = crate::object::CommitId::new(id());
+        assert_eq!(MergeError::Store(io()).kind(), FailureKind::Other);
+        assert_eq!(MergeError::Store(mismatch()).kind(), FailureKind::Damaged);
+        assert_eq!(
+            MergeError::Tree(ReadError::Store(Box::new(io()))).kind(),
+            FailureKind::Other
+        );
+        assert_eq!(
+            MergeError::Tree(ReadError::Store(Box::new(mismatch()))).kind(),
+            FailureKind::Damaged
+        );
+        // A body that is not canonical has no store error and is damage.
+        assert_eq!(
+            MergeError::Tree(ReadError::Commit {
+                id: commit,
+                source: CommitParseError::NotUtf8 { valid_up_to: 0 }
+            })
+            .kind(),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            MergeError::Missing {
+                id: id(),
+                kind: Kind::Tree
+            }
+            .kind(),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            MergeError::Entries(TreeError::DuplicateName("n".into())).kind(),
+            FailureKind::Other
+        );
+        // A start commit that the caller named is an argument error; a parent that is missing is
+        // damage.
+        assert_eq!(
+            MergeError::History(HistoryError::Missing {
+                id: commit,
+                child: None
+            })
+            .kind(),
+            FailureKind::Other
+        );
+        assert_eq!(
+            MergeError::History(HistoryError::Missing {
+                id: commit,
+                child: Some(commit)
+            })
+            .kind(),
+            FailureKind::Damaged
+        );
     }
 
     #[test]
@@ -601,6 +705,19 @@ mod tests {
         assert_eq!(
             SnapshotError::Store(Box::new(corrupt())).kind(),
             FailureKind::Damaged
+        );
+    }
+
+    #[test]
+    fn a_conflict_that_a_command_cannot_read_as_one_tree_is_no_damage() {
+        use crate::object::{Blob, CommitId};
+        let id = CommitId::new(Blob::new("conflict").id().object_id());
+        // A stored `commit2` is valid, so the repository is not told to be damaged.
+        assert_eq!(SnapshotError::Conflicted { id }.kind(), FailureKind::Other);
+        assert_eq!(DiffError::Conflicted { id }.kind(), FailureKind::Other);
+        assert_eq!(
+            StatusError::Snapshot(SnapshotError::Conflicted { id }).kind(),
+            FailureKind::Other
         );
     }
 

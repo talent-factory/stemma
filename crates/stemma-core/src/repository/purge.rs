@@ -1,8 +1,9 @@
 //! The plan of a purge: removing a secret from the history and the operation log (ADR-014).
 //!
 //! A purge takes the ID of a blob. Every commit whose tree holds the blob, at any depth, is
-//! rewritten with a tree without it, and every commit after it with the new parents; the change ID
-//! stays. The entries of the log that name a rewritten commit are replaced by stubs. The objects
+//! rewritten with a tree without it (for a `commit2`, every tree of its list, in the form that its
+//! sum has afterwards), and every commit after it with the new parents; the change ID stays.
+//! The entries of the log that name a rewritten commit are replaced by stubs. The objects
 //! that the rewrite replaced are deleted, and so are leftovers in the store that hold the blob or
 //! come after a commit that does. The plan fails if anything that is kept still reaches them.
 //!
@@ -22,14 +23,15 @@ use std::collections::{hash_map, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
-use super::snapshot::{read_commit, read_object, SnapshotError};
+use super::snapshot::{read_any_commit, read_object, SnapshotError};
 use super::{Repository, UpdateError};
+use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::object::{
-    BlobId, Commit, CommitError, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId,
+    BlobId, Commit2Error, CommitError, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId,
 };
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
 use crate::refs::{BranchName, Head, RefError};
-use crate::store::{FsObjectStore, ObjectStore, StoreError};
+use crate::store::{Batch, FsObjectStore, ObjectStore, StoreError};
 use crate::{Actor, ActorRef, Allowed, Authorizer};
 
 /// The operation that the authorizer is asked for.
@@ -295,7 +297,7 @@ fn refuse_agent(actor: &Actor) -> Result<(), PurgeError> {
 #[derive(Debug, Clone)]
 enum NewObject {
     Tree(Tree),
-    Commit(Commit),
+    Commit(AnyCommit),
 }
 
 impl NewObject {
@@ -307,10 +309,13 @@ impl NewObject {
     }
 
     /// Stores the object; one that the store has already is left alone (ADR-007).
-    fn put(&self, objects: &impl ObjectStore) -> Result<(), StoreError> {
+    fn put(&self, objects: &Batch<'_>) -> Result<(), StoreError> {
         match self {
             Self::Tree(tree) => objects.put_tree(tree).map(|_| ()),
-            Self::Commit(commit) => objects.put_commit(commit).map(|_| ()),
+            Self::Commit(AnyCommit::Commit(commit)) => objects.put_commit(commit).map(|_| ()),
+            Self::Commit(AnyCommit::Commit2(commit)) => {
+                objects.put_raw(Kind::Commit2, &commit.encode()).map(|_| ())
+            }
         }
     }
 }
@@ -340,10 +345,11 @@ struct Planner<'a> {
     /// Every commit that was looked at, with the ID of its new version (the same ID if it does
     /// not change).
     commits: HashMap<CommitId, CommitId>,
-    /// The tree and the parents of every commit, old and new.
-    commit_links: HashMap<CommitId, (TreeId, Vec<CommitId>)>,
+    /// The trees (one for a `commit`, the list for a `commit2`) and the parents of every commit,
+    /// old and new.
+    commit_links: HashMap<CommitId, (Vec<TreeId>, Vec<CommitId>)>,
     /// The new commits, by their IDs.
-    new_commits: HashMap<CommitId, Commit>,
+    new_commits: HashMap<CommitId, AnyCommit>,
     /// The commits that change, parents first.
     rewrites: Vec<(CommitId, CommitId)>,
 }
@@ -368,7 +374,7 @@ impl<'a> Planner<'a> {
     /// stack instead of recursing: a commit is done once all its parents are done.
     fn commit(&mut self, root: CommitId) -> Result<(), PurgeError> {
         let mut pending = vec![root];
-        let mut read: HashMap<CommitId, Commit> = HashMap::new();
+        let mut read: HashMap<CommitId, AnyCommit> = HashMap::new();
         while let Some(&id) = pending.last() {
             if self.commits.contains_key(&id) {
                 pending.pop();
@@ -377,7 +383,7 @@ impl<'a> Planner<'a> {
             let commit = match read.entry(id) {
                 hash_map::Entry::Occupied(known) => known.into_mut(),
                 hash_map::Entry::Vacant(slot) => {
-                    slot.insert(read_commit(self.objects, id).map_err(PurgeError::Read)?)
+                    slot.insert(read_any_commit(self.objects, id).map_err(PurgeError::Read)?)
                 }
             };
             let missing: Vec<CommitId> = commit
@@ -392,29 +398,48 @@ impl<'a> Planner<'a> {
             }
             pending.pop();
             let commit = read.remove(&id).expect("the commit was read above");
+            // A `commit` has one tree and a `commit2` a list of them; every one of the list may
+            // hold the blob.
+            let sum = commit.tree_sum();
             self.commit_links
-                .insert(id, (commit.tree(), commit.parents().to_vec()));
+                .insert(id, (sum.terms().to_vec(), commit.parents().to_vec()));
             let parents: Vec<CommitId> = commit
                 .parents()
                 .iter()
                 .map(|parent| self.commits[parent])
                 .collect();
-            let tree = self.tree(commit.tree())?;
-            if tree.is_none() && parents == commit.parents() {
+            let mut changed = false;
+            let mut terms = Vec::with_capacity(sum.terms().len());
+            for &tree in sum.terms() {
+                let new = self.tree(tree)?;
+                changed |= new.is_some();
+                terms.push(new.unwrap_or(tree));
+            }
+            if !changed && parents == commit.parents() {
                 self.commits.insert(id, id);
                 continue;
             }
+            let terms = Merge::try_from_terms(terms).expect("a rewrite keeps the number of trees");
+            // The form of the result follows from the sum: a base and a side that the rewrite
+            // makes equal cancel, so that a conflict can end up as a `commit`.
             let rewritten = commit
-                .reparent(tree.unwrap_or(commit.tree()), parents)
+                .reparent(&terms, parents)
                 .map_err(|error| match error {
-                    CommitError::DuplicateParent(parent) => {
+                    FromSumError::Commit(CommitError::DuplicateParent(parent))
+                    | FromSumError::Commit2(Commit2Error::DuplicateParent(parent)) => {
                         PurgeError::DuplicateParent { commit: id, parent }
                     }
+                    source => PurgeError::Rewrite { commit: id, source },
                 })?;
             let new = rewritten.id();
             self.commits.insert(id, new);
-            self.commit_links
-                .insert(new, (rewritten.tree(), rewritten.parents().to_vec()));
+            self.commit_links.insert(
+                new,
+                (
+                    rewritten.tree_sum().into_terms(),
+                    rewritten.parents().to_vec(),
+                ),
+            );
             self.new_commits.insert(new, rewritten);
             self.rewrites.push((id, new));
         }
@@ -488,7 +513,8 @@ impl<'a> Planner<'a> {
         let mut pending: Vec<(TreeId, String)> = self
             .rewrites
             .iter()
-            .map(|(old, _)| (self.commit_links[old].0, String::new()))
+            .flat_map(|(old, _)| &self.commit_links[old].0)
+            .map(|tree| (*tree, String::new()))
             .collect();
         let join = |prefix: &str, name: &str| {
             if prefix.is_empty() {
@@ -540,10 +566,9 @@ impl<'a> Planner<'a> {
                 Kind::Tree => {
                     self.tree(TreeId::new(id)).map_err(leftover)?;
                 }
-                Kind::Commit => self.commit(CommitId::new(id)).map_err(leftover)?,
-                // A `commit2` names a list of trees, and the plan cannot follow it yet. It is an
-                // error and not skipped, as one of its trees may hold the blob.
-                kind => return Err(leftover(PurgeError::UnsupportedKind { id, kind })),
+                // Every kind is matched, so that a kind added later does not compile until the
+                // plan follows it: skipping it would leave a secret that it may reach.
+                Kind::Commit | Kind::Commit2 => self.commit(CommitId::new(id)).map_err(leftover)?,
             }
         }
         Ok(())
@@ -580,7 +605,7 @@ impl<'a> Planner<'a> {
     fn reached(&mut self, roots: &[CommitId]) -> Result<HashSet<ObjectId>, PurgeError> {
         let mut seen = HashSet::new();
         let mut commits: Vec<CommitId> = roots.to_vec();
-        let mut trees = Vec::new();
+        let mut trees: Vec<TreeId> = Vec::new();
         while let Some(id) = commits.pop() {
             if !seen.insert(id.object_id()) {
                 continue;
@@ -588,8 +613,8 @@ impl<'a> Planner<'a> {
             if !self.commit_links.contains_key(&id) {
                 self.commit(id)?;
             }
-            let (tree, parents) = &self.commit_links[&id];
-            trees.push(*tree);
+            let (listed, parents) = &self.commit_links[&id];
+            trees.extend(listed);
             commits.extend(parents);
         }
         while let Some(id) = trees.pop() {
@@ -616,7 +641,9 @@ impl<'a> Planner<'a> {
         let mut seen = HashSet::new();
         for (_, new) in rewrites {
             let commit = &self.new_commits[new];
-            self.push_tree(commit.tree(), &mut seen, &mut objects);
+            for tree in commit.tree_sum().terms() {
+                self.push_tree(*tree, &mut seen, &mut objects);
+            }
             objects.push(NewObject::Commit(commit.clone()));
         }
         objects
@@ -688,6 +715,14 @@ pub enum PurgeError {
         /// The new parent that it would have twice.
         parent: CommitId,
     },
+    /// A rewrite of a commit gives a sum of trees that no commit can hold. The form of a commit
+    /// follows from its sum, so this means a defect of the rewrite, not a damaged repository.
+    Rewrite {
+        /// The commit.
+        commit: CommitId,
+        /// Why the sum is rejected.
+        source: FromSumError,
+    },
     /// A tree or a commit that nothing reaches, left in the store, cannot be planned. The scan
     /// does not skip it, as it may hold the blob.
     Leftover {
@@ -695,14 +730,6 @@ pub enum PurgeError {
         id: ObjectId,
         /// Why it cannot be planned.
         source: Box<PurgeError>,
-    },
-    /// An object of a kind that the plan cannot follow yet is in the store. The scan does not
-    /// skip it, as it may reach the blob.
-    UnsupportedKind {
-        /// The object.
-        id: ObjectId,
-        /// Its kind.
-        kind: Kind,
     },
     /// The plan would replace more entries of the log than the journal of a purge lists
     /// (2^24), so that the purge could not be resumed or aborted after a crash.
@@ -774,10 +801,10 @@ impl PurgeError {
                  {} that its journal can list",
                 journal::MAX_STUBS
             ),
-            Self::UnsupportedKind { id, kind } => write!(
+            Self::Rewrite { commit, source } => write!(
                 f,
-                "{id} is a {} object, which a purge cannot follow yet",
-                kind.name()
+                "the rewrite of the commit {commit} gives a sum of trees that no commit can hold: \
+                 {source}"
             ),
             Self::TaggedCommit { tags } => {
                 write!(f, "a tag never moves, so the purge cannot proceed while ")?;
@@ -828,11 +855,11 @@ impl Error for PurgeError {
             Self::Read(error) => error.source(),
             Self::Store(error) | Self::BlobUnreadable { source: error, .. } => error.source(),
             Self::Leftover { source, .. } => source.source(),
+            Self::Rewrite { source, .. } => source.source(),
             Self::Agent
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
-            | Self::UnsupportedKind { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => None,
         }
@@ -861,8 +888,9 @@ fn check_tags(
 mod tests {
     use std::fs;
 
+    use super::super::snapshot::read_commit;
     use super::*;
-    use crate::object::Blob;
+    use crate::object::{Blob, Commit};
     use crate::repository::InitOptions;
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
@@ -926,7 +954,15 @@ mod tests {
 
     /// The tree of the new version of a commit.
     fn new_tree(planner: &Planner<'_>, old: CommitId) -> TreeId {
-        planner.new_commits[&planner.commits[&old]].tree()
+        one_tree(&planner.new_commits[&planner.commits[&old]])
+    }
+
+    /// The tree of a commit that is not a conflict.
+    fn one_tree(commit: &AnyCommit) -> TreeId {
+        match commit {
+            AnyCommit::Commit(commit) => commit.tree(),
+            AnyCommit::Commit2(_) => panic!("a commit2 has no one tree"),
+        }
     }
 
     /// The ID that a tree names under `name`.
@@ -964,7 +1000,10 @@ mod tests {
         let mut planner = Planner::new(repository.objects(), blob);
         planner.commit(old).unwrap();
         let new = planner.commits[&old];
-        planner.new_commits[&new].clone()
+        match planner.new_commits[&new].clone() {
+            AnyCommit::Commit(commit) => commit,
+            AnyCommit::Commit2(_) => panic!("a commit2 has no one tree"),
+        }
     }
 
     fn names(repository: &Repository, tree: TreeId, planner: &Planner<'_>) -> Vec<String> {
@@ -1191,7 +1230,7 @@ mod tests {
         let [_, second, _] = history(&dir, &repository);
         let mut planner = Planner::new(repository.objects(), BlobId::new(secret()));
         planner.commit(second).unwrap();
-        let tree = planner.new_commits[&planner.commits[&second]].tree();
+        let tree = one_tree(&planner.new_commits[&planner.commits[&second]]);
         assert_eq!(names(&repository, tree, &planner), ["a.txt"]);
 
         // The same files saved by a snapshot make the same tree.
@@ -1667,55 +1706,203 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_leftover_commit2_stops_the_plan_and_is_named() {
-        let dir = TempDir::new();
-        let repository = repository(&dir);
-        let [first, ..] = history(&dir, &repository);
-        let store = repository.objects();
-        let tree = read_commit(store, first).unwrap().tree();
-        let conflict = crate::object::Commit2::try_new(
-            vec![
-                tree,
-                crate::object::TreeId::new(crate::object::ObjectId::from_digest(blake3::hash(
-                    b"other",
-                ))),
-                tree,
-            ],
-            vec![first],
+    /// A tree without the secret, which differs from the trees of `history`.
+    fn other_tree(repository: &Repository) -> TreeId {
+        let blob = repository.objects().put_blob(&Blob::new("other")).unwrap();
+        let entry = TreeEntry::file("b.txt", FileMode::File, blob).unwrap();
+        repository
+            .objects()
+            .put_tree(&Tree::try_new(vec![entry]).unwrap())
+            .unwrap()
+    }
+
+    /// Stores a `commit2` with the trees and the parent.
+    fn conflict(repository: &Repository, trees: Vec<TreeId>, parent: CommitId) -> CommitId {
+        let commit = crate::object::Commit2::try_new(
+            trees,
+            vec![parent],
             crate::change::ChangeId::generate().unwrap(),
             actor(),
             8,
             "conflict",
         )
         .unwrap();
-        let conflict = store.put_raw(Kind::Commit2, &conflict.encode()).unwrap();
+        let id = repository
+            .objects()
+            .put_raw(Kind::Commit2, &commit.encode())
+            .unwrap();
+        CommitId::new(id)
+    }
+
+    fn tree_of(repository: &Repository, commit: CommitId) -> TreeId {
+        read_commit(repository.objects(), commit).unwrap().tree()
+    }
+
+    #[test]
+    fn a_commit2_is_rewritten_in_each_tree_of_its_list_and_stays_a_commit2() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, third] = history(&dir, &repository);
+        let (kept, with_secret, later) = (
+            tree_of(&repository, first),
+            tree_of(&repository, second),
+            tree_of(&repository, third),
+        );
+        let other = other_tree(&repository);
+        let old = conflict(&repository, vec![later, with_secret, other], first);
+        let planner = planned(&repository, old);
+        let new = planner.commits[&old];
+        assert_ne!(new, old);
+        let AnyCommit::Commit2(rewritten) = &planner.new_commits[&new] else {
+            panic!("the sum keeps three terms, so it stays a commit2");
+        };
+        assert_eq!(
+            rewritten.trees(),
+            [
+                planner.trees[&later].unwrap(),
+                planner.trees[&with_secret].unwrap(),
+                other
+            ]
+        );
+        assert_eq!(rewritten.parents(), [first]);
+        assert_eq!(rewritten.message(), "conflict");
+        // The tree that the purge leaves of `second` is the tree of `first`, which holds no key.
+        assert_eq!(planner.trees[&with_secret], Some(kept));
+        assert_eq!(planner.trees[&kept], None);
+        assert_eq!(planner.commit_links[&new].0, rewritten.trees());
+    }
+
+    #[test]
+    fn a_commit2_whose_terms_cancel_after_the_rewrite_becomes_a_commit() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, third] = history(&dir, &repository);
+        let (kept, with_secret, later) = (
+            tree_of(&repository, first),
+            tree_of(&repository, second),
+            tree_of(&repository, third),
+        );
+        // The base loses the key and equals the second side, so the two cancel.
+        let old = conflict(&repository, vec![later, with_secret, kept], first);
+        let planner = planned(&repository, old);
+        let new = planner.commits[&old];
+        let AnyCommit::Commit(rewritten) = &planner.new_commits[&new] else {
+            panic!("one tree is left, so the commit is a commit");
+        };
+        assert_eq!(rewritten.tree(), planner.trees[&later].unwrap());
+        assert_eq!(rewritten.parents(), [first]);
+        assert_eq!(rewritten.change(), {
+            let AnyCommit::Commit2(inner) =
+                crate::repository::snapshot::read_any_commit(repository.objects(), old).unwrap()
+            else {
+                panic!("the stored commit is a commit2");
+            };
+            inner.change()
+        });
+    }
+
+    #[test]
+    fn a_commit2_with_clean_trees_is_rewritten_when_its_parent_is_and_keeps_its_trees() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let other = other_tree(&repository);
+        let kept = tree_of(&repository, first);
+        let old = conflict(&repository, vec![kept, other, kept], second);
+        let planner = planned(&repository, old);
+        let new = planner.commits[&old];
+        assert_ne!(new, old);
+        let AnyCommit::Commit2(rewritten) = &planner.new_commits[&new] else {
+            panic!("the trees are untouched, so the commit stays a commit2");
+        };
+        assert_eq!(rewritten.trees(), [kept, other, kept]);
+        assert_eq!(rewritten.parents(), [planner.commits[&second]]);
+        assert_eq!(rewritten.message(), "conflict");
+    }
+
+    #[test]
+    fn a_leftover_commit2_whose_parents_become_one_is_an_error_that_names_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let store = repository.objects();
+        let file = |name: &str, content: &str| {
+            TreeEntry::file(name, FileMode::File, Blob::new(content).id()).unwrap()
+        };
+        let with = store
+            .put_tree(&Tree::try_new(vec![file("a.txt", "one"), file("key", SECRET)]).unwrap())
+            .unwrap();
+        let without = store
+            .put_tree(&Tree::try_new(vec![file("a.txt", "one")]).unwrap())
+            .unwrap();
+        let change = crate::change::ChangeId::generate().unwrap();
+        let parent = |tree| Commit::try_new(tree, vec![], change, actor(), 5, "p").unwrap();
+        let one = store.put_commit(&parent(with)).unwrap();
+        let two = store.put_commit(&parent(without)).unwrap();
+        let other = other_tree(&repository);
+        let conflict = crate::object::Commit2::try_new(
+            vec![without, other, without],
+            vec![one, two],
+            crate::change::ChangeId::generate().unwrap(),
+            actor(),
+            6,
+            "conflict",
+        )
+        .unwrap();
+        let conflict = CommitId::new(store.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
+
         let error = repository
             .plan_purge(secret(), &actor(), &AllowAll)
             .unwrap_err();
         match &error {
             PurgeError::Leftover { id, source } => {
-                assert_eq!(*id, conflict);
-                assert!(
-                    matches!(
-                        **source,
-                        PurgeError::UnsupportedKind { id, kind: Kind::Commit2 } if id == conflict
-                    ),
-                    "{source:?}"
-                );
-                assert!(
-                    source.to_string().ends_with(&format!(
-                        "{conflict} is a commit2 object, which a purge cannot follow yet"
-                    )),
-                    "{source}"
-                );
+                assert_eq!(*id, conflict.object_id());
+                assert!(matches!(
+                    **source,
+                    PurgeError::DuplicateParent { commit, parent }
+                        if commit == conflict && parent == two
+                ));
             }
             other => panic!("expected a leftover, got {other:?}"),
         }
-        assert_eq!(
-            crate::failure::Classify::kind(&error),
-            crate::failure::FailureKind::Damaged
-        );
+    }
+
+    #[test]
+    fn a_leftover_commit2_that_holds_the_secret_is_deleted_with_its_kind() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let other = other_tree(&repository);
+        let with_secret = tree_of(&repository, second);
+        let kept = tree_of(&repository, first);
+        let old = conflict(&repository, vec![with_secret, kept, other], first);
+        let plan = plan(&repository);
+        assert!(plan.deleted_commits().contains(&old), "{plan:?}");
+    }
+
+    #[test]
+    fn a_leftover_commit2_that_follows_a_rewritten_commit_is_deleted() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let other = other_tree(&repository);
+        let kept = tree_of(&repository, first);
+        let old = conflict(&repository, vec![kept, other, kept], second);
+        let plan = plan(&repository);
+        assert!(plan.deleted_commits().contains(&old), "{plan:?}");
+    }
+
+    #[test]
+    fn a_leftover_commit2_that_holds_no_secret_stays() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let other = other_tree(&repository);
+        let kept = tree_of(&repository, first);
+        let old = conflict(&repository, vec![kept, other, kept], first);
+        let plan = plan(&repository);
+        assert!(!plan.deleted_commits().contains(&old), "{plan:?}");
+        assert!(!plan.rewrites().iter().any(|(from, _)| *from == old));
     }
 
     #[test]

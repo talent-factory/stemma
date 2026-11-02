@@ -149,12 +149,20 @@ them.
   and the version of the format stays. The kind name is hashed with the body, so the bytes of a
   `commit2` are another object under the kind `commit`. `Commit::parse` still rejects more than one
   `tree` line. The type is `Commit2`, separate from `Commit`. What a conflict means, and how it is
-  resolved, stays with phase 3 (STEMMA-19). The purge (ADR-014) does not follow a `commit2` yet and
-  reports one that it finds in the store as an error, instead of skipping a tree that may hold the
-  blob. `Commit2::id` returns a `CommitId`, so that a conflict can stand where a commit stands, but
-  the store, the reads of a snapshot and a difference, and `verify` still read a `CommitId` as the
-  kind `commit`. Until phase 3 decides how a `CommitId` resolves to either kind, a `commit2` cannot
-  be a parent that verifies, nor the target of a branch or of the working copy (STEMMA-179).
+  resolved, stays with phase 3 (STEMMA-19). `Commit2::id` returns a `CommitId`, so that a conflict
+  can stand where a commit stands, and **a `CommitId` names either kind**: the store resolves it to
+  a `commit` or to a `commit2` by the kind of the stored object (`resolve_commit`,
+  `get_any_commit`, which returns `AnyCommit`), so that a `commit2` is a parent that passes
+  `verify`, a step of the history, and the target of a branch or of the working copy. The reader
+  `get_commit` stays strict and returns a `Commit` only, since a caller that needs one tree has none
+  in a `commit2`: `status`, `diff`, `restore`, and `commit` report such a commit as a conflict
+  (`Conflicted`) and not as a kind mismatch, until phase 3 gives them a meaning for it (STEMMA-19).
+  The purge (ADR-014) follows the list of trees of a `commit2` and writes the new version of a
+  rewritten one in the form that its sum has. The kind is part of the ID, so the same bytes under
+  the kind `commit` and under the kind `commit2` are two objects (see above). The alternative, an
+  ID type of its own for a `commit2`, was rejected: every place that takes a parent or a pointer
+  would accept both types, the branch and the log would store two kinds of ID, and nothing would
+  gain, since the kind is already read from the object (STEMMA-179).
 - **Algebra of the sum of trees** *(confirmed)*. The list of a `commit2` is a sum, read as the first
   tree plus the change from each removed tree to the added tree after it. The module `conflict` of
   the core holds it: `Merge` is the sum over any value, and `AnyCommit::from_sum` writes the commit
@@ -167,11 +175,45 @@ them.
   the sum it came from does). The padding belongs to the sums of the paths, not to the list of trees
   of a `commit2`, which is stored simplified. The rule that two sides which made the same change
   resolve at once is not part of the algebra: it loses information when the result is merged again,
-  and the merge decides whether to apply it. The text with markers that shows a conflicted file is
-  one function of the sum (`marker_text`), a pure function of the list of the contents of the terms,
-  in order. The working copy and `diff` are to show it, and the snapshot is to compare the bytes of
+  and the merge decides whether to apply it (see "Merge of trees"). The text with markers that
+  shows a conflicted file is one function of the sum (`marker_text`), a pure function of the list
+  of the contents of the terms, in order. The working copy and `diff` are to show it, and the snapshot is to compare the bytes of
   a file with it and not to parse markers. Nothing calls it yet, and no command writes a `commit2`
   yet.
+- **Merge of trees** *(confirmed)*. The module `merge` of the core merges two commits into a sum of
+  trees (STEMMA-170), at level 2 of ADR-004. It writes blobs and trees and no commit, and reads
+  only commits without a conflict until a `CommitId` resolves to either kind (STEMMA-179). The rules
+  are these.
+  - *The sum.* One merge base gives `ours + (theirs - base)`. Several bases are neither merged into
+    a virtual commit nor merged recursively. They are one flat sum, as in Jujutsu: the first base,
+    plus the change to each further base from its best common ancestors with any one of the
+    earlier bases. The result may have more than three sides. `merge_bases` returns the bases
+    sorted by ID, and that order fixes the sum. With three or more bases the choice of the first is
+    arbitrary, but always the same. Histories without a common ancestor have the empty tree as
+    their base.
+  - *Per name.* Cancelling terms come first (the changed value wins over the unchanged one). If all
+    sides are equal, that value is the result, for content and for mode, per path; there is no
+    setting for it in phase 3. If every term is a directory or absent, the trees are merged one
+    level down, so that a directory deleted on one side and changed on the other conflicts only at
+    the paths that the changed side touched, and a directory without entries is absent. If every
+    term is a file, the mode and the content are merged independently, and a conflict of one keeps
+    the decided value of the other in every term. A symbolic link is one value and is never merged
+    by line. Everything else is a conflict of the path: a deleted file against a changed one, two
+    sides that add the same path with different content, and different types (a file against a
+    directory or a link).
+  - *No rename detection.* A rename is a delete and an add, so an edit of the old name on the other
+    side is a conflict of a deleted against a changed file. A later slice can add detection without
+    a change of the format.
+  - *Lines.* The lines of a file are compared with the first base that did not cancel by
+    `diff_byte_lines`, the function of `diff`, so that merge and `diff` use the same edit script.
+    The lines of the base that all comparisons match divide the file, and each piece between two of them is decided as a sum of
+    its own. Changes that touch each other without overlapping are one piece and a conflict, unless
+    both sides made the same change. A binary file and a file that is not UTF-8 are a conflict as a
+    whole. A file is merged only if every piece is decided; otherwise the conflict of the path holds
+    the whole blobs, and markers exist only as the text of `marker_text` on disk.
+  - *The result* is the simplified sum of trees. All paths are padded to the widest sum, and a
+    result that cancels down to one tree is that tree, with the ID of a tree that never had a
+    conflict.
 - **Strict reading** *(confirmed)*. A reader rejects what it does not recognize: an unknown or
   repeated header, a header out of order, a number with a plus sign, `-0`, or leading zeros, or any
   other non-canonical form. Otherwise one logical object could have several encodings and several
