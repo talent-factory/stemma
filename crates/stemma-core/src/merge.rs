@@ -203,15 +203,15 @@ pub fn tree_sum(
     theirs: CommitId,
 ) -> Result<Merge<TreeId>, MergeError> {
     let base = base_sum(store, &merge_bases(store, ours, theirs)?)?;
-    let our_tree = read_commit(store, ours, None)?.tree();
-    let their_tree = read_commit(store, theirs, None)?.tree();
+    let ours_sum = read_commit(store, ours, None)?.tree_sum();
+    let theirs_sum = read_commit(store, theirs, None)?.tree_sum();
     // `ours + theirs - base`: the removed terms of the base are added, its added terms removed.
-    let (base_adds, base_removes): (Vec<TreeId>, Vec<TreeId>) = (
-        base.adds().copied().collect(),
-        base.removes().copied().collect(),
-    );
-    let mut adds = vec![our_tree, their_tree];
-    adds.extend(base_removes);
+    let mut adds: Vec<TreeId> = ours_sum.adds().copied().collect();
+    adds.extend(theirs_sum.adds().copied());
+    adds.extend(base.removes().copied());
+    let mut base_adds: Vec<TreeId> = ours_sum.removes().copied().collect();
+    base_adds.extend(theirs_sum.removes().copied());
+    base_adds.extend(base.adds().copied());
     Ok(Merge::from_parts(adds, base_adds))
 }
 
@@ -222,16 +222,17 @@ fn base_sum(store: &dyn ObjectStore, bases: &[CommitId]) -> Result<Merge<TreeId>
     let Some((&first, rest)) = bases.split_first() else {
         return Ok(Merge::resolved(store.put_tree(&Tree::try_new(vec![])?)?));
     };
-    let mut sum = Merge::resolved(read_commit(store, first, None)?.tree());
+    let mut sum = read_commit(store, first, None)?.tree_sum();
     let mut done = vec![first];
     for &other in rest {
         let common = base_sum(store, &common_ancestors(store, &done, other)?)?;
-        let other_tree = read_commit(store, other, None)?.tree();
+        let other_sum = read_commit(store, other, None)?.tree_sum();
         // `sum + other - common`.
         let mut adds: Vec<TreeId> = sum.adds().copied().collect();
-        adds.push(other_tree);
+        adds.extend(other_sum.adds().copied());
         adds.extend(common.removes().copied());
         let mut removes: Vec<TreeId> = sum.removes().copied().collect();
+        removes.extend(other_sum.removes().copied());
         removes.extend(common.adds().copied());
         sum = Merge::from_parts(adds, removes);
         done.push(other);
@@ -1289,8 +1290,11 @@ mod tests {
         let (ours, theirs, [left, right]) = criss_cross(&store);
         let merge = |bases: &[CommitId]| {
             let base = base_sum(&store, bases).unwrap();
-            let our_tree = read_commit(&store, ours, None).unwrap().tree();
-            let their_tree = read_commit(&store, theirs, None).unwrap().tree();
+            let our_tree = read_commit(&store, ours, None).unwrap().tree_sum().terms()[0];
+            let their_tree = read_commit(&store, theirs, None)
+                .unwrap()
+                .tree_sum()
+                .terms()[0];
             let (adds, removes) = (
                 base.removes().copied().collect::<Vec<_>>(),
                 base.adds().copied().collect::<Vec<_>>(),
@@ -1557,8 +1561,8 @@ mod tests {
     ) -> Merge<TreeId> {
         let base = base_sum(store, bases).unwrap();
         let mut adds = vec![
-            read_commit(store, ours, None).unwrap().tree(),
-            read_commit(store, theirs, None).unwrap().tree(),
+            read_commit(store, ours, None).unwrap().tree_sum().terms()[0],
+            read_commit(store, theirs, None).unwrap().tree_sum().terms()[0],
         ];
         adds.extend(base.removes().copied());
         let removes = base.adds().copied().collect();

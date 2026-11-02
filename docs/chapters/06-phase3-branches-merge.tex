@@ -44,6 +44,62 @@ mit \type{--take-over} (Risikostufe 3). Umgesetzt; Kapitel 4 beschreibt die Rege
 der Anhang die Befehle. Die zweite Arbeitskopie baut darauf auf.
 \stopitemize
 
+\section{Den Branch wechseln: switch}
+
+Der Befehl \type{switch} wechselt den Branch, auf den HEAD zeigt, oder löst HEAD vom Branch.
+Mit \type{switch NAME} wechselt er zu einem Branch, der besteht;
+mit \type{switch -c NAME [START]} legt er den Branch an und wechselt dorthin;
+mit \type{switch --detach COMMIT-ODER-BRANCH} nennt HEAD einen Commit und keinen Branch.
+Ein unbekannter Name ohne \type{-c} ist ein Fehler.
+Der Befehl wechselt nur, solange der Working-Copy-Commit leer ist (ADR-010):
+Was dort steht, bliebe sonst auf dem alten Branch zurück.
+
+\startitemize[n]
+\item Der Befehl löst das Ziel auf und prüft alles, was nichts schreibt: ob der Name besteht
+oder frei ist, ob der Commit im Objektspeicher liegt, und ob eine Datei im Arbeitsverzeichnis im
+Weg steht, die kein Commit verfolgt.
+Ein solcher Konflikt fällt hier auf, bevor die erste Datei geschrieben ist.
+\item Er nimmt die Sperre der Referenzen und speichert die verfolgten Dateien in einem Snapshot
+(Operation \type{snapshot}, eigener Eintrag).
+\item Der Working-Copy-Commit muss leer sein, sein Baum also der seines ersten Elternteils.
+Sonst bricht der Befehl ab; die Änderung steht im Snapshot und geht nicht verloren,
+und die Meldung verweist auf \type{commit}.
+\item Ein neuer, leerer Working-Copy-Commit entsteht auf der Spitze des Ziels:
+mit dem Baum der Spitze, leerer Nachricht und einer neuen Change-ID.
+\item Der Eintrag \type{switch} wird geschrieben und gesichert, dann bringt die Checkout-Schicht
+das Arbeitsverzeichnis auf den Baum des Ziels (ADR-013).
+Sind die Bäume gleich, bewegen sich nur die Zeiger.
+\item Zuletzt bewegen sich die Zeiger: der neue Branch, der Working-Copy-Commit und HEAD.
+\stopitemize
+
+Der Befehl schreibt einen Eintrag für alle Bewegungen.
+Dieselbe Reihenfolge wie beim \type{op restore} gilt nach einem Absturz:
+Bricht der Befehl nach dem Eintrag ab, steht der alte Stand in den Zeigern, und der Eintrag
+gilt im Log als nicht übernommen.
+Bricht er nach den Dateien ab, liegt das Ziel im Arbeitsverzeichnis, aber die Zeiger sind alt.
+Ein Snapshot würde die Dateien des Ziels als Änderung des alten Working-Copy-Commits speichern;
+darum sagt die Meldung, derselbe Aufruf sei noch einmal zu machen, bevor ein anderer Befehl läuft.
+Der zweite Aufruf erkennt den Eintrag des abgebrochenen, nimmt keinen Snapshot und benutzt den
+Working-Copy-Commit jenes Eintrags weiter.
+Auch der zweite Aufruf prüft den Eigentümer der Arbeitskopie:
+ein anderer Akteur braucht \type{--take-over}, ein Agent übernimmt nie.
+Der Befehl ist mit \type{op restore} umkehrbar; die Ausgabe nennt den Eintrag.
+
+\startinfobox
+{\bf Grenzfälle von \type{switch}.}
+\startitemize
+\item Ein Wechsel zum Branch, auf den HEAD schon zeigt, endet mit Exit-Code 0 und der Zeile
+\type{Already on NAME}; es entsteht kein Eintrag und kein Snapshot.
+\item Hat der Branch von HEAD noch keinen Commit, hat \type{switch -c} ohne START keinen
+Anfang und lehnt ab.
+\item Ein Working-Copy-Commit mit Änderungen lehnt der Wechsel ab, statt sie mitzunehmen.
+Dass die Änderungen mitkommen, wäre eine spätere Erweiterung.
+\item Auf einem abgekoppelten HEAD lehnt \type{commit} ab und verweist auf \type{switch -c}.
+\item Eine Datei, die kein Commit verfolgt und die das Ziel anlegen will, bricht den Wechsel ab;
+der Befehl schreibt nichts, auch keinen Snapshot.
+\stopitemize
+\stopinfobox
+
 \section[sec:tree-merge]{Der Merge von Trees}
 
 Der Merge zweier Commits ist eine Funktion auf ihren Trees
