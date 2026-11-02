@@ -2455,8 +2455,8 @@ der Liste und ersetzt jeden, der den Blob enthält.
 Der Commit wird in der Form neu geschrieben, die seine Summe danach hat:
 Wird ein weggenommener Baum der Liste einem hinzugefügten gleich, heben sich beide auf,
 und aus dem Konflikt kann ein \type{commit} mit derselben Änderungs-ID werden.
-Ein Purge kann nicht laufen, solange die Arbeitskopie ein \type{commit2} ist,
-denn sein Schnappschuss meldet den offenen Konflikt.
+Das Anwenden eines Purge kann nicht laufen, solange die Arbeitskopie ein \type{commit2} ist,
+denn sein Schnappschuss meldet den offenen Konflikt; der Plan selbst schreibt nichts.
 \item Ein Objekt, das zwischen dem Auflisten des Speichers und dem Lesen seines Kopfs verschwindet,
 nennt nichts mehr und wird übersprungen.
 Verschwindet es erst danach, hält der Plan an.

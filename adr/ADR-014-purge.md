@@ -99,9 +99,9 @@ Facts that bound the design:
   (ADR-005) through every tree of its list, as it follows the one tree of a `commit`: each tree
   that holds the blob is replaced, and the commit is written again in the form that its sum has
   afterwards. A base and a side that the purge makes equal cancel, so a conflict can end up as
-  a `commit` with the same change ID. A purge starts with a snapshot, so it does not run while the
-  working-copy commit is a `commit2`: the snapshot reports the open conflict. The plan checks at
-  the end
+  a `commit` with the same change ID. Applying a purge (`apply_purge`) starts with a snapshot, so
+  it does not run while the working-copy commit is a `commit2`: the snapshot reports the open
+  conflict. The plan itself writes nothing and takes no snapshot. The plan checks at the end
   that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
   The scratch files of `tmp/` are removed when the purge takes the lock (ADR-011); see the
   limits.

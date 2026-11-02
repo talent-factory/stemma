@@ -420,8 +420,8 @@ impl<'a> Planner<'a> {
                 continue;
             }
             let terms = Merge::try_from_terms(terms).expect("a rewrite keeps the number of trees");
-            // The form of the result follows from the sum: a base and a side that the rewrite makes equal
-            // cancel, so that a conflict can end up as a `commit`.
+            // The form of the result follows from the sum: a base and a side that the rewrite
+            // makes equal cancel, so that a conflict can end up as a `commit`.
             let rewritten = commit
                 .reparent(&terms, parents)
                 .map_err(|error| match error {
@@ -1799,6 +1799,72 @@ mod tests {
             };
             inner.change()
         });
+    }
+
+    #[test]
+    fn a_commit2_with_clean_trees_is_rewritten_when_its_parent_is_and_keeps_its_trees() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let other = other_tree(&repository);
+        let kept = tree_of(&repository, first);
+        let old = conflict(&repository, vec![kept, other, kept], second);
+        let planner = planned(&repository, old);
+        let new = planner.commits[&old];
+        assert_ne!(new, old);
+        let AnyCommit::Commit2(rewritten) = &planner.new_commits[&new] else {
+            panic!("the trees are untouched, so the commit stays a commit2");
+        };
+        assert_eq!(rewritten.trees(), [kept, other, kept]);
+        assert_eq!(rewritten.parents(), [planner.commits[&second]]);
+        assert_eq!(rewritten.message(), "conflict");
+    }
+
+    #[test]
+    fn a_leftover_commit2_whose_parents_become_one_is_an_error_that_names_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let store = repository.objects();
+        let file = |name: &str, content: &str| {
+            TreeEntry::file(name, FileMode::File, Blob::new(content).id()).unwrap()
+        };
+        let with = store
+            .put_tree(&Tree::try_new(vec![file("a.txt", "one"), file("key", SECRET)]).unwrap())
+            .unwrap();
+        let without = store
+            .put_tree(&Tree::try_new(vec![file("a.txt", "one")]).unwrap())
+            .unwrap();
+        let change = crate::change::ChangeId::generate().unwrap();
+        let parent = |tree| Commit::try_new(tree, vec![], change, actor(), 5, "p").unwrap();
+        let one = store.put_commit(&parent(with)).unwrap();
+        let two = store.put_commit(&parent(without)).unwrap();
+        let other = other_tree(&repository);
+        let conflict = crate::object::Commit2::try_new(
+            vec![without, other, without],
+            vec![one, two],
+            crate::change::ChangeId::generate().unwrap(),
+            actor(),
+            6,
+            "conflict",
+        )
+        .unwrap();
+        let conflict = CommitId::new(store.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
+
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        match &error {
+            PurgeError::Leftover { id, source } => {
+                assert_eq!(*id, conflict.object_id());
+                assert!(matches!(
+                    **source,
+                    PurgeError::DuplicateParent { commit, parent }
+                        if commit == conflict && parent == two
+                ));
+            }
+            other => panic!("expected a leftover, got {other:?}"),
+        }
     }
 
     #[test]

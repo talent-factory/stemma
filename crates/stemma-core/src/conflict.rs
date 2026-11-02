@@ -1195,6 +1195,57 @@ mod tests {
     }
 
     #[test]
+    fn reparent_keeps_the_metadata_and_takes_its_form_from_the_new_sum() {
+        let (old_parent, new_parent) = (from_sum(&trees(&[8])).id(), from_sum(&trees(&[9])).id());
+        let change = sample_change();
+        let original = |numbers: &[u8]| {
+            AnyCommit::from_sum(
+                &trees(numbers),
+                vec![old_parent],
+                change,
+                human(),
+                1_234,
+                "the message",
+            )
+            .expect("valid commit")
+        };
+        // (original sum, new sum, new sum is a conflict)
+        let cases: [(&[u8], &[u8], bool); 4] = [
+            (&[1, 2, 3], &[4, 5, 6], true),
+            (&[1, 2, 3], &[4, 5, 5], false),
+            (&[1], &[4], false),
+            (&[1], &[4, 5, 6], true),
+        ];
+        for (before, after, conflicted) in cases {
+            let moved = original(before)
+                .reparent(&trees(after), vec![new_parent])
+                .expect("valid commit");
+            assert_eq!(moved.is_conflicted(), conflicted, "{before:?} -> {after:?}");
+            assert_eq!(moved.parents(), [new_parent], "{before:?} -> {after:?}");
+            assert_eq!(moved.change(), change, "{before:?} -> {after:?}");
+            assert_eq!(*moved.author(), human(), "{before:?} -> {after:?}");
+            assert_eq!(moved.timestamp(), 1_234, "{before:?} -> {after:?}");
+            assert_eq!(moved.message(), "the message", "{before:?} -> {after:?}");
+        }
+    }
+
+    #[test]
+    fn reparent_rejects_duplicate_parents_in_the_form_of_the_result() {
+        let parent = from_sum(&trees(&[8])).id();
+        let commit = from_sum(&trees(&[1]));
+        let moved = commit.reparent(&trees(&[1]), vec![parent, parent]);
+        assert!(matches!(
+            moved,
+            Err(FromSumError::Commit(CommitError::DuplicateParent(_)))
+        ));
+        let moved = commit.reparent(&trees(&[1, 2, 3]), vec![parent, parent]);
+        assert!(matches!(
+            moved,
+            Err(FromSumError::Commit2(Commit2Error::DuplicateParent(_)))
+        ));
+    }
+
+    #[test]
     fn a_removed_term_cancels_against_the_first_free_side_and_the_rest_keeps_its_order() {
         let (seed, mut rng) = (seed(), Rng::new(seed(), 0xC0F6));
         for case in 0..cases() {
