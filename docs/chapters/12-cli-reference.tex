@@ -21,6 +21,10 @@ er macht keinen Snapshot und berührt weder Branch noch HEAD noch das Log.
 Beim Setzen schreibt \type{tag} den Tag-Zeiger und einen Eintrag ins Log,
 bewegt aber weder HEAD noch einen Branch und ändert weder Arbeitsverzeichnis noch
 Working-Copy-Commit. Beim Auflisten ändert der Befehl nichts; die Zeile zeigt den Höchstfall.
+Auch \type{branch} schreibt einen Eintrag ins Log und bewegt nur Zeiger: Beim Anlegen einen Branch,
+beim Löschen einen Branch, beim Umbenennen zwei Branches und HEAD, wenn HEAD den Branch nennt.
+Arbeitsverzeichnis und Working-Copy-Commit bleiben, wie sie sind; auch hier zeigt die Zeile
+den Höchstfall.
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]
@@ -337,6 +341,13 @@ sichert den Eintrag aber nicht. \stopxcell
 \startxcell[width=0.41\textwidth] Der Tag ist gesetzt oder gelöscht,
 aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen; \type{stemma tag} zeigt, welche Tags es gibt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{branch} \stopxcell
+\startxcell[width=0.41\textwidth] Der Branch ist angelegt, umbenannt oder gelöscht,
+aber die Ausgabe liess sich nicht schreiben, ein Verzeichnis ist nicht gesichert,
+oder beim Umbenennen bewegte sich nur ein Teil der Zeiger. \stopxcell
+\startxcell Nicht wiederholen; \type{stemma branch} zeigt, welche Branches es gibt. \stopxcell
 \stopxrow
 \startxrow
 \startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
@@ -1323,6 +1334,107 @@ stemma tag v1 --actor "human daniel"
 stemma tag v0.9 b3:1111...1111 --actor "human daniel"
 stemma tag --delete v1 --actor "human daniel"
 stemma tag --json
+\stoptyping
+
+\section{branch}
+
+Legt einen Branch an, benennt einen um, löscht einen oder listet die Branches, wenn kein Argument
+folgt (ADR-008).
+
+\starttyping
+stemma branch [-C VERZEICHNIS] [--actor AKTEUR] NAME [START]
+stemma branch [-C VERZEICHNIS] [--actor AKTEUR] -m ALT NEU
+stemma branch [-C VERZEICHNIS] [--actor AKTEUR] -d NAME
+stemma branch [-C VERZEICHNIS]
+\stoptyping
+
+\startitemize
+\item {\bf NAME:} Der Name des neuen Branches, nach den Regeln eines Branch-Namens. Ohne Name und
+ohne Option listet der Befehl die Branches. Der neue Branch ist nicht ausgecheckt: HEAD,
+Arbeitsverzeichnis und Working-Copy-Commit bleiben, wie sie sind.
+\item {\bf START:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern, an dem der Branch
+beginnt. Ohne sie nimmt der Befehl den Commit, zu dem HEAD führt: die Spitze des Branches von HEAD,
+bei einem abgekoppelten HEAD dessen Commit. Hat der Branch noch keinen Commit, ist das ein Fehler.
+Ohne NAME ist ein START ein Aufruffehler (Exit-Code 2).
+\item {\bf \type{-m}, \type{--move} ALT NEU:} Benennt den Branch ALT in NEU um. Nennt HEAD den
+Branch ALT, nennt er danach NEU, im selben Eintrag. Den Namen NEU darf es noch nicht geben.
+\item {\bf \type{-d}, \type{--delete} NAME:} Löscht den Branch NAME, ohne zu prüfen, ob seine
+Commits von anderswo erreichbar sind, und ohne Option zum Erzwingen. Den Branch, den HEAD nennt,
+löscht der Befehl nie.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt: \type{human <id>} oder
+\type{agent <id> model=<model> session=<session> sponsor=<sponsor>}. Er ist nötig, wenn der Befehl
+einen Branch anlegt, umbenennt oder löscht; fehlt die Option, gilt \type{STEMMA_ACTOR}. Beim
+Auflisten braucht der Befehl keinen Akteur.
+\stopitemize
+
+Die Optionen \type{-m} und \type{-d} schliessen sich gegenseitig und mit NAME aus; ein NAME
+ohne gültige Form, ein START, der keine ID ist, und eine Option ohne ihre Namen sind
+Aufruffehler (Exit-Code 2). Der Befehl hat kein \type{--json}.
+
+Jede Änderung ist ein Aufruf mit genau einem Eintrag im Log und dem Operationsnamen
+\type{branch}. Der Kern fragt den Autorisierer nach dieser Operation und übergibt ihm den
+Branch-Namen als Ziel; beim Umbenennen fragt er zweimal, erst für ALT, dann für NEU, und beide
+Antworten müssen Ja sein. Bis zur Richtlinie der Phase 4 übergibt der Befehl \type{AllowAll}.
+Der Kern prüft alles unter der Sperre der Referenzen, schreibt dann den Eintrag und bewegt erst
+danach die Zeiger (ADR-011). Der Befehl macht keinen Snapshot.
+
+{\bf Anlegen.} Der Eintrag nennt den neuen Branch mit \type{-} als altem Wert. Einen Branch, den
+es gibt, lehnt der Befehl ab, auch wenn er auf denselben Commit zeigt (Exit-Code 1, kein Eintrag).
+
+{\bf Umbenennen.} Der Eintrag nennt NEU (alter Wert \type{-}), ALT (neuer Wert \type{-}) und,
+wenn HEAD mitgeht, HEAD von \type{branch:ALT} nach \type{branch:NEU}. Der Befehl bewegt die Zeiger
+in dieser Reihenfolge: erst entsteht NEU, dann folgt HEAD, zuletzt verschwindet ALT. Bricht der
+Befehl dazwischen ab, liegt der Commit unter mindestens einem der Namen; kein Commit geht
+verloren. Heissen ALT und NEU gleich oder gibt es NEU schon, lehnt der Befehl ab (Exit-Code 1,
+kein Eintrag). Dasselbe gilt für Namen, die einander im Weg stehen, etwa \type{a} und
+\type{a/b}: Die Datei von ALT steht dem Verzeichnis von NEU im Weg, bis sie gelöscht ist.
+
+{\bf Löschen.} Der Eintrag nennt NAME mit der Spitze als altem und \type{-} als neuem Wert. Die
+Spitze liest der Befehl zuerst und übergibt sie dem Kern als den Wert, den der Branch haben soll;
+so löscht er keinen Branch, der inzwischen weitergerückt ist. Der Kern prüft unter der Sperre,
+ob NAME der Branch von HEAD ist, und lehnt dann ab (Exit-Code 1, kein Eintrag). Ein abgekoppelter
+HEAD schützt keinen Branch. Das Löschen ist nicht endgültig: \type{stemma op restore} mit der
+Nummer des Eintrags bringt den Branch zurück (ADR-013), solange der Commit im Objektspeicher liegt,
+und das tut er bis zu einem Purge.
+
+{\bf Textform.} Beim Anlegen eine Zeile \type{Created branch NAME at COMMIT}. Beim Umbenennen
+\type{Renamed branch ALT to NEU, at COMMIT}, beim Löschen
+\type{Deleted branch NAME, which was at COMMIT}; beide Ausgaben nennen in einer zweiten Zeile den
+Befehl, der die Änderung zurücknimmt: \type{To undo it: stemma op restore N} beziehungsweise
+\type{To bring it back: stemma op restore N}, mit der Nummer des Eintrags. Das Löschen ändert
+weder die Arbeitskopie noch HEAD noch einen anderen Branch.
+
+{\bf Listenform.} Je Branch eine Zeile, nach Name sortiert: ein Stern für den Branch von HEAD
+und sonst ein Leerzeichen, der Name (auf die Breite des längsten aufgefüllt), die ersten zwölf
+Hexadezimalziffern der Commit-ID und die erste Zeile der Nachricht. Ein abgekoppelter HEAD steht
+als erste Zeile mit der Marke \type{(detached KURZE-ID)} anstelle des Namens. Ein Branch, den HEAD
+nennt und der noch keinen Commit hat, fehlt in der Liste.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem fehlenden \type{--actor}, einem Branch,
+den es nicht gibt (\type{there is no branch `NAME`}; auch ein Name, der nur ein Verzeichnis von
+Branches ist), einem Branch, der sich zwischen dem Lesen und der Sperre bewegt hat, einem
+Commit, der nicht im Objektspeicher liegt oder ein anderes Objekt ist, und bei einem Journal
+eines Purge. Hält ein anderer Befehl die Sperre, endet er mit Exit-Code 6. Beschädigte Referenzen
+enden mit Exit-Code 5. Alle diese Fälle schreiben keinen Eintrag, ausser einem Fehler des
+Dateisystems nach dem Eintrag: Dann steht im Log ein Eintrag für eine Änderung, die nicht oder
+nur zum Teil stattfand, \type{op log} markiert ihn mit \type{!}, und man liest die Branches mit
+\type{stemma branch}, bevor man wiederholt. Hat sich dabei schon ein Zeiger bewegt (beim
+Umbenennen), ist der Exit-Code 3, und der Befehl wird nicht wiederholt; \type{op restore} des
+Eintrags stellt den alten Zustand her. Ebenso endet der Befehl mit Exit-Code 3, wenn die
+Änderung gemacht ist, aber die Ausgabe sich nicht schreiben lässt oder nur das Verzeichnis nicht
+auf den Datenträger kam. Beim Auflisten ist eine Ausgabe, die sich nicht schreiben lässt,
+Exit-Code 1; schliesst der Leser die Pipe früh, endet der Befehl ohne Meldung mit Exit-Code 0.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma branch topic --actor "human daniel"
+stemma branch fix b3:4a0b66...3b65 --actor "human daniel"
+stemma branch -m topic feature/topic --actor "human daniel"
+stemma branch -d feature/topic --actor "human daniel"
+stemma branch
 \stoptyping
 
 \section{op log}
