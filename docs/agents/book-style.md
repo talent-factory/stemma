@@ -129,7 +129,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Konflikt | Merge-Konflikt (alone) | An open conflict, kept as data in the commit (ADR-005) |
 | Summe von Trees | | The list of trees of a conflict: add, remove, add, ... (ADR-005) |
 | Fixzeile | Anker (that is the anchor of the log) | A line of the base that every comparison of a line merge matches |
-| Zwischenstück | Abschnitt (of the line merge) | The text between two fixed lines, one piece per term; a sum of its own |
+| Zwischenstück | Abschnitt (of the line merge) | The text between two fixed lines, one part per term; the parts are a sum of their own |
 | Zeiger | | A branch, HEAD, a tag, or the working-copy reference |
 | Zeigerbewegung | Zug | Setting a pointer from an old to a new value |
 | Operation Log, Eintrag | Operationslog, Logeintrag | ADR-011 |

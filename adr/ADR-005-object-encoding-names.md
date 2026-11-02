@@ -168,9 +168,8 @@ them.
   of a `commit2`, which is stored simplified. The rule that two sides which made the same change
   resolve at once is not part of the algebra: it loses information when the result is merged again,
   and the merge decides whether to apply it (see "Merge of trees"). The text with markers that
-  shows a conflicted file is
-  one function of the sum (`marker_text`), a pure function of the list of the contents of the terms,
-  in order. The working copy and `diff` are to show it, and the snapshot is to compare the bytes of
+  shows a conflicted file is one function of the sum (`marker_text`), a pure function of the list
+  of the contents of the terms, in order. The working copy and `diff` are to show it, and the snapshot is to compare the bytes of
   a file with it and not to parse markers. Nothing calls it yet, and no command writes a `commit2`
   yet.
 - **Merge of trees** *(confirmed)*. The module `merge` of the core merges two commits into a sum of
@@ -179,9 +178,9 @@ them.
   are these.
   - *The sum.* One merge base gives `ours + (theirs - base)`. Several bases are neither merged into
     a virtual commit nor merged recursively. They are one flat sum, as in Jujutsu: the first base,
-    plus the change from the common ancestors of all earlier bases and each further base to it.
-    The result may have more than three sides, and it follows from the bases, which `merge_bases`
-    returns sorted by ID, which fixes the sum. With three or more bases the choice of the first is
+    plus the change to each further base from its best common ancestors with any one of the
+    earlier bases. The result may have more than three sides. `merge_bases` returns the bases
+    sorted by ID, and that order fixes the sum. With three or more bases the choice of the first is
     arbitrary, but always the same. Histories without a common ancestor have the empty tree as
     their base.
   - *Per name.* Cancelling terms come first (the changed value wins over the unchanged one). If all
@@ -197,9 +196,9 @@ them.
   - *No rename detection.* A rename is a delete and an add, so an edit of the old name on the other
     side is a conflict of a deleted against a changed file. A later slice can add detection without
     a change of the format.
-  - *Lines.* The lines of a file are compared with the first base that did not cancel by `diff_byte_lines`, the
-    function of `diff`, so that merge and `diff` use the same edit script. The lines of the base that all
-    comparisons match divide the file, and each piece between two of them is decided as a sum of
+  - *Lines.* The lines of a file are compared with the first base that did not cancel by
+    `diff_byte_lines`, the function of `diff`, so that merge and `diff` use the same edit script.
+    The lines of the base that all comparisons match divide the file, and each piece between two of them is decided as a sum of
     its own. Changes that touch each other without overlapping are one piece and a conflict, unless
     both sides made the same change. A binary file and a file that is not UTF-8 are a conflict as a
     whole. A file is merged only if every piece is decided; otherwise the conflict of the path holds

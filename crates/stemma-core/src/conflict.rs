@@ -102,9 +102,12 @@ impl<T: Clone + Eq> Merge<T> {
         self.terms
     }
 
-    /// Builds a sum from its added and its removed terms. The caller guarantees that there is one
-    /// added term more than there are removed terms; the terms are interleaved as side, base,
-    /// side, base, ..., side.
+    /// Builds a sum from its added and its removed terms, interleaved as side, base, side, base,
+    /// ..., side.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless there is exactly one added term more than there are removed terms.
     pub(crate) fn from_parts(adds: Vec<T>, removes: Vec<T>) -> Self {
         assert_eq!(adds.len(), removes.len() + 1, "a sum has one side more");
         let mut terms = Vec::with_capacity(adds.len() + removes.len());

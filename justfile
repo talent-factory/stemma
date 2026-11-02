@@ -129,7 +129,7 @@ ci: format-check lint doc-check doc-lines test
 # entry, journal, or merge_lines.
 # Needs nightly and cargo-fuzz (rustup toolchain install nightly; cargo install cargo-fuzz
 # --locked), so it is not part of `ci`. New inputs go to fuzz/corpus/TARGET, a finding to
-# fuzz/artifacts/TARGET; fuzz/seeds/TARGET holds the valid encodings that the fuzzer starts from.
+# fuzz/artifacts/TARGET; fuzz/seeds/TARGET holds the inputs that the fuzzer starts from.
 # An input that takes longer than ten seconds is a finding, so that a hang cannot use up the run.
 [group('Quality')]
 fuzz target seconds="300":

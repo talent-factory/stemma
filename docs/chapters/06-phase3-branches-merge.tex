@@ -61,8 +61,8 @@ Mit einer Merge-Basis $B$ ist die Summe $O + (T - B)$, wenn $O$ der Tree der eig
 und $T$ der der anderen ist. Nach einem Criss-Cross-Merge gibt es mehrere Merge-Basen.
 Stemma bildet daraus keinen virtuellen Commit und merged nicht rekursiv, wie git es tut.
 Die Basen gehen als flache Summe in den Merge ein, wie bei Jujutsu \cite[jujutsu].
-Die Summe der Basen ist die erste Basis, plus die Änderung von den gemeinsamen Vorfahren
-aller früheren Basen und einer weiteren Basis zu dieser weiteren Basis; diese Vorfahren
+Die Summe der Basen ist die erste Basis, plus die Änderung zu jeder weiteren Basis von deren
+besten gemeinsamen Vorfahren mit je einer der früheren Basen; diese Vorfahren
 bestimmt dieselbe Regel noch einmal.
 Haben $L$ und $R$ den gemeinsamen Vorfahren $W$, so ist die Summe der Basen $L + (R - W)$
 und die des Merges $O + T - L - R + W$.

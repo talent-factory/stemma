@@ -497,7 +497,6 @@ mod tests {
             found: Kind::Blob,
         };
         let commit = crate::object::CommitId::new(id());
-        let tree = crate::object::TreeId::new(id());
         assert_eq!(MergeError::Store(io()).kind(), FailureKind::Other);
         assert_eq!(MergeError::Store(mismatch()).kind(), FailureKind::Damaged);
         assert_eq!(
@@ -525,7 +524,6 @@ mod tests {
             .kind(),
             FailureKind::Damaged
         );
-        let _ = tree;
         assert_eq!(
             MergeError::Entries(TreeError::DuplicateName("n".into())).kind(),
             FailureKind::Other

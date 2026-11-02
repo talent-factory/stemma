@@ -86,7 +86,8 @@ pub fn journal(input: &[u8]) {
 pub const MERGE_SEPARATOR: u8 = 0x1e;
 
 /// The merge of the lines of a file (`merge::merge_lines`). The input is the base, ours, and
-/// theirs, separated by [`MERGE_SEPARATOR`]; a missing part is empty.
+/// theirs, separated by [`MERGE_SEPARATOR`] (further separators stay in theirs); a missing part is
+/// empty.
 ///
 /// The merge has no encoding to round-trip, so the check holds the rules of the merge for one
 /// input. A binary text or a text that is not UTF-8 is never merged. For text, the sides can be

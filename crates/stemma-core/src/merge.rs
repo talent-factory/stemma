@@ -11,9 +11,9 @@
 //! One merge base `B` of the commits `O` (ours) and `T` (theirs) gives `O + (T - B)`. Several
 //! best common ancestors, as after a criss-cross merge, are not merged into a virtual commit, and
 //! no recursive merge runs: they are combined as a flat sum (Jujutsu does the same). The sum of a
-//! set of bases is the first base, plus the change from the common ancestors of all earlier bases
-//! and each further base to that further base, found the same way. Terms that two parts have in common
-//! cancel. The sum may therefore have more than three sides. The bases come sorted by ID from
+//! set of bases is the first base, plus the change to each further base from its best common
+//! ancestors with any one of the earlier bases; those ancestors are summed by the same rule.
+//! Terms that two summands have in common cancel. The sum may therefore have more than three sides. The bases come sorted by ID from
 //! [`merge_bases`], which fixes the sum: it depends on the histories alone. With three or more
 //! bases the choice of the first one is arbitrary, but it is the same every time. A merge of
 //! histories that share nothing has the empty tree as its base.
@@ -69,6 +69,10 @@
 //! every further base, and again in every level of the recursion over their common ancestors, so
 //! both the depth and the number of calls grow with the history in the worst case; criss-cross
 //! lattices that are deeper than a few levels are not expected in practice.
+//!
+//! A tree or blob that is not read is not verified: an object that cancels, or that only one side
+//! changed, enters the result by its ID, so a missing or damaged one is reported only by the
+//! reader of the result.
 //!
 //! Only commits without a conflict are meant as operands. A `CommitId` does not resolve to a
 //! `commit2` yet (ADR-005, STEMMA-179), so one that names it is reported as an error of the store.
@@ -212,8 +216,8 @@ pub fn tree_sum(
 }
 
 /// The sum that stands for the common ancestors: the empty tree if there are none, the tree of
-/// the only one, and for several the first plus the change from the common ancestors of all
-/// earlier ones and each further one to that further one.
+/// the only one, and for several the first plus the change to each further one from its best
+/// common ancestors with any one of the earlier ones.
 fn base_sum(store: &dyn ObjectStore, bases: &[CommitId]) -> Result<Merge<TreeId>, MergeError> {
     let Some((&first, rest)) = bases.split_first() else {
         return Ok(Merge::resolved(store.put_tree(&Tree::try_new(vec![])?)?));
@@ -501,8 +505,8 @@ fn decided<T: Clone + Eq>(sum: &Merge<T>) -> Option<T> {
 /// where the terms do not cancel and the sides do not agree.
 ///
 /// A sum of one term is that text, if it is text. Otherwise the first removed term, the base, is
-/// the reference; the caller passes the sum simplified, so that this is the first base that did
-/// not cancel. Each other term is compared with it by the same function as `diff`
+/// the reference of whatever sum is passed. The merge of a file simplifies the sum first, so that the
+/// reference is the first base that did not cancel. Each other term is compared with it by the same function as `diff`
 /// ([`diff_byte_lines`]). The lines of the base that every comparison matches are the fixed lines,
 /// and the text between two of them is a piece with one part per term. The parts of a piece are a
 /// sum of their own and are decided like any sum: cancelling, or all sides equal. Changes of two
@@ -1486,6 +1490,62 @@ mod tests {
             let result = std::panic::catch_unwind(|| crate::fuzz::merge_lines(&input));
             assert!(result.is_ok(), "case {case}, seed {seed}: {input:?}");
         }
+    }
+
+    #[test]
+    fn the_checks_of_the_fuzz_target_reach_the_text_branch_for_generated_texts() {
+        let mut rng = Rng::new(seed(), 0x3E29);
+        // Text only, so that the equal-sides, one-side-changed, and known-lines checks run.
+        let alphabet: &[u8] = b"ab\n\n\n  \x1e\x1e";
+        for _ in 0..cases() {
+            let length = rng.below(40);
+            let input: Vec<u8> = (0..length).map(|_| *rng.pick(alphabet)).collect();
+            crate::fuzz::merge_lines(&input);
+        }
+    }
+
+    #[test]
+    fn a_line_deleted_on_one_side_and_changed_on_the_other_is_a_conflict() {
+        let base = text(&["a", "b", "c", "d", "e"]);
+        let deleted = text(&["a", "c", "d", "e"]);
+        let changed = text(&["a", "B", "c", "d", "e"]);
+        assert_eq!(lines_of(&base, &deleted, &changed), None);
+        assert_eq!(lines_of(&base, &changed, &deleted), None);
+    }
+
+    #[test]
+    fn the_same_deletion_on_both_sides_is_made_once() {
+        let base = text(&["a", "b", "c", "d", "e", "f", "g"]);
+        let ours = text(&["a", "c", "d", "e", "f", "G"]);
+        let theirs = text(&["a", "c", "d", "E", "f", "g"]);
+        let merged = Some(text(&["a", "c", "d", "E", "f", "G"]));
+        assert_eq!(lines_of(&base, &ours, &theirs), merged);
+        assert_eq!(lines_of(&base, &theirs, &ours), merged);
+    }
+
+    #[test]
+    fn repeated_lines_are_merged_symmetrically() {
+        let base = text(&["x", "x", "x"]);
+        let ours = text(&["y", "x", "x", "x"]);
+        let theirs = text(&["x", "x", "x", "z"]);
+        let merged = Some(text(&["y", "x", "x", "x", "z"]));
+        assert_eq!(lines_of(&base, &ours, &theirs), merged);
+        assert_eq!(lines_of(&base, &theirs, &ours), merged);
+    }
+
+    #[test]
+    fn a_directory_replaced_by_a_file_is_a_conflict_if_the_other_side_edits_inside() {
+        let trees = merge3(&[("d/a", "1\n")], &[("d", "file\n")], &[("d/a", "2\n")]);
+        assert_eq!(trees.len(), 3, "{trees:?}");
+        assert_eq!(trees[0], expected(&[("d", "file\n")]));
+        assert_eq!(trees[1], expected(&[("d/a", "1\n")]));
+        assert_eq!(trees[2], expected(&[("d/a", "2\n")]));
+    }
+
+    #[test]
+    fn a_directory_replaced_by_a_file_on_one_side_alone_is_the_file() {
+        let merged = clean(&[("d/a", "1\n")], &[("d", "file\n")], &[("d/a", "1\n")]);
+        assert_eq!(merged, expected(&[("d", "file\n")]));
     }
 
     /// Merges `ours` and `theirs` over the given bases, in the given order.
