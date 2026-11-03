@@ -1767,9 +1767,11 @@ fn plan_switch_text(target: &SwitchTarget, plan: &SwitchPlan) -> String {
     for path in plan.checkout().removals() {
         text.push_str(&format!("    remove {}\n", escape_path(path)));
     }
-    text.push_str(
-        "A real run saves unsaved changes first; the plan is made from the saved working copy\n",
-    );
+    if !plan.repeats() {
+        text.push_str(
+            "A real run saves unsaved changes first; the plan is made from the saved working copy\n",
+        );
+    }
     text
 }
 

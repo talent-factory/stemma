@@ -249,7 +249,10 @@ impl Repository {
             Ok(resolved) => resolved,
             Err(already) => return Ok(Switched::AlreadyOn(already)),
         };
-        self.preflight(&resolved, changes, actor)?;
+        // A repeat of a stopped switch makes no new working-copy commit, so its carry is not
+        // planned (a `--discard` that got past a refusal must not be asked for again).
+        let repeats = self.stopped_switch(&resolved)?.is_some();
+        self.preflight(&resolved, changes, actor, repeats)?;
         let lock = self
             .refs_store()
             .lock_writer(&allowed)
@@ -544,6 +547,7 @@ impl Repository {
         resolved: &Resolved,
         changes: Changes,
         actor: &Actor,
+        repeats: bool,
     ) -> Result<(), SwitchError> {
         let branches = resolved.branches();
         let targets = RestoreTargets {
@@ -554,6 +558,9 @@ impl Repository {
         self.refs_store()
             .plan_restore(&targets, self.objects())
             .map_err(SwitchError::Refs)?;
+        if repeats {
+            return Ok(());
+        }
         self.plan_for(resolved, changes, actor).map(drop)
     }
 
@@ -1736,6 +1743,48 @@ mod tests {
         assert_eq!(handled, Handled::Carried { conflicts: vec![] });
         assert_eq!(working_copy(&repository).change(), before.change());
         assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nTHREE\n");
+    }
+
+    #[test]
+    fn a_stopped_discard_is_finished_as_a_discard_without_asking_for_the_carry_again() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        let feature = repository.refs().branch(&name("feature")).unwrap().unwrap();
+        write(&dir, "a.txt", "scratch\n");
+        let before = working_copy(&repository);
+        let target = SwitchTarget::Create {
+            name: name("old"),
+            start: Some(Revision::Commit(feature.object_id())),
+        };
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        let denied = Rc::new(RefCell::new(None));
+        let arm = Rc::clone(&denied);
+        super::super::snapshot::pause::at_next(
+            super::super::snapshot::pause::Stage::Moves,
+            move || {
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&heads));
+            },
+        );
+        let error = switch_with(&repository, &target, Changes::Discard).unwrap_err();
+        drop(denied);
+        assert!(
+            matches!(error, SwitchError::AfterSnapshot { .. }),
+            "{error}"
+        );
+
+        let result = switch(&repository, &target);
+
+        let Ok(Switched::Done {
+            snapshot, handled, ..
+        }) = result
+        else {
+            panic!("expected a switch, got {result:?}");
+        };
+        assert!(snapshot.is_none(), "a repeat takes no snapshot");
+        assert_eq!(handled, Handled::Discarded);
+        assert_ne!(working_copy(&repository).change(), before.change());
+        assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nthree\n");
     }
 
     #[test]

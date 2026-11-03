@@ -858,8 +858,9 @@ mitzunehmen: Das Verzeichnis kommt auf den Stand des Ziels, und der neue Working
 leer. Die Änderungen bleiben im Log, im Snapshot des Befehls oder im alten Working-Copy-Commit,
 den der Eintrag nennt, und gehen nicht verloren; \type{op restore} holt sie zurück.
 Ohne Änderungen hat die Option keine Wirkung.
-\item {\bf \type{--dry-run}:} Zeigt, was der Wechsel täte, und schreibt nichts, auch keinen
-Snapshot. Der Plan geht vom gesicherten Working-Copy-Commit aus.
+\item {\bf \type{--dry-run}:} Zeigt, was der Wechsel täte, und schreibt keinen Eintrag und keinen
+Snapshot; nur Objekte, die kein Commit nennt, kann er speichern.
+Der Plan geht vom gesicherten Working-Copy-Commit aus.
 Zusammen mit \type{--discard} zeigt er den Plan des Zurücklassens.
 \stopitemize
 
@@ -910,9 +911,9 @@ Dann kommen die Zeilen \type{head}, bei \type{-c} die Zeile \type{branch}
 und \type{base}, die Zeile
 \type{carry the changes of the working copy to the new base}
 mit einer Zeile \type{conflict PFAD} je Pfad im Konflikt (oder \type{discard the changes of the
-working copy}), je Datei \type{write PFAD} und \type{remove PFAD}, und zuletzt der Hinweis, dass
-ein echter Wechsel zuerst sichert. Zeigt HEAD schon auf den Branch, schreibt auch der Plan
-\type{Already on NAME}.
+working copy}), je Datei \type{write PFAD} und \type{remove PFAD}, und zuletzt, ausser bei einem
+abgebrochenen Wechsel, der Hinweis, dass ein echter Wechsel zuerst sichert.
+Zeigt HEAD schon auf den Branch, schreibt auch der Plan \type{Already on NAME}.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem unbekannten Branch (die Meldung nennt
 \type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Commit, den der
