@@ -128,7 +128,11 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
 - [ ] A pointer that has moved on since the entry: the restore puts the old value back even if
       other entries moved it afterwards. Whether the command should warn, and show the entries
       in between, is open.
-- [ ] A restore of an entry whose old value is a commit with a conflict (phase 3).
+- [x] A restore of an entry whose old value is a commit with a conflict (phase 3). The checkout
+      layer writes the tree that shows the conflict: the text with markers at each conflicted
+      path, made by the function that `diff` uses (ADR-010). Without a conflict nothing changes.
+      The snapshot that follows sees the unchanged text and keeps the conflict, so an undo after
+      a merge with a conflict works (STEMMA-158, built in STEMMA-169).
 - [x] The risk level of a restore in ADR-004: level 2 (STEMMA-161).
 - [ ] A dry run does not take the snapshot, so a change that is not saved yet is not in its plan.
       The real run can find a conflict that the dry run did not, and replaces a file with such a

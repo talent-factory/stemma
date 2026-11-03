@@ -691,7 +691,7 @@ fn json_of_a_clean_working_copy() {
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(
         result.stdout,
-        "{\"schema\":1,\"clean\":true,\"changes\":[],\"untracked\":[],\"leftovers\":[]}\n"
+        "{\"schema\":1,\"clean\":true,\"conflicts\":[],\"changes\":[],\"untracked\":[],\"leftovers\":[]}\n"
     );
 }
 
@@ -711,7 +711,7 @@ fn json_lists_changes_and_untracked_files_with_plain_paths() {
     assert_eq!(result.code, 0, "{}", result.stderr);
     assert_eq!(
         result.stdout,
-        "{\"schema\":1,\"clean\":false,\"changes\":[{\"kind\":\"M\",\"path\":\"a.txt\"}],\
+        "{\"schema\":1,\"clean\":false,\"conflicts\":[],\"changes\":[{\"kind\":\"M\",\"path\":\"a.txt\"}],\
          \"untracked\":[\"new \\\"name\\\".txt\"],\"leftovers\":[]}\n"
     );
 }

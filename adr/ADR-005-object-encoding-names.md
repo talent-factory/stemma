@@ -145,7 +145,7 @@ them.
   line after the first `parent` line, a removed tree (a base) that equals an added tree (a side),
   which would cancel, and everything that `Commit::parse` rejects. The same tree may stand more than
   once, as a side or as a base, since the sides of a conflict may agree; only a base that equals a
-  side is rejected. No command writes a `commit2` yet, so no stored object is affected by this rule
+  side is rejected. No command creates a conflict yet, so no stored object is affected by this rule
   and the version of the format stays. The kind name is hashed with the body, so the bytes of a
   `commit2` are another object under the kind `commit`. `Commit::parse` still rejects more than one
   `tree` line. The type is `Commit2`, separate from `Commit`. What a conflict means, and how it is
@@ -155,8 +155,9 @@ them.
   `get_any_commit`, which returns `AnyCommit`), so that a `commit2` is a parent that passes
   `verify`, a step of the history, and the target of a branch or of the working copy. The reader
   `get_commit` stays strict and returns a `Commit` only, since a caller that needs one tree has none
-  in a `commit2`: `status`, `diff`, `restore`, and `commit` report such a commit as a conflict
-  (`Conflicted`) and not as a kind mismatch, until phase 3 gives them a meaning for it (STEMMA-19).
+  in a `commit2`: `switch` reports such a commit as a conflict (`Conflicted`) and not as a kind
+  mismatch (STEMMA-19); `snapshot`, `status`, `diff`, `restore`, and `commit` read it through the
+  tree that shows the conflict (ADR-010).
   The purge (ADR-014) follows the list of trees of a `commit2` and writes the new version of a
   rewritten one in the form that its sum has. The kind is part of the ID, so the same bytes under
   the kind `commit` and under the kind `commit2` are two objects (see above). The alternative, an
@@ -177,9 +178,8 @@ them.
   resolve at once is not part of the algebra: it loses information when the result is merged again,
   and the merge decides whether to apply it (see "Merge of trees"). The text with markers that
   shows a conflicted file is one function of the sum (`marker_text`), a pure function of the list
-  of the contents of the terms, in order. The working copy and `diff` are to show it, and the snapshot is to compare the bytes of
-  a file with it and not to parse markers. Nothing calls it yet, and no command writes a `commit2`
-  yet.
+  of the contents of the terms, in order. The working copy, `status`, and `diff` show it, and the snapshot compares the bytes of a
+  file with it and does not parse markers (ADR-010). No command creates a `commit2` yet.
 - **Merge of trees** *(confirmed)*. The module `merge` of the core merges two commits into a sum of
   trees (STEMMA-170), at level 2 of ADR-004. It writes blobs and trees and no commit, and reads
   only commits without a conflict until a `CommitId` resolves to either kind (STEMMA-179). The rules
