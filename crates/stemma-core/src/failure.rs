@@ -391,17 +391,16 @@ impl Classify for SwitchError {
             Self::Store(error) => error.kind(),
             Self::Snapshot(error) | Self::Read(error) => error.kind(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.kind(),
+            Self::Next(error) => error.kind(),
             Self::MoveFailed { source, .. }
             | Self::PartlyMoved { source, .. }
             | Self::NotDurable { source, .. }
             | Self::SnapshotNotDurable { source, .. } => source.kind(),
             Self::AfterSnapshot { source, .. } => source.kind(),
-            Self::ChangeId(_)
-            | Self::NoSuchBranch(_)
+            Self::NoSuchBranch(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
-            | Self::NoStart(_)
-            | Self::NotEmpty { .. } => FailureKind::Other,
+            | Self::NoStart(_) => FailureKind::Other,
         }
     }
 }
@@ -410,8 +409,8 @@ impl Classify for RewriteError {
     fn kind(&self) -> FailureKind {
         match self {
             Self::Update(error) => error.kind(),
-            Self::Refs(error) => error.kind(),
             Self::Log(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
             Self::Store(error) => error.kind(),
             Self::Snapshot(error) | Self::Read(error) => error.kind(),
             Self::Merge(error) => error.kind(),

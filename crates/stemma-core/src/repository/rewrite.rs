@@ -125,11 +125,12 @@ impl Repository {
     ///
     /// After the snapshot, [`RewriteError::Read`], [`RewriteError::Merge`],
     /// [`RewriteError::Invalid`], [`RewriteError::Store`], [`RewriteError::ChangeId`],
-    /// [`RewriteError::Parents`], [`RewriteError::SameChange`], and [`RewriteError::Checkout`] stand for the preparation of the
-    /// new commit and the plan of the files. They wrote nothing but objects and, if the snapshot
-    /// wrote an entry, that entry; the error is then wrapped in [`RewriteError::AfterSnapshot`].
-    /// Then [`RewriteError::CheckoutFailed`], [`RewriteError::MoveFailed`], and
-    /// [`RewriteError::NotDurable`] say how far the rewrite came.
+    /// [`RewriteError::Parents`], [`RewriteError::SameChange`], and [`RewriteError::Checkout`]
+    /// stand for the preparation of the new commit and the plan of the files. They wrote nothing
+    /// but objects and, if the snapshot wrote an entry, that entry; the error is then wrapped in
+    /// [`RewriteError::AfterSnapshot`]. Then [`RewriteError::CheckoutFailed`],
+    /// [`RewriteError::MoveFailed`], and [`RewriteError::NotDurable`] say how far the rewrite
+    /// came.
     pub fn rewrite_working_copy(
         &self,
         onto: CommitId,
@@ -281,6 +282,8 @@ impl Repository {
     /// The tree is `onto + (working - parent)` as a sum, merged by [`merge_trees`]. A working-copy
     /// commit without a parent has the empty tree as its base. One that holds no change (its
     /// sum equals that of its base) is replaced by an empty commit with a change ID of its own.
+    /// `switch` and `merge` call this for a working-copy commit that holds changes, and
+    /// [`start_empty`](Self::start_empty) for one that does not.
     pub(super) fn carry(
         &self,
         working: &AnyCommit,
@@ -289,14 +292,8 @@ impl Repository {
     ) -> Result<Carried, RewriteError> {
         let objects = self.objects();
         let base = match working.parents() {
-            [] => Merge::resolved(
-                objects
-                    .put_tree(&Tree::try_new(vec![]).map_err(|e| RewriteError::Merge(e.into()))?)
-                    .map_err(|error| RewriteError::Store(Box::new(error)))?,
-            ),
-            [parent] => read_any_commit(objects, *parent)
-                .map_err(RewriteError::Read)?
-                .tree_sum(),
+            [] => self.base_of(None)?,
+            [parent] => self.base_of(Some(*parent))?,
             _ => {
                 return Err(RewriteError::Parents {
                     working: working.id(),
@@ -310,14 +307,7 @@ impl Repository {
         let new_base = target.tree_sum();
         let own = working.tree_sum();
         let commit = if own.is_equivalent(&base) {
-            AnyCommit::from_sum(
-                &new_base,
-                vec![onto],
-                ChangeId::generate().map_err(RewriteError::ChangeId)?,
-                actor.clone(),
-                now(),
-                "",
-            )
+            Self::empty_on(&new_base, onto, actor)?
         } else {
             // `onto + working - base`: the removed terms of the base are added, its added terms
             // removed.
@@ -329,12 +319,69 @@ impl Repository {
             removes.extend(base.adds().copied());
             let merged = merge_trees(objects, &Merge::from_parts(adds, removes))
                 .map_err(RewriteError::Merge)?;
-            working.reparent(&merged, vec![onto])
+            working
+                .reparent(&merged, vec![onto])
+                .map_err(RewriteError::Invalid)?
+        };
+        self.store_carried(&commit)
+    }
+
+    /// Makes an empty working-copy commit on `onto` with a change ID of its own, and stores it:
+    /// the tree of `onto`, the only parent `onto`, and an empty message. This is what `switch`
+    /// starts on the tip of its target, and what a rewrite makes of a working-copy commit that
+    /// holds no change. Writes objects and nothing else.
+    pub(super) fn start_empty(
+        &self,
+        onto: CommitId,
+        actor: &Actor,
+    ) -> Result<Carried, RewriteError> {
+        let target = read_any_commit(self.objects(), onto).map_err(RewriteError::Read)?;
+        let commit = Self::empty_on(&target.tree_sum(), onto, actor)?;
+        self.store_carried(&commit)
+    }
+
+    /// Whether the working-copy commit holds a change: its sum differs from that of its first
+    /// parent, or from the empty tree if it has none (the rule of `status`).
+    pub(super) fn holds_changes(&self, working: &AnyCommit) -> Result<bool, RewriteError> {
+        let base = self.base_of(working.parents().first().copied())?;
+        Ok(!working.tree_sum().is_equivalent(&base))
+    }
+
+    /// The sum of trees that a parent stands for, or the empty tree if there is none.
+    fn base_of(&self, parent: Option<CommitId>) -> Result<Merge<TreeId>, RewriteError> {
+        match parent {
+            Some(parent) => Ok(read_any_commit(self.objects(), parent)
+                .map_err(RewriteError::Read)?
+                .tree_sum()),
+            None => Ok(Merge::resolved(
+                self.objects()
+                    .put_tree(&Tree::try_new(vec![]).map_err(|e| RewriteError::Merge(e.into()))?)
+                    .map_err(|error| RewriteError::Store(Box::new(error)))?,
+            )),
         }
-        .map_err(RewriteError::Invalid)?;
-        let id = match &commit {
-            AnyCommit::Commit(commit) => objects.put_commit(commit),
-            AnyCommit::Commit2(commit) => objects
+    }
+
+    fn empty_on(
+        new_base: &Merge<TreeId>,
+        onto: CommitId,
+        actor: &Actor,
+    ) -> Result<AnyCommit, RewriteError> {
+        AnyCommit::from_sum(
+            new_base,
+            vec![onto],
+            ChangeId::generate().map_err(RewriteError::ChangeId)?,
+            actor.clone(),
+            now(),
+            "",
+        )
+        .map_err(RewriteError::Invalid)
+    }
+
+    fn store_carried(&self, commit: &AnyCommit) -> Result<Carried, RewriteError> {
+        let id = match commit {
+            AnyCommit::Commit(commit) => self.objects().put_commit(commit),
+            AnyCommit::Commit2(commit) => self
+                .objects()
                 .put_raw(Kind::Commit2, &commit.encode())
                 .map(CommitId::new),
         }
@@ -698,7 +745,7 @@ mod tests {
     use crate::fault;
     use crate::object::TreeEntry;
     use crate::refs::BranchName;
-    use crate::repository::{InitOptions, SwitchTarget};
+    use crate::repository::{Changes, InitOptions, SwitchTarget};
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
 
@@ -745,7 +792,7 @@ mod tests {
 
     fn switch(repository: &Repository, target: &SwitchTarget) {
         repository
-            .switch(target, &actor(), &AllowAll)
+            .switch(target, Changes::Carry, &actor(), &AllowAll)
             .map(drop)
             .unwrap();
     }

@@ -59,7 +59,9 @@ pub use restore::{RestoreError, RestorePlan, Restored};
 pub use rewrite::{RewriteError, Rewritten};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
-pub use switch::{Revision, SwitchError, SwitchTarget, Switched};
+pub use switch::{
+    Changes, Handled, Planned, Revision, SwitchError, SwitchPlan, SwitchTarget, Switched,
+};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 pub use worktree::{AddedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
 

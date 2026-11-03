@@ -824,7 +824,12 @@ mod tests {
 
     fn switch(repository: &Repository, target: &SwitchTarget) {
         repository
-            .switch(target, &actor(), &AllowAll)
+            .switch(
+                target,
+                crate::repository::Changes::Carry,
+                &actor(),
+                &AllowAll,
+            )
             .map(drop)
             .unwrap();
     }
@@ -1042,6 +1047,7 @@ mod tests {
                     name: name("a-old"),
                     start: Some(crate::repository::Revision::Commit(first_a.object_id())),
                 },
+                crate::repository::Changes::Carry,
                 &actor(),
                 &AllowAll,
             )

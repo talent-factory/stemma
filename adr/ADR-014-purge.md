@@ -116,7 +116,9 @@ A purge holds the repository lock from the plan to the end and keeps a journal. 
 file `refs.lock`, which is not re-entrant, so the purge needs an internal path that writes the
 `purge` entry and moves the pointers while it holds the lock (`Lock` is private to the references
 today). Every other command that writes takes the same lock before its first object and keeps it
-to its last move (STEMMA-49, see "Writers refuse"), so a purge and a writer cannot overlap. The
+to its last move (STEMMA-49, see "Writers refuse"), so a purge and a writer cannot overlap.
+(The one exception is `switch`: its checks and `--dry-run` may store objects that no commit names
+before the lock, see ADR-010. They are never referenced, and a purge removes them.) The
 journal keeps writers out while a purge that stopped has not been resumed or aborted, when no
 lock may be held.
 

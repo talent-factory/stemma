@@ -77,30 +77,155 @@ fn a_switch_to_the_current_branch_is_code_0_without_an_entry() {
     assert_eq!(newest(dir.path()), before);
 }
 
-#[test]
-fn a_working_copy_with_changes_is_refused_with_code_1_after_it_was_saved() {
-    let dir = committed();
+/// `main` holds `a.txt` as "one\ntwo\nthree\n"; `feature` changes its first line to "ONE". The
+/// repository is on `main`.
+fn two_branches() -> Dir {
+    let dir = Dir::new();
+    ok(dir.path(), &["init", "--actor", ACTOR]);
+    write(dir.path(), "a.txt", "one\ntwo\nthree\n");
+    ok(dir.path(), &["track", "a.txt", "--actor", ACTOR]);
+    ok(dir.path(), &["commit", "-m", "first", "--actor", ACTOR]);
     ok(dir.path(), &["switch", "-c", "feature", "--actor", ACTOR]);
-    write(dir.path(), "a.txt", "scratch");
+    write(dir.path(), "a.txt", "ONE\ntwo\nthree\n");
+    ok(dir.path(), &["commit", "-m", "edit", "--actor", ACTOR]);
+    ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    dir
+}
+
+#[test]
+fn the_changes_of_the_working_copy_are_carried_and_the_output_says_so() {
+    let dir = two_branches();
+    write(dir.path(), "a.txt", "one\ntwo\nTHREE\n");
     let before = newest(dir.path());
 
-    let result = run(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    let result = ok(dir.path(), &["switch", "feature", "--actor", ACTOR]);
 
-    assert_eq!(result.code, 1, "{}", result.stdout);
-    assert_eq!(result.stdout, "");
+    let entry = newest(dir.path());
+    assert_eq!(entry, before + 2, "the snapshot and the switch");
+    assert_eq!(
+        result.stdout,
+        format!(
+            "Saved the working copy first as entry {}\n\
+             Switched to branch feature as entry {entry}\n\
+             Carried the changes of the working copy to the new base\n\
+             To undo it: stemma op restore {entry}\n",
+            before + 1
+        )
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "ONE\ntwo\nTHREE\n");
+}
+
+#[test]
+fn a_conflict_of_the_carry_is_listed_and_is_no_failure() {
+    let dir = two_branches();
+    write(dir.path(), "a.txt", "uno\ntwo\nthree\n");
+
+    let result = ok(dir.path(), &["switch", "feature", "--actor", ACTOR]);
+
     assert!(
-        result.stderr.contains("commit them first"),
+        result.stdout.contains("Carried the changes"),
         "{}",
-        result.stderr
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("C conflict a.txt\n"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        read(dir.path(), "a.txt").starts_with("<<<<<<< conflict\n"),
+        "{}",
+        read(dir.path(), "a.txt")
+    );
+    let status = ok(dir.path(), &["status", "--actor", ACTOR]);
+    assert!(
+        status.stdout.contains("C a.txt"),
+        "status shows the conflict: {}",
+        status.stdout
+    );
+}
+
+#[test]
+fn discard_brings_the_directory_to_the_target_and_keeps_the_changes_in_the_log() {
+    let dir = two_branches();
+    write(dir.path(), "a.txt", "scratch\n");
+    let before = newest(dir.path());
+
+    let result = ok(
+        dir.path(),
+        &["switch", "feature", "--discard", "--actor", ACTOR],
+    );
+
+    let entry = newest(dir.path());
+    assert_eq!(entry, before + 2);
+    assert!(
+        result.stdout.contains(
+            "Left the changes behind; the log keeps them, and `op restore` brings them back\n"
+        ),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "ONE\ntwo\nthree\n");
+}
+
+#[test]
+fn a_dry_run_writes_nothing_and_names_the_plan() {
+    let dir = two_branches();
+    write(dir.path(), "a.txt", "uno\ntwo\nthree\n");
+    ok(dir.path(), &["status", "--actor", ACTOR]);
+    let before = newest(dir.path());
+
+    let result = ok(
+        dir.path(),
+        &["switch", "feature", "--dry-run", "--actor", ACTOR],
+    );
+
+    assert_eq!(newest(dir.path()), before, "no entry");
+    assert_eq!(read(dir.path(), "a.txt"), "uno\ntwo\nthree\n");
+    assert!(
+        result
+            .stdout
+            .starts_with("Would switch to branch feature; nothing is written\n"),
+        "{}",
+        result.stdout
     );
     assert!(
         result
-            .stderr
-            .contains(&format!("saved first as entry {}", before + 1)),
+            .stdout
+            .contains("    carry the changes of the working copy to the new base\n"),
         "{}",
-        result.stderr
+        result.stdout
     );
-    assert_eq!(read(dir.path(), "a.txt"), "scratch");
+    assert!(
+        result.stdout.contains("    conflict a.txt\n"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("    write a.txt\n"),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(result.stderr, "");
+}
+
+#[test]
+fn a_dry_run_cannot_be_combined_with_take_over() {
+    let dir = committed();
+
+    let result = run(
+        dir.path(),
+        &[
+            "switch",
+            "main",
+            "--dry-run",
+            "--take-over",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    assert_eq!(result.code, 2, "{}", result.stderr);
 }
 
 #[test]
@@ -219,4 +344,48 @@ fn a_detached_switch_takes_a_commit_id_and_an_unknown_id_is_refused() {
         back.stdout
     );
     assert_eq!(read(dir.path(), "a.txt"), "two");
+}
+
+#[test]
+fn discard_without_changes_says_nothing_about_them() {
+    let dir = two_branches();
+
+    let result = ok(
+        dir.path(),
+        &["switch", "feature", "--discard", "--actor", ACTOR],
+    );
+
+    assert!(
+        !result.stdout.contains("Left the changes"),
+        "{}",
+        result.stdout
+    );
+    assert!(!result.stdout.contains("Carried"), "{}", result.stdout);
+}
+
+#[test]
+fn a_dry_run_of_a_discard_names_the_discard() {
+    let dir = two_branches();
+    write(dir.path(), "a.txt", "scratch\n");
+    ok(dir.path(), &["status", "--actor", ACTOR]);
+
+    let result = ok(
+        dir.path(),
+        &[
+            "switch",
+            "feature",
+            "--discard",
+            "--dry-run",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    assert!(
+        result
+            .stdout
+            .contains("    discard the changes of the working copy\n"),
+        "{}",
+        result.stdout
+    );
 }
