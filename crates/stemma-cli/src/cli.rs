@@ -21,14 +21,13 @@
 //! was before the purge, and nothing can undo either.
 //!
 //! A command that only reads (`log`, `op log`, `status`, `tag` and `branch` without a name, `op
-//! restore --dry-run`, and `purge` without `--apply`, `--resume`, or `--abort`) has made
-//! nothing by its output, so a failed write of its
-//! output is code 1; some of the output may already be written, and a script discards it. A
-//! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
-//! output. The one exception is a closed pipe after an `op restore` that was made: the output is
-//! the only place that names its entry, so it is code 3.
-//! An `op restore` writes its result before an error that follows a restore that was made, as
-//! `commit` does.
+//! restore --dry-run`, `switch --dry-run`, and `purge` without `--apply`, `--resume`, or `--abort`)
+//! has made nothing by its output, so a failed write of its output is code 1; some of the output
+//! may already be written, and a script discards it. A closed pipe is not a failure, and it does
+//! not hide an error of flushing that comes after the output. The one exception is a closed pipe
+//! after an `op restore` that was made: the output is the only place that names its entry, so it is
+//! code 3. An `op restore` writes its result before an error that follows a restore that was made,
+//! as `commit` does.
 //!
 //! Two more codes split code 1 (ADR-018, [`FailureKind`]). Code 5 is damage: the log, a
 //! reference file, or an object is not as it must be, or the chain does not match an anchor; a
@@ -87,11 +86,12 @@ use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
 use stemma_core::repository::{
-    normalize_path_in, ApplyPurgeError, CommitError, Committed, Comparison, Content, Diff,
-    DiffError, Discovered, InitError, InitOptions, MergeBranchError, MergeKind, Merged, OpenError,
-    PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository, RestoreError, RestorePlan,
-    Revision, SnapshotError, Status, StatusError, SwitchError, SwitchTarget, Switched, TrackError,
-    Tracking, UpdateError, WorktreeBranch, WorktreeError,
+    normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
+    DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
+    OpenError, Planned, PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository,
+    RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError, SwitchError,
+    SwitchPlan, SwitchTarget, Switched, TrackError, Tracking, UpdateError, WorktreeBranch,
+    WorktreeError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -549,6 +549,16 @@ struct SwitchArgs {
     #[arg(long)]
     detach: bool,
 
+    /// Leave the changes of the working copy behind instead of carrying them to the target: the
+    /// directory is brought to the target, and the saved changes stay in the log
+    #[arg(long)]
+    discard: bool,
+
+    /// Show what would move and what would become of the changes, and write nothing, not even a
+    /// snapshot of the working copy
+    #[arg(long)]
+    dry_run: bool,
+
     /// A directory of the repository: the one that contains `.stemma`, or one below it
     #[arg(
         short = 'C',
@@ -566,7 +576,7 @@ struct SwitchArgs {
 
     /// Take the working copy over from its owner first: ask for the operation `take-over`, write
     /// its entry, and make the actor the owner, so that a working copy of another actor is saved
-    #[arg(long)]
+    #[arg(long, conflicts_with = "dry_run")]
     take_over: bool,
 }
 
@@ -1723,11 +1733,12 @@ impl Drop for TakeOverNote<'_> {
 }
 
 /// Changes the branch that HEAD names, makes a branch and changes to it (`-c`), or detaches HEAD
-/// (`--detach`), while the working-copy commit is empty (ADR-010). The core takes the snapshot
-/// first and refuses a working-copy commit that holds changes. The result is written before an
-/// error that follows a switch that was made (exit code 3), so that a script finds the entry that
-/// undoes it. A closed pipe is no failure for "already on", and it is one after a switch, because
-/// the output is the only place that names the entry.
+/// (`--detach`) (ADR-010). The core takes the snapshot first. A working-copy commit that holds
+/// changes is carried to the target, or, with `--discard`, left behind. Without a snapshot,
+/// `--dry-run` shows what would move. The result is written before an error that follows a switch
+/// that was made (exit code 3), so that a script finds the entry that undoes it. A closed pipe is
+/// no failure for "already on" or for a plan, and it is one after a switch, because the output is
+/// the only place that names the entry.
 fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
     // A usage error comes first, as for the errors of the parser: before the actor is read or the
     // repository is looked for.
@@ -1748,19 +1759,40 @@ fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
             )
             .exit(),
     };
+    let changes = if args.discard {
+        Changes::Discard
+    } else {
+        Changes::Carry
+    };
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
     let repository = taking_over(repository, args.take_over);
     let _note = TakeOverNote(&repository);
-    match repository.switch(&target, &actor, &AllowAll) {
+    if args.dry_run {
+        return match repository
+            .plan_switch(&target, changes, &actor, &AllowAll)
+            .map_err(CliError::Switch)?
+        {
+            Planned::AlreadyOn(name) => {
+                write_switch(out, &format!("Already on {name}\n"), None, None)
+            }
+            Planned::Would(plan) => {
+                write_switch(out, &plan_switch_text(&target, &plan), None, None)
+            }
+        };
+    }
+    match repository.switch(&target, changes, &actor, &AllowAll) {
         Ok(Switched::AlreadyOn(name)) => {
             write_switch(out, &format!("Already on {name}\n"), None, None)
         }
         Ok(Switched::Done {
-            snapshot, entry, ..
+            snapshot,
+            entry,
+            handled,
+            ..
         }) => write_switch(
             out,
-            &switched_text(&target, snapshot.as_deref(), &entry),
+            &switched_text(&target, snapshot.as_deref(), &handled, &entry),
             Some(entry.number()),
             snapshot.as_deref().map(oplog::Entry::number),
         ),
@@ -1769,8 +1801,10 @@ fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
                 if let Some(entry) = error.entry() {
                     // The message of the error names the entries too, so a failure to write is
                     // not reported on top of it.
-                    let _ =
-                        out.write_all(switched_text(&target, error.snapshot(), entry).as_bytes());
+                    let _ = out.write_all(
+                        switched_text(&target, error.snapshot(), &Handled::Nothing, entry)
+                            .as_bytes(),
+                    );
                 }
             }
             Err(CliError::Switch(error))
@@ -1803,10 +1837,12 @@ fn write_switch(
     }
 }
 
-/// What a switch did: the snapshot, the move, and how to undo it.
+/// What a switch did: the snapshot, the move, what became of the changes, and how to undo it.
+/// An error after the switch was made does not know what became of the changes.
 fn switched_text(
     target: &SwitchTarget,
     snapshot: Option<&oplog::Entry>,
+    handled: &Handled,
     entry: &oplog::Entry,
 ) -> String {
     let what = match target {
@@ -1815,9 +1851,10 @@ fn switched_text(
         SwitchTarget::Detach(revision) => format!("Detached HEAD at {revision}"),
     };
     format!(
-        "{}{what} as entry {}\nTo undo it: stemma op restore {}\n",
+        "{}{what} as entry {}\n{}To undo it: stemma op restore {}\n",
         saved_text(snapshot),
         entry.number(),
+        handled_text(handled, true),
         entry.number()
     )
 }
@@ -1936,6 +1973,75 @@ fn rebased_text(target: &Revision, done: &Rebased) -> String {
         "To undo it: stemma op restore {}\n",
         entry.number()
     ));
+    text
+}
+
+/// The lines about the changes of the working copy: carried (with the paths in conflict), or left
+/// behind. Nothing for a working copy without changes. `done` picks the tense.
+fn handled_text(handled: &Handled, done: bool) -> String {
+    match handled {
+        Handled::Nothing => String::new(),
+        Handled::Discarded if done => {
+            "Left the changes behind; the log keeps them, and `op restore` brings them back\n"
+                .to_owned()
+        }
+        Handled::Discarded => "    discard the changes of the working copy\n".to_owned(),
+        Handled::Carried { conflicts } => {
+            let mut text = if done {
+                "Carried the changes of the working copy to the new base\n".to_owned()
+            } else {
+                "    carry the changes of the working copy to the new base\n".to_owned()
+            };
+            for path in conflicts {
+                text.push_str(&format!(
+                    "{}conflict {}\n",
+                    if done { "C " } else { "    " },
+                    escape_path(path)
+                ));
+            }
+            text
+        }
+    }
+}
+
+/// What a switch would do: the pointers, the changes, and the files.
+fn plan_switch_text(target: &SwitchTarget, plan: &SwitchPlan) -> String {
+    use crate::op_log::{value, HeadValue};
+    let mut text = format!(
+        "Would {}; nothing is written\n",
+        match target {
+            SwitchTarget::Existing(name) => format!("switch to branch {name}"),
+            SwitchTarget::Create { name, .. } => format!("switch to a new branch {name}"),
+            SwitchTarget::Detach(revision) => format!("detach HEAD at {revision}"),
+        }
+    );
+    if plan.repeats() {
+        text.push_str("    finish the switch that stopped\n");
+    }
+    text.push_str(&format!(
+        "    head  {}\n",
+        value(Some(&HeadValue(plan.head())))
+    ));
+    if let Some((name, commit)) = plan.created() {
+        text.push_str(&format!(
+            "    branch {}  (none) -> {}\n",
+            name.to_string().escape_debug(),
+            value(Some(commit))
+        ));
+    }
+    text.push_str(&format!("    base  {}\n", value(Some(&plan.commit()))));
+    text.push_str(&handled_text(plan.handled(), false));
+    for write in plan.checkout().writes() {
+        text.push_str(&format!("    write {}\n", escape_path(write.path())));
+    }
+    for path in plan.checkout().removals() {
+        text.push_str(&format!("    remove {}\n", escape_path(path)));
+    }
+    if !plan.repeats() {
+        text.push_str(
+            "A real run saves unsaved changes first; the plan is made from the saved working copy\n",
+        );
+    }
     text
 }
 

@@ -108,22 +108,40 @@ art, not a template (ADR-015).
     commit), and when the branch is not at the parent of the working-copy commit: a commit on
     top of that parent would drop what the branch has. Moving the working-copy commit
     onto the new tip is the rewrite below (STEMMA-171).
-- **`switch` changes the branch while the working-copy commit is empty** *(confirmed, implemented
-  in `Repository::switch` and `stemma switch`; STEMMA-167)*. `switch <name>` makes HEAD name an
+- **`switch` changes the branch and carries the changes of the working-copy commit** *(confirmed,
+  implemented in `Repository::switch` and `stemma switch`; STEMMA-167, STEMMA-174)*.
+  `switch <name>` makes HEAD name an
   existing branch, `switch -c <name> [<start>]` makes the branch (at `<start>`, a branch or a
   commit, by default at the commit that HEAD leads to) and switches to it, and
   `switch --detach <commit-or-branch>` makes HEAD name a commit (`Head::Detached`). A name that
   does not exist is an error without `-c`, and a name that exists is an error with it. Details:
   - **A snapshot comes first**, as for every command that changes something. Then the
-    working-copy commit `W` must be *empty* (the tree of its first parent, or the empty tree if it
-    has none, as for `commit` and `status`). If it is not, the command is refused with a message
-    to commit first; the snapshot stays, so nothing is lost. A switch that carries the changes
-    over replaces the refusal later.
-  - **A new, empty working-copy commit** `W'` starts on the tip `T` of the target: the tree of
-    `T`, the only parent `T`, an empty message, and a change ID of its own. `W` stays reachable
-    through the log only (ADR-011), as the old working-copy commit does after a `commit`.
+    working-copy commit `W` is *empty* (the tree of its first parent, or the empty tree if it has
+    none, as for `commit` and `status`) or it holds changes.
+  - **An empty `W` is replaced by a new, empty working-copy commit** `W'` on the tip `T` of the
+    target: the tree of `T`, the only parent `T`, an empty message, and a change ID of its own.
+    `W` stays reachable through the log only (ADR-011), as the old working-copy commit does after
+    a `commit`.
+  - **A `W` that holds changes is carried** (STEMMA-174). `W'` is made by the rewrite below: the
+    only parent `T`, the change ID, the author, the time, and the message of `W`, and the tree
+    `T + (W - P)` as a sum (ADR-005). A conflict of the carry is data of `W'` and no failure, so
+    the command ends with code 0 and lists the paths in conflict; the directory holds the text
+    of the markers. A `W` with several parents that holds changes is refused, as by the rewrite.
+    A target `T` that records a conflict is no longer refused: the directory shows it like that of
+    any working-copy commit with a conflict (ADR-005).
+  - **`--discard` leaves the changes behind.** `W'` is the empty commit of the previous item even
+    if `W` holds changes, and the directory is brought to the tree of `T`. Nothing is lost: the
+    changes stay in the log (in the snapshot, or in `W` itself if nothing was unsaved), and
+    `op restore` brings them back. `--discard` has no effect on an empty `W`.
+  - **`--dry-run` plans and writes nothing**, not even a snapshot, as `op restore --dry-run` does
+    (STEMMA-77). It shows the moves of the pointers, what becomes of the changes (carried, with
+    the paths in conflict, or left behind), and the files that would be written and removed. It
+    works from the working-copy commit as it is saved; a real run saves the directory first, so
+    what it carries can differ. The merge of a carry stores objects that no commit names, which
+    a purge removes. `--dry-run` cannot be combined with `--take-over`.
   - **One entry holds all moves** (operation `switch`): HEAD, the working-copy commit `W` to
-    `W'`, and for `-c` the branch from nothing to `T`. The order is that of a restore
+    `W'` (a carried one included), and for `-c` the branch from nothing to `T`. The order is that
+    of a restore
     (ADR-013): the checks and the plan, the entry, the files, then the pointers (the branch, the
     working-copy commit, HEAD last). The checkout layer of ADR-013 is used unchanged, from the
     tree of `W` to the tree of `T`; equal trees move only the pointers. A file that is not
@@ -145,7 +163,9 @@ art, not a template (ADR-015).
     and writes an entry of its own. It still applies the rule of the owner: another actor is
     refused without `--take-over`, and an agent never takes over. An entry of `take-over` names
     no pointer and does not hide the stopped switch. The error of a stop after the entry says to
-    run the same switch again before any other command.
+    run the same switch again before any other command. The repeat finishes the switch as it was
+    started: a stopped carry stays a carry whatever `--discard` says on the second call, and the
+    output names what became of the changes.
   - **`commit` stays refused on a detached HEAD**, and its message points to `switch -c <name>`.
   - **The level** of `switch` is 2, like `restore` (ADR-004): it moves refs and writes files in
     the working copy. The command has the option `--take-over` of the other commands that take a
@@ -262,8 +282,8 @@ art, not a template (ADR-015).
   - **`status` and `log` mark it.** `status` has a section `Conflicts` (paths and the number of
     sides of each) before `Changes`. `log` marks the commit in its header line with
     `conflict (N sides)`. The two fields are added to `--json` without a new `schema` (ADR-018).
-  - **`switch` still refuses** a working-copy commit or a target that holds a conflict
-    (STEMMA-19).
+  - **`switch` carries** a working-copy commit that holds a conflict, and switches to a target
+    that holds one (STEMMA-174, STEMMA-19).
 - **A working copy belongs to one actor** *(confirmed)*. A snapshot is made by the actor of the
   command that takes it, and the log names that actor. A snapshot saves whatever is in the
   directory, so when two actors (a human and an agent, say) work in one directory, a change of
@@ -320,7 +340,7 @@ art, not a template (ADR-015).
 
 - **The working-copy commit follows a new base by a rewrite** *(confirmed; STEMMA-171, from the
   resolutions of STEMMA-154 and STEMMA-155)*. When the branch gets a new tip `T` (a merge, a
-  rebase, later a `switch` that carries changes), the working-copy commit `W` with the old parent
+  rebase, a `switch` that carries changes), the working-copy commit `W` with the old parent
   `P` is replaced by `W'`, one mechanism for all of them.
   - *The content* is the three-way merge `T + (W - P)` of the trees as a sum (ADR-005), so a
     conflict of the carry is data of `W'`, and a `W` with an open conflict goes through the same
@@ -428,8 +448,8 @@ art, not a template (ADR-015).
       `Repository::rewrite_working_copy` replaces the working-copy commit by a commit on the new
       tip (STEMMA-171, below). `merge` calls it (STEMMA-172, below), and `rebase` shares its
       steps (STEMMA-173, below).
-- [ ] `switch` refuses a working-copy commit that holds changes. Carrying them to the target uses
-      the rewrite below and is a slice of its own (phase 3).
+- [x] `switch` refused a working-copy commit that holds changes. It carries them to the target
+      with the rewrite below, or leaves them behind with `--discard` (STEMMA-174).
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
       does when the working-copy commit has one (phase 3).
 

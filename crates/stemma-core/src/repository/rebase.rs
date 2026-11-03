@@ -172,8 +172,12 @@ impl Repository {
         }
         let snapshot = match &stopped {
             Some(_) => {
-                self.own_for_repeat_locked(&lock, actor, authorizer)
-                    .map_err(RebaseError::Snapshot)?;
+                self.own_for_rewrite_repeat(&lock, actor, authorizer)
+                    .map_err(|error| match error {
+                        RewriteError::Snapshot(error) => RebaseError::Snapshot(error),
+                        RewriteError::Refs(error) => RebaseError::Refs(error),
+                        other => RebaseError::Replay(Box::new(other)),
+                    })?;
                 None
             }
             None => match self.snapshot_locked(&lock, actor, authorizer) {
@@ -927,7 +931,12 @@ mod tests {
 
     fn switch(repository: &Repository, target: &SwitchTarget) {
         repository
-            .switch(target, &actor(), &AllowAll)
+            .switch(
+                target,
+                crate::repository::Changes::Carry,
+                &actor(),
+                &AllowAll,
+            )
             .map(drop)
             .unwrap();
     }

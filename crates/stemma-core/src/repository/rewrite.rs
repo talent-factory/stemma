@@ -10,9 +10,9 @@
 //!
 //! [`Repository::rewrite_working_copy`] is the mechanism, in the order of ADR-013: a snapshot,
 //! the plan of the files, the entry, the files, the pointer. It moves the working-copy commit and
-//! nothing else. The commands that also move a branch or HEAD write one entry for all moves, so
-//! they cannot call it. `rebase` (`rebase.rs`) shares the steps below (`carry`, `base_sum`,
-//! `replay`, `store_commit`, `carried`) and writes its own entry; merge is to do the same.
+//! nothing else. The commands that also move a branch or HEAD (merge, rebase) are to write one
+//! entry for all moves; they need a variant of the steps below that takes part in their entry,
+//! which this module does not offer yet.
 //!
 //! A `W` that holds no change is not carried. It is replaced by an empty commit on the new tip with
 //! a change ID of its own, as `switch` starts one, because the change ID tells a review that a
@@ -125,11 +125,12 @@ impl Repository {
     ///
     /// After the snapshot, [`RewriteError::Read`], [`RewriteError::Merge`],
     /// [`RewriteError::Invalid`], [`RewriteError::Store`], [`RewriteError::ChangeId`],
-    /// [`RewriteError::Parents`], [`RewriteError::SameChange`], and [`RewriteError::Checkout`] stand for the preparation of the
-    /// new commit and the plan of the files. They wrote nothing but objects and, if the snapshot
-    /// wrote an entry, that entry; the error is then wrapped in [`RewriteError::AfterSnapshot`].
-    /// Then [`RewriteError::CheckoutFailed`], [`RewriteError::MoveFailed`], and
-    /// [`RewriteError::NotDurable`] say how far the rewrite came.
+    /// [`RewriteError::Parents`], [`RewriteError::SameChange`], and [`RewriteError::Checkout`]
+    /// stand for the preparation of the new commit and the plan of the files. They wrote nothing
+    /// but objects and, if the snapshot wrote an entry, that entry; the error is then wrapped in
+    /// [`RewriteError::AfterSnapshot`]. Then [`RewriteError::CheckoutFailed`],
+    /// [`RewriteError::MoveFailed`], and [`RewriteError::NotDurable`] say how far the rewrite
+    /// came.
     pub fn rewrite_working_copy(
         &self,
         onto: CommitId,
@@ -281,48 +282,33 @@ impl Repository {
     /// The tree is `onto + (working - parent)` as a sum, merged by [`merge_trees`]. A working-copy
     /// commit without a parent has the empty tree as its base. One that holds no change (its
     /// sum equals that of its base) is replaced by an empty commit with a change ID of its own.
+    /// `switch` and `merge` call this for a working-copy commit that holds changes, and
+    /// [`start_empty`](Self::start_empty) for one that does not.
     pub(super) fn carry(
         &self,
         working: &AnyCommit,
         onto: CommitId,
         actor: &Actor,
     ) -> Result<Carried, RewriteError> {
-        let objects = self.objects();
         let base = self.base_sum(working)?;
-        let target = read_any_commit(objects, onto).map_err(RewriteError::Read)?;
+        let target = read_any_commit(self.objects(), onto).map_err(RewriteError::Read)?;
         if target.change() == working.change() {
             return Err(RewriteError::SameChange { onto });
         }
         let commit = if working.tree_sum().is_equivalent(&base) {
-            AnyCommit::from_sum(
-                &target.tree_sum(),
-                vec![onto],
-                ChangeId::generate().map_err(RewriteError::ChangeId)?,
-                actor.clone(),
-                now(),
-                "",
-            )
-            .map_err(RewriteError::Invalid)?
+            Self::empty_on(&target.tree_sum(), onto, actor)?
         } else {
             self.replay(working, &base, &target)?
         };
-        let id = self.store_commit(&commit)?;
-        self.carried(id)
+        self.store_carried(&commit)
     }
 
     /// The sum of trees that a commit is a change against: the tree of its only parent, or the
     /// empty tree if it has none. A commit with several parents has no such base yet.
     pub(super) fn base_sum(&self, commit: &AnyCommit) -> Result<Merge<TreeId>, RewriteError> {
-        let objects = self.objects();
         match commit.parents() {
-            [] => Ok(Merge::resolved(
-                objects
-                    .put_tree(&Tree::try_new(vec![]).map_err(|e| RewriteError::Merge(e.into()))?)
-                    .map_err(|error| RewriteError::Store(Box::new(error)))?,
-            )),
-            [parent] => Ok(read_any_commit(objects, *parent)
-                .map_err(RewriteError::Read)?
-                .tree_sum()),
+            [] => self.base_of(None),
+            [parent] => self.base_of(Some(*parent)),
             _ => Err(RewriteError::Parents {
                 working: commit.id(),
             }),
@@ -368,6 +354,62 @@ impl Repository {
                 .map(CommitId::new),
         }
         .map_err(|error| RewriteError::Store(Box::new(error)))
+    }
+
+    /// Makes an empty working-copy commit on `onto` with a change ID of its own, and stores it:
+    /// the tree of `onto`, the only parent `onto`, and an empty message. This is what `switch`
+    /// starts on the tip of its target, and what a rewrite makes of a working-copy commit that
+    /// holds no change. Writes objects and nothing else.
+    pub(super) fn start_empty(
+        &self,
+        onto: CommitId,
+        actor: &Actor,
+    ) -> Result<Carried, RewriteError> {
+        let target = read_any_commit(self.objects(), onto).map_err(RewriteError::Read)?;
+        let commit = Self::empty_on(&target.tree_sum(), onto, actor)?;
+        self.store_carried(&commit)
+    }
+
+    /// Whether the working-copy commit holds a change: its sum differs from that of its first
+    /// parent, or from the empty tree if it has none (the rule of `status`).
+    pub(super) fn holds_changes(&self, working: &AnyCommit) -> Result<bool, RewriteError> {
+        let base = self.base_of(working.parents().first().copied())?;
+        Ok(!working.tree_sum().is_equivalent(&base))
+    }
+
+    /// The sum of trees that a parent stands for, or the empty tree if there is none.
+    fn base_of(&self, parent: Option<CommitId>) -> Result<Merge<TreeId>, RewriteError> {
+        match parent {
+            Some(parent) => Ok(read_any_commit(self.objects(), parent)
+                .map_err(RewriteError::Read)?
+                .tree_sum()),
+            None => Ok(Merge::resolved(
+                self.objects()
+                    .put_tree(&Tree::try_new(vec![]).map_err(|e| RewriteError::Merge(e.into()))?)
+                    .map_err(|error| RewriteError::Store(Box::new(error)))?,
+            )),
+        }
+    }
+
+    fn empty_on(
+        new_base: &Merge<TreeId>,
+        onto: CommitId,
+        actor: &Actor,
+    ) -> Result<AnyCommit, RewriteError> {
+        AnyCommit::from_sum(
+            new_base,
+            vec![onto],
+            ChangeId::generate().map_err(RewriteError::ChangeId)?,
+            actor.clone(),
+            now(),
+            "",
+        )
+        .map_err(RewriteError::Invalid)
+    }
+
+    fn store_carried(&self, commit: &AnyCommit) -> Result<Carried, RewriteError> {
+        let id = self.store_commit(commit)?;
+        self.carried(id)
     }
 
     /// The directory tree of a stored working-copy commit, with the paths that are a conflict.
@@ -435,25 +477,19 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<(), RewriteError> {
-        self.own_for_repeat_locked(lock, actor, authorizer)
-            .map_err(RewriteError::Snapshot)
-    }
-
-    /// The owner check that a snapshot makes, for a repeat of a stopped rewrite or rebase that
-    /// takes none.
-    pub(super) fn own_for_repeat_locked(
-        &self,
-        lock: &WriteLock,
-        actor: &Actor,
-        authorizer: &dyn Authorizer,
-    ) -> Result<(), SnapshotError> {
         let (_, owner) = self
             .refs_store()
             .working_copy_and_owner()
-            .map_err(SnapshotError::Refs)?;
-        if self.check_owner(actor, owner.as_ref())? {
-            let operation = self.ask_take_over(actor, authorizer)?;
-            self.take_over_locked(lock, &operation, actor)?;
+            .map_err(RewriteError::Refs)?;
+        if self
+            .check_owner(actor, owner.as_ref())
+            .map_err(RewriteError::Snapshot)?
+        {
+            let operation = self
+                .ask_take_over(actor, authorizer)
+                .map_err(RewriteError::Snapshot)?;
+            self.take_over_locked(lock, &operation, actor)
+                .map_err(RewriteError::Snapshot)?;
         }
         Ok(())
     }
@@ -732,7 +768,7 @@ mod tests {
     use crate::fault;
     use crate::object::TreeEntry;
     use crate::refs::BranchName;
-    use crate::repository::{InitOptions, SwitchTarget};
+    use crate::repository::{Changes, InitOptions, SwitchTarget};
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
 
@@ -779,7 +815,7 @@ mod tests {
 
     fn switch(repository: &Repository, target: &SwitchTarget) {
         repository
-            .switch(target, &actor(), &AllowAll)
+            .switch(target, Changes::Carry, &actor(), &AllowAll)
             .map(drop)
             .unwrap();
     }
