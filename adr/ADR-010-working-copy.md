@@ -298,6 +298,19 @@ art, not a template (ADR-015).
   other refusals of a repository state have (exit code 1), so it needs no exit code of its
   own. Every move of the working-copy commit keeps the owner, `op restore` included: the owner
   is not a pointer, and a restore does not give the directory back to an earlier actor.
+- **A second working copy is a linked worktree** (STEMMA-175). The rule "every actor works in a
+  working copy of its own" has a place to stand now: `stemma worktree add` makes a second
+  directory of the same repository, with the `HEAD` and the file `working-copy` (and so the
+  working-copy commit and the owner) in a state directory of its own (ADR-009). A snapshot in one
+  worktree reads and replaces only the working-copy commit of that worktree, so the commands of
+  two actors in two worktrees take no snapshot from each other and need no `--take-over`. The
+  objects, the branches, the tags, the log, and the lock of the references are shared, so a commit
+  of one worktree is at once visible to the others, and one writer at a time holds the lock. The
+  owner of the new working copy is the actor of `worktree add`, or the actor of `--owner`; the new
+  working-copy commit names the owner as its author. A branch is checked out in one worktree only
+  (ADR-009), so the branch of a worktree moves only by the commands of its owner. The check of the
+  owner of a snapshot is unchanged: an actor that is not the owner of the worktree where the
+  command runs is refused there, with `--take-over` for a human.
 - **The lease of ADR-004 and the rule are independent.** ADR-004 proposes a lease on a branch,
   which a server would enforce: it governs who may move the branch. It does not govern who
   writes into a local directory, and a server cannot see that. The rule above is what covers
@@ -372,7 +385,12 @@ art, not a template (ADR-015).
 - [ ] A tracked path that is now a special file blocks every snapshot until it is gone, and a
       tracked directory that is now a link drops its files from the tree without a warning. Both
       want a way to report or to untrack (`stemma track`, STEMMA-2).
-- [ ] A second working copy (a worktree) for a second agent in one repository (phase 3).
+- [x] A second working copy (a worktree) for a second agent in one repository (phase 3,
+      STEMMA-175): `stemma worktree add`, with the layout and the rules of ADR-009. Each worktree
+      has its own `HEAD`, its own `working-copy` with its own owner, and its own working-copy
+      commit; the objects, the branches, the tags, the log, and the lock are shared. Two actors
+      therefore work at the same time without taking a working copy over from each other. See
+      Consequences.
 - [x] Whether `stemma commit` needs a flag that makes a snapshot and a commit in one step for a
       script. It does not: `commit` takes the snapshot itself before it commits, so
       `stemma commit -m` is that step (STEMMA-77).

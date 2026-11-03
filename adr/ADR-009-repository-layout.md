@@ -26,8 +26,57 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   `refs/heads/`, `refs/tags/` (made by the first tag, ADR-008), `refs.lock` (while a command
   writes), and `refs.lock.guard` (the guard of the
   lock, which stays; ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
-  it stopped, ADR-014), `derived/` (the cache of derived data, optional, ADR-017), and `tmp/`
-  (the temporary files of the object store, the references, the log, and the purge).
+  it stopped, ADR-014), `derived/` (the cache of derived data, optional, ADR-017), `worktrees/`
+  (one state directory for each linked worktree, made by the first `worktree add`; see below),
+  and `tmp/` (the temporary files of the object store, the references, the log, and the purge).
+- **Linked worktrees** (STEMMA-175). The shared store (`objects/`, `refs/`, `oplog/`, `tmp/`, the
+  lock, the journal of a purge, and `format`) stays in the `.stemma/` of the main worktree. A
+  linked worktree adds only the pointers that belong to a working copy: its state directory
+  `.stemma/worktrees/<name>/` holds the files `HEAD` and `working-copy` (ADR-010), as the
+  main `.stemma/` does for the main worktree, and `location`, which holds the absolute path of
+  the worktree and a newline. The directory of the worktree holds a file `.stemma` and no
+  directory: its content is `stemma-worktree ` and the absolute path of the state directory and a
+  newline. The state directory is named after the last part of the path, reduced to letters,
+  digits, `-`, `_`, and `.` and numbered if the name is taken; `main` is the name of the main
+  worktree and is never given to a linked one.
+  `Repository::open` reads the pointer file, checks that it names `worktrees/<name>` of a
+  `.stemma`, and checks that `location` in that state directory is the directory that holds the
+  pointer file, with its links resolved. Otherwise the worktree was moved or copied, and the
+  command fails with `WorktreeMoved` and a message that says so; a state directory that is gone
+  is `MissingWorktreeState`, and a pointer file that claims the prefix and has another form is
+  `MalformedPointer`, which counts as damage (exit code 5). A file `.stemma` without the prefix
+  is a file in the way (`NotADirectory`), as before. Everything else about the repository is
+  read from the shared `.stemma/`: the `format` is checked there, and `discover` checks the
+  owner of the pointer file and of the shared `.stemma/` on Unix and Windows as it does for a
+  directory.
+  The branch is the unit of exclusion: **a branch is checked out in one worktree only**. A
+  `HEAD` that names a branch holds its name, whether the branch has a commit yet or not. The
+  rule has no override. It is checked under the lock of the references, through one helper that
+  the code calls where the pointers are planned: `switch` and `op restore` (the move of `HEAD`
+  to a branch, and the move or deletion of any branch that another worktree has checked out),
+  `branch -d` and `branch -m` (the branch of another worktree would lose its name), and
+  `worktree add`. The
+  check reads the `HEAD` of every other worktree. A state directory without `HEAD` is an add that
+  stopped and holds no branch. The error is `RefError::CheckedOut` and names the worktree.
+  `worktree add <path> <branch>` checks out an existing branch that is free, and `-b <new>`
+  makes `<new>` at the commit that `HEAD` of the calling worktree leads to. A call without a
+  branch is a usage error (exit code 2): there are no detached worktrees. The path must not
+  exist or must be an empty directory, and it must not be a worktree, lie in one, or contain
+  one; the main worktree counts. `--owner` gives the working copy of the new worktree to another
+  actor than the caller. The core asks the authorizer for the operation `worktree-add` (an
+  operation name holds no space) with the path as the target. The new working-copy commit is
+  empty, on the tip of the branch, with the owner as its author. `worktree list` shows the name,
+  the path, the branch of `HEAD`, and the owner of every worktree, the main one first.
+  The order of an add is the rule of ADR-011: the files are planned, the entry is written and
+  flushed, the files are written, and then the pointers move: the new branch, `location`,
+  `working-copy`, `HEAD`, and the pointer file last, so that a worktree that can be opened is a
+  complete one. The entry names `HEAD` and the working-copy commit of the new worktree from
+  nothing to their values, as the first entry of `init` does, and the new branch.
+  The check of the paths and the making of the directory happen under the lock of the
+  references, so of two adds of one path at once the second is turned away by the lock and
+  has made nothing. `HEAD` follows the rule of the branches in every way it can move
+  (`set_head`, `replace_head`, `set_head_after`), not only in the commands. A directory that a
+  failed add made and cannot remove is named in the error (`WorktreeError::NotCleaned`).
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
@@ -143,6 +192,24 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 
 ## Open items
 
+- [ ] `worktree repair`, for a worktree that was moved, and `--json` for `worktree list`
+      (STEMMA-175 leaves both out). Until then a moved worktree is added again, and its state
+      directory is removed by hand.
+- [ ] `worktree remove`, and the removal of a worktree directory that was deleted outside
+      Stemma: its state directory stays, `worktree list` still shows it, and its branch stays
+      held.
+- [ ] The operation log is one log for all worktrees, but `HEAD` and the working-copy commit are
+      per worktree. The entry of `worktree add` is judged by `op log` as unknown, and an
+      `op restore` of an entry that another worktree wrote moves the pointers of the worktree
+      where it runs, if the check of the branch allows it. A log with an entry for each
+      worktree is a question for later.
+- [x] A purge sees the pointers of one worktree only, so it would delete objects that another
+      worktree needs. `purge` (plan and `--apply`) therefore refuses a repository with more than
+      one worktree (`PurgeError::LinkedWorktrees`, exit code 1); `--resume` and `--abort` of a
+      purge that began are not refused. A purge over all worktrees is a question for later.
+- [ ] The format is not raised for linked worktrees: a program that knows only format 5 does not
+      open a worktree (the pointer file is a file in the way), but it opens the main worktree
+      and does not see that a branch is checked out elsewhere.
 - [ ] Hide the object store too, if an operation needs to be sure that it is the one of this
       repository; today `objects()` is safe, because anything stored through it belongs to this
       repository, and `update_branch` and `set_head` use it themselves.

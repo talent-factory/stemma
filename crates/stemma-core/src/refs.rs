@@ -432,6 +432,15 @@ pub enum RefError {
         /// The branch that HEAD names.
         name: BranchName,
     },
+    /// Another worktree has the branch checked out: its `HEAD` names it. Two worktrees on one
+    /// branch would move the branch under each other, so no command that moves `HEAD` to a branch,
+    /// deletes it, or renames it takes it, and there is no override (ADR-009).
+    CheckedOut {
+        /// The branch.
+        name: BranchName,
+        /// The name of the worktree that has it checked out; `main` for the main worktree.
+        worktree: String,
+    },
     /// The tag is not where the caller saw it when it was to be deleted: it was deleted, or
     /// deleted and set again at another commit, since. Only the deletion of a tag is stale,
     /// because a tag never moves (ADR-008).
@@ -666,6 +675,12 @@ impl fmt::Display for RefError {
                 "the branch `{name}` is the branch of HEAD and cannot be deleted; switch to \
                  another branch first"
             ),
+            Self::CheckedOut { name, worktree } => write!(
+                f,
+                "the branch `{name}` is checked out in the worktree `{worktree}`; switch that \
+                 worktree to another branch first, or, if its directory is gone, remove its state \
+                 directory `.stemma/worktrees/{worktree}`"
+            ),
             Self::StaleTag {
                 name,
                 expected,
@@ -823,6 +838,7 @@ impl Error for RefError {
             | Self::TagExists { .. }
             | Self::BranchExists { .. }
             | Self::HeadBranch { .. }
+            | Self::CheckedOut { .. }
             | Self::StaleTag { .. }
             | Self::StaleHead { .. }
             | Self::Conflict { .. }
@@ -894,6 +910,7 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ///
     /// Returns [`RefError::MissingCommit`] if the commit is not in the store,
     /// [`RefError::NotACommit`] if the object is neither a `commit` nor a `commit2`,
+    /// [`RefError::CheckedOut`] if another worktree has the branch checked out,
     /// [`RefError::Store`] and
     /// [`RefError::Io`] if the store or the storage fails, [`RefError::Locked`] if another change
     /// is in progress, and [`RefError::NotFlushed`] if the change was made but could not be
@@ -1073,7 +1090,11 @@ pub trait RefStore: crate::store::sealed::Sealed {
 /// References as files below the repository's metadata directory.
 #[derive(Debug, Clone)]
 pub struct FsRefStore {
+    /// The metadata directory that every worktree shares: the branches, the tags, the lock.
     root: PathBuf,
+    /// The directory of the files `HEAD` and `working-copy`: `root` itself, or the state directory
+    /// of a worktree below `root/worktrees/` (ADR-009).
+    local: PathBuf,
 }
 
 /// The lock file while it exists. The file holds a token that only this lock knows (`token` is the
@@ -1338,6 +1359,16 @@ impl PurgeLock {
     }
 }
 
+/// The name of the directory in the metadata directory that holds one state directory for each
+/// linked worktree (ADR-009).
+pub(crate) const WORKTREES_DIR: &str = "worktrees";
+
+/// The file of a state directory that names the directory of its worktree (ADR-009).
+pub(crate) const LOCATION_FILE: &str = "location";
+
+/// The name that the main worktree has in a message and in `worktree list`.
+pub(crate) const MAIN_WORKTREE: &str = "main";
+
 /// The name of the journal of a purge in the metadata directory (ADR-014).
 pub(crate) const PURGE_JOURNAL: &str = "purge-pending";
 
@@ -1354,11 +1385,24 @@ impl FsRefStore {
     /// Creates a store that keeps its files below `root`, the repository's metadata directory.
     /// The directory is not checked here; every operation checks it.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        Self {
+            local: root.clone(),
+            root,
+        }
+    }
+
+    /// Creates a store for a linked worktree: the branches, the tags, and the lock are below `root`,
+    /// and `HEAD` and `working-copy` are in `local`, the state directory of the worktree.
+    pub fn for_worktree(root: impl Into<PathBuf>, local: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            local: local.into(),
+        }
     }
 
     fn head_path(&self) -> PathBuf {
-        self.root.join("HEAD")
+        self.local.join("HEAD")
     }
 
     fn heads_dir(&self) -> PathBuf {
@@ -1382,7 +1426,7 @@ impl FsRefStore {
     }
 
     fn working_copy_path(&self) -> PathBuf {
-        self.root.join("working-copy")
+        self.local.join("working-copy")
     }
 
     fn lock_path(&self) -> PathBuf {
@@ -1456,6 +1500,93 @@ impl FsRefStore {
 
     fn journal_path(&self) -> PathBuf {
         self.root.join(PURGE_JOURNAL)
+    }
+
+    /// The state directories of the worktrees other than this one, each with its name: the main
+    /// worktree (`root` itself, called `main`) and every directory below `root/worktrees/`. An
+    /// entry that is no directory (a `.DS_Store`, say) and a state directory without `HEAD` (an
+    /// add that stopped) are no worktrees and are left out. A name that is not UTF-8 is damage.
+    pub(crate) fn other_states(&self) -> Result<Vec<(String, PathBuf)>, RefError> {
+        let mut states = Vec::new();
+        if self.local != self.root {
+            states.push((MAIN_WORKTREE.to_owned(), self.root.clone()));
+        }
+        let dir = self.root.join(WORKTREES_DIR);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(states),
+            Err(error) => return Err(io_error("list the worktrees in", &dir)(error)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(io_error("list the worktrees in", &dir))?;
+            let path = entry.path();
+            if path == self.local {
+                continue;
+            }
+            let is_dir = entry
+                .file_type()
+                .map_err(io_error("inspect", &path))?
+                .is_dir();
+            if !is_dir {
+                continue;
+            }
+            match fs::symlink_metadata(path.join("HEAD")) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_error("inspect", &path.join("HEAD"))(error)),
+            }
+            let name = entry.file_name().into_string().map_err(|_| RefError::Io {
+                operation: "list the worktrees in",
+                path: path.clone(),
+                source: io::Error::new(io::ErrorKind::InvalidData, "the name is not UTF-8"),
+            })?;
+            states.push((name, path));
+        }
+        states.sort();
+        Ok(states)
+    }
+
+    /// The worktree other than this one whose `HEAD` names the branch `name`, if there is one. The
+    /// branch need not exist: a `HEAD` that names a branch that has no commit yet holds the name.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of reading a `HEAD`: [`RefError::NoHead`], [`RefError::Corrupt`], and
+    /// [`RefError::Io`].
+    pub(crate) fn checked_out_elsewhere(
+        &self,
+        name: &BranchName,
+    ) -> Result<Option<String>, RefError> {
+        for (worktree, state) in self.other_states()? {
+            let path = state.join("HEAD");
+            let Some(bytes) = self.read_reference(&path)? else {
+                // A linked state without `HEAD` is left out by `other_states`; the main worktree
+                // always has one.
+                if state == self.root {
+                    return Err(RefError::NoHead { path });
+                }
+                continue;
+            };
+            let head = Head::parse(&bytes).map_err(|source| RefError::Corrupt { path, source })?;
+            if head == Head::Branch(name.clone()) {
+                return Ok(Some(worktree));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Fails with [`RefError::CheckedOut`] if another worktree has the branch checked out.
+    pub(crate) fn require_not_checked_out_elsewhere(
+        &self,
+        name: &BranchName,
+    ) -> Result<(), RefError> {
+        match self.checked_out_elsewhere(name)? {
+            Some(worktree) => Err(RefError::CheckedOut {
+                name: name.clone(),
+                worktree,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// Fails with [`RefError::PurgePending`] if the journal of a purge exists (ADR-014), without
@@ -2327,6 +2458,7 @@ impl FsRefStore {
         if self.head()? == Head::Branch(name.clone()) {
             return Err(RefError::HeadBranch { name: name.clone() });
         }
+        self.require_not_checked_out_elsewhere(name)?;
         let done = match step() {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
@@ -2405,6 +2537,7 @@ impl FsRefStore {
             });
         }
         let follows = self.head()? == Head::Branch(old.clone());
+        self.require_not_checked_out_elsewhere(old)?;
         if let Some(empty) = &target.empty_directory {
             // Nothing is below it, and the lock is held, so no branch is lost. It goes before the
             // step, so that a failure here leaves no entry that names a move that cannot be made.
@@ -2425,7 +2558,7 @@ impl FsRefStore {
         if follows {
             let head = Head::Branch(new.clone());
             steps.push(Box::new(move || {
-                self.write_replacing(&self.head_path(), &head.encode(), &self.root)
+                self.write_replacing(&self.head_path(), &head.encode(), &self.local)
                     .map(|()| true)
             }));
         }
@@ -2458,8 +2591,9 @@ impl FsRefStore {
         step: impl FnOnce(&Head) -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        if let Head::Detached(commit) = head {
-            Self::require_commit(commit, objects)?;
+        match head {
+            Head::Detached(commit) => Self::require_commit(commit, objects)?,
+            Head::Branch(name) => self.require_not_checked_out_elsewhere(name)?,
         }
         let old = self.head()?;
         if &old != expected {
@@ -2475,7 +2609,7 @@ impl FsRefStore {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
-        let moved = self.write_replacing(&self.head_path(), &head.encode(), &self.root);
+        let moved = self.write_replacing(&self.head_path(), &head.encode(), &self.local);
         Ok(Self::after_move(done, moved))
     }
 
@@ -2523,7 +2657,7 @@ impl FsRefStore {
         self.write_replacing(
             &self.working_copy_path(),
             &encode_working_copy(new, owner.as_ref()),
-            &self.root,
+            &self.local,
         )
     }
 
@@ -2548,7 +2682,7 @@ impl FsRefStore {
         self.write_replacing(
             &self.working_copy_path(),
             &encode_working_copy(&commit, Some(actor)),
-            &self.root,
+            &self.local,
         )
     }
 
@@ -2581,7 +2715,7 @@ impl FsRefStore {
             self.write_replacing(
                 &self.working_copy_path(),
                 &encode_working_copy(&commit, Some(owner)),
-                &self.root,
+                &self.local,
             )
         });
         Ok(Self::after_move(done, moved))
@@ -2818,6 +2952,10 @@ impl FsRefStore {
         if let Some(target) = targets.head {
             let current = self.head()?;
             if &current != target {
+                // A HEAD that moves to a branch takes it, which no other worktree may have.
+                if let Head::Branch(name) = target {
+                    self.require_not_checked_out_elsewhere(name)?;
+                }
                 moves.head = Some((current, target.clone()));
             }
         }
@@ -2854,6 +2992,8 @@ impl FsRefStore {
                 }
             }
             if current.commit != *target {
+                // A branch that another worktree has checked out neither moves nor goes.
+                self.require_not_checked_out_elsewhere(name)?;
                 moves.branches.push((name.clone(), current.commit, *target));
                 empty_directories.extend(current.empty_directory);
             }
@@ -3036,7 +3176,7 @@ impl FsRefStore {
         // branch follows that branch, so it already leads to the commit that the branch has.
         if let Some((_, new)) = &moves.head {
             steps.push(Box::new(move || {
-                self.write_replacing(&self.head_path(), &new.encode(), &self.root)
+                self.write_replacing(&self.head_path(), &new.encode(), &self.local)
                     .map(|()| true)
             }));
         }
@@ -3142,6 +3282,171 @@ impl FsRefStore {
     }
 }
 
+/// The branch that a new worktree checks out.
+#[derive(Debug, Clone)]
+pub(crate) enum NewWorktreeBranch {
+    /// An existing branch, at the commit `tip`.
+    Existing(BranchName, CommitId),
+    /// A branch that does not exist yet and is made at the commit `tip`.
+    Create(BranchName, CommitId),
+}
+
+impl NewWorktreeBranch {
+    fn name(&self) -> &BranchName {
+        match self {
+            Self::Existing(name, _) | Self::Create(name, _) => name,
+        }
+    }
+
+    fn tip(&self) -> CommitId {
+        match self {
+            Self::Existing(_, tip) | Self::Create(_, tip) => *tip,
+        }
+    }
+}
+
+/// What `worktree add` writes into the state directory of the new worktree.
+#[derive(Debug, Clone)]
+pub(crate) struct NewWorktree<'a> {
+    /// The name of the state directory `worktrees/<name>` below the metadata directory; the
+    /// directory does not exist yet.
+    pub(crate) name: &'a str,
+    /// The directory of the worktree, absolute, as the file `location` holds it.
+    pub(crate) location: &'a str,
+    /// The branch that HEAD names.
+    pub(crate) branch: NewWorktreeBranch,
+    /// The new working-copy commit.
+    pub(crate) working_copy: CommitId,
+    /// The owner of the working copy.
+    pub(crate) owner: &'a Actor,
+}
+
+impl FsRefStore {
+    /// The name of the worktree that this store belongs to: `main`, or the name of the state
+    /// directory.
+    pub(crate) fn worktree_name(&self) -> String {
+        if self.local == self.root {
+            MAIN_WORKTREE.to_owned()
+        } else {
+            self.local
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        }
+    }
+
+    /// Adds a worktree: the branch that it checks out is made if it is new, the state directory
+    /// gets its files, and `finish` runs last. `step` runs after the checks and before the first
+    /// move, under the lock of the references that the caller holds (`_lock`); it writes the entry
+    /// of the log and the files of the new directory.
+    ///
+    /// The moves are made in this order: the new branch, the file `location`, the file
+    /// `working-copy`, the file `HEAD`, and `finish` (the pointer file in the directory of the
+    /// worktree). `HEAD` comes after the files it belongs to, so a state directory without it is
+    /// an add that stopped and counts for no branch; a stop before the pointer file leaves a
+    /// worktree that cannot be opened. The same call run again does not finish it: the state
+    /// directory exists, and `worktree add` takes a fresh name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::MissingCommit`] for a tip that the store lacks, [`RefError::Stale`] for
+    /// an existing branch that is not at its tip, [`RefError::Conflict`] and
+    /// [`RefError::BranchExists`] for the name of a new branch, [`RefError::CheckedOut`] if a
+    /// worktree has the branch checked out (a `HEAD` that names a branch that does not exist yet
+    /// holds the name too), and the errors of reading a `HEAD`. Once `step` has run, nothing is an
+    /// error of this call; see [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn add_worktree_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        new: &NewWorktree<'_>,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce() -> Result<T, E>,
+        finish: impl Fn() -> Result<(), RefError>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let name = new.branch.name();
+        Self::require_commit(&new.branch.tip(), objects)?;
+        let current = self.current(RefKind::Branch, name)?;
+        if let Some((with, kind)) = current.in_the_way {
+            return Err(RefError::Conflict {
+                reference: RefKind::Branch,
+                name: name.clone(),
+                with,
+                kind,
+            });
+        }
+        match &new.branch {
+            NewWorktreeBranch::Existing(_, tip) => {
+                let tip = *tip;
+                if current.commit != Some(tip) {
+                    return Err(RefError::Stale {
+                        name: name.clone(),
+                        expected: Some(tip),
+                        found: current.commit,
+                    });
+                }
+            }
+            NewWorktreeBranch::Create(..) => {
+                if let Some(found) = current.commit {
+                    return Err(RefError::BranchExists {
+                        name: name.clone(),
+                        found,
+                    });
+                }
+            }
+        }
+        if self.head()? == Head::Branch(name.clone()) {
+            return Err(RefError::CheckedOut {
+                name: name.clone(),
+                worktree: self.worktree_name(),
+            });
+        }
+        self.require_not_checked_out_elsewhere(name)?;
+        if let (NewWorktreeBranch::Create(..), Some(empty)) =
+            (&new.branch, &current.empty_directory)
+        {
+            fault::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let head = Head::Branch(name.clone());
+        let state = self.root.join(WORKTREES_DIR).join(new.name);
+        let state = state.as_path();
+        let mut steps: Vec<MoveStep<'_>> = Vec::new();
+        if let NewWorktreeBranch::Create(_, tip) = &new.branch {
+            let tip = *tip;
+            steps.push(Box::new(move || {
+                self.write_replacing(
+                    &self.branch_path(name),
+                    &encode_branch(&tip),
+                    &self.heads_dir(),
+                )
+                .map(|()| true)
+            }));
+        }
+        let location = format!("{}\n", new.location);
+        steps.push(Box::new(move || {
+            self.write_replacing(&state.join(LOCATION_FILE), location.as_bytes(), &self.root)
+                .map(|()| true)
+        }));
+        steps.push(Box::new(move || {
+            self.write_replacing(
+                &state.join("working-copy"),
+                &encode_working_copy(&new.working_copy, Some(new.owner)),
+                &self.root,
+            )
+            .map(|()| true)
+        }));
+        steps.push(Box::new(move || {
+            self.write_replacing(&state.join("HEAD"), &head.encode(), &self.root)
+                .map(|()| true)
+        }));
+        steps.push(Box::new(move || finish().map(|()| true)));
+        Ok(Self::run_steps(done, steps))
+    }
+}
+
 impl FsRefStore {
     /// The references of a namespace with their commits, sorted by name.
     fn list_namespace(&self, namespace: RefKind) -> Result<Vec<(BranchName, CommitId)>, RefError> {
@@ -3211,10 +3516,11 @@ impl RefStore for FsRefStore {
         let _lock = self.lock_writer(allowed)?;
         // Under the lock, as in `set_head_after`: a purge that ran before it may have removed the
         // commit since a look without the lock.
-        if let Head::Detached(commit) = head {
-            Self::require_commit(commit, objects)?;
+        match head {
+            Head::Detached(commit) => Self::require_commit(commit, objects)?,
+            Head::Branch(name) => self.require_not_checked_out_elsewhere(name)?,
         }
-        self.write_replacing(&self.head_path(), &head.encode(), &self.root)
+        self.write_replacing(&self.head_path(), &head.encode(), &self.local)
     }
 
     fn replace_head(
@@ -3226,8 +3532,9 @@ impl RefStore for FsRefStore {
     ) -> Result<(), RefError> {
         self.require_root()?;
         let _lock = self.lock_writer(allowed)?;
-        if let Head::Detached(commit) = head {
-            Self::require_commit(commit, objects)?;
+        match head {
+            Head::Detached(commit) => Self::require_commit(commit, objects)?,
+            Head::Branch(name) => self.require_not_checked_out_elsewhere(name)?,
         }
         let found = self.head()?;
         if &found != expected {
@@ -3236,7 +3543,7 @@ impl RefStore for FsRefStore {
                 found,
             });
         }
-        self.write_replacing(&self.head_path(), &head.encode(), &self.root)
+        self.write_replacing(&self.head_path(), &head.encode(), &self.local)
     }
 
     fn branch(&self, name: &BranchName) -> Result<Option<CommitId>, RefError> {
@@ -6931,5 +7238,78 @@ mod tests {
             refs.verify(&objects),
             Err(RefError::Corrupt { .. })
         ));
+    }
+
+    // ---- One branch per worktree
+
+    /// The main store of `setup` and a linked state `w` below it whose `HEAD` is `head`.
+    fn with_linked(head: &str) -> (TempDir, FsObjectStore, FsRefStore, PathBuf) {
+        let (dir, objects, refs) = setup();
+        let state = dir.path().join(WORKTREES_DIR).join("w");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("HEAD"), head).unwrap();
+        (dir, objects, refs, state)
+    }
+
+    #[test]
+    fn head_cannot_move_to_a_branch_that_another_worktree_has() {
+        let (_dir, objects, refs, _state) = with_linked("branch feat\n");
+        let granted = Allowed::granted();
+        let feat = Head::Branch(name("feat"));
+        let error = refs.set_head(&feat, &objects, &granted).unwrap_err();
+        assert!(
+            matches!(&error, RefError::CheckedOut { worktree, .. } if worktree == "w"),
+            "{error}"
+        );
+        refs.set_head(&Head::Branch(name("main")), &objects, &granted)
+            .unwrap();
+        let error = refs
+            .replace_head(&Head::Branch(name("main")), &feat, &objects, &granted)
+            .unwrap_err();
+        assert!(matches!(error, RefError::CheckedOut { .. }), "{error}");
+        assert_eq!(refs.head().unwrap(), Head::Branch(name("main")));
+    }
+
+    #[test]
+    fn stray_entries_and_states_without_head_hold_no_branch() {
+        let (dir, objects, refs, _state) = with_linked("branch other\n");
+        let worktrees = dir.path().join(WORKTREES_DIR);
+        fs::write(worktrees.join(".DS_Store"), b"x").unwrap();
+        fs::create_dir_all(worktrees.join("stopped")).unwrap();
+        refs.set_head(&Head::Branch(name("feat")), &objects, &Allowed::granted())
+            .unwrap();
+        let states = refs.other_states().unwrap();
+        let names: Vec<_> = states.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["w"]);
+    }
+
+    #[test]
+    fn a_damaged_head_of_another_worktree_is_an_error_and_not_a_free_branch() {
+        let (_dir, objects, refs, _state) = with_linked("garbage\n");
+        let error = refs
+            .set_head(&Head::Branch(name("feat")), &objects, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Corrupt { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_linked_store_sees_the_main_worktree_as_an_owner_of_its_branch() {
+        let (dir, objects, main, state) = with_linked("branch feat\n");
+        let granted = Allowed::granted();
+        main.set_head(&Head::Branch(name("main")), &objects, &granted)
+            .unwrap();
+        let linked = FsRefStore::for_worktree(dir.path(), &state);
+        let error = linked
+            .set_head(&Head::Branch(name("main")), &objects, &granted)
+            .unwrap_err();
+        assert!(
+            matches!(&error, RefError::CheckedOut { worktree, .. } if worktree == "main"),
+            "{error}"
+        );
+        // The linked HEAD is its own: the move to its own branch is no conflict.
+        linked
+            .set_head(&Head::Branch(name("feat")), &objects, &granted)
+            .unwrap();
+        assert_eq!(main.head().unwrap(), Head::Branch(name("main")));
     }
 }

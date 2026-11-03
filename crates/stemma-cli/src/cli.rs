@@ -72,7 +72,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap::error::ErrorKind;
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand};
 
 use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::conflict::AnyCommit;
@@ -86,7 +86,8 @@ use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, InitError, InitOptions, OpenError, PurgeError, PurgePlan, Purged,
     Repository, RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError,
-    SwitchError, SwitchTarget, Switched, TrackError, Tracking, UpdateError,
+    SwitchError, SwitchTarget, Switched, TrackError, Tracking, UpdateError, WorktreeBranch,
+    WorktreeError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -132,6 +133,71 @@ enum Command {
     },
     /// Remove a secret from the history and the log; without --apply, only show what it would do
     Purge(PurgeArgs),
+    /// Add a second working copy of the repository on its own branch, or list the worktrees
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WorktreeCommand {
+    /// Add a worktree in PATH with a branch checked out; a branch is checked out in one worktree
+    /// only
+    Add(WorktreeAddArgs),
+    /// List the worktrees: name, path, branch, and owner
+    List(WorktreeListArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("target").required(true).multiple(false).args(["branch", "new_branch"])
+))]
+struct WorktreeAddArgs {
+    /// The directory of the new worktree: it does not exist, or it is empty. It may not lie in
+    /// another worktree or hold one
+    #[arg(value_name = "PATH")]
+    path: PathBuf,
+
+    /// The existing branch to check out; no other worktree may have it checked out
+    #[arg(value_name = "BRANCH")]
+    branch: Option<BranchName>,
+
+    /// Make the branch NEW at the commit that HEAD leads to, and check it out
+    #[arg(short = 'b', long = "branch", value_name = "NEW")]
+    new_branch: Option<BranchName>,
+
+    /// The owner of the new working copy, `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; by default the actor
+    #[arg(long, value_name = "ACTOR")]
+    owner: Option<OsString>,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct WorktreeListArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -804,6 +870,19 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The core refused the worktree or could not add or list it. An entry of the log can name a
+    /// worktree that was not added ([`WorktreeError::pointer_moved`] says whether a pointer moved).
+    Worktree(WorktreeError),
+    /// The worktree is added and recorded in the log, but the result could not be written to the
+    /// output. A script must not repeat the command: the worktree exists.
+    WorktreeOutput {
+        /// What was made, as the output would have said it.
+        made: String,
+        /// The error of the output.
+        source: io::Error,
+    },
+    /// The worktrees were read, but the output could not be written.
+    WorktreeWrite(io::Error),
     /// The history cannot be read: a commit is absent, damaged, or the store failed.
     History(HistoryError),
     /// `log` could not read the working-copy pointer.
@@ -908,6 +987,7 @@ impl CliError {
             | Self::TagOutput { .. }
             | Self::TagDeleteOutput { .. }
             | Self::BranchOutput { .. }
+            | Self::WorktreeOutput { .. }
             | Self::StatusNotDurable { .. }
             | Self::PurgedOutput { .. }
             | Self::RestoreOutput {
@@ -936,6 +1016,9 @@ impl CliError {
             Self::Switch(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Branch(error) if error.pointer_moved() => ExitCode::from(3),
+            Self::Worktree(error) if error.pointer_moved() || error.entry().is_some() => {
+                ExitCode::from(3)
+            }
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
             Self::Status(error) if error.not_durable() => ExitCode::from(3),
             Self::Diff(error) if error.not_durable() => ExitCode::from(3),
@@ -959,6 +1042,7 @@ impl CliError {
             Self::TagRefs(error) => by_kind(error.kind()),
             Self::Branch(error) => by_kind(error.kind()),
             Self::BranchRefs(error) => by_kind(error.kind()),
+            Self::Worktree(error) => by_kind(error.kind()),
             // `init` writes the file, so a repository without it lost it: damage, as for `op log`.
             Self::LogRefs(RefError::NoWorkingCopy { .. }) => ExitCode::from(5),
             Self::LogRefs(error) => by_kind(error.kind()),
@@ -990,6 +1074,7 @@ impl CliError {
             | Self::NoCommitToBranch
             | Self::NoSuchBranch(_)
             | Self::BranchWrite { .. }
+            | Self::WorktreeWrite(_)
             | Self::Write { .. } => ExitCode::FAILURE,
         }
     }
@@ -1198,6 +1283,13 @@ impl fmt::Display for CliError {
                     None => Ok(()),
                 }
             }
+            Self::Worktree(error) => error.fmt(f),
+            Self::WorktreeOutput { made, source } => {
+                write!(f, "{made}, but the result could not be written: {source}")
+            }
+            Self::WorktreeWrite(source) => {
+                write!(f, "could not write the list of the worktrees: {source}")
+            }
             Self::Purge(error) => error.fmt(f),
             Self::PurgeOutput(source) => write!(
                 f,
@@ -1354,7 +1446,99 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Tag(args) => tag(args, out).map(|()| ExitCode::SUCCESS),
         Command::Branch(args) => branch(args, out).map(|()| ExitCode::SUCCESS),
         Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Worktree {
+            command: WorktreeCommand::Add(args),
+        } => worktree_add(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Worktree {
+            command: WorktreeCommand::List(args),
+        } => worktree_list(args, out).map(|()| ExitCode::SUCCESS),
     }
+}
+
+/// Adds a worktree (ADR-009): a second working copy with its own HEAD, working-copy commit, and
+/// owner, on a branch that no other worktree has checked out. The core asks the authorizer for
+/// `worktree-add` and writes one entry; the working copy of the calling worktree is neither read nor saved.
+fn worktree_add(args: WorktreeAddArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let branch = match (args.branch, args.new_branch) {
+        (Some(name), None) => WorktreeBranch::Existing(name),
+        (None, Some(name)) => WorktreeBranch::Create(name),
+        // The argument group takes exactly one of the two.
+        _ => unreachable!("the parser requires exactly one of the branch and `-b`"),
+    };
+    let actor = actor(args.actor)?;
+    let owner = match args.owner {
+        Some(text) => Some(self::actor(Some(text))?),
+        None => None,
+    };
+    let repository = open(&args.repository)?;
+    let added = repository
+        .add_worktree(&args.path, &branch, owner.as_ref(), &actor, &AllowAll)
+        .map_err(CliError::Worktree)?;
+    let text = format!(
+        "Added the worktree {} in {} on {} branch {} as entry {}\nOwner: {}\n",
+        added.name,
+        escape_path(&added.path.display().to_string()),
+        if added.created { "the new" } else { "the" },
+        added.branch,
+        added.entry.number(),
+        added.owner
+    );
+    match out.write_all(text.as_bytes()) {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(CliError::WorktreeOutput {
+            made: format!(
+                "added the worktree {} as entry {}",
+                added.name,
+                added.entry.number()
+            ),
+            source,
+        }),
+        Ok(()) => Ok(()),
+    }
+}
+
+/// Lists the worktrees, the main one first: the name, the path, the branch of HEAD (or
+/// `(detached <short id>)`), and the owner, in columns padded to the longest value. The command only
+/// reads.
+fn worktree_list(args: WorktreeListArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let repository = open(&args.repository)?;
+    let rows: Vec<[String; 4]> = repository
+        .worktrees()
+        .map_err(CliError::Worktree)?
+        .into_iter()
+        .map(|info| {
+            let branch = match &info.head {
+                Head::Branch(name) => name.to_string(),
+                Head::Detached(commit) => format!("(detached {})", short_id(*commit)),
+            };
+            [
+                mask_controls(&info.name),
+                escape_path(&info.path.display().to_string()),
+                mask_controls(&branch),
+                info.owner
+                    .map_or_else(|| "-".to_owned(), |owner| mask_controls(&owner.to_string())),
+            ]
+        })
+        .collect();
+    let width = |column: usize| {
+        rows.iter()
+            .map(|row| row[column].chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let (name_width, path_width, branch_width) = (width(0), width(1), width(2));
+    for row in &rows {
+        let text = format!(
+            "{:<name_width$}  {:<path_width$}  {:<branch_width$}  {}",
+            row[0], row[1], row[2], row[3]
+        );
+        match out.write_all(format!("{}\n", text.trim_end()).as_bytes()) {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(source) => return Err(CliError::WorktreeWrite(source)),
+            Ok(()) => {}
+        }
+    }
+    Ok(())
 }
 
 /// The repository of a command that takes a snapshot, which takes the working copy over if

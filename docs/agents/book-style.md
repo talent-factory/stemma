@@ -122,6 +122,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Working-Copy-Commit | Arbeitskopie-Commit, WC-Commit | The commit that holds the state of the working directory (ADR-010) |
 | Arbeitskopie | | The concept: the editable state of a repository |
 | Arbeitsverzeichnis | Arbeitsordner | The directory on disk that holds the files |
+| Worktree | Workspace, zweite Kopie | A further working directory of the repository with its own HEAD, working-copy commit, and owner; the working directory of the root is the main worktree (ADR-009). Not a Git worktree: say \quotation{Git-Worktree} for that |
 | Snapshot | Schnappschuss | Recording the working directory into the Working-Copy-Commit |
 | Verlauf | Historie, History | The commit graph |
 | Merge-Basis | gemeinsamer Vorfahre (alone) | A best common ancestor of two commits (ADR-017) |

@@ -14,8 +14,13 @@
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
 //! ├── oplog-tip       the number and the hash of the last entry of the log (ADR-011)
 //! ├── purge-pending   the journal of a purge, only while it runs or after it stopped (ADR-014)
+//! ├── worktrees/      one state directory for each linked worktree (ADR-009)
+//! │   └── <name>/     its own `HEAD` and `working-copy`, and `location`, the path of the worktree
 //! └── tmp/            temporary files of the object store, the references, and the log
 //! ```
+//!
+//! The directory of a linked worktree holds a file `.stemma` instead of a directory. The file
+//! names the state directory of the worktree, and the state directory names the worktree back.
 
 use std::error::Error;
 use std::fmt;
@@ -38,6 +43,7 @@ mod snapshot;
 mod status;
 mod switch;
 mod track;
+mod worktree;
 
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};
 pub use commit::{CommitError, Committed};
@@ -51,6 +57,7 @@ pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use switch::{Revision, SwitchError, SwitchTarget, Switched};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
+pub use worktree::{AddedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::fault;
@@ -58,7 +65,7 @@ use crate::object::{Commit, CommitId, ObjectId, Tree, METADATA_DIR};
 use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge, TAKE_OVER};
 use crate::refs::{
     encode_working_copy, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError, RefStore,
-    WriteLock,
+    WriteLock, WORKTREES_DIR,
 };
 use crate::store::{
     create_dirs_synced as create_store_dirs, create_temp, flush_directory,
@@ -67,6 +74,8 @@ use crate::store::{
 };
 use crate::verify::RefVerifyError;
 use crate::{Actor, ActorRef, Allowed, Authorizer};
+
+use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` writes, and that a purge and every new entry
 /// of the log move a repository to: version 5, the owner of the working copy (ADR-010).
@@ -194,6 +203,38 @@ fn parse_format(bytes: &[u8]) -> Option<&str> {
     canonical.then_some(digits)
 }
 
+/// Reads the file `format` in the metadata directory `metadata_dir` and checks that this code reads
+/// its version. With `owned` (Unix), the file is read through a handle on the directory that was
+/// checked for its owner (see [`Repository::open_with`]).
+fn check_format(metadata_dir: &Path, owned: bool) -> Result<(), OpenError> {
+    let format_path = metadata_dir.join("format");
+    #[cfg(unix)]
+    let bytes = if owned {
+        read_format_owned(metadata_dir, &format_path)?
+    } else {
+        read_format(&format_path)?
+    };
+    #[cfg(not(unix))]
+    let bytes = {
+        let _ = owned;
+        read_format(&format_path)?
+    };
+    match parse_format(&bytes) {
+        Some(version)
+            if READ_VERSIONS
+                .iter()
+                .any(|known| version == known.to_string()) =>
+        {
+            Ok(())
+        }
+        Some(found) => Err(OpenError::UnsupportedFormat {
+            path: format_path,
+            found: found.to_owned(),
+        }),
+        None => Err(OpenError::MalformedFormat { path: format_path }),
+    }
+}
+
 /// What [`Repository::init`] needs besides the directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitOptions {
@@ -229,7 +270,13 @@ impl Default for InitOptions {
 /// is shared by the clones on purpose.
 #[derive(Debug, Clone)]
 pub struct Repository {
+    /// The directory of the working copy: the one that holds `.stemma`, as a directory in the main
+    /// worktree and as a pointer file in a linked one.
     path: PathBuf,
+    /// The metadata directory that every worktree shares (ADR-009).
+    shared: PathBuf,
+    /// The name of the state directory if this is a linked worktree, `None` for the main one.
+    worktree: Option<String>,
     objects: FsObjectStore,
     refs: FsRefStore,
     oplog: FsOpLog,
@@ -340,6 +387,13 @@ impl Repository {
         let metadata_dir = path.join(METADATA_DIR);
         match fs::metadata(&metadata_dir) {
             Ok(metadata) if metadata.is_dir() => {}
+            // A file, and not a link to one, is the pointer of a linked worktree (ADR-009).
+            Ok(metadata)
+                if metadata.is_file()
+                    && fs::symlink_metadata(&metadata_dir).is_ok_and(|m| m.is_file()) =>
+            {
+                return worktree::open_linked(path, owned);
+            }
             Ok(_) => return Err(OpenError::NotADirectory { path: metadata_dir }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 // A link that leads nowhere is not "no `.stemma`": something is in the way.
@@ -358,32 +412,8 @@ impl Repository {
             }
             Err(error) => return Err(OpenError::io("inspect", &metadata_dir)(error)),
         }
-        let format_path = metadata_dir.join("format");
-        #[cfg(unix)]
-        let bytes = if owned {
-            read_format_owned(&metadata_dir, &format_path)?
-        } else {
-            read_format(&format_path)?
-        };
-        #[cfg(not(unix))]
-        let bytes = {
-            let _ = owned;
-            read_format(&format_path)?
-        };
-        match parse_format(&bytes) {
-            Some(version)
-                if READ_VERSIONS
-                    .iter()
-                    .any(|known| version == known.to_string()) =>
-            {
-                Ok(Self::at(path))
-            }
-            Some(found) => Err(OpenError::UnsupportedFormat {
-                path: format_path,
-                found: found.to_owned(),
-            }),
-            None => Err(OpenError::MalformedFormat { path: format_path }),
-        }
+        check_format(&metadata_dir, owned)?;
+        Ok(Self::at(path))
     }
 
     /// Opens the repository that `start` lies in: the one at `start`, as [`open`](Self::open)
@@ -452,8 +482,11 @@ impl Repository {
                 // And on the path after an open that succeeded, so that a `.stemma` that appeared
                 // after the first look, or one that the first look could not inspect, is not used
                 // unchecked; on Unix the handle was checked as well.
-                if opened.is_ok() {
+                if let Ok(repository) = &opened {
                     trusted(&at_start)?;
+                    if repository.worktree.is_some() {
+                        trusted(&repository.shared)?;
+                    }
                 }
                 return opened.map(|repository| Discovered {
                     repository,
@@ -511,6 +544,9 @@ impl Repository {
             let repository = Self::open_with(root, true)?;
             // As at the start: the path again after the open.
             trusted(&metadata_dir)?;
+            if repository.worktree.is_some() {
+                trusted(&repository.shared)?;
+            }
             return Ok(Discovered {
                 repository,
                 subdirectory: parts.join("/"),
@@ -527,9 +563,25 @@ impl Repository {
         let metadata_dir = path.join(METADATA_DIR);
         Self {
             path: path.to_path_buf(),
+            shared: metadata_dir.clone(),
+            worktree: None,
             objects: FsObjectStore::new(&metadata_dir),
             refs: FsRefStore::new(&metadata_dir),
             oplog: FsOpLog::new(metadata_dir),
+            take_over: None,
+        }
+    }
+
+    /// The repository of the linked worktree in `path`, whose state directory is
+    /// `shared/worktrees/<name>`. Nothing is checked.
+    fn linked(path: &Path, shared: &Path, name: &str) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            shared: shared.to_path_buf(),
+            worktree: Some(name.to_owned()),
+            objects: FsObjectStore::new(shared),
+            refs: FsRefStore::for_worktree(shared, shared.join(WORKTREES_DIR).join(name)),
+            oplog: FsOpLog::new(shared),
             take_over: None,
         }
     }
@@ -543,9 +595,15 @@ impl Repository {
         &self.path
     }
 
-    /// The metadata directory `.stemma/`.
+    /// The metadata directory `.stemma/`. A linked worktree has the one of the main worktree: the
+    /// objects, the branches, the tags, the log, and the lock are shared (ADR-009).
     pub fn metadata_dir(&self) -> PathBuf {
-        self.path.join(METADATA_DIR)
+        self.shared.clone()
+    }
+
+    /// The name of this worktree if it is a linked one, `None` for the main worktree.
+    pub fn worktree_name(&self) -> Option<&str> {
+        self.worktree.as_deref()
     }
 
     /// The object store of this repository.
@@ -2309,10 +2367,37 @@ pub enum OpenError {
         /// The `.stemma` that was found.
         found: PathBuf,
     },
-    /// `.stemma` exists, but it is not a directory: it is a file, or a link that leads nowhere.
+    /// `.stemma` exists, but it is neither a directory nor the pointer file of a worktree: it is
+    /// another file, or a link that leads nowhere.
     NotADirectory {
         /// The `.stemma` that is in the way.
         path: PathBuf,
+    },
+    /// The file `.stemma` of a linked worktree is not in canonical form: it is not UTF-8, is
+    /// long, or does not name a state directory `worktrees/<name>` of a `.stemma` by an absolute
+    /// path (ADR-009).
+    MalformedPointer {
+        /// The pointer file.
+        path: PathBuf,
+    },
+    /// The state directory that the pointer file of a linked worktree names does not exist. The
+    /// worktree was removed from the repository, or the repository was moved.
+    MissingWorktreeState {
+        /// The pointer file.
+        path: PathBuf,
+        /// The state directory that it names.
+        state: PathBuf,
+    },
+    /// The state directory of a linked worktree names another directory than the one that holds
+    /// the pointer file: the worktree was moved or copied (ADR-009).
+    WorktreeMoved {
+        /// The directory of the worktree, with its links resolved.
+        path: PathBuf,
+        /// The state directory that the pointer file names.
+        state: PathBuf,
+        /// The directory that the state directory names, or `None` if its file `location` is
+        /// missing or not readable as a path.
+        recorded: Option<String>,
     },
     /// `.stemma` has no file `format`.
     MissingFormat {
@@ -2394,6 +2479,9 @@ impl OpenError {
             | Self::AtVolumeRoot { .. }
             | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
+            | Self::MalformedPointer { .. }
+            | Self::MissingWorktreeState { .. }
+            | Self::WorktreeMoved { .. }
             | Self::MissingFormat { .. }
             | Self::FormatNotRegular { .. }
             | Self::FormatOwner { .. }
@@ -2455,6 +2543,37 @@ impl fmt::Display for OpenError {
                 "`{}` exists, but it is not a directory (a file, or a link that leads nowhere)",
                 path.display()
             ),
+            Self::MalformedPointer { path } => write!(
+                f,
+                "the file `{}` of a worktree is not in canonical form: it should hold \
+                 `{POINTER_PREFIX}` and the absolute path of the state directory, which is \
+                 `.stemma/worktrees/<name>` of the main worktree",
+                path.display()
+            ),
+            Self::MissingWorktreeState { path, state } => write!(
+                f,
+                "the worktree of `{}` has no state directory `{}`: it was removed from the \
+                 repository or the repository was moved",
+                path.display(),
+                state.display()
+            ),
+            Self::WorktreeMoved {
+                path,
+                state,
+                recorded,
+            } => {
+                write!(
+                    f,
+                    "the worktree `{}` does not match its state directory `{}`, which belongs to ",
+                    path.display(),
+                    state.display()
+                )?;
+                match recorded {
+                    Some(recorded) => write!(f, "`{recorded}`")?,
+                    None => f.write_str("no directory that can be read")?,
+                }
+                f.write_str(": it was moved or copied; move it back, or add the worktree again")
+            }
             Self::MissingFormat { path } => {
                 write!(f, "the repository has no format file `{}`", path.display())
             }
@@ -2517,6 +2636,9 @@ impl Error for OpenError {
             | Self::AtVolumeRoot { .. }
             | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
+            | Self::MalformedPointer { .. }
+            | Self::MissingWorktreeState { .. }
+            | Self::WorktreeMoved { .. }
             | Self::MissingFormat { .. }
             | Self::FormatNotRegular { .. }
             | Self::FormatOwner { .. }
