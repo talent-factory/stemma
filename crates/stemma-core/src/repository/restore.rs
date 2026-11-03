@@ -12,7 +12,8 @@ use std::error::Error;
 use std::fmt;
 
 use super::checkout::{CheckoutError, CheckoutPlan};
-use super::snapshot::{read_commit, SnapshotError};
+use super::conflicted;
+use super::snapshot::{read_any_commit, SnapshotError};
 use super::{now, Repository, UpdateError};
 use crate::object::{CommitId, TreeId};
 use crate::oplog::{
@@ -418,8 +419,12 @@ impl Repository {
     }
 
     fn tree_of(&self, commit: CommitId) -> Result<TreeId, RestoreError> {
-        read_commit(self.objects(), commit)
-            .map(|commit| commit.tree())
+        // A commit with an open conflict is written as the tree that shows it: the text with
+        // markers at each conflicted path (ADR-013). The snapshot that follows keeps the conflict
+        // as long as the files are not edited.
+        let commit = read_any_commit(self.objects(), commit).map_err(RestoreError::Snapshot)?;
+        conflicted::view(self.objects(), &commit.tree_sum())
+            .map(|view| view.tree)
             .map_err(RestoreError::Snapshot)
     }
 
@@ -802,6 +807,7 @@ impl Error for RestoreError {
 mod tests {
     use std::fs;
 
+    use super::super::snapshot::read_commit;
     use super::*;
     use crate::fault;
     use crate::repository::InitOptions;
@@ -904,6 +910,50 @@ mod tests {
         assert_eq!(numbers(&repository).len(), count + 1);
         let moved = entry.change().unwrap().working_copy().unwrap();
         assert_eq!(moved.after(), Some(&old));
+    }
+
+    #[test]
+    fn a_restore_to_a_conflicted_commit_writes_the_text_and_the_snapshot_keeps_the_conflict() {
+        use crate::testutil::conflicted_commit;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (conflict, text) = conflicted_commit(&repository);
+        let before = repository.refs().working_copy().unwrap();
+        let moved = repository
+            .update_working_copy(
+                &OperationName::try_new("snapshot").unwrap(),
+                before,
+                conflict,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap()
+            .unwrap();
+        write(&dir, "a.txt", &String::from_utf8(text.clone()).unwrap());
+        write(&dir, "b.txt", "same\n");
+        // The conflict is resolved by an edit, and that is undone by a restore of the entry that
+        // saved the edit.
+        write(&dir, "a.txt", "merged\n");
+        let resolved = repository
+            .snapshot(&actor(), &AllowAll)
+            .unwrap()
+            .expect("the edit is saved");
+        assert_ne!(repository.refs().working_copy().unwrap(), conflict);
+        let (saved, _) = done(restore(&repository, resolved.number()));
+        assert!(saved.is_none(), "nothing was unsaved");
+        assert_eq!(repository.refs().working_copy().unwrap(), conflict);
+        assert_eq!(read(&dir, "a.txt").as_bytes(), text.as_slice());
+        assert_eq!(read(&dir, "b.txt"), "same\n");
+        // The text is the one that Stemma wrote, so the snapshot keeps the conflict.
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+        assert_eq!(repository.refs().working_copy().unwrap(), conflict);
+        // A restore to the start brings back a state without a conflict, and the other way too.
+        let (_, back) = done(restore(&repository, moved.number()));
+        assert_eq!(repository.refs().working_copy().unwrap(), before);
+        assert!(!dir.path().join("a.txt").exists());
+        done(restore(&repository, back.number()));
+        assert_eq!(repository.refs().working_copy().unwrap(), conflict);
+        assert_eq!(read(&dir, "a.txt").as_bytes(), text.as_slice());
     }
 
     #[test]

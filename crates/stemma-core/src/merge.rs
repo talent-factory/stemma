@@ -294,9 +294,9 @@ pub fn merge_trees(
 /// One value of a name in one term of the sum. A name that a term does not have is `None` where
 /// this is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Slot {
-    mode: EntryMode,
-    id: ObjectId,
+pub(crate) struct Slot {
+    pub(crate) mode: EntryMode,
+    pub(crate) id: ObjectId,
 }
 
 struct Merger<'a> {

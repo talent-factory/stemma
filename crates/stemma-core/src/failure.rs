@@ -282,10 +282,9 @@ impl Classify for DiffError {
             Self::AfterSnapshot { source, .. } => source.kind(),
             // An object that a commit of the repository names is not there or does not parse.
             Self::Missing { .. } | Self::Damaged { .. } => FailureKind::Damaged,
-            Self::Conflicted { .. }
-            | Self::UnknownCommit { .. }
-            | Self::InvalidPath { .. }
-            | Self::NoSuchPath { .. } => FailureKind::Other,
+            Self::UnknownCommit { .. } | Self::InvalidPath { .. } | Self::NoSuchPath { .. } => {
+                FailureKind::Other
+            }
         }
     }
 }
@@ -743,7 +742,6 @@ mod tests {
         let id = CommitId::new(Blob::new("conflict").id().object_id());
         // A stored `commit2` is valid, so the repository is not told to be damaged.
         assert_eq!(SnapshotError::Conflicted { id }.kind(), FailureKind::Other);
-        assert_eq!(DiffError::Conflicted { id }.kind(), FailureKind::Other);
         assert_eq!(
             StatusError::Snapshot(SnapshotError::Conflicted { id }).kind(),
             FailureKind::Other

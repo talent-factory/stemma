@@ -74,6 +74,13 @@ the change from each removed tree to the added tree after it. Equal added and re
 cancel, so a conflict never nests. One tree is no conflict. (Summe von Trees)
 _Avoid_: Merge list, tree list (for the algebra)
 
+**Conflict view**:
+The one tree that shows a commit with an open conflict to the working directory, `status`,
+`diff`, and the checkout layer: at each conflicted path a file with the text of the markers, at
+every other path its value. A snapshot keeps a conflicted path only if its file equals that text;
+any other text resolves the path. (Konfliktansicht)
+_Avoid_: Marker file, conflict tree
+
 **Tree merge**:
 The merge of two commits as a function on their trees: it sums the trees of the two commits and of
 their merge bases, decides every path, and returns a sum of trees, which is one tree if nothing

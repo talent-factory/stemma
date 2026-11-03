@@ -229,6 +229,41 @@ art, not a template (ADR-015).
 - **Conflicts can be data in a commit.** This model allows it, because every state is a commit.
   The conflict model of phase 3 makes it so: a conflict is a sum of trees in a `commit2`
   (ADR-005), and the algebra is in `conflict.rs` of the core.
+- **A conflict in the working copy is a view, and the snapshot compares bytes** *(confirmed;
+  STEMMA-153, STEMMA-157, built in STEMMA-169)*. The directory holds files, so a commit with an
+  open conflict is shown as one tree: each path whose values do not cancel is a file that holds
+  the text with markers of `marker_text`, and every other path holds its value. The same tree
+  is what `status`, `diff`, and the checkout layer (ADR-013) work on, and one function makes it.
+  - **A path is conflicted** if the values of its name in the terms of the sum do not cancel and
+    are not all directories. A directory is entered, so the names below it are paths of their
+    own. A term that is a directory stands against a file or against nothing: it has no content
+    of its own, and the text shows it as the line `(directory <id>)`, with the ID of its tree, so that two
+    different directories never cancel; the files below it stay in
+    the commit and are not written. A symbolic link shows as its target. If the contents
+    cancel and only the modes differ, there is no text to show: the file holds the content that
+    all of them have, and its mode counts in the comparison below. If the contents cancel and
+    the path is absent in the view (a mode change against a deletion), the view holds no file;
+    the conflict shows in `status` and is resolved by creating the file and tracking it. The
+    mode of a file with markers is not recorded: a `chmod` on it changes nothing.
+  - **The snapshot keeps a conflict only on an exact match.** If the file at a conflicted path
+    has the bytes of the text that Stemma wrote, the path keeps its values; the new commit holds
+    the same terms for it. Any other text resolves the path with exactly that text, in every
+    term, and so does a file that is gone. Stemma does not parse markers, so a half-edited
+    marker (one line removed, a marker left in a resolved file) counts as a resolution, and a
+    file that was resolved by hand but still holds markers stays resolved. Parsing would not
+    save these cases either.
+  - **A change next to a conflict** is made in every term. A file that is not conflicted and
+    that is edited gets the new content in all terms of the sum, so the conflict stays what it
+    was. When the last conflicted path is resolved, the sum cancels down to one tree and the
+    snapshot writes a plain `commit` again, with the same change ID (ADR-005).
+  - **A commit with an open conflict is allowed.** `commit` succeeds with exit code 0 and
+    says so in its one line; the new working-copy commit holds the same sum of trees. A gate
+    that refuses to merge or to push a conflict belongs to the merge gate (phase 4).
+  - **`status` and `log` mark it.** `status` has a section `Conflicts` (paths and the number of
+    sides of each) before `Changes`. `log` marks the commit in its header line with
+    `conflict (N sides)`. The two fields are added to `--json` without a new `schema` (ADR-018).
+  - **`switch` still refuses** a working-copy commit or a target that holds a conflict
+    (STEMMA-19).
 - **A working copy belongs to one actor** *(confirmed)*. A snapshot is made by the actor of the
   command that takes it, and the log names that actor. A snapshot saves whatever is in the
   directory, so when two actors (a human and an agent, say) work in one directory, a change of
