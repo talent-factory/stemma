@@ -475,9 +475,9 @@ const MIN_MARKER_LEN: usize = 7;
 /// order. The snapshot compares the file with the text of the sum that the commit stores, so the
 /// order of the stored sum is the one that counts.
 ///
-/// Nothing calls it yet. The working copy and `diff` are to show this text, and the snapshot is
-/// to decide whether a file is still the conflict by comparing the bytes of the file with it;
-/// Stemma does not parse markers.
+/// The rewrite of the working-copy commit writes this text to the directory (ADR-010). `diff` is
+/// to show it too, and the snapshot is to decide whether a file is still the conflict by comparing
+/// the bytes of the file with it; Stemma does not parse markers.
 ///
 /// The form, for a sum of three terms:
 ///

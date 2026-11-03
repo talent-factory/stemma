@@ -33,7 +33,8 @@ aufhebenden Paaren aufgefüllt.
 Der Text mit Markierungen entsteht aus einer einzigen Funktion der Summe.
 Er soll nur auf der Platte und im \type{diff} erscheinen; der Snapshot soll Bytes vergleichen und
 keine Markierungen lesen.
-Noch ruft ihn nichts auf.
+Die Arbeitskopie schreibt ihn beim Umschreiben auf eine neue Basis
+(\in{Abschnitt}[sec:rewrite-wc]).
 Die Regel, dass zwei Seiten mit gleicher Änderung sofort als gelöst gelten, gehört nicht zur
 Algebra, weil sie beim erneuten Zusammenführen Information verliert.
 Noch schreibt kein Befehl einen solchen Commit.
@@ -291,6 +292,64 @@ neuen im Weg, bis sie gelöscht ist.
 \type{main} in \type{Main} umzubenennen ein Namenskonflikt; der Befehl lehnt es ab, statt die
 Datei zu überschreiben.
 \item Besteht das Journal eines Purge, lehnt der Befehl jede Änderung ab (ADR-014).
+\stopitemize
+\stopinfobox
+
+\section[sec:rewrite-wc]{Die Arbeitskopie auf eine neue Basis umschreiben}
+Wenn der Branch eine neue Spitze bekommt, muss die Arbeitskopie mitgehen.
+Das gilt nach einem Merge, nach einem Rebase und später für einen \type{switch},
+der Änderungen mitnimmt.
+Alle drei brauchen denselben Schritt: Der Working-Copy-Commit $W$ mit dem alten Elternteil $P$
+wird durch einen Commit $W'$ auf der neuen Spitze $T$ ersetzt.
+Der Kern bietet diesen Schritt als eine Methode an
+(\type{Repository::rewrite_working_copy}); einen eigenen Befehl dafür gibt es nicht.
+
+Der Inhalt von $W'$ ist der Drei-Wege-Merge von $W$ über $P$ mit $T$ als anderer Seite.
+Als Summe von Trees (\in{Abschnitt}[sec:tree-merge]) ist das $T + (W - P)$.
+Ein Konflikt dabei ist Daten des Commits $W'$, kein Fehler.
+Trägt $W$ selbst einen offenen Konflikt, durchläuft er dieselbe Rechnung:
+Seine Terme heben sich gegen die neuen auf, oder die Summe wird länger.
+Führt die neue Basis eine Seite des Konflikts wieder heraus, fällt er weg,
+und $W'$ ist ein gewöhnlicher Commit.
+
+\startitemize[n]
+\item Der Schritt fragt den Autorisierer nach \type{rewrite}
+und nimmt die Sperre der Referenzen.
+\item Er speichert die verfolgten Dateien in einem Snapshot.
+\item Er bildet $W'$ und schreibt den Commit in den Speicher.
+$W'$ hat $T$ als einzigen Elternteil und behält Change-ID, Autor, Zeit und Beschreibung von $W$.
+\item Er plant die Dateien, schreibt den Eintrag ins Log, bringt das Verzeichnis auf den Tree von
+$W'$ und bewegt zuletzt den Zeiger des Working-Copy-Commits (ADR-013).
+\stopitemize
+
+Der Schritt bewegt nur den Working-Copy-Commit.
+HEAD und die Branches bleiben, wo sie sind; wer sie im selben Zug bewegt, schreibt einen Eintrag
+für alle Bewegungen.
+Die ersetzten Commits bleiben im Log (ADR-011),
+und \type{op restore} macht den Schritt rückgängig.
+
+Ein Working-Copy-Commit ohne Änderung wird nicht mitgenommen.
+Er wird durch einen leeren Commit auf $T$ mit einer neuen Change-ID ersetzt,
+wie ihn \type{switch} anlegt, denn eine leere Arbeitskopie hat keine Änderung,
+der ein Review folgen könnte.
+
+Bei einem Konflikt enthält das Verzeichnis die Datei jedes entschiedenen Pfads
+und für jeden unentschiedenen Pfad den Text mit Markierungen.
+Damit sind die konkurrierenden Werte sichtbar, ohne dass der Commit sie als Text speichert.
+
+\startinfobox
+{\bf Grenzfälle des Umschreibens.}
+\startitemize
+\item Bricht der Schritt ab, nachdem die Dateien geschrieben sind, aber bevor der Zeiger sich
+bewegt, nennt die Fehlermeldung den Eintrag und verlangt den gleichen Aufruf noch einmal.
+Der zweite Aufruf nimmt keinen Snapshot, der die neuen Dateien als Änderungen des alten Commits
+speichern würde, und verwendet den Commit des abgebrochenen Eintrags wieder.
+\item Ein Working-Copy-Commit mit mehr als einem Elternteil lehnt der Schritt ab,
+weil seine Basis noch nicht festgelegt ist.
+\item Ein Pfad, bei dem ein Verzeichnis gegen eine Datei steht, erscheint im Text als Datei.
+Die Seite mit dem Verzeichnis gilt darin als abwesend; der Commit behält die Trees.
+\item Den Snapshot eines Working-Copy-Commits mit offenem Konflikt lehnt der Kern noch ab.
+Was ein Befehl mit einem Konflikt tut, ist offen.
 \stopitemize
 \stopinfobox
 

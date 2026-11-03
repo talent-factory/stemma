@@ -270,6 +270,32 @@ art, not a template (ADR-015).
   actor that holds the lease of a branch is the natural owner of the working copy that follows
   it; that link is part of the enforcement in the open items.
 
+- **The working-copy commit follows a new base by a rewrite** *(confirmed; STEMMA-171, from the
+  resolutions of STEMMA-154 and STEMMA-155)*. When the branch gets a new tip `T` (a merge, a
+  rebase, later a `switch` that carries changes), the working-copy commit `W` with the old parent
+  `P` is replaced by `W'`, one mechanism for all of them.
+  - *The content* is the three-way merge `T + (W - P)` of the trees as a sum (ADR-005), so a
+    conflict of the carry is data of `W'`, and a `W` with an open conflict goes through the same
+    algebra: its terms cancel against the new ones, or the sum grows. A `W` without a parent has
+    the empty tree as its base. A `W` with several parents is refused until a rule for its base
+    exists.
+  - *The identity.* `W'` has `T` as its only parent and keeps the change ID, the author, the
+    time, and the message of `W`. A `W` that holds no change (its sum equals that of `P`) is not
+    carried: it is replaced by an empty commit on `T` with a new change ID, as `switch` starts
+    one, because an empty working copy has no change that a review could follow.
+  - *The order* is that of ADR-013: snapshot, plan of the files, entry, files, pointer, under one
+    lock. The mechanism moves the working-copy commit only and writes the entry `rewrite`; a
+    caller that moves a branch or HEAD at the same time writes one entry for all moves. A stop
+    after the files is finished by the same call, which takes no snapshot and uses the commit of
+    the stopped entry again, as a repeated `switch` does.
+  - *The directory* of a conflicted `W'` holds the file of every decided path and the text of
+    `marker_text` for every path that is not decided, so the competing values are visible. A
+    directory term of a conflict of types counts as absent in this text. The snapshot of such a
+    working-copy commit is not decided yet (STEMMA-19): it is refused with the error for a
+    `commit2`.
+  - *Only the working-copy commit moves.* The other branches keep their commits, and the log keeps
+    the replaced ones (ADR-011).
+
 ## Open items
 
 - [x] `Commit::rewrite`, which takes the parents and the change ID from the commit it replaces
@@ -278,11 +304,13 @@ art, not a template (ADR-015).
 - [x] A branch that someone moved to an older version of the working-copy commit that has a
       message, or a working-copy commit that `op restore` put back, looked like a `commit` that
       stopped, and the next `commit` finished it. The log decides it now (STEMMA-76).
-- [ ] A commit with an empty tree as an allowed empty commit, a commit while HEAD names a commit
-      (its message points to `switch -c`), and a commit while the branch has moved (a rebase,
-      phase 3) are refused today.
-- [ ] `switch` refuses a working-copy commit that holds changes. Carrying them to the target is a
-      slice of its own (phase 3).
+- [ ] A commit with an empty tree as an allowed empty commit, and a commit while HEAD names a
+      commit (its message points to `switch -c`), are refused today.
+- [x] A commit while the branch has moved (a rebase, a merge). The working-copy commit follows the
+      branch: `Repository::rewrite_working_copy` replaces it by a commit on the new tip, so the
+      branch has not moved away from its parent (STEMMA-171, below).
+- [ ] `switch` refuses a working-copy commit that holds changes. Carrying them to the target uses
+      the rewrite below and is a slice of its own (phase 3).
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
       does when the working-copy commit has one (phase 3).
 
