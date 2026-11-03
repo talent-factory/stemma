@@ -84,10 +84,10 @@ use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, CommitError, Committed, Comparison, Content, Diff,
-    DiffError, Discovered, InitError, InitOptions, OpenError, PurgeError, PurgePlan, Purged,
-    Repository, RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError,
-    SwitchError, SwitchTarget, Switched, TrackError, Tracking, UpdateError, WorktreeBranch,
-    WorktreeError,
+    DiffError, Discovered, InitError, InitOptions, MergeBranchError, MergeKind, Merged, OpenError,
+    PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan, Revision, SnapshotError,
+    Status, StatusError, SwitchError, SwitchTarget, Switched, TrackError, Tracking, UpdateError,
+    WorktreeBranch, WorktreeError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -115,6 +115,9 @@ enum Command {
     Commit(CommitArgs),
     /// Change the branch that HEAD names, or detach HEAD, while the working-copy commit is empty
     Switch(SwitchArgs),
+    /// Merge a branch into the branch that HEAD names: a fast-forward if HEAD's branch is behind,
+    /// nothing if the branch is merged already, otherwise a merge commit
+    Merge(MergeArgs),
     /// Show what the working copy changes and which files are not tracked
     Status(StatusArgs),
     /// Show the changes between two commits, or between a commit and the working copy
@@ -561,6 +564,38 @@ struct SwitchArgs {
     take_over: bool,
 }
 
+#[derive(Debug, Args)]
+struct MergeArgs {
+    /// The branch to merge into the branch that HEAD names
+    #[arg(value_name = "BRANCH")]
+    branch: BranchName,
+
+    /// The message of the merge commit; by default `Merge BRANCH into CURRENT`. A fast-forward
+    /// makes no commit and does not use it
+    #[arg(short = 'm', long = "message", value_name = "MESSAGE")]
+    message: Option<String>,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. The snapshot and the merge are made by this actor
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
+}
+
 /// Reads a branch name, or a commit by its ID if the text starts with `b3:` (a branch name cannot
 /// hold a colon).
 fn parse_revision(text: &str) -> Result<Revision, String> {
@@ -779,6 +814,18 @@ enum CliError {
     /// The switch was refused or stopped. [`SwitchError::pointer_moved`] says whether a pointer
     /// moved; the error says what is in the log and what state the files are in.
     Switch(SwitchError),
+    /// The merge was refused or stopped. [`MergeBranchError::pointer_moved`] says whether a pointer
+    /// moved; the error says what is in the log and what state the files are in.
+    Merge(MergeBranchError),
+    /// The merge was made or was not needed, but the result could not be written to the output.
+    MergeOutput {
+        /// The entry of the merge, if one was made.
+        merged: Option<u64>,
+        /// The entry of the snapshot that came first, if one was made.
+        snapshot: Option<u64>,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The switch was made or was not needed, but the result could not be written to the output.
     SwitchOutput {
         /// The entry of the switch, if one was made.
@@ -967,6 +1014,7 @@ impl CliError {
             | Self::Diff(DiffError::Snapshot(error))
             | Self::Restore(RestoreError::Snapshot(error))
             | Self::Switch(SwitchError::Snapshot(error))
+            | Self::Merge(MergeBranchError::Snapshot(error))
             | Self::ApplyPurge(ApplyPurgeError::Snapshot(error)) => Some(error),
             _ => None,
         }
@@ -1001,6 +1049,12 @@ impl CliError {
             }
             | Self::SwitchOutput {
                 snapshot: Some(_), ..
+            }
+            | Self::MergeOutput {
+                merged: Some(_), ..
+            }
+            | Self::MergeOutput {
+                snapshot: Some(_), ..
             } => ExitCode::from(3),
             // The take-over is made, but not flushed; the command stopped there.
             error
@@ -1014,6 +1068,7 @@ impl CliError {
             }
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Switch(error) if error.pointer_moved() => ExitCode::from(3),
+            Self::Merge(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Branch(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Worktree(error) if error.pointer_moved() || error.entry().is_some() => {
@@ -1037,6 +1092,7 @@ impl CliError {
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
             Self::Switch(error) => by_kind(error.kind()),
+            Self::Merge(error) => by_kind(error.kind()),
             Self::History(error) => by_kind(error.kind()),
             Self::Tag(error) => by_kind(error.kind()),
             Self::TagRefs(error) => by_kind(error.kind()),
@@ -1065,6 +1121,7 @@ impl CliError {
             | Self::DiffOutput { .. }
             | Self::RestoreOutput { .. }
             | Self::SwitchOutput { .. }
+            | Self::MergeOutput { .. }
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
             | Self::LogWrite { .. }
@@ -1244,6 +1301,25 @@ impl fmt::Display for CliError {
             }
             Self::Restore(error) => error.fmt(f),
             Self::Switch(error) => error.fmt(f),
+            Self::Merge(error) => error.fmt(f),
+            Self::MergeOutput {
+                merged,
+                snapshot,
+                source,
+            } => {
+                match merged {
+                    Some(entry) => write!(f, "merged as entry {entry} of the operation log")?,
+                    None => write!(f, "nothing was merged")?,
+                }
+                if let Some(saved) = snapshot {
+                    write!(f, " (the working copy was saved first as entry {saved})")?;
+                }
+                write!(f, ", but the result could not be written: {source}")?;
+                match merged {
+                    Some(entry) => write!(f, "; to undo it run `stemma op restore {entry}`"),
+                    None => Ok(()),
+                }
+            }
             Self::SwitchOutput {
                 switched,
                 snapshot,
@@ -1431,6 +1507,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Track(args) => track(args, out).map(|()| ExitCode::SUCCESS),
         Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
         Command::Switch(args) => switch(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Merge(args) => merge(args, out).map(|()| ExitCode::SUCCESS),
         Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
         Command::Diff(args) => diff(args, out),
         Command::Log(args) => show_log(args, out).map(|()| ExitCode::SUCCESS),
@@ -1668,6 +1745,147 @@ fn switched_text(
         entry.number(),
         entry.number()
     )
+}
+
+/// Merges a branch into the branch that HEAD names (ADR-010): a fast-forward if HEAD's branch is
+/// behind, nothing if the branch is merged already, otherwise a merge commit. A conflict is no
+/// failure; the commit records it, and the output lists its paths. The core takes the snapshot
+/// first and carries the working-copy commit onto the new tip. The result is written before an
+/// error that follows a merge that was made (exit code 3), so that a script finds the entry that
+/// undoes it. A closed pipe is no failure for "already up to date" without a snapshot entry, and
+/// it is one after a merge or a snapshot entry, because the output is the only place that names
+/// the entry.
+fn merge(args: MergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
+    match repository.merge(&args.branch, args.message.as_deref(), &actor, &AllowAll) {
+        Ok(Merged::UpToDate { snapshot }) => write_merge(
+            out,
+            &format!(
+                "{}Already up to date with {}\n",
+                saved_text(snapshot.as_deref()),
+                args.branch
+            ),
+            None,
+            snapshot.as_deref().map(oplog::Entry::number),
+        ),
+        Ok(done @ Merged::Done { .. }) => {
+            let Merged::Done {
+                snapshot, entry, ..
+            } = &done
+            else {
+                unreachable!("the pattern is `Done`")
+            };
+            write_merge(
+                out,
+                &merged_text(&done),
+                Some(entry.number()),
+                snapshot.as_deref().map(oplog::Entry::number),
+            )
+        }
+        Err(error) => {
+            if error.made() {
+                if let (Some(entry), Some(result)) = (error.entry(), error.result()) {
+                    // The message of the error names the entries too, so a failure to write is
+                    // not reported on top of it.
+                    let text = merge_result_text(
+                        error.snapshot(),
+                        entry,
+                        (&result.branch, &args.branch),
+                        (result.kind, result.commit),
+                        &result.conflicts,
+                    );
+                    let _ = out.write_all(text.as_bytes());
+                }
+            }
+            Err(CliError::Merge(error))
+        }
+    }
+}
+
+/// Writes the result of a merge. `merged` and `snapshot` are the entries that the call made.
+fn write_merge(
+    out: &mut dyn Write,
+    text: &str,
+    merged: Option<u64>,
+    snapshot: Option<u64>,
+) -> Result<(), CliError> {
+    match out.write_all(text.as_bytes()) {
+        Ok(()) => Ok(()),
+        // The reader of a pipe has had enough, and nothing was made that only this text names.
+        Err(error)
+            if error.kind() == io::ErrorKind::BrokenPipe
+                && merged.is_none()
+                && snapshot.is_none() =>
+        {
+            Ok(())
+        }
+        Err(source) => Err(CliError::MergeOutput {
+            merged,
+            snapshot,
+            source,
+        }),
+    }
+}
+
+/// What a merge did: the snapshot, the move, the conflicts, and how to undo it.
+fn merged_text(done: &Merged) -> String {
+    let Merged::Done {
+        snapshot,
+        entry,
+        branch,
+        merged,
+        kind,
+        commit,
+        conflicts,
+        ..
+    } = done
+    else {
+        return String::new();
+    };
+    merge_result_text(
+        snapshot.as_deref(),
+        entry,
+        (branch, merged),
+        (*kind, *commit),
+        conflicts,
+    )
+}
+
+/// The text of a merge that was made, from its parts: `branches` are the branch that moved and
+/// the branch that was merged in.
+fn merge_result_text(
+    snapshot: Option<&oplog::Entry>,
+    entry: &oplog::Entry,
+    branches: (&BranchName, &BranchName),
+    (kind, commit): (MergeKind, CommitId),
+    conflicts: &[String],
+) -> String {
+    let (branch, merged) = branches;
+    let what = match kind {
+        MergeKind::FastForward => {
+            format!("Fast-forwarded {branch} to {merged} (commit {commit})")
+        }
+        MergeKind::MergeCommit => format!("Merged {merged} into {branch} (commit {commit})"),
+    };
+    let mut text = format!(
+        "{}{what} as entry {}\n",
+        saved_text(snapshot),
+        entry.number()
+    );
+    if !conflicts.is_empty() {
+        text.push_str("Conflicts:\n");
+        for path in conflicts {
+            text.push_str(&format!("C {}\n", escape_path(path)));
+        }
+    }
+    text.push_str(&format!(
+        "To undo it: stemma op restore {}\n",
+        entry.number()
+    ));
+    text
 }
 
 /// Purges a blob (ADR-014), or shows what that would do. The core refuses an agent before it

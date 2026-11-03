@@ -37,7 +37,7 @@ use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::merge::{merge_trees, MergeError};
 use crate::object::{CommitId, Kind, ObjectId, Tree, TreeId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, TAKE_OVER};
-use crate::refs::{Logged, RefError};
+use crate::refs::{BranchName, Logged, RefError};
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
 
@@ -72,12 +72,12 @@ pub enum Rewritten {
 }
 
 /// A new working-copy commit, written to the store and not yet named by a pointer.
-struct Carried {
-    id: CommitId,
+pub(super) struct Carried {
+    pub(super) id: CommitId,
     /// The tree that the directory is to hold: the tree of the commit, or, for a conflict, the
     /// tree with the text of the conflicts in place of the conflicted files.
-    display: TreeId,
-    conflicts: Vec<String>,
+    pub(super) display: TreeId,
+    pub(super) conflicts: Vec<String>,
 }
 
 impl Repository {
@@ -209,7 +209,7 @@ impl Repository {
             current,
             carried.id,
             self.objects(),
-            || self.write_rewrite(&lock, &operation, current, &carried, actor),
+            || self.write_carried(&lock, &operation, current, &carried, vec![], actor),
         );
         let made = |entry: Entry| Rewritten::Done {
             snapshot: snapshot.clone(),
@@ -236,13 +236,16 @@ impl Repository {
     }
 
     /// The step of the move, under the lock: plan the files, write the entry, bring the directory
-    /// to the new tree (ADR-013).
-    fn write_rewrite(
+    /// to the new tree (ADR-013). The entry names the move of the working-copy commit and the
+    /// moves of `branches`, which a command that moves a branch in the same operation passes (merge,
+    /// ADR-010); a plain rewrite passes none.
+    pub(super) fn write_carried(
         &self,
         lock: &WriteLock,
         operation: &OperationName,
         current: CommitId,
         carried: &Carried,
+        branches: Vec<(BranchName, Moved<CommitId>)>,
         actor: &Actor,
     ) -> Result<Entry, RewriteError> {
         let working = read_any_commit(self.objects(), current).map_err(RewriteError::Read)?;
@@ -258,7 +261,7 @@ impl Repository {
             operation.clone(),
             None,
             Some(Moved::from_to(Some(current), Some(carried.id))),
-            vec![],
+            branches,
         )
         .map_err(|error| RewriteError::Update(UpdateError::Log(OpLogError::Entry(error))))?;
         let entry = self
@@ -278,7 +281,7 @@ impl Repository {
     /// The tree is `onto + (working - parent)` as a sum, merged by [`merge_trees`]. A working-copy
     /// commit without a parent has the empty tree as its base. One that holds no change (its
     /// sum equals that of its base) is replaced by an empty commit with a change ID of its own.
-    fn carry(
+    pub(super) fn carry(
         &self,
         working: &AnyCommit,
         onto: CommitId,
@@ -340,7 +343,7 @@ impl Repository {
     }
 
     /// The directory tree of a stored working-copy commit, with the paths that are a conflict.
-    fn carried(&self, id: CommitId) -> Result<Carried, RewriteError> {
+    pub(super) fn carried(&self, id: CommitId) -> Result<Carried, RewriteError> {
         let commit = read_any_commit(self.objects(), id).map_err(RewriteError::Read)?;
         let view =
             conflicted::view(self.objects(), &commit.tree_sum()).map_err(RewriteError::Read)?;
@@ -398,7 +401,7 @@ impl Repository {
 
     /// The owner check of the snapshot that a repeat does not take: another actor does not finish
     /// the rewrite of the owner without `--take-over`, and an agent never takes over (ADR-010).
-    fn own_for_rewrite_repeat(
+    pub(super) fn own_for_rewrite_repeat(
         &self,
         lock: &WriteLock,
         actor: &Actor,
