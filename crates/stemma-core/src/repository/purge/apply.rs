@@ -1113,7 +1113,7 @@ mod tests {
             .filter(|entry| matches!(entry.record(), Record::Purge(_)))
             .collect();
         assert!(!purges.is_empty());
-        if let Some(moved) = plan.working_copy() {
+        if let Some(moved) = plan.working_copy("main") {
             assert_eq!(
                 repository.refs().working_copy().unwrap(),
                 *moved.after().unwrap()
@@ -1820,7 +1820,7 @@ mod tests {
             )
             .unwrap();
         let purged = apply(&repository);
-        let moved = purged.plan().head().unwrap();
+        let moved = purged.plan().head("main").unwrap();
         assert_eq!(repository.refs().head().unwrap(), *moved.after().unwrap());
         assert_purged(&dir, &repository, &purged);
     }

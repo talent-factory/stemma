@@ -670,12 +670,18 @@ fn the_entry_names_the_new_pointers_and_the_branch() {
     assert!(log.contains("feature"), "{log}");
 }
 
-#[test]
-fn a_purge_is_refused_while_there_are_other_worktrees() {
+/// The secret that the purge tests commit; its blob ID is what `purge` takes.
+const SECRET: &str = "key=hunter2";
+
+fn secret() -> String {
+    stemma_core::object::Blob::new(SECRET).id().to_string()
+}
+
+/// A sandbox with a linked worktree `linked` on the new branch `feature`.
+fn with_linked() -> Sandbox {
     let sandbox = Sandbox::new();
-    let repo = sandbox.repo();
     ok(
-        &repo,
+        &sandbox.repo(),
         &[
             "worktree",
             "add",
@@ -686,19 +692,66 @@ fn a_purge_is_refused_while_there_are_other_worktrees() {
             ACTOR,
         ],
     );
-    let blob = format!("b3:{}", "0".repeat(64));
+    sandbox
+}
 
-    let refused = run(&repo, &["purge", &blob, "--actor", ACTOR]);
-    let from_linked = run(&sandbox.at("linked"), &["purge", &blob, "--actor", ACTOR]);
+#[test]
+fn a_purge_rewrites_the_working_copy_of_another_worktree_and_keeps_its_files() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    // The secret is in the working-copy commit of the linked worktree, not committed.
+    write(&linked, "key", SECRET);
+    ok(&linked, &["track", "key", "--actor", ACTOR]);
+    let before = fs::read_to_string(linked.join(".stemma")).unwrap();
 
-    for result in [refused, from_linked] {
-        assert_eq!(result.code, 1, "{}", result.stderr);
-        assert!(
-            result.stderr.contains("other worktrees"),
-            "{}",
-            result.stderr
-        );
-    }
+    let plan = ok(&repo, &["purge", &secret(), "--actor", ACTOR]);
+    assert!(
+        plan.stdout
+            .contains("    working-copy of the worktree linked  "),
+        "{}",
+        plan.stdout
+    );
+    let applied = ok(&repo, &["purge", &secret(), "--apply", "--actor", ACTOR]);
+
+    assert!(
+        applied
+            .stdout
+            .contains("working-copy of the worktree linked"),
+        "{}",
+        applied.stdout
+    );
+    // The commit of the linked worktree no longer holds the key, and the worktree opens.
+    let state = repo.join(".stemma/worktrees/linked");
+    let working_copy = read(&state, "working-copy");
+    assert!(!working_copy.contains("b3:0000"), "{working_copy}");
+    assert_eq!(fs::read_to_string(linked.join(".stemma")).unwrap(), before);
+    let status = ok(&linked, &["status", "--actor", ACTOR]);
+    assert!(status.stdout.contains("key"), "{}", status.stdout);
+    // The purge was run from the main worktree; the same purge again finds nothing to rewrite.
+    let again = run(&repo, &["purge", &secret(), "--actor", ACTOR]);
+    assert_eq!(again.code, 1, "{}", again.stderr);
+}
+
+#[test]
+fn a_purge_run_in_a_linked_worktree_moves_the_pointers_of_the_main_worktree() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&repo, "key", SECRET);
+    ok(&repo, &["track", "key", "--actor", ACTOR]);
+    ok(&repo, &["commit", "-m", "second", "--actor", ACTOR]);
+
+    let applied = ok(&linked, &["purge", &secret(), "--apply", "--actor", ACTOR]);
+
+    assert!(applied.stdout.contains("branch main"), "{}", applied.stdout);
+    assert!(
+        applied.stdout.contains("working-copy"),
+        "{}",
+        applied.stdout
+    );
+    let log = ok(&repo, &["log"]);
+    assert!(log.stdout.contains("second"), "{}", log.stdout);
+    let verify = ok(&repo, &["op", "verify"]);
+    assert_eq!(verify.code, 0);
 }
 
 #[test]
@@ -905,4 +958,313 @@ fn two_adds_of_the_same_path_at_once_leave_one_worktree() {
         let list = ok(&repo, &["worktree", "list"]).stdout;
         assert_eq!(list.lines().count(), 2, "round {round}: {list}");
     }
+}
+
+// ---- worktree remove
+
+#[test]
+fn remove_deletes_the_directory_and_the_state_and_keeps_the_branch() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    let shown = shown(&linked);
+
+    let removed = ok(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+
+    assert!(
+        removed
+            .stdout
+            .starts_with(&format!("Removed the worktree linked in {shown} as entry ")),
+        "{}",
+        removed.stdout
+    );
+    assert!(!linked.exists());
+    assert!(!repo.join(".stemma/worktrees/linked").exists());
+    assert!(repo.join(".stemma/refs/heads/feature").is_file());
+    let list = ok(&repo, &["worktree", "list"]).stdout;
+    assert_eq!(list.lines().count(), 1, "{list}");
+    // The branch is free again.
+    ok(
+        &repo,
+        &["worktree", "add", "../again", "feature", "--actor", ACTOR],
+    );
+}
+
+#[test]
+fn remove_names_the_worktree_its_directory_and_the_pointers_in_the_entry() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    let location = real(&linked);
+    ok(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+
+    let log = ok(&repo, &["op", "log", "--json", "-n", "1"]).stdout;
+
+    assert!(log.contains("\"operation\":\"worktree-remove\""), "{log}");
+    assert!(log.contains("\"worktree\":\"linked\""), "{log}");
+    assert!(
+        log.contains(&format!("\"location\":{}", stemma_quote(&location))),
+        "{log}"
+    );
+    assert!(log.contains("\"new\":null"), "{log}");
+    let text = ok(&repo, &["op", "log", "-n", "1"]).stdout;
+    assert!(text.contains("    worktree linked  "), "{text}");
+}
+
+/// The path as JSON writes it.
+fn stemma_quote(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\"))
+}
+
+#[test]
+fn remove_accepts_the_path_of_the_directory() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+
+    ok(
+        &repo,
+        &["worktree", "remove", "../linked", "--actor", ACTOR],
+    );
+
+    assert!(!linked.exists());
+}
+
+#[test]
+fn remove_saves_the_unsaved_files_first() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "a.txt", "changed");
+
+    let removed = ok(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+
+    assert!(
+        removed
+            .stdout
+            .contains("The files were saved first as entry "),
+        "{}",
+        removed.stdout
+    );
+    let log = ok(&repo, &["op", "log", "--json"]).stdout;
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(lines[0].contains("worktree-remove"), "{log}");
+    assert!(lines[1].contains("\"operation\":\"snapshot\""), "{log}");
+    assert!(lines[1].contains("\"worktree\":\"linked\""), "{log}");
+}
+
+#[test]
+fn remove_refuses_files_that_are_not_tracked_unless_forced() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "notes/todo.txt", "keep me");
+    let entries = common::numbers(&repo).len();
+
+    let refused = run(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("notes/todo.txt") && refused.stderr.contains("--force"),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(read(&linked, "notes/todo.txt"), "keep me");
+    assert!(repo.join(".stemma/worktrees/linked/HEAD").is_file());
+    assert_eq!(common::numbers(&repo).len(), entries, "nothing was written");
+
+    ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    assert!(!linked.exists());
+}
+
+#[test]
+fn remove_refuses_the_main_worktree_and_the_worktree_it_runs_in() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+
+    let main = run(&linked, &["worktree", "remove", "main", "--actor", ACTOR]);
+    let current = run(&linked, &["worktree", "remove", "linked", "--actor", ACTOR]);
+    let unknown = run(&repo, &["worktree", "remove", "nowhere", "--actor", ACTOR]);
+
+    assert_eq!(main.code, 1, "{}", main.stderr);
+    assert!(main.stderr.contains("main worktree"), "{}", main.stderr);
+    assert_eq!(current.code, 1, "{}", current.stderr);
+    assert!(
+        current.stderr.contains("another worktree"),
+        "{}",
+        current.stderr
+    );
+    assert_eq!(unknown.code, 1, "{}", unknown.stderr);
+    assert!(
+        unknown.stderr.contains("no linked worktree"),
+        "{}",
+        unknown.stderr
+    );
+    assert!(linked.join(".stemma").is_file());
+}
+
+#[test]
+fn remove_prunes_the_state_of_a_directory_that_was_deleted_outside() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    fs::remove_dir_all(&linked).unwrap();
+
+    let removed = ok(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+
+    assert!(
+        removed.stdout.contains("The directory was gone already"),
+        "{}",
+        removed.stdout
+    );
+    assert!(!repo.join(".stemma/worktrees/linked").exists());
+    assert_eq!(ok(&repo, &["worktree", "list"]).stdout.lines().count(), 1);
+}
+
+#[test]
+fn remove_does_not_touch_a_directory_that_is_not_the_worktree() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    // The pointer file names another state directory: the directory was replaced.
+    fs::write(
+        linked.join(".stemma"),
+        "stemma-worktree /elsewhere/.stemma/worktrees/x\n",
+    )
+    .unwrap();
+    write(&linked, "precious.txt", "mine");
+
+    let refused = run(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("pointer file"),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(read(&linked, "precious.txt"), "mine");
+}
+
+#[test]
+fn an_agent_cannot_remove_the_worktree_of_a_human() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "a.txt", "changed");
+
+    let refused = run(
+        &repo,
+        &[
+            "worktree",
+            "remove",
+            "linked",
+            "--actor",
+            "agent bot model=m session=s sponsor=daniel",
+        ],
+    );
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(linked.join(".stemma").is_file());
+    assert_eq!(read(&linked, "a.txt"), "changed");
+}
+
+// ---- op restore per worktree
+
+#[test]
+fn the_entry_of_a_linked_worktree_names_it_and_the_entry_of_the_main_one_does_not() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    write(&repo, "c.txt", "three");
+    ok(&repo, &["track", "c.txt", "--actor", ACTOR]);
+
+    let log = ok(&repo, &["op", "log", "--json"]).stdout;
+    let lines: Vec<&str> = log.lines().collect();
+
+    assert!(lines[0].contains("\"worktree\":\"main\""), "{log}");
+    assert!(lines[1].contains("\"worktree\":\"linked\""), "{log}");
+    let file = common::entry_file(
+        &repo,
+        common::numbers(&repo)[common::numbers(&repo).len() - 1],
+    );
+    assert!(!fs::read_to_string(file).unwrap().contains("worktree "));
+}
+
+#[test]
+fn op_restore_of_an_entry_of_another_worktree_is_refused_and_works_in_that_worktree() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    let entry = common::numbers(&repo).last().unwrap().to_string();
+
+    let refused = run(&repo, &["op", "restore", &entry, "--actor", ACTOR]);
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("worktree `linked`")
+            && refused.stderr.contains(&format!("op restore {entry}")),
+        "{}",
+        refused.stderr
+    );
+    assert!(!repo.join("b.txt").exists());
+    assert_eq!(read(&linked, "b.txt"), "two");
+
+    ok(&linked, &["op", "restore", &entry, "--actor", ACTOR]);
+
+    assert!(!linked.join("b.txt").exists());
+    assert!(!repo.join("b.txt").exists());
+}
+
+#[test]
+fn op_restore_of_the_entry_that_added_or_removed_a_worktree_is_refused() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    let added = common::numbers(&repo).last().unwrap().to_string();
+    let refused = run(&repo, &["op", "restore", &added, "--actor", ACTOR]);
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("added or removed a worktree"),
+        "{}",
+        refused.stderr
+    );
+
+    ok(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+    let removed = common::numbers(&repo).last().unwrap().to_string();
+    let refused = run(&repo, &["op", "restore", &removed, "--actor", ACTOR]);
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("added or removed a worktree"),
+        "{}",
+        refused.stderr
+    );
+}
+
+#[test]
+fn op_log_judges_the_entries_of_each_worktree_by_its_own_pointers() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    write(&repo, "c.txt", "three");
+    ok(&repo, &["track", "c.txt", "--actor", ACTOR]);
+
+    let from_main = ok(&repo, &["op", "log", "--json"]).stdout;
+    let from_linked = ok(&linked, &["op", "log", "--json"]).stdout;
+
+    // Each worktree knows its own newest entry; the other one's is not known there.
+    let took = |log: &str, worktree: &str| -> String {
+        let line = log
+            .lines()
+            .find(|line| line.contains(&format!("\"worktree\":\"{worktree}\"")))
+            .unwrap();
+        line.rsplit("\"took_effect\":")
+            .next()
+            .unwrap()
+            .trim_end_matches('}')
+            .to_owned()
+    };
+    assert_eq!(took(&from_main, "main"), "true", "{from_main}");
+    assert_eq!(took(&from_linked, "linked"), "true", "{from_linked}");
+    assert_eq!(took(&from_main, "linked"), "null", "{from_main}");
+    assert_eq!(took(&from_linked, "main"), "null", "{from_linked}");
 }

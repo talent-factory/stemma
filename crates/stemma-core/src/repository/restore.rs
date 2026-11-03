@@ -344,6 +344,21 @@ impl Repository {
         {
             return Err(RestoreError::TagsOnly { number });
         }
+        if matches!(
+            change.operation().as_str(),
+            "worktree-add" | "worktree-remove"
+        ) {
+            return Err(RestoreError::WorktreeEntry { number });
+        }
+        let here = self.refs_store().worktree_name();
+        if change.worktree_name() != here
+            && (change.head().is_some() || change.working_copy().is_some())
+        {
+            return Err(RestoreError::OtherWorktree {
+                number,
+                worktree: change.worktree_name().to_owned(),
+            });
+        }
         if pending_stubs(&entries).contains(&number) {
             return Err(RestoreError::PurgePending { number });
         }
@@ -459,6 +474,7 @@ impl Repository {
         }
         let locked_after = refs.is_locked().map_err(RestoreError::Refs)?;
         let current = Current::new(head, branches, !(locked_before || locked_after))
+            .in_worktree(self.refs_store().worktree_name())
             .with_working_copy(Some(working_copy))
             .with_tags(tags)
             .with_owner(owner);
@@ -467,7 +483,7 @@ impl Repository {
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`, `PurgePending`,
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`, `OtherWorktree`, `WorktreeEntry`, `PurgePending`,
 /// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
 /// those with an `entry` wrote it.
 #[derive(Debug)]
@@ -499,6 +515,21 @@ pub enum RestoreError {
     /// the branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so
     /// the restore is refused and no file is written.
     TagsOnly {
+        /// The number.
+        number: u64,
+    },
+    /// The entry moved HEAD or the working-copy commit of another worktree. A restore puts back the
+    /// pointers of the worktree it runs in, so it is run there (ADR-013).
+    OtherWorktree {
+        /// The number.
+        number: u64,
+        /// The worktree of the entry: `main` or the name of a linked worktree.
+        worktree: String,
+    },
+    /// The entry added or removed a worktree (`worktree-add`, `worktree-remove`). A restore does
+    /// not make or remove a worktree: remove it with `worktree remove`, add it again with
+    /// `worktree add` (ADR-013).
+    WorktreeEntry {
         /// The number.
         number: u64,
     },
@@ -606,6 +637,8 @@ impl RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::TagsOnly { .. }
+            | Self::OtherWorktree { .. }
+            | Self::WorktreeEntry { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
@@ -683,6 +716,17 @@ impl fmt::Display for RestoreError {
                 f,
                 "entry {number} only made or deleted tags, which a restore does not touch (a tag \
                  never moves), so there is nothing to restore"
+            ),
+            Self::OtherWorktree { number, worktree } => write!(
+                f,
+                "entry {number} moved HEAD or the working-copy commit of the worktree \
+                 `{worktree}`, and a restore puts back the pointers of the worktree it runs in; \
+                 run `op restore {number}` in that worktree"
+            ),
+            Self::WorktreeEntry { number } => write!(
+                f,
+                "entry {number} added or removed a worktree, which a restore does not undo; use \
+                 `worktree remove` or `worktree add`"
             ),
             Self::PurgePending { number } => write!(
                 f,
@@ -796,6 +840,8 @@ impl Error for RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::TagsOnly { .. }
+            | Self::OtherWorktree { .. }
+            | Self::WorktreeEntry { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,

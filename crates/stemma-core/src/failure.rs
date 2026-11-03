@@ -130,9 +130,10 @@ impl Classify for RefError {
             Self::TagExists { .. } => FailureKind::Other,
             // A name that is taken, and the branch of HEAD or of another worktree: the caller picks
             // another name or switches that HEAD first, so a retry of the same call does not help.
-            Self::BranchExists { .. } | Self::HeadBranch { .. } | Self::CheckedOut { .. } => {
-                FailureKind::Other
-            }
+            Self::BranchExists { .. }
+            | Self::HeadBranch { .. }
+            | Self::CheckedOut { .. }
+            | Self::NoSuchWorktree { .. } => FailureKind::Other,
             // A pointer that a purge moves is at neither of its journal values. A person has to
             // look at it, but the variant also stands for a plain race after a lock removed by
             // hand, so it is not called damage here; `purge --resume` says what to do.
@@ -375,6 +376,8 @@ impl Classify for RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::TagsOnly { .. }
+            | Self::OtherWorktree { .. }
+            | Self::WorktreeEntry { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => FailureKind::Other,
@@ -495,8 +498,19 @@ impl Classify for WorktreeError {
             Self::NotCleaned { cause, .. } => cause.kind(),
             Self::MoveFailed { source, .. }
             | Self::PartlyMoved { source, .. }
-            | Self::NotDurable { source, .. } => source.kind(),
+            | Self::NotDurable { source, .. }
+            | Self::RemoveMoveFailed { source, .. }
+            | Self::RemovePartlyMoved { source, .. }
+            | Self::RemoveNotDurable { source, .. } => source.kind(),
+            Self::Snapshot(error) => error.kind(),
+            Self::AfterSnapshot { source, .. } => source.kind(),
             Self::ChangeId(_)
+            | Self::RemoveFailed { .. }
+            | Self::NoSuchWorktree(_)
+            | Self::RemoveMain
+            | Self::RemoveCurrent(_)
+            | Self::NotItsPointer { .. }
+            | Self::Dirty { .. }
             | Self::Io { .. }
             | Self::PathNotUtf8(_)
             | Self::NotEmpty(_)
@@ -531,7 +545,6 @@ impl Classify for PurgeError {
             | Self::DuplicateParent { .. }
             | Self::Rewrite { .. }
             | Self::TooManyEntries { .. }
-            | Self::LinkedWorktrees { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }

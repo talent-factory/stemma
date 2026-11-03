@@ -65,7 +65,7 @@ pub use switch::{
     Changes, Handled, Planned, Revision, SwitchError, SwitchPlan, SwitchTarget, Switched,
 };
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
-pub use worktree::{AddedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
+pub use worktree::{AddedWorktree, RemovedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::fault;
@@ -670,7 +670,13 @@ impl Repository {
     /// [`raise_format`]); once it is raised, it stays raised, even if the entry fails after it.
     pub(crate) fn append(&self, lock: &WriteLock, change: &Change) -> Result<Entry, OpLogError> {
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
-        let entry = self.oplog.append(change)?;
+        // The entry names the linked worktree it was made in; an entry that names one already (the
+        // add and the removal of a worktree) keeps it. The main worktree leaves the name out.
+        let change = change
+            .clone()
+            .in_worktree(self.worktree.clone(), None)
+            .map_err(OpLogError::Entry)?;
+        let entry = self.oplog.append(&change)?;
         // Not an error of the change: the entry and its move stand without the owner.
         let _ = self.refs.adopt_owner(lock, change.actor());
         Ok(entry)

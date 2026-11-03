@@ -152,7 +152,7 @@
 //! reader never meets a file that the writer made and cannot read; the actor and the names in it
 //! have no limit of their own.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -161,7 +161,7 @@ use std::str::FromStr;
 
 use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
-use crate::refs::{BranchName, BranchNameError, Head};
+use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError};
 
@@ -404,6 +404,11 @@ pub enum EntryError {
     StubWithoutBody(u64),
     /// Entry 1 names the hash of an entry before it, but there is none.
     FirstAfter,
+    /// The name of a worktree is not one that a worktree has: letters, digits, `-`, `_`, and `.`
+    /// (not first), and not `main`, which the entry leaves out.
+    BadWorktree(String),
+    /// The directory of a worktree holds a control character, or the entry names no worktree.
+    BadLocation(String),
 }
 
 impl fmt::Display for EntryError {
@@ -455,6 +460,16 @@ impl fmt::Display for EntryError {
             Self::FirstAfter => f.write_str(
                 "entry 1 names the hash of an entry before it, but it is the first entry",
             ),
+            Self::BadWorktree(name) => write!(
+                f,
+                "`{}` is not the name of a linked worktree",
+                name.escape_debug()
+            ),
+            Self::BadLocation(path) => write!(
+                f,
+                "`{}` cannot be the directory of a worktree in an entry",
+                path.escape_debug()
+            ),
         }
     }
 }
@@ -471,6 +486,15 @@ pub struct Change {
     working_copy: Option<Moved<CommitId>>,
     branches: Vec<(BranchName, Moved<CommitId>)>,
     tags: Vec<(BranchName, Moved<CommitId>)>,
+    /// The linked worktree of the entry, boxed so that the common entry stays small.
+    worktree: Option<Box<WorktreeTag>>,
+}
+
+/// The worktree that an entry names and the directory of it, if the entry makes or removes one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorktreeTag {
+    name: String,
+    location: Option<String>,
 }
 
 impl Change {
@@ -565,6 +589,7 @@ impl Change {
             working_copy,
             branches,
             tags,
+            worktree: None,
         })
     }
 
@@ -605,6 +630,55 @@ impl Change {
         &self.tags
     }
 
+    /// The linked worktree that the entry belongs to, or `None` for the main worktree, whose name
+    /// the entry leaves out (ADR-011). `HEAD` and the working-copy commit of the entry are those of
+    /// this worktree.
+    pub fn worktree(&self) -> Option<&str> {
+        self.worktree.as_deref().map(|tag| tag.name.as_str())
+    }
+
+    /// The name of the worktree as a message shows it: the name of the linked worktree, or `main`.
+    pub fn worktree_name(&self) -> &str {
+        self.worktree().unwrap_or(MAIN_WORKTREE)
+    }
+
+    /// The directory of the worktree, in the entries that make or remove one (`worktree-add`,
+    /// `worktree-remove`) and in a restore that brings a removed worktree back (ADR-013).
+    pub fn location(&self) -> Option<&str> {
+        self.worktree.as_deref()?.location.as_deref()
+    }
+
+    /// The change made for the worktree `worktree` (`None` for the main one), with the directory
+    /// `location` if the operation makes or removes the worktree. An entry that names a worktree
+    /// already keeps it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::BadWorktree`] for a name that no worktree has and
+    /// [`EntryError::BadLocation`] for a directory that holds a control character, or one without a
+    /// worktree.
+    pub(crate) fn in_worktree(
+        mut self,
+        worktree: Option<String>,
+        location: Option<String>,
+    ) -> Result<Self, EntryError> {
+        if self.worktree.is_some() {
+            return Ok(self);
+        }
+        if let Some(name) = &worktree {
+            if !valid_worktree_name(name) {
+                return Err(EntryError::BadWorktree(name.clone()));
+            }
+        }
+        if let Some(path) = &location {
+            if worktree.is_none() || !valid_location(path) {
+                return Err(EntryError::BadLocation(path.clone()));
+            }
+        }
+        self.worktree = worktree.map(|name| Box::new(WorktreeTag { name, location }));
+        Ok(self)
+    }
+
     /// Every commit that the change names, old and new: the roots that the garbage collection
     /// needs from this entry (ADR-007, ADR-011). A commit that is named twice is listed twice.
     pub fn commits(&self) -> Vec<CommitId> {
@@ -626,6 +700,24 @@ impl Change {
         }
         commits
     }
+}
+
+/// Whether `name` can be the name of a linked worktree in an entry: the name of its state
+/// directory, which is reduced to letters, digits, `-`, `_`, and `.` (not first), and is never
+/// `main`.
+pub(crate) fn valid_worktree_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != MAIN_WORKTREE
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// Whether `path` fits on one line of an entry: it is not empty and holds no control character.
+fn valid_location(path: &str) -> bool {
+    !path.is_empty() && !path.chars().any(char::is_control)
 }
 
 /// Hashes `text` after the line `header`, so that a hash of one kind of text cannot pass for one
@@ -1013,6 +1105,12 @@ impl Entry {
             }
             Record::Change(change) => {
                 let mut out = format!("operation {}\n", change.operation);
+                if let Some(tag) = change.worktree.as_deref() {
+                    out.push_str(&format!("worktree {}\n", tag.name));
+                    if let Some(location) = &tag.location {
+                        out.push_str(&format!("location {location}\n"));
+                    }
+                }
                 if let Some(head) = &change.head {
                     out.push_str(&format!(
                         "head {} {}\n",
@@ -1220,12 +1318,36 @@ impl Entry {
             }
         })?;
 
+        // The worktree and its directory come before the pointers, if the entry has them.
+        let mut first = body + 1;
+        let mut worktree = None;
+        let mut location = None;
+        if let Some(name) = lines
+            .get(first)
+            .and_then(|line| line.strip_prefix("worktree "))
+        {
+            if !valid_worktree_name(name) {
+                return Err(malformed(first + 1, EntryMalformed::BadWorktree));
+            }
+            worktree = Some(name.to_owned());
+            first += 1;
+            if let Some(path) = lines
+                .get(first)
+                .and_then(|line| line.strip_prefix("location "))
+            {
+                if !valid_location(path) {
+                    return Err(malformed(first + 1, EntryMalformed::BadLocation));
+                }
+                location = Some(path.to_owned());
+                first += 1;
+            }
+        }
         // The pointers, in the fixed order: head, working-copy, branches, tags.
         let mut head = None;
         let mut working_copy = None;
         let mut branches: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
         let mut tags: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
-        for (index, line) in lines.iter().enumerate().skip(body + 1) {
+        for (index, line) in lines.iter().enumerate().skip(first) {
             let number = index + 1;
             let tokens: Vec<&str> = line.split(' ').collect();
             let after_branches = !branches.is_empty() || !tags.is_empty();
@@ -1325,6 +1447,7 @@ impl Entry {
         // report the line; this builds the value through the constructor, so that a reader cannot
         // return a change that the constructor would reject.
         Change::try_new_with_tags(time, actor, operation, head, working_copy, branches, tags)
+            .and_then(|change| change.in_worktree(worktree, location))
             .and_then(|change| Entry::linked(number, chain, Record::Change(change)))
             .map_err(EntryParseError::Entry)
     }
@@ -1564,6 +1687,10 @@ pub enum EntryMalformed {
     TrailingLine,
     /// The fifth line of a version-3 entry is not `previous <hash>` or `previous -`.
     ExpectedPrevious,
+    /// The line `worktree` names `main` or a name that no linked worktree has.
+    BadWorktree,
+    /// The line `location` is empty or holds a control character.
+    BadLocation,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -1593,6 +1720,13 @@ impl fmt::Display for EntryMalformed {
             }
             Self::TrailingLine => "the entry has a line after its last one",
             Self::ExpectedPrevious => "expected the header `previous <hash>` or `previous -`",
+            Self::BadWorktree => {
+                "the name of the worktree is empty, is `main`, or has a character that a worktree \
+                 name does not have"
+            }
+            Self::BadLocation => {
+                "the directory of the worktree is empty or has a control character"
+            }
         })
     }
 }
@@ -3089,6 +3223,8 @@ pub struct Current {
     /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
     /// `Some(None)` for a working copy without an owner.
     owner: Option<Option<Actor>>,
+    /// The worktree whose HEAD, working-copy commit, and owner these are.
+    worktree: String,
     settled: bool,
 }
 
@@ -3119,8 +3255,19 @@ impl Current {
             branches: branches.into_iter().collect(),
             tags: None,
             owner: None,
+            worktree: MAIN_WORKTREE.to_owned(),
             settled,
         }
+    }
+
+    /// Names the worktree that HEAD, the working-copy commit, and the owner belong to; the default
+    /// is `main`. An entry of another worktree is judged by its branches and its tags only: its
+    /// HEAD and its working-copy commit are not known here, so their moves are confirmed or
+    /// refuted by a later entry of the same worktree, and else unknown (ADR-011).
+    #[must_use]
+    pub fn in_worktree(mut self, worktree: impl Into<String>) -> Self {
+        self.worktree = worktree.into();
+        self
     }
 
     /// Adds the value of the working-copy commit, `None` if it does not exist. Without it, the
@@ -3240,8 +3387,10 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
         "the entries must ascend"
     );
     let settled = current.is_some_and(|current| current.settled);
-    let mut next_head: Option<&Moved<Head>> = None;
-    let mut next_working_copy: Option<&Moved<CommitId>> = None;
+    // HEAD and the working-copy commit belong to a worktree, so the next move of each is looked
+    // up by the worktree of the entry; branches and tags are shared.
+    let mut next_head: HashMap<&str, &Moved<Head>> = HashMap::new();
+    let mut next_working_copy: HashMap<&str, &Moved<CommitId>> = HashMap::new();
     let mut next_branch: HashMap<&BranchName, &Moved<CommitId>> = HashMap::new();
     let mut next_tag: HashMap<&BranchName, &Moved<CommitId>> = HashMap::new();
     let mut result = vec![Outcome::Unknown; entries.len()];
@@ -3249,8 +3398,9 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     // it is evidence for an entry before it: such an entry is unknown (ADR-014). A purge entry
     // moves nothing and is no barrier.
     let mut behind_stub = false;
-    // A take-over after this entry: the owner now is the work of that one.
-    let mut newer_take_over = false;
+    // A take-over after this entry in the same worktree: the owner now is the work of that one.
+    let mut newer_take_over: HashSet<&str> = HashSet::new();
+    let here = current.map_or(MAIN_WORKTREE, |current| current.worktree.as_str());
     for (index, entry) in entries.iter().enumerate().rev() {
         let change = match entry.record() {
             Record::Change(change) if !behind_stub => change,
@@ -3260,8 +3410,10 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
                 continue;
             }
         };
+        let worktree = change.worktree_name();
+        let local = worktree == here;
         if change.operation().as_str() == TAKE_OVER {
-            result[index] = if newer_take_over {
+            result[index] = if newer_take_over.contains(worktree) || !local {
                 Outcome::Unknown
             } else {
                 match current.and_then(|current| current.owner.as_ref()) {
@@ -3270,21 +3422,32 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
                     _ => Outcome::Unknown,
                 }
             };
-            newer_take_over = true;
+            newer_take_over.insert(worktree);
             continue;
         }
         let mut judged = Vec::new();
         if let Some(moved) = change.head() {
-            let now = current.map_or(Now::Unknown, |current| Now::Is(&current.head));
-            judged.push(judge(moved, next_head, now, settled));
+            let now = match current {
+                Some(current) if local => Now::Is(&current.head),
+                _ => Now::Unknown,
+            };
+            judged.push(judge(moved, next_head.get(worktree).copied(), now, settled));
         }
         if let Some(moved) = change.working_copy() {
-            let now = match current.map(|current| &current.working_copy) {
+            let now = match current
+                .filter(|_| local)
+                .map(|current| &current.working_copy)
+            {
                 Some(WorkingCopy::Absent) => Now::Absent,
                 Some(WorkingCopy::At(commit)) => Now::Is(commit),
                 Some(WorkingCopy::Unknown) | None => Now::Unknown,
             };
-            judged.push(judge(moved, next_working_copy, now, settled));
+            judged.push(judge(
+                moved,
+                next_working_copy.get(worktree).copied(),
+                now,
+                settled,
+            ));
         }
         for (name, moved) in change.branches() {
             let now = current.map_or(Now::Unknown, |current| {
@@ -3308,8 +3471,12 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
             Outcome::Unknown
         };
         // This entry is the next one for the entries before it.
-        next_head = change.head().or(next_head);
-        next_working_copy = change.working_copy().or(next_working_copy);
+        if let Some(moved) = change.head() {
+            next_head.insert(worktree, moved);
+        }
+        if let Some(moved) = change.working_copy() {
+            next_working_copy.insert(worktree, moved);
+        }
         for (name, moved) in change.branches() {
             next_branch.insert(name, moved);
         }
@@ -6806,5 +6973,135 @@ mod tests {
         let entries = log.verify().unwrap();
         assert_eq!(entries.len(), 4);
         assert_eq!(chain_start(&entries), Some(4));
+    }
+
+    // ---- The worktree of an entry (ADR-011)
+
+    fn in_worktree(change: Change, name: &str) -> Change {
+        change.in_worktree(Some(name.to_owned()), None).unwrap()
+    }
+
+    #[test]
+    fn an_entry_of_a_linked_worktree_names_it_and_the_main_one_leaves_it_out() {
+        let main = Entry::linked(1, Chain::Start, Record::Change(change("main", None, A))).unwrap();
+        assert!(!String::from_utf8(main.encode())
+            .unwrap()
+            .contains("worktree"));
+        assert_eq!(main.change().unwrap().worktree(), None);
+        assert_eq!(main.change().unwrap().worktree_name(), "main");
+
+        let linked = in_worktree(change("main", None, A), "feature-2");
+        let entry = Entry::linked(1, Chain::Start, Record::Change(linked)).unwrap();
+        let text = String::from_utf8(entry.encode()).unwrap();
+        assert!(
+            text.contains("\noperation commit\nworktree feature-2\nbranch main - "),
+            "{text}"
+        );
+        assert_eq!(Entry::parse(text.as_bytes()).unwrap(), entry);
+        // The name is covered by the hash of the body.
+        assert_ne!(entry.body_hash(), main.body_hash());
+    }
+
+    #[test]
+    fn the_directory_of_a_worktree_follows_its_name() {
+        let change = change("main", None, A)
+            .in_worktree(Some("w".to_owned()), Some("/tmp/w".to_owned()))
+            .unwrap();
+        let entry = Entry::linked(1, Chain::Start, Record::Change(change)).unwrap();
+        let text = String::from_utf8(entry.encode()).unwrap();
+        assert!(
+            text.contains("\nworktree w\nlocation /tmp/w\nbranch main - "),
+            "{text}"
+        );
+        assert_eq!(Entry::parse(text.as_bytes()).unwrap(), entry);
+        assert_eq!(entry.change().unwrap().location(), Some("/tmp/w"));
+    }
+
+    #[test]
+    fn a_name_or_a_directory_that_no_worktree_has_is_refused() {
+        for name in ["", "main", ".hidden", "a b", "a/b", "ä"] {
+            assert_eq!(
+                change("main", None, A).in_worktree(Some(name.to_owned()), None),
+                Err(EntryError::BadWorktree(name.to_owned())),
+                "{name:?}"
+            );
+        }
+        assert!(matches!(
+            change("main", None, A).in_worktree(None, Some("/tmp/w".to_owned())),
+            Err(EntryError::BadLocation(_))
+        ));
+        assert!(matches!(
+            change("main", None, A).in_worktree(Some("w".to_owned()), Some("a\nb".to_owned())),
+            Err(EntryError::BadLocation(_))
+        ));
+        let good = Entry::linked(
+            1,
+            Chain::Start,
+            Record::Change(in_worktree(change("main", None, A), "w")),
+        )
+        .unwrap();
+        let text = String::from_utf8(good.encode()).unwrap();
+        for bad in ["worktree main", "worktree ", "worktree a b"] {
+            let other = text.replace("worktree w", bad);
+            assert!(Entry::parse(other.as_bytes()).is_err(), "{bad}");
+        }
+        // The line comes right after the operation, before the pointers.
+        let late = text.replace("worktree w\n", "") + "worktree w\n";
+        assert!(Entry::parse(late.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_outcome_of_a_pointer_is_judged_inside_its_worktree() {
+        let moved_wc = |from, to| {
+            Change::try_new(
+                TIME,
+                human(),
+                operation("snapshot"),
+                None,
+                Some(moved(from, to)),
+                vec![],
+            )
+            .unwrap()
+        };
+        let entry = |number, change| Entry::of(number, Record::Change(change)).unwrap();
+        // The linked worktree went from A to B and on to C; the main worktree from A to B.
+        let entries = [
+            entry(1, in_worktree(moved_wc(Some(A), Some(B)), "w")),
+            entry(2, moved_wc(Some(A), Some(B))),
+            entry(3, in_worktree(moved_wc(Some(B), Some(C)), "w")),
+        ];
+        let main =
+            Current::new(Head::Branch(branch("main")), [], true).with_working_copy(Some(commit(B)));
+        let linked = Current::new(Head::Branch(branch("w")), [], true)
+            .in_worktree("w")
+            .with_working_copy(Some(commit(C)));
+
+        // Seen from the main worktree, the entry before another one of the same worktree is
+        // confirmed by it; the newest entry of the linked one is not known.
+        assert_eq!(
+            outcomes(&entries, Some(&main)),
+            [Outcome::Took, Outcome::Took, Outcome::Unknown]
+        );
+        assert_eq!(
+            outcomes(&entries, Some(&linked)),
+            [Outcome::Took, Outcome::Unknown, Outcome::Took]
+        );
+    }
+
+    #[test]
+    fn a_take_over_is_judged_in_its_own_worktree_only() {
+        let take_over = Change::try_new(TIME, human(), operation(TAKE_OVER), None, None, vec![])
+            .unwrap()
+            .in_worktree(Some("w".to_owned()), None)
+            .unwrap();
+        let entries = [Entry::of(1, Record::Change(take_over)).unwrap()];
+        let main = Current::new(Head::Branch(branch("main")), [], true)
+            .with_working_copy(Some(commit(A)))
+            .with_owner(Some(human()));
+        assert_eq!(outcomes(&entries, Some(&main)), [Outcome::Unknown]);
+        assert_eq!(
+            outcomes(&entries, Some(&main.clone().in_worktree("w"))),
+            [Outcome::Took]
+        );
     }
 }

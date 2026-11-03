@@ -432,6 +432,11 @@ pub enum RefError {
         /// The branch that HEAD names.
         name: BranchName,
     },
+    /// There is no linked worktree with the name.
+    NoSuchWorktree {
+        /// The name.
+        name: String,
+    },
     /// Another worktree has the branch checked out: its `HEAD` names it. Two worktrees on one
     /// branch would move the branch under each other, so no command that moves `HEAD` to a branch,
     /// deletes it, or renames it takes it, and there is no override (ADR-009).
@@ -675,6 +680,9 @@ impl fmt::Display for RefError {
                 "the branch `{name}` is the branch of HEAD and cannot be deleted; switch to \
                  another branch first"
             ),
+            Self::NoSuchWorktree { name } => {
+                write!(f, "there is no linked worktree `{name}`; `worktree list` shows them")
+            }
             Self::CheckedOut { name, worktree } => write!(
                 f,
                 "the branch `{name}` is checked out in the worktree `{worktree}`; switch that \
@@ -839,6 +847,7 @@ impl Error for RefError {
             | Self::BranchExists { .. }
             | Self::HeadBranch { .. }
             | Self::CheckedOut { .. }
+            | Self::NoSuchWorktree { .. }
             | Self::StaleTag { .. }
             | Self::StaleHead { .. }
             | Self::Conflict { .. }
@@ -1374,10 +1383,12 @@ pub(crate) const PURGE_JOURNAL: &str = "purge-pending";
 
 /// The pointers that a purge moves, each from the value before the purge to the one after it.
 /// A purge moves HEAD only when it names a commit, and it neither creates nor deletes a branch.
+/// HEAD and the working-copy commit belong to a worktree, which each move names (`main` or the
+/// name of a linked worktree), so a purge moves those of every worktree (ADR-014).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct PurgeMoves {
-    pub(crate) head: Option<(CommitId, CommitId)>,
-    pub(crate) working_copy: Option<(CommitId, CommitId)>,
+    pub(crate) heads: Vec<(String, CommitId, CommitId)>,
+    pub(crate) working_copies: Vec<(String, CommitId, CommitId)>,
     pub(crate) branches: Vec<(BranchName, CommitId, CommitId)>,
 }
 
@@ -3091,49 +3102,120 @@ impl FsRefStore {
         step: impl FnOnce() -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        let stale = |pointer: &str| RefError::PurgeStale {
-            pointer: pointer.to_owned(),
+        let stale = |pointer: String| RefError::PurgeStale { pointer };
+        let label = |what: &str, worktree: &str| {
+            if worktree == MAIN_WORKTREE {
+                what.to_owned()
+            } else {
+                format!("{what} of the worktree `{worktree}`")
+            }
         };
+        // The store of each worktree that has a move, with the value it is moved to.
+        let mut heads = Vec::new();
+        for (worktree, old, new) in &planned.heads {
+            Self::require_commit(new, objects)?;
+            let store = self.store_of(worktree);
+            let (old, new) = (Head::Detached(*old), Head::Detached(*new));
+            let current = store.head()?;
+            if current == old {
+                heads.push((store, new));
+            } else if current != new {
+                return Err(stale(label("HEAD", worktree)));
+            }
+        }
+        let mut working_copies = Vec::new();
+        for (worktree, old, new) in &planned.working_copies {
+            Self::require_commit(new, objects)?;
+            let store = self.store_of(worktree);
+            let current = store.working_copy()?;
+            if current == *old {
+                working_copies.push((store, *new));
+            } else if current != *new {
+                return Err(stale(label("working-copy", worktree)));
+            }
+        }
         let mut moves = RestoreMoves::default();
-        if let Some((old, new)) = planned.head {
-            Self::require_commit(&new, objects)?;
-            let (old, new) = (Head::Detached(old), Head::Detached(new));
-            let current = self.head()?;
-            if current == old {
-                moves.head = Some((old, new));
-            } else if current != new {
-                return Err(stale("HEAD"));
-            }
-        }
-        if let Some((old, new)) = planned.working_copy {
-            Self::require_commit(&new, objects)?;
-            let current = self.working_copy()?;
-            if current == old {
-                moves.working_copy = Some((old, new));
-            } else if current != new {
-                return Err(stale("working-copy"));
-            }
-        }
         for (name, old, new) in &planned.branches {
             Self::require_commit(new, objects)?;
             let current = self.current(RefKind::Branch, name)?.commit;
             if current == Some(*old) {
                 moves.branches.push((name.clone(), Some(*old), Some(*new)));
             } else if current != Some(*new) {
-                return Err(stale(name.as_str()));
+                return Err(stale(name.as_str().to_owned()));
             }
         }
         let done = match step() {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
-        Ok(self.apply_moves(done, &moves))
+        let mut steps = self.branch_steps(&moves);
+        for (store, new) in &working_copies {
+            steps.push(Box::new(move || {
+                store.write_working_copy(new).map(|()| true)
+            }));
+        }
+        for (store, new) in &heads {
+            steps.push(Box::new(move || {
+                store
+                    .write_replacing(&store.head_path(), &new.encode(), &store.local)
+                    .map(|()| true)
+            }));
+        }
+        Ok(Self::run_steps(done, steps))
+    }
+
+    /// HEAD and the working-copy commit of every worktree, this one included, with its name: `main`
+    /// first, then the linked worktrees by name. A state directory without `HEAD` is an add that
+    /// stopped and is left out ([`other_states`](Self::other_states)).
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of reading a `HEAD` or a `working-copy`, and of listing the worktrees.
+    pub(crate) fn all_pointers(&self) -> Result<Vec<(String, Head, CommitId)>, RefError> {
+        let mut names = vec![self.worktree_name()];
+        names.extend(self.other_states()?.into_iter().map(|(name, _)| name));
+        names.sort_by(|a, b| (a != MAIN_WORKTREE, a).cmp(&(b != MAIN_WORKTREE, b)));
+        let mut found = Vec::with_capacity(names.len());
+        for name in names {
+            let store = self.store_of(&name);
+            found.push((name, store.head()?, store.working_copy()?));
+        }
+        Ok(found)
+    }
+
+    /// The store of the worktree `name`: `main` or the name of a state directory below
+    /// `worktrees/`. The state directory is not checked here; reading a pointer of it does.
+    fn store_of(&self, name: &str) -> FsRefStore {
+        if name == MAIN_WORKTREE {
+            Self::new(self.root.clone())
+        } else {
+            Self::for_worktree(self.root.clone(), self.root.join(WORKTREES_DIR).join(name))
+        }
     }
 
     /// Makes the moves after the step ran: the branches, the deletions before the creations, then
     /// the working-copy commit, then HEAD, one after the other. After a failure, the branches that
     /// did not move are therefore not the end of the list of the moves.
     fn apply_moves<T, E>(&self, done: T, moves: &RestoreMoves) -> Logged<T, E> {
+        let mut steps = self.branch_steps(moves);
+        if let Some((_, new)) = &moves.working_copy {
+            steps.push(Box::new(move || {
+                self.write_working_copy(new).map(|()| true)
+            }));
+        }
+        // HEAD last: a stop before it leaves the file of HEAD as it was. A HEAD that names a
+        // branch follows that branch, so it already leads to the commit that the branch has.
+        if let Some((_, new)) = &moves.head {
+            steps.push(Box::new(move || {
+                self.write_replacing(&self.head_path(), &new.encode(), &self.local)
+                    .map(|()| true)
+            }));
+        }
+        Self::run_steps(done, steps)
+    }
+
+    /// The steps that move the branches: the deletions before the creations.
+    fn branch_steps<'s>(&'s self, moves: &'s RestoreMoves) -> Vec<MoveStep<'s>> {
         let mut steps: Vec<MoveStep<'_>> = Vec::new();
         // The deletions come before the creations, so that `a` can go before `a/b` comes, and
         // `a/b` before `a`.
@@ -3167,20 +3249,7 @@ impl FsRefStore {
                 None => Box::new(move || self.delete_reference_file(RefKind::Branch, name)),
             });
         }
-        if let Some((_, new)) = &moves.working_copy {
-            steps.push(Box::new(move || {
-                self.write_working_copy(new).map(|()| true)
-            }));
-        }
-        // HEAD last: a stop before it leaves the file of HEAD as it was. A HEAD that names a
-        // branch follows that branch, so it already leads to the commit that the branch has.
-        if let Some((_, new)) = &moves.head {
-            steps.push(Box::new(move || {
-                self.write_replacing(&self.head_path(), &new.encode(), &self.local)
-                    .map(|()| true)
-            }));
-        }
-        Self::run_steps(done, steps)
+        steps
     }
 
     /// Runs the moves one after the other and stops at the first failure, so that the pointers
@@ -3443,6 +3512,63 @@ impl FsRefStore {
                 .map(|()| true)
         }));
         steps.push(Box::new(move || finish().map(|()| true)));
+        Ok(Self::run_steps(done, steps))
+    }
+}
+
+impl FsRefStore {
+    /// Removes the state directory of the linked worktree `name`: `step` runs after the checks and
+    /// before the first move, under the lock of the references that the caller holds (`_lock`); it
+    /// writes the entry of the log and removes the files of the worktree.
+    ///
+    /// The moves are made in this order: the file `HEAD`, so that the state directory counts for
+    /// no branch and `worktree list` leaves it out, then the state directory with the rest. The
+    /// branch that the worktree had stays, and so do the commits (the entry names them).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::NoSuchWorktree`] for a name that no linked worktree has, and the errors
+    /// of reading the references. Once `step` has run, nothing is an error of this call; see
+    /// [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn remove_worktree_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        name: &str,
+        step: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.require_root()?;
+        let state = self.root.join(WORKTREES_DIR).join(name);
+        let head = state.join("HEAD");
+        if name == MAIN_WORKTREE || self.read_reference(&head)?.is_none() {
+            return Err(RefError::NoSuchWorktree {
+                name: name.to_owned(),
+            });
+        }
+        let done = match step() {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        let dir = self.root.join(WORKTREES_DIR);
+        let (state, head, dir) = (state.as_path(), head.as_path(), dir.as_path());
+        let steps: Vec<MoveStep<'_>> = vec![
+            Box::new(move || {
+                fault::remove_file(head)
+                    .map_err(io_error("remove the HEAD of the worktree", head))?;
+                Ok(true)
+            }),
+            Box::new(move || {
+                fault::remove_dir_all(state).map_err(io_error(
+                    "remove the state directory of the worktree",
+                    state,
+                ))?;
+                flush_directory(dir)
+                    .map(|()| true)
+                    .map_err(|source| RefError::NotFlushed {
+                        path: dir.to_path_buf(),
+                        source,
+                    })
+            }),
+        ];
         Ok(Self::run_steps(done, steps))
     }
 }
@@ -7311,5 +7437,68 @@ mod tests {
             .set_head(&Head::Branch(name("feat")), &objects, &granted)
             .unwrap();
         assert_eq!(main.head().unwrap(), Head::Branch(name("main")));
+    }
+
+    #[test]
+    fn the_state_of_a_worktree_is_removed_with_its_head_first_and_the_step_runs_before() {
+        let (dir, _objects, refs, state) = with_linked("branch feat\n");
+        fs::write(state.join("working-copy"), "x").unwrap();
+        let lock = refs.lock_writer(&Allowed::granted()).unwrap();
+        let mut ran = false;
+        let logged = refs
+            .remove_worktree_after(&lock, "w", || {
+                // The step runs before the first move: the state is whole.
+                ran = state.join("HEAD").is_file() && state.join("working-copy").is_file();
+                Ok::<_, ()>(7)
+            })
+            .unwrap();
+        assert!(ran);
+        assert!(matches!(logged, Logged::Moved(7)));
+        assert!(!state.exists());
+        assert!(dir.path().join(WORKTREES_DIR).is_dir());
+        // The branch of the worktree is free again.
+        assert_eq!(refs.checked_out_elsewhere(&name("feat")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_worktree_that_does_not_exist_or_is_main_is_refused_and_no_step_runs() {
+        let (_dir, _objects, refs, state) = with_linked("branch feat\n");
+        let lock = refs.lock_writer(&Allowed::granted()).unwrap();
+        for worktree in ["nowhere", MAIN_WORKTREE] {
+            let error = refs
+                .remove_worktree_after(&lock, worktree, || -> Result<(), ()> {
+                    panic!("the step ran")
+                })
+                .unwrap_err();
+            assert!(matches!(error, RefError::NoSuchWorktree { .. }), "{error}");
+        }
+        assert!(state.join("HEAD").is_file());
+        // A step that fails is the step's failure; the state stays.
+        let logged = refs
+            .remove_worktree_after(&lock, "w", || Err::<(), _>("no"))
+            .unwrap();
+        assert!(matches!(logged, Logged::StepFailed("no")));
+        assert!(state.join("HEAD").is_file());
+    }
+
+    #[test]
+    fn the_pointers_of_every_worktree_are_listed_main_first() {
+        let (dir, objects, refs, state) = with_linked("branch feat\n");
+        let (one, two) = (commit(&objects, "one"), commit(&objects, "two"));
+        fs::write(dir.path().join("HEAD"), "branch main\n").unwrap();
+        fs::write(
+            dir.path().join("working-copy"),
+            encode_working_copy(&one, None),
+        )
+        .unwrap();
+        fs::write(state.join("working-copy"), encode_working_copy(&two, None)).unwrap();
+
+        let all = refs.all_pointers().unwrap();
+
+        let names: Vec<&str> = all.iter().map(|(name, _, _)| name.as_str()).collect();
+        assert_eq!(names, ["main", "w"]);
+        assert_eq!(all[0].2, one);
+        assert_eq!(all[1].1, Head::Branch(name("feat")));
+        assert_eq!(all[1].2, two);
     }
 }
