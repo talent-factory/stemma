@@ -41,9 +41,15 @@ fn read(dir: &Path, path: &str) -> String {
     fs::read_to_string(dir.join(path)).unwrap()
 }
 
-/// The real path of an existing directory, as `worktree list` prints it.
+/// The real path of an existing directory, as it stands in a file of the repository.
 fn real(path: &Path) -> String {
     fs::canonicalize(path).unwrap().display().to_string()
+}
+
+/// The real path as the commands print it: escaped like every path in their output, so a
+/// backslash of a Windows path is doubled.
+fn shown(path: &Path) -> String {
+    real(path).replace('\\', "\\\\")
 }
 
 #[test]
@@ -67,7 +73,7 @@ fn a_worktree_on_a_new_branch_has_the_files_a_pointer_and_its_own_state() {
     assert!(
         added.stdout.starts_with(&format!(
             "Added the worktree linked in {} on the new branch feature as entry ",
-            real(&linked)
+            shown(&linked)
         )),
         "{}",
         added.stdout
@@ -80,7 +86,12 @@ fn a_worktree_on_a_new_branch_has_the_files_a_pointer_and_its_own_state() {
         read(&linked, ".stemma"),
         format!(
             "stemma-worktree {}\n",
-            real(&sandbox.repo()) + "/.stemma/worktrees/linked"
+            fs::canonicalize(sandbox.repo())
+                .unwrap()
+                .join(".stemma")
+                .join("worktrees")
+                .join("linked")
+                .display()
         )
     );
     assert_eq!(read(&state, "HEAD"), "branch feature\n");
@@ -250,14 +261,14 @@ fn list_shows_the_main_worktree_first_then_the_others_with_branch_and_owner() {
         .map(|line| line.split_whitespace().collect())
         .collect();
     let expected = [
-        ("main", real(&repo), "main", "human daniel"),
+        ("main", shown(&repo), "main", "human daniel"),
         (
             "another",
-            real(&sandbox.at("another")),
+            shown(&sandbox.at("another")),
             "other",
             "human daniel",
         ),
-        ("linked", real(&linked), "feature", "human anna"),
+        ("linked", shown(&linked), "feature", "human anna"),
     ];
     assert_eq!(rows.len(), expected.len(), "{from_main}");
     for (row, (name, path, branch, owner)) in rows.iter().zip(&expected) {
@@ -734,7 +745,10 @@ fn a_path_with_dot_dot_below_a_missing_directory_is_refused() {
     );
 
     assert_eq!(refused.code, 1, "{}", refused.stderr);
-    assert!(refused.stderr.contains(".."), "{}", refused.stderr);
+    // Windows folds the `..` away before the check; the main worktree is refused by name then.
+    if cfg!(not(windows)) {
+        assert!(refused.stderr.contains(".."), "{}", refused.stderr);
+    }
     assert!(!sandbox.at("nowhere").exists());
     assert!(!repo.join(".stemma/refs/heads/x").exists());
 }
