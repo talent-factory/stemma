@@ -1,21 +1,25 @@
 //! Changing the branch: `switch` (ADR-010).
 //!
-//! A switch takes a snapshot, builds a new, empty working-copy commit on the tip of the target, and
+//! A switch takes a snapshot, builds the next working-copy commit on the tip of the target, and
 //! moves HEAD, the working-copy commit, and (for a new branch) the branch in one entry of the log.
-//! The directory is brought to the tree of the target by the checkout layer (ADR-013), in the order
-//! of a restore: plan, entry, files, pointers. Only an empty working-copy commit can be left; a
-//! working-copy commit that holds changes is refused, and the user commits first.
+//! The directory is brought to the tree of the next working-copy commit by the checkout layer
+//! (ADR-013), in the order of a restore: plan, entry, files, pointers.
+//!
+//! A working-copy commit without changes is replaced by an empty one on the tip. One that holds
+//! changes is carried by the rewrite of [`rewrite`](super::rewrite) (`T + (W - P)`, same change
+//! ID), so a conflict is data of the new commit and never stops the switch; [`Changes::Discard`]
+//! drops the changes instead. [`Repository::plan_switch`] shows the result and writes nothing.
 
 use std::error::Error;
 use std::fmt;
 use std::io;
 
 use super::checkout::{CheckoutError, CheckoutPlan};
-use super::snapshot::{read_commit, SnapshotError};
+use super::conflicted;
+use super::rewrite::{Carried, RewriteError};
+use super::snapshot::{read_any_commit, SnapshotError};
 use super::{now, Repository, UpdateError, WriteLock};
-use crate::change::{ChangeId, GenerateError};
-use crate::index::Index;
-use crate::object::{Commit, CommitId, ObjectId, TreeId};
+use crate::object::{CommitId, ObjectId, TreeId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, TAKE_OVER};
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
 use crate::store::{ObjectStore, StoreError};
@@ -59,6 +63,89 @@ pub enum SwitchTarget {
     Detach(Revision),
 }
 
+/// What a switch does with the changes of the working-copy commit when it holds some.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Changes {
+    /// Carry them to the target: the new working-copy commit keeps the change ID and holds
+    /// `T + (W - P)`, where a conflict is data of the commit (the rewrite of ADR-010).
+    #[default]
+    Carry,
+    /// Leave them behind: the new working-copy commit is empty, and the directory is brought to
+    /// the target. The snapshot that comes first keeps the changes in the log.
+    Discard,
+}
+
+/// What became of the changes of the working-copy commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Handled {
+    /// The working-copy commit held no change, and an empty one started on the target.
+    Nothing,
+    /// The changes were carried to the target.
+    Carried {
+        /// The paths that are an open conflict in the new working-copy commit, sorted. Empty if
+        /// the carry was clean.
+        conflicts: Vec<String>,
+    },
+    /// The changes were left behind (`--discard`); the log keeps the snapshot that holds them.
+    Discarded,
+}
+
+/// What a switch would do, and nothing was written but objects that no commit names.
+#[derive(Debug)]
+#[must_use]
+pub enum Planned {
+    /// HEAD names the branch already: the switch would do nothing.
+    AlreadyOn(BranchName),
+    /// The switch would move pointers and files.
+    Would(Box<SwitchPlan>),
+}
+
+/// The moves of a switch that was planned and not made.
+///
+/// The plan is made from the working-copy commit as it is saved. A real switch saves the
+/// unsaved changes of the directory first, so what it carries can differ.
+#[derive(Debug)]
+pub struct SwitchPlan {
+    head: Head,
+    tip: CommitId,
+    created: Option<(BranchName, CommitId)>,
+    handled: Handled,
+    checkout: CheckoutPlan,
+    repeats: bool,
+}
+
+impl SwitchPlan {
+    /// The value of HEAD afterwards.
+    pub fn head(&self) -> &Head {
+        &self.head
+    }
+
+    /// The commit at the target, the parent of the new working-copy commit.
+    pub fn commit(&self) -> CommitId {
+        self.tip
+    }
+
+    /// The branch that the switch would make, with its commit.
+    pub fn created(&self) -> Option<&(BranchName, CommitId)> {
+        self.created.as_ref()
+    }
+
+    /// What would become of the changes of the working-copy commit.
+    pub fn handled(&self) -> &Handled {
+        &self.handled
+    }
+
+    /// The files that would be written and removed.
+    pub fn checkout(&self) -> &CheckoutPlan {
+        &self.checkout
+    }
+
+    /// Whether the newest entry is a switch that stopped and this one would finish it.
+    pub fn repeats(&self) -> bool {
+        self.repeats
+    }
+}
+
 /// How a switch ended.
 #[derive(Debug)]
 #[must_use]
@@ -77,6 +164,8 @@ pub enum Switched {
         commit: CommitId,
         /// The new working-copy commit, a child of `commit`.
         working_copy: CommitId,
+        /// What became of the changes of the old working-copy commit.
+        handled: Handled,
     },
 }
 
@@ -103,15 +192,21 @@ impl Repository {
     /// Changes the branch that HEAD names, or detaches HEAD (ADR-010).
     ///
     /// The steps are: the authorizer is asked for `switch`; the target is resolved and the checks
-    /// that need no write are made, among them the plan of the files, so that a file of the
-    /// directory that is in the way is found before the first write; the lock of the references is
-    /// taken and held to the last move (ADR-014); the tracked files are saved in a snapshot (a
-    /// second question to the authorizer, `snapshot`); the working-copy commit must be empty (its
-    /// tree is that of its first parent, or empty if it has none); a new empty working-copy commit
-    /// with a new change ID is made on the tip of the target; the plan is made again from the
+    /// that need no write are made, among them the next working-copy commit and the plan of the
+    /// files, so that a file of the directory that is in the way is found before the first write;
+    /// the lock of the references is taken and held to the last move (ADR-014); the tracked files
+    /// are saved in a snapshot (a second question to the authorizer, `snapshot`); the next
+    /// working-copy commit is made on the tip of the target; the plan is made again from the
     /// values the lock sees, the entry is written and flushed, the directory is brought to the
-    /// tree of the target, and the pointers move: the new branch first, then the working-copy
-    /// commit, and HEAD last (ADR-013). One entry holds all moves.
+    /// tree of the next working-copy commit, and the pointers move: the new branch first, then the
+    /// working-copy commit, and HEAD last (ADR-013). One entry holds all moves.
+    ///
+    /// The next working-copy commit depends on the working-copy commit `W` after the snapshot. If
+    /// `W` holds no change (its tree is that of its first parent, or empty if it has none), it is
+    /// an empty commit with a new change ID. If `W` holds changes, `changes` decides:
+    /// [`Changes::Carry`] makes the commit of the rewrite of ADR-010 (the same change ID, the
+    /// tree `T + (W - P)`, where a conflict is data of the commit and no failure), and
+    /// [`Changes::Discard`] makes the empty commit, so the changes stay in the log only.
     ///
     /// A switch to the branch that HEAD names is [`Switched::AlreadyOn`] and writes nothing. If the
     /// trees are equal, only the pointers move.
@@ -119,22 +214,24 @@ impl Repository {
     /// If the newest entry of the log is a switch with the same result that did not take effect
     /// (the files were written and a pointer did not move), the call is its repeat: it takes no
     /// snapshot, as one would save the files of the target as changes of the old working-copy
-    /// commit, and it uses the working-copy commit of that entry again.
+    /// commit, and it uses the working-copy commit of that entry again, whatever `changes` says.
     ///
     /// # Errors
     ///
     /// Before the snapshot: [`SwitchError::Update`] for a refusal of the question `switch`,
     /// [`SwitchError::NoSuchBranch`], [`SwitchError::NoSuchCommit`], [`SwitchError::BranchExists`],
     /// [`SwitchError::NoStart`], [`SwitchError::Refs`], [`SwitchError::Store`],
-    /// [`SwitchError::Read`] for a commit that cannot be read, and [`SwitchError::Checkout`]
-    /// for a file in the way. Nothing is written then. After the snapshot, the same errors can
-    /// come again, and [`SwitchError::NotEmpty`] if the working-copy commit holds changes; they are
+    /// [`SwitchError::Read`] for a commit that cannot be read, [`SwitchError::Next`] for the
+    /// next working-copy commit (a merge that fails, or a working-copy commit with several parents
+    /// that holds changes), and [`SwitchError::Checkout`] for a file in the way. Nothing is
+    /// written then but objects. After the snapshot, the same errors can come again; they are
     /// wrapped in [`SwitchError::AfterSnapshot`] when the snapshot wrote an entry. Then
     /// [`SwitchError::CheckoutFailed`], [`SwitchError::MoveFailed`],
     /// [`SwitchError::PartlyMoved`], and [`SwitchError::NotDurable`] say how far the switch came.
     pub fn switch(
         &self,
         target: &SwitchTarget,
+        changes: Changes,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Switched, SwitchError> {
@@ -150,7 +247,7 @@ impl Repository {
             Ok(resolved) => resolved,
             Err(already) => return Ok(Switched::AlreadyOn(already)),
         };
-        self.preflight(&resolved)?;
+        self.preflight(&resolved, changes, actor)?;
         let lock = self
             .refs_store()
             .lock_writer(&allowed)
@@ -168,9 +265,9 @@ impl Repository {
         }
         let (snapshot, mut snapshot_late, repeated) = match stopped {
             // The repeat takes no snapshot, so the rule of the owner is applied here (ADR-010).
-            Some(next) => {
+            Some(stopped) => {
                 self.own_for_repeat(&lock, actor, authorizer)?;
-                (None, None, Some(next))
+                (None, None, Some(stopped))
             }
             None => match self.snapshot_locked(&lock, actor, authorizer) {
                 Ok(entry) => (entry, None, None),
@@ -194,16 +291,17 @@ impl Repository {
             None => error,
         };
         let next = match repeated {
-            Some(next) => next,
-            None => match self.start_working_copy(&resolved, actor) {
-                Ok(next) => next,
-                Err(error) => return Err(wrap(error, snapshot_late.take())),
-            },
+            Some((next, old)) => self.repeated(next, old),
+            None => self.next_working_copy(&resolved, changes, actor),
+        };
+        let (next, handled) = match next {
+            Ok(next) => next,
+            Err(error) => return Err(wrap(error, snapshot_late.take())),
         };
         let branches = resolved.branches();
         let targets = RestoreTargets {
             head: Some(&resolved.head),
-            working_copy: Some(next),
+            working_copy: Some(next.id),
             branches: &branches,
         };
         let logged = self
@@ -246,7 +344,8 @@ impl Repository {
             entry: Box::new(entry),
             head: resolved.head.clone(),
             commit: resolved.tip,
-            working_copy: next,
+            working_copy: next.id,
+            handled: handled.clone(),
         };
         match logged {
             Err(error) => Err(wrap(SwitchError::Refs(error), snapshot_late.take())),
@@ -284,6 +383,60 @@ impl Repository {
                 snapshot_late.take(),
             )),
         }
+    }
+
+    /// Plans a switch and writes nothing, not even a snapshot: the pointers that would move, what
+    /// would become of the changes of the working-copy commit, and the files that would be
+    /// written and removed. The authorizer is asked for `switch`, as for [`switch`](Self::switch).
+    ///
+    /// The plan is made from the working-copy commit as it is saved. A real switch saves the
+    /// unsaved changes of the directory first, so what it carries can differ. A carry stores the
+    /// objects of the merge, which no commit names.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`switch`](Self::switch) returns before the snapshot.
+    pub fn plan_switch(
+        &self,
+        target: &SwitchTarget,
+        changes: Changes,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Planned, SwitchError> {
+        let operation =
+            OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
+        self.refs_store()
+            .refuse_pending_purge()
+            .map_err(SwitchError::Refs)?;
+        let _ = self
+            .authorize(actor, authorizer, &operation, &target_name(target))
+            .map_err(SwitchError::Update)?;
+        let resolved = match self.resolve(target)? {
+            Ok(resolved) => resolved,
+            Err(already) => return Ok(Planned::AlreadyOn(already)),
+        };
+        let branches = resolved.branches();
+        let targets = RestoreTargets {
+            head: Some(&resolved.head),
+            working_copy: None,
+            branches: &branches,
+        };
+        self.refs_store()
+            .plan_restore(&targets, self.objects())
+            .map_err(SwitchError::Refs)?;
+        let repeats = self.stopped_switch(&resolved)?.is_some();
+        if !repeats {
+            self.require_free(target)?;
+        }
+        let (_, handled, checkout) = self.plan_for(&resolved, changes, actor)?;
+        Ok(Planned::Would(Box::new(SwitchPlan {
+            head: resolved.head,
+            tip: resolved.tip,
+            created: resolved.created,
+            handled,
+            checkout,
+            repeats,
+        })))
     }
 
     /// Reads the target. The inner `Err` is the branch that HEAD names already.
@@ -366,11 +519,16 @@ impl Repository {
         }
     }
 
-    /// The checks that write nothing: a name in the way of the new branch, and, if the
-    /// working-copy commit is empty, the plan of the files, so that a file that is in the way is
-    /// found before the snapshot. A working-copy commit that holds changes is refused later, after
-    /// its snapshot, so that the message comes after the changes are saved.
-    fn preflight(&self, resolved: &Resolved) -> Result<(), SwitchError> {
+    /// The checks that write nothing but objects: a name in the way of the new branch, the next
+    /// working-copy commit from the working-copy commit as it is saved, and the plan of the
+    /// files, so that a file that is in the way is found before the snapshot. The plan is made
+    /// again under the lock, from the working-copy commit that the snapshot leaves.
+    fn preflight(
+        &self,
+        resolved: &Resolved,
+        changes: Changes,
+        actor: &Actor,
+    ) -> Result<(), SwitchError> {
         let branches = resolved.branches();
         let targets = RestoreTargets {
             head: Some(&resolved.head),
@@ -380,70 +538,96 @@ impl Repository {
         self.refs_store()
             .plan_restore(&targets, self.objects())
             .map_err(SwitchError::Refs)?;
+        self.plan_for(resolved, changes, actor).map(drop)
+    }
+
+    /// The next working-copy commit and the plan of the files for the working-copy commit as it
+    /// is saved now.
+    fn plan_for(
+        &self,
+        resolved: &Resolved,
+        changes: Changes,
+        actor: &Actor,
+    ) -> Result<(Carried, Handled, CheckoutPlan), SwitchError> {
+        let (next, handled) = self.next_working_copy(resolved, changes, actor)?;
         let current = self.refs().working_copy().map_err(SwitchError::Refs)?;
-        let working = read_commit(self.objects(), current).map_err(SwitchError::Read)?;
-        if self.is_empty(&working)? {
-            let from = working.tree();
-            let to = self.tip_tree(resolved.tip)?;
-            self.plan_checkout(Some(from), to)
-                .map_err(SwitchError::Checkout)?;
-        }
-        Ok(())
+        let from = self.display_tree(current)?;
+        let plan = self
+            .plan_checkout(Some(from), next.display)
+            .map_err(SwitchError::Checkout)?;
+        Ok((next, handled, plan))
     }
 
-    /// Whether the commit holds no change: its tree is that of its first parent, or the empty tree
-    /// if it has none (the rule of `status`).
-    fn is_empty(&self, working: &Commit) -> Result<bool, SwitchError> {
-        let before = match working.parents().first() {
-            Some(parent) => read_commit(self.objects(), *parent)
-                .map_err(SwitchError::Read)?
-                .tree(),
-            None => Index::new()
-                .write_tree(self.objects())
-                .map_err(|error| SwitchError::Read(SnapshotError::WriteTree(error)))?,
-        };
-        Ok(working.tree() == before)
-    }
-
-    fn tip_tree(&self, commit: CommitId) -> Result<TreeId, SwitchError> {
-        read_commit(self.objects(), commit)
-            .map(|commit| commit.tree())
+    /// The tree that the directory holds for a commit: its tree, or the working-copy view of a
+    /// commit that records a conflict (ADR-005).
+    fn display_tree(&self, commit: CommitId) -> Result<TreeId, SwitchError> {
+        let commit = read_any_commit(self.objects(), commit).map_err(SwitchError::Read)?;
+        conflicted::view(self.objects(), &commit.tree_sum())
+            .map(|view| view.tree)
             .map_err(SwitchError::Read)
     }
 
-    /// The new working-copy commit: the tree of the tip, the tip as only parent, an empty
-    /// message, and a change ID of its own. The old working-copy commit must be empty.
-    fn start_working_copy(
+    /// The new working-copy commit on the tip, stored and not yet named by a pointer: the carry
+    /// of the current one if it holds changes and `changes` says so, otherwise an empty commit
+    /// with a change ID of its own.
+    fn next_working_copy(
         &self,
         resolved: &Resolved,
+        changes: Changes,
         actor: &Actor,
-    ) -> Result<CommitId, SwitchError> {
+    ) -> Result<(Carried, Handled), SwitchError> {
         let current = self.refs().working_copy().map_err(SwitchError::Refs)?;
-        let working = read_commit(self.objects(), current).map_err(SwitchError::Read)?;
-        if !self.is_empty(&working)? {
-            return Err(SwitchError::NotEmpty { working: current });
+        let working = read_any_commit(self.objects(), current).map_err(SwitchError::Read)?;
+        let holds = self.holds_changes(&working).map_err(SwitchError::next)?;
+        match (holds, changes) {
+            (true, Changes::Carry) => {
+                let carried = self
+                    .carry(&working, resolved.tip, actor)
+                    .map_err(SwitchError::next)?;
+                let conflicts = carried.conflicts.clone();
+                Ok((carried, Handled::Carried { conflicts }))
+            }
+            (true, Changes::Discard) => Ok((
+                self.start_empty(resolved.tip, actor)
+                    .map_err(SwitchError::next)?,
+                Handled::Discarded,
+            )),
+            (false, _) => Ok((
+                self.start_empty(resolved.tip, actor)
+                    .map_err(SwitchError::next)?,
+                Handled::Nothing,
+            )),
         }
-        let next = Commit::try_new(
-            self.tip_tree(resolved.tip)?,
-            vec![resolved.tip],
-            ChangeId::generate().map_err(SwitchError::ChangeId)?,
-            actor.clone(),
-            now(),
-            "",
-        )
-        .expect("a single parent is not repeated");
-        self.objects()
-            .put_commit(&next)
-            .map_err(|error| SwitchError::Store(Box::new(error)))
     }
 
-    /// The working-copy commit of the newest entry if that entry is a switch with the result that
-    /// `resolved` asks for and that did not finish: every pointer it names is at its old or at its
+    /// The commit of a stopped switch, used again, and what became of the changes of the working-copy
+    /// commit `old` that it replaced: a commit that keeps the change ID carried them.
+    fn repeated(&self, next: CommitId, old: CommitId) -> Result<(Carried, Handled), SwitchError> {
+        let carried = self.carried(next).map_err(SwitchError::next)?;
+        let before = read_any_commit(self.objects(), old).map_err(SwitchError::Read)?;
+        let after = read_any_commit(self.objects(), next).map_err(SwitchError::Read)?;
+        let handled = if after.change() == before.change() {
+            Handled::Carried {
+                conflicts: carried.conflicts.clone(),
+            }
+        } else if self.holds_changes(&before).map_err(SwitchError::next)? {
+            Handled::Discarded
+        } else {
+            Handled::Nothing
+        };
+        Ok((carried, handled))
+    }
+
+    /// The working-copy commit of the newest entry and the one it replaced, if that entry is a
+    /// switch with the result that `resolved` asks for and that did not finish: every pointer it names is at its old or at its
     /// new value, and at least one is at its old value. Such an entry was written, and the files
     /// were brought to the target, but a pointer did not move (a stop after the files, or after
     /// some of the pointers). The caller holds the lock of the references, so no writer is between
     /// its entry and its moves.
-    fn stopped_switch(&self, resolved: &Resolved) -> Result<Option<CommitId>, SwitchError> {
+    fn stopped_switch(
+        &self,
+        resolved: &Resolved,
+    ) -> Result<Option<(CommitId, CommitId)>, SwitchError> {
         let entries = self.oplog().entries().map_err(SwitchError::Log)?;
         // A `take-over` names no pointer: the repeat of another actor writes one before its own
         // entry, and it must not hide the stopped switch from a second repeat.
@@ -506,8 +690,8 @@ impl Repository {
         }
         // The commit is in the store, as the entry was written after it, so a failure to read it
         // is damage and not "no repeat": going on would take the snapshot that a repeat avoids.
-        let commit = read_commit(self.objects(), next).map_err(SwitchError::Read)?;
-        Ok((commit.parents() == [resolved.tip]).then_some(next))
+        let commit = read_any_commit(self.objects(), next).map_err(SwitchError::Read)?;
+        Ok((commit.parents() == [resolved.tip]).then_some((next, old)))
     }
 
     /// The check of the owner that the snapshot makes, for a repeat that takes none: another
@@ -541,8 +725,8 @@ impl Repository {
     fn plan_files(&self, moves: &RestoreMoves) -> Result<Option<CheckoutPlan>, SwitchError> {
         match &moves.working_copy {
             Some((current, target)) => {
-                let from = self.tip_tree(*current)?;
-                let to = self.tip_tree(*target)?;
+                let from = self.display_tree(*current)?;
+                let to = self.display_tree(*target)?;
                 self.plan_checkout(Some(from), to)
                     .map(Some)
                     .map_err(SwitchError::Checkout)
@@ -577,12 +761,14 @@ pub enum SwitchError {
     Store(Box<StoreError>),
     /// The snapshot failed, or the owner of the working copy is not the actor.
     Snapshot(SnapshotError),
-    /// A commit or a tree could not be read or made. Nothing of the switch was written.
+    /// A commit or a tree could not be read. Nothing of the switch was written.
     Read(SnapshotError),
+    /// The next working-copy commit could not be made: the merge of the carry failed, an object
+    /// is missing, the working-copy commit that holds changes has several parents, or the target
+    /// has the change ID of the working-copy commit. Nothing was written but objects.
+    Next(Box<RewriteError>),
     /// A file is in the way, or the files cannot be planned. Nothing was written.
     Checkout(CheckoutError),
-    /// The operating system gave no random bytes for the change ID.
-    ChangeId(GenerateError),
     /// There is no branch with the name (`switch -c` makes one).
     NoSuchBranch(BranchName),
     /// The store has no commit with the ID.
@@ -591,11 +777,6 @@ pub enum SwitchError {
     BranchExists(BranchName),
     /// `switch -c` has no start: no start is given and the branch of HEAD has no commit yet.
     NoStart(BranchName),
-    /// The working-copy commit holds changes, which a switch would leave behind.
-    NotEmpty {
-        /// The working-copy commit.
-        working: CommitId,
-    },
     /// The files could not be brought to the tree of the target after the entry was written. No
     /// pointer moved, and the files done so far stay; the same switch run again finishes it.
     CheckoutFailed {
@@ -648,6 +829,10 @@ pub enum SwitchError {
 }
 
 impl SwitchError {
+    fn next(error: RewriteError) -> Self {
+        Self::Next(Box::new(error))
+    }
+
     /// Returns the error of the file system, if there is one inside.
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
@@ -661,13 +846,12 @@ impl SwitchError {
             Self::Store(error) => error.io_error(),
             Self::Snapshot(error) | Self::Read(error) => error.io_error(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
+            Self::Next(error) => error.io_error(),
             Self::AfterSnapshot { source, .. } => source.io_error(),
-            Self::ChangeId(_)
-            | Self::NoSuchBranch(_)
+            Self::NoSuchBranch(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
-            | Self::NoStart(_)
-            | Self::NotEmpty { .. } => None,
+            | Self::NoStart(_) => None,
         }
     }
 
@@ -735,7 +919,11 @@ impl fmt::Display for SwitchError {
             Self::Checkout(error) => {
                 write!(f, "could not switch, nothing of it was written: {error}")
             }
-            Self::ChangeId(error) => write!(f, "could not make a change ID: {error}"),
+            Self::Next(error) => write!(
+                f,
+                "could not make the next working-copy commit, nothing of the switch was written: \
+                 {error}"
+            ),
             Self::NoSuchBranch(name) => write!(
                 f,
                 "there is no branch `{name}`; `stemma switch -c {name}` makes one"
@@ -749,11 +937,6 @@ impl fmt::Display for SwitchError {
                 f,
                 "the branch `{name}` has no commit yet, so a new branch has no start; commit \
                  first or name a start"
-            ),
-            Self::NotEmpty { working } => write!(
-                f,
-                "the working-copy commit {working} holds changes, which a switch would leave \
-                 behind; commit them first with `stemma commit`"
             ),
             Self::CheckoutFailed { entry, source } => write!(
                 f,
@@ -838,13 +1021,12 @@ impl Error for SwitchError {
             Self::Store(error) => error.source(),
             Self::Snapshot(error) | Self::Read(error) => error.source(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.source(),
-            Self::ChangeId(error) => error.source(),
+            Self::Next(error) => error.source(),
             Self::AfterSnapshot { source, .. } => source.source(),
             Self::NoSuchBranch(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
-            | Self::NoStart(_)
-            | Self::NotEmpty { .. } => None,
+            | Self::NoStart(_) => None,
         }
     }
 }
@@ -857,6 +1039,7 @@ mod tests {
 
     use super::*;
     use crate::fault;
+    use crate::repository::snapshot::read_commit;
     use crate::repository::{CommitError, InitOptions};
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
@@ -899,7 +1082,15 @@ mod tests {
     }
 
     fn switch(repository: &Repository, target: &SwitchTarget) -> Result<Switched, SwitchError> {
-        repository.switch(target, &actor(), &AllowAll)
+        switch_with(repository, target, Changes::Carry)
+    }
+
+    fn switch_with(
+        repository: &Repository,
+        target: &SwitchTarget,
+        changes: Changes,
+    ) -> Result<Switched, SwitchError> {
+        repository.switch(target, changes, &actor(), &AllowAll)
     }
 
     fn done(result: Result<Switched, SwitchError>) -> (Option<Entry>, Entry, CommitId) {
@@ -1059,36 +1250,208 @@ mod tests {
         assert!(error.to_string().contains("switch -c"), "{error}");
     }
 
+    const BASE: &str = "one\ntwo\nthree\n";
+
+    /// `main` holds `a.txt` with `BASE`; `feature` changes its first line to `ONE`. The
+    /// repository is on `main` with an empty working-copy commit.
+    fn two_branches(dir: &TempDir, repository: &Repository) {
+        write(dir, "a.txt", BASE);
+        track_and_commit(repository, &["a.txt"], "first");
+        done(switch(repository, &create("feature")));
+        write(dir, "a.txt", "ONE\ntwo\nthree\n");
+        repository
+            .commit("feature edit", &actor(), &AllowAll)
+            .map(drop)
+            .unwrap();
+        done(switch(repository, &existing("main")));
+    }
+
+    fn working_copy(repository: &Repository) -> crate::conflict::AnyCommit {
+        let id = repository.refs().working_copy().unwrap();
+        read_any_commit(repository.objects(), id).unwrap()
+    }
+
     #[test]
-    fn a_working_copy_with_changes_is_refused_after_its_changes_are_saved() {
+    fn the_changes_of_the_working_copy_are_carried_to_the_target_with_their_change_id() {
         let dir = TempDir::new();
         let repository = repository(&dir);
-        first_commit(&dir, &repository);
-        done(switch(&repository, &create("feature")));
-        write(&dir, "a.txt", "scratch");
+        two_branches(&dir, &repository);
+        write(&dir, "a.txt", "one\ntwo\nTHREE\n");
+        let before = working_copy(&repository);
+        let feature = repository.refs().branch(&name("feature")).unwrap().unwrap();
         let count = entries(&repository);
-        let head = repository.refs().head().unwrap();
 
-        let error = switch(&repository, &existing("main")).unwrap_err();
+        let result = switch(&repository, &existing("feature"));
 
-        let SwitchError::AfterSnapshot { source, .. } = &error else {
-            panic!("expected a refusal after the snapshot, got {error}");
+        let Ok(Switched::Done {
+            snapshot,
+            entry,
+            working_copy: next,
+            handled,
+            ..
+        }) = result
+        else {
+            panic!("expected a switch, got {result:?}");
         };
-        assert!(matches!(**source, SwitchError::NotEmpty { .. }), "{error}");
-        assert!(error.to_string().contains("commit them first"), "{error}");
-        assert!(error.snapshot().is_some());
-        assert_eq!(entries(&repository), count + 1, "only the snapshot");
-        assert_eq!(repository.refs().head().unwrap(), head);
-        assert_eq!(read(&dir, "a.txt"), "scratch");
-        // The edit is in the log, not lost.
-        let saved = repository.refs().working_copy().unwrap();
+        assert!(snapshot.is_some(), "the edit was saved first");
         assert_eq!(
-            read_commit(repository.objects(), saved)
-                .unwrap()
-                .parents()
-                .len(),
-            1
+            entries(&repository),
+            count + 2,
+            "the snapshot and the switch"
         );
+        assert_eq!(entry.change().unwrap().operation().as_str(), "switch");
+        assert_eq!(handled, Handled::Carried { conflicts: vec![] });
+        assert_eq!(repository.refs().working_copy().unwrap(), next);
+        let after = working_copy(&repository);
+        assert_eq!(after.parents(), [feature]);
+        assert_eq!(after.change(), before.change(), "the same change");
+        assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nTHREE\n");
+        // The directory and the commit agree: the next snapshot has nothing to save.
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_conflict_of_the_carry_is_data_of_the_new_working_copy_and_no_failure() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        write(&dir, "a.txt", "uno\ntwo\nthree\n");
+        let before = working_copy(&repository);
+
+        let result = switch(&repository, &existing("feature"));
+
+        let Ok(Switched::Done { handled, .. }) = result else {
+            panic!("expected a switch, got {result:?}");
+        };
+        assert_eq!(
+            handled,
+            Handled::Carried {
+                conflicts: vec!["a.txt".to_owned()]
+            }
+        );
+        let after = working_copy(&repository);
+        assert!(matches!(after, crate::conflict::AnyCommit::Commit2(_)));
+        assert_eq!(after.change(), before.change());
+        assert_eq!(after.tree_sum().sides(), 2);
+        assert_eq!(
+            read(&dir, "a.txt"),
+            "<<<<<<< conflict\n+++++++ side 1\nONE\ntwo\nthree\n------- base 1\n\
+             one\ntwo\nthree\n+++++++ side 2\nuno\ntwo\nthree\n>>>>>>>\n"
+        );
+        // The markers are the saved state: the next snapshot keeps the conflict as it is.
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+    }
+
+    #[test]
+    fn discard_leaves_the_changes_in_the_log_and_starts_an_empty_working_copy() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        write(&dir, "a.txt", "scratch\n");
+        let before = working_copy(&repository);
+        let feature = repository.refs().branch(&name("feature")).unwrap().unwrap();
+
+        let result = switch_with(&repository, &existing("feature"), Changes::Discard);
+
+        let Ok(Switched::Done {
+            snapshot, handled, ..
+        }) = result
+        else {
+            panic!("expected a switch, got {result:?}");
+        };
+        assert_eq!(handled, Handled::Discarded);
+        assert!(snapshot.is_some(), "the changes are in the log");
+        assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nthree\n");
+        let after = working_copy(&repository);
+        assert_eq!(after.parents(), [feature]);
+        assert_ne!(after.change(), before.change(), "a new change ID");
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+    }
+
+    #[test]
+    fn discard_of_a_working_copy_without_changes_is_the_plain_switch() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+
+        let result = switch_with(&repository, &existing("feature"), Changes::Discard);
+
+        let Ok(Switched::Done { handled, .. }) = result else {
+            panic!("expected a switch, got {result:?}");
+        };
+        assert_eq!(handled, Handled::Nothing);
+    }
+
+    #[test]
+    fn a_plan_reports_the_carry_and_writes_nothing() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        write(&dir, "a.txt", "uno\ntwo\nthree\n");
+        // The plan looks at the saved state, so the edit is saved first.
+        repository.snapshot(&actor(), &AllowAll).unwrap().unwrap();
+        let count = entries(&repository);
+        let pointers = (
+            repository.refs().head().unwrap(),
+            repository.refs().working_copy().unwrap(),
+        );
+
+        let planned = repository
+            .plan_switch(&existing("feature"), Changes::Carry, &actor(), &AllowAll)
+            .unwrap();
+
+        let Planned::Would(plan) = planned else {
+            panic!("expected a plan, got {planned:?}");
+        };
+        assert_eq!(
+            plan.handled(),
+            &Handled::Carried {
+                conflicts: vec!["a.txt".to_owned()]
+            }
+        );
+        assert_eq!(plan.head(), &Head::Branch(name("feature")));
+        assert!(!plan.repeats());
+        assert_eq!(plan.checkout().writes().len(), 1);
+        assert_eq!(entries(&repository), count, "no entry");
+        assert_eq!(
+            pointers,
+            (
+                repository.refs().head().unwrap(),
+                repository.refs().working_copy().unwrap()
+            )
+        );
+        assert_eq!(read(&dir, "a.txt"), "uno\ntwo\nthree\n");
+        let again = repository
+            .plan_switch(&existing("main"), Changes::Carry, &actor(), &AllowAll)
+            .unwrap();
+        assert!(matches!(again, Planned::AlreadyOn(ref branch) if branch.as_str() == "main"));
+    }
+
+    #[test]
+    fn a_target_that_records_a_conflict_is_switched_to() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        write(&dir, "a.txt", "uno\ntwo\nthree\n");
+        done(switch(&repository, &create("clash")));
+        let _ = switch(&repository, &existing("feature")).unwrap();
+        // `clash` is at the commit of `main`; carry the edit onto `feature`, commit the conflict.
+        repository
+            .commit("conflict", &actor(), &AllowAll)
+            .map(drop)
+            .unwrap();
+        let conflicted = repository.refs().branch(&name("feature")).unwrap().unwrap();
+        done(switch(&repository, &existing("main")));
+
+        let (_, _, next) = done(switch(&repository, &existing("feature")));
+
+        assert_eq!(
+            read_any_commit(repository.objects(), next)
+                .unwrap()
+                .parents(),
+            [conflicted]
+        );
+        assert!(read(&dir, "a.txt").starts_with("<<<<<<< conflict\n"));
     }
 
     #[test]
@@ -1179,7 +1542,7 @@ mod tests {
         first_commit(&dir, &repository);
         let count = entries(&repository);
         let error = repository
-            .switch(&create("feature"), &actor(), &DenyAll)
+            .switch(&create("feature"), Changes::Carry, &actor(), &DenyAll)
             .unwrap_err();
         assert!(
             matches!(error, SwitchError::Update(UpdateError::Denied { .. })),
@@ -1321,15 +1684,19 @@ mod tests {
             name: name("other"),
             start: Some(Revision::Commit(first.object_id())),
         };
-        let error = switch(&repository, &other).unwrap_err();
+        let result = switch(&repository, &other);
 
-        assert!(error.snapshot().is_some(), "a snapshot was taken: {error}");
-        assert!(
-            matches!(&error, SwitchError::AfterSnapshot { source, .. }
-                if matches!(**source, SwitchError::NotEmpty { .. })),
-            "{error}"
-        );
-        assert_eq!(entries(&repository), count + 1);
+        // Not a repeat, so the files of the stopped switch are saved as changes of the old
+        // working-copy commit, and they are carried like any other change.
+        let Ok(Switched::Done {
+            snapshot, handled, ..
+        }) = result
+        else {
+            panic!("expected a switch, got {result:?}");
+        };
+        assert!(snapshot.is_some(), "a snapshot was taken");
+        assert!(matches!(handled, Handled::Carried { .. }), "{handled:?}");
+        assert_eq!(entries(&repository), count + 2);
     }
 
     #[test]
@@ -1340,9 +1707,12 @@ mod tests {
         // Any later entry, here a snapshot of the files of the target, ends the repeat.
         repository.snapshot(&actor(), &AllowAll).unwrap();
 
-        let error = switch(&repository, &target).unwrap_err();
+        let result = switch(&repository, &target);
 
-        assert!(matches!(error, SwitchError::NotEmpty { .. }), "{error}");
+        let Ok(Switched::Done { handled, .. }) = result else {
+            panic!("expected a switch, got {result:?}");
+        };
+        assert!(matches!(handled, Handled::Carried { .. }), "{handled:?}");
     }
 
     #[test]
@@ -1407,7 +1777,9 @@ mod tests {
         let count = entries(&repository);
         let other = Actor::human("mara").unwrap();
 
-        let error = repository.switch(&target, &other, &AllowAll).unwrap_err();
+        let error = repository
+            .switch(&target, Changes::Carry, &other, &AllowAll)
+            .unwrap_err();
 
         assert!(
             matches!(error, SwitchError::Snapshot(SnapshotError::NotOwner { .. })),
@@ -1436,7 +1808,12 @@ mod tests {
         let (_, target) = stopped_switch_to_old(&dir, &repository);
         let other = Actor::human("mara").unwrap();
 
-        let (saved, _, next) = done(repository.taking_over().switch(&target, &other, &AllowAll));
+        let (saved, _, next) = done(repository.taking_over().switch(
+            &target,
+            Changes::Carry,
+            &other,
+            &AllowAll,
+        ));
 
         assert!(saved.is_none());
         assert_eq!(repository.refs().working_copy().unwrap(), next);
@@ -1454,7 +1831,7 @@ mod tests {
 
         let error = repository
             .taking_over()
-            .switch(&target, &agent, &AllowAll)
+            .switch(&target, Changes::Carry, &agent, &AllowAll)
             .unwrap_err();
 
         assert!(
@@ -1472,7 +1849,7 @@ mod tests {
         let other = Actor::human("mara").unwrap();
         take_over_by(&repository, &other);
 
-        let (saved, _, _) = done(repository.switch(&target, &other, &AllowAll));
+        let (saved, _, _) = done(repository.switch(&target, Changes::Carry, &other, &AllowAll));
 
         assert!(saved.is_none(), "still a repeat, so no snapshot");
     }

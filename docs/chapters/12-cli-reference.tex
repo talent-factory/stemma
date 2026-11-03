@@ -176,7 +176,8 @@ Die zweite Arbeitskopie von Stemma ist ein Worktree von Stemma, den \type{worktr
 (siehe dort); er hat ein eigenes Zustandsverzeichnis im \type{.stemma} der Wurzel und geht mit
 \type{git worktree remove} nicht verloren.
 
-Auch \type{op restore --dry-run} und \type{purge} ohne \type{--apply} verlangen einen Akteur,
+Auch \type{op restore --dry-run}, \type{switch --dry-run} und \type{purge} ohne \type{--apply}
+verlangen einen Akteur,
 obwohl sie nichts schreiben; sie prüfen ihn, bevor sie das Repository öffnen.
 Nur \type{log}, \type{op log} und \type{op verify} laufen ohne Akteur.
 Eine Akteur-Zeile in falscher Form endet wie ein fehlender Akteur mit Exit-Code 1,
@@ -464,7 +465,7 @@ also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
 nennt das Journal, \type{stemma purge --resume} und \type{--abort}.
 \type{purge --apply} lehnt ebenfalls ab, mit Exit-Code 3, denn ein Purge ist schon begonnen.
 Lesen bleibt möglich: \type{log}, \type{op log}, \type{op verify},
-\type{op restore --dry-run},
+\type{op restore --dry-run}, \type{switch --dry-run},
 \type{purge} ohne \type{--apply} und \type{diff} mit zwei Kennungen laufen.
 
 Meldungen sind vollständig und enthalten die Ursache. Ein Programm gibt sie mit
@@ -824,9 +825,10 @@ stemma commit -C projekt -m "Fix the build"
 Wechselt den Branch, auf den HEAD zeigt, oder löst HEAD vom Branch (ADR-010).
 
 \starttyping
-stemma switch NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over]
-stemma switch -c NAME [START] [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+stemma switch NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--discard] [--dry-run]
+stemma switch -c NAME [START] [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--discard] [--dry-run]
 stemma switch --detach COMMIT-ODER-BRANCH [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+    [--discard] [--dry-run]
 \stoptyping
 
 \startitemize
@@ -850,6 +852,14 @@ Eintrag des Wechsels tragen diesen Akteur.
 bei der Wiederholung eines abgebrochenen Wechsels, vor den Dateien
 (siehe {\bf Eigentümer der Arbeitskopie} oben).
 Ohne die Option lehnt auch die Wiederholung einen anderen Akteur ab, und ein Agent übernimmt nie.
+Mit \type{--dry-run} zusammen ist es ein Aufruffehler (Exit-Code 2).
+\item {\bf \type{--discard}:} Lässt die Änderungen des Working-Copy-Commits zurück, statt sie
+mitzunehmen: Das Verzeichnis kommt auf den Stand des Ziels, und der neue Working-Copy-Commit ist
+leer. Die Änderungen stehen im Snapshot des Befehls und gehen nicht verloren; \type{op restore}
+holt sie zurück. Ohne Änderungen hat die Option keine Wirkung.
+\item {\bf \type{--dry-run}:} Zeigt, was der Wechsel täte, und schreibt nichts, auch keinen
+Snapshot. Der Plan geht vom gesicherten Working-Copy-Commit aus.
+Zusammen mit \type{--discard} zeigt er den Plan des Zurücklassens.
 \stopitemize
 
 Der Befehl hat keine JSON-Form.
@@ -861,14 +871,16 @@ Dann speichert er die verfolgten Dateien wie ein Snapshot
 Ist der Working-Copy-Commit danach leer, sein Baum also der seines ersten Elternteils,
 entsteht auf der Spitze des Ziels ein neuer, leerer Working-Copy-Commit mit dem Baum der Spitze
 und einer neuen Change-ID.
-Die Checkout-Schicht bringt das Arbeitsverzeichnis auf diesen Baum (ADR-013);
+Hat er Änderungen, nimmt der Befehl sie mit: Der neue Working-Copy-Commit hat die Spitze $T$ als
+Elternteil, behält Change-ID, Autor, Zeit und Beschreibung des alten, und sein Baum ist
+$T + (W - P)$. Ein Konflikt dabei ist Daten des Commits und kein Fehler; das Verzeichnis zeigt den
+Text mit Markierungen, und \type{status} nennt den Pfad.
+Mit \type{--discard} ist der neue Commit leer, auch wenn der alte Änderungen hatte.
+Die Checkout-Schicht bringt das Arbeitsverzeichnis auf den Baum des neuen Commits (ADR-013);
 sind die Bäume gleich, schreibt sie nichts.
 Im Eintrag \type{switch} stehen alle Bewegungen: HEAD, der Working-Copy-Commit und bei \type{-c}
 der neue Branch. Die Reihenfolge ist wie beim \type{op restore}: erst der Eintrag, dann die
 Dateien, dann die Zeiger (der Branch, der Working-Copy-Commit, zuletzt HEAD).
-
-Hat der Working-Copy-Commit Änderungen, lehnt der Befehl ab und nimmt sie nicht mit.
-Die Änderungen stehen im Snapshot, und die Meldung nennt dessen Eintrag.
 
 Die Ausgabe nennt den Eintrag und wie sich der Wechsel zurücksetzen lässt:
 
@@ -884,15 +896,30 @@ Die erste Zeile heisst \type{Switched to branch NAME} bei einem bestehenden Bran
 Zeigt HEAD schon auf den Branch, schreibt der Befehl \type{Already on NAME}, endet mit
 Exit-Code 0 und schreibt weder einen Snapshot noch einen Eintrag.
 
+Hatte der Working-Copy-Commit Änderungen, steht nach der ersten Zeile eine weitere:
+\type{Carried the changes of the working copy to the new base}, gefolgt von einer Zeile
+\type{C conflict PFAD} je Pfad im Konflikt, oder bei \type{--discard}
+\type{Left the changes behind; the log keeps them in the snapshot above}.
+
+Mit \type{--dry-run} beginnt die Ausgabe mit \type{Would switch to branch NAME; nothing is
+written} (bei \type{-c} \type{switch to a new branch NAME}, bei \type{--detach}
+\type{detach HEAD at ZIEL}). Es folgen die Zeilen \type{head} und \type{base}, bei \type{-c}
+die Zeile \type{branch}, die Zeile \type{carry the changes of the working copy to the new base}
+mit einer Zeile \type{conflict PFAD} je Pfad im Konflikt (oder \type{discard the changes of the
+working copy}), je Datei \type{write PFAD} und \type{remove PFAD}, und zuletzt der Hinweis, dass
+ein echter Wechsel zuerst sichert. Zeigt HEAD schon auf den Branch, schreibt auch der Plan
+\type{Already on NAME}.
+
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem unbekannten Branch (die Meldung nennt
 \type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Commit, den der
 Objektspeicher nicht hat, bei einem Branch von HEAD ohne Commit, wenn \type{-c} keinen START hat,
 und bei einem offenen Purge.
 Ebenso endet er, wenn eine Datei im Weg steht, die kein Commit verfolgt: Die Meldung nennt den Pfad,
 und der Befehl schreibt nichts, auch keinen Snapshot.
-Mit Exit-Code 1 endet er auch bei einem Working-Copy-Commit mit Änderungen;
-das lässt den Snapshot zurück, und die Meldung nennt dessen Eintrag.
-Ein erneuter Aufruf ist unbedenklich, sobald die Änderungen committet sind.
+Ebenso endet er bei einem Working-Copy-Commit mit Änderungen und mehr als einem Elternteil
+(ohne \type{--discard}), und wenn das Ziel die Change-ID des Working-Copy-Commits hat.
+Schlägt der Merge der Änderungen fehl, nennt die Meldung die Ursache; der Befehl hat dann nur
+Objekte geschrieben, und der Snapshot, falls er einen Eintrag schrieb, steht im Log.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 
 Scheitert das Schreiben der Dateien oder die erste Zeigerbewegung, nachdem der Eintrag im Log
@@ -919,6 +946,8 @@ stemma switch -c feature --actor "human daniel"
 stemma switch main --actor "human daniel"
 stemma switch -c fix b3:4a0b66... --actor "human daniel"
 stemma switch --detach main -C projekt --actor "human daniel"
+stemma switch feature --dry-run --actor "human daniel"
+stemma switch feature --discard --actor "human daniel"
 \stoptyping
 
 \section{status}

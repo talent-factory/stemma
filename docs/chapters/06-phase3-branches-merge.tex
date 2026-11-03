@@ -56,8 +56,10 @@ Mit \type{switch NAME} wechselt er zu einem Branch, der besteht;
 mit \type{switch -c NAME [START]} legt er den Branch an und wechselt dorthin;
 mit \type{switch --detach COMMIT-ODER-BRANCH} nennt HEAD einen Commit und keinen Branch.
 Ein unbekannter Name ohne \type{-c} ist ein Fehler.
-Der Befehl wechselt nur, solange der Working-Copy-Commit leer ist (ADR-010):
-Was dort steht, bliebe sonst auf dem alten Branch zurück.
+Hat der Working-Copy-Commit Änderungen, nimmt der Befehl sie mit (ADR-010):
+Sie bleiben nicht auf dem alten Branch zurück, sondern stehen danach auf der Spitze des Ziels.
+Mit \type{--discard} lässt er sie stattdessen zurück, und mit \type{--dry-run} zeigt er nur,
+was er täte.
 
 \startitemize[n]
 \item Der Befehl löst das Ziel auf und prüft alles, was nichts schreibt: ob der Name besteht
@@ -66,11 +68,15 @@ Weg steht, die kein Commit verfolgt.
 Ein solcher Konflikt fällt hier auf, bevor die erste Datei geschrieben ist.
 \item Er nimmt die Sperre der Referenzen und speichert die verfolgten Dateien in einem Snapshot
 (Operation \type{snapshot}, eigener Eintrag).
-\item Der Working-Copy-Commit muss leer sein, sein Baum also der seines ersten Elternteils.
-Sonst bricht der Befehl ab; die Änderung steht im Snapshot und geht nicht verloren,
-und die Meldung verweist auf \type{commit}.
-\item Ein neuer, leerer Working-Copy-Commit entsteht auf der Spitze des Ziels:
+\item Der neue Working-Copy-Commit entsteht auf der Spitze des Ziels.
+Ist der alte leer, sein Baum also der seines ersten Elternteils, ist der neue ebenfalls leer:
 mit dem Baum der Spitze, leerer Nachricht und einer neuen Change-ID.
+Hat der alte Änderungen, nimmt der Befehl sie mit, und der neue entsteht wie beim Umschreiben
+(\in{Abschnitt}[sec:rewrite-wc]): Er behält Change-ID, Autor, Zeit und Beschreibung, und sein
+Baum ist $T + (W - P)$.
+Ein Konflikt dabei ist Daten des neuen Commits und bricht den Wechsel nicht ab.
+Mit \type{--discard} ist der neue Commit auch dann leer; die Änderungen stehen dann nur im
+Snapshot des Logs.
 \item Der Eintrag \type{switch} wird geschrieben und gesichert, dann bringt die Checkout-Schicht
 das Arbeitsverzeichnis auf den Baum des Ziels (ADR-013).
 Sind die Bäume gleich, bewegen sich nur die Zeiger.
@@ -89,6 +95,14 @@ Working-Copy-Commit jenes Eintrags weiter.
 Auch der zweite Aufruf prüft den Eigentümer der Arbeitskopie:
 ein anderer Akteur braucht \type{--take-over}, ein Agent übernimmt nie.
 Der Befehl ist mit \type{op restore} umkehrbar; die Ausgabe nennt den Eintrag.
+Die Wiederholung eines abgebrochenen Wechsels beendet ihn so, wie er begann:
+Sie nimmt den Commit des Eintrags weiter, und \type{--discard} ändert daran nichts.
+
+Mit \type{--dry-run} schreibt der Befehl nichts, auch keinen Snapshot.
+Er zeigt die Zeiger, die sich bewegten, was aus den Änderungen würde (mitgenommen, mit den Pfaden
+im Konflikt, oder zurückgelassen) und welche Dateien sich ändern.
+Der Plan geht vom gesicherten Working-Copy-Commit aus; ein echter Wechsel sichert zuerst, was im
+Verzeichnis noch ungesichert steht.
 
 \startinfobox
 {\bf Grenzfälle von \type{switch}.}
@@ -97,8 +111,10 @@ Der Befehl ist mit \type{op restore} umkehrbar; die Ausgabe nennt den Eintrag.
 \type{Already on NAME}; es entsteht kein Eintrag und kein Snapshot.
 \item Hat der Branch von HEAD noch keinen Commit, hat \type{switch -c} ohne START keinen
 Anfang und lehnt ab.
-\item Ein Working-Copy-Commit mit Änderungen lehnt der Wechsel ab, statt sie mitzunehmen.
-Dass die Änderungen mitkommen, wäre eine spätere Erweiterung.
+\item Ein Working-Copy-Commit mit mehr als einem Elternteil und mit Änderungen lehnt der
+Wechsel ab, weil seine Basis noch nicht festgelegt ist; mit \type{--discard} wechselt er.
+\item Hat das Ziel die Change-ID des Working-Copy-Commits, lehnt der Wechsel das Mitnehmen ab,
+weil sonst zwei Commits derselben Änderung entstünden.
 \item Auf einem abgekoppelten HEAD lehnt \type{commit} ab und verweist auf \type{switch -c}.
 \item Eine Datei, die kein Commit verfolgt und die das Ziel anlegen will, bricht den Wechsel ab;
 der Befehl schreibt nichts, auch keinen Snapshot.
@@ -464,7 +480,8 @@ so lässt sich ein Merge mit Konflikt rückgängig machen und wiederherstellen.
 den gemeinsamen Inhalt, und ihr Modus zählt beim Vergleich: Wer ihn ändert, löst den Pfad.
 \item Ein symbolischer Link erscheint mit seinem Ziel als Inhalt und wird als gewöhnliche
 Datei geschrieben.
-\item \type{switch} lehnt einen Working-Copy-Commit oder ein Ziel mit Konflikt noch ab.
+\item \type{switch} nimmt einen Working-Copy-Commit mit Konflikt mit und wechselt auch zu einem
+Ziel, das einen Konflikt enthält; die Rechnung ist dieselbe wie beim Umschreiben.
 \item Ein Pfad im Konflikt, den der Benutzer durch ein Verzeichnis ersetzt, ist aufgelöst:
 Es steht dann keine Datei an diesem Pfad.
 \stopitemize
@@ -472,7 +489,7 @@ Es steht dann keine Datei an diesem Pfad.
 
 \section[sec:rewrite-wc]{Die Arbeitskopie auf eine neue Basis umschreiben}
 Wenn der Branch eine neue Spitze bekommt, muss die Arbeitskopie mitgehen.
-Das gilt nach einem Merge, nach einem Rebase und später für einen \type{switch},
+Das gilt nach einem Merge, nach einem Rebase und für einen \type{switch},
 der Änderungen mitnimmt.
 Alle drei brauchen denselben Schritt: Der Working-Copy-Commit $W$ mit dem alten Elternteil $P$
 wird durch einen Commit $W'$ auf der neuen Spitze $T$ ersetzt.
