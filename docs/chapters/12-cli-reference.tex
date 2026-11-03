@@ -30,8 +30,8 @@ den Höchstfall.
 Der Befehl \type{worktree add} schreibt die Dateien eines neuen Verzeichnisses und legt dort
 Working-Copy-Commit, HEAD und, mit \type{-b}, einen Branch an; die Zeile zeigt diesen neuen
 Worktree und nicht den des Aufrufs. \type{worktree list} liest nur und hat keine Zeile.
-Bei \type{rebase} bewegt sich nur der Branch, auf den HEAD zeigt, und HEAD bleibt;
-die Dateien ändern sich, wenn der neue Baum sich vom alten unterscheidet.
+Bei \type{rebase} bewegen sich der Branch, auf den HEAD zeigt, und der Working-Copy-Commit;
+HEAD bleibt. Die Dateien ändern sich, wenn der neue Baum sich vom alten unterscheidet.
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]
@@ -774,8 +774,7 @@ und bei einem HEAD, der einen Commit und keinen Branch nennt.
 Diese Fälle brechen ab, bevor der Snapshot läuft, und ändern nichts.
 Mit Exit-Code 1 endet er auch, wenn nichts zu committen ist, weil der Baum der des Elternteils ist
 (beim ersten Commit: leer), und wenn der Branch nicht beim Elternteil des Working-Copy-Commits
-steht, weil ihn jemand bewegt hat. Der Befehl lehnt dann ab, statt zu verwerfen, was der Branch hat;
-\type{stemma rebase} bringt beides zusammen.
+steht, weil ihn jemand bewegt hat. Der Befehl lehnt dann ab, statt zu verwerfen, was der Branch hat.
 Diese beiden Fälle lassen den Snapshot zurück, und ein erneuter
 Aufruf ist unbedenklich.
 Hat der Snapshot einen Eintrag geschrieben, nennt ihn jede Meldung, die danach kommt, am Ende:
@@ -964,7 +963,7 @@ Ohne die Option lehnt auch die Wiederholung einen anderen Akteur ab, und ein Age
 Der Befehl hat keine JSON-Form.
 
 {\bf Verhalten.} Der Befehl braucht einen Branch: Zeigt HEAD auf einen Commit, lehnt er ab.
-Er sucht die beste gemeinsame Vorfahrin von Spitze und Ziel (die Merge-Basis)
+Er sucht den besten gemeinsamen Vorfahren von Spitze und Ziel (die Merge-Basis)
 und nimmt die Commits der Spitze, die das Ziel nicht hat.
 Dann speichert er die verfolgten Dateien wie ein Snapshot
 (Operation \type{snapshot}, eigener Eintrag).

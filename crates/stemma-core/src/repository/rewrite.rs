@@ -10,9 +10,9 @@
 //!
 //! [`Repository::rewrite_working_copy`] is the mechanism, in the order of ADR-013: a snapshot,
 //! the plan of the files, the entry, the files, the pointer. It moves the working-copy commit and
-//! nothing else. The commands that also move a branch or HEAD (merge, rebase) are to write one
-//! entry for all moves; they need a variant of the steps below that takes part in their entry,
-//! which this module does not offer yet.
+//! nothing else. The commands that also move a branch or HEAD write one entry for all moves, so
+//! they cannot call it. `rebase` (`rebase.rs`) shares the steps below (`carry`, `base_sum`,
+//! `replay`, `store_commit`, `carried`) and writes its own entry; merge is to do the same.
 //!
 //! A `W` that holds no change is not carried. It is replaced by an empty commit on the new tip with
 //! a change ID of its own, as `switch` starts one, because the change ID tells a review that a

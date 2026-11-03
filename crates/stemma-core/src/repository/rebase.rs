@@ -2,7 +2,8 @@
 //!
 //! A rebase takes the commits of the branch that HEAD names which the target does not have, replays
 //! them one after the other on the target, and moves the branch to the last of them. The working-
-//! copy commit follows the branch through the rewrite of `rewrite_working_copy` (same change ID),
+//! copy commit follows the branch through the rewrite of `rewrite_working_copy`: it keeps its
+//! change ID, unless it holds no change and is replaced by an empty commit with a new one,
 //! so the branch and the working-copy commit move in one entry of the log, in the order of
 //! ADR-013: snapshot, plan of the files, entry, files, pointers.
 //!
@@ -52,8 +53,8 @@ pub struct Replayed {
 #[derive(Debug)]
 #[must_use]
 pub enum Rebased {
-    /// The target is the tip of the branch or an ancestor of it already. Nothing was read for
-    /// writing and the log has no entry.
+    /// The branch has the target already (it is the tip or an ancestor of it). No entry of a
+    /// rebase was written; a snapshot of unsaved changes may have been.
     UpToDate,
     /// The branch and the working-copy commit moved.
     Done {
@@ -104,7 +105,7 @@ impl Repository {
     /// the range, and the merge commits in it are checked, which write nothing; the tracked files
     /// are saved in a snapshot (a second question, `snapshot`); the commits are replayed and
     /// stored, the working-copy commit is carried onto the new tip as `rewrite_working_copy` does
-    /// (same change ID); the files are planned, the entry is written and flushed, the directory is
+    /// (it keeps its change ID unless it holds no change); the files are planned, the entry is written and flushed, the directory is
     /// brought to the new tree, and the branch and the working-copy commit move (ADR-013). HEAD
     /// stays. The pointers are read under the lock, so the move is a compare-and-swap against the
     /// values this call saw.
@@ -205,7 +206,12 @@ impl Repository {
             Some(stopped) => self
                 .carried(stopped.working_copy)
                 .map(|carried| (stopped.new_tip, carried))
-                .map_err(|error| wrap(RebaseError::Replay(Box::new(error)))),
+                .map_err(|error| {
+                    wrap(match error {
+                        RewriteError::Read(error) => RebaseError::Read(error),
+                        other => RebaseError::Replay(Box::new(other)),
+                    })
+                }),
             None => self.replay_range(&plan, current, actor).map_err(wrap),
         }?;
         let replayed = self.replayed(new_tip, plan.onto).map_err(wrap)?;
@@ -232,7 +238,9 @@ impl Repository {
         };
         match logged {
             Err(error) => Err(wrap(RebaseError::Refs(error))),
-            Ok(Logged::Unchanged) => Ok(Rebased::UpToDate),
+            Ok(Logged::Unchanged) => {
+                unreachable!("the new working-copy commit differs from the old one")
+            }
             Ok(Logged::Moved(entry)) => Ok(made(entry)),
             Ok(Logged::StepFailed(error)) => Err(wrap(error)),
             Ok(Logged::MoveFailed(entry, source)) => Err(wrap(RebaseError::MoveFailed {
@@ -351,8 +359,12 @@ impl Repository {
             });
             match commit.parents() {
                 [parent] => at = *parent,
-                // The chain was made by this module and leads to the target.
-                _ => break,
+                // A chain that does not lead to the target by single parents is damage.
+                _ => {
+                    return Err(RebaseError::Replay(Box::new(RewriteError::Parents {
+                        working: at,
+                    })))
+                }
             }
         }
         chain.reverse();
@@ -461,16 +473,20 @@ impl Repository {
         };
         // The branch is where the stopped rebase left it: at the old tip, or at the new one.
         let tip = plan.old_tip;
-        let moved_here = change
+        let before = change
             .branches()
             .iter()
             .find(|(name, _)| *name == plan.branch)
-            .map(|(_, moved)| moved);
-        let branch_fits = tip == new_tip || moved_here.is_some_and(|m| m.before() == Some(&tip));
-        let leads_to_target = merge_bases(self.objects(), new_tip, plan.onto)
-            .map_err(RebaseError::History)?
-            == [plan.onto];
-        if branch_fits && leads_to_target {
+            .and_then(|(_, moved)| moved.before().copied());
+        let branch_fits = tip == new_tip || before == Some(tip);
+        // The stopped rebase must have been onto this target, exactly: the commits it replayed
+        // (as many as the old tip had above the target) lie on `new_tip`, and the target is the
+        // commit below them. A target that is only an ancestor of the new tip is another one.
+        let same_target = match before {
+            Some(before) => self.stopped_onto(before, new_tip, plan.onto)?,
+            None => false,
+        };
+        if branch_fits && same_target {
             Ok(Some(Stopped {
                 working_copy: next,
                 new_tip,
@@ -480,6 +496,42 @@ impl Repository {
             // working-copy commit.
             Err(RebaseError::StoppedOnOtherTarget { stopped: next })
         }
+    }
+}
+
+impl Repository {
+    /// Whether the new tip `new_tip` of a stopped rebase of the branch that was at `before` is
+    /// the replay of the range of `before` on `onto`: stepping down as many commits as `before`
+    /// has above its merge base with `onto` leads to `onto` exactly.
+    fn stopped_onto(
+        &self,
+        before: CommitId,
+        new_tip: CommitId,
+        onto: CommitId,
+    ) -> Result<bool, RebaseError> {
+        let bases = merge_bases(self.objects(), before, onto).map_err(RebaseError::History)?;
+        let [base] = bases.as_slice() else {
+            return Ok(false);
+        };
+        let mut steps = 0usize;
+        let mut at = before;
+        while at != *base {
+            let commit = read_any_commit(self.objects(), at).map_err(RebaseError::Read)?;
+            let &[parent] = commit.parents() else {
+                return Ok(false);
+            };
+            at = parent;
+            steps += 1;
+        }
+        let mut at = new_tip;
+        for _ in 0..steps {
+            let commit = read_any_commit(self.objects(), at).map_err(RebaseError::Read)?;
+            let &[parent] = commit.parents() else {
+                return Ok(false);
+            };
+            at = parent;
+        }
+        Ok(at == onto)
     }
 }
 
@@ -1270,5 +1322,72 @@ mod tests {
             "{error}"
         );
         assert_eq!(entries(&repository), count);
+    }
+
+    #[test]
+    fn a_file_in_the_way_is_found_before_anything_is_written() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        // `main` adds `c.txt`; here the file exists and no commit tracks it.
+        write(&dir, "c.txt", "mine\n");
+        let old = tip(&repository, "feature");
+        let working = repository.refs().working_copy().unwrap();
+        let count = entries(&repository);
+
+        let error = rebase(&repository, &onto("main")).unwrap_err();
+
+        assert!(matches!(error, RebaseError::Checkout(_)), "{error}");
+        assert_eq!(read(&dir, "c.txt"), "mine\n");
+        assert_eq!(tip(&repository, "feature"), old);
+        assert_eq!(repository.refs().working_copy().unwrap(), working);
+        assert_eq!(entries(&repository), count);
+    }
+
+    #[test]
+    fn a_branch_without_a_commit_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let count = entries(&repository);
+
+        let error = rebase(&repository, &onto("main")).unwrap_err();
+
+        assert!(matches!(error, RebaseError::NoCommits(_)), "{error}");
+        assert_eq!(entries(&repository), count);
+    }
+
+    #[test]
+    fn a_repeat_is_for_the_same_target_exactly_and_not_for_one_below_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        write(&dir, "b.txt", "b\n");
+        track(&repository, "b.txt");
+        let main = tip(&repository, "main");
+        let below = commit_of(&repository, main).parents()[0];
+        let metadata = repository.metadata_dir();
+        let denied = Rc::new(RefCell::new(None));
+        let arm = Rc::clone(&denied);
+        super::super::snapshot::pause::at_next(
+            super::super::snapshot::pause::Stage::Moves,
+            move || {
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&metadata));
+            },
+        );
+        let _ = rebase(&repository, &onto("main")).unwrap_err();
+        drop(denied);
+        let _ = fs::remove_file(repository.metadata_dir().join("refs.lock"));
+        let count = entries(&repository);
+
+        // `below` is an ancestor of the stopped tip, but the stopped rebase was onto `main`.
+        let error = rebase(&repository, &Revision::Commit(below.object_id())).unwrap_err();
+
+        assert!(
+            matches!(error, RebaseError::StoppedOnOtherTarget { .. }),
+            "{error}"
+        );
+        assert_eq!(entries(&repository), count);
+        let made = done(rebase(&repository, &onto("main")));
+        assert_eq!(made.replayed.len(), 2);
     }
 }

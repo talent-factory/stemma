@@ -40,6 +40,10 @@
 //! failure keeps the code of that failure. Most errors of `init` and of opening a repository stay
 //! at 1.
 //!
+//! `switch` and `rebase` follow `op restore`: a stop after their entry is code 1 and the same call
+//! run again finishes it, a stop after some of the pointers is code 3, and the snapshot that came
+//! first stays in the log when a later step fails.
+//!
 //! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
 //! log (`track`, `commit`, `tag`, `branch`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
