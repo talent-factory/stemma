@@ -17,7 +17,7 @@ use crate::refs::RefError;
 use crate::repository::{
     ApplyPurgeError, CheckoutError, CommitError, DiffError, InitError, JournalError, OpenError,
     PurgeError, PurgeFailure, RestoreError, SnapshotError, StatusError, SwitchError, TrackError,
-    UpdateError,
+    UpdateError, WorktreeError,
 };
 use crate::store::StoreError;
 use crate::verify::VerifyError;
@@ -57,7 +57,7 @@ impl Classify for OpenError {
     fn kind(&self) -> FailureKind {
         match self {
             // The file is there but not in canonical form.
-            Self::MalformedFormat { .. } => FailureKind::Damaged,
+            Self::MalformedFormat { .. } | Self::MalformedPointer { .. } => FailureKind::Damaged,
             // A missing `format`, one that is not a regular file or not shown to be ours, another
             // version, and a `.stemma` that is not a directory are not a form the code wrote, but
             // the caller cannot tell them from a wrong directory or a newer program, so they stay
@@ -71,6 +71,8 @@ impl Classify for OpenError {
             | Self::AtVolumeRoot { .. }
             | Self::ReparsePoint { .. }
             | Self::NotADirectory { .. }
+            | Self::MissingWorktreeState { .. }
+            | Self::WorktreeMoved { .. }
             | Self::MissingFormat { .. }
             | Self::FormatNotRegular { .. }
             | Self::FormatOwner { .. }
@@ -128,7 +130,9 @@ impl Classify for RefError {
             Self::TagExists { .. } => FailureKind::Other,
             // A name that is taken, and the branch of HEAD: the caller picks another name or
             // switches HEAD first, so a retry of the same call does not help.
-            Self::BranchExists { .. } | Self::HeadBranch { .. } => FailureKind::Other,
+            Self::BranchExists { .. } | Self::HeadBranch { .. } | Self::CheckedOut { .. } => {
+                FailureKind::Other
+            }
             // A pointer that a purge moves is at neither of its journal values. A person has to
             // look at it, but the variant also stands for a plain race after a lock removed by
             // hand, so it is not called damage here; `purge --resume` says what to do.
@@ -399,6 +403,29 @@ impl Classify for SwitchError {
             | Self::BranchExists(_)
             | Self::NoStart(_)
             | Self::NotEmpty { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for WorktreeError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Update(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
+            Self::Read(error) => error.kind(),
+            Self::Store(error) => error.kind(),
+            Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.kind(),
+            Self::MoveFailed { source, .. }
+            | Self::PartlyMoved { source, .. }
+            | Self::NotDurable { source, .. } => source.kind(),
+            Self::ChangeId(_)
+            | Self::Io { .. }
+            | Self::PathNotUtf8(_)
+            | Self::NotEmpty(_)
+            | Self::PathInUse { .. }
+            | Self::Nested { .. }
+            | Self::NoSuchBranch(_)
+            | Self::NoStart(_) => FailureKind::Other,
         }
     }
 }
