@@ -345,6 +345,37 @@ art, not a template (ADR-015).
     need a variant of the mechanism that takes part in their entry; the first version is the
     standalone call. `op restore` undoes a rewrite like any entry.
 
+- **`merge` joins a branch into the branch of HEAD in one operation** *(confirmed; STEMMA-172)*.
+  `stemma merge <branch> [-m <message>]` is the first command that calls the rewrite above with
+  an entry of its own.
+  - *The result* follows from the merge bases of the two tips `A` (HEAD's branch) and `B`: if `B`
+    is an ancestor of `A`, nothing is done and no entry is written (the snapshot of the call, if
+    the directory held changes, stays); if `A` is an ancestor of `B`, the branch takes `B` (a
+    fast-forward, no commit); otherwise the command makes a merge commit with the parents `A` and
+    `B` in this order, a change ID of its own, the actor and the time of the call, and the tree
+    of `merge_commits` (ADR-005). A conflict is no failure: the merge commit is a `commit2`, and
+    the command lists the paths. The default message is `Merge <branch> into <current>`; an empty
+    message is refused.
+  - *One entry for both moves.* The branch and the working-copy commit move under one lock in one
+    entry named `merge`, in the order of ADR-013: snapshot, plan of the files, entry, files, the
+    branch, then the working-copy commit. The branch moves by compare-and-swap against `A`, so a
+    concurrent change is refused and not overwritten. HEAD and the other branches stay. The
+    working-copy commit `W` follows the new tip `T` by the carry of the rewrite above (`T + (W -
+    P)`), so the changes of the directory survive and an empty working copy is replaced by an
+    empty commit with a new change ID. `op restore` undoes the merge with one call.
+  - *A stop* after the files is finished by the same call, which takes no snapshot, uses the
+    commits of the stopped entry again (the message of the repeat is not used), and moves the
+    pointers that are still at their old value: the branch first, so a stop between the two
+    moves leaves the merge commit reachable. Another merge is refused while the newest entry is a
+    merge that did not finish, as a snapshot would save its files as changes. Another actor does
+    not finish the merge of the owner without `--take-over`; an agent never takes over.
+  - *Authorization.* The operation is `merge` with the other branch as target. It is not an
+    approval of ADR-004: computing the merge is risk level 2, and only the branch of the current
+    worktree moves (a branch is checked out in one worktree only, ADR-009).
+  - *Not decided here:* what a merge does when `W` has two parents (the carry refuses it, as
+    above), a merge of a commit or a tag instead of a branch, and a merge that stops for a
+    conflict (`--no-commit`) or resolves one with a strategy.
+
 ## Open items
 
 - [x] `Commit::rewrite`, which takes the parents and the change ID from the commit it replaces
@@ -357,7 +388,7 @@ art, not a template (ADR-015).
       commit (its message points to `switch -c`), are refused today.
 - [x] A commit while the branch has moved (a rebase, a merge). The mechanism exists:
       `Repository::rewrite_working_copy` replaces the working-copy commit by a commit on the new
-      tip (STEMMA-171, below). No command calls it yet; merge and rebase must.
+      tip (STEMMA-171, below). `merge` calls it (STEMMA-172, below); rebase must.
 - [ ] `switch` refuses a working-copy commit that holds changes. Carrying them to the target uses
       the rewrite below and is a slice of its own (phase 3).
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge

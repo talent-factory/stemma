@@ -15,9 +15,9 @@ use crate::merge::MergeError;
 use crate::oplog::OpLogError;
 use crate::refs::RefError;
 use crate::repository::{
-    ApplyPurgeError, CheckoutError, CommitError, DiffError, InitError, JournalError, OpenError,
-    PurgeError, PurgeFailure, RestoreError, SnapshotError, StatusError, SwitchError, TrackError,
-    UpdateError, WorktreeError,
+    ApplyPurgeError, CheckoutError, CommitError, DiffError, InitError, JournalError,
+    MergeBranchError, OpenError, PurgeError, PurgeFailure, RestoreError, RewriteError,
+    SnapshotError, StatusError, SwitchError, TrackError, UpdateError, WorktreeError,
 };
 use crate::store::StoreError;
 use crate::verify::VerifyError;
@@ -402,6 +402,56 @@ impl Classify for SwitchError {
             | Self::BranchExists(_)
             | Self::NoStart(_)
             | Self::NotEmpty { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for RewriteError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Update(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
+            Self::Log(error) => error.kind(),
+            Self::Store(error) => error.kind(),
+            Self::Snapshot(error) | Self::Read(error) => error.kind(),
+            Self::Merge(error) => error.kind(),
+            Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.kind(),
+            Self::MoveFailed { source, .. }
+            | Self::NotDurable { source, .. }
+            | Self::SnapshotNotDurable { source, .. } => source.kind(),
+            Self::AfterSnapshot { source, .. } => source.kind(),
+            Self::Invalid(_)
+            | Self::ChangeId(_)
+            | Self::NoSuchCommit(_)
+            | Self::Parents { .. }
+            | Self::StoppedOnOtherBase { .. }
+            | Self::SameChange { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for MergeBranchError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Update(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
+            Self::Log(error) => error.kind(),
+            Self::Store(error) => error.kind(),
+            Self::Snapshot(error) | Self::Read(error) => error.kind(),
+            Self::Merge(error) => error.kind(),
+            Self::Rewrite(error) => error.kind(),
+            Self::MoveFailed { source, .. }
+            | Self::PartlyMoved { source, .. }
+            | Self::NotDurable { source, .. }
+            | Self::SnapshotNotDurable { source, .. } => source.kind(),
+            Self::AfterSnapshot { source, .. } => source.kind(),
+            Self::EmptyMessage
+            | Self::DetachedHead(_)
+            | Self::NoSuchBranch(_)
+            | Self::NoCommit(_)
+            | Self::Invalid(_)
+            | Self::ChangeId(_)
+            | Self::Stopped { .. } => FailureKind::Other,
         }
     }
 }

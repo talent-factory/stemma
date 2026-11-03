@@ -18,7 +18,8 @@ Nach einem Criss-Cross-Merge, bei dem sich zwei Seiten gegenseitig einmischen,
 sind es mehrere, und der Merge muss sie zusammenführen.
 Die Funktion liest kein Commit-Datum, sondern geht die ganze Vorfahrenmenge beider Seiten durch.
 Der Kern führt die Trees zweier Commits über ihre Merge-Basen zusammen
-(\in{Abschnitt}[sec:tree-merge]); der Befehl, der daraus einen Merge-Commit macht, folgt später.
+(\in{Abschnitt}[sec:tree-merge]); der Befehl \type{merge} macht daraus einen Fast-Forward
+oder einen Merge-Commit (\in{Abschnitt}[sec:merge-command]).
 \item Konflikte als Daten im Commit, nicht als Markierung in der Arbeitskopie.
 Kapitel 2 beschreibt das Vorbild Jujutsu.
 Ein Konflikt ist eine Summe von Trees: Der erste Tree wird genommen, und die Änderung von jedem
@@ -36,9 +37,9 @@ der Snapshot vergleicht Bytes und
 liest keine Markierungen (\in{Abschnitt}[sec:conflict-commands]).
 Die Regel, dass zwei Seiten mit gleicher Änderung sofort als gelöst gelten, gehört nicht zur
 Algebra, weil sie beim erneuten Zusammenführen Information verliert.
-Noch schreibt kein Befehl einen solchen Commit; \type{snapshot}, \type{status}, \type{log},
-\type{diff}, \type{commit} und \type{op restore} können ihn aber lesen; \type{snapshot} und
-\type{commit} führen ihn weiter.
+Der Befehl \type{merge} schreibt einen solchen Commit, wenn die beiden Seiten sich widersprechen;
+\type{snapshot}, \type{status}, \type{log}, \type{diff}, \type{commit} und \type{op restore}
+lesen ihn, und \type{snapshot} und \type{commit} führen ihn weiter.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
 \item Eigentümer der Arbeitskopie (Format 5, ADR-010): Ein Snapshot speichert nur die
 Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich
@@ -501,7 +502,8 @@ $W'$ und bewegt zuletzt den Zeiger des Working-Copy-Commits (ADR-013).
 
 Der Schritt bewegt nur den Working-Copy-Commit.
 HEAD und die Branches bleiben, wo sie sind.
-Befehle, die sie im selben Zug bewegen, sollen später einen Eintrag für alle Bewegungen schreiben.
+Der Befehl \type{merge} bewegt den Branch im selben Zug und schreibt einen Eintrag für beide
+Bewegungen (\in{Abschnitt}[sec:merge-command]); ein Rebase soll es ebenso tun.
 Die ersetzten Commits bleiben im Log (ADR-011),
 und \type{op restore} macht den Schritt rückgängig.
 
@@ -529,6 +531,67 @@ weil sonst zwei Commits derselben Änderung entstünden.
 weil seine Basis noch nicht festgelegt ist.
 \item Ein Pfad, bei dem ein Verzeichnis gegen eine Datei steht, erscheint wie in
 \in{Abschnitt}[sec:conflict-commands]; der Commit behält die Trees.
+\stopitemize
+\stopinfobox
+
+\section[sec:merge-command]{Branches zusammenführen: merge}
+
+Der Befehl \type{merge} führt einen Branch in den Branch ein, auf den HEAD zeigt.
+Er verbindet den Merge der Trees (\in{Abschnitt}[sec:tree-merge]) mit dem Umschreiben der
+Arbeitskopie (\in{Abschnitt}[sec:rewrite-wc]) und bewegt den Branch und den
+Working-Copy-Commit in einer Operation.
+Was geschieht, bestimmen die Merge-Basen der beiden Spitzen $A$ (eigener Branch) und $B$ (anderer
+Branch):
+
+\startitemize
+\item Ist $B$ ein Vorfahre von $A$, ist alles eingeführt, und es geschieht nichts.
+\item Ist $A$ ein Vorfahre von $B$, nimmt der Branch die Spitze $B$ (Fast-Forward).
+Es entsteht kein Commit.
+\item Sonst entsteht ein Merge-Commit $M$ mit den Eltern $A$ und $B$, in dieser Reihenfolge.
+Sein Baum ist die Summe $A + B - \mathrm{Basis}$ nach dem Merge der Trees,
+bei mehreren Basen die flache Summe aus \in{Abschnitt}[sec:tree-merge].
+\stopitemize
+
+Ein Konflikt hält den Merge nicht an.
+$M$ speichert ihn als Daten (ADR-005), und der Befehl nennt die Pfade in der Ausgabe.
+Wer ihn lösen will, bearbeitet die Datei im Verzeichnis; der Snapshot macht daraus einen
+Commit ohne Konflikt, sobald der Text keine Markierungen mehr trägt.
+Der Merge-Commit bekommt eine neue Change-ID, weil er keine Änderung eines anderen Commits ist;
+Autor und Zeit sind die des Aufrufs.
+
+\startitemize[n]
+\item Der Befehl fragt den Autorisierer nach \type{merge} und nimmt die Sperre der Referenzen.
+\item Er speichert die verfolgten Dateien in einem Snapshot
+(ausser bei der Wiederholung eines abgebrochenen Aufrufs, siehe unten).
+\item Er bestimmt die neue Spitze und schreibt, wenn nötig, $M$ in den Speicher.
+\item Er bildet den neuen Working-Copy-Commit $W'$ auf der neuen Spitze nach der Rechnung
+$T + (W - P)$ aus \in{Abschnitt}[sec:rewrite-wc].
+\item Er plant die Dateien, schreibt \emph{einen} Eintrag ins Log, bringt das Verzeichnis auf den
+Tree von $W'$ und bewegt zuerst den Branch, dann den Working-Copy-Commit (ADR-013).
+\stopitemize
+
+Der Branch bewegt sich nur, wenn er noch auf $A$ steht (Compare-and-Swap unter der Sperre);
+HEAD und die anderen Branches bleiben.
+Der Eintrag \type{merge} nennt beide Bewegungen, und \type{op restore} macht den Merge mit
+einem Aufruf rückgängig.
+
+\startinfobox
+{\bf Grenzfälle des Merges.}
+\startitemize
+\item Bricht der Befehl ab, nachdem die Dateien geschrieben sind, steht der Zeiger des Branchs
+vielleicht schon auf $M$, der Working-Copy-Commit aber noch auf dem alten Wert.
+Die Fehlermeldung verlangt den gleichen Aufruf noch einmal.
+Der zweite Aufruf liest den Eintrag, nimmt keinen Snapshot und verwendet die Commits des Eintrags
+wieder; seine Nachricht ist dann ohne Wirkung.
+Ein Merge eines anderen Branchs lehnt der Kern in diesem Zustand ab, weil ein Snapshot die neuen
+Dateien als Änderungen des alten Commits speichern würde.
+\item Zeigt HEAD auf einen Commit statt auf einen Branch, gibt es keinen Branch, den der Merge
+bewegen könnte; der Befehl lehnt ab und verweist auf \type{switch}.
+\item Ist der Working-Copy-Commit leer, ersetzt ihn ein leerer Commit auf der neuen Spitze mit
+neuer Change-ID; sonst behält der neue Commit die Change-ID, und ein Konflikt der Übertragung ist
+Daten von $W'$.
+\item Die Arbeit, die vor dem Aufruf im Verzeichnis lag, geht nicht verloren:
+Sie steht im Snapshot und im Log, auch wenn der Merge scheitert.
 \stopitemize
 \stopinfobox
 
