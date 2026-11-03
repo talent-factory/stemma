@@ -7,7 +7,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::object::{Blob, BlobId, Commit, CommitId, ObjectId, Tree, TreeId};
+use crate::conflict::{marker_text, Merge};
+use crate::object::{
+    Blob, BlobId, Commit, Commit2, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId,
+};
+use crate::repository::Repository;
 use crate::store::{sealed, FsObjectStore, ObjectStore, RawObject, StoreError};
 
 /// Makes a symbolic link to a file and says whether it did. Without the right to create one
@@ -197,4 +201,33 @@ impl ObjectStore for FaultyStore {
     fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
         self.inner.contains(id)
     }
+}
+
+/// Stores a `commit2` without parents that holds two files. `a.txt` is `one` on the first side,
+/// `base` at the base, and `two` on the second side, so it is a conflict of two sides; `b.txt` is
+/// `same` in every tree. Returns the commit and the text that shows the conflict at `a.txt`
+/// (ADR-010), which is what a working directory holds for an unchanged conflict.
+pub(crate) fn conflicted_commit(repository: &Repository) -> (CommitId, Vec<u8>) {
+    let store = repository.objects();
+    let tree = |a: &str| {
+        let blob = |content: &str| store.put_blob(&Blob::new(content)).unwrap();
+        let entries = vec![
+            TreeEntry::file("a.txt", FileMode::File, blob(a)).unwrap(),
+            TreeEntry::file("b.txt", FileMode::File, blob("same\n")).unwrap(),
+        ];
+        store.put_tree(&Tree::try_new(entries).unwrap()).unwrap()
+    };
+    let commit = Commit2::try_new(
+        vec![tree("one\n"), tree("base\n"), tree("two\n")],
+        vec![],
+        crate::change::ChangeId::generate().unwrap(),
+        crate::Actor::human("daniel").unwrap(),
+        1_700_000_000,
+        "",
+    )
+    .unwrap();
+    let id = CommitId::new(store.put_raw(Kind::Commit2, &commit.encode()).unwrap());
+    let sum =
+        Merge::try_from_terms(vec![Some(&b"one\n"[..]), Some(b"base\n"), Some(b"two\n")]).unwrap();
+    (id, marker_text(&sum).unwrap())
 }

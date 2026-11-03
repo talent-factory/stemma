@@ -417,6 +417,31 @@ impl AnyCommit {
         }
     }
 
+    /// Returns the commit that replaces this one in a snapshot or a `commit` (ADR-010): the same
+    /// parents and change ID, and the given trees, author, time, and message. The form follows
+    /// from the sum (see [`from_sum`](Self::from_sum)), so a snapshot that resolves the last
+    /// conflicted path writes a `commit` again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`from_sum`](Self::from_sum).
+    pub fn rewrite(
+        &self,
+        trees: &Merge<TreeId>,
+        author: Actor,
+        timestamp: i64,
+        message: impl Into<String>,
+    ) -> Result<Self, FromSumError> {
+        Self::from_sum(
+            trees,
+            self.parents().to_vec(),
+            self.change(),
+            author,
+            timestamp,
+            message,
+        )
+    }
+
     /// Returns a commit with the same change, author, time, and message, and the given trees and
     /// parents. The form follows from the sum (see [`from_sum`](Self::from_sum)), so a rewrite
     /// that makes two terms equal can turn a `commit2` into a `commit`.
@@ -475,9 +500,9 @@ const MIN_MARKER_LEN: usize = 7;
 /// order. The snapshot compares the file with the text of the sum that the commit stores, so the
 /// order of the stored sum is the one that counts.
 ///
-/// The rewrite of the working-copy commit writes this text to the directory (ADR-010). `diff` is
-/// to show it too, and the snapshot is to decide whether a file is still the conflict by comparing
-/// the bytes of the file with it; Stemma does not parse markers.
+/// The working-copy view of a commit (`repository::conflicted`) writes this text for each
+/// conflicted path, and the snapshot keeps a conflict only if the file equals it byte for byte;
+/// Stemma does not parse markers.
 ///
 /// The form, for a sum of three terms:
 ///

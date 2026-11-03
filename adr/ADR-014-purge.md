@@ -296,6 +296,11 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
 
 ## Open items
 
+- [ ] The view of a commit with an open conflict writes the text with markers as a blob (ADR-010),
+      and that blob holds the content of every side. A purge rewrites the trees and commits and
+      deletes the blob it was asked for, but no tree or commit names the text blob, so a copy of
+      a purged secret can stay in it. Decide with the garbage collection of ADR-007: collect
+      the blobs that nothing names, or build the view in memory for the commands that only read.
 - [x] The format of the stub and of the `purge` entry, in the strict text form of ADR-011: entry
       encoding `stemma-oplog 2`, written only for these two (STEMMA-47; see ADR-011). A
       `purge` entry has `commits <n>` and `stubs <ranges>`, and a list that does not fit is

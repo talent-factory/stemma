@@ -8,11 +8,12 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
-use super::snapshot::read_commit;
+use super::snapshot::read_any_commit;
 use super::{now, Repository, SnapshotError, UpdateError};
 use crate::change::{ChangeId, GenerateError};
+use crate::conflict::{AnyCommit, Merge};
 use crate::index::Index;
-use crate::object::{Commit, CommitId, TreeId};
+use crate::object::{CommitId, Kind, TreeId};
 use crate::oplog::{outcomes, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome};
 use crate::refs::{BranchMove, BranchName, Head, Logged, RefError, WorkingCopyMove, WriteLock};
 use crate::store::{ObjectStore, StoreError};
@@ -35,6 +36,9 @@ pub struct Committed {
     pub working_copy: CommitId,
     /// The branch that moved to `commit`.
     pub branch: BranchName,
+    /// The number of sides of the open conflict that `commit` records, or `None` if it records
+    /// none. A commit with an open conflict is allowed and succeeds (ADR-010).
+    pub conflict_sides: Option<usize>,
     /// The entry of the log for the moves.
     pub entry: Entry,
     /// The call finished an earlier commit that had stopped between its two moves, and the
@@ -141,7 +145,7 @@ impl Repository {
         actor: &Actor,
     ) -> Result<Committed, CommitError> {
         let current = self.refs().working_copy().map_err(CommitError::Refs)?;
-        let working = read_commit(self.objects(), current)?;
+        let working = read_any_commit(self.objects(), current)?;
         let tip = self.refs().branch(&name).map_err(CommitError::Refs)?;
         if working.parents() != tip.as_slice() {
             let Some(stopped) = tip else {
@@ -151,7 +155,7 @@ impl Repository {
                     tip,
                 });
             };
-            let named = read_commit(self.objects(), stopped).map_err(CommitError::Tip)?;
+            let named = read_any_commit(self.objects(), stopped).map_err(CommitError::Tip)?;
             let stopped_here = named.parents() == working.parents()
                 && named.change() == working.change()
                 && !named.message().is_empty()
@@ -166,20 +170,27 @@ impl Repository {
             });
         }
         let before = match tip {
-            Some(parent) => read_commit(self.objects(), parent)
+            Some(parent) => read_any_commit(self.objects(), parent)
                 .map_err(CommitError::Tip)?
-                .tree(),
-            None => Index::new()
-                .write_tree(self.objects())
-                .map_err(SnapshotError::WriteTree)?,
+                .tree_sum(),
+            None => Merge::resolved(
+                Index::new()
+                    .write_tree(self.objects())
+                    .map_err(SnapshotError::WriteTree)?,
+            ),
         };
-        if working.tree() == before {
+        // A commit with an open conflict is allowed (ADR-010): the commit and the working-copy
+        // commit after it hold the same sum of trees.
+        let trees = working.tree_sum();
+        if trees == before {
             return Err(CommitError::NothingToCommit);
         }
 
-        let named = working.rewrite(working.tree(), actor.clone(), now(), message);
+        let named = working
+            .rewrite(&trees, actor.clone(), now(), message)
+            .expect("the parents of an existing commit are distinct");
         let named_id = self.put(&named)?;
-        let (_, next_id) = self.start_after(named.tree(), named_id, actor)?;
+        let (_, next_id) = self.start_after(&trees, named_id, actor)?;
 
         let outcome = self
             .refs
@@ -218,6 +229,7 @@ impl Repository {
             commit: named_id,
             working_copy: next_id,
             branch: name,
+            conflict_sides: sides_of(&trees),
             entry,
             resumed: false,
             late,
@@ -233,13 +245,13 @@ impl Repository {
         lock: &WriteLock,
         operation: &OperationName,
         branch: BranchName,
-        named: &Commit,
-        working: &Commit,
+        named: &AnyCommit,
+        working: &AnyCommit,
         actor: &Actor,
     ) -> Result<Committed, CommitError> {
         let named_id = named.id();
         let current = working.id();
-        let (_, next_id) = self.start_after(working.tree(), named_id, actor)?;
+        let (_, next_id) = self.start_after(&working.tree_sum(), named_id, actor)?;
         let (entry, late) = match self.move_working_copy(lock, operation, current, next_id, actor) {
             Ok(Some(entry)) => (entry, None),
             Ok(None) => unreachable!("the working-copy commit changes: its parents differ"),
@@ -250,6 +262,7 @@ impl Repository {
             commit: named_id,
             working_copy: next_id,
             branch,
+            conflict_sides: sides_of(&named.tree_sum()),
             entry,
             resumed: true,
             late,
@@ -300,12 +313,12 @@ impl Repository {
     /// message, and a change ID of its own.
     fn start_after(
         &self,
-        tree: TreeId,
+        trees: &Merge<TreeId>,
         named_id: CommitId,
         actor: &Actor,
-    ) -> Result<(Commit, CommitId), CommitError> {
-        let next = Commit::try_new(
-            tree,
+    ) -> Result<(AnyCommit, CommitId), CommitError> {
+        let next = AnyCommit::from_sum(
+            trees,
             vec![named_id],
             ChangeId::generate().map_err(CommitError::ChangeId)?,
             actor.clone(),
@@ -317,11 +330,22 @@ impl Repository {
         Ok((next, id))
     }
 
-    fn put(&self, commit: &Commit) -> Result<CommitId, CommitError> {
-        self.objects()
-            .put_commit(commit)
-            .map_err(|error| CommitError::Store(Box::new(error)))
+    fn put(&self, commit: &AnyCommit) -> Result<CommitId, CommitError> {
+        match commit {
+            AnyCommit::Commit(commit) => self.objects().put_commit(commit),
+            AnyCommit::Commit2(commit) => self
+                .objects()
+                .put_raw(Kind::Commit2, &commit.encode())
+                .map(CommitId::new),
+        }
+        .map_err(|error| CommitError::Store(Box::new(error)))
     }
+}
+
+/// The number of sides of the conflict that a sum of trees records, or `None` for one tree.
+fn sides_of(trees: &Merge<TreeId>) -> Option<usize> {
+    let simplified = trees.simplify();
+    (!simplified.is_resolved()).then(|| simplified.sides())
 }
 
 /// The error of an outcome that is no success.
@@ -535,9 +559,10 @@ impl Error for CommitError {
 mod tests {
     use std::fs;
 
+    use super::super::snapshot::read_commit;
     use super::*;
     use crate::fault;
-    use crate::object::Tree;
+    use crate::object::{Commit, Tree};
     use crate::oplog::OpLogError;
     use crate::repository::InitOptions;
     use crate::testutil::TempDir;
@@ -917,9 +942,13 @@ mod tests {
         let working = repository.refs().working_copy().unwrap();
         let old = read(repository, working);
         let named = old.rewrite(old.tree(), actor(), now(), "stopped");
-        let named = repository.put(&named).unwrap();
+        let named = repository.put(&AnyCommit::Commit(named)).unwrap();
         let (_, next) = repository
-            .start_after(read(repository, named).tree(), named, &actor())
+            .start_after(
+                &Merge::resolved(read(repository, named).tree()),
+                named,
+                &actor(),
+            )
             .unwrap();
         Pending {
             named,
@@ -1092,7 +1121,12 @@ mod tests {
         let pending = stopped(&repository, &dir);
         let old = read(&repository, pending.working);
         let other = repository
-            .put(&old.rewrite(old.tree(), actor(), now(), "other"))
+            .put(&AnyCommit::Commit(old.rewrite(
+                old.tree(),
+                actor(),
+                now(),
+                "other",
+            )))
             .unwrap();
         repository
             .update_branch(

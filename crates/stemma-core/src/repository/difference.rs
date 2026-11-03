@@ -14,10 +14,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
+use super::conflicted;
 use super::{Repository, SnapshotError, UpdateError};
 use crate::conflict::AnyCommit;
 use crate::diff::{diff_byte_lines, hunks, is_binary, Hunk};
-use crate::object::{Commit, CommitId, EntryMode, Kind, ObjectId, Tree, TreeId};
+use crate::object::{CommitId, EntryMode, Kind, ObjectId, Tree, TreeId};
 use crate::refs::RefError;
 use crate::store::{ObjectStore, RawObject, StoreError};
 use crate::{Actor, Authorizer};
@@ -116,18 +117,32 @@ pub struct FileDiff {
     content: Content,
     old_exists: bool,
     new_exists: bool,
+    conflict: bool,
 }
 
 impl FileDiff {
     /// Builds the entry of one file. The two flags tell whether the file is on each side; an
     /// empty file is on its side, so it is not the same as a file that is not there.
-    fn new(path: String, content: Content, old_exists: bool, new_exists: bool) -> Self {
+    fn new(
+        path: String,
+        content: Content,
+        old_exists: bool,
+        new_exists: bool,
+        conflict: bool,
+    ) -> Self {
         Self {
             path,
             content,
             old_exists,
             new_exists,
+            conflict,
         }
+    }
+
+    /// Tells whether the path holds an open conflict on the new side. The lines of that side are
+    /// then the text with markers that the working directory holds (ADR-010).
+    pub fn conflict(&self) -> bool {
+        self.conflict
     }
 
     /// Tells whether the file is on the old side. It is not, if the file was added.
@@ -209,12 +224,6 @@ pub enum DiffError {
         /// Why the object does not parse.
         reason: String,
     },
-    /// A commit that the diff needs is a `commit2`: it records an open conflict and has no one tree
-    /// to compare. What a diff of a conflict shows is not decided yet (STEMMA-19).
-    Conflicted {
-        /// The commit.
-        id: CommitId,
-    },
     /// An operand is not the identifier of a commit in the store: it is not an identifier, or it
     /// names no object, or it names an object of another kind.
     UnknownCommit {
@@ -252,10 +261,6 @@ impl fmt::Display for DiffError {
             Self::Store(error) => write!(f, "an object could not be read from the store: {error}"),
             Self::Missing { id } => write!(f, "object {id} is missing from the store"),
             Self::Damaged { id, reason } => write!(f, "object {id} is damaged: {reason}"),
-            Self::Conflicted { id } => write!(
-                f,
-                "the commit {id} records an open conflict, which a diff cannot compare as one tree"
-            ),
             Self::UnknownCommit { operand } => {
                 write!(
                     f,
@@ -291,7 +296,6 @@ impl Error for DiffError {
             Self::Store(error) => Some(error),
             Self::Missing { .. }
             | Self::Damaged { .. }
-            | Self::Conflicted { .. }
             | Self::UnknownCommit { .. }
             | Self::InvalidPath { .. }
             | Self::NoSuchPath { .. } => None,
@@ -394,10 +398,10 @@ impl Repository {
             }
         };
         let old_files = match old {
-            Some(side) => self.files_of(side.commit())?,
+            Some(side) => self.files_of(side.commit())?.0,
             None => BTreeMap::new(),
         };
-        let new_files = self.files_of(new.commit())?;
+        let (new_files, new_conflicts) = self.files_of(new.commit())?;
         let all: BTreeSet<&String> = old_files.keys().chain(new_files.keys()).collect();
         if let Some(missing) = paths
             .iter()
@@ -438,6 +442,7 @@ impl Repository {
                 content,
                 before.is_some(),
                 after.is_some(),
+                new_conflicts.contains(path),
             ));
         }
         Ok(Diff {
@@ -477,10 +482,18 @@ impl Repository {
         }
     }
 
-    /// Lists the files of the tree of a commit with the IDs of their blobs.
-    fn files_of(&self, commit: CommitId) -> Result<BTreeMap<String, ObjectId>, DiffError> {
-        let tree = commit_of(self.objects(), commit)?.tree();
-        files(self.objects(), tree)
+    /// Lists the files of a commit with the IDs of their blobs, and the paths with an open
+    /// conflict. A commit with a conflict is the tree that shows it: the text with markers at
+    /// each conflicted path, the one that the working directory holds (ADR-010).
+    #[allow(clippy::type_complexity)]
+    fn files_of(
+        &self,
+        commit: CommitId,
+    ) -> Result<(BTreeMap<String, ObjectId>, BTreeSet<String>), DiffError> {
+        let commit = commit_of(self.objects(), commit)?;
+        let view = conflicted::view(self.objects(), &commit.tree_sum()).map_err(view_error)?;
+        let conflicts = view.files().into_iter().map(|file| file.path).collect();
+        Ok((files(self.objects(), view.tree)?, conflicts))
     }
 
     /// Reads the content of a blob, or the empty content for a file that a side lacks.
@@ -521,21 +534,30 @@ fn read_raw(objects: &dyn ObjectStore, id: ObjectId, kind: Kind) -> Result<RawOb
         .ok_or(DiffError::Missing { id })
 }
 
-/// Reads and parses a commit of one tree. A `commit2` is [`DiffError::Conflicted`].
-fn commit_of(objects: &dyn ObjectStore, id: CommitId) -> Result<Commit, DiffError> {
+/// Reads and parses a commit in either of its kinds.
+fn commit_of(objects: &dyn ObjectStore, id: CommitId) -> Result<AnyCommit, DiffError> {
     let raw = objects
         .get_commit_object(&id.object_id())
         .map_err(DiffError::Store)?
         .ok_or(DiffError::Missing { id: id.object_id() })?;
-    let commit = AnyCommit::parse(raw.kind(), raw.body())
+    AnyCommit::parse(raw.kind(), raw.body())
         .expect("the kind is a commit or a commit2")
         .map_err(|error| DiffError::Damaged {
             id: id.object_id(),
             reason: error.to_string(),
-        })?;
-    match commit {
-        AnyCommit::Commit(commit) => Ok(commit),
-        AnyCommit::Commit2(_) => Err(DiffError::Conflicted { id }),
+        })
+}
+
+/// The error of building the view of a commit, as the diff reports it.
+fn view_error(error: SnapshotError) -> DiffError {
+    match error {
+        SnapshotError::Store(error) => DiffError::Store(*error),
+        SnapshotError::Missing { id, .. } => DiffError::Missing { id },
+        SnapshotError::Tree { id, source } => DiffError::Damaged {
+            id: id.object_id(),
+            reason: source.to_string(),
+        },
+        other => DiffError::Snapshot(other),
     }
 }
 
@@ -618,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn a_commit2_is_an_operand_that_the_diff_cannot_compare_as_one_tree() {
+    fn a_commit2_is_compared_by_the_text_that_shows_its_conflict() {
         use crate::object::{Commit2, FileMode, Tree, TreeEntry};
         use crate::store::ObjectStore;
         let dir = TempDir::new();
@@ -626,15 +648,15 @@ mod tests {
         let repository =
             Repository::init(dir.path(), &InitOptions::default(), &actor, &AllowAll).unwrap();
         let store = repository.objects();
-        let blob = store.put_blob(&crate::object::Blob::new("x")).unwrap();
-        let tree = |name: &str| {
-            let entry = TreeEntry::file(name, FileMode::File, blob).unwrap();
+        let tree = |content: &str| {
+            let blob = store.put_blob(&crate::object::Blob::new(content)).unwrap();
+            let entry = TreeEntry::file("a", FileMode::File, blob).unwrap();
             store
                 .put_tree(&Tree::try_new(vec![entry]).unwrap())
                 .unwrap()
         };
         let conflict = Commit2::try_new(
-            vec![tree("a"), tree("b"), tree("c")],
+            vec![tree("one\n"), tree("base\n"), tree("two\n")],
             vec![],
             crate::change::ChangeId::generate().unwrap(),
             actor.clone(),
@@ -643,18 +665,40 @@ mod tests {
         )
         .unwrap();
         let id = CommitId::new(store.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
-        // The operand is a commit identifier, so it is not `UnknownCommit`; it has no one tree.
         let operand = id.to_string();
-        let error = repository
+        let diff = repository
             .diff(&actor, &AllowAll, Comparison::WithWorkingCopy(&operand))
-            .unwrap_err();
-        assert!(
-            matches!(error, DiffError::Conflicted { id: found } if found == id),
-            "{error}"
-        );
-        assert!(error.to_string().contains("open conflict"), "{error}");
+            .unwrap();
+        // The working copy is empty, so the file is deleted and the old side is the marker text.
+        let [file] = diff.files() else {
+            panic!("one file differs: {:?}", diff.files());
+        };
+        assert_eq!(file.path(), "a");
+        assert!(!file.conflict(), "the new side is the working copy");
+        let Content::Text(text) = file.content() else {
+            panic!("the text is not binary");
+        };
+        assert_eq!(text.old_lines()[0], "<<<<<<< conflict\n");
+        assert!(text.old_lines().contains(&"two\n".to_owned()));
+        let diff = repository
+            .diff(&actor, &AllowAll, Comparison::Commits(&operand, &operand))
+            .unwrap();
+        assert!(diff.files().is_empty());
+        // Against a commit without the file, the new side is the conflict and the path says so.
+        let empty = repository.refs().working_copy().unwrap().to_string();
+        let diff = repository
+            .diff(&actor, &AllowAll, Comparison::Commits(&empty, &operand))
+            .unwrap();
+        let [file] = diff.files() else {
+            panic!("one file differs: {:?}", diff.files());
+        };
+        assert!(file.conflict());
+        let Content::Text(text) = file.content() else {
+            panic!("the text is not binary");
+        };
+        assert_eq!(text.new_lines()[0], "<<<<<<< conflict\n");
         // A tree is no commit of either kind.
-        let operand = tree("a").to_string();
+        let operand = tree("one\n").to_string();
         let error = repository
             .diff(&actor, &AllowAll, Comparison::WithWorkingCopy(&operand))
             .unwrap_err();

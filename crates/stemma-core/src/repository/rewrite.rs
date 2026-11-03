@@ -20,22 +20,22 @@
 //!
 //! The directory is written from the tree of `W'` if it has one tree. If `W'` records a conflict,
 //! every path that is decided holds its file, and every path that is not decided holds the text of
-//! [`marker_text`], so that the directory shows the competing values (ADR-005). A directory
-//! term of a path that is a conflict of types counts as absent in this text; the commit keeps the
-//! trees.
+//! `marker_text`, so that the directory shows the competing values (ADR-005). The tree is the
+//! working-copy view of the commit (`conflicted::view`), the same that the snapshot compares the
+//! directory with, so an unchanged text keeps the conflict at the next snapshot.
 
-use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::io;
 
 use super::checkout::CheckoutError;
-use super::snapshot::{read_any_commit, read_commit, SnapshotError};
+use super::conflicted;
+use super::snapshot::{read_any_commit, SnapshotError};
 use super::{now, Repository, UpdateError, WriteLock};
 use crate::change::{ChangeId, GenerateError};
-use crate::conflict::{marker_text, AnyCommit, FromSumError, Merge};
+use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::merge::{merge_trees, MergeError};
-use crate::object::{Blob, CommitId, EntryMode, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
+use crate::object::{CommitId, Kind, ObjectId, Tree, TreeId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, TAKE_OVER};
 use crate::refs::{Logged, RefError};
 use crate::store::{ObjectStore, StoreError};
@@ -105,12 +105,9 @@ impl Repository {
     /// that rewrite was onto another commit, the call is refused with
     /// [`RewriteError::StoppedOnOtherBase`] for the same reason.
     ///
-    /// A working-copy commit that records a conflict is refused by the snapshot
-    /// ([`SnapshotError::Conflicted`]): what a command does with an open conflict is not decided
-    /// yet. The merge of such a commit is the same as for any other and is tested through the
-    /// step that makes the commit. The same holds for the result: after a rewrite that ends in a
-    /// conflict, every command that takes a snapshot, `op restore` and a second rewrite among
-    /// them, is refused with that error until the snapshot handles a conflict (STEMMA-19).
+    /// A working-copy commit that records a conflict goes through the same merge as any other:
+    /// the snapshot keeps the conflict while the marker text is unchanged, and the terms of the
+    /// sum cancel against the new base or grow.
     ///
     /// # Errors
     ///
@@ -248,9 +245,10 @@ impl Repository {
         carried: &Carried,
         actor: &Actor,
     ) -> Result<Entry, RewriteError> {
-        let from = read_commit(self.objects(), current)
+        let working = read_any_commit(self.objects(), current).map_err(RewriteError::Read)?;
+        let from = conflicted::view(self.objects(), &working.tree_sum())
             .map_err(RewriteError::Read)?
-            .tree();
+            .tree;
         let plan = self
             .plan_checkout(Some(from), carried.display)
             .map_err(RewriteError::Checkout)?;
@@ -344,19 +342,12 @@ impl Repository {
     /// The directory tree of a stored working-copy commit, with the paths that are a conflict.
     fn carried(&self, id: CommitId) -> Result<Carried, RewriteError> {
         let commit = read_any_commit(self.objects(), id).map_err(RewriteError::Read)?;
-        let mut display = Display {
-            store: self.objects(),
-            conflicts: Vec::new(),
-        };
-        let tree = display
-            .tree("", &commit.tree_sum())
-            .map_err(RewriteError::Merge)?;
-        let mut conflicts = display.conflicts;
-        conflicts.sort();
+        let view =
+            conflicted::view(self.objects(), &commit.tree_sum()).map_err(RewriteError::Read)?;
         Ok(Carried {
             id,
-            display: tree,
-            conflicts,
+            display: view.tree,
+            conflicts: view.files().into_iter().map(|file| file.path).collect(),
         })
     }
 
@@ -428,152 +419,6 @@ impl Repository {
                 .map_err(RewriteError::Snapshot)?;
         }
         Ok(())
-    }
-}
-
-/// One value of a name in one term of a sum of trees.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Slot {
-    mode: EntryMode,
-    id: ObjectId,
-}
-
-/// Builds the tree that the directory holds for a sum of trees.
-struct Display<'a> {
-    store: &'a dyn ObjectStore,
-    conflicts: Vec<String>,
-}
-
-impl Display<'_> {
-    /// The tree of a sum: the tree itself if the sum is resolved, and otherwise a tree in which a
-    /// path that is decided holds its value and a path that is not holds the marker text.
-    fn tree(&mut self, prefix: &str, sum: &Merge<TreeId>) -> Result<TreeId, MergeError> {
-        let sum = sum.simplify();
-        if let Some(tree) = sum.resolution() {
-            return Ok(tree);
-        }
-        let empty = self.store.put_tree(&Tree::try_new(vec![])?)?;
-        let trees: Vec<Tree> = sum
-            .terms()
-            .iter()
-            .map(|id| {
-                self.store.get_tree(id)?.ok_or(MergeError::Missing {
-                    id: id.object_id(),
-                    kind: Kind::Tree,
-                })
-            })
-            .collect::<Result<_, _>>()?;
-        let names: BTreeSet<&str> = trees
-            .iter()
-            .flat_map(|tree| tree.entries().iter().map(TreeEntry::name))
-            .collect();
-        let mut entries = Vec::new();
-        for name in names {
-            let slots = Merge::try_from_terms(
-                trees
-                    .iter()
-                    .map(|tree| {
-                        tree.entries()
-                            .binary_search_by(|entry| entry.name().cmp(name))
-                            .ok()
-                            .map(|at| {
-                                let entry = &tree.entries()[at];
-                                Slot {
-                                    mode: entry.mode(),
-                                    id: entry.id(),
-                                }
-                            })
-                    })
-                    .collect(),
-            )
-            .expect("the trees are the terms of a sum")
-            .simplify();
-            let path = if prefix.is_empty() {
-                name.to_owned()
-            } else {
-                format!("{prefix}/{name}")
-            };
-            if let Some(decided) = slots.resolution() {
-                if let Some(slot) = decided {
-                    entries.push(entry_of(name, slot)?);
-                }
-            } else if slots.terms().iter().flatten().all(is_directory) {
-                let below = slots.map(|term| term.map_or(empty, |slot| TreeId::new(slot.id)));
-                let tree = self.tree(&path, &below)?;
-                if tree != empty {
-                    entries.push(TreeEntry::directory(name, tree)?);
-                }
-            } else {
-                entries.extend(self.conflicted_file(name, path, &slots)?);
-            }
-        }
-        Ok(self.store.put_tree(&Tree::try_new(entries)?)?)
-    }
-
-    /// The file that stands for a path that is not decided: the marker text of its terms. The
-    /// mode is that of the first term that is a file, and a regular file if none is, since a
-    /// link with this text would point nowhere.
-    fn conflicted_file(
-        &mut self,
-        name: &str,
-        path: String,
-        slots: &Merge<Option<Slot>>,
-    ) -> Result<Option<TreeEntry>, MergeError> {
-        let mut contents: Vec<Option<Vec<u8>>> = Vec::with_capacity(slots.terms().len());
-        for term in slots.terms() {
-            contents.push(match term {
-                Some(slot) if !is_directory(slot) => Some(
-                    self.store
-                        .get_expecting(&slot.id, Kind::Blob)?
-                        .map(crate::store::RawObject::into_body)
-                        .ok_or(MergeError::Missing {
-                            id: slot.id,
-                            kind: Kind::Blob,
-                        })?,
-                ),
-                _ => None,
-            });
-        }
-        let sum = Merge::try_from_terms(contents.iter().map(Option::as_deref).collect())
-            .expect("the terms of a sum");
-        // Directories count as absent, so the terms may cancel to one value in this text: that
-        // value is what the path shows. If that value is "absent", the path holds no file; it
-        // stays in the list of conflicts, as the sum still records it.
-        let text = match marker_text(&sum) {
-            Some(text) => text,
-            None => match sum.resolution() {
-                Some(Some(value)) => value.to_vec(),
-                _ => {
-                    self.conflicts.push(path);
-                    return Ok(None);
-                }
-            },
-        };
-        let mode = slots
-            .terms()
-            .iter()
-            .flatten()
-            .find_map(|slot| match slot.mode {
-                EntryMode::File => Some(FileMode::File),
-                EntryMode::Executable => Some(FileMode::Executable),
-                EntryMode::Symlink | EntryMode::Directory => None,
-            })
-            .unwrap_or(FileMode::File);
-        let blob = self.store.put_blob(&Blob::new(text))?;
-        self.conflicts.push(path);
-        Ok(Some(TreeEntry::file(name, mode, blob)?))
-    }
-}
-
-fn is_directory(slot: &Slot) -> bool {
-    slot.mode == EntryMode::Directory
-}
-
-/// The tree entry for a value of a name.
-fn entry_of(name: &str, slot: Slot) -> Result<TreeEntry, crate::object::TreeError> {
-    match FileMode::from_entry_mode(slot.mode) {
-        Some(mode) => TreeEntry::file(name, mode, crate::object::BlobId::new(slot.id)),
-        None => TreeEntry::directory(name, TreeId::new(slot.id)),
     }
 }
 
@@ -848,6 +693,7 @@ mod tests {
 
     use super::*;
     use crate::fault;
+    use crate::object::TreeEntry;
     use crate::refs::BranchName;
     use crate::repository::{InitOptions, SwitchTarget};
     use crate::testutil::TempDir;
@@ -1447,31 +1293,42 @@ mod tests {
     }
 
     #[test]
-    fn a_rewrite_that_ends_in_a_conflict_is_refused_by_the_snapshot_until_it_handles_one() {
+    fn a_conflicted_working_copy_is_carried_by_the_public_call() {
         let dir = TempDir::new();
         let repository = repository(&dir);
         history(&dir, &repository);
         let feature = tip(&repository, "feature");
+        let later = tip(&repository, "later");
         let main = tip(&repository, "main");
         write(&dir, "a.txt", "uno\ntwo\nthree\n");
-        let (_, entry, conflicted, _) = done(rewrite(&repository, feature));
-        let count = entries(&repository);
+        let (_, _, conflicted, conflicts) = done(rewrite(&repository, feature));
+        assert_eq!(conflicts, ["a.txt"]);
+        let text = read(&dir, "a.txt");
+        assert!(text.starts_with("<<<<<<< conflict\n"));
 
-        let error = rewrite(&repository, main).unwrap_err();
-        assert!(
-            matches!(
-                error,
-                RewriteError::Snapshot(SnapshotError::Conflicted { id }) if id == conflicted
-            ),
-            "{error}"
+        // The snapshot sees the text unchanged and keeps the conflict, which goes on to `later`.
+        let (saved, _, next, conflicts) = done(rewrite(&repository, later));
+
+        assert!(saved.is_none(), "an unchanged marker text is no change");
+        assert_eq!(conflicts, ["a.txt"]);
+        assert_eq!(read(&dir, "a.txt"), text);
+        let commit = read_any_commit(repository.objects(), next).unwrap();
+        assert!(commit.is_conflicted());
+        assert_eq!(commit.parents(), [later]);
+        assert_eq!(
+            commit.change(),
+            read_any_commit(repository.objects(), conflicted)
+                .unwrap()
+                .change()
         );
-        assert!(matches!(
-            repository.restore(entry.number(), false, &actor(), &AllowAll),
-            Err(crate::repository::RestoreError::Snapshot(
-                SnapshotError::Conflicted { .. }
-            ))
-        ));
-        assert_eq!(entries(&repository), count, "both wrote nothing");
-        assert_eq!(repository.refs().working_copy().unwrap(), conflicted);
+
+        // Back onto `main`, the other side is gone and the conflict cancels.
+        let (_, _, last, conflicts) = done(rewrite(&repository, main));
+
+        assert!(conflicts.is_empty());
+        assert_eq!(read(&dir, "a.txt"), "uno\ntwo\nthree\n");
+        assert!(!read_any_commit(repository.objects(), last)
+            .unwrap()
+            .is_conflicted());
     }
 }
