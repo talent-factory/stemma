@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 766" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 810" font-family="Helvetica, Arial, sans-serif">
   <title>Welcher Befehl berührt welche Zone</title>
-  <rect x="0" y="0" width="740" height="766" fill="#FFFFFF"/>
+  <rect x="0" y="0" width="740" height="810" fill="#FFFFFF"/>
 
   <!-- Zone headers: one colour per zone, dark enough for print -->
   <g font-size="12" font-weight="bold" text-anchor="middle">
@@ -33,6 +33,7 @@
     <line x1="20" y1="634" x2="730" y2="634"/>
     <line x1="20" y1="678" x2="730" y2="678"/>
     <line x1="20" y1="722" x2="730" y2="722"/>
+    <line x1="20" y1="766" x2="730" y2="766"/>
   </g>
 
   <!-- Commands -->
@@ -50,8 +51,9 @@
     <text x="20" y="521" font-family="Courier, monospace" font-size="15" font-weight="bold">tag</text>
     <text x="20" y="565" font-family="Courier, monospace" font-size="15" font-weight="bold">branch</text>
     <text x="20" y="609" font-family="Courier, monospace" font-size="15" font-weight="bold">switch</text>
-    <text x="20" y="653" font-family="Courier, monospace" font-size="15" font-weight="bold">worktree add</text>
-    <text x="20" y="697" font-family="Courier, monospace" font-size="15" font-weight="bold">rebase</text>
+    <text x="20" y="653" font-family="Courier, monospace" font-size="15" font-weight="bold">merge</text>
+    <text x="20" y="697" font-family="Courier, monospace" font-size="15" font-weight="bold">worktree add</text>
+    <text x="20" y="741" font-family="Courier, monospace" font-size="15" font-weight="bold">rebase</text>
   </g>
   <g fill="#0F172A" font-size="12">
     <text x="20" y="97">legt das Repository an</text>
@@ -67,8 +69,9 @@
     <text x="20" y="537">setzt einen Tag auf einen Commit oder listet die Tags</text>
     <text x="20" y="581">legt Branches an, benennt sie um, löscht sie oder listet sie</text>
     <text x="20" y="625">wechselt den Branch oder löst HEAD vom Branch</text>
-    <text x="20" y="669">legt eine zweite Arbeitskopie mit eigenem HEAD an</text>
-    <text x="20" y="713">spielt den Branch auf ein Ziel neu auf</text>
+    <text x="20" y="669">führt einen Branch in den Branch von HEAD ein</text>
+    <text x="20" y="713">legt eine zweite Arbeitskopie mit eigenem HEAD an</text>
+    <text x="20" y="757">spielt den Branch auf ein Ziel neu auf</text>
   </g>
 
   <!-- init: changes working-copy commit, HEAD, log -->
@@ -159,31 +162,38 @@
   <circle cx="580" cy="612" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="612" r="9" fill="#6B46C1"/>
 
-  <!-- worktree add: writes the files of a new directory, makes a working-copy commit of its own,
-       a HEAD of its own (and a branch with -b), and an entry; the calling worktree is not read.
-       The row shows the new worktree; worktree list only reads and has no row. -->
+  <!-- merge: saves and rewrites the directory, moves the branch of HEAD and the working-copy
+       commit (HEAD stays), writes one entry; nothing happens if the branch is an ancestor -->
   <circle cx="380" cy="656" r="9" fill="#2B6CB0"/>
   <circle cx="480" cy="656" r="9" fill="#B45309"/>
   <circle cx="580" cy="656" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="656" r="9" fill="#6B46C1"/>
 
-  <!-- rebase: saves and rewrites the directory, replays the commits of the branch of HEAD on the
-       target, moves that branch and the working-copy commit (HEAD stays), writes one entry -->
+  <!-- worktree add: writes the files of a new directory, makes a working-copy commit of its own,
+       a HEAD of its own (and a branch with -b), and an entry; the calling worktree is not read.
+       The row shows the new worktree; worktree list only reads and has no row. -->
   <circle cx="380" cy="700" r="9" fill="#2B6CB0"/>
   <circle cx="480" cy="700" r="9" fill="#B45309"/>
   <circle cx="580" cy="700" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="700" r="9" fill="#6B46C1"/>
 
+  <!-- rebase: saves and rewrites the directory, replays the commits of the branch of HEAD on the
+       target, moves that branch and the working-copy commit (HEAD stays), writes one entry -->
+  <circle cx="380" cy="744" r="9" fill="#2B6CB0"/>
+  <circle cx="480" cy="744" r="9" fill="#B45309"/>
+  <circle cx="580" cy="744" r="9" fill="#2F7D32"/>
+  <circle cx="680" cy="744" r="9" fill="#6B46C1"/>
+
   <!-- Legend -->
   <g fill="#0F172A" font-size="12">
-    <circle cx="28" cy="745" r="8" fill="#0F172A"/>
-    <text x="44" y="749">ändert</text>
-    <circle cx="116" cy="745" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <text x="132" y="749">liest nur</text>
-    <circle cx="220" cy="745" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <path d="M220,738 A7,7 0 0 0 220,752 Z" fill="#0F172A"/>
-    <text x="236" y="749">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
-    <text x="568" y="749" font-size="14" fill="#64748B">–</text>
-    <text x="584" y="749">unberührt</text>
+    <circle cx="28" cy="789" r="8" fill="#0F172A"/>
+    <text x="44" y="793">ändert</text>
+    <circle cx="116" cy="789" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <text x="132" y="793">liest nur</text>
+    <circle cx="220" cy="789" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <path d="M220,782 A7,7 0 0 0 220,796 Z" fill="#0F172A"/>
+    <text x="236" y="793">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
+    <text x="568" y="793" font-size="14" fill="#64748B">–</text>
+    <text x="584" y="793">unberührt</text>
   </g>
 </svg>

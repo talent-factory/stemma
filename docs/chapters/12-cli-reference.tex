@@ -15,8 +15,10 @@ Der Zeiger auf den Working-Copy-Commit gehört zur Zone des Working-Copy-Commits
 Bei \type{op restore} hängt es vom Eintrag ab, welche Zeiger und Dateien sich bewegen;
 die Zeile zeigt den Höchstfall. Bei \type{switch} bewegt sich ein neuer Branch nur mit
 \type{-c}, und die Dateien nur, wenn sich die Bäume unterscheiden; auch hier zeigt die Zeile
-den Höchstfall. Bei \type{diff} ist der Working-Copy-Commit als Seite der
-Höchstfall: Der Snapshot ändert nur dann etwas, wenn sich eine verfolgte Datei geändert hat,
+den Höchstfall. Bei \type{merge} bewegt sich der Branch von HEAD, HEAD selbst bleibt,
+und ist der andere Branch schon ein Vorfahre, ändert der Befehl ausser dem Snapshot nichts.
+Bei \type{diff} ist der Working-Copy-Commit als Seite der Höchstfall:
+Der Snapshot ändert nur dann etwas, wenn sich eine verfolgte Datei geändert hat,
 und bei zwei Commits ändert der Befehl nichts.
 Bei \type{log} liest der Befehl nur die Commits ab dem Working-Copy-Commit;
 er macht keinen Snapshot und berührt weder Branch noch HEAD noch das Log.
@@ -137,8 +139,8 @@ command again with `--take-over` to make `human bob` its owner
 
 Einem Agenten rät die Meldung stattdessen, einen Menschen zu fragen.
 
-Die Option \type{--take-over} von \type{track}, \type{commit}, \type{switch}, \type{rebase},
-\type{status}, \type{diff} und \type{op restore} übernimmt die Arbeitskopie
+Die Option \type{--take-over} von \type{track}, \type{commit}, \type{switch}, \type{merge},
+\type{rebase}, \type{status}, \type{diff} und \type{op restore} übernimmt die Arbeitskopie
 im Snapshot des Befehls.
 Entschieden wird vor der ersten gelesenen Datei: Ein Agent wird abgewiesen, und der Autorisierer
 wird nach der Operation \type{take-over} mit dem Ziel \type{working-copy} gefragt.
@@ -231,8 +233,8 @@ gehört auch dazu: Der Befehl kann ein falsches Argument nicht von einem Schaden
 Meist hat der Befehl nichts geändert. Zwei Spuren können die Codes 1, 5 und 6 hinterlassen:
 einen Eintrag für eine Zeigerbewegung,
 die nicht stattfand (\type{op log} markiert ihn mit \type{!}),
-und bei den Befehlen \type{commit}, \type{switch}, \type{rebase}, \type{status}, \type{diff},
-\type{op restore} und \type{purge --apply}
+und bei den Befehlen \type{commit}, \type{switch}, \type{merge}, \type{rebase}, \type{status},
+\type{diff}, \type{op restore} und \type{purge --apply}
 den Eintrag des
 Snapshots, den sie vor dem Scheitern machten; die Meldung nennt ihn, und ein erneuter
 Aufruf ist unbedenklich.
@@ -382,6 +384,20 @@ aber nur der Branch hat sich bewegt. \stopxcell
 er nimmt dann keinen Snapshot. \stopxcell
 \stopxrow
 \startxrow
+\startxcell[width=0.19\textwidth] \type{merge} \stopxcell
+\startxcell[width=0.41\textwidth] Der Merge ist gemacht,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen;
+die Ausgabe oder die Meldung nennt den Eintrag, der den Merge zurücksetzt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \type{merge} \stopxcell
+\startxcell[width=0.41\textwidth] Der Eintrag steht, die Dateien liegen auf dem Stand des Merges,
+aber der Branch hat sich bewegt und der Working-Copy-Commit nicht. \stopxcell
+\startxcell Denselben Aufruf wiederholen, bevor ein anderer Befehl läuft;
+er nimmt dann keinen Snapshot. \stopxcell
+\stopxrow
+\startxrow
 \startxcell[width=0.19\textwidth] \type{branch} \stopxcell
 \startxcell[width=0.41\textwidth] Der Branch ist angelegt, umbenannt oder gelöscht,
 aber die Ausgabe liess sich nicht schreiben, ein Verzeichnis ist nicht gesichert,
@@ -442,7 +458,8 @@ und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
 \stopplacetable
 
 {\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{switch},
-\type{rebase}, \type{status}, \type{op restore}, \type{diff} mit dem Working-Copy-Commit),
+\type{merge}, \type{rebase}, \type{status}, \type{op restore},
+\type{diff} mit dem Working-Copy-Commit),
 nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
 und hält sie bis zu seiner letzten Zeigerbewegung, also mindestens so lange, wie sein Snapshot
 dauert. \type{purge --apply} hält sie von seinem Plan bis zu seinem Ende.
@@ -474,7 +491,7 @@ Was sich nicht entfernen lässt, bleibt, ohne dass der Befehl scheitert;
 der nächste versucht es wieder.
 
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
-lehnen \type{track}, \type{commit}, \type{switch}, \type{rebase}, \type{status},
+lehnen \type{track}, \type{commit}, \type{switch}, \type{merge}, \type{rebase}, \type{status},
 \type{op restore} und \type{diff} mit
 dem Working-Copy-Commit ab, wenn sie die Sperre nehmen,
 also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
@@ -1040,6 +1057,110 @@ Exit-Code 3.
 \starttyping
 stemma rebase main --actor "human daniel"
 stemma rebase b3:4a0b66... -C projekt --actor "human daniel"
+\stoptyping
+
+\section{merge}
+
+Führt einen Branch in den Branch ein, auf den HEAD zeigt (ADR-010, ADR-005).
+
+\starttyping
+stemma merge BRANCH [-m NACHRICHT] [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+\stoptyping
+
+\startitemize
+\item {\bf BRANCH:} Der Branch, der eingeführt wird; er muss bestehen.
+\item {\bf \type{-m}, \type{--message} NACHRICHT:} Die Beschreibung des Merge-Commits.
+Ohne die Option lautet sie \type{Merge BRANCH into AKTUELLER}.
+Ein Fast-Forward macht keinen Commit und braucht sie nicht; eine leere Nachricht lehnt der Befehl
+ab (Exit-Code 1), in jedem Fall, auch bei einem Fast-Forward und bei \type{Already up to date},
+und auch wenn sie nur aus Leerraum besteht.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot, der Merge-Commit und
+der Eintrag tragen diesen Akteur.
+\item {\bf \type{--take-over}:} Übernimmt die Arbeitskopie, im Snapshot des Befehls oder,
+bei der Wiederholung eines abgebrochenen Merges, vor den Dateien
+(siehe {\bf Eigentümer der Arbeitskopie} oben).
+Ohne die Option lehnt auch die Wiederholung einen anderen Akteur ab, und ein Agent übernimmt nie.
+\stopitemize
+
+Der Befehl hat keine JSON-Form.
+
+{\bf Verhalten.} HEAD muss auf einen Branch zeigen, und der Autorisierer wird nach der Operation
+\type{merge} gefragt, zuerst mit dem Branch von HEAD als Ziel, dem Branch, der sich bewegt,
+und dann mit dem anderen Branch.
+Der Befehl nimmt die Sperre der Referenzen und speichert die verfolgten Dateien wie ein Snapshot
+(Operation \type{snapshot}, eigener Eintrag).
+Dann hängt es von den Merge-Basen der beiden Spitzen ab, was geschieht:
+
+\startitemize
+\item Ist die Spitze des anderen Branchs ein Vorfahre der eigenen, ist alles eingeführt.
+Der Befehl schreibt ausser dem Snapshot nichts.
+\item Ist die eigene Spitze ein Vorfahre der anderen, nimmt der Branch die andere Spitze:
+ein Fast-Forward ohne neuen Commit.
+\item Sonst entsteht ein Merge-Commit mit der eigenen und der anderen Spitze als Eltern,
+in dieser Reihenfolge, und mit einer neuen Change-ID.
+Sein Baum ist der Merge der Spitzen über ihre Merge-Basen (ADR-005); gibt es mehrere Basen,
+fliessen sie alle ein.
+Ein Konflikt ist kein Fehler: Der Commit speichert ihn als Daten, und die Ausgabe nennt die Pfade.
+\stopitemize
+
+Der Working-Copy-Commit folgt der neuen Spitze nach der Regel des Umschreibens (ADR-010):
+Seine Änderungen werden auf die neue Spitze übertragen, und ein Working-Copy-Commit ohne Änderung
+wird durch einen leeren Commit mit neuer Change-ID ersetzt.
+Das Verzeichnis zeigt bei einem Konflikt für jeden unentschiedenen Pfad den Text mit Markierungen.
+Im Eintrag \type{merge} stehen beide Bewegungen: der Branch und der Working-Copy-Commit.
+HEAD bleibt, und die anderen Branches auch.
+Die Reihenfolge ist wie beim \type{op restore}: erst der Eintrag, dann die Dateien,
+dann die Zeiger (zuerst der Branch, danach der Working-Copy-Commit).
+
+Die Ausgabe nennt den Eintrag und wie sich der Merge zurücksetzen lässt:
+
+\starttyping
+Merged other into feature (commit b3:7d1e...) as entry 21
+Conflicts:
+C a.txt
+To undo it: stemma op restore 21
+\stoptyping
+
+Die erste Zeile heisst \type{Fast-forwarded BRANCH to ANDERER (commit ID)} bei einem Fast-Forward.
+Die Zeilen \type{Conflicts:} und \type{C PFAD} stehen nur bei einem Konflikt.
+Hat der Snapshot einen Eintrag geschrieben, steht davor die Zeile
+\type{Saved the working copy first as entry N}.
+Ist der andere Branch ein Vorfahre, schreibt der Befehl \type{Already up to date with BRANCH}
+und endet mit Exit-Code 0, ohne einen Eintrag für den Merge.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem unbekannten Branch, bei einem HEAD ohne
+Branch (die Meldung nennt \type{switch}), bei einem Branch von HEAD ohne Commit,
+bei einer leeren Nachricht und bei einem offenen Purge.
+Eine gehaltene Sperre beendet ihn mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
+Ein Fehler nach dem Snapshot lässt dessen Eintrag zurück, und die Meldung nennt ihn.
+
+Scheitert das Schreiben der Dateien oder die erste Zeigerbewegung, nachdem der Eintrag im Log
+steht, endet der Befehl mit Exit-Code 1 (bei einer gehaltenen Sperre mit 6).
+Die Dateien liegen dann ganz oder zum Teil auf dem neuen Stand, die Zeiger sind alt,
+und der Eintrag steht für einen Merge, der nicht stattfand.
+Hat sich der Branch bewegt und der Working-Copy-Commit nicht, endet der Befehl mit Exit-Code 3.
+In beiden Fällen nennt die Meldung den Aufruf: Derselbe Merge ist noch einmal zu machen,
+bevor ein anderer Befehl läuft. Der zweite Aufruf erkennt den Eintrag, nimmt keinen Snapshot,
+benutzt die Commits des Eintrags weiter und bewegt die übrigen Zeiger.
+Die Nachricht des zweiten Aufrufs wird dann nicht benutzt.
+Ein anderer Merge ist in diesem Zustand abgelehnt, weil ein Snapshot die neuen Dateien als
+Änderung des alten Working-Copy-Commits speichern würde.
+
+Mit Exit-Code 3 endet der Befehl auch, wenn der Merge gemacht ist,
+aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
+Ein Skript wiederholt ihn dann nicht; die Zeile mit dem Eintrag steht, wenn möglich, vor dem
+Fehler auf der Standardausgabe. Schliesst der Leser der Ausgabe die Pipe früh,
+endet der Befehl bei \type{Already up to date} ohne Snapshot-Eintrag mit Exit-Code 0;
+hat der Snapshot einen Eintrag geschrieben, und nach einem Merge, endet er mit Exit-Code 3.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma merge feature --actor "human daniel"
+stemma merge other -m "Both edits" --actor "human daniel"
+stemma merge fix -C projekt --actor "human daniel"
 \stoptyping
 
 \section{status}
