@@ -35,6 +35,17 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   are. The restore writes an entry of its own, the operation `restore`, like every operation that
   moves a pointer. A restore never rewrites the log, so a restore can itself be restored; only a
   purge replaces entries by stubs (ADR-014).
+- **A restore puts back the pointers of its own worktree** *(confirmed; STEMMA-176)*. `HEAD`
+  and the working-copy commit belong to a worktree (ADR-009), and an entry of a linked worktree
+  names it (ADR-011). A restore writes the files of the directory where it runs, so it puts
+  back the old `HEAD` and working-copy commit of that worktree only. An entry that moved `HEAD`
+  or the working-copy commit of another worktree is refused (`OtherWorktree`), and the message
+  names the worktree: `op restore` is run in that worktree. An entry of another worktree that
+  names branches only is restored from anywhere, as the branches are shared. The check that a
+  branch is checked out in one worktree only (ADR-009) stays. The outcome of the entry that is
+  judged before the restore is the one of its own worktree (ADR-011). The entries of
+  `worktree add` and `worktree remove` are refused (`WorktreeEntry`): a restore does not make a
+  directory or delete one. The restore writes its entry in the worktree where it runs.
 - **A snapshot comes first** *(confirmed)*. Like every command, the restore saves the directory in
   a snapshot under the actor of the command, once it knows that there is something to restore
   (the plan is made before, so that a missing commit or a file in the way is found before the

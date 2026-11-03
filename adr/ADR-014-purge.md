@@ -49,6 +49,23 @@ Facts that bound the design:
   - Rewriting only the blob and keeping the commits is not possible: a tree that names a missing
     blob cannot be read, and a replacement blob has another ID, so the tree would have to change
     as well.
+- **The purge covers every worktree** *(confirmed; STEMMA-176)*. A repository can have linked
+  worktrees (ADR-009), each with its own `HEAD` and working-copy commit. The roots of the plan
+  are the `HEAD` and the working-copy commit of every worktree, the one where the purge runs and
+  all others, so no object that another worktree needs is deleted, and what the rewrite
+  replaces is moved there too: the working-copy commit of each worktree, and its `HEAD` when it
+  names a commit. The plan names the worktree on each of these moves (`main` or the name of a
+  linked worktree). The journal names it as well: a journal whose moves of `HEAD` and the
+  working-copy commit are all those of the main worktree has the form and the header
+  `stemma-purge 1` that it had before worktrees, and any other has `stemma-purge 2` with the
+  worktree on each of the two lines, `main` first and then by name, so one purge has one
+  encoding and a purge that an older program began can be finished. `--resume` and `--abort`
+  run in any worktree. The snapshot that comes first saves the directory of the worktree where
+  the purge runs. The directories of the other worktrees are not read or written: an unsaved
+  file with the secret in one of them stays until its worktree takes a snapshot, which adds it to
+  the working-copy commit again. The person purges, then removes the secret from the files of
+  every worktree, or has `.stemmaignore` exclude it. Before STEMMA-176 the purge refused a
+  repository with more than one worktree (`PurgeError::LinkedWorktrees`).
 - **The entries of the log that name a rewritten commit become stubs** *(confirmed)*. Every entry
   that names a rewritten commit as an old or a new value is replaced by a stub with the **same
   number**, so the numbering has no gap (ADR-011). The stub keeps the number, the time, and the
