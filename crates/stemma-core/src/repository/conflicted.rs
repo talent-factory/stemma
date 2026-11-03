@@ -264,7 +264,10 @@ pub(super) fn resolve(
             let found = index
                 .get(&path.path)
                 .map(|entry| (entry.mode(), entry.id()));
-            path.is_unchanged(found)
+            // Files below the path mean that a directory has taken the place of the file: that
+            // resolves the path, whatever the view showed there (or did not show).
+            let below = format!("{}/", path.path);
+            path.is_unchanged(found) && !index.iter().any(|(other, _)| other.starts_with(&below))
         })
         .collect();
     let mut resolved = index.clone();
@@ -762,5 +765,24 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
         assert_eq!(repository.refs().working_copy().unwrap(), id);
+    }
+
+    #[test]
+    fn a_tracked_directory_in_the_place_of_a_conflicted_file_resolves_the_path() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        let file = tree_of(&repository, &[("a", "file\n")]);
+        let base = tree_of(&repository, &[]);
+        let nested = tree_of(&repository, &[("a/x", "x\n")]);
+        let sum = Merge::try_from_terms(vec![file, base, nested]).unwrap();
+        let shown = view(store, &sum).unwrap();
+        let mut index = Index::new();
+        index
+            .insert("a/x", FileMode::File, blob(&repository, "mine\n"))
+            .unwrap();
+        let resolved = resolve(store, &shown.conflicts, &index).unwrap();
+        assert!(resolved.is_resolved());
     }
 }
