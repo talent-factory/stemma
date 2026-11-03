@@ -73,7 +73,7 @@ A caller can tell them apart only by the text of the message, which is written f
     `working_copy` (boolean, true for `@`), `parents` (a list of IDs), `change`, `author`, `time`
     (seconds since the Unix epoch, as the commit claims), `message` (verbatim), and `conflict`:
     `null`, or `{sides}` for a commit that records an open conflict (ADR-005, ADR-010).
-  - The three fields are added to schema 1 (STEMMA-169): a reader that ignores fields it does
+  - The two fields are added to schema 1 (STEMMA-169): a reader that ignores fields it does
     not know keeps working, and `schema` stays 1. `diff` has no `--json` yet; when it gets one
     with the API of phase 6, a file entry carries `conflict` (boolean, true if the path holds
     an open conflict on the new side). The core offers it as `FileDiff::conflict` today.

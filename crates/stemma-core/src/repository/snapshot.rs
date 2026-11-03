@@ -238,6 +238,16 @@ impl Repository {
         // The files decide which conflicted paths stay conflicted; with no conflict the sum is the
         // tree.
         let sum = conflicted::resolve(&objects, &view.conflicts, &index)?;
+        if sum == commit.tree_sum() {
+            // Only the mode of a kept conflicted file differs, which the conflict does not
+            // record: nothing changed, so there is no new commit and no entry.
+            finish_new(objects)?;
+            return Ok(Replaced {
+                entry: None,
+                added: saved,
+                late: None,
+            });
+        }
         let replacement = commit
             .rewrite(&sum, actor.clone(), now(), commit.message())
             .expect("the parents of the commit that it replaces are distinct");
@@ -286,8 +296,9 @@ fn finish_new(objects: Batch<'_>) -> Result<(), SnapshotError> {
 }
 
 /// Reads and parses the commit of the one tree that a command works on. A `commit2` holds a
-/// conflict and has no one tree, so it is [`SnapshotError::Conflicted`]: what a command does with
-/// a conflict is not decided yet (STEMMA-19).
+/// conflict and has no one tree, so it is [`SnapshotError::Conflicted`]. Only `switch` still reads
+/// commits this way (STEMMA-19); the other commands read the commit with [`read_any_commit`] and
+/// build the view of `conflicted`.
 pub(super) fn read_commit(
     objects: &dyn ObjectStore,
     id: CommitId,

@@ -941,7 +941,7 @@ ein weiteres Argument ist ein Aufruffehler (Exit-Code 2).
 (Operation \type{snapshot}); ein Eintrag entsteht nur, wenn sich eine verfolgte Datei
 geändert hat.
 Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit.
-(Bei einem Konflikt ist der Working-Copy-Commit der Tree, der ihn zeigt; siehe unten.)
+(Bei einem Konflikt gilt der Tree der Ansicht; siehe unten.)
 \type{status} zeigt deshalb nicht, was vom Working-Copy-Commit abweicht,
 sondern was dieser Commit gegenüber seinem Elternteil tut
 (beim ersten Commit gegenüber dem leeren Baum):
@@ -1136,29 +1136,30 @@ Seiten, wie sie im Kopf stehen. Ist eine der beiden Fassungen binär, gilt das f
 
 {\bf Konflikte.} Ein Commit mit offenem Konflikt vergleicht der Befehl als den Tree, der ihn
 zeigt (ADR-010): An jedem Pfad im Konflikt steht der Text mit Markierungen, derselbe, den ein
-Restore und der Snapshot für die Platte schreiben, und der Befehl vergleicht ihn wie eine
-gewöhnliche Datei. Der Kopf eines solchen Pfades, soweit der Konflikt auf der neuen Seite
+Restore für die Platte schreibt und mit dem der Snapshot die Datei vergleicht. Der Befehl
+vergleicht ihn wie eine gewöhnliche Datei.
+Der Kopf eines solchen Pfades, soweit der Konflikt auf der neuen Seite
 liegt, endet mit \type{(conflict)}:
 
 \starttyping
 diff a.txt (conflict)
 --- b3:4f2a0c… a.txt
 +++ working-copy b3:9c1e7d… a.txt
-@@ -1 +1,7 @@
--base
+@@ -1 +1,8 @@
 +<<<<<<< conflict
 ++++++++ side 1
 +one
 +------- base 1
-+base
+ base
 ++++++++ side 2
 +two
 +>>>>>>>
 \stoptyping
 
-Hat ein Term ein Verzeichnis, zeigt der Text die Zeile \type{(directory)}; die Dateien darin
-schreibt der Befehl nicht. Der Befehl schreibt dafür Objekte in den Speicher (den Text und die
-Trees der Ansicht), aber keinen Eintrag und keinen Zeiger.
+Hat ein Term ein Verzeichnis, zeigt der Text die Zeile \type{(directory ID)}
+mit der ID seines Trees; die Dateien darin schreibt der Befehl nicht.
+Der Befehl schreibt dafür Objekte in den Speicher (den Text und die Trees der Ansicht),
+aber keinen Eintrag und keinen Zeiger.
 
 Zeilen vergleicht der Befehl so, wie sie gespeichert sind, samt Zeilenende.
 Eine Änderung nur der Zeilenenden erscheint deshalb als Änderung der Zeile.

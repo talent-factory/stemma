@@ -237,10 +237,14 @@ art, not a template (ADR-015).
   - **A path is conflicted** if the values of its name in the terms of the sum do not cancel and
     are not all directories. A directory is entered, so the names below it are paths of their
     own. A term that is a directory stands against a file or against nothing: it has no content
-    of its own, and the text shows it as the line `(directory)`; the files below it stay in
+    of its own, and the text shows it as the line `(directory <id>)`, with the ID of its tree, so that two
+    different directories never cancel; the files below it stay in
     the commit and are not written. A symbolic link shows as its target. If the contents
     cancel and only the modes differ, there is no text to show: the file holds the content that
-    all of them have, and its mode counts in the comparison below.
+    all of them have, and its mode counts in the comparison below. If the contents cancel and
+    the path is absent in the view (a mode change against a deletion), the view holds no file;
+    the conflict shows in `status` and is resolved by creating the file and tracking it. The
+    mode of a file with markers is not recorded: a `chmod` on it changes nothing.
   - **The snapshot keeps a conflict only on an exact match.** If the file at a conflicted path
     has the bytes of the text that Stemma wrote, the path keeps its values; the new commit holds
     the same terms for it. Any other text resolves the path with exactly that text, in every
@@ -257,7 +261,7 @@ art, not a template (ADR-015).
     that refuses to merge or to push a conflict belongs to the merge gate (phase 4).
   - **`status` and `log` mark it.** `status` has a section `Conflicts` (paths and the number of
     sides of each) before `Changes`. `log` marks the commit in its header line with
-    `conflict (N sides)`. The fields are added to `--json` without a new `schema` (ADR-018).
+    `conflict (N sides)`. The two fields are added to `--json` without a new `schema` (ADR-018).
   - **`switch` still refuses** a working-copy commit or a target that holds a conflict
     (STEMMA-19).
 - **A working copy belongs to one actor** *(confirmed)*. A snapshot is made by the actor of the

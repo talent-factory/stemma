@@ -914,7 +914,6 @@ mod tests {
 
     #[test]
     fn a_restore_to_a_conflicted_commit_writes_the_text_and_the_snapshot_keeps_the_conflict() {
-        use crate::object::CommitId;
         use crate::testutil::conflicted_commit;
         let dir = TempDir::new();
         let repository = repository(&dir);
@@ -955,7 +954,6 @@ mod tests {
         done(restore(&repository, back.number()));
         assert_eq!(repository.refs().working_copy().unwrap(), conflict);
         assert_eq!(read(&dir, "a.txt").as_bytes(), text.as_slice());
-        let _: CommitId = conflict;
     }
 
     #[test]

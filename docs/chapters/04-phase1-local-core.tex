@@ -217,9 +217,10 @@ Der Speicher löst sie nach der Art des gespeicherten Objekts zu einem \type{com
 einem \type{commit2} auf.
 Ein \type{commit2} ist deshalb ein Elter, der \type{verify} besteht, ein Schritt der Geschichte
 und das Ziel eines Zweigs oder der Arbeitskopie.
-Wer einen einzigen Baum braucht, etwa \type{status}, \type{diff}, \type{restore} und
-\type{commit}, findet in einem \type{commit2} keinen und meldet einen offenen Konflikt,
-statt eine falsche Art zu beklagen; was diese Befehle damit tun, entscheidet Phase 3.
+Wer einen einzigen Baum braucht, etwa \type{switch}, findet in einem \type{commit2} keinen und
+meldet einen offenen Konflikt, statt eine falsche Art zu beklagen; \type{status}, \type{diff},
+\type{restore} und \type{commit} lesen ihn über den Baum, der den Konflikt zeigt
+(Kapitel 6).
 
 Zum Graphen gehören weitere Invarianten.
 {\em Jedes Objekt hat genau eine Kodierung.}

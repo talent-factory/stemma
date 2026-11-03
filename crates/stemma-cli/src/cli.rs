@@ -2997,9 +2997,9 @@ fn finish_status_as(status: Status, json: bool, out: &mut dyn Write) -> Result<(
     }
 }
 
-/// The text of the status: the conflicts with their number of sides, the changes with their letters, the untracked files, and the files that
-/// an interrupted checkout left, each section only if it has files, or one line if there are none.
-/// A path is written with [`escape_path`].
+/// The text of the status: the conflicts with their number of sides, the changes with their
+/// letters, the untracked files, and the files that an interrupted checkout left, each section
+/// only if it has files, or one line if there are none. A path is written with [`escape_path`].
 fn status_text(status: &Status) -> String {
     if status.conflicts.is_empty()
         && status.changes.is_empty()
@@ -3068,8 +3068,8 @@ fn escape_path(path: &str) -> String {
 }
 
 /// The status as one JSON object and a newline (`schema`, ADR-018): `clean`, `conflicts` (a list of
-/// `path` and `sides`), `changes` (a list of `kind` and `path`), `untracked`, and `leftovers`. A path is a plain JSON string, not escaped by
-/// [`escape_path`].
+/// `path` and `sides`), `changes` (a list of `kind` and `path`), `untracked`, and `leftovers`. A path is a plain JSON
+/// string, not escaped by [`escape_path`].
 fn status_json(status: &Status) -> String {
     let paths = |paths: &[String]| {
         paths

@@ -31,12 +31,14 @@ unveränderter ID.
 Alle Pfade eines Commits teilen die Zahl der Seiten; ein kleinerer Konflikt wird mit
 aufhebenden Paaren aufgefüllt.
 Der Text mit Markierungen entsteht aus einer einzigen Funktion der Summe.
-Er erscheint nur auf der Platte und im \type{diff}; der Snapshot vergleicht Bytes und
+Er erscheint in der Arbeitskopie, in \type{status} und im \type{diff};
+der Snapshot vergleicht Bytes und
 liest keine Markierungen (\in{Abschnitt}[sec:conflict-commands]).
 Die Regel, dass zwei Seiten mit gleicher Änderung sofort als gelöst gelten, gehört nicht zur
 Algebra, weil sie beim erneuten Zusammenführen Information verliert.
 Noch schreibt kein Befehl einen solchen Commit; \type{snapshot}, \type{status}, \type{log},
-\type{diff}, \type{commit} und \type{op restore} können ihn aber lesen und weiterführen.
+\type{diff}, \type{commit} und \type{op restore} können ihn aber lesen; \type{snapshot} und
+\type{commit} führen ihn weiter.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
 \item Eigentümer der Arbeitskopie (Format 5, ADR-010): Ein Snapshot speichert nur die
 Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich
@@ -308,7 +310,8 @@ vereinfachten Summe sich nicht aufheben und nicht alle Verzeichnisse sind. Verze
 die Brücke, sie zeigt sie nicht; die Namen darunter sind eigene Pfade. Der Tree der Ansicht
 enthält an jedem Pfad im Konflikt eine Datei mit dem Text der Markierungen und sonst den Wert
 des Pfades. Steht an einem Pfad ein Verzeichnis gegen eine Datei, hat das Verzeichnis keinen
-Inhalt und erscheint im Text als Zeile \type{(directory)}; seine Dateien bleiben im Commit und
+Inhalt und erscheint im Text als Zeile \type{(directory ID)} mit der ID seines Trees, damit zwei
+verschiedene Verzeichnisse sich nie aufheben; seine Dateien bleiben im Commit und
 werden nicht geschrieben.
 
 \startitemize[n]
@@ -328,7 +331,7 @@ mit der ID, die ein Zustand ohne Konflikt immer hat.
 
 {\bf Invariante.} Zwei Zustände mit gleicher Bedeutung haben die gleiche Form. Die Ansicht ist
 eine Funktion der Summe allein; der Snapshot schreibt für einen Pfad im Konflikt, der unverändert
-ist, dieselben Terme in derselben Reihenfolge zurück. Weil der Text von dieser Reihenfolge
+ist, gleichwertige Terme in derselben Reihenfolge zurück. Weil der Text von dieser Reihenfolge
 abhängt, zeigt die Platte nach dem Snapshot denselben Text wie vorher.
 
 {\bf Kosten.} Die Ansicht liest die Trees der Summe wie der Merge

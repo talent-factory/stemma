@@ -15,7 +15,8 @@
 //! all directories. A directory is entered, not shown, so the names below it are conflicted paths
 //! on their own. Where a directory stands against a file or against nothing in some terms, the
 //! directory term has no content of its own, and the text shows it as the line
-//! `(directory)`; the files below it stay in the commit and are not written.
+//! `(directory <id>)`, so that two different directories never cancel; the files below it stay in
+//! the commit and are not written.
 
 use std::collections::BTreeSet;
 
@@ -199,9 +200,6 @@ fn walk(
     put_tree(objects, entries).map(Some)
 }
 
-/// What the text shows for a term that is a directory.
-const DIRECTORY_TEXT: &[u8] = b"(directory)\n";
-
 /// The file that shows the values of one path, and whether its mode counts. The text is the one of
 /// [`marker_text`]. If the contents cancel and only the modes differ, there is no text to show:
 /// the file holds the content that all of them have, and its mode counts.
@@ -213,7 +211,9 @@ fn show(
         .terms()
         .iter()
         .map(|slot| match slot {
-            Some(slot) if slot.mode == EntryMode::Directory => Ok(Some(DIRECTORY_TEXT.to_vec())),
+            Some(slot) if slot.mode == EntryMode::Directory => Ok(Some(
+                format!("(directory {})\n", TreeId::new(slot.id)).into_bytes(),
+            )),
             Some(slot) => {
                 let raw = read_object(objects, slot.id, Kind::Blob)?;
                 Ok(Some(raw.into_body()))
@@ -558,6 +558,7 @@ mod tests {
             blob(&repository, "inside\n"),
         )
         .unwrap()]);
+        let directory_inner = inner;
         let directory = put(vec![TreeEntry::directory("a", inner).unwrap()]);
         let sum = Merge::try_from_terms(vec![file, base, directory]).unwrap();
         let shown = view(store, &sum).unwrap();
@@ -565,7 +566,10 @@ mod tests {
         assert_eq!(shown.conflicts[0].path, "a");
         let text = content(&repository, shown.tree, "a");
         assert!(text.contains("+++++++ side 1\nfile\n"), "{text}");
-        assert!(text.contains("+++++++ side 2\n(directory)\n"), "{text}");
+        assert!(
+            text.contains(&format!("+++++++ side 2\n(directory {directory_inner})\n")),
+            "{text}"
+        );
 
         // The file of the view, unchanged, keeps the three trees, and the directory comes back.
         let mut index = Index::new();
@@ -620,5 +624,143 @@ mod tests {
         let shown = view(repository.objects(), &Merge::resolved(tree)).unwrap();
         assert_eq!(shown.tree, tree);
         assert!(shown.conflicts.is_empty());
+    }
+
+    /// A tree of the given files, written through an index.
+    fn tree_of(repository: &Repository, files: &[(&str, &str)]) -> TreeId {
+        let mut index = Index::new();
+        for (path, text) in files {
+            index
+                .insert(*path, FileMode::File, blob(repository, text))
+                .unwrap();
+        }
+        index.write_tree(repository.objects()).unwrap()
+    }
+
+    /// Five trees: `dir/a.txt` has two sides (its sum is padded), `b.txt` has three, and
+    /// `dir/other.txt` is the same in every tree.
+    fn two_paths(repository: &Repository) -> Merge<TreeId> {
+        let tree = |a: &str, b: &str| {
+            tree_of(
+                repository,
+                &[("dir/a.txt", a), ("b.txt", b), ("dir/other.txt", "same\n")],
+            )
+        };
+        Merge::try_from_terms(vec![
+            tree("a1\n", "b1\n"),
+            tree("a0\n", "b0\n"),
+            tree("a2\n", "b2\n"),
+            tree("a2\n", "b3\n"),
+            tree("a2\n", "b4\n"),
+        ])
+        .unwrap()
+    }
+
+    fn shown(shown: &View, path: &str) -> BlobId {
+        let file = shown.conflicts.iter().find(|c| c.path == path).unwrap();
+        file.shown.unwrap().1
+    }
+
+    #[test]
+    fn paths_with_different_numbers_of_sides_in_nested_directories_keep_their_own_terms() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        let sum = two_paths(&repository);
+        let view = view(store, &sum).unwrap();
+        let sides: Vec<_> = view
+            .files()
+            .into_iter()
+            .map(|f| (f.path, f.sides))
+            .collect();
+        assert_eq!(
+            sides,
+            [("b.txt".to_owned(), 3), ("dir/a.txt".to_owned(), 2)]
+        );
+
+        let mut index = Index::new();
+        index
+            .insert("b.txt", FileMode::File, shown(&view, "b.txt"))
+            .unwrap();
+        index
+            .insert("dir/a.txt", FileMode::File, shown(&view, "dir/a.txt"))
+            .unwrap();
+        index
+            .insert(
+                "dir/other.txt",
+                FileMode::File,
+                blob(&repository, "changed\n"),
+            )
+            .unwrap();
+
+        // Nothing is resolved: the widest path decides the number of sides, the other is padded
+        // and keeps its own terms, and the view of the result is the same text.
+        let kept = resolve(store, &view.conflicts, &index).unwrap();
+        assert_eq!(kept.terms().len(), 5);
+        let again = self::view(store, &kept).unwrap();
+        assert_eq!(again.files(), view.files());
+        for path in ["b.txt", "dir/a.txt"] {
+            assert_eq!(shown(&again, path), shown(&view, path));
+        }
+        for tree in kept.terms() {
+            let raw = read_object(store, tree.object_id(), Kind::Tree).unwrap();
+            let root = Tree::parse(raw.body()).unwrap();
+            let entry = root.entries().iter().find(|e| e.name() == "dir").unwrap();
+            assert_eq!(
+                content(&repository, TreeId::new(entry.id()), "other.txt"),
+                "changed\n"
+            );
+        }
+
+        // Editing the wide path leaves the narrow one with its two sides.
+        index
+            .insert("b.txt", FileMode::File, blob(&repository, "mine\n"))
+            .unwrap();
+        let narrow = resolve(store, &view.conflicts, &index).unwrap();
+        assert_eq!(narrow.terms().len(), 3);
+        let after = self::view(store, &narrow).unwrap();
+        assert_eq!(after.files(), [ConflictedFile::new("dir/a.txt", 2)]);
+        assert_eq!(content(&repository, after.tree, "b.txt"), "mine\n");
+
+        // Editing the narrow path leaves the wide one with its three sides.
+        index
+            .insert("b.txt", FileMode::File, shown(&view, "b.txt"))
+            .unwrap();
+        index
+            .insert("dir/a.txt", FileMode::File, blob(&repository, "merged\n"))
+            .unwrap();
+        let wide = resolve(store, &view.conflicts, &index).unwrap();
+        assert_eq!(wide.terms().len(), 5);
+        let after = self::view(store, &wide).unwrap();
+        assert_eq!(after.files(), [ConflictedFile::new("b.txt", 3)]);
+    }
+
+    #[test]
+    fn two_different_directories_do_not_cancel_against_a_file() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        let with_dir = |text: &str| tree_of(&repository, &[("a/b", text)]);
+        let file = tree_of(&repository, &[("a", "file\n")]);
+        let sum = Merge::try_from_terms(vec![with_dir("x\n"), with_dir("y\n"), file]).unwrap();
+        let shown = view(store, &sum).unwrap();
+        assert_eq!(shown.files(), [ConflictedFile::new("a", 2)]);
+        let text = content(&repository, shown.tree, "a");
+        assert!(text.starts_with("<<<<<<< conflict\n"), "{text}");
+        assert!(text.contains("(directory b3:"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_mode_on_a_kept_conflict_file_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let (repository, id, _) = conflicted(&dir);
+        let path = dir.path().join("a.txt");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+        assert_eq!(repository.refs().working_copy().unwrap(), id);
     }
 }

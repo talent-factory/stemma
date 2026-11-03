@@ -500,8 +500,8 @@ const MIN_MARKER_LEN: usize = 7;
 /// order. The snapshot compares the file with the text of the sum that the commit stores, so the
 /// order of the stored sum is the one that counts.
 ///
-/// Nothing calls it yet. The working copy and `diff` are to show this text, and the snapshot is
-/// to decide whether a file is still the conflict by comparing the bytes of the file with it;
+/// The working-copy view of a commit (`repository::conflicted`) writes this text for each
+/// conflicted path, and the snapshot keeps a conflict only if the file equals it byte for byte;
 /// Stemma does not parse markers.
 ///
 /// The form, for a sum of three terms:
