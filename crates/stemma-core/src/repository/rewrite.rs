@@ -37,7 +37,7 @@ use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::merge::{merge_trees, MergeError};
 use crate::object::{CommitId, Kind, ObjectId, Tree, TreeId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, TAKE_OVER};
-use crate::refs::{Logged, RefError};
+use crate::refs::{BranchName, Logged, RefError};
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
 
@@ -210,7 +210,7 @@ impl Repository {
             current,
             carried.id,
             self.objects(),
-            || self.write_rewrite(&lock, &operation, current, &carried, actor),
+            || self.write_carried(&lock, &operation, current, &carried, vec![], actor),
         );
         let made = |entry: Entry| Rewritten::Done {
             snapshot: snapshot.clone(),
@@ -237,13 +237,16 @@ impl Repository {
     }
 
     /// The step of the move, under the lock: plan the files, write the entry, bring the directory
-    /// to the new tree (ADR-013).
-    fn write_rewrite(
+    /// to the new tree (ADR-013). The entry names the move of the working-copy commit and the
+    /// moves of `branches`, which a command that moves a branch in the same operation passes (merge,
+    /// ADR-010); a plain rewrite passes none.
+    pub(super) fn write_carried(
         &self,
         lock: &WriteLock,
         operation: &OperationName,
         current: CommitId,
         carried: &Carried,
+        branches: Vec<(BranchName, Moved<CommitId>)>,
         actor: &Actor,
     ) -> Result<Entry, RewriteError> {
         let working = read_any_commit(self.objects(), current).map_err(RewriteError::Read)?;
@@ -259,7 +262,7 @@ impl Repository {
             operation.clone(),
             None,
             Some(Moved::from_to(Some(current), Some(carried.id))),
-            vec![],
+            branches,
         )
         .map_err(|error| RewriteError::Update(UpdateError::Log(OpLogError::Entry(error))))?;
         let entry = self
@@ -279,7 +282,7 @@ impl Repository {
     /// The tree is `onto + (working - parent)` as a sum, merged by [`merge_trees`]. A working-copy
     /// commit without a parent has the empty tree as its base. One that holds no change (its
     /// sum equals that of its base) is replaced by an empty commit with a change ID of its own.
-    /// `switch` calls this for a working-copy commit that holds changes, and
+    /// `switch` and `merge` call this for a working-copy commit that holds changes, and
     /// [`start_empty`](Self::start_empty) for one that does not.
     pub(super) fn carry(
         &self,
@@ -445,7 +448,7 @@ impl Repository {
 
     /// The owner check of the snapshot that a repeat does not take: another actor does not finish
     /// the rewrite of the owner without `--take-over`, and an agent never takes over (ADR-010).
-    fn own_for_rewrite_repeat(
+    pub(super) fn own_for_rewrite_repeat(
         &self,
         lock: &WriteLock,
         actor: &Actor,
