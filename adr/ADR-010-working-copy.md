@@ -294,7 +294,11 @@ art, not a template (ADR-015).
     working-copy commit is not decided yet (STEMMA-19): it is refused with the error for a
     `commit2`.
   - *Only the working-copy commit moves.* The other branches keep their commits, and the log keeps
-    the replaced ones (ADR-011).
+    the replaced ones (ADR-011). The commands that move a branch or HEAD in the same operation
+    need a variant of the mechanism that takes part in their entry; the first version is the
+    standalone call. Until the snapshot handles a conflict (STEMMA-19), a rewrite that ends in a
+    conflict leaves a working-copy commit that every snapshotting command refuses, `op restore`
+    included; `op restore` undoes a clean rewrite.
 
 ## Open items
 
