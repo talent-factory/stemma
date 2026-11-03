@@ -951,7 +951,8 @@ stemma merge BRANCH [-m NACHRICHT] [-C VERZEICHNIS] --actor AKTEUR [--take-over]
 \item {\bf \type{-m}, \type{--message} NACHRICHT:} Die Beschreibung des Merge-Commits.
 Ohne die Option lautet sie \type{Merge BRANCH into AKTUELLER}.
 Ein Fast-Forward macht keinen Commit und braucht sie nicht; eine leere Nachricht lehnt der Befehl
-ab (Exit-Code 1).
+ab (Exit-Code 1), in jedem Fall, auch bei einem Fast-Forward und bei \type{Already up to date},
+und auch wenn sie nur aus Leerraum besteht.
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot, der Merge-Commit und
@@ -965,7 +966,8 @@ Ohne die Option lehnt auch die Wiederholung einen anderen Akteur ab, und ein Age
 Der Befehl hat keine JSON-Form.
 
 {\bf Verhalten.} HEAD muss auf einen Branch zeigen, und der Autorisierer wird nach der Operation
-\type{merge} mit dem anderen Branch als Ziel gefragt.
+\type{merge} gefragt, zuerst mit dem Branch von HEAD als Ziel, dem Branch, der sich bewegt,
+und dann mit dem anderen Branch.
 Der Befehl nimmt die Sperre der Referenzen und speichert die verfolgten Dateien wie ein Snapshot
 (Operation \type{snapshot}, eigener Eintrag).
 Dann hängt es von den Merge-Basen der beiden Spitzen ab, was geschieht:
@@ -1029,7 +1031,8 @@ Mit Exit-Code 3 endet der Befehl auch, wenn der Merge gemacht ist,
 aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
 Ein Skript wiederholt ihn dann nicht; die Zeile mit dem Eintrag steht, wenn möglich, vor dem
 Fehler auf der Standardausgabe. Schliesst der Leser der Ausgabe die Pipe früh,
-endet der Befehl bei \type{Already up to date} mit Exit-Code 0 und nach einem Merge mit Exit-Code 3.
+endet der Befehl bei \type{Already up to date} ohne Snapshot-Eintrag mit Exit-Code 0;
+hat der Snapshot einen Eintrag geschrieben, und nach einem Merge, endet er mit Exit-Code 3.
 
 {\bf Beispiele.}
 

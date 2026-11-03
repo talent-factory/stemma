@@ -115,8 +115,8 @@ enum Command {
     Commit(CommitArgs),
     /// Change the branch that HEAD names, or detach HEAD, while the working-copy commit is empty
     Switch(SwitchArgs),
-    /// Merge a branch into the branch that HEAD names: a fast-forward if the branch is behind,
-    /// otherwise a merge commit
+    /// Merge a branch into the branch that HEAD names: a fast-forward if HEAD's branch is behind,
+    /// nothing if the branch is merged already, otherwise a merge commit
     Merge(MergeArgs),
     /// Show what the working copy changes and which files are not tracked
     Status(StatusArgs),
@@ -1747,13 +1747,14 @@ fn switched_text(
     )
 }
 
-/// Merges a branch into the branch that HEAD names (ADR-010): a fast-forward if the branch is
-/// behind, otherwise a merge commit. A conflict is no failure; the commit records it, and the output
-/// lists its paths. The core takes the snapshot first and carries the working-copy commit onto the
-/// new tip. The result is written before an error that follows a merge that was made (exit code
-/// 3), so that a script finds the entry that undoes it. A closed pipe is no failure for "already up
-/// to date", and it is one after a merge, because the output is the only place that names the
-/// entry.
+/// Merges a branch into the branch that HEAD names (ADR-010): a fast-forward if HEAD's branch is
+/// behind, nothing if the branch is merged already, otherwise a merge commit. A conflict is no
+/// failure; the commit records it, and the output lists its paths. The core takes the snapshot
+/// first and carries the working-copy commit onto the new tip. The result is written before an
+/// error that follows a merge that was made (exit code 3), so that a script finds the entry that
+/// undoes it. A closed pipe is no failure for "already up to date" without a snapshot entry, and
+/// it is one after a merge or a snapshot entry, because the output is the only place that names
+/// the entry.
 fn merge(args: MergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
@@ -1786,15 +1787,15 @@ fn merge(args: MergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
         }
         Err(error) => {
             if error.made() {
-                if let Some(entry) = error.entry() {
+                if let (Some(entry), Some(result)) = (error.entry(), error.result()) {
                     // The message of the error names the entries too, so a failure to write is
                     // not reported on top of it.
-                    let text = format!(
-                        "{}Merged {} as entry {}\nTo undo it: stemma op restore {}\n",
-                        saved_text(error.snapshot()),
-                        args.branch,
-                        entry.number(),
-                        entry.number()
+                    let text = merge_result_text(
+                        error.snapshot(),
+                        entry,
+                        (&result.branch, &args.branch),
+                        (result.kind, result.commit),
+                        &result.conflicts,
                     );
                     let _ = out.write_all(text.as_bytes());
                 }
@@ -1844,6 +1845,25 @@ fn merged_text(done: &Merged) -> String {
     else {
         return String::new();
     };
+    merge_result_text(
+        snapshot.as_deref(),
+        entry,
+        (branch, merged),
+        (*kind, *commit),
+        conflicts,
+    )
+}
+
+/// The text of a merge that was made, from its parts: `branches` are the branch that moved and
+/// the branch that was merged in.
+fn merge_result_text(
+    snapshot: Option<&oplog::Entry>,
+    entry: &oplog::Entry,
+    branches: (&BranchName, &BranchName),
+    (kind, commit): (MergeKind, CommitId),
+    conflicts: &[String],
+) -> String {
+    let (branch, merged) = branches;
     let what = match kind {
         MergeKind::FastForward => {
             format!("Fast-forwarded {branch} to {merged} (commit {commit})")
@@ -1852,7 +1872,7 @@ fn merged_text(done: &Merged) -> String {
     };
     let mut text = format!(
         "{}{what} as entry {}\n",
-        saved_text(snapshot.as_deref()),
+        saved_text(snapshot),
         entry.number()
     );
     if !conflicts.is_empty() {

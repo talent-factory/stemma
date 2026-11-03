@@ -51,7 +51,7 @@ pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, Plan
 pub use commit::{CommitError, Committed};
 pub use conflicted::ConflictedFile;
 pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side, TextDiff};
-pub use merge_branch::{MergeBranchError, MergeKind, Merged};
+pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
 };

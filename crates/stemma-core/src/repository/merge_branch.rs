@@ -75,6 +75,19 @@ pub enum Merged {
     },
 }
 
+/// What a merge did, as far as a report needs it.
+#[derive(Debug)]
+pub struct MergeResult {
+    /// The branch that moved.
+    pub branch: BranchName,
+    /// Whether the merge fast-forwarded or made a commit.
+    pub kind: MergeKind,
+    /// The commit that the branch names now.
+    pub commit: CommitId,
+    /// The paths that are an open conflict in the new working-copy commit, sorted.
+    pub conflicts: Vec<String>,
+}
+
 /// What is decided before anything is written under the lock.
 struct Plan {
     /// The tip of the branch before the merge.
@@ -101,7 +114,7 @@ struct Stopped {
 impl Repository {
     /// Merges the branch `other` into the branch that HEAD names (ADR-010).
     ///
-    /// The steps are: the authorizer is asked for `merge` (the target is `other`); the lock of the
+    /// The steps are: the authorizer is asked for `merge` twice, for the branch that moves and for `other`; the lock of the
     /// references is taken and held to the last move (ADR-014); the tracked files are saved in a
     /// snapshot (a second question, `snapshot`); the new tip is decided and, for a merge commit,
     /// made; the working-copy commit is carried onto it; then the plan of the files, the entry,
@@ -120,7 +133,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Before anything is written: [`MergeBranchError::EmptyMessage`],
+    /// Before anything of the merge is written (the message is checked first, even for a
+    /// fast-forward or "up to date"): [`MergeBranchError::EmptyMessage`],
     /// [`MergeBranchError::DetachedHead`], [`MergeBranchError::NoSuchBranch`],
     /// [`MergeBranchError::NoCommit`], [`MergeBranchError::Update`] for a refusal of the question
     /// `merge`, [`MergeBranchError::Refs`] for a lock that another command holds or a purge that
@@ -153,7 +167,12 @@ impl Repository {
         self.refs_store()
             .refuse_pending_purge()
             .map_err(MergeBranchError::Refs)?;
+        // The branch that is written comes first and gives the proof for the lock; the branch
+        // that is read is asked for as well, as `rename` asks for both names.
         let allowed = self
+            .authorize(actor, authorizer, &operation, name.as_str())
+            .map_err(MergeBranchError::Update)?;
+        let _source = self
             .authorize(actor, authorizer, &operation, other.as_str())
             .map_err(MergeBranchError::Update)?;
         if self
@@ -245,7 +264,9 @@ impl Repository {
                         &operation,
                         plan.current,
                         &plan.carried,
-                        Vec::new(),
+                        // The entry of a repeat names the branch move too, so that a repeat that
+                        // stops again is found again, and `op restore` undoes both moves.
+                        branch_moved,
                         actor,
                     )
                 },
@@ -276,6 +297,12 @@ impl Repository {
             Ok(Logged::NotFlushed(entry, source)) => Err(wrap(MergeBranchError::NotDurable {
                 entry: Box::new(entry),
                 source,
+                result: Box::new(MergeResult {
+                    branch: name,
+                    kind: plan.kind,
+                    commit: plan.tip,
+                    conflicts: plan.carried.conflicts,
+                }),
             })),
         }
     }
@@ -468,8 +495,9 @@ pub enum MergeBranchError {
     NoSuchBranch(BranchName),
     /// The branch that HEAD names has no commit yet.
     NoCommit(BranchName),
-    /// The authorizer refused `merge`, or the entry could not be written (see
-    /// [`UpdateError::Log`]). No pointer moved and no file was written.
+    /// The authorizer refused `merge` or the question of the snapshot, or an entry could not be
+    /// written (see [`UpdateError::Log`]). No pointer of the merge moved and no file was written;
+    /// the entry of a snapshot may exist.
     Update(UpdateError),
     /// The references could not be read, the lock is held, or a purge is pending.
     Refs(RefError),
@@ -520,6 +548,8 @@ pub enum MergeBranchError {
         entry: Box<Entry>,
         /// The error of the flush.
         source: RefError,
+        /// What the merge did, for the report of a merge that is not to be repeated.
+        result: Box<MergeResult>,
     },
     /// The snapshot moved the working-copy commit and its directory could not be flushed. The
     /// merge did not start.
@@ -597,6 +627,16 @@ impl MergeBranchError {
         }
     }
 
+    /// The result of a merge that was made and whose flush failed: the branch, how it moved, its
+    /// commit, and the conflicted paths. `None` for any other error.
+    pub fn result(&self) -> Option<&MergeResult> {
+        match self {
+            Self::NotDurable { result, .. } => Some(result),
+            Self::AfterSnapshot { source, .. } => source.result(),
+            _ => None,
+        }
+    }
+
     /// Whether a pointer moved although the call failed and the move is not known to be durable
     /// or complete: the branch moved and the working-copy commit did not, or a flush failed. A
     /// snapshot that moved a pointer durably before a later step failed is not counted;
@@ -640,6 +680,17 @@ impl fmt::Display for MergeBranchError {
             Self::Merge(error) => write!(f, "could not merge the branches: {error}"),
             Self::Invalid(error) => write!(f, "the merge commit is not valid: {error}"),
             Self::ChangeId(error) => write!(f, "could not make a change ID: {error}"),
+            Self::Rewrite(RewriteError::CheckoutFailed { entry, source }) => write!(
+                f,
+                "could not write the files; entry {} names a merge that did not happen and no \
+                 pointer moved, and the files done so far stay: {source}; run the same merge \
+                 again before any other command, as a snapshot saves only the files that the \
+                 working-copy commit tracks and would miss the files that only the new tree has",
+                entry.number()
+            ),
+            Self::Rewrite(RewriteError::Checkout(error)) => {
+                write!(f, "could not merge, nothing of it was written: {error}")
+            }
             Self::Rewrite(error) => error.fmt(f),
             Self::Stopped { stopped } => write!(
                 f,
@@ -661,7 +712,7 @@ impl fmt::Display for MergeBranchError {
                  not: {source}; run the same merge again before any other command",
                 entry.number()
             ),
-            Self::NotDurable { entry, source } => write!(
+            Self::NotDurable { entry, source, .. } => write!(
                 f,
                 "the merge was made as entry {}, but the directory could not be flushed, so it \
                  may not survive a crash: {source}",
@@ -1062,6 +1113,36 @@ mod tests {
     }
 
     #[test]
+    fn the_authorizer_is_asked_for_the_branch_that_moves_and_for_the_other_one() {
+        struct DenyTarget(&'static str);
+        impl Authorizer for DenyTarget {
+            fn authorize(&self, _: &Actor, operation: &OperationName, target: &str) -> Decision {
+                if operation.as_str() == "merge" && target == self.0 {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                }
+            }
+        }
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let count = entries(&repository);
+
+        for denied in ["main", "feature"] {
+            let error = repository
+                .merge(&name("feature"), None, &actor(), &DenyTarget(denied))
+                .unwrap_err();
+            assert!(
+                matches!(error, MergeBranchError::Update(_)),
+                "{denied}: {error}"
+            );
+        }
+        assert_eq!(entries(&repository), count);
+        assert_ne!(tip(&repository, "main"), tip(&repository, "feature"));
+    }
+
+    #[test]
     fn a_detached_head_a_missing_branch_and_a_refusal_write_nothing() {
         let dir = TempDir::new();
         let repository = repository(&dir);
@@ -1152,5 +1233,112 @@ mod tests {
         assert_eq!(tip(&repository, "feature"), named);
         assert_eq!(read(&dir, "b.txt"), "b\n");
         assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+    }
+
+    /// Stops the next merge after its entry and files: the pointer of the working-copy commit
+    /// cannot be replaced. Returns the error of the call.
+    fn stopped(repository: &Repository, other: &str) -> MergeBranchError {
+        let metadata = repository.metadata_dir();
+        let denied = Rc::new(RefCell::new(None));
+        let arm = Rc::clone(&denied);
+        super::super::snapshot::pause::at_next(
+            super::super::snapshot::pause::Stage::Moves,
+            move || {
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&metadata));
+            },
+        );
+        let error = merge(repository, other).unwrap_err();
+        drop(denied);
+        let _ = fs::remove_file(repository.metadata_dir().join("refs.lock"));
+        error
+    }
+
+    #[test]
+    fn a_repeat_that_stops_again_is_found_again_and_names_both_moves() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        switch(&repository, &existing("feature"));
+        write(&dir, "b.txt", "b\n");
+        track(&repository, "b.txt");
+        let first = stopped(&repository, "other");
+        assert!(
+            matches!(first, MergeBranchError::PartlyMoved { .. }),
+            "{first}"
+        );
+        let named = tip(&repository, "feature");
+
+        let second = stopped(&repository, "other");
+
+        let entry = second.entry().expect("the repeat wrote an entry");
+        let change = entry.change().unwrap();
+        assert_eq!(
+            change.branches().len(),
+            1,
+            "the entry of a repeat names the branch"
+        );
+        let count = entries(&repository);
+        let merged = done(merge(&repository, "other"));
+        assert!(
+            merged.snapshot.is_none(),
+            "no snapshot of the files of the stop"
+        );
+        assert_eq!(merged.commit, named);
+        assert_eq!(entries(&repository), count + 1);
+        assert_eq!(read(&dir, "b.txt"), "b\n");
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+
+        // The entry of the repeat undoes both moves.
+        let before = tip(&repository, "other");
+        repository
+            .restore(merged.entry.number(), false, &actor(), &AllowAll)
+            .unwrap();
+        assert_ne!(tip(&repository, "feature"), named, "the branch is back");
+        assert_eq!(tip(&repository, "other"), before);
+    }
+
+    #[test]
+    fn a_stopped_fast_forward_is_finished_as_a_fast_forward() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let feature = tip(&repository, "feature");
+        let error = stopped(&repository, "feature");
+        assert!(
+            matches!(error, MergeBranchError::PartlyMoved { .. }),
+            "{error}"
+        );
+
+        let merged = done(merge(&repository, "feature"));
+
+        assert_eq!(merged.kind, MergeKind::FastForward);
+        assert_eq!(merged.commit, feature);
+        assert!(merged.snapshot.is_none());
+        assert_eq!(tip(&repository, "main"), feature);
+        assert!(repository.snapshot(&actor(), &AllowAll).unwrap().is_none());
+    }
+
+    #[test]
+    fn another_actor_does_not_finish_a_stopped_merge() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        switch(&repository, &existing("feature"));
+        let _ = stopped(&repository, "other");
+        let count = entries(&repository);
+        let mara = Actor::human("mara").unwrap();
+
+        let error = repository
+            .merge(&name("other"), None, &mara, &AllowAll)
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                MergeBranchError::Snapshot(SnapshotError::NotOwner { .. })
+            ),
+            "{error}"
+        );
+        assert_eq!(entries(&repository), count);
     }
 }

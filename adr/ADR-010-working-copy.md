@@ -357,7 +357,9 @@ art, not a template (ADR-015).
     the command lists the paths. The default message is `Merge <branch> into <current>`; an empty
     message is refused.
   - *One entry for both moves.* The branch and the working-copy commit move under one lock in one
-    entry named `merge`, in the order of ADR-013: snapshot, plan of the files, entry, files, the
+    entry named `merge` (a repeat names both moves as well, also when the branch moved
+    already, so that a second stop is found again and `op restore` undoes both), in the order of
+    ADR-013: snapshot, plan of the files, entry, files, the
     branch, then the working-copy commit. The branch moves by compare-and-swap against `A`, so a
     concurrent change is refused and not overwritten. HEAD and the other branches stay. The
     working-copy commit `W` follows the new tip `T` by the carry of the rewrite above (`T + (W -
@@ -369,8 +371,9 @@ art, not a template (ADR-015).
     moves leaves the merge commit reachable. Another merge is refused while the newest entry is a
     merge that did not finish, as a snapshot would save its files as changes. Another actor does
     not finish the merge of the owner without `--take-over`; an agent never takes over.
-  - *Authorization.* The operation is `merge` with the other branch as target. It is not an
-    approval of ADR-004: computing the merge is risk level 2, and only the branch of the current
+  - *Authorization.* The operation is `merge`, asked for twice: with the branch that moves as
+    target, which gives the proof for the lock, and with the other branch, as `branch -m` asks
+    for both names. It is not an approval of ADR-004: computing the merge is risk level 2, and only the branch of the current
     worktree moves (a branch is checked out in one worktree only, ADR-009).
   - *Not decided here:* what a merge does when `W` has two parents (the carry refuses it, as
     above), a merge of a commit or a tag instead of a branch, and a merge that stops for a
