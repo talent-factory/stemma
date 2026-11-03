@@ -658,3 +658,203 @@ fn the_entry_names_the_new_pointers_and_the_branch() {
     assert!(log.contains("worktree-add"), "{log}");
     assert!(log.contains("feature"), "{log}");
 }
+
+#[test]
+fn a_purge_is_refused_while_there_are_other_worktrees() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            "../linked",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    let blob = format!("b3:{}", "0".repeat(64));
+
+    let refused = run(&repo, &["purge", &blob, "--actor", ACTOR]);
+    let from_linked = run(&sandbox.at("linked"), &["purge", &blob, "--actor", ACTOR]);
+
+    for result in [refused, from_linked] {
+        assert_eq!(result.code, 1, "{}", result.stderr);
+        assert!(
+            result.stderr.contains("other worktrees"),
+            "{}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn op_restore_does_not_delete_a_branch_that_another_worktree_has_checked_out() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    ok(&repo, &["branch", "topic", "--actor", ACTOR]);
+    let entry = common::numbers(&repo).last().unwrap().to_string();
+    ok(
+        &repo,
+        &["worktree", "add", "../linked", "topic", "--actor", ACTOR],
+    );
+
+    let refused = run(&repo, &["op", "restore", &entry, "--actor", ACTOR]);
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused
+            .stderr
+            .contains("checked out in the worktree `linked`"),
+        "{}",
+        refused.stderr
+    );
+    assert!(repo.join(".stemma/refs/heads/topic").is_file());
+}
+
+#[test]
+fn a_path_with_dot_dot_below_a_missing_directory_is_refused() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+
+    // It would lead back to the main worktree, which no check of the names sees.
+    let refused = run(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "../nowhere/../repo",
+            "-b",
+            "x",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(refused.stderr.contains(".."), "{}", refused.stderr);
+    assert!(!sandbox.at("nowhere").exists());
+    assert!(!repo.join(".stemma/refs/heads/x").exists());
+}
+
+#[test]
+fn a_stray_file_or_a_stopped_add_in_the_state_directories_is_no_worktree() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            "../linked",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    let states = repo.join(".stemma/worktrees");
+    fs::write(states.join(".DS_Store"), "x").unwrap();
+    // An add that stopped before it wrote `HEAD`.
+    fs::create_dir(states.join("ghost")).unwrap();
+    fs::write(states.join("ghost/location"), "/nowhere\n").unwrap();
+
+    let list = ok(&repo, &["worktree", "list"]).stdout;
+    let added = run(
+        &repo,
+        &["worktree", "add", "-b", "more", "../more", "--actor", ACTOR],
+    );
+    let switched = run(&repo, &["switch", "-c", "free", "--actor", ACTOR]);
+
+    assert_eq!(list.lines().count(), 2, "{list}");
+    assert_eq!(added.code, 0, "{}", added.stderr);
+    assert_eq!(switched.code, 0, "{}", switched.stderr);
+}
+
+#[test]
+fn a_new_branch_in_a_repository_without_a_commit_has_no_start() {
+    let dir = Dir::new();
+    let repo = dir.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    ok(&repo, &["init", "--actor", ACTOR]);
+
+    let refused = run(
+        &repo,
+        &["worktree", "add", "-b", "x", "../linked", "--actor", ACTOR],
+    );
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("no commit yet"),
+        "{}",
+        refused.stderr
+    );
+    assert!(!dir.path().join("linked").exists());
+}
+
+#[test]
+fn a_new_branch_starts_where_head_of_the_calling_worktree_is() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    let linked = sandbox.at("linked");
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            "../linked",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    write(&linked, "b.txt", "on feature");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    ok(&linked, &["commit", "-m", "second", "--actor", ACTOR]);
+
+    ok(
+        &linked,
+        &[
+            "worktree", "add", "-b", "child", "../child", "--actor", ACTOR,
+        ],
+    );
+
+    // The files of `feature` are there; `main` does not have them.
+    assert_eq!(read(&sandbox.at("child"), "b.txt"), "on feature");
+    assert!(!repo.join("b.txt").exists());
+}
+
+#[test]
+fn worktrees_with_the_same_last_part_get_their_own_state_directories() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+
+    ok(
+        &repo,
+        &["worktree", "add", "-b", "one", "../a/x", "--actor", ACTOR],
+    );
+    ok(
+        &repo,
+        &["worktree", "add", "-b", "two", "../b/x", "--actor", ACTOR],
+    );
+    ok(
+        &repo,
+        &[
+            "worktree", "add", "-b", "three", "../main", "--actor", ACTOR,
+        ],
+    );
+
+    let list = ok(&repo, &["worktree", "list"]).stdout;
+    let names: Vec<&str> = list
+        .lines()
+        .map(|line| line.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(names, ["main", "main-2", "x", "x-2"], "{list}");
+    assert_eq!(
+        read(&repo.join(".stemma/worktrees/x-2"), "location"),
+        format!("{}\n", real(&sandbox.at("b/x")))
+    );
+}

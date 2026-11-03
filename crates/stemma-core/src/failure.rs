@@ -128,8 +128,8 @@ impl Classify for RefError {
             // A tag that exists is a name that is taken; it never moves, so there is nothing to
             // read again and retry.
             Self::TagExists { .. } => FailureKind::Other,
-            // A name that is taken, and the branch of HEAD: the caller picks another name or
-            // switches HEAD first, so a retry of the same call does not help.
+            // A name that is taken, and the branch of HEAD or of another worktree: the caller picks
+            // another name or switches that HEAD first, so a retry of the same call does not help.
             Self::BranchExists { .. } | Self::HeadBranch { .. } | Self::CheckedOut { .. } => {
                 FailureKind::Other
             }
@@ -453,6 +453,7 @@ impl Classify for PurgeError {
             | Self::DuplicateParent { .. }
             | Self::Rewrite { .. }
             | Self::TooManyEntries { .. }
+            | Self::LinkedWorktrees { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }

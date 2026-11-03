@@ -383,7 +383,8 @@ und sein Branch bleibt belegt. Einen Befehl, der ihn entfernt, gibt es noch nich
 \item Das Log ist eines für alle Worktrees, HEAD und der Working-Copy-Commit gehören aber je
 einem. Das Log zeigt den Eintrag von \type{worktree add} darum als unbekannt, und ein
 \type{op restore} bewegt die Zeiger des Worktrees, in dem er läuft, nie die eines anderen.
-\item Ein Purge bewegt HEAD und den Working-Copy-Commit nur des Worktrees, in dem er läuft.
+\item Ein Purge kennt nur die Zeiger des Worktrees, in dem er läuft, und würde Objekte löschen,
+die ein anderer braucht. Darum lehnt \type{purge} ein Repository mit mehr als einem Worktree ab.
 \stopitemize
 \stopinfobox
 

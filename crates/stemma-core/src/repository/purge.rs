@@ -150,6 +150,18 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<(BlobId, Allowed), PurgeError> {
         refuse_agent(actor)?;
+        // The plan takes the roots from this worktree only; another worktree has a working-copy
+        // commit of its own, which a purge would neither keep nor rewrite (ADR-009).
+        let linked: Vec<String> = self
+            .refs_store()
+            .other_states()
+            .map_err(PurgeError::Refs)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        if !linked.is_empty() {
+            return Err(PurgeError::LinkedWorktrees { worktrees: linked });
+        }
         let allowed = self.authorize_purge(actor, authorizer, &blob.to_string())?;
         match self.objects().resolve_blob(&blob) {
             Ok(Some(found)) => Ok((found, allowed)),
@@ -744,6 +756,12 @@ pub enum PurgeError {
         /// that does. Never empty.
         tags: Vec<(BranchName, CommitId)>,
     },
+    /// The repository has more than one worktree. The roots of a purge are the pointers of the
+    /// worktree where it runs, so it would delete objects that another worktree still needs.
+    LinkedWorktrees {
+        /// The other worktrees, the main one included.
+        worktrees: Vec<String>,
+    },
     /// The plan would keep an object reachable that holds the blob or that it deletes. This is a
     /// mistake of the plan and not of the repository; it is an error so that the secret does not
     /// stay without a word.
@@ -795,6 +813,12 @@ impl PurgeError {
                 )?;
                 source.reason(f)
             }
+            Self::LinkedWorktrees { worktrees } => write!(
+                f,
+                "the repository has other worktrees ({}), and a purge sees the pointers of one \
+                 worktree only; remove the other worktrees first",
+                worktrees.join(", ")
+            ),
             Self::TooManyEntries { count } => write!(
                 f,
                 "the purge would replace {count} entries of the operation log, more than the \
@@ -860,6 +884,7 @@ impl Error for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
+            | Self::LinkedWorktrees { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => None,
         }

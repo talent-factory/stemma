@@ -51,8 +51,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   directory.
   The branch is the unit of exclusion: **a branch is checked out in one worktree only**. A
   `HEAD` that names a branch holds its name, whether the branch has a commit yet or not. The
-  rule has no override. It is checked under the lock of the references, in one place, where the
-  pointers are planned: `switch` and `op restore` (the move of `HEAD` to a branch), `branch -d`
+  rule has no override. It is checked under the lock of the references, through one helper that
+  the code calls where the pointers are planned: `switch` and `op restore` (the move of `HEAD` to a branch, and the move or
+  deletion of any branch that another worktree has checked out), `branch -d`
   and `branch -m` (the branch of another worktree would lose its name), and `worktree add`. The
   check reads the `HEAD` of every other worktree. A state directory without `HEAD` is an add that
   stopped and holds no branch. The error is `RefError::CheckedOut` and names the worktree.
@@ -196,8 +197,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       `op restore` of an entry that another worktree wrote moves the pointers of the worktree
       where it runs, if the check of the branch allows it. A log with an entry for each
       worktree is a question for later.
-- [ ] A purge moves `HEAD` and the working-copy commit of the worktree where it runs only. The
-      working-copy commits of other worktrees can name a purged commit.
+- [x] A purge sees the pointers of one worktree only, so it would delete objects that another
+      worktree needs. `purge` (plan and `--apply`) therefore refuses a repository with more than
+      one worktree (`PurgeError::LinkedWorktrees`, exit code 1); `--resume` and `--abort` of a
+      purge that began are not refused. A purge over all worktrees is a question for later.
 - [ ] The format is not raised for linked worktrees: a program that knows only format 5 does not
       open a worktree (the pointer file is a file in the way), but it opens the main worktree
       and does not see that a branch is checked out elsewhere.

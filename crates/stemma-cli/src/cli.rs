@@ -1457,7 +1457,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
 
 /// Adds a worktree (ADR-009): a second working copy with its own HEAD, working-copy commit, and
 /// owner, on a branch that no other worktree has checked out. The core asks the authorizer for
-/// `worktree-add` and writes one entry; the calling worktree is neither read nor saved.
+/// `worktree-add` and writes one entry; the working copy of the calling worktree is neither read nor saved.
 fn worktree_add(args: WorktreeAddArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let branch = match (args.branch, args.new_branch) {
         (Some(name), None) => WorktreeBranch::Existing(name),

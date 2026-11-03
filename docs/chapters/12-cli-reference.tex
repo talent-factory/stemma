@@ -1632,11 +1632,11 @@ angelegt hat, entfernt er dann wieder; ein bestehendes leeres bleibt. Eine gehal
 beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Der
 Eintrag steht für einen Worktree, der nicht oder nur zum Teil entstand. Die Meldung nennt den
-Eintrag und rät, das Verzeichnis des Worktrees und sein Zustandsverzeichnis unter
-\type{.stemma/worktrees} zu entfernen und den Befehl zu wiederholen; ein Zustandsverzeichnis ohne
-\type{HEAD} gilt als abgebrochen und hält keinen Branch. Mit Exit-Code 3 endet der Befehl auch,
-wenn der Worktree da ist, aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht
-gesichert ist; ein Skript wiederholt ihn dann nicht.
+Eintrag und rät, je nach Fall das Verzeichnis des Worktrees, sein Zustandsverzeichnis unter
+\type{.stemma/worktrees} und einen neuen Branch zu entfernen und den Befehl zu wiederholen.
+Ein Zustandsverzeichnis ohne \type{HEAD} gilt als abgebrochen und hält keinen Branch.
+Mit Exit-Code 3 endet der Befehl auch, wenn der Worktree da ist, aber die Ausgabe sich nicht
+schreiben liess oder ein Verzeichnis nicht gesichert ist; ein Skript wiederholt ihn dann nicht.
 
 {\bf Ein Worktree öffnen.} Jeder Befehl, der in einem Worktree läuft, liest dessen Zeigerdatei und
 das Zustandsverzeichnis, das sie nennt. Nennt die Datei \type{location} dort ein anderes
@@ -2240,6 +2240,10 @@ Agent ist, wenn das Verzeichnis kein Repository ist, wenn der Objektspeicher kei
 der ID hat (auch wenn die ID einen Commit oder einen Baum nennt)
 und wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
 ohne dass die Datei beschädigt ist.
+Mit Exit-Code 1 endet er auch, wenn das Repository mehr als einen Worktree hat: Ein Purge sieht nur
+die Zeiger des Worktrees, in dem er läuft, und würde Objekte löschen, die ein anderer braucht.
+Die Meldung nennt die anderen Worktrees; \type{--resume} und \type{--abort} sind davon nicht
+betroffen.
 Ist die Datei des Blobs oder ein Objekt im Speicher beschädigt, ist das ein Schaden:
 Dann ist nicht bekannt, ob es den Blob nennt.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.

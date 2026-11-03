@@ -97,13 +97,13 @@ impl Repository {
     /// The steps are: the authorizer is asked for `worktree-add` with the path as the target; the
     /// path is made absolute and checked (it must not be, lie in, or hold a worktree, and if it
     /// exists it is an empty directory); the lock of the references is taken and held to the last
-    /// pointer; the branch is read again, and refused if another worktree has it checked out or, for
-    /// a new branch, if it exists; the state directory gets a name from the last part of the path;
-    /// the working-copy commit is made, empty and on the tip, with a change ID of its own and
+    /// pointer; the state directory gets a name from the last part of the path; the branch is read
+    /// again, and refused if another worktree has it checked out or, for a new branch, if it
+    /// exists; the working-copy commit is made, empty and on the tip, with a change ID of its own and
     /// `owner` as its author; the plan of the files is made; the entry is written and flushed; the
     /// files are written; the pointers are placed: the new branch, the state directory with
     /// `location`, `working-copy` and `HEAD`, and the pointer file `.stemma` last. The calling
-    /// worktree is not read and not saved.
+    /// working copy of the calling worktree is neither read nor saved; with `-b` its `HEAD` is read.
     ///
     /// `owner` is the actor of the caller unless another is given.
     ///
@@ -129,15 +129,24 @@ impl Repository {
         self.refs_store()
             .refuse_pending_purge()
             .map_err(WorktreeError::Refs)?;
-        let allowed = self
-            .authorize(actor, authorizer, &operation, &path.display().to_string())
-            .map_err(WorktreeError::Update)?;
         let owner = owner.unwrap_or(actor);
         let location = resolve(path)?;
         let text = location
             .to_str()
             .ok_or_else(|| WorktreeError::PathNotUtf8(location.clone()))?
             .to_owned();
+        let allowed = self
+            .authorize(
+                actor,
+                authorizer,
+                &operation,
+                &location.display().to_string(),
+            )
+            .map_err(WorktreeError::Update)?;
+        // The pointer file holds the state directory, which lies below the shared directory.
+        if resolve(&self.metadata_dir())?.to_str().is_none() {
+            return Err(WorktreeError::PathNotUtf8(self.metadata_dir()));
+        }
         self.refuse_overlap(&location)?;
         let made = prepare_directory(&location)?;
         let result = self.add_in(&location, &text, branch, owner, actor, &operation, &allowed);
@@ -145,7 +154,7 @@ impl Repository {
             if error.entry().is_none() {
                 // Nothing of the add was written: the directory that this call made goes again. A
                 // directory that cannot be removed stays, and the message names the add only.
-                let _ = fault::remove_dir_all(made);
+                remove_made(&location, made);
             }
         }
         result
@@ -327,7 +336,7 @@ impl Repository {
     /// Refuses a path that is a worktree, lies in one, or holds one. The main worktree counts.
     fn refuse_overlap(&self, location: &Path) -> Result<(), WorktreeError> {
         for other in self.worktrees()? {
-            let known = resolve(&other.path).unwrap_or(other.path);
+            let known = resolve(&other.path)?;
             if location == known {
                 return Err(WorktreeError::PathInUse {
                     path: location.to_path_buf(),
@@ -375,20 +384,33 @@ impl Repository {
         let mut states = Vec::new();
         for entry in entries {
             let entry = entry.map_err(WorktreeError::io("list the worktrees in", &dir))?;
+            let path = entry.path();
+            // A file in the directory (a `.DS_Store`, say) is no worktree.
+            let is_dir = entry
+                .file_type()
+                .map_err(WorktreeError::io("inspect", &path))?
+                .is_dir();
+            if !is_dir {
+                continue;
+            }
             let name = entry
                 .file_name()
                 .into_string()
                 .map_err(|_| WorktreeError::Io {
                     operation: "list the worktrees in",
-                    path: entry.path(),
+                    path: path.clone(),
                     source: io::Error::new(io::ErrorKind::InvalidData, "the name is not UTF-8"),
                 })?;
-            states.push((name, entry.path()));
+            states.push((name, path));
         }
         states.sort();
         for (name, state) in states {
-            if !state.join("HEAD").exists() {
-                continue;
+            // A state directory without `HEAD` is an add that stopped; it is left out.
+            let head = state.join("HEAD");
+            match fs::symlink_metadata(&head) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(WorktreeError::io("inspect", &head)(error)),
             }
             let located = state.join(LOCATION_FILE);
             let text = fs::read_to_string(&located).map_err(WorktreeError::io(
@@ -438,7 +460,16 @@ fn resolve(path: &Path) -> Result<PathBuf, WorktreeError> {
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
-                    return Ok(absolute);
+                    // A `..` below a directory that does not exist leads nowhere that can be
+                    // compared, and `prepare_directory` could reach an existing worktree by it.
+                    return Err(WorktreeError::Io {
+                        operation: "resolve the path of",
+                        path: absolute,
+                        source: io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "the path has `..` below a directory that does not exist",
+                        ),
+                    });
                 };
                 missing.push(name);
                 existing = parent;
@@ -477,21 +508,52 @@ fn prepare_directory(location: &Path) -> Result<Option<PathBuf>, WorktreeError> 
     }
 }
 
-/// Writes the pointer file `.stemma` in the directory of the worktree, the last file of the add.
+/// Removes the directories that [`prepare_directory`] made, from `location` up to `made`, each
+/// only while it is empty: another call may have put something into a directory they share, and
+/// that stays. A directory that cannot be removed stays too.
+fn remove_made(location: &Path, made: &Path) {
+    let mut current = location;
+    loop {
+        if fault::remove_dir(current).is_err() {
+            return;
+        }
+        if current == made {
+            return;
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return,
+        }
+    }
+}
+
+/// Writes the pointer file `.stemma` in the directory of the worktree, the last file of the add,
+/// and flushes the directory. A state directory that is not UTF-8 is refused before the add.
 fn write_pointer(location: &Path, state: &Path) -> Result<(), RefError> {
     let target = location.join(METADATA_DIR);
-    let text = state
-        .to_str()
-        .expect("the state directory is below a UTF-8 path");
+    let io_error = |path: &Path, source: io::Error| RefError::Io {
+        operation: "write the pointer file",
+        path: path.to_path_buf(),
+        source,
+    };
+    let Some(text) = state.to_str() else {
+        return Err(io_error(
+            &target,
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the state directory is not UTF-8",
+            ),
+        ));
+    };
     let content = format!("{POINTER_PREFIX}{text}\n");
     let write = || -> io::Result<()> {
         let mut file = fault::create_new(&target)?;
         file.write_all(content.as_bytes())?;
         file.sync_all()
     };
-    write().map_err(|source| RefError::Io {
-        operation: "write the pointer file",
-        path: target.clone(),
+    write().map_err(|source| io_error(&target, source))?;
+    crate::store::flush_directory(location).map_err(|source| RefError::NotFlushed {
+        path: location.to_path_buf(),
         source,
     })
 }
@@ -574,7 +636,8 @@ pub(super) fn open_linked(path: &Path, owned: bool) -> Result<Repository, OpenEr
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WorktreeError {
-    /// The authorizer refused `worktree-add`, or the entry could not be written.
+    /// The authorizer refused `worktree-add`, or the entry could not be written. An entry that is
+    /// not known to be flushed stays in the log ([`WorktreeError::entry`]).
     Update(UpdateError),
     /// The references could not be read, a lock is held, or the branch is in the way, exists, or
     /// is checked out in another worktree.
@@ -598,7 +661,7 @@ pub enum WorktreeError {
     },
     /// The path has a part that is not UTF-8, which the pointer file cannot hold.
     PathNotUtf8(PathBuf),
-    /// The path is not an empty directory, or does not exist and cannot be made.
+    /// The path exists and is not an empty directory: a directory with files, a file, or a link.
     NotEmpty(PathBuf),
     /// The path is the directory of a worktree already.
     PathInUse {
@@ -713,18 +776,12 @@ impl fmt::Display for WorktreeError {
         match self {
             Self::Update(error) => write!(f, "could not add the worktree: {error}"),
             Self::Refs(error) => {
-                write!(
-                    f,
-                    "could not add the worktree, nothing of it was written: {error}"
-                )
+                write!(f, "the references refuse the worktree: {error}")
             }
             Self::Read(error) => write!(f, "could not read a commit or a tree: {error}"),
             Self::Store(error) => write!(f, "could not store a commit: {error}"),
             Self::Checkout(error) => {
-                write!(
-                    f,
-                    "could not add the worktree, nothing of it was written: {error}"
-                )
+                write!(f, "the files of the worktree cannot be planned: {error}")
             }
             Self::ChangeId(error) => write!(f, "could not make a change ID: {error}"),
             Self::Io {
@@ -791,8 +848,9 @@ impl fmt::Display for WorktreeError {
             Self::PartlyMoved { entry, source } => write!(
                 f,
                 "entry {} was written and the files are in place, but only some of the pointers \
-                 moved: {source}; remove the directory of the worktree and its state directory \
-                 below `.stemma/worktrees` and run the command again",
+                 moved: {source}; remove the directory of the worktree, its state directory \
+                 below `.stemma/worktrees`, and the new branch if the call made one, and run \
+                 the command again",
                 entry.number()
             ),
             Self::NotDurable { entry, source } => write!(

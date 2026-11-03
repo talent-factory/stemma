@@ -433,8 +433,8 @@ pub enum RefError {
         name: BranchName,
     },
     /// Another worktree has the branch checked out: its `HEAD` names it. Two worktrees on one
-    /// branch would move the branch under each other, so no command takes it, and there is no
-    /// override (ADR-009).
+    /// branch would move the branch under each other, so no command that moves `HEAD` to a branch,
+    /// deletes it, or renames it takes it, and there is no override (ADR-009).
     CheckedOut {
         /// The branch.
         name: BranchName,
@@ -678,7 +678,8 @@ impl fmt::Display for RefError {
             Self::CheckedOut { name, worktree } => write!(
                 f,
                 "the branch `{name}` is checked out in the worktree `{worktree}`; switch that \
-                 worktree to another branch first"
+                 worktree to another branch first, or, if its directory is gone, remove its state \
+                 directory `.stemma/worktrees/{worktree}`"
             ),
             Self::StaleTag {
                 name,
@@ -1357,8 +1358,8 @@ impl PurgeLock {
     }
 }
 
-/// The directory of the metadata directory that holds one state directory for each linked
-/// worktree (ADR-009).
+/// The name of the directory in the metadata directory that holds one state directory for each
+/// linked worktree (ADR-009).
 pub(crate) const WORKTREES_DIR: &str = "worktrees";
 
 /// The file of a state directory that names the directory of its worktree (ADR-009).
@@ -1501,9 +1502,10 @@ impl FsRefStore {
     }
 
     /// The state directories of the worktrees other than this one, each with its name: the main
-    /// worktree (`root` itself, called `main`) and every directory below `root/worktrees/`. A
-    /// directory that is not a directory, or a name that is not UTF-8, is damage.
-    fn other_states(&self) -> Result<Vec<(String, PathBuf)>, RefError> {
+    /// worktree (`root` itself, called `main`) and every directory below `root/worktrees/`. An
+    /// entry that is no directory (a `.DS_Store`, say) and a state directory without `HEAD` (an
+    /// add that stopped) are no worktrees and are left out. A name that is not UTF-8 is damage.
+    pub(crate) fn other_states(&self) -> Result<Vec<(String, PathBuf)>, RefError> {
         let mut states = Vec::new();
         if self.local != self.root {
             states.push((MAIN_WORKTREE.to_owned(), self.root.clone()));
@@ -1519,6 +1521,18 @@ impl FsRefStore {
             let path = entry.path();
             if path == self.local {
                 continue;
+            }
+            let is_dir = entry
+                .file_type()
+                .map_err(io_error("inspect", &path))?
+                .is_dir();
+            if !is_dir {
+                continue;
+            }
+            match fs::symlink_metadata(path.join("HEAD")) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_error("inspect", &path.join("HEAD"))(error)),
             }
             let name = entry.file_name().into_string().map_err(|_| RefError::Io {
                 operation: "list the worktrees in",
@@ -1545,8 +1559,8 @@ impl FsRefStore {
         for (worktree, state) in self.other_states()? {
             let path = state.join("HEAD");
             let Some(bytes) = self.read_reference(&path)? else {
-                // `HEAD` is the last file that `worktree add` writes: a linked worktree without
-                // one is an add that stopped, and holds no branch. The main worktree always has one.
+                // A linked state without `HEAD` is left out by `other_states`; the main worktree
+                // always has one.
                 if state == self.root {
                     return Err(RefError::NoHead { path });
                 }
@@ -2976,6 +2990,8 @@ impl FsRefStore {
                 }
             }
             if current.commit != *target {
+                // A branch that another worktree has checked out neither moves nor goes.
+                self.require_not_checked_out_elsewhere(name)?;
                 moves.branches.push((name.clone(), current.commit, *target));
                 empty_directories.extend(current.empty_directory);
             }
