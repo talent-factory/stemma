@@ -39,6 +39,7 @@ mod merge_branch;
 mod purge;
 #[cfg(any(fuzzing, test))]
 pub(crate) use purge::fuzz_journal;
+mod rebase;
 mod restore;
 mod rewrite;
 mod snapshot;
@@ -55,6 +56,7 @@ pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
 };
+pub use rebase::{RebaseError, Rebased, Replayed};
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use rewrite::{RewriteError, Rewritten};
 pub use snapshot::{SnapshotError, Unsupported};

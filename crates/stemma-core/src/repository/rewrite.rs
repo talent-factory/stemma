@@ -290,40 +290,70 @@ impl Repository {
         onto: CommitId,
         actor: &Actor,
     ) -> Result<Carried, RewriteError> {
-        let objects = self.objects();
-        let base = match working.parents() {
-            [] => self.base_of(None)?,
-            [parent] => self.base_of(Some(*parent))?,
-            _ => {
-                return Err(RewriteError::Parents {
-                    working: working.id(),
-                })
-            }
-        };
-        let target = read_any_commit(objects, onto).map_err(RewriteError::Read)?;
+        let base = self.base_sum(working)?;
+        let target = read_any_commit(self.objects(), onto).map_err(RewriteError::Read)?;
         if target.change() == working.change() {
             return Err(RewriteError::SameChange { onto });
         }
-        let new_base = target.tree_sum();
-        let own = working.tree_sum();
-        let commit = if own.is_equivalent(&base) {
-            Self::empty_on(&new_base, onto, actor)?
+        let commit = if working.tree_sum().is_equivalent(&base) {
+            Self::empty_on(&target.tree_sum(), onto, actor)?
         } else {
-            // `onto + working - base`: the removed terms of the base are added, its added terms
-            // removed.
-            let mut adds: Vec<TreeId> = new_base.adds().copied().collect();
-            adds.extend(own.adds().copied());
-            adds.extend(base.removes().copied());
-            let mut removes: Vec<TreeId> = new_base.removes().copied().collect();
-            removes.extend(own.removes().copied());
-            removes.extend(base.adds().copied());
-            let merged = merge_trees(objects, &Merge::from_parts(adds, removes))
-                .map_err(RewriteError::Merge)?;
-            working
-                .reparent(&merged, vec![onto])
-                .map_err(RewriteError::Invalid)?
+            self.replay(working, &base, &target)?
         };
         self.store_carried(&commit)
+    }
+
+    /// The sum of trees that a commit is a change against: the tree of its only parent, or the
+    /// empty tree if it has none. A commit with several parents has no such base yet.
+    pub(super) fn base_sum(&self, commit: &AnyCommit) -> Result<Merge<TreeId>, RewriteError> {
+        match commit.parents() {
+            [] => self.base_of(None),
+            [parent] => self.base_of(Some(*parent)),
+            _ => Err(RewriteError::Parents {
+                working: commit.id(),
+            }),
+        }
+    }
+
+    /// The commit `commit` replayed onto the commit `onto`: the same change ID, author, time, and
+    /// message, `onto` as its only parent, and the tree `onto + (commit - base)` as a sum, merged
+    /// by [`merge_trees`]. `base` is the sum that `commit` is a change against
+    /// ([`base_sum`](Self::base_sum)). A conflict of the merge is data of the result, and an open
+    /// conflict of `commit` goes through the same sum. Writes the trees of the merge and nothing
+    /// else; the commit is not stored.
+    pub(super) fn replay(
+        &self,
+        commit: &AnyCommit,
+        base: &Merge<TreeId>,
+        onto: &AnyCommit,
+    ) -> Result<AnyCommit, RewriteError> {
+        let new_base = onto.tree_sum();
+        let own = commit.tree_sum();
+        // `onto + commit - base`: the removed terms of the base are added, its added terms
+        // removed.
+        let mut adds: Vec<TreeId> = new_base.adds().copied().collect();
+        adds.extend(own.adds().copied());
+        adds.extend(base.removes().copied());
+        let mut removes: Vec<TreeId> = new_base.removes().copied().collect();
+        removes.extend(own.removes().copied());
+        removes.extend(base.adds().copied());
+        let merged = merge_trees(self.objects(), &Merge::from_parts(adds, removes))
+            .map_err(RewriteError::Merge)?;
+        commit
+            .reparent(&merged, vec![onto.id()])
+            .map_err(RewriteError::Invalid)
+    }
+
+    /// Writes a commit of either kind to the store.
+    pub(super) fn store_commit(&self, commit: &AnyCommit) -> Result<CommitId, RewriteError> {
+        match commit {
+            AnyCommit::Commit(commit) => self.objects().put_commit(commit),
+            AnyCommit::Commit2(commit) => self
+                .objects()
+                .put_raw(Kind::Commit2, &commit.encode())
+                .map(CommitId::new),
+        }
+        .map_err(|error| RewriteError::Store(Box::new(error)))
     }
 
     /// Makes an empty working-copy commit on `onto` with a change ID of its own, and stores it:
@@ -378,14 +408,7 @@ impl Repository {
     }
 
     fn store_carried(&self, commit: &AnyCommit) -> Result<Carried, RewriteError> {
-        let id = match commit {
-            AnyCommit::Commit(commit) => self.objects().put_commit(commit),
-            AnyCommit::Commit2(commit) => self
-                .objects()
-                .put_raw(Kind::Commit2, &commit.encode())
-                .map(CommitId::new),
-        }
-        .map_err(|error| RewriteError::Store(Box::new(error)))?;
+        let id = self.store_commit(commit)?;
         self.carried(id)
     }
 

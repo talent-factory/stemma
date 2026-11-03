@@ -39,6 +39,10 @@
 //! failure keeps the code of that failure. Most errors of `init` and of opening a repository stay
 //! at 1.
 //!
+//! `switch` and `rebase` follow `op restore`: a stop after their entry is code 1 and the same call
+//! run again finishes it, a stop after some of the pointers is code 3, and the snapshot that came
+//! first stays in the log when a later step fails.
+//!
 //! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
 //! log (`track`, `commit`, `tag`, `branch`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
@@ -84,9 +88,10 @@ use stemma_core::refs::{BranchName, Head, RefError};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
-    OpenError, Planned, PurgeError, PurgePlan, Purged, Repository, RestoreError, RestorePlan,
-    Revision, SnapshotError, Status, StatusError, SwitchError, SwitchPlan, SwitchTarget, Switched,
-    TrackError, Tracking, UpdateError, WorktreeBranch, WorktreeError,
+    OpenError, Planned, PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository,
+    RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError, SwitchError,
+    SwitchPlan, SwitchTarget, Switched, TrackError, Tracking, UpdateError, WorktreeBranch,
+    WorktreeError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -114,6 +119,8 @@ enum Command {
     Commit(CommitArgs),
     /// Change the branch that HEAD names, or detach HEAD, while the working-copy commit is empty
     Switch(SwitchArgs),
+    /// Replay the commits of the current branch on a target, and move the branch to the result
+    Rebase(RebaseArgs),
     /// Merge a branch into the branch that HEAD names: a fast-forward if HEAD's branch is behind,
     /// nothing if the branch is merged already, otherwise a merge commit
     Merge(MergeArgs),
@@ -574,6 +581,33 @@ struct SwitchArgs {
 }
 
 #[derive(Debug, Args)]
+struct RebaseArgs {
+    /// The branch or the commit (`b3:` and 64 hexadecimal digits) to replay the current branch on
+    #[arg(value_name = "TARGET", value_parser = parse_revision)]
+    target: Revision,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. The snapshot and the rebase are made by this actor
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
+}
+
+#[derive(Debug, Args)]
 struct MergeArgs {
     /// The branch to merge into the branch that HEAD names
     #[arg(value_name = "BRANCH")]
@@ -844,6 +878,18 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The rebase was refused or stopped. [`RebaseError::pointer_moved`] says whether a pointer
+    /// moved; the error says what is in the log and what state the files are in.
+    Rebase(RebaseError),
+    /// The rebase was made or was not needed, but the result could not be written to the output.
+    RebaseOutput {
+        /// The entry of the rebase, if one was made.
+        rebased: Option<u64>,
+        /// The entry of the snapshot that came first, if one was made.
+        snapshot: Option<u64>,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The restore was made or planned, but the result could not be written to the output.
     RestoreOutput {
         /// The entry of the restore, if one was made.
@@ -1023,6 +1069,7 @@ impl CliError {
             | Self::Diff(DiffError::Snapshot(error))
             | Self::Restore(RestoreError::Snapshot(error))
             | Self::Switch(SwitchError::Snapshot(error))
+            | Self::Rebase(RebaseError::Snapshot(error))
             | Self::Merge(MergeBranchError::Snapshot(error))
             | Self::ApplyPurge(ApplyPurgeError::Snapshot(error)) => Some(error),
             _ => None,
@@ -1059,6 +1106,12 @@ impl CliError {
             | Self::SwitchOutput {
                 snapshot: Some(_), ..
             }
+            | Self::RebaseOutput {
+                rebased: Some(_), ..
+            }
+            | Self::RebaseOutput {
+                snapshot: Some(_), ..
+            }
             | Self::MergeOutput {
                 merged: Some(_), ..
             }
@@ -1077,6 +1130,7 @@ impl CliError {
             }
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Switch(error) if error.pointer_moved() => ExitCode::from(3),
+            Self::Rebase(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Merge(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Branch(error) if error.pointer_moved() => ExitCode::from(3),
@@ -1101,6 +1155,7 @@ impl CliError {
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
             Self::Switch(error) => by_kind(error.kind()),
+            Self::Rebase(error) => by_kind(error.kind()),
             Self::Merge(error) => by_kind(error.kind()),
             Self::History(error) => by_kind(error.kind()),
             Self::Tag(error) => by_kind(error.kind()),
@@ -1130,6 +1185,7 @@ impl CliError {
             | Self::DiffOutput { .. }
             | Self::RestoreOutput { .. }
             | Self::SwitchOutput { .. }
+            | Self::RebaseOutput { .. }
             | Self::MergeOutput { .. }
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
@@ -1310,6 +1366,25 @@ impl fmt::Display for CliError {
             }
             Self::Restore(error) => error.fmt(f),
             Self::Switch(error) => error.fmt(f),
+            Self::Rebase(error) => error.fmt(f),
+            Self::RebaseOutput {
+                rebased,
+                snapshot,
+                source,
+            } => {
+                match rebased {
+                    Some(entry) => write!(f, "rebased as entry {entry} of the operation log")?,
+                    None => write!(f, "nothing was rebased")?,
+                }
+                if let Some(saved) = snapshot {
+                    write!(f, " (the working copy was saved first as entry {saved})")?;
+                }
+                write!(f, ", but the result could not be written: {source}")?;
+                match rebased {
+                    Some(entry) => write!(f, "; to undo it run `stemma op restore {entry}`"),
+                    None => Ok(()),
+                }
+            }
             Self::Merge(error) => error.fmt(f),
             Self::MergeOutput {
                 merged,
@@ -1516,6 +1591,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Track(args) => track(args, out).map(|()| ExitCode::SUCCESS),
         Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
         Command::Switch(args) => switch(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Rebase(args) => rebase(args, out).map(|()| ExitCode::SUCCESS),
         Command::Merge(args) => merge(args, out).map(|()| ExitCode::SUCCESS),
         Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
         Command::Diff(args) => diff(args, out),
@@ -1781,6 +1857,123 @@ fn switched_text(
         handled_text(handled, true),
         entry.number()
     )
+}
+
+/// Replays the commits of the current branch on a target (ADR-010). The core takes the snapshot
+/// first. As for `switch`, the result is written before an error that follows a rebase that was
+/// made (exit code 3), so that a script finds the entry that undoes it. A closed pipe is no
+/// failure for "up to date", and it is one after a rebase, because the output is the only place
+/// that names the entry.
+fn rebase(args: RebaseArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
+    match repository.rebase(&args.target, &actor, &AllowAll) {
+        Ok(Rebased::UpToDate) => write_rebase(
+            out,
+            &format!("Already up to date with {}\n", args.target),
+            None,
+            None,
+        ),
+        Ok(done @ Rebased::Done { .. }) => {
+            let Rebased::Done {
+                snapshot, entry, ..
+            } = &done
+            else {
+                unreachable!("matched above")
+            };
+            write_rebase(
+                out,
+                &rebased_text(&args.target, &done),
+                Some(entry.number()),
+                snapshot.as_deref().map(oplog::Entry::number),
+            )
+        }
+        Err(error) => {
+            if error.made() {
+                if let Some(entry) = error.entry() {
+                    // The message of the error names the entries too, so a failure to write is
+                    // not reported on top of it.
+                    let text = format!(
+                        "{}Rebased onto {} as entry {}\nTo undo it: stemma op restore {}\n",
+                        saved_text(error.snapshot()),
+                        args.target,
+                        entry.number(),
+                        entry.number()
+                    );
+                    let _ = out.write_all(text.as_bytes());
+                }
+            }
+            Err(CliError::Rebase(error))
+        }
+    }
+}
+
+/// Writes the result of a rebase. `rebased` and `snapshot` are the entries that the call made.
+fn write_rebase(
+    out: &mut dyn Write,
+    text: &str,
+    rebased: Option<u64>,
+    snapshot: Option<u64>,
+) -> Result<(), CliError> {
+    match out.write_all(text.as_bytes()) {
+        Ok(()) => Ok(()),
+        // The reader of a pipe has had enough, and nothing was made that only this text names.
+        Err(error)
+            if error.kind() == io::ErrorKind::BrokenPipe
+                && rebased.is_none()
+                && snapshot.is_none() =>
+        {
+            Ok(())
+        }
+        Err(source) => Err(CliError::RebaseOutput {
+            rebased,
+            snapshot,
+            source,
+        }),
+    }
+}
+
+/// What a rebase did: the snapshot, the move, the commits it replayed with their conflicts, the
+/// conflicts of the working copy, and how to undo it.
+fn rebased_text(target: &Revision, done: &Rebased) -> String {
+    let Rebased::Done {
+        snapshot,
+        entry,
+        branch,
+        replayed,
+        conflicts,
+        ..
+    } = done
+    else {
+        return String::new();
+    };
+    let mut text = saved_text(snapshot.as_deref());
+    let count = replayed.len();
+    text.push_str(&format!(
+        "Rebased {branch} onto {target} as entry {}: {count} commit{} replayed\n",
+        entry.number(),
+        if count == 1 { "" } else { "s" }
+    ));
+    for commit in replayed {
+        for file in &commit.conflicts {
+            text.push_str(&format!(
+                "Commit {} has an open conflict in {} ({} sides)\n",
+                commit.commit, file.path, file.sides
+            ));
+        }
+    }
+    for path in conflicts {
+        text.push_str(&format!(
+            "The working copy has an open conflict in {path}\n"
+        ));
+    }
+    text.push_str(&format!(
+        "To undo it: stemma op restore {}\n",
+        entry.number()
+    ));
+    text
 }
 
 /// The lines about the changes of the working copy: carried (with the paths in conflict), or left

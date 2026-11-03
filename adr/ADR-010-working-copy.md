@@ -106,8 +106,8 @@ art, not a template (ADR-015).
   - A commit is refused when the message is empty (there is no editor in phase 1), when HEAD
     names a commit and not a branch, when the tree is that of the parent (or empty, for a first
     commit), and when the branch is not at the parent of the working-copy commit: a commit on
-    top of that parent would drop what the branch has. A rebase (phase 3) brings the two
-    together.
+    top of that parent would drop what the branch has. Moving the working-copy commit
+    onto the new tip is the rewrite below (STEMMA-171).
 - **`switch` changes the branch and carries the changes of the working-copy commit** *(confirmed,
   implemented in `Repository::switch` and `stemma switch`; STEMMA-167, STEMMA-174)*.
   `switch <name>` makes HEAD name an
@@ -362,8 +362,37 @@ art, not a template (ADR-015).
     unchanged, so a second rewrite carries an open conflict through the same algebra.
   - *Only the working-copy commit moves.* The other branches keep their commits, and the log keeps
     the replaced ones (ADR-011). The commands that move a branch or HEAD in the same operation
-    need a variant of the mechanism that takes part in their entry; the first version is the
-    standalone call. `op restore` undoes a rewrite like any entry.
+    cannot call it: they share its steps and write one entry for all moves (`rebase` does, below;
+    merge is to). `op restore` undoes a rewrite like any entry.
+
+- **`rebase` replays the branch of HEAD on a target** *(confirmed, implemented in
+  `Repository::rebase` and `stemma rebase`; STEMMA-173)*. `rebase <target>` (a branch or a
+  commit) replays the commits that the tip of the branch of HEAD has and the target has not, and
+  moves the branch and the working-copy commit in one entry `rebase`.
+  - *The range* runs from the tip down to the best common ancestor of the tip and the target
+    (`merge_bases`). No common ancestor, several best ones (a criss-cross), a merge commit in the
+    range, and a HEAD that names a commit are refused before anything is written. A tip below
+    the target has an empty range, so the branch moves forward; a target that the branch has
+    already is "up to date" and writes nothing, not even a snapshot.
+  - *Each commit* is replayed as the sum `new parent + (commit - old parent)`, the algebra of the
+    rewrite above, with the same change ID, author, time, and message. A conflict is data of the
+    replayed commit and stops nothing; the commits above carry it on, and a source commit with an
+    open conflict goes through the same sum. There is no `--continue` and no `--abort`: one
+    `op restore` of the entry undoes the whole rebase.
+  - *The working-copy commit* is carried onto the new tip by the same steps as
+    `rewrite_working_copy`: it keeps its change ID unless it holds no change, in which case it is
+    replaced by an empty commit with a new one, and its conflicts are shown in the directory.
+  - *The order* is that of ADR-013, under one lock: snapshot, the replay (objects only), plan of
+    the files, entry, files, pointers. The entry holds the move of the branch and of the
+    working-copy commit; HEAD and every other branch stay. The branch moves first, so that a stop
+    between the two moves leaves the new commits reachable. A stop after the entry is finished by
+    the same call, which takes no snapshot and uses the commits of the stopped entry; a rebase
+    onto another target is refused in that state, for the reason that a repeated `switch` is.
+    The repeat is for the same target exactly: the commits the stopped rebase replayed must lie
+    directly on it.
+  - *Owner and authorization.* The authorizer is asked for `rebase` (the target is the revision)
+    and, for the snapshot, for `snapshot`. A repeat checks the owner of the working copy as the
+    snapshot would.
 
 - **`merge` joins a branch into the branch of HEAD in one operation** *(confirmed; STEMMA-172)*.
   `stemma merge <branch> [-m <message>]` is the first command that calls the rewrite above with
@@ -417,7 +446,8 @@ art, not a template (ADR-015).
       commit (its message points to `switch -c`), are refused today.
 - [x] A commit while the branch has moved (a rebase, a merge). The mechanism exists:
       `Repository::rewrite_working_copy` replaces the working-copy commit by a commit on the new
-      tip (STEMMA-171, below). `merge` calls it (STEMMA-172, below); rebase must.
+      tip (STEMMA-171, below). `merge` calls it (STEMMA-172, below), and `rebase` shares its
+      steps (STEMMA-173, below).
 - [x] `switch` refused a working-copy commit that holds changes. It carries them to the target
       with the rewrite below, or leaves them behind with `--discard` (STEMMA-174).
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge

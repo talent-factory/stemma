@@ -553,6 +553,55 @@ weil seine Basis noch nicht festgelegt ist.
 \stopitemize
 \stopinfobox
 
+\section[sec:rebase]{Rebase: den Branch auf ein Ziel neu aufspielen}
+Der Befehl \type{stemma rebase ZIEL} spielt die Commits des Branchs, auf den HEAD zeigt,
+auf dem Ziel neu auf.
+Er baut auf dem Umschreiben der Arbeitskopie (\in{Abschnitt}[sec:rewrite-wc]) auf und bewegt
+im selben Zug den Branch.
+
+Der Befehl nimmt die Commits der Spitze, die das Ziel nicht hat.
+Den Anfang dieses Bereichs liefert die Merge-Basis von Spitze und Ziel,
+die Funktion \type{merge_bases} aus dem Umfang dieser Phase.
+Liegt die Spitze unter dem Ziel, ist der Bereich leer, und der Branch rückt auf das Ziel vor.
+Hat der Branch das Ziel schon, ändert der Befehl nichts und schreibt keinen Eintrag.
+
+Jeder Commit des Bereichs wird, vom ältesten an, wie der Working-Copy-Commit beim Umschreiben
+aufgespielt:
+Sein Baum ist die Summe $E' + (C - E)$ aus dem Baum des neuen Elternteils $E'$,
+dem Baum des Commits $C$ und dem seines alten Elternteils $E$.
+Der neue Commit behält Change-ID, Autor, Zeit und Beschreibung;
+nur seine ID ist neu, weil sich der Elternteil ändert.
+So findet ein Review dieselbe Änderung wieder, obwohl der Commit ein anderer Wert ist.
+
+Ein Konflikt hält das Aufspielen nicht an.
+Er ist Daten des neuen Commits (ADR-005), und ein Commit darüber trägt ihn weiter,
+solange er den Pfad nicht auflöst.
+Trägt ein Commit des Bereichs schon einen offenen Konflikt, läuft er durch dieselbe Summe.
+Es gibt deshalb weder \type{--continue} noch \type{--abort}:
+Wer das Ergebnis nicht will, setzt es mit \type{op restore} zurück.
+Das genügt, weil der Eintrag alle Bewegungen enthält, den Branch und den Working-Copy-Commit.
+
+Die Reihenfolge ist die von ADR-013: Snapshot, Plan der Dateien, Eintrag, Dateien, Zeiger.
+Der Branch bewegt sich vor dem Working-Copy-Commit, damit ein Abbruch dazwischen
+keinen Commit unerreichbar macht.
+Nach einem Abbruch nach den Dateien verlangt die Fehlermeldung denselben Aufruf noch einmal;
+er nimmt keinen Snapshot und verwendet die Commits des Eintrags.
+
+\startinfobox
+{\bf Grenzfälle des Aufspielens.}
+\startitemize
+\item Ein Commit mit mehr als einem Elternteil im Bereich lehnt der Befehl ab,
+bevor er etwas schreibt: Seine Änderung hat keine einzelne Basis.
+Wie ein Rebase die Change-ID eines solchen Commits behandelt, bleibt offen.
+\item Haben Spitze und Ziel mehrere beste gemeinsame Vorfahren (ein Criss-cross-Merge)
+oder keinen, lehnt der Befehl ab.
+\item Zeigt HEAD auf einen Commit und nicht auf einen Branch, gibt es nichts zu bewegen.
+Der Befehl lehnt ab.
+\item Andere Branches und Tags behalten die alten Commits.
+Die ersetzten Commits bleiben im Log (ADR-011).
+\stopitemize
+\stopinfobox
+
 \section[sec:merge-command]{Branches zusammenführen: merge}
 
 Der Befehl \type{merge} führt einen Branch in den Branch ein, auf den HEAD zeigt.
@@ -617,7 +666,6 @@ Sie steht im Snapshot und im Log, auch wenn der Merge scheitert.
 \section{Offene Fragen}
 
 \startitemize
-\item Rebase: Ja oder nein in Phase 3?
 \item Ein Log je Worktree statt eines gemeinsamen, und ein \type{op restore}, der die Zeiger
 eines anderen Worktrees versteht; heute gilt er nur für den Worktree, in dem er läuft.
 \item Abgeleitete Daten, etwa Indizes für \type{log} oder später Blame.
