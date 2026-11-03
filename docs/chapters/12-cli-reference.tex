@@ -27,6 +27,9 @@ Auch \type{branch} schreibt einen Eintrag ins Log und bewegt nur Zeiger: Beim An
 beim Löschen einen Branch, beim Umbenennen zwei Branches und HEAD, wenn HEAD den Branch nennt.
 Arbeitsverzeichnis und Working-Copy-Commit bleiben, wie sie sind; auch hier zeigt die Zeile
 den Höchstfall.
+Der Befehl \type{worktree add} schreibt die Dateien eines neuen Verzeichnisses und legt dort
+Working-Copy-Commit, HEAD und, mit \type{-b}, einen Branch an; die Zeile zeigt diesen neuen
+Worktree und nicht den des Aufrufs. \type{worktree list} liest nur und hat keine Zeile.
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]
@@ -169,6 +172,9 @@ dem Worktree verloren: Git überträgt ein ignoriertes \type{.stemma} nicht in e
 und \type{git worktree remove} löscht bei einem sauberen Worktree das Verzeichnis samt
 \type{.stemma} ohne \type{--force} und ohne Meldung.
 Bis Phase 3 ruft ein Akteur \type{stemma} deshalb nicht in einem Git-Worktree auf.
+Die zweite Arbeitskopie von Stemma ist ein Worktree von Stemma, den \type{worktree add} anlegt
+(siehe dort); er hat ein eigenes Zustandsverzeichnis im \type{.stemma} der Wurzel und geht mit
+\type{git worktree remove} nicht verloren.
 
 Auch \type{op restore --dry-run} und \type{purge} ohne \type{--apply} verlangen einen Akteur,
 obwohl sie nichts schreiben; sie prüfen ihn, bevor sie das Repository öffnen.
@@ -1554,6 +1560,135 @@ stemma branch fix b3:4a0b66...3b65 --actor "human daniel"
 stemma branch -m topic feature/topic --actor "human daniel"
 stemma branch -d feature/topic --actor "human daniel"
 stemma branch
+\stoptyping
+
+\section{worktree add}
+
+Legt eine zweite Arbeitskopie des Repositories an: ein Worktree mit eigenem HEAD, eigenem
+Working-Copy-Commit und eigenem Eigentümer (ADR-009, ADR-010).
+
+\starttyping
+stemma worktree add [-C VERZEICHNIS] [--owner AKTEUR] --actor AKTEUR PFAD BRANCH
+stemma worktree add [-C VERZEICHNIS] [--owner AKTEUR] --actor AKTEUR -b NEU PFAD
+\stoptyping
+
+\startitemize
+\item {\bf PFAD:} Das Verzeichnis des neuen Worktrees. Es darf nicht bestehen oder muss ein leeres
+Verzeichnis sein; fehlende Verzeichnisse darüber legt der Befehl an. Ein relativer Pfad gilt vom
+aktuellen Verzeichnis des Aufrufs aus und nicht von \type{-C}. Der Pfad darf kein Worktree sein,
+in keinem liegen und keinen enthalten, den Worktree der Wurzel eingeschlossen. Hat er einen Teil,
+der kein UTF-8 ist, lehnt der Befehl ihn ab.
+\item {\bf BRANCH:} Ein Branch, der besteht und den kein anderer Worktree ausgecheckt hat. Der
+Worktree beginnt auf seiner Spitze.
+\item {\bf \type{-b}, \type{--branch} NEU:} Legt den Branch NEU an der Spitze an, zu der HEAD des
+aufrufenden Worktrees führt, und checkt ihn aus. Besteht NEU, ist es ein Fehler. Genau eines von
+BRANCH und \type{-b} ist nötig: Fehlt beides oder stehen beide da, ist es ein Aufruffehler
+(Exit-Code 2). Einen abgekoppelten Worktree legt der Befehl nicht an.
+\item {\bf \type{--owner} AKTEUR:} Der Eigentümer der neuen Arbeitskopie, in der Form der Option
+\type{--actor}. Ohne die Option ist es der Akteur des Aufrufs. Der Eigentümer ist auch der Autor
+des ersten Working-Copy-Commits des Worktrees.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories, von dem
+aus der Befehl es öffnet: eines des Worktrees der Wurzel oder eines anderen Worktrees. Standard ist
+das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Er ist nötig; fehlt die Option, gilt
+\type{STEMMA_ACTOR}.
+\stopitemize
+
+Der Befehl hat keine JSON-Form. Er liest die Arbeitskopie des aufrufenden Worktrees nicht, macht
+keinen Snapshot und prüft keinen Eigentümer, denn er ändert diese Arbeitskopie nicht.
+
+{\bf Verhalten.} Der Kern fragt den Autorisierer nach der Operation \type{worktree-add} und
+übergibt ihm den Pfad als Ziel; bis zur Richtlinie der Phase 4 übergibt der Befehl
+\type{AllowAll}. Dann macht er den Pfad absolut, löst die Links auf und prüft ihn.
+Er nimmt die Sperre der Referenzen und liest den Branch noch einmal.
+Ein Branch, den ein anderer Worktree ausgecheckt hat, lehnt er ab, ohne Option zum Erzwingen;
+ein HEAD, der einen Branch ohne Commit nennt, zählt auch.
+Der Name des Worktrees ist der letzte Teil des Pfades, auf Buchstaben, Ziffern, \type{-},
+\type{_} und \type{.} gekürzt und bei Bedarf mit einer Zahl versehen.
+Der Working-Copy-Commit entsteht leer auf der Spitze, mit deren Baum, einer neuen Change-ID und
+dem Eigentümer als Autor.
+Der Befehl plant die Dateien, schreibt den Eintrag \type{worktree-add} und sichert ihn,
+schreibt die Dateien und bewegt dann die Zeiger in dieser Reihenfolge: der neue Branch, die Datei
+\type{location}, die Datei \type{working-copy}, die Datei \type{HEAD} und zuletzt die Zeigerdatei
+\type{.stemma} im Verzeichnis des Worktrees.
+Der Eintrag nennt HEAD und den Working-Copy-Commit des neuen Worktrees mit \type{-} als altem Wert
+und, mit \type{-b}, den neuen Branch.
+
+Die Ausgabe nennt Name, Pfad, Branch, Eintrag und Eigentümer:
+
+\starttyping
+Added the worktree linked in /home/daniel/linked on the new branch feature as entry 14
+Owner: human anna
+\stoptyping
+
+Bei einem bestehenden Branch heisst es \type{on the branch feature}.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem fehlenden \type{--actor}, einem Pfad, der
+nicht frei ist (die Meldung nennt ihn und den Worktree, mit dem er kollidiert), einem Branch, den
+es nicht gibt (\type{-b} legt ihn an), den es schon gibt (mit \type{-b}) oder den ein Worktree
+ausgecheckt hat (die Meldung nennt ihn), einem Branch von HEAD ohne Commit bei \type{-b},
+einer Datei, die im Weg steht, und bei einem offenen Purge. Das Verzeichnis, das der Aufruf selbst
+angelegt hat, entfernt er dann wieder; ein bestehendes leeres bleibt. Eine gehaltene Sperre
+beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
+Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Der
+Eintrag steht für einen Worktree, der nicht oder nur zum Teil entstand. Die Meldung nennt den
+Eintrag und rät, das Verzeichnis des Worktrees und sein Zustandsverzeichnis unter
+\type{.stemma/worktrees} zu entfernen und den Befehl zu wiederholen; ein Zustandsverzeichnis ohne
+\type{HEAD} gilt als abgebrochen und hält keinen Branch. Mit Exit-Code 3 endet der Befehl auch,
+wenn der Worktree da ist, aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht
+gesichert ist; ein Skript wiederholt ihn dann nicht.
+
+{\bf Ein Worktree öffnen.} Jeder Befehl, der in einem Worktree läuft, liest dessen Zeigerdatei und
+das Zustandsverzeichnis, das sie nennt. Nennt die Datei \type{location} dort ein anderes
+Verzeichnis, wurde der Worktree verschoben oder kopiert, und der Befehl endet mit Exit-Code 1 und
+der Meldung \type{does not match its state directory}; fehlt das Zustandsverzeichnis, sagt die
+Meldung das. Eine Zeigerdatei in falscher Form ist ein Schaden (Exit-Code 5). Ein Worktree zu
+verschieben ist nicht vorgesehen; \type{worktree repair} gehört nicht zu diesem Stand.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma worktree add ../anna -b anna --owner "human anna" --actor "human daniel"
+stemma worktree add ../review feature/x --actor "human daniel"
+\stoptyping
+
+\section{worktree list}
+
+Listet die Worktrees des Repositories (ADR-009).
+
+\starttyping
+stemma worktree list [-C VERZEICHNIS]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
+das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
+\stopitemize
+
+Der Befehl liest nur: Er braucht keinen Akteur, macht keinen Snapshot und schreibt keinen
+Eintrag. Er hat keine JSON-Form. Die Ausgabe ist von jedem Worktree aus dieselbe.
+
+{\bf Ausgabe.} Je Worktree eine Zeile, der Worktree der Wurzel zuerst, die übrigen nach Namen:
+der Name (\type{main} für die Wurzel), der Pfad, der Branch von HEAD (bei einem abgekoppelten HEAD
+\type{(detached KURZE-ID)}) und der Eigentümer der Arbeitskopie (\type{-} ohne Eigentümer). Die
+Spalten sind durch zwei Leerzeichen getrennt und auf die Breite des längsten Wertes aufgefüllt.
+Ein Worktree, dessen Verzeichnis entfernt wurde, erscheint weiter mit dem Pfad, den er hatte;
+ein Zustandsverzeichnis ohne \type{HEAD} erscheint nicht.
+
+\starttyping
+main    /home/daniel/stemma    main     human daniel
+linked  /home/daniel/linked    feature  human anna
+\stoptyping
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn ein \type{HEAD} oder eine Datei
+\type{working-copy} sich nicht lesen lässt; beschädigte Referenzen enden mit Exit-Code 5.
+Schliesst der Leser die Pipe früh, endet der Befehl ohne Meldung mit Exit-Code 0.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma worktree list
+stemma worktree list -C ../linked
 \stoptyping
 
 \section{op log}

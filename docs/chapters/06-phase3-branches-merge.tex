@@ -42,6 +42,9 @@ Noch schreibt kein Befehl einen solchen Commit.
 Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich
 mit \type{--take-over} (Risikostufe 3). Umgesetzt; Kapitel 4 beschreibt die Regel,
 der Anhang die Befehle. Die zweite Arbeitskopie baut darauf auf.
+\item Eine zweite Arbeitskopie desselben Repositories: ein Worktree mit eigenem HEAD, eigenem
+Working-Copy-Commit und eigenem Eigentümer, auf einem Branch, den sonst kein Worktree ausgecheckt
+hat. Umgesetzt; \in{Abschnitt}[sec:worktree] beschreibt ihn.
 \stopitemize
 
 \section{Den Branch wechseln: switch}
@@ -294,11 +297,102 @@ Datei zu überschreiben.
 \stopitemize
 \stopinfobox
 
+\section[sec:worktree]{Eine zweite Arbeitskopie: worktree}
+
+Zwei Akteure sollen nicht im selben Verzeichnis arbeiten (ADR-010): Ein Snapshot speichert, was im
+Verzeichnis liegt, und der Eintrag nennt den Akteur des Befehls, nicht den der Änderung.
+Ein Worktree ist ein weiteres Arbeitsverzeichnis desselben Repositories mit eigenem HEAD,
+eigenem Working-Copy-Commit und eigenem Eigentümer; das Arbeitsverzeichnis der Wurzel ist der
+Haupt-Worktree. Der Befehl \type{worktree add} gibt dem zweiten Akteur ein solches Verzeichnis,
+ohne das Repository zu kopieren: Objekte, Branches, Tags, Log und Sperre bleiben gemeinsam,
+und nur die Zeiger, die zu einer Arbeitskopie gehören, hat jeder Worktree für sich.
+Wer in einem Worktree einen Commit macht, sieht ihn sofort in allen anderen, denn der
+Objektspeicher und die Branches sind dieselben; die Dateien der anderen Worktrees bleiben
+davon unberührt.
+
+Das Layout (ADR-009) legt neben die Dateien des Repositories der Wurzel ein Zustandsverzeichnis
+je Worktree und eine Zeigerdatei im Worktree selbst:
+
+\starttyping
+repo/.stemma/                    gemeinsam: objects/, refs/, oplog/, refs.lock, format
+repo/.stemma/HEAD                HEAD des Worktrees der Wurzel
+repo/.stemma/working-copy        Working-Copy-Commit und Eigentümer der Wurzel
+repo/.stemma/worktrees/linked/   Zustand des Worktrees "linked"
+    HEAD, working-copy           wie in der Wurzel, aber für diesen Worktree
+    location                     der absolute Pfad des Worktrees
+linked/.stemma                   Datei: "stemma-worktree " und Pfad des Zustands
+\stoptyping
+
+Die Zeigerdatei und das Zustandsverzeichnis verweisen aufeinander. Beim Öffnen liest der Befehl
+die Zeigerdatei, folgt ihr zum Zustandsverzeichnis und vergleicht dessen \type{location} mit
+dem Verzeichnis, in dem die Zeigerdatei liegt. Stimmen beide nicht überein, wurde der Worktree
+verschoben oder kopiert, und der Befehl bricht mit einer Meldung ab, die das sagt; er arbeitet
+nie im Zustand eines Worktrees, der woanders liegt. Die Suche nach dem Repository
+prüft zusätzlich den Besitzer der Zeigerdatei und des gemeinsamen \type{.stemma}, wie sie es für
+ein \type{.stemma}-Verzeichnis tut (ADR-009).
+
+\startitemize[n]
+\item Der Befehl fragt den Autorisierer nach der Operation \type{worktree-add} und macht den Pfad
+absolut. Er verlangt, dass der Pfad frei ist: Er besteht nicht oder ist ein leeres Verzeichnis,
+und er ist kein Worktree, liegt in keinem und enthält keinen, den Worktree der Wurzel
+eingeschlossen. Ein Worktree in einem anderen würde dessen Snapshot die Dateien des inneren
+unterschieben.
+\item Er nimmt die Sperre der Referenzen und prüft unter ihr den Branch.
+Ein bestehender Branch muss frei sein, kein anderer Worktree hat ihn also ausgecheckt.
+Mit \type{-b NEU} entsteht der Branch an der Spitze, zu der HEAD des aufrufenden Worktrees führt,
+und der Name muss frei sein. Einen Worktree ohne Branch gibt es nicht:
+Ohne BRANCH und ohne \type{-b} ist der Aufruf ein Aufruffehler.
+\item Ein neuer, leerer Working-Copy-Commit entsteht auf der Spitze, mit deren Baum, einer neuen
+Change-ID und dem Eigentümer als Autor. Eigentümer ist der Akteur des Aufrufs oder der von
+\type{--owner}.
+\item Der Eintrag \type{worktree-add} wird geschrieben und gesichert. Er nennt HEAD und den
+Working-Copy-Commit des neuen Worktrees mit \type{-} als altem Wert, wie der erste Eintrag von
+\type{init}, und bei \type{-b} den neuen Branch.
+\item Die Dateien des Baumes entstehen im neuen Verzeichnis. Zuletzt bewegen sich die Zeiger:
+der neue Branch, die Dateien \type{location}, \type{working-copy} und \type{HEAD} des
+Zustandsverzeichnisses und, als letzte Datei, die Zeigerdatei \type{.stemma} im Worktree.
+\stopitemize
+
+Nach einem Absturz ist der Worktree entweder ganz da oder nicht benutzbar.
+Die Zeigerdatei steht zuletzt, also lässt sich ein halber Worktree nicht öffnen.
+Ein Zustandsverzeichnis ohne \type{HEAD} gilt als abgebrochen und hält keinen Branch,
+sodass ein solcher Rest kein anderes Kommando blockiert.
+Bricht der Befehl nach dem Eintrag ab, endet er mit Exit-Code 3.
+Der Eintrag steht dann für einen Worktree, der nicht oder nur zum Teil entstand,
+und die Meldung nennt, was zu entfernen ist, bevor man den Aufruf wiederholt.
+
+Der Grundsatz hinter allem ist, dass ein Branch in einem Worktree ausgecheckt ist.
+Zwei Worktrees auf demselben Branch würden den Branch unter dem anderen bewegen, und die Dateien
+des einen entsprächen nicht mehr dem Branch. Die Regel hat keine Ausnahme und keine Option zum
+Erzwingen. Der Kern prüft sie an einer Stelle, unter der Sperre, in der Planung der Zeiger: Sie
+gilt für \type{switch} und \type{op restore}, soweit HEAD zu einem Branch wechselt, für
+\type{branch -d} und \type{branch -m}, bei denen HEAD eines anderen Worktrees sonst auf einen
+Branch ohne Namen zeigte, und für \type{worktree add}. Dafür liest die Prüfung HEAD jedes anderen
+Worktrees; ein HEAD, der einen Branch ohne Commit nennt, hält den Namen ebenfalls.
+Die Meldung nennt den Worktree, der den Branch hat.
+
+\startinfobox
+{\bf Grenzfälle von \type{worktree}.}
+\startitemize
+\item \type{worktree list} zeigt je Worktree Name, Pfad, Branch von HEAD und Eigentümer, den der
+Wurzel zuerst. Der Befehl liest nur und hat keine JSON-Form.
+\item Ein Worktree, dessen Verzeichnis ohne Stemma gelöscht wurde, bleibt in der Liste,
+und sein Branch bleibt belegt. Einen Befehl, der ihn entfernt, gibt es noch nicht, und
+\type{worktree repair} für einen verschobenen Worktree ebenso wenig.
+\item Ein Git-Worktree ist etwas anderes (Anhang): Er hat kein Zustandsverzeichnis von Stemma.
+\item Das Log ist eines für alle Worktrees, HEAD und der Working-Copy-Commit gehören aber je
+einem. Das Log zeigt den Eintrag von \type{worktree add} darum als unbekannt, und ein
+\type{op restore} bewegt die Zeiger des Worktrees, in dem er läuft, nie die eines anderen.
+\item Ein Purge bewegt HEAD und den Working-Copy-Commit nur des Worktrees, in dem er läuft.
+\stopitemize
+\stopinfobox
+
 \section{Offene Fragen}
 
 \startitemize
 \item Rebase: Ja oder nein in Phase 3?
-\item Verhalten bei einem Branch, der in einem anderen Worktree ausgecheckt ist.
+\item Ein Log je Worktree statt eines gemeinsamen, und ein \type{op restore}, der die Zeiger
+eines anderen Worktrees versteht; heute gilt er nur für den Worktree, in dem er läuft.
 \item Abgeleitete Daten, etwa Indizes für \type{log} oder später Blame.
 ADR-017 legt einen Cache unter \type{.stemma/derived/} fest, der nie zum
 Objektmodell gehört. Er wird bei der ersten Abfrage aus den Werten der Eltern gefüllt, ein
