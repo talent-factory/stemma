@@ -446,6 +446,7 @@ impl Classify for RebaseError {
             | Self::NotDurable { source, .. }
             | Self::SnapshotNotDurable { source, .. } => source.kind(),
             Self::AfterSnapshot { source, .. } => source.kind(),
+            Self::BrokenChain { .. } => FailureKind::Damaged,
             Self::NotOnBranch
             | Self::NoCommits(_)
             | Self::NoSuchBranch(_)

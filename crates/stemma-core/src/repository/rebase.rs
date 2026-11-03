@@ -53,8 +53,8 @@ pub struct Replayed {
 #[derive(Debug)]
 #[must_use]
 pub enum Rebased {
-    /// The branch has the target already (it is the tip or an ancestor of it). No entry of a
-    /// rebase was written; a snapshot of unsaved changes may have been.
+    /// The branch has the target already (it is the tip or an ancestor of it). Nothing was
+    /// written: no snapshot and no entry.
     UpToDate,
     /// The branch and the working-copy commit moved.
     Done {
@@ -105,8 +105,8 @@ impl Repository {
     /// the range, and the merge commits in it are checked, which write nothing; the tracked files
     /// are saved in a snapshot (a second question, `snapshot`); the commits are replayed and
     /// stored, the working-copy commit is carried onto the new tip as `rewrite_working_copy` does
-    /// (it keeps its change ID unless it holds no change); the files are planned, the entry is written and flushed, the directory is
-    /// brought to the new tree, and the branch and the working-copy commit move (ADR-013). HEAD
+    /// (it keeps its change ID unless it holds no change); the files are planned, the entry is
+    /// written and flushed, the directory is brought to the new tree, and the branch and the working-copy commit move (ADR-013). HEAD
     /// stays. The pointers are read under the lock, so the move is a compare-and-swap against the
     /// values this call saw.
     ///
@@ -360,11 +360,7 @@ impl Repository {
             match commit.parents() {
                 [parent] => at = *parent,
                 // A chain that does not lead to the target by single parents is damage.
-                _ => {
-                    return Err(RebaseError::Replay(Box::new(RewriteError::Parents {
-                        working: at,
-                    })))
-                }
+                _ => return Err(RebaseError::BrokenChain { commit: at }),
             }
         }
         chain.reverse();
@@ -473,11 +469,25 @@ impl Repository {
         };
         // The branch is where the stopped rebase left it: at the old tip, or at the new one.
         let tip = plan.old_tip;
-        let before = change
-            .branches()
+        // The entry of a repeat names only the pointers that still had to move, so the old value
+        // of the branch is taken from the newest entry of this rebase that names the branch: the
+        // stopped entries, newest first, that move the working-copy commit away from `old`.
+        let before = entries
             .iter()
-            .find(|(name, _)| *name == plan.branch)
-            .and_then(|(_, moved)| moved.before().copied());
+            .rev()
+            .filter_map(Entry::change)
+            .filter(|change| change.operation().as_str() != TAKE_OVER)
+            .take_while(|change| {
+                change.operation().as_str() == OPERATION
+                    && change.working_copy().and_then(Moved::before) == Some(&old)
+            })
+            .find_map(|change| {
+                change
+                    .branches()
+                    .iter()
+                    .find(|(name, _)| *name == plan.branch)
+                    .and_then(|(_, moved)| moved.before().copied())
+            });
         let branch_fits = tip == new_tip || before == Some(tip);
         // The stopped rebase must have been onto this target, exactly: the commits it replayed
         // (as many as the old tip had above the target) lie on `new_tip`, and the target is the
@@ -584,6 +594,12 @@ pub enum RebaseError {
         /// The best common ancestors, sorted.
         bases: Vec<CommitId>,
     },
+    /// The commits above the target do not form a chain of single parents down to it: the
+    /// history was damaged after the rebase made it.
+    BrokenChain {
+        /// The commit where the chain breaks.
+        commit: CommitId,
+    },
     /// A commit of the range has more than one parent. A merge commit has no single base to
     /// replay it against.
     MergeInRange {
@@ -669,6 +685,7 @@ impl RebaseError {
             | Self::NoCommonAncestor { .. }
             | Self::AmbiguousBase { .. }
             | Self::MergeInRange { .. }
+            | Self::BrokenChain { .. }
             | Self::StoppedOnOtherTarget { .. } => None,
         }
     }
@@ -760,6 +777,11 @@ impl fmt::Display for RebaseError {
                  replay has no single start",
                 bases.len()
             ),
+            Self::BrokenChain { commit } => write!(
+                f,
+                "commit {commit} does not have exactly one parent, so the commits above the \
+                 target do not form a chain down to it; the history is damaged"
+            ),
             Self::MergeInRange { commit } => write!(
                 f,
                 "commit {commit} is a merge commit in the range to replay; a rebase does not \
@@ -842,6 +864,7 @@ impl Error for RebaseError {
             | Self::NoCommonAncestor { .. }
             | Self::AmbiguousBase { .. }
             | Self::MergeInRange { .. }
+            | Self::BrokenChain { .. }
             | Self::StoppedOnOtherTarget { .. } => None,
         }
     }
@@ -1389,5 +1412,39 @@ mod tests {
         assert_eq!(entries(&repository), count);
         let made = done(rebase(&repository, &onto("main")));
         assert_eq!(made.replayed.len(), 2);
+    }
+
+    #[test]
+    fn a_repeat_that_stops_again_can_still_be_finished() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        write(&dir, "b.txt", "b\n");
+        track(&repository, "b.txt");
+        let stop = |repository: &Repository| {
+            let metadata = repository.metadata_dir();
+            let denied = Rc::new(RefCell::new(None));
+            let arm = Rc::clone(&denied);
+            super::super::snapshot::pause::at_next(
+                super::super::snapshot::pause::Stage::Moves,
+                move || {
+                    *arm.borrow_mut() = Some(fault::deny_writes_in(&metadata));
+                },
+            );
+            let error = rebase(repository, &onto("main")).unwrap_err();
+            drop(denied);
+            let _ = fs::remove_file(repository.metadata_dir().join("refs.lock"));
+            error
+        };
+        // The first stop moved the branch; the repeat stops before any pointer, and its entry
+        // does not name the branch any more.
+        assert!(matches!(stop(&repository), RebaseError::PartlyMoved { .. }));
+        assert!(matches!(stop(&repository), RebaseError::MoveFailed { .. }));
+
+        let made = done(rebase(&repository, &onto("main")));
+
+        assert!(made.snapshot.is_none(), "the repeat takes no snapshot");
+        assert_eq!(repository.refs().working_copy().unwrap(), made.working_copy);
+        assert_eq!(read(&dir, "b.txt"), "b\n");
     }
 }
