@@ -2077,7 +2077,8 @@ bleibt im Log erhalten.
 Fehlt das Verzeichnis des Worktrees, weil es ohne Stemma gelöscht wurde, entfernt der Befehl nur
 das Zustandsverzeichnis.
 
-Die Ausgabe nennt Name, Pfad und Eintrag, danach den Snapshot, falls einer entstand, und den
+Die Ausgabe nennt Name, Pfad und Eintrag, danach den Snapshot, falls einer entstand, die Dateien,
+die \type{--force} mit dem Verzeichnis entfernt hat (kein Commit hält sie), und den
 Working-Copy-Commit:
 
 \starttyping
@@ -2097,8 +2098,8 @@ verfolgten Dateien ohne \type{--force} (die Meldung nennt die ersten) und bei ei
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet er mit Exit-Code 3: Die Meldung
 nennt den Eintrag und sagt, was von Hand zu entfernen ist (das Verzeichnis, oder der Rest des
-Zustandsverzeichnisses unter \type{.stemma/worktrees}) und dass der Aufruf mit \type{--force}
-danach nur das Zustandsverzeichnis wegnimmt. Mit Exit-Code 3 endet er auch, wenn der Worktree weg
+Zustandsverzeichnisses unter \type{.stemma/worktrees}) und dass derselbe Aufruf danach nur das
+Zustandsverzeichnis wegnimmt. Mit Exit-Code 3 endet er auch, wenn der Worktree weg
 ist, aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
 
 {\bf Beispiele.}

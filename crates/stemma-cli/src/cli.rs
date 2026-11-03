@@ -1713,6 +1713,15 @@ fn worktree_remove(args: WorktreeRemoveArgs, out: &mut dyn Write) -> Result<(), 
             saved.number()
         ));
     }
+    if !removed.discarded.is_empty() {
+        text.push_str(&format!(
+            "Also removed {} files that no commit holds:\n",
+            removed.discarded.len()
+        ));
+        for path in &removed.discarded {
+            text.push_str(&format!("    {}\n", escape_path(path)));
+        }
+    }
     if removed.directory_missing {
         text.push_str("The directory was gone already; only the state was removed\n");
     }

@@ -1268,3 +1268,66 @@ fn op_log_judges_the_entries_of_each_worktree_by_its_own_pointers() {
     assert_eq!(took(&from_main, "linked"), "null", "{from_main}");
     assert_eq!(took(&from_linked, "main"), "null", "{from_linked}");
 }
+
+#[test]
+fn an_agent_cannot_prune_the_state_of_a_human_even_if_the_directory_is_gone() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    fs::remove_dir_all(&linked).unwrap();
+
+    let refused = run(
+        &repo,
+        &[
+            "worktree",
+            "remove",
+            "linked",
+            "--actor",
+            "agent bot model=m session=s sponsor=daniel",
+        ],
+    );
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(repo.join(".stemma/worktrees/linked/HEAD").is_file());
+}
+
+#[test]
+fn remove_with_force_names_the_files_that_no_commit_holds() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "notes/todo.txt", "gone");
+
+    let removed = ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+
+    assert!(
+        removed
+            .stdout
+            .contains("Also removed 1 files that no commit holds:\n    notes/todo.txt\n"),
+        "{}",
+        removed.stdout
+    );
+}
+
+#[test]
+fn op_restore_of_an_entry_of_a_removed_worktree_is_refused() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    let entry = common::numbers(&repo).last().unwrap().to_string();
+    ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+
+    let refused = run(&repo, &["op", "restore", &entry, "--actor", ACTOR]);
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("removed or added again"),
+        "{}",
+        refused.stderr
+    );
+}

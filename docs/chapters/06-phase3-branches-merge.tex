@@ -406,7 +406,9 @@ dann der Rest.
 
 Der Branch bleibt, und die Commits bleiben: Der Eintrag nennt den Working-Copy-Commit, also
 behalten Log und Purge ihn. Ein Absturz nach dem Eintrag endet mit Exit-Code 3, und die Meldung
-sagt, was von Hand zu entfernen ist. Ein \type{op restore} macht das Entfernen nicht rückgängig;
+sagt, was von Hand zu entfernen ist; der Name eines entfernten Worktrees kann später ein anderer
+Worktree tragen, darum setzt \type{op restore} Einträge eines entfernten Worktrees nicht zurück.
+Ein \type{op restore} macht das Entfernen nicht rückgängig;
 wer den Worktree wieder braucht, legt ihn mit \type{worktree add} auf dem Branch neu an.
 
 Der Grundsatz hinter allem ist, dass ein Branch in einem Worktree ausgecheckt ist.

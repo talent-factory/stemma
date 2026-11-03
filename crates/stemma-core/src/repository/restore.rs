@@ -350,6 +350,24 @@ impl Repository {
         ) {
             return Err(RestoreError::WorktreeEntry { number });
         }
+        // The worktree of the entry was removed or made again since: its name stands for another
+        // worktree now, or for none.
+        if change.worktree().is_some()
+            && entries[position + 1..]
+                .iter()
+                .filter_map(Entry::change)
+                .any(|later| {
+                    matches!(
+                        later.operation().as_str(),
+                        "worktree-add" | "worktree-remove"
+                    ) && later.worktree() == change.worktree()
+                })
+        {
+            return Err(RestoreError::GoneWorktree {
+                number,
+                worktree: change.worktree_name().to_owned(),
+            });
+        }
         let here = self.refs_store().worktree_name();
         if change.worktree_name() != here
             && (change.head().is_some() || change.working_copy().is_some())
@@ -526,6 +544,14 @@ pub enum RestoreError {
         /// The worktree of the entry: `main` or the name of a linked worktree.
         worktree: String,
     },
+    /// The worktree of the entry was removed, or added again under the same name, after the
+    /// entry. Its pointers are gone or belong to another worktree now (ADR-013).
+    GoneWorktree {
+        /// The number.
+        number: u64,
+        /// The name of the worktree.
+        worktree: String,
+    },
     /// The entry added or removed a worktree (`worktree-add`, `worktree-remove`). A restore does
     /// not make or remove a worktree: remove it with `worktree remove`, add it again with
     /// `worktree add` (ADR-013).
@@ -639,6 +665,7 @@ impl RestoreError {
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
+            | Self::GoneWorktree { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
@@ -722,6 +749,11 @@ impl fmt::Display for RestoreError {
                 "entry {number} moved HEAD or the working-copy commit of the worktree \
                  `{worktree}`, and a restore puts back the pointers of the worktree it runs in; \
                  run `op restore {number}` in that worktree"
+            ),
+            Self::GoneWorktree { number, worktree } => write!(
+                f,
+                "entry {number} belongs to the worktree `{worktree}`, which was removed or added \
+                 again since, so its pointers cannot be put back"
             ),
             Self::WorktreeEntry { number } => write!(
                 f,
@@ -842,6 +874,7 @@ impl Error for RestoreError {
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
+            | Self::GoneWorktree { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,

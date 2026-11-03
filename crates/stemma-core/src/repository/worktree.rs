@@ -116,6 +116,9 @@ pub struct RemovedWorktree {
     pub head: Head,
     /// The working-copy commit of the worktree. The entry names it, so a purge and the log keep it.
     pub working_copy: CommitId,
+    /// The files that the working-copy commit did not track and `--force` removed with the
+    /// directory. They are in no commit, so nothing brings them back.
+    pub discarded: Vec<String>,
 }
 
 impl Repository {
@@ -162,12 +165,13 @@ impl Repository {
         let allowed = self
             .authorize(actor, authorizer, &operation, worktree)
             .map_err(WorktreeError::Update)?;
-        let info = self.find_worktree(worktree)?;
         let shared = resolve(&self.metadata_dir())?;
         let lock = self
             .refs_store()
             .lock_writer(&allowed)
             .map_err(WorktreeError::Refs)?;
+        // Under the lock, so that a removal that ran in between is `NoSuchWorktree`.
+        let info = self.find_worktree(worktree)?;
         let state = shared.join(WORKTREES_DIR).join(&info.name);
         let exists = match fs::symlink_metadata(&info.path) {
             Ok(_) => true,
@@ -178,6 +182,13 @@ impl Repository {
             check_pointer(&info.path, &state)?;
         }
         let view = Repository::linked(&info.path, &shared, &info.name);
+        // The owner decides, also when the directory is gone and nothing is saved: only the owner
+        // removes the state of a working copy (ADR-010).
+        let (_, owner) = crate::refs::FsRefStore::for_worktree(&shared, &state)
+            .working_copy_and_owner()
+            .map_err(WorktreeError::Refs)?;
+        view.check_owner(actor, owner.as_ref())
+            .map_err(|error| WorktreeError::Snapshot(Box::new(error)))?;
         let mut snapshot = None;
         let mut late = None;
         if exists {
@@ -211,11 +222,13 @@ impl Repository {
             .map_err(WorktreeError::Refs)
             .map_err(after(&snapshot))?;
         let text = info.path.to_string_lossy().into_owned();
+        let mut discarded = Vec::new();
         let logged = self
             .refs_store()
             .remove_worktree_after(&lock, &info.name, || {
                 if exists {
                     let untracked = view.untracked_files(working_copy)?;
+                    discarded.clone_from(&untracked);
                     if !force && !untracked.is_empty() {
                         return Err(WorktreeError::Dirty {
                             path: info.path.clone(),
@@ -258,6 +271,7 @@ impl Repository {
             directory_missing: !exists,
             head: head.clone(),
             working_copy,
+            discarded: discarded.clone(),
         };
         let result = match logged.map_err(WorktreeError::Refs) {
             Err(error) => Err(error),
@@ -720,6 +734,14 @@ fn resolve_or(path: &Path) -> PathBuf {
 /// Checks that the directory `path` holds the pointer file of the worktree whose state directory
 /// is `state`, so that a removal never deletes the files of another directory.
 fn check_pointer(path: &Path, state: &Path) -> Result<(), WorktreeError> {
+    // A link to a directory is not the directory of the worktree: removing it would remove the
+    // link only.
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink()) {
+        return Err(WorktreeError::NotItsPointer {
+            path: path.to_path_buf(),
+            state: state.to_path_buf(),
+        });
+    }
     let pointer = path.join(METADATA_DIR);
     let expected = state
         .to_str()
@@ -1360,15 +1382,15 @@ impl fmt::Display for WorktreeError {
             } => write!(
                 f,
                 "entry {} was written, but the directory `{}` could not be removed and no pointer \
-                 moved: {source}; remove the directory by hand and run the command again with \
-                 `--force`, which then removes the state directory only",
+                 moved: {source}; remove the directory by hand and run the command again, \
+                 which then removes the state directory only",
                 entry.number(),
                 path.display()
             ),
             Self::RemoveMoveFailed { entry, source } => write!(
                 f,
                 "entry {} was written and the directory is gone, but the state directory is \
-                 whole: {source}; run the command again with `--force`",
+                 whole: {source}; run the command again, which removes the state directory only",
                 entry.number()
             ),
             Self::RemovePartlyMoved { entry, source } => write!(

@@ -378,6 +378,7 @@ impl Classify for RestoreError {
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
+            | Self::GoneWorktree { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => FailureKind::Other,

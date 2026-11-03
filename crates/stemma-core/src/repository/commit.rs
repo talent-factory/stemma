@@ -293,6 +293,8 @@ impl Repository {
             entry
                 .change()
                 .filter(|change| change.operation().as_str() == OPERATION)
+                // The commit of this worktree: another worktree has pointers of its own.
+                .filter(|change| change.worktree() == self.worktree_name())
                 .map(|change| (at, change))
         }) else {
             return Ok(false);
@@ -305,6 +307,7 @@ impl Repository {
             return Ok(false);
         }
         let now = Current::new(Head::Branch(branch.clone()), [(branch.clone(), tip)], true)
+            .in_worktree(self.worktree_name().unwrap_or(crate::refs::MAIN_WORKTREE))
             .with_working_copy(Some(current));
         Ok(outcomes(&entries, Some(&now))[position] == Outcome::NotTaken)
     }
