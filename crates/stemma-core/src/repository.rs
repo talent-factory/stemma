@@ -39,6 +39,7 @@ mod purge;
 #[cfg(any(fuzzing, test))]
 pub(crate) use purge::fuzz_journal;
 mod restore;
+mod rewrite;
 mod snapshot;
 mod status;
 mod switch;
@@ -53,6 +54,7 @@ pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
 };
 pub use restore::{RestoreError, RestorePlan, Restored};
+pub use rewrite::{RewriteError, Rewritten};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use switch::{Revision, SwitchError, SwitchTarget, Switched};

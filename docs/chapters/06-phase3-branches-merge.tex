@@ -470,6 +470,68 @@ Es steht dann keine Datei an diesem Pfad.
 \stopitemize
 \stopinfobox
 
+\section[sec:rewrite-wc]{Die Arbeitskopie auf eine neue Basis umschreiben}
+Wenn der Branch eine neue Spitze bekommt, muss die Arbeitskopie mitgehen.
+Das gilt nach einem Merge, nach einem Rebase und später für einen \type{switch},
+der Änderungen mitnimmt.
+Alle drei brauchen denselben Schritt: Der Working-Copy-Commit $W$ mit dem alten Elternteil $P$
+wird durch einen Commit $W'$ auf der neuen Spitze $T$ ersetzt.
+Der Kern bietet diesen Schritt als eine Methode an
+(\type{Repository::rewrite_working_copy}); einen eigenen Befehl dafür gibt es nicht.
+
+Der Inhalt von $W'$ ist der Drei-Wege-Merge von $W$ über $P$ mit $T$ als anderer Seite.
+Als Summe von Trees (\in{Abschnitt}[sec:tree-merge]) ist das $T + (W - P)$.
+Ein Konflikt dabei ist Daten des Commits $W'$, kein Fehler.
+Trägt $W$ selbst einen offenen Konflikt, durchläuft er dieselbe Rechnung:
+Seine Terme heben sich gegen die neuen auf, oder die Summe wird länger.
+Der Snapshot behält den Konflikt, solange der Text der Markierungen unverändert ist.
+Führt die neue Basis eine Seite des Konflikts wieder heraus, fällt er weg,
+und $W'$ ist ein gewöhnlicher Commit.
+
+\startitemize[n]
+\item Der Schritt fragt den Autorisierer nach \type{rewrite}
+und nimmt die Sperre der Referenzen.
+\item Er speichert die verfolgten Dateien in einem Snapshot
+(ausser bei der Wiederholung eines abgebrochenen Aufrufs, siehe unten).
+\item Er bildet $W'$ und schreibt den Commit in den Speicher.
+$W'$ hat $T$ als einzigen Elternteil und behält Change-ID, Autor, Zeit und Beschreibung von $W$.
+\item Er plant die Dateien, schreibt den Eintrag ins Log, bringt das Verzeichnis auf den Tree von
+$W'$ und bewegt zuletzt den Zeiger des Working-Copy-Commits (ADR-013).
+\stopitemize
+
+Der Schritt bewegt nur den Working-Copy-Commit.
+HEAD und die Branches bleiben, wo sie sind.
+Befehle, die sie im selben Zug bewegen, sollen später einen Eintrag für alle Bewegungen schreiben.
+Die ersetzten Commits bleiben im Log (ADR-011),
+und \type{op restore} macht den Schritt rückgängig.
+
+Ein Working-Copy-Commit ohne Änderung wird nicht mitgenommen.
+Er wird durch einen leeren Commit auf $T$ mit einer neuen Change-ID ersetzt,
+wie ihn \type{switch} anlegt, denn eine leere Arbeitskopie hat keine Änderung,
+der ein Review folgen könnte.
+
+Bei einem Konflikt enthält das Verzeichnis die Datei jedes entschiedenen Pfads
+und für jeden unentschiedenen Pfad den Text mit Markierungen.
+Damit sind die konkurrierenden Werte sichtbar, ohne dass der Commit sie als Text speichert.
+
+\startinfobox
+{\bf Grenzfälle des Umschreibens.}
+\startitemize
+\item Bricht der Schritt ab, nachdem die Dateien geschrieben sind, aber bevor der Zeiger sich
+bewegt, nennt die Fehlermeldung den Eintrag und verlangt den gleichen Aufruf noch einmal.
+Der zweite Aufruf nimmt keinen Snapshot, der die neuen Dateien als Änderungen des alten Commits
+speichern würde, und verwendet den Commit des abgebrochenen Eintrags wieder.
+Ein Umschreiben auf eine andere Basis lehnt der Kern in diesem Zustand ab,
+aus demselben Grund.
+\item Eine Basis mit der Change-ID des Working-Copy-Commits lehnt der Schritt ab,
+weil sonst zwei Commits derselben Änderung entstünden.
+\item Ein Working-Copy-Commit mit mehr als einem Elternteil lehnt der Schritt ab,
+weil seine Basis noch nicht festgelegt ist.
+\item Ein Pfad, bei dem ein Verzeichnis gegen eine Datei steht, erscheint wie in
+\in{Abschnitt}[sec:conflict-commands]; der Commit behält die Trees.
+\stopitemize
+\stopinfobox
+
 \section{Offene Fragen}
 
 \startitemize
