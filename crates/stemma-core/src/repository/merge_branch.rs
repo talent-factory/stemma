@@ -399,11 +399,11 @@ impl Repository {
         let entries = self.oplog().entries().map_err(MergeBranchError::Log)?;
         // A `take-over` names no pointer: the repeat of another actor writes one before its own
         // entry, and must not hide a stopped merge from a second repeat.
-        let Some(change) = entries
+        let Some((number, change)) = entries
             .iter()
             .rev()
-            .filter_map(Entry::change)
-            .find(|change| change.operation().as_str() != TAKE_OVER)
+            .filter_map(|entry| entry.change().map(|change| (entry.number(), change)))
+            .find(|(_, change)| change.operation().as_str() != TAKE_OVER)
         else {
             return Ok(None);
         };
@@ -420,9 +420,12 @@ impl Repository {
         if current != old {
             return Ok(None);
         }
-        let refused = Err(MergeBranchError::Stopped { stopped: next });
+        let refused = Err(MergeBranchError::Stopped {
+            stopped: next,
+            entry: number,
+        });
         let [(branch, moved_branch)] = change.branches() else {
-            // A repeat of a stopped merge that moved the working-copy commit only has no branch.
+            // An entry that moved the working-copy commit only is no merge that this code wrote.
             return Ok(None);
         };
         let (Some(&old_tip), Some(&new_tip)) = (moved_branch.before(), moved_branch.after()) else {
@@ -518,12 +521,15 @@ pub enum MergeBranchError {
     /// The working-copy commit could not be carried onto the new tip, or its files could not be
     /// brought to the new tree. For [`RewriteError::CheckoutFailed`] the entry was written.
     Rewrite(RewriteError),
-    /// The newest entry is a merge that did not finish and is not this one. Taking a snapshot
-    /// would save its files as changes of the working-copy commit, so nothing was done: the same
-    /// merge run again finishes it. Nothing was written.
+    /// The newest entry is a merge that did not finish and is not this one, or what it merged
+    /// has moved since. Taking a snapshot would save its files as changes of the working-copy
+    /// commit, so nothing was done: the same merge run again finishes it if nothing moved, and
+    /// `op restore` of its entry undoes it. Nothing was written.
     Stopped {
         /// The working-copy commit that the stopped merge made.
         stopped: CommitId,
+        /// The entry of the stopped merge.
+        entry: u64,
     },
     /// The entry was written and the files are at the new tree, but the first pointer did not
     /// move.
@@ -692,11 +698,12 @@ impl fmt::Display for MergeBranchError {
                 write!(f, "could not merge, nothing of it was written: {error}")
             }
             Self::Rewrite(error) => error.fmt(f),
-            Self::Stopped { stopped } => write!(
+            Self::Stopped { stopped, entry } => write!(
                 f,
-                "the newest merge (working-copy commit {stopped}) did not finish and is not this \
-                 one; run that merge again before any other command, as a snapshot would save \
-                 its files as changes"
+                "the newest merge (entry {entry}, working-copy commit {stopped}) did not finish \
+                 and is not this one, or the branch that it merged has moved since; run that \
+                 merge again before any other command, as a snapshot would save its files as \
+                 changes, or undo it with `stemma op restore {entry}`"
             ),
             Self::MoveFailed { entry, source } => write!(
                 f,
@@ -1340,5 +1347,61 @@ mod tests {
             "{error}"
         );
         assert_eq!(entries(&repository), count);
+    }
+
+    #[test]
+    fn a_stopped_merge_is_refused_when_the_other_branch_moved_since() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        switch(&repository, &existing("feature"));
+        let _ = stopped(&repository, "other");
+        // `other` gets a commit from a second worktree of the repository.
+        let named = tip(&repository, "feature");
+        let moved = AnyCommit::from_sum(
+            &read_any_commit(repository.objects(), tip(&repository, "other"))
+                .unwrap()
+                .tree_sum(),
+            vec![tip(&repository, "other")],
+            ChangeId::generate().unwrap(),
+            actor(),
+            now(),
+            "later",
+        )
+        .unwrap();
+        let AnyCommit::Commit(moved) = moved else {
+            panic!("a commit without a conflict");
+        };
+        let id = repository.objects().put_commit(&moved).unwrap();
+        let lock = repository
+            .refs_store()
+            .lock_writer(
+                &crate::Allowed::ask(
+                    &AllowAll,
+                    &actor(),
+                    &OperationName::try_new("x").unwrap(),
+                    "x",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let moved = repository.refs_store().update_branch_after(
+            &lock,
+            &name("other"),
+            Some(tip(&repository, "other")),
+            id,
+            repository.objects(),
+            || Ok::<_, OpLogError>(()),
+        );
+        assert!(matches!(moved, Ok(Logged::Moved(()))));
+        drop(lock);
+        let count = entries(&repository);
+
+        let error = merge(&repository, "other").unwrap_err();
+
+        assert!(matches!(error, MergeBranchError::Stopped { .. }), "{error}");
+        assert!(error.to_string().contains("op restore"), "{error}");
+        assert_eq!(entries(&repository), count);
+        assert_eq!(tip(&repository, "feature"), named);
     }
 }

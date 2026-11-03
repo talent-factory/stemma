@@ -375,6 +375,12 @@ art, not a template (ADR-015).
     target, which gives the proof for the lock, and with the other branch, as `branch -m` asks
     for both names. It is not an approval of ADR-004: computing the merge is risk level 2, and only the branch of the current
     worktree moves (a branch is checked out in one worktree only, ADR-009).
+  - *Known limit.* A repeat finds the stopped merge as the newest entry of the log, and the log
+    is shared by all worktrees: a command that writes an entry in another worktree between the
+    stop and the repeat hides it, and the repeat then takes a snapshot of the half-written
+    files. `rewrite` and `switch` have the same limit. The error text names the entry and
+    `op restore` as the way out; a repeat that looks for the stopped entry of its own worktree is
+    a slice of its own.
   - *Not decided here:* what a merge does when `W` has two parents (the carry refuses it, as
     above), a merge of a commit or a tag instead of a branch, and a merge that stops for a
     conflict (`--no-commit`) or resolves one with a strategy.
