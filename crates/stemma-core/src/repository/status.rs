@@ -12,7 +12,8 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
-use super::snapshot::{read_commit, read_object, tracked_files};
+use super::conflicted::{self, ConflictedFile};
+use super::snapshot::{read_any_commit, read_object, tracked_files};
 use super::track::{walk, Found};
 use super::{Repository, SnapshotError, TrackError, UpdateError};
 use crate::ignore::{IgnoreError, IgnoreRules};
@@ -84,7 +85,12 @@ pub struct Status {
     /// changes are then against the empty tree). A commit with several parents is compared with
     /// the first.
     pub parent: Option<CommitId>,
-    /// The files that the working-copy commit changes, sorted by path.
+    /// The paths with an open conflict in the working-copy commit, sorted by path; empty if it has
+    /// none (ADR-010). The file of such a path holds the text with markers, so the path is in
+    /// [`changes`](Self::changes) as well if that text differs from the parent.
+    pub conflicts: Vec<ConflictedFile>,
+    /// The files that the working-copy commit changes, sorted by path. A conflicted commit is
+    /// compared by the tree that shows it.
     pub changes: Vec<FileChange>,
     /// The files in the working directory that are not in the tree of the working-copy commit and
     /// that no pattern of `.stemmaignore` excludes, sorted by path. A directory is not listed,
@@ -171,10 +177,11 @@ impl Repository {
             Err(error) => return Err(StatusError::Snapshot(error)),
         };
         match self.read_state() {
-            Ok((head, working_copy, parent, changes, tracked)) => Ok(Status {
+            Ok((head, working_copy, parent, conflicts, changes, tracked)) => Ok(Status {
                 head,
                 working_copy,
                 parent,
+                conflicts,
                 changes,
                 untracked: found.files.difference(&tracked).cloned().collect(),
                 leftovers: found.leftovers.into_iter().collect(),
@@ -201,6 +208,7 @@ impl Repository {
             Head,
             CommitId,
             Option<CommitId>,
+            Vec<ConflictedFile>,
             Vec<FileChange>,
             BTreeSet<String>,
         ),
@@ -208,23 +216,25 @@ impl Repository {
     > {
         let working_copy = self.refs().working_copy().map_err(Failure::Refs)?;
         let head = self.refs().head().map_err(Failure::Refs)?;
-        let commit = read_commit(self.objects(), working_copy).map_err(Failure::Read)?;
+        let commit = read_any_commit(self.objects(), working_copy).map_err(Failure::Read)?;
+        let view = conflicted::view(self.objects(), &commit.tree_sum()).map_err(Failure::Read)?;
         let parent = commit.parents().first().copied();
         let old = match parent {
-            Some(parent) => Some(
-                read_commit(self.objects(), parent)
-                    .map_err(Failure::Read)?
-                    .tree(),
-            ),
+            Some(parent) => {
+                let parent = read_any_commit(self.objects(), parent).map_err(Failure::Read)?;
+                let shown =
+                    conflicted::view(self.objects(), &parent.tree_sum()).map_err(Failure::Read)?;
+                Some(shown.tree)
+            }
             None => None,
         };
-        let changes = compare(self.objects(), old, commit.tree()).map_err(Failure::Read)?;
-        let tracked = tracked_files(self.objects(), commit.tree())
+        let changes = compare(self.objects(), old, view.tree).map_err(Failure::Read)?;
+        let tracked = tracked_files(self.objects(), view.tree)
             .map_err(Failure::Read)?
             .into_iter()
             .map(|file| file.path)
             .collect();
-        Ok((head, working_copy, parent, changes, tracked))
+        Ok((head, working_copy, parent, view.files(), changes, tracked))
     }
 }
 
@@ -463,6 +473,7 @@ impl Error for StatusError {}
 mod tests {
     use std::fs;
 
+    use super::super::snapshot::read_commit;
     use super::*;
     use crate::repository::InitOptions;
     use crate::testutil::TempDir;

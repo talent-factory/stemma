@@ -417,6 +417,31 @@ impl AnyCommit {
         }
     }
 
+    /// Returns the commit that replaces this one in a snapshot or a `commit` (ADR-010): the same
+    /// parents and change ID, and the given trees, author, time, and message. The form follows
+    /// from the sum (see [`from_sum`](Self::from_sum)), so a snapshot that resolves the last
+    /// conflicted path writes a `commit` again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`from_sum`](Self::from_sum).
+    pub fn rewrite(
+        &self,
+        trees: &Merge<TreeId>,
+        author: Actor,
+        timestamp: i64,
+        message: impl Into<String>,
+    ) -> Result<Self, FromSumError> {
+        Self::from_sum(
+            trees,
+            self.parents().to_vec(),
+            self.change(),
+            author,
+            timestamp,
+            message,
+        )
+    }
+
     /// Returns a commit with the same change, author, time, and message, and the given trees and
     /// parents. The form follows from the sum (see [`from_sum`](Self::from_sum)), so a rewrite
     /// that makes two terms equal can turn a `commit2` into a `commit`.

@@ -729,6 +729,14 @@ Der Befehl gibt eine Zeile mit der ID des Commits und dem Branch aus:
 Committed b3:4a0b66... on main
 \stoptyping
 
+Hält der Working-Copy-Commit einen offenen Konflikt (ADR-010), ist der Commit erlaubt:
+Der Befehl endet mit Exit-Code 0, und dieselbe Zeile nennt den Konflikt am Ende.
+Der neue Working-Copy-Commit hat dieselbe Summe von Trees wie der benannte Commit, ist also leer.
+
+\starttyping
+Committed b3:4a0b66... on main with an open conflict (2 sides)
+\stoptyping
+
 {\bf JSON-Form.} Mit \type{--json} schreibt der Befehl statt dieser Zeile ein Objekt mit den
 Feldern \type{schema} (1), \type{commit} (die ID), \type{branch} und \type{resumed}.
 \type{resumed} ist \type{true}, wenn der Aufruf einen Commit beendet hat, der zwischen seinen
@@ -933,6 +941,7 @@ ein weiteres Argument ist ein Aufruffehler (Exit-Code 2).
 (Operation \type{snapshot}); ein Eintrag entsteht nur, wenn sich eine verfolgte Datei
 geändert hat.
 Danach ist jede verfolgte Datei gleich dem Working-Copy-Commit.
+(Bei einem Konflikt ist der Working-Copy-Commit der Tree, der ihn zeigt; siehe unten.)
 \type{status} zeigt deshalb nicht, was vom Working-Copy-Commit abweicht,
 sondern was dieser Commit gegenüber seinem Elternteil tut
 (beim ersten Commit gegenüber dem leeren Baum):
@@ -944,6 +953,21 @@ D gone.txt
 M src/main.rs
 Untracked files:
 ? notes.txt
+\stoptyping
+
+Hält der Working-Copy-Commit einen offenen Konflikt (ADR-010), steht vor den Änderungen der
+Abschnitt \type{Conflicts}. Er nennt je Pfad mit \type{C} die Zahl der Seiten, die an diesem
+Pfad übrig bleiben; sie kann kleiner sein als die des Commits, weil sich Terme aufheben.
+Die Datei eines solchen Pfades enthält den Text mit Markierungen, den Stemma geschrieben hat;
+sie steht daher auch bei den Änderungen, wenn der Text vom Elternteil abweicht.
+Ein Snapshot behält den Konflikt nur, solange die Datei genau dieser Text ist
+(siehe {\bf Konflikte} bei \type{diff}).
+
+\starttyping
+Conflicts:
+C src/main.rs (2 sides)
+Working copy changes:
+M src/main.rs
 \stoptyping
 
 \type{A} ist eine Datei, die der Commit hinzufügt, \type{M} eine mit anderem Inhalt oder
@@ -969,8 +993,8 @@ restore is running:
 ! docs/.stemma-checkout-4711-3-0123456789abcdef
 \stoptyping
 
-Ein Abschnitt ohne Dateien fehlt. Gibt es weder Änderungen noch unverfolgte Dateien noch Reste,
-schreibt der Befehl eine Zeile:
+Ein Abschnitt ohne Dateien fehlt. Gibt es weder Konflikte noch Änderungen noch unverfolgte
+Dateien noch Reste, schreibt der Befehl eine Zeile:
 
 \starttyping
 Working copy is clean
@@ -987,8 +1011,10 @@ Eine verfolgte Datei, die ein Muster der Ausschlussdatei ausschliesst, bleibt in
 Änderungen; sie wird weiter gespeichert.
 
 {\bf JSON-Form.} Mit \type{--json} schreibt der Befehl statt des Textes ein Objekt mit den Feldern
-\type{schema} (1), \type{clean}, \type{changes}, \type{untracked} und \type{leftovers}.
-\type{clean} ist \type{true}, wenn alle drei Listen leer sind.
+\type{schema} (1), \type{clean}, \type{conflicts}, \type{changes}, \type{untracked} und
+\type{leftovers}. \type{clean} ist \type{true}, wenn alle vier Listen leer sind.
+\type{conflicts} enthält je Pfad im Konflikt \type{path} und \type{sides}; das Feld ist
+neu und lässt \type{schema} bei 1 (ADR-018).
 \type{changes} enthält je Änderung \type{kind} und \type{path}; \type{kind} ist {\tt A}
 (neu), {\tt M} (geändert) oder {\tt D} (gelöscht), und diese Buchstaben gehören zu Schema 1,
 auch wenn sich der Text ändern darf.
@@ -997,6 +1023,7 @@ Das Beispiel ist umgebrochen; der Befehl schreibt eine Zeile:
 
 \starttyping
 {"schema":1,"clean":false,
+"conflicts":[{"path":"a.txt","sides":2}],
 "changes":[{"kind":"M","path":"a.txt"}],
 "untracked":["b.txt"],"leftovers":[]}
 \stoptyping
@@ -1106,6 +1133,32 @@ Dateien, und \type{--exit-code} betrachtet nur die gewählten Dateien.
 Eine Datei mit einem NUL-Byte in den ersten 8000 Bytes ist binär: Der Befehl zeigt ihren
 Inhalt nicht, sondern nur die Zeile \type{Binary files ... and ... differ} mit den beiden
 Seiten, wie sie im Kopf stehen. Ist eine der beiden Fassungen binär, gilt das für die ganze Datei.
+
+{\bf Konflikte.} Ein Commit mit offenem Konflikt vergleicht der Befehl als den Tree, der ihn
+zeigt (ADR-010): An jedem Pfad im Konflikt steht der Text mit Markierungen, derselbe, den ein
+Restore und der Snapshot für die Platte schreiben, und der Befehl vergleicht ihn wie eine
+gewöhnliche Datei. Der Kopf eines solchen Pfades, soweit der Konflikt auf der neuen Seite
+liegt, endet mit \type{(conflict)}:
+
+\starttyping
+diff a.txt (conflict)
+--- b3:4f2a0c… a.txt
++++ working-copy b3:9c1e7d… a.txt
+@@ -1 +1,7 @@
+-base
++<<<<<<< conflict
+++++++++ side 1
++one
++------- base 1
++base
+++++++++ side 2
++two
++>>>>>>>
+\stoptyping
+
+Hat ein Term ein Verzeichnis, zeigt der Text die Zeile \type{(directory)}; die Dateien darin
+schreibt der Befehl nicht. Der Befehl schreibt dafür Objekte in den Speicher (den Text und die
+Trees der Ansicht), aber keinen Eintrag und keinen Zeiger.
 
 Zeilen vergleicht der Befehl so, wie sie gespeichert sind, samt Zeilenende.
 Eine Änderung nur der Zeilenenden erscheint deshalb als Änderung der Zeile.
@@ -1298,6 +1351,13 @@ jede um vier Leerzeichen eingerückt. Eine Leerzeile beendet den Block;
 ein Commit ohne Nachricht, etwa der Working-Copy-Commit nach \type{init},
 hat also den Kopf und eine Leerzeile.
 Die Marke ist \type{@} für den Working-Copy-Commit und \type{o} für jeden anderen.
+Hält ein Commit einen offenen Konflikt (ADR-010), endet seine erste Zeile mit
+\type{conflict (N sides)}, wobei \type{N} die Zahl der Seiten nach dem Aufheben der Terme ist:
+
+\starttyping
+o b3:3333...3333 conflict (2 sides)
+\stoptyping
+
 Autor und Nachricht stammen vom Commit und können das Terminal steuern oder die Anzeige
 täuschen; die Textform schreibt darum diese Zeichen als \type{\u{..}} (hexadezimal):
 die Steuerzeichen von Unicode (C0, DEL und C1) ausser dem Tabulator, ein einzelnes
@@ -1329,7 +1389,9 @@ o b3:1111...1111
 {\bf JSON-Form.} Jede Zeile hat die Felder \type{schema} (heute 1), \type{commit},
 \type{working_copy} (\type{true} für den Working-Copy-Commit), \type{parents} (eine Liste von IDs,
 leer ohne Eltern), \type{change}, \type{author}, \type{time} (Sekunden seit dem 1.1.1970,
-wie im Commit) und \type{message} (unverändert, mit den Regeln von JSON maskiert).
+wie im Commit), \type{message} (unverändert, mit den Regeln von JSON maskiert) und
+\type{conflict}: \type{null} oder ein Objekt \type{{"sides":N}} für einen Commit mit offenem
+Konflikt. Das Feld ist neu und lässt \type{schema} bei 1 (ADR-018).
 
 {\bf Fehler.} Der Befehl liest die Commits, bevor er etwas ausgibt, und gibt bei einem Fehler
 nichts aus. Fehlt ein Commit, den der Working-Copy-Commit oder ein Elternteil nennt, ist er nicht in
@@ -1838,6 +1900,11 @@ der den Branch bewegte und dann abbrach), lässt sich zurücksetzen.
 Ein Zeiger, den spätere Einträge weiterbewegt haben, geht ohne Warnung auf den alten Wert.
 Bewegt sich der Working-Copy-Commit, schreibt das Restore die Dateien des alten Baums
 ins Arbeitsverzeichnis.
+Hält das Ziel einen offenen Konflikt, ist der Baum der, der ihn zeigt (ADR-010, ADR-013):
+An jedem Pfad im Konflikt steht der Text mit Markierungen, derselbe wie in \type{diff}.
+Der Snapshot danach sieht den unveränderten Text und behält den Konflikt;
+so lässt sich ein Merge mit Konflikt zurücksetzen und wiederherstellen.
+Ohne Konflikt ändert sich nichts.
 Verfolgte Dateien, die der alte Baum nicht hat, werden gelöscht,
 und mit ihnen die Verzeichnisse, die dadurch leer werden.
 Nicht verfolgte Dateien, \type{.stemma} und \type{.git} bleiben unberührt.

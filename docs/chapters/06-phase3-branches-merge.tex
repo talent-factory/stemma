@@ -31,12 +31,12 @@ unveränderter ID.
 Alle Pfade eines Commits teilen die Zahl der Seiten; ein kleinerer Konflikt wird mit
 aufhebenden Paaren aufgefüllt.
 Der Text mit Markierungen entsteht aus einer einzigen Funktion der Summe.
-Er soll nur auf der Platte und im \type{diff} erscheinen; der Snapshot soll Bytes vergleichen und
-keine Markierungen lesen.
-Noch ruft ihn nichts auf.
+Er erscheint nur auf der Platte und im \type{diff}; der Snapshot vergleicht Bytes und
+liest keine Markierungen (\in{Abschnitt}[sec:conflict-commands]).
 Die Regel, dass zwei Seiten mit gleicher Änderung sofort als gelöst gelten, gehört nicht zur
 Algebra, weil sie beim erneuten Zusammenführen Information verliert.
-Noch schreibt kein Befehl einen solchen Commit.
+Noch schreibt kein Befehl einen solchen Commit; \type{snapshot}, \type{status}, \type{log},
+\type{diff}, \type{commit} und \type{op restore} können ihn aber lesen und weiterführen.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
 \item Eigentümer der Arbeitskopie (Format 5, ADR-010): Ein Snapshot speichert nur die
 Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich
@@ -291,6 +291,85 @@ neuen im Weg, bis sie gelöscht ist.
 \type{main} in \type{Main} umzubenennen ein Namenskonflikt; der Befehl lehnt es ab, statt die
 Datei zu überschreiben.
 \item Besteht das Journal eines Purge, lehnt der Befehl jede Änderung ab (ADR-014).
+\stopitemize
+\stopinfobox
+
+\section[sec:conflict-commands]{Konflikte in den Befehlen}
+
+Ein Konflikt liegt als Summe von Trees im Commit (ADR-005), das Arbeitsverzeichnis aber besteht
+aus Dateien. Die Befehle, die einen Commit lesen oder zeigen, brauchen deshalb eine Brücke:
+Aus der Summe entsteht ein einzelner Tree, der den Konflikt zeigt, und aus den Dateien kommt
+wieder eine Summe zurück. Diese Brücke ist die einzige Stelle, die Konflikte kennt;
+\type{status}, \type{diff} und die Checkout-Schicht arbeiten danach wie immer auf einem Tree
+(ADR-010).
+
+{\bf Definition.} Ein Pfad ist {\em im Konflikt}, wenn die Werte seines Namens in den Termen der
+vereinfachten Summe sich nicht aufheben und nicht alle Verzeichnisse sind. Verzeichnisse betritt
+die Brücke, sie zeigt sie nicht; die Namen darunter sind eigene Pfade. Der Tree der Ansicht
+enthält an jedem Pfad im Konflikt eine Datei mit dem Text der Markierungen und sonst den Wert
+des Pfades. Steht an einem Pfad ein Verzeichnis gegen eine Datei, hat das Verzeichnis keinen
+Inhalt und erscheint im Text als Zeile \type{(directory)}; seine Dateien bleiben im Commit und
+werden nicht geschrieben.
+
+\startitemize[n]
+\item Der Snapshot liest den Commit und baut die Ansicht. Die verfolgten Dateien sind die
+des Trees der Ansicht.
+\item Er liest diese Dateien wie immer und schreibt den Tree des Arbeitsverzeichnisses.
+Ist er gleich dem der Ansicht, ist nichts zu speichern, und der Konflikt bleibt.
+\item Sonst entscheidet er jeden Pfad im Konflikt einzeln. Ist die Datei Byte für Byte der Text,
+den Stemma geschrieben hat, behält der Pfad seine Werte. Jeder andere Inhalt löst den Pfad
+mit genau diesem Inhalt, in jedem Term; eine gelöschte Datei löst ihn durch Löschen.
+\item Alle übrigen Pfade nehmen den Inhalt der Datei in jedem Term der Summe an,
+sodass eine Änderung neben einem Konflikt diesen nicht berührt.
+\item Aus den Termen entsteht ein neuer Commit mit denselben Eltern und derselben Change-ID.
+Hebt sich die Summe auf einen Tree auf, ist er wieder ein gewöhnlicher \type{commit}
+mit der ID, die ein Zustand ohne Konflikt immer hat.
+\stopitemize
+
+{\bf Invariante.} Zwei Zustände mit gleicher Bedeutung haben die gleiche Form. Die Ansicht ist
+eine Funktion der Summe allein; der Snapshot schreibt für einen Pfad im Konflikt, der unverändert
+ist, dieselben Terme in derselben Reihenfolge zurück. Weil der Text von dieser Reihenfolge
+abhängt, zeigt die Platte nach dem Snapshot denselben Text wie vorher.
+
+{\bf Kosten.} Die Ansicht liest die Trees der Summe wie der Merge
+(\in{Abschnitt}[sec:tree-merge]): Ein Tree, der sich aufhebt, wird nicht gelesen. Die Kosten sind
+$O(n \cdot k)$ bis auf logarithmische Faktoren für $n$ Einträge in den Verzeichnissen, die sich
+unterscheiden, und $k$ Terme. Ein Commit ohne Konflikt kostet nichts zusätzlich und schreibt
+nichts.
+
+{\bf Warum Bytes statt Markierungen.} Der Snapshot liest keine Markierungen, denn jede Regel zum
+Lesen hätte Grenzfälle in beide Richtungen: Eine Datei, die Markierungen dokumentiert, wäre
+ein Konflikt, und eine halb bearbeitete Markierung liesse sich nicht sicher deuten.
+Der Vergleich der Bytes hat keinen solchen Fall. Der Preis ist, dass ein halb bearbeiteter Text
+als Lösung gilt: Wer eine Zeile der Markierung entfernt, hat den Pfad aufgelöst, mit dem
+Text, der dasteht.
+
+{\bf Die Befehle.}
+
+\startitemize
+\item \type{status} zeigt vor den Änderungen den Abschnitt \type{Conflicts} mit den Pfaden und
+der Zahl der Seiten je Pfad. Die Änderungen sind die des Trees der Ansicht gegen den Elternteil.
+\item \type{log} setzt \type{conflict (N sides)} in die Kopfzeile des Commits.
+\item \type{diff} zeigt für einen Pfad im Konflikt den Text mit Markierungen wie für eine
+gewöhnliche Datei; der Kopf nennt den Pfad mit \type{(conflict)}.
+\item \type{commit} darf einen offenen Konflikt festhalten, mit Exit-Code 0 und einer Zeile,
+die ihn nennt. Der neue Working-Copy-Commit hat dieselbe Summe, ist also leer.
+Ein Gate, das einen Merge mit Konflikt ablehnt, gehört zum Merge-Gate der Phase 4.
+\item \type{op restore} schreibt für einen Commit mit Konflikt den Text mit Markierungen.
+Der Snapshot danach sieht den unveränderten Text und behält den Konflikt;
+so lässt sich ein Merge mit Konflikt rückgängig machen und wiederherstellen.
+\stopitemize
+
+\startinfobox
+{\bf Grenzfälle der Ansicht.}
+\startitemize
+\item Unterscheiden sich die Terme eines Pfades nur im Modus, gibt es keinen Text. Die Datei hat
+den gemeinsamen Inhalt, und ihr Modus zählt beim Vergleich: Wer ihn ändert, löst den Pfad.
+\item Ein symbolischer Link erscheint mit seinem Ziel als Inhalt und wird als gewöhnliche
+Datei geschrieben.
+\item \type{switch} lehnt einen Working-Copy-Commit oder ein Ziel mit Konflikt noch ab.
+\item Ein Pfad im Konflikt, den der Benutzer durch ein Verzeichnis ersetzt, ist aufgelöst:
+Es steht dann keine Datei an diesem Pfad.
 \stopitemize
 \stopinfobox
 

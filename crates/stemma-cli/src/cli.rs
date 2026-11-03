@@ -1998,8 +1998,8 @@ fn show_log(args: LogArgs, out: &mut dyn Write) -> Result<(), CliError> {
 /// One commit for a person: the mark and the ID, then the change, the parents (`-` for none), the
 /// author, and the time. A message follows after a blank line, every line indented by four spaces.
 /// A blank line ends the block, so a commit with an empty message, such as the working-copy commit
-/// after `init`, has the header and one blank line. A `commit2` (an open conflict) is listed like a
-/// commit; marking it is left to the conflict commands of phase 3 (STEMMA-19).
+/// after `init`, has the header and one blank line. A `commit2` (an open conflict) is marked in the
+/// header line with `conflict (N sides)`.
 fn log_text(id: CommitId, commit: &AnyCommit, current: bool) -> String {
     let parents = commit
         .parents()
@@ -2008,8 +2008,9 @@ fn log_text(id: CommitId, commit: &AnyCommit, current: bool) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     let mut text = format!(
-        "{} {id}\n  change   {}\n  parents  {}\n  author   {}\n  time     {}\n",
+        "{} {id}{}\n  change   {}\n  parents  {}\n  author   {}\n  time     {}\n",
         if current { '@' } else { 'o' },
+        conflict_note(conflict_sides(commit), " conflict"),
         commit.change(),
         if parents.is_empty() { "-" } else { &parents },
         mask_controls(&commit.author().to_string()),
@@ -2028,6 +2029,13 @@ fn log_text(id: CommitId, commit: &AnyCommit, current: bool) -> String {
     }
     text.push('\n');
     text
+}
+
+/// The number of sides of the conflict that a commit records, or `None` if it records none. Terms
+/// that cancel are not counted.
+fn conflict_sides(commit: &AnyCommit) -> Option<usize> {
+    let sum = commit.tree_sum().simplify();
+    (!sum.is_resolved()).then(|| sum.sides())
 }
 
 /// Whether `mask_controls` writes the character as `\u{..}`: the controls of Unicode (C0, DEL, and
@@ -2061,7 +2069,8 @@ fn mask_controls(text: &str) -> String {
 
 /// One commit as one JSON object and a newline (`schema`, ADR-018): `commit`, `working_copy`
 /// (true for `@`), `parents` (a list of IDs), `change`, `author`, `time` (seconds since the Unix
-/// epoch, as the commit claims), and `message` (verbatim).
+/// epoch, as the commit claims), `message` (verbatim), and `conflict`: `null`, or an object with
+/// `sides` for a commit that records an open conflict.
 fn log_json(id: CommitId, commit: &AnyCommit, current: bool) -> String {
     let parents: Vec<String> = commit
         .parents()
@@ -2070,13 +2079,17 @@ fn log_json(id: CommitId, commit: &AnyCommit, current: bool) -> String {
         .collect();
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"commit\":{},\"working_copy\":{current},\"parents\":[{}],\
-         \"change\":{},\"author\":{},\"time\":{},\"message\":{}}}\n",
+         \"change\":{},\"author\":{},\"time\":{},\"message\":{},\"conflict\":{}}}\n",
         op_log::quote(&id.to_string()),
         parents.join(","),
         op_log::quote(&commit.change().to_string()),
         op_log::quote(&commit.author().to_string()),
         commit.timestamp(),
-        op_log::quote(commit.message())
+        op_log::quote(commit.message()),
+        conflict_sides(commit).map_or_else(
+            || "null".to_owned(),
+            |sides| format!("{{\"sides\":{sides}}}")
+        )
     )
 }
 
@@ -2744,7 +2757,8 @@ fn diff_text(diff: &Diff, colour: bool) -> String {
         } else {
             "/dev/null".to_owned()
         };
-        text.push_str(&format!("{bold}diff {path}{reset}\n"));
+        let note = if file.conflict() { " (conflict)" } else { "" };
+        text.push_str(&format!("{bold}diff {path}{note}{reset}\n"));
         let text_diff = match file.content() {
             Content::Binary => {
                 text.push_str(&format!("Binary files {old_name} and {new_name} differ\n"));
@@ -2983,14 +2997,28 @@ fn finish_status_as(status: Status, json: bool, out: &mut dyn Write) -> Result<(
     }
 }
 
-/// The text of the status: the changes with their letters, the untracked files, and the files that
+/// The text of the status: the conflicts with their number of sides, the changes with their letters, the untracked files, and the files that
 /// an interrupted checkout left, each section only if it has files, or one line if there are none.
 /// A path is written with [`escape_path`].
 fn status_text(status: &Status) -> String {
-    if status.changes.is_empty() && status.untracked.is_empty() && status.leftovers.is_empty() {
+    if status.conflicts.is_empty()
+        && status.changes.is_empty()
+        && status.untracked.is_empty()
+        && status.leftovers.is_empty()
+    {
         return "Working copy is clean\n".to_owned();
     }
     let mut text = String::new();
+    if !status.conflicts.is_empty() {
+        text.push_str("Conflicts:\n");
+        for conflict in &status.conflicts {
+            text.push_str(&format!(
+                "C {} ({} sides)\n",
+                escape_path(&conflict.path),
+                conflict.sides
+            ));
+        }
+    }
     if !status.changes.is_empty() {
         text.push_str("Working copy changes:\n");
         for change in &status.changes {
@@ -3039,8 +3067,8 @@ fn escape_path(path: &str) -> String {
         .join("/")
 }
 
-/// The status as one JSON object and a newline (`schema`, ADR-018): `clean`, `changes` (a list of
-/// `kind` and `path`), `untracked`, and `leftovers`. A path is a plain JSON string, not escaped by
+/// The status as one JSON object and a newline (`schema`, ADR-018): `clean`, `conflicts` (a list of
+/// `path` and `sides`), `changes` (a list of `kind` and `path`), `untracked`, and `leftovers`. A path is a plain JSON string, not escaped by
 /// [`escape_path`].
 fn status_json(status: &Status) -> String {
     let paths = |paths: &[String]| {
@@ -3062,11 +3090,25 @@ fn status_json(status: &Status) -> String {
         })
         .collect::<Vec<_>>()
         .join(",");
-    let clean =
-        status.changes.is_empty() && status.untracked.is_empty() && status.leftovers.is_empty();
+    let conflicts = status
+        .conflicts
+        .iter()
+        .map(|conflict| {
+            format!(
+                "{{\"path\":{},\"sides\":{}}}",
+                op_log::quote(&conflict.path),
+                conflict.sides
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let clean = status.conflicts.is_empty()
+        && status.changes.is_empty()
+        && status.untracked.is_empty()
+        && status.leftovers.is_empty();
     format!(
-        "{{\"schema\":{JSON_SCHEMA},\"clean\":{clean},\"changes\":[{changes}],\"untracked\":[{}],\
-         \"leftovers\":[{}]}}\n",
+        "{{\"schema\":{JSON_SCHEMA},\"clean\":{clean},\"conflicts\":[{conflicts}],\
+         \"changes\":[{changes}],\"untracked\":[{}],\"leftovers\":[{}]}}\n",
         paths(&status.untracked),
         paths(&status.leftovers)
     )
@@ -3088,13 +3130,26 @@ fn commit_json(result: &Committed) -> String {
 fn commit_text(result: &Committed) -> String {
     if result.resumed {
         format!(
-            "Finished the commit {} on {} that had stopped; the message of this call was not \
+            "Finished the commit {} on {} that had stopped{}; the message of this call was not \
              used\n",
-            result.commit, result.branch
+            result.commit,
+            result.branch,
+            conflict_note(result.conflict_sides, ", with an open conflict")
         )
     } else {
-        format!("Committed {} on {}\n", result.commit, result.branch)
+        format!(
+            "Committed {} on {}{}\n",
+            result.commit,
+            result.branch,
+            conflict_note(result.conflict_sides, " with an open conflict")
+        )
     }
+}
+
+/// The note for a commit that records an open conflict: `lead`, then the number of sides in
+/// parentheses. Nothing for a commit without one.
+fn conflict_note(sides: Option<usize>, lead: &str) -> String {
+    sides.map_or_else(String::new, |sides| format!("{lead} ({sides} sides)"))
 }
 
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
@@ -3314,7 +3369,7 @@ fn temp_left_message(path: &Path, error: &io::Error) -> String {
 mod tests {
     use super::*;
     use stemma_core::object::Commit;
-    use stemma_core::repository::{SnapshotError, UpdateError};
+    use stemma_core::repository::{ConflictedFile, SnapshotError, UpdateError};
 
     /// A repository made by `init` below the temp directory, and its first entry.
     fn repository_with_entry(name: &str) -> (PathBuf, stemma_core::oplog::Entry) {
@@ -3936,6 +3991,29 @@ mod tests {
             "Left by an interrupted restore, may hold an old file or a purged secret; remove them \
              unless a restore is running:\n! it\\'s/.stemma-checkout-1-0-0123456789abcdef\n"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_conflicts_come_before_the_changes_and_make_the_working_copy_unclean() {
+        let (dir, mut status) = a_status("status-conflicts");
+        status.conflicts.push(ConflictedFile::new("keep.txt", 3));
+        assert_eq!(
+            status_text(&status),
+            "Conflicts:\nC keep.txt (3 sides)\n\
+             Working copy changes:\nD gone.txt\nM keep.txt\nA new.txt\n\
+             Untracked files:\n? it\\'s.txt\n"
+        );
+        let json = status_json(&status);
+        assert!(
+            json.contains("\"clean\":false,\"conflicts\":[{\"path\":\"keep.txt\",\"sides\":3}],"),
+            "{json}"
+        );
+        status.changes.clear();
+        status.untracked.clear();
+        assert_eq!(status_text(&status), "Conflicts:\nC keep.txt (3 sides)\n");
+        status.conflicts.clear();
+        assert!(status_json(&status).contains("\"clean\":true,\"conflicts\":[],"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -5156,9 +5234,56 @@ mod tests {
         assert!(
             json.ends_with(
                 "\"message\":\"Merge \\\"x\\\"\\u000d\\u000a\
-            second\\u0009line\\u000a\\u000a\"}\n"
+            second\\u0009line\\u000a\\u000a\",\"conflict\":null}\n"
             ),
             "{json}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_commit_with_an_open_conflict_is_marked_in_the_header_and_the_json() {
+        use stemma_core::object::{Blob, Commit2, FileMode, Tree, TreeEntry};
+        use stemma_core::store::ObjectStore;
+        let (dir, first_id, first, _, _) = merge_commit("log-conflict");
+        let repository = Repository::open(&dir).unwrap();
+        let store = repository.objects();
+        let trees = ["one", "base", "two"]
+            .iter()
+            .map(|text| {
+                let blob = store.put_blob(&Blob::new(*text)).unwrap();
+                let entry = TreeEntry::file("a.txt", FileMode::File, blob).unwrap();
+                store
+                    .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                    .unwrap()
+            })
+            .collect();
+        let conflict = Commit2::try_new(
+            trees,
+            vec![first_id],
+            first.change(),
+            Actor::human("daniel").unwrap(),
+            1_700_000_000,
+            "",
+        )
+        .unwrap();
+        let id = conflict.id();
+        let commit = AnyCommit::Commit2(conflict);
+        let text = log_text(id, &commit, false);
+        assert!(
+            text.starts_with(&format!("o {id} conflict (2 sides)\n")),
+            "{text}"
+        );
+        let json = log_json(id, &commit, true);
+        assert!(json.ends_with(",\"conflict\":{\"sides\":2}}\n"), "{json}");
+        // A commit without a conflict has no mark and a null.
+        let plain = AnyCommit::Commit(first);
+        assert!(log_text(first_id, &plain, true).starts_with(&format!("@ {first_id}\n")));
+        assert!(log_json(first_id, &plain, true).ends_with(",\"conflict\":null}\n"));
+        assert_eq!(conflict_note(None, " conflict"), "");
+        assert_eq!(
+            conflict_note(Some(3), " with an open conflict"),
+            " with an open conflict (3 sides)"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

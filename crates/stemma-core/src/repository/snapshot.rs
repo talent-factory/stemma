@@ -14,7 +14,7 @@ use std::fs::{self, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{now, Repository, UpdateError};
+use super::{conflicted, now, Repository, UpdateError};
 use crate::conflict::AnyCommit;
 use crate::fault;
 use crate::index::{Index, IndexError, WriteTreeError};
@@ -186,8 +186,10 @@ impl Repository {
             true => Some(self.ask_take_over(actor, authorizer)?),
             false => None,
         };
-        let commit = read_commit(self.objects(), current)?;
-        let tracked = tracked_files(self.objects(), commit.tree())?;
+        let commit = read_any_commit(self.objects(), current)?;
+        // A commit with an open conflict is read as the tree that shows it (ADR-010).
+        let view = conflicted::view(self.objects(), &commit.tree_sum())?;
+        let tracked = tracked_files(self.objects(), view.tree)?;
         let mut known: HashSet<String> = tracked.iter().map(|file| file.path.clone()).collect();
         let added: Vec<Tracked> = additions(self.path())?
             .into_iter()
@@ -221,7 +223,7 @@ impl Repository {
         if let Some(operation) = take_over {
             self.take_over_locked(lock, &operation, actor)?;
         }
-        if tree == commit.tree() {
+        if tree == view.tree {
             // An unchanged tree has all its objects already, unless one was damaged and saved
             // again. The entry that names the working-copy commit was written after its objects
             // were durable (ADR-011), so only the new ones are flushed; flushing the directories
@@ -233,10 +235,13 @@ impl Repository {
                 late: None,
             });
         }
-        let replacement = commit.rewrite(tree, actor.clone(), now(), commit.message());
-        let new = objects
-            .put_commit(&replacement)
-            .map_err(|error| SnapshotError::Store(Box::new(error)))?;
+        // The files decide which conflicted paths stay conflicted; with no conflict the sum is the
+        // tree.
+        let sum = conflicted::resolve(&objects, &view.conflicts, &index)?;
+        let replacement = commit
+            .rewrite(&sum, actor.clone(), now(), commit.message())
+            .expect("the parents of the commit that it replaces are distinct");
+        let new = put_any_commit(&objects, &replacement)?;
         finish(objects)?;
         match self.move_working_copy(lock, operation, current, new, actor) {
             Ok(entry) => Ok(Replaced {
@@ -291,6 +296,20 @@ pub(super) fn read_commit(
         AnyCommit::Commit(commit) => Ok(commit),
         AnyCommit::Commit2(_) => Err(SnapshotError::Conflicted { id }),
     }
+}
+
+/// Stores a commit in its own form: a `commit`, or a `commit2` for an open conflict.
+pub(super) fn put_any_commit(
+    objects: &Batch<'_>,
+    commit: &AnyCommit,
+) -> Result<CommitId, SnapshotError> {
+    match commit {
+        AnyCommit::Commit(commit) => objects.put_commit(commit),
+        AnyCommit::Commit2(commit) => objects
+            .put_raw(Kind::Commit2, &commit.encode())
+            .map(CommitId::new),
+    }
+    .map_err(|error| SnapshotError::Store(Box::new(error)))
 }
 
 /// Reads and parses the commit in either of its kinds, `commit` or `commit2`.
