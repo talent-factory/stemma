@@ -855,8 +855,9 @@ Ohne die Option lehnt auch die Wiederholung einen anderen Akteur ab, und ein Age
 Mit \type{--dry-run} zusammen ist es ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{--discard}:} Lässt die Änderungen des Working-Copy-Commits zurück, statt sie
 mitzunehmen: Das Verzeichnis kommt auf den Stand des Ziels, und der neue Working-Copy-Commit ist
-leer. Die Änderungen stehen im Snapshot des Befehls und gehen nicht verloren; \type{op restore}
-holt sie zurück. Ohne Änderungen hat die Option keine Wirkung.
+leer. Die Änderungen bleiben im Log, im Snapshot des Befehls oder im alten Working-Copy-Commit,
+den der Eintrag nennt, und gehen nicht verloren; \type{op restore} holt sie zurück.
+Ohne Änderungen hat die Option keine Wirkung.
 \item {\bf \type{--dry-run}:} Zeigt, was der Wechsel täte, und schreibt nichts, auch keinen
 Snapshot. Der Plan geht vom gesicherten Working-Copy-Commit aus.
 Zusammen mit \type{--discard} zeigt er den Plan des Zurücklassens.
@@ -899,12 +900,15 @@ Exit-Code 0 und schreibt weder einen Snapshot noch einen Eintrag.
 Hatte der Working-Copy-Commit Änderungen, steht nach der ersten Zeile eine weitere:
 \type{Carried the changes of the working copy to the new base}, gefolgt von einer Zeile
 \type{C conflict PFAD} je Pfad im Konflikt, oder bei \type{--discard}
-\type{Left the changes behind; the log keeps them in the snapshot above}.
+\type{Left the changes behind; the log keeps them, and `op restore` brings them back}.
 
 Mit \type{--dry-run} beginnt die Ausgabe mit \type{Would switch to branch NAME; nothing is
 written} (bei \type{-c} \type{switch to a new branch NAME}, bei \type{--detach}
-\type{detach HEAD at ZIEL}). Es folgen die Zeilen \type{head} und \type{base}, bei \type{-c}
-die Zeile \type{branch}, die Zeile \type{carry the changes of the working copy to the new base}
+\type{detach HEAD at ZIEL}).
+Bei einem abgebrochenen Wechsel folgt die Zeile \type{finish the switch that stopped}.
+Dann kommen die Zeilen \type{head}, bei \type{-c} die Zeile \type{branch}
+und \type{base}, die Zeile
+\type{carry the changes of the working copy to the new base}
 mit einer Zeile \type{conflict PFAD} je Pfad im Konflikt (oder \type{discard the changes of the
 working copy}), je Datei \type{write PFAD} und \type{remove PFAD}, und zuletzt der Hinweis, dass
 ein echter Wechsel zuerst sichert. Zeigt HEAD schon auf den Branch, schreibt auch der Plan
@@ -917,7 +921,8 @@ und bei einem offenen Purge.
 Ebenso endet er, wenn eine Datei im Weg steht, die kein Commit verfolgt: Die Meldung nennt den Pfad,
 und der Befehl schreibt nichts, auch keinen Snapshot.
 Ebenso endet er bei einem Working-Copy-Commit mit Änderungen und mehr als einem Elternteil
-(ohne \type{--discard}), und wenn das Ziel die Change-ID des Working-Copy-Commits hat.
+(ohne \type{--discard}), und wenn das Ziel die Change-ID des Working-Copy-Commits hat und
+der Befehl die Änderungen mitnähme.
 Schlägt der Merge der Änderungen fehl, nennt die Meldung die Ursache; der Befehl hat dann nur
 Objekte geschrieben, und der Snapshot, falls er einen Eintrag schrieb, steht im Log.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.

@@ -159,9 +159,9 @@ fn discard_brings_the_directory_to_the_target_and_keeps_the_changes_in_the_log()
     let entry = newest(dir.path());
     assert_eq!(entry, before + 2);
     assert!(
-        result
-            .stdout
-            .contains("Left the changes behind; the log keeps them in the snapshot above\n"),
+        result.stdout.contains(
+            "Left the changes behind; the log keeps them, and `op restore` brings them back\n"
+        ),
         "{}",
         result.stdout
     );
@@ -344,4 +344,48 @@ fn a_detached_switch_takes_a_commit_id_and_an_unknown_id_is_refused() {
         back.stdout
     );
     assert_eq!(read(dir.path(), "a.txt"), "two");
+}
+
+#[test]
+fn discard_without_changes_says_nothing_about_them() {
+    let dir = two_branches();
+
+    let result = ok(
+        dir.path(),
+        &["switch", "feature", "--discard", "--actor", ACTOR],
+    );
+
+    assert!(
+        !result.stdout.contains("Left the changes"),
+        "{}",
+        result.stdout
+    );
+    assert!(!result.stdout.contains("Carried"), "{}", result.stdout);
+}
+
+#[test]
+fn a_dry_run_of_a_discard_names_the_discard() {
+    let dir = two_branches();
+    write(dir.path(), "a.txt", "scratch\n");
+    ok(dir.path(), &["status", "--actor", ACTOR]);
+
+    let result = ok(
+        dir.path(),
+        &[
+            "switch",
+            "feature",
+            "--discard",
+            "--dry-run",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    assert!(
+        result
+            .stdout
+            .contains("    discard the changes of the working copy\n"),
+        "{}",
+        result.stdout
+    );
 }

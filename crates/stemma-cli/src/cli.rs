@@ -21,14 +21,13 @@
 //! was before the purge, and nothing can undo either.
 //!
 //! A command that only reads (`log`, `op log`, `status`, `tag` and `branch` without a name, `op
-//! restore --dry-run`, `switch --dry-run`, and `purge` without `--apply`, `--resume`, or `--abort`) has made
-//! nothing by its output, so a failed write of its
-//! output is code 1; some of the output may already be written, and a script discards it. A
-//! closed pipe is not a failure, and it does not hide an error of flushing that comes after the
-//! output. The one exception is a closed pipe after an `op restore` that was made: the output is
-//! the only place that names its entry, so it is code 3.
-//! An `op restore` writes its result before an error that follows a restore that was made, as
-//! `commit` does.
+//! restore --dry-run`, `switch --dry-run`, and `purge` without `--apply`, `--resume`, or `--abort`)
+//! has made nothing by its output, so a failed write of its output is code 1; some of the output
+//! may already be written, and a script discards it. A closed pipe is not a failure, and it does
+//! not hide an error of flushing that comes after the output. The one exception is a closed pipe
+//! after an `op restore` that was made: the output is the only place that names its entry, so it is
+//! code 3. An `op restore` writes its result before an error that follows a restore that was made,
+//! as `commit` does.
 //!
 //! Two more codes split code 1 (ADR-018, [`FailureKind`]). Code 5 is damage: the log, a
 //! reference file, or an object is not as it must be, or the chain does not match an anchor; a
@@ -1713,7 +1712,8 @@ fn handled_text(handled: &Handled, done: bool) -> String {
     match handled {
         Handled::Nothing => String::new(),
         Handled::Discarded if done => {
-            "Left the changes behind; the log keeps them in the snapshot above\n".to_owned()
+            "Left the changes behind; the log keeps them, and `op restore` brings them back\n"
+                .to_owned()
         }
         Handled::Discarded => "    discard the changes of the working copy\n".to_owned(),
         Handled::Carried { conflicts } => {

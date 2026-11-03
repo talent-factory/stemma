@@ -75,8 +75,7 @@ Hat der alte Änderungen, nimmt der Befehl sie mit, und der neue entsteht wie be
 (\in{Abschnitt}[sec:rewrite-wc]): Er behält Change-ID, Autor, Zeit und Beschreibung, und sein
 Baum ist $T + (W - P)$.
 Ein Konflikt dabei ist Daten des neuen Commits und bricht den Wechsel nicht ab.
-Mit \type{--discard} ist der neue Commit auch dann leer; die Änderungen stehen dann nur im
-Snapshot des Logs.
+Mit \type{--discard} ist der neue Commit auch dann leer; die Änderungen bleiben dann nur im Log.
 \item Der Eintrag \type{switch} wird geschrieben und gesichert, dann bringt die Checkout-Schicht
 das Arbeitsverzeichnis auf den Baum des Ziels (ADR-013).
 Sind die Bäume gleich, bewegen sich nur die Zeiger.
@@ -98,9 +97,11 @@ Der Befehl ist mit \type{op restore} umkehrbar; die Ausgabe nennt den Eintrag.
 Die Wiederholung eines abgebrochenen Wechsels beendet ihn so, wie er begann:
 Sie nimmt den Commit des Eintrags weiter, und \type{--discard} ändert daran nichts.
 
-Mit \type{--dry-run} schreibt der Befehl nichts, auch keinen Snapshot.
-Er zeigt die Zeiger, die sich bewegten, was aus den Änderungen würde (mitgenommen, mit den Pfaden
-im Konflikt, oder zurückgelassen) und welche Dateien sich ändern.
+Mit \type{--dry-run} schreibt der Befehl keinen Eintrag und keinen Snapshot und bewegt nichts;
+nur Objekte, die kein Commit nennt, kann er speichern.
+Er zeigt die Zeiger, die sich bewegen würden,
+was aus den Änderungen würde (mitgenommen, mit den Pfaden im Konflikt, oder zurückgelassen)
+und welche Dateien sich ändern.
 Der Plan geht vom gesicherten Working-Copy-Commit aus; ein echter Wechsel sichert zuerst, was im
 Verzeichnis noch ungesichert steht.
 
@@ -113,7 +114,8 @@ Verzeichnis noch ungesichert steht.
 Anfang und lehnt ab.
 \item Ein Working-Copy-Commit mit mehr als einem Elternteil und mit Änderungen lehnt der
 Wechsel ab, weil seine Basis noch nicht festgelegt ist; mit \type{--discard} wechselt er.
-\item Hat das Ziel die Change-ID des Working-Copy-Commits, lehnt der Wechsel das Mitnehmen ab,
+\item Hat das Ziel die Change-ID des Working-Copy-Commits und hat dieser Änderungen, lehnt der
+Wechsel das Mitnehmen ab (ohne \type{--discard}),
 weil sonst zwei Commits derselben Änderung entstünden.
 \item Auf einem abgekoppelten HEAD lehnt \type{commit} ab und verweist auf \type{switch -c}.
 \item Eine Datei, die kein Commit verfolgt und die das Ziel anlegen will, bricht den Wechsel ab;

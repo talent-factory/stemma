@@ -125,11 +125,12 @@ impl Repository {
     ///
     /// After the snapshot, [`RewriteError::Read`], [`RewriteError::Merge`],
     /// [`RewriteError::Invalid`], [`RewriteError::Store`], [`RewriteError::ChangeId`],
-    /// [`RewriteError::Parents`], [`RewriteError::SameChange`], and [`RewriteError::Checkout`] stand for the preparation of the
-    /// new commit and the plan of the files. They wrote nothing but objects and, if the snapshot
-    /// wrote an entry, that entry; the error is then wrapped in [`RewriteError::AfterSnapshot`].
-    /// Then [`RewriteError::CheckoutFailed`], [`RewriteError::MoveFailed`], and
-    /// [`RewriteError::NotDurable`] say how far the rewrite came.
+    /// [`RewriteError::Parents`], [`RewriteError::SameChange`], and [`RewriteError::Checkout`]
+    /// stand for the preparation of the new commit and the plan of the files. They wrote nothing
+    /// but objects and, if the snapshot wrote an entry, that entry; the error is then wrapped in
+    /// [`RewriteError::AfterSnapshot`]. Then [`RewriteError::CheckoutFailed`],
+    /// [`RewriteError::MoveFailed`], and [`RewriteError::NotDurable`] say how far the rewrite
+    /// came.
     pub fn rewrite_working_copy(
         &self,
         onto: CommitId,

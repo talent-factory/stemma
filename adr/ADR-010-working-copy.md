@@ -109,7 +109,8 @@ art, not a template (ADR-015).
     top of that parent would drop what the branch has. A rebase (phase 3) brings the two
     together.
 - **`switch` changes the branch and carries the changes of the working-copy commit** *(confirmed,
-  implemented in `Repository::switch` and `stemma switch`; STEMMA-167, STEMMA-174)*. `switch <name>` makes HEAD name an
+  implemented in `Repository::switch` and `stemma switch`; STEMMA-167, STEMMA-174)*.
+  `switch <name>` makes HEAD name an
   existing branch, `switch -c <name> [<start>]` makes the branch (at `<start>`, a branch or a
   commit, by default at the commit that HEAD leads to) and switches to it, and
   `switch --detach <commit-or-branch>` makes HEAD name a commit (`Head::Detached`). A name that
@@ -130,8 +131,8 @@ art, not a template (ADR-015).
     any working-copy commit with a conflict (ADR-005).
   - **`--discard` leaves the changes behind.** `W'` is the empty commit of the previous item even
     if `W` holds changes, and the directory is brought to the tree of `T`. Nothing is lost: the
-    changes are in the snapshot, and `op restore` brings them back. `--discard` has no effect on
-    an empty `W`.
+    changes stay in the log (in the snapshot, or in `W` itself if nothing was unsaved), and
+    `op restore` brings them back. `--discard` has no effect on an empty `W`.
   - **`--dry-run` plans and writes nothing**, not even a snapshot, as `op restore --dry-run` does
     (STEMMA-77). It shows the moves of the pointers, what becomes of the changes (carried, with
     the paths in conflict, or left behind), and the files that would be written and removed. It
@@ -139,7 +140,8 @@ art, not a template (ADR-015).
     what it carries can differ. The merge of a carry stores objects that no commit names, which
     a purge removes. `--dry-run` cannot be combined with `--take-over`.
   - **One entry holds all moves** (operation `switch`): HEAD, the working-copy commit `W` to
-    `W'` (a carried one included), and for `-c` the branch from nothing to `T`. The order is that of a restore
+    `W'` (a carried one included), and for `-c` the branch from nothing to `T`. The order is that
+    of a restore
     (ADR-013): the checks and the plan, the entry, the files, then the pointers (the branch, the
     working-copy commit, HEAD last). The checkout layer of ADR-013 is used unchanged, from the
     tree of `W` to the tree of `T`; equal trees move only the pointers. A file that is not

@@ -71,7 +71,8 @@ pub enum Changes {
     #[default]
     Carry,
     /// Leave them behind: the new working-copy commit is empty, and the directory is brought to
-    /// the target. The snapshot that comes first keeps the changes in the log.
+    /// the target. The log keeps them: in the snapshot that comes first, or in the old
+    /// working-copy commit that the entry of the switch names.
     Discard,
 }
 
@@ -86,7 +87,8 @@ pub enum Handled {
         /// the carry was clean.
         conflicts: Vec<String>,
     },
-    /// The changes were left behind (`--discard`); the log keeps the snapshot that holds them.
+    /// The changes were left behind (`--discard`); the log keeps the commit that holds
+    /// them.
     Discarded,
 }
 
@@ -424,11 +426,25 @@ impl Repository {
         self.refs_store()
             .plan_restore(&targets, self.objects())
             .map_err(SwitchError::Refs)?;
-        let repeats = self.stopped_switch(&resolved)?.is_some();
-        if !repeats {
-            self.require_free(target)?;
-        }
-        let (_, handled, checkout) = self.plan_for(&resolved, changes, actor)?;
+        let stopped = self.stopped_switch(&resolved)?;
+        let repeats = stopped.is_some();
+        let (handled, checkout) = match stopped {
+            // A repeat finishes the stopped switch as it was started, whatever `changes` says.
+            Some((next, old)) => {
+                let (next, handled) = self.repeated(next, old)?;
+                let current = self.refs().working_copy().map_err(SwitchError::Refs)?;
+                let from = self.display_tree(current)?;
+                let plan = self
+                    .plan_checkout(Some(from), next.display)
+                    .map_err(SwitchError::Checkout)?;
+                (handled, plan)
+            }
+            None => {
+                self.require_free(target)?;
+                let (_, handled, checkout) = self.plan_for(&resolved, changes, actor)?;
+                (handled, checkout)
+            }
+        };
         Ok(Planned::Would(Box::new(SwitchPlan {
             head: resolved.head,
             tip: resolved.tip,
@@ -600,8 +616,8 @@ impl Repository {
         }
     }
 
-    /// The commit of a stopped switch, used again, and what became of the changes of the working-copy
-    /// commit `old` that it replaced: a commit that keeps the change ID carried them.
+    /// The commit of a stopped switch, used again, and what became of the changes of the
+    /// working-copy commit `old` that it replaced: a commit that keeps the change ID carried them.
     fn repeated(&self, next: CommitId, old: CommitId) -> Result<(Carried, Handled), SwitchError> {
         let carried = self.carried(next).map_err(SwitchError::next)?;
         let before = read_any_commit(self.objects(), old).map_err(SwitchError::Read)?;
@@ -619,11 +635,11 @@ impl Repository {
     }
 
     /// The working-copy commit of the newest entry and the one it replaced, if that entry is a
-    /// switch with the result that `resolved` asks for and that did not finish: every pointer it names is at its old or at its
-    /// new value, and at least one is at its old value. Such an entry was written, and the files
-    /// were brought to the target, but a pointer did not move (a stop after the files, or after
-    /// some of the pointers). The caller holds the lock of the references, so no writer is between
-    /// its entry and its moves.
+    /// switch with the result that `resolved` asks for and that did not finish: every pointer it
+    /// names is at its old or at its new value, and at least one is at its old value. Such an
+    /// entry was written, and the files were brought to the target, but a pointer did not move (a
+    /// stop after the files, or after some of the pointers). The caller holds the lock of the
+    /// references, so no writer is between its entry and its moves.
     fn stopped_switch(
         &self,
         resolved: &Resolved,
@@ -919,11 +935,7 @@ impl fmt::Display for SwitchError {
             Self::Checkout(error) => {
                 write!(f, "could not switch, nothing of it was written: {error}")
             }
-            Self::Next(error) => write!(
-                f,
-                "could not make the next working-copy commit, nothing of the switch was written: \
-                 {error}"
-            ),
+            Self::Next(error) => write!(f, "could not make the next working-copy commit: {error}"),
             Self::NoSuchBranch(name) => write!(
                 f,
                 "there is no branch `{name}`; `stemma switch -c {name}` makes one"
@@ -1670,6 +1682,60 @@ mod tests {
         drop(denied);
         assert!(matches!(error, SwitchError::MoveFailed { .. }), "{error}");
         (first, target)
+    }
+
+    #[test]
+    fn a_stopped_carry_is_planned_and_finished_as_a_carry_whatever_discard_says() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        let feature = repository.refs().branch(&name("feature")).unwrap().unwrap();
+        write(&dir, "a.txt", "one\ntwo\nTHREE\n");
+        let before = working_copy(&repository);
+        let target = SwitchTarget::Create {
+            name: name("old"),
+            start: Some(Revision::Commit(feature.object_id())),
+        };
+        let heads = repository.metadata_dir().join("refs").join("heads");
+        let denied = Rc::new(RefCell::new(None));
+        let arm = Rc::clone(&denied);
+        super::super::snapshot::pause::at_next(
+            super::super::snapshot::pause::Stage::Moves,
+            move || {
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&heads));
+            },
+        );
+        let error = switch(&repository, &target).unwrap_err();
+        drop(denied);
+        assert!(
+            matches!(error, SwitchError::AfterSnapshot { .. }),
+            "{error}"
+        );
+        let count = entries(&repository);
+
+        // The plan of the repeat is that of the stopped carry, not of a discard.
+        let planned = repository
+            .plan_switch(&target, Changes::Discard, &actor(), &AllowAll)
+            .unwrap();
+        let Planned::Would(plan) = planned else {
+            panic!("expected a plan, got {planned:?}");
+        };
+        assert!(plan.repeats());
+        assert_eq!(plan.handled(), &Handled::Carried { conflicts: vec![] });
+        assert_eq!(entries(&repository), count, "a plan writes nothing");
+
+        let result = switch_with(&repository, &target, Changes::Discard);
+
+        let Ok(Switched::Done {
+            snapshot, handled, ..
+        }) = result
+        else {
+            panic!("expected a switch, got {result:?}");
+        };
+        assert!(snapshot.is_none(), "a repeat takes no snapshot");
+        assert_eq!(handled, Handled::Carried { conflicts: vec![] });
+        assert_eq!(working_copy(&repository).change(), before.change());
+        assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nTHREE\n");
     }
 
     #[test]
