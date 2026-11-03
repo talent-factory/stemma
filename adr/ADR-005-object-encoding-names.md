@@ -177,8 +177,8 @@ them.
   resolve at once is not part of the algebra: it loses information when the result is merged again,
   and the merge decides whether to apply it (see "Merge of trees"). The text with markers that
   shows a conflicted file is one function of the sum (`marker_text`), a pure function of the list
-  of the contents of the terms, in order. `diff` is to show it, and the snapshot is to compare the bytes of
-  a file with it and not to parse markers. The rewrite of the working-copy commit calls it to write
+  of the contents of the terms, in order. `diff` is to show it, and the snapshot is to compare
+  the bytes of a file with it and not to parse markers. The rewrite of the working-copy commit calls it to write
   the directory of a conflict (ADR-010); no command writes a `commit2` yet.
 - **Merge of trees** *(confirmed)*. The module `merge` of the core merges two commits into a sum of
   trees (STEMMA-170), at level 2 of ADR-004. It writes blobs and trees and no commit, and reads

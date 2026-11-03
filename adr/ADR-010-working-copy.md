@@ -310,9 +310,9 @@ art, not a template (ADR-015).
       stopped, and the next `commit` finished it. The log decides it now (STEMMA-76).
 - [ ] A commit with an empty tree as an allowed empty commit, and a commit while HEAD names a
       commit (its message points to `switch -c`), are refused today.
-- [x] A commit while the branch has moved (a rebase, a merge). The working-copy commit follows the
-      branch: `Repository::rewrite_working_copy` replaces it by a commit on the new tip, so the
-      branch has not moved away from its parent (STEMMA-171, below).
+- [x] A commit while the branch has moved (a rebase, a merge). The mechanism exists:
+      `Repository::rewrite_working_copy` replaces the working-copy commit by a commit on the new
+      tip (STEMMA-171, below). No command calls it yet; merge and rebase must.
 - [ ] `switch` refuses a working-copy commit that holds changes. Carrying them to the target uses
       the rewrite below and is a slice of its own (phase 3).
 - [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge

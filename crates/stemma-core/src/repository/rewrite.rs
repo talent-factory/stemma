@@ -98,10 +98,12 @@ impl Repository {
     /// holds the marker text of each.
     ///
     /// If the newest entry of the log (a `take-over` does not count) is a rewrite onto the same
-    /// commit that did not take effect (the files were written and the pointer did not move), the
-    /// call is its repeat: it takes no snapshot, as one would save the new files as changes of
-    /// the old working-copy commit, and it uses the commit of that entry again. It checks the
-    /// owner of the working copy instead (ADR-010).
+    /// commit that did not take effect (the entry was written, the files are written or partly
+    /// written, and the pointer did not move), the call is its repeat: it takes no snapshot, as
+    /// one would save the new files as changes of the old working-copy commit, and it uses the
+    /// commit of that entry again. It checks the owner of the working copy instead (ADR-010). If
+    /// that rewrite was onto another commit, the call is refused with
+    /// [`RewriteError::StoppedOnOtherBase`] for the same reason.
     ///
     /// A working-copy commit that records a conflict is refused by the snapshot
     /// ([`SnapshotError::Conflicted`]): what a command does with an open conflict is not decided
@@ -115,7 +117,8 @@ impl Repository {
     /// Before anything is written: [`RewriteError::Update`] for a refusal of the question
     /// `rewrite`, [`RewriteError::Refs`] for a lock that another command holds or a purge that is
     /// pending, [`RewriteError::NoSuchCommit`], [`RewriteError::Store`], and, when the call looks
-    /// for a stopped rewrite, [`RewriteError::Log`] and [`RewriteError::Read`].
+    /// for a stopped rewrite, [`RewriteError::Log`], [`RewriteError::Read`], and
+    /// [`RewriteError::StoppedOnOtherBase`].
     ///
     /// [`RewriteError::Snapshot`] is a refusal of the snapshot or, for a repeat, of the owner
     /// check; a take-over that the repeat made may have written its entry before it fails. A
@@ -125,7 +128,7 @@ impl Repository {
     ///
     /// After the snapshot, [`RewriteError::Read`], [`RewriteError::Merge`],
     /// [`RewriteError::Invalid`], [`RewriteError::Store`], [`RewriteError::ChangeId`],
-    /// [`RewriteError::Parents`], and [`RewriteError::Checkout`] stand for the preparation of the
+    /// [`RewriteError::Parents`], [`RewriteError::SameChange`], and [`RewriteError::Checkout`] stand for the preparation of the
     /// new commit and the plan of the files. They wrote nothing but objects and, if the snapshot
     /// wrote an entry, that entry; the error is then wrapped in [`RewriteError::AfterSnapshot`].
     /// Then [`RewriteError::CheckoutFailed`], [`RewriteError::MoveFailed`], and
@@ -276,7 +279,7 @@ impl Repository {
     ///
     /// The tree is `onto + (working - parent)` as a sum, merged by [`merge_trees`]. A working-copy
     /// commit without a parent has the empty tree as its base. One that holds no change (its
-    /// sum equals that of its parent) is replaced by an empty commit with a change ID of its own.
+    /// sum equals that of its base) is replaced by an empty commit with a change ID of its own.
     fn carry(
         &self,
         working: &AnyCommit,
@@ -299,9 +302,11 @@ impl Repository {
                 })
             }
         };
-        let new_base = read_any_commit(objects, onto)
-            .map_err(RewriteError::Read)?
-            .tree_sum();
+        let target = read_any_commit(objects, onto).map_err(RewriteError::Read)?;
+        if target.change() == working.change() {
+            return Err(RewriteError::SameChange { onto });
+        }
+        let new_base = target.tree_sum();
         let own = working.tree_sum();
         let commit = if own.is_equivalent(&base) {
             AnyCommit::from_sum(
@@ -355,11 +360,14 @@ impl Repository {
         })
     }
 
-    /// The working-copy commit of the newest entry, if that entry is a rewrite onto `onto` that
-    /// did not finish: the pointer still has its old value, and the commit of the entry has `onto`
-    /// as its only parent. The files were written then (a stop after the files, or in their
-    /// middle), and the pointer did not move. The caller holds the lock of the references, so no
-    /// writer came between the entry and its move.
+    /// The working-copy commit of the newest entry, if that entry is a rewrite that did not
+    /// finish: the pointer still has its old value. The files were written then (a stop after the
+    /// files, or in their middle), and the pointer did not move. The caller holds the lock of
+    /// the references, so no writer came between the entry and its move.
+    ///
+    /// If the commit of the entry has `onto` as its only parent, this is the repeat and the
+    /// result is that commit. If it has another parent, the call is refused with
+    /// [`RewriteError::StoppedOnOtherBase`].
     fn stopped_rewrite(&self, onto: CommitId) -> Result<Option<CommitId>, RewriteError> {
         let entries = self.oplog().entries().map_err(RewriteError::Log)?;
         // A `take-over` names no pointer: the repeat of another actor writes one before its own
@@ -388,7 +396,13 @@ impl Repository {
         // The commit is in the store, as the entry was written after it: a failure to read it
         // is damage and not "no repeat", which would take the snapshot that the repeat avoids.
         let commit = read_any_commit(self.objects(), next).map_err(RewriteError::Read)?;
-        Ok((commit.parents() == [onto]).then_some(next))
+        if commit.parents() == [onto] {
+            Ok(Some(next))
+        } else {
+            // A snapshot would save the files of the stopped rewrite as changes of the old
+            // working-copy commit, and the new rewrite would carry them onto another base.
+            Err(RewriteError::StoppedOnOtherBase { stopped: next })
+        }
     }
 
     /// The owner check of the snapshot that a repeat does not take: another actor does not finish
@@ -490,7 +504,7 @@ impl Display<'_> {
                     entries.push(TreeEntry::directory(name, tree)?);
                 }
             } else {
-                entries.push(self.conflicted_file(name, path, &slots)?);
+                entries.extend(self.conflicted_file(name, path, &slots)?);
             }
         }
         Ok(self.store.put_tree(&Tree::try_new(entries)?)?)
@@ -504,7 +518,7 @@ impl Display<'_> {
         name: &str,
         path: String,
         slots: &Merge<Option<Slot>>,
-    ) -> Result<TreeEntry, MergeError> {
+    ) -> Result<Option<TreeEntry>, MergeError> {
         let mut contents: Vec<Option<Vec<u8>>> = Vec::with_capacity(slots.terms().len());
         for term in slots.terms() {
             contents.push(match term {
@@ -523,10 +537,18 @@ impl Display<'_> {
         let sum = Merge::try_from_terms(contents.iter().map(Option::as_deref).collect())
             .expect("the terms of a sum");
         // Directories count as absent, so the terms may cancel to one value in this text: that
-        // value is what the path shows.
-        let text = marker_text(&sum)
-            .or_else(|| sum.resolution().flatten().map(<[u8]>::to_vec))
-            .unwrap_or_default();
+        // value is what the path shows. If that value is "absent", the path holds no file; it
+        // stays in the list of conflicts, as the sum still records it.
+        let text = match marker_text(&sum) {
+            Some(text) => text,
+            None => match sum.resolution() {
+                Some(Some(value)) => value.to_vec(),
+                _ => {
+                    self.conflicts.push(path);
+                    return Ok(None);
+                }
+            },
+        };
         let mode = slots
             .terms()
             .iter()
@@ -539,7 +561,7 @@ impl Display<'_> {
             .unwrap_or(FileMode::File);
         let blob = self.store.put_blob(&Blob::new(text))?;
         self.conflicts.push(path);
-        Ok(TreeEntry::file(name, mode, blob)?)
+        Ok(Some(TreeEntry::file(name, mode, blob)?))
     }
 }
 
@@ -569,7 +591,7 @@ pub enum RewriteError {
     Refs(RefError),
     /// The log could not be read.
     Log(OpLogError),
-    /// A commit could not be looked up or stored.
+    /// A commit could not be looked up or stored (this includes a failure to write one).
     Store(Box<StoreError>),
     /// The snapshot failed, or the owner of the working copy is not the actor.
     Snapshot(SnapshotError),
@@ -589,6 +611,19 @@ pub enum RewriteError {
     Parents {
         /// The working-copy commit.
         working: CommitId,
+    },
+    /// The newest entry is a rewrite that did not finish, and it is onto another commit. Taking
+    /// a snapshot would save its files as changes of the working-copy commit, so nothing was
+    /// done: the same rewrite run again finishes it. Nothing was written.
+    StoppedOnOtherBase {
+        /// The working-copy commit that the stopped rewrite made.
+        stopped: CommitId,
+    },
+    /// The new base has the change ID of the working-copy commit, so the result would be a
+    /// second commit of one change. Nothing was written but objects.
+    SameChange {
+        /// The commit that was to be the new base.
+        onto: CommitId,
     },
     /// The files could not be brought to the new tree after the entry was written. No pointer
     /// moved, and the files done so far stay; the same rewrite run again finishes it.
@@ -645,9 +680,12 @@ impl RewriteError {
             Self::Snapshot(error) | Self::Read(error) => error.io_error(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
             Self::AfterSnapshot { source, .. } => source.io_error(),
-            Self::Invalid(_) | Self::ChangeId(_) | Self::NoSuchCommit(_) | Self::Parents { .. } => {
-                None
-            }
+            Self::Invalid(_)
+            | Self::ChangeId(_)
+            | Self::NoSuchCommit(_)
+            | Self::Parents { .. }
+            | Self::StoppedOnOtherBase { .. }
+            | Self::SameChange { .. } => None,
         }
     }
 
@@ -705,7 +743,7 @@ impl fmt::Display for RewriteError {
                 "could not rewrite the working-copy commit, nothing of it was written: {error}"
             ),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
-            Self::Store(error) => write!(f, "could not look up a commit: {error}"),
+            Self::Store(error) => write!(f, "could not look up or store a commit: {error}"),
             Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(
                 f,
@@ -725,6 +763,17 @@ impl fmt::Display for RewriteError {
                 f,
                 "the working-copy commit {working} has more than one parent, and its base is \
                  not decided yet"
+            ),
+            Self::StoppedOnOtherBase { stopped } => write!(
+                f,
+                "the newest rewrite (working-copy commit {stopped}) did not finish and is onto \
+                 another commit; run that rewrite again before any other command, as a snapshot \
+                 would save its files as changes"
+            ),
+            Self::SameChange { onto } => write!(
+                f,
+                "commit {onto} has the change ID of the working-copy commit, so a rewrite onto it \
+                 would make two commits of one change"
             ),
             Self::CheckoutFailed { entry, source } => write!(
                 f,
@@ -783,7 +832,10 @@ impl Error for RewriteError {
             Self::Invalid(error) => error.source(),
             Self::ChangeId(error) => error.source(),
             Self::AfterSnapshot { source, .. } => source.source(),
-            Self::NoSuchCommit(_) | Self::Parents { .. } => None,
+            Self::NoSuchCommit(_)
+            | Self::Parents { .. }
+            | Self::StoppedOnOtherBase { .. }
+            | Self::SameChange { .. } => None,
         }
     }
 }
@@ -897,8 +949,8 @@ mod tests {
     const BASE: &str = "one\ntwo\nthree\n";
 
     /// `main` holds `a.txt` with `BASE`; `feature` changes its first line to `ONE`; `other` adds
-    /// `c.txt`; `later` follows `feature` and adds `d.txt`. The repository is on `main` with an empty working-copy commit, and the directory
-    /// holds the files of `main`.
+    /// `c.txt`; `later` follows `feature` and adds `d.txt`. The repository is on `main` with an
+    /// empty working-copy commit, and the directory holds the files of `main`.
     fn history(dir: &TempDir, repository: &Repository) {
         write(dir, "a.txt", BASE);
         track(repository, "a.txt");
@@ -1255,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_rewrite_is_not_repeated_for_another_base() {
+    fn a_stopped_rewrite_blocks_a_rewrite_onto_another_base() {
         let dir = TempDir::new();
         let repository = repository(&dir);
         history(&dir, &repository);
@@ -1278,14 +1330,81 @@ mod tests {
         let stopped = error.entry().unwrap().number();
         assert!(matches!(error, RewriteError::MoveFailed { .. }), "{error}");
 
-        // Another base is a new rewrite: it takes a snapshot first, which saves what the stopped
-        // one wrote, and builds its own commit.
-        let (saved, entry, next, _) = done(rewrite(&repository, other));
+        // Another base is refused: a snapshot would save what the stopped rewrite wrote as
+        // changes, and the new rewrite would carry them. Nothing is written.
+        let count = entries(&repository);
+        let error = rewrite(&repository, other).unwrap_err();
+        assert!(
+            matches!(error, RewriteError::StoppedOnOtherBase { .. }),
+            "{error}"
+        );
+        assert_eq!(entries(&repository), count);
+        assert!(error.entry().is_none() && error.snapshot().is_none());
 
-        assert!(saved.is_some(), "a new rewrite takes a snapshot");
+        // The same base finishes it.
+        let (saved, entry, _, _) = done(rewrite(&repository, feature));
+        assert!(saved.is_none(), "the repeat takes no snapshot");
         assert!(entry.number() > stopped);
-        let after = read_any_commit(repository.objects(), next).unwrap();
-        assert_eq!(after.parents(), [other]);
+    }
+
+    #[test]
+    fn edits_in_different_places_of_one_file_merge_without_a_conflict() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let feature = tip(&repository, "feature");
+        write(&dir, "a.txt", "one\ntwo\nTHREE\n");
+
+        let (_, _, next, conflicts) = done(rewrite(&repository, feature));
+
+        assert!(conflicts.is_empty());
+        assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nTHREE\n");
+        assert!(matches!(
+            read_any_commit(repository.objects(), next).unwrap(),
+            AnyCommit::Commit(_)
+        ));
+    }
+
+    #[test]
+    fn a_deletion_is_carried_onto_the_new_base() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let other = tip(&repository, "other");
+        fs::remove_file(dir.path().join("a.txt")).unwrap();
+
+        let (_, _, next, conflicts) = done(rewrite(&repository, other));
+
+        assert!(conflicts.is_empty());
+        assert!(!dir.path().join("a.txt").exists());
+        assert_eq!(read(&dir, "c.txt"), "c\n");
+        let names: Vec<String> = files(&repository, &working(&repository))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["c.txt"]);
+        assert_eq!(repository.refs().working_copy().unwrap(), next);
+    }
+
+    #[test]
+    fn a_rewrite_onto_a_commit_of_the_same_change_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let itself = repository.refs().working_copy().unwrap();
+        write(&dir, "b.txt", "b\n");
+        track(&repository, "b.txt");
+        let count = entries(&repository);
+
+        let error = rewrite(&repository, itself).unwrap_err();
+
+        let inner = match &error {
+            RewriteError::AfterSnapshot { source, .. } => source,
+            other => other,
+        };
+        assert!(matches!(inner, RewriteError::SameChange { .. }), "{error}");
+        // Only the snapshot of the unsaved file was written.
+        assert!(entries(&repository) <= count + 1);
     }
 
     #[test]

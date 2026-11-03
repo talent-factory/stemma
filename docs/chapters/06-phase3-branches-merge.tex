@@ -347,6 +347,10 @@ Damit sind die konkurrierenden Werte sichtbar, ohne dass der Commit sie als Text
 bewegt, nennt die Fehlermeldung den Eintrag und verlangt den gleichen Aufruf noch einmal.
 Der zweite Aufruf nimmt keinen Snapshot, der die neuen Dateien als Änderungen des alten Commits
 speichern würde, und verwendet den Commit des abgebrochenen Eintrags wieder.
+Ein Umschreiben auf eine andere Basis lehnt der Kern in diesem Zustand ab,
+aus demselben Grund.
+\item Eine Basis mit der Change-ID des Working-Copy-Commits lehnt der Schritt ab,
+weil sonst zwei Commits derselben Änderung entstünden.
 \item Ein Working-Copy-Commit mit mehr als einem Elternteil lehnt der Schritt ab,
 weil seine Basis noch nicht festgelegt ist.
 \item Ein Pfad, bei dem ein Verzeichnis gegen eine Datei steht, erscheint im Text als Datei.
