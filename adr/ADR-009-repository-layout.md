@@ -52,9 +52,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   The branch is the unit of exclusion: **a branch is checked out in one worktree only**. A
   `HEAD` that names a branch holds its name, whether the branch has a commit yet or not. The
   rule has no override. It is checked under the lock of the references, through one helper that
-  the code calls where the pointers are planned: `switch` and `op restore` (the move of `HEAD` to a branch, and the move or
-  deletion of any branch that another worktree has checked out), `branch -d`
-  and `branch -m` (the branch of another worktree would lose its name), and `worktree add`. The
+  the code calls where the pointers are planned: `switch` and `op restore` (the move of `HEAD`
+  to a branch, and the move or deletion of any branch that another worktree has checked out),
+  `branch -d` and `branch -m` (the branch of another worktree would lose its name), and
+  `worktree add`. The
   check reads the `HEAD` of every other worktree. A state directory without `HEAD` is an add that
   stopped and holds no branch. The error is `RefError::CheckedOut` and names the worktree.
   `worktree add <path> <branch>` checks out an existing branch that is free, and `-b <new>`
@@ -71,6 +72,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   `working-copy`, `HEAD`, and the pointer file last, so that a worktree that can be opened is a
   complete one. The entry names `HEAD` and the working-copy commit of the new worktree from
   nothing to their values, as the first entry of `init` does, and the new branch.
+  The check of the paths and the making of the directory happen under the lock of the
+  references, so of two adds of one path at once the second is turned away by the lock and
+  has made nothing. `HEAD` follows the rule of the branches in every way it can move
+  (`set_head`, `replace_head`, `set_head_after`), not only in the commands. A directory that a
+  failed add made and cannot remove is named in the error (`WorktreeError::NotCleaned`).
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a

@@ -910,6 +910,7 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ///
     /// Returns [`RefError::MissingCommit`] if the commit is not in the store,
     /// [`RefError::NotACommit`] if the object is neither a `commit` nor a `commit2`,
+    /// [`RefError::CheckedOut`] if another worktree has the branch checked out,
     /// [`RefError::Store`] and
     /// [`RefError::Io`] if the store or the storage fails, [`RefError::Locked`] if another change
     /// is in progress, and [`RefError::NotFlushed`] if the change was made but could not be
@@ -2590,8 +2591,9 @@ impl FsRefStore {
         step: impl FnOnce(&Head) -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        if let Head::Detached(commit) = head {
-            Self::require_commit(commit, objects)?;
+        match head {
+            Head::Detached(commit) => Self::require_commit(commit, objects)?,
+            Head::Branch(name) => self.require_not_checked_out_elsewhere(name)?,
         }
         let old = self.head()?;
         if &old != expected {
@@ -3514,8 +3516,9 @@ impl RefStore for FsRefStore {
         let _lock = self.lock_writer(allowed)?;
         // Under the lock, as in `set_head_after`: a purge that ran before it may have removed the
         // commit since a look without the lock.
-        if let Head::Detached(commit) = head {
-            Self::require_commit(commit, objects)?;
+        match head {
+            Head::Detached(commit) => Self::require_commit(commit, objects)?,
+            Head::Branch(name) => self.require_not_checked_out_elsewhere(name)?,
         }
         self.write_replacing(&self.head_path(), &head.encode(), &self.local)
     }
@@ -3529,8 +3532,9 @@ impl RefStore for FsRefStore {
     ) -> Result<(), RefError> {
         self.require_root()?;
         let _lock = self.lock_writer(allowed)?;
-        if let Head::Detached(commit) = head {
-            Self::require_commit(commit, objects)?;
+        match head {
+            Head::Detached(commit) => Self::require_commit(commit, objects)?,
+            Head::Branch(name) => self.require_not_checked_out_elsewhere(name)?,
         }
         let found = self.head()?;
         if &found != expected {
@@ -7234,5 +7238,78 @@ mod tests {
             refs.verify(&objects),
             Err(RefError::Corrupt { .. })
         ));
+    }
+
+    // ---- One branch per worktree
+
+    /// The main store of `setup` and a linked state `w` below it whose `HEAD` is `head`.
+    fn with_linked(head: &str) -> (TempDir, FsObjectStore, FsRefStore, PathBuf) {
+        let (dir, objects, refs) = setup();
+        let state = dir.path().join(WORKTREES_DIR).join("w");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("HEAD"), head).unwrap();
+        (dir, objects, refs, state)
+    }
+
+    #[test]
+    fn head_cannot_move_to_a_branch_that_another_worktree_has() {
+        let (_dir, objects, refs, _state) = with_linked("branch feat\n");
+        let granted = Allowed::granted();
+        let feat = Head::Branch(name("feat"));
+        let error = refs.set_head(&feat, &objects, &granted).unwrap_err();
+        assert!(
+            matches!(&error, RefError::CheckedOut { worktree, .. } if worktree == "w"),
+            "{error}"
+        );
+        refs.set_head(&Head::Branch(name("main")), &objects, &granted)
+            .unwrap();
+        let error = refs
+            .replace_head(&Head::Branch(name("main")), &feat, &objects, &granted)
+            .unwrap_err();
+        assert!(matches!(error, RefError::CheckedOut { .. }), "{error}");
+        assert_eq!(refs.head().unwrap(), Head::Branch(name("main")));
+    }
+
+    #[test]
+    fn stray_entries_and_states_without_head_hold_no_branch() {
+        let (dir, objects, refs, _state) = with_linked("branch other\n");
+        let worktrees = dir.path().join(WORKTREES_DIR);
+        fs::write(worktrees.join(".DS_Store"), b"x").unwrap();
+        fs::create_dir_all(worktrees.join("stopped")).unwrap();
+        refs.set_head(&Head::Branch(name("feat")), &objects, &Allowed::granted())
+            .unwrap();
+        let states = refs.other_states().unwrap();
+        let names: Vec<_> = states.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["w"]);
+    }
+
+    #[test]
+    fn a_damaged_head_of_another_worktree_is_an_error_and_not_a_free_branch() {
+        let (_dir, objects, refs, _state) = with_linked("garbage\n");
+        let error = refs
+            .set_head(&Head::Branch(name("feat")), &objects, &Allowed::granted())
+            .unwrap_err();
+        assert!(matches!(error, RefError::Corrupt { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_linked_store_sees_the_main_worktree_as_an_owner_of_its_branch() {
+        let (dir, objects, main, state) = with_linked("branch feat\n");
+        let granted = Allowed::granted();
+        main.set_head(&Head::Branch(name("main")), &objects, &granted)
+            .unwrap();
+        let linked = FsRefStore::for_worktree(dir.path(), &state);
+        let error = linked
+            .set_head(&Head::Branch(name("main")), &objects, &granted)
+            .unwrap_err();
+        assert!(
+            matches!(&error, RefError::CheckedOut { worktree, .. } if worktree == "main"),
+            "{error}"
+        );
+        // The linked HEAD is its own: the move to its own branch is no conflict.
+        linked
+            .set_head(&Head::Branch(name("feat")), &objects, &granted)
+            .unwrap();
+        assert_eq!(main.head().unwrap(), Head::Branch(name("main")));
     }
 }

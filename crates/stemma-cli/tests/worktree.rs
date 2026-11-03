@@ -858,3 +858,37 @@ fn worktrees_with_the_same_last_part_get_their_own_state_directories() {
         format!("{}\n", real(&sandbox.at("b/x")))
     );
 }
+
+#[test]
+fn two_adds_of_the_same_path_at_once_leave_one_worktree() {
+    for round in 0..3 {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.repo();
+        let runs: Vec<_> = ["one", "two"]
+            .into_iter()
+            .map(|branch| {
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    run(
+                        &repo,
+                        &["worktree", "add", "-b", branch, "../same", "--actor", ACTOR],
+                    )
+                })
+            })
+            .collect();
+        let runs: Vec<_> = runs.into_iter().map(|run| run.join().unwrap()).collect();
+
+        let won = runs.iter().filter(|run| run.code == 0).count();
+        assert_eq!(
+            won,
+            1,
+            "round {round}: {:?}",
+            runs.iter().map(|run| &run.stderr).collect::<Vec<_>>()
+        );
+        let linked = sandbox.at("same");
+        assert_eq!(read(&linked, "a.txt"), "one", "round {round}");
+        assert!(linked.join(".stemma").is_file(), "round {round}");
+        let list = ok(&repo, &["worktree", "list"]).stdout;
+        assert_eq!(list.lines().count(), 2, "round {round}: {list}");
+    }
+}

@@ -415,6 +415,7 @@ impl Classify for WorktreeError {
             Self::Read(error) => error.kind(),
             Self::Store(error) => error.kind(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.kind(),
+            Self::NotCleaned { cause, .. } => cause.kind(),
             Self::MoveFailed { source, .. }
             | Self::PartlyMoved { source, .. }
             | Self::NotDurable { source, .. } => source.kind(),

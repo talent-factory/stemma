@@ -113,7 +113,8 @@ impl Repository {
     /// [`WorktreeError::PathInUse`], [`WorktreeError::Nested`], [`WorktreeError::NoSuchBranch`],
     /// [`WorktreeError::NoStart`], [`WorktreeError::Refs`] (among them [`RefError::CheckedOut`]
     /// and [`RefError::BranchExists`]), [`WorktreeError::Checkout`], and the errors of the
-    /// storage. The directory that the call made is removed again. After the entry:
+    /// storage. The directory that the call made is removed again, and
+    /// [`WorktreeError::NotCleaned`] names one that cannot be. After the entry:
     /// [`WorktreeError::CheckoutFailed`], [`WorktreeError::MoveFailed`],
     /// [`WorktreeError::PartlyMoved`], and [`WorktreeError::NotDurable`].
     pub fn add_worktree(
@@ -148,16 +149,7 @@ impl Repository {
             return Err(WorktreeError::PathNotUtf8(self.metadata_dir()));
         }
         self.refuse_overlap(&location)?;
-        let made = prepare_directory(&location)?;
-        let result = self.add_in(&location, &text, branch, owner, actor, &operation, &allowed);
-        if let (Err(error), Some(made)) = (&result, &made) {
-            if error.entry().is_none() {
-                // Nothing of the add was written: the directory that this call made goes again. A
-                // directory that cannot be removed stays, and the message names the add only.
-                remove_made(&location, made);
-            }
-        }
-        result
+        self.add_in(&location, &text, branch, owner, actor, &operation, &allowed)
     }
 
     /// The part of [`add_worktree`](Self::add_worktree) that runs under the lock.
@@ -176,6 +168,41 @@ impl Repository {
             .refs_store()
             .lock_writer(allowed)
             .map_err(WorktreeError::Refs)?;
+        // Again, under the lock: an add of the same path that ran in between is in the list now.
+        self.refuse_overlap(location)?;
+        // The directory is made under the lock too: a call that the lock turns away has made
+        // nothing, so it cannot remove the directory of the call that holds the lock.
+        let made = prepare_directory(location)?;
+        match self.add_locked(&lock, location, text, branch, owner, actor, operation) {
+            Err(error) if error.entry().is_none() => match made {
+                // Nothing of the add was written: the directory that this call made goes again. One
+                // that cannot be removed is named, so that nobody finds it by chance.
+                Some(made) => Err(match remove_made(location, &made) {
+                    Some((path, source)) => WorktreeError::NotCleaned {
+                        cause: Box::new(error),
+                        path,
+                        source,
+                    },
+                    None => error,
+                }),
+                None => Err(error),
+            },
+            result => result,
+        }
+    }
+
+    /// The add itself, once the lock is held and the directory of the worktree is ready.
+    #[allow(clippy::too_many_arguments)]
+    fn add_locked(
+        &self,
+        lock: &crate::repository::WriteLock,
+        location: &Path,
+        text: &str,
+        branch: &WorktreeBranch,
+        owner: &Actor,
+        actor: &Actor,
+        operation: &OperationName,
+    ) -> Result<AddedWorktree, WorktreeError> {
         let name = self.free_name(location)?;
         // The pointer file holds this path, so it is absolute and has no link in it.
         let shared = resolve(&self.metadata_dir())?;
@@ -211,7 +238,7 @@ impl Repository {
         };
         let created = matches!(branch, WorktreeBranch::Create(_));
         let logged = self.refs_store().add_worktree_after(
-            &lock,
+            lock,
             &new,
             self.objects(),
             || {
@@ -234,7 +261,7 @@ impl Repository {
                     WorktreeError::Update(UpdateError::Log(OpLogError::Entry(error)))
                 })?;
                 let entry = self
-                    .append(&lock, &change)
+                    .append(lock, &change)
                     .map_err(|error| WorktreeError::Update(UpdateError::Log(error)))?;
                 if let Err(source) = view.apply_checkout(&plan) {
                     return Err(WorktreeError::CheckoutFailed {
@@ -510,20 +537,27 @@ fn prepare_directory(location: &Path) -> Result<Option<PathBuf>, WorktreeError> 
 
 /// Removes the directories that [`prepare_directory`] made, from `location` up to `made`, each
 /// only while it is empty: another call may have put something into a directory they share, and
-/// that stays. A directory that cannot be removed stays too.
-fn remove_made(location: &Path, made: &Path) {
+/// that stays. Returns the directory that could not be removed for another reason, with the error.
+fn remove_made(location: &Path, made: &Path) -> Option<(PathBuf, io::Error)> {
     let mut current = location;
     loop {
-        if fault::remove_dir(current).is_err() {
-            return;
+        match fault::remove_dir(current) {
+            Ok(()) => {}
+            // Gone, or in use by another call: nothing to remove, nothing to report.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                return None;
+            }
+            Err(error) => return Some((current.to_path_buf(), error)),
         }
         if current == made {
-            return;
+            return None;
         }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return,
-        }
+        current = current.parent()?;
     }
 }
 
@@ -705,6 +739,16 @@ pub enum WorktreeError {
         /// Why the next pointer did not move.
         source: RefError,
     },
+    /// The add failed before it wrote anything, and the directory that the call made could not be
+    /// removed again.
+    NotCleaned {
+        /// Why the add failed.
+        cause: Box<WorktreeError>,
+        /// The directory that stays.
+        path: PathBuf,
+        /// Why it could not be removed.
+        source: io::Error,
+    },
     /// The worktree was added, but a directory could not be flushed to disk.
     NotDurable {
         /// The entry that was written.
@@ -738,6 +782,7 @@ impl WorktreeError {
             Self::Store(error) => error.io_error(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
             Self::Io { source, .. } => Some(source),
+            Self::NotCleaned { cause, .. } => cause.io_error(),
             Self::ChangeId(_)
             | Self::PathNotUtf8(_)
             | Self::NotEmpty(_)
@@ -853,6 +898,15 @@ impl fmt::Display for WorktreeError {
                  the command again",
                 entry.number()
             ),
+            Self::NotCleaned {
+                cause,
+                path,
+                source,
+            } => write!(
+                f,
+                "{cause}; the directory `{}` that the call made could not be removed: {source}",
+                path.display()
+            ),
             Self::NotDurable { entry, source } => write!(
                 f,
                 "the worktree was added as entry {}, but a directory could not be flushed, so \
@@ -876,6 +930,7 @@ impl Error for WorktreeError {
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.source(),
             Self::ChangeId(error) => error.source(),
             Self::Io { source, .. } => source.source(),
+            Self::NotCleaned { cause, .. } => cause.source(),
             Self::PathNotUtf8(_)
             | Self::NotEmpty(_)
             | Self::PathInUse { .. }
