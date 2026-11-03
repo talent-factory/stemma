@@ -85,9 +85,9 @@ use stemma_core::refs::{BranchName, Head, RefError};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, InitError, InitOptions, OpenError, PurgeError, PurgePlan, Purged,
-    Repository, RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError,
-    SwitchError, SwitchTarget, Switched, TrackError, Tracking, UpdateError, WorktreeBranch,
-    WorktreeError,
+    RebaseError, Rebased, Repository, RestoreError, RestorePlan, Revision, SnapshotError, Status,
+    StatusError, SwitchError, SwitchTarget, Switched, TrackError, Tracking, UpdateError,
+    WorktreeBranch, WorktreeError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -115,6 +115,8 @@ enum Command {
     Commit(CommitArgs),
     /// Change the branch that HEAD names, or detach HEAD, while the working-copy commit is empty
     Switch(SwitchArgs),
+    /// Replay the commits of the current branch on a target, and move the branch to the result
+    Rebase(RebaseArgs),
     /// Show what the working copy changes and which files are not tracked
     Status(StatusArgs),
     /// Show the changes between two commits, or between a commit and the working copy
@@ -561,6 +563,33 @@ struct SwitchArgs {
     take_over: bool,
 }
 
+#[derive(Debug, Args)]
+struct RebaseArgs {
+    /// The branch or the commit (`b3:` and 64 hexadecimal digits) to replay the current branch on
+    #[arg(value_name = "TARGET", value_parser = parse_revision)]
+    target: Revision,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. The snapshot and the rebase are made by this actor
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+
+    /// Take the working copy over from its owner first: ask for the operation `take-over`, write
+    /// its entry, and make the actor the owner, so that a working copy of another actor is saved
+    #[arg(long)]
+    take_over: bool,
+}
+
 /// Reads a branch name, or a commit by its ID if the text starts with `b3:` (a branch name cannot
 /// hold a colon).
 fn parse_revision(text: &str) -> Result<Revision, String> {
@@ -788,6 +817,18 @@ enum CliError {
         /// The error of the output.
         source: io::Error,
     },
+    /// The rebase was refused or stopped. [`RebaseError::pointer_moved`] says whether a pointer
+    /// moved; the error says what is in the log and what state the files are in.
+    Rebase(RebaseError),
+    /// The rebase was made or was not needed, but the result could not be written to the output.
+    RebaseOutput {
+        /// The entry of the rebase, if one was made.
+        rebased: Option<u64>,
+        /// The entry of the snapshot that came first, if one was made.
+        snapshot: Option<u64>,
+        /// The error of the output.
+        source: io::Error,
+    },
     /// The restore was made or planned, but the result could not be written to the output.
     RestoreOutput {
         /// The entry of the restore, if one was made.
@@ -967,6 +1008,7 @@ impl CliError {
             | Self::Diff(DiffError::Snapshot(error))
             | Self::Restore(RestoreError::Snapshot(error))
             | Self::Switch(SwitchError::Snapshot(error))
+            | Self::Rebase(RebaseError::Snapshot(error))
             | Self::ApplyPurge(ApplyPurgeError::Snapshot(error)) => Some(error),
             _ => None,
         }
@@ -1001,6 +1043,12 @@ impl CliError {
             }
             | Self::SwitchOutput {
                 snapshot: Some(_), ..
+            }
+            | Self::RebaseOutput {
+                rebased: Some(_), ..
+            }
+            | Self::RebaseOutput {
+                snapshot: Some(_), ..
             } => ExitCode::from(3),
             // The take-over is made, but not flushed; the command stopped there.
             error
@@ -1014,6 +1062,7 @@ impl CliError {
             }
             Self::Restore(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Switch(error) if error.pointer_moved() => ExitCode::from(3),
+            Self::Rebase(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Branch(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Worktree(error) if error.pointer_moved() || error.entry().is_some() => {
@@ -1037,6 +1086,7 @@ impl CliError {
             Self::Diff(error) => by_kind(error.kind()),
             Self::Restore(error) => by_kind(error.kind()),
             Self::Switch(error) => by_kind(error.kind()),
+            Self::Rebase(error) => by_kind(error.kind()),
             Self::History(error) => by_kind(error.kind()),
             Self::Tag(error) => by_kind(error.kind()),
             Self::TagRefs(error) => by_kind(error.kind()),
@@ -1065,6 +1115,7 @@ impl CliError {
             | Self::DiffOutput { .. }
             | Self::RestoreOutput { .. }
             | Self::SwitchOutput { .. }
+            | Self::RebaseOutput { .. }
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
             | Self::LogWrite { .. }
@@ -1244,6 +1295,25 @@ impl fmt::Display for CliError {
             }
             Self::Restore(error) => error.fmt(f),
             Self::Switch(error) => error.fmt(f),
+            Self::Rebase(error) => error.fmt(f),
+            Self::RebaseOutput {
+                rebased,
+                snapshot,
+                source,
+            } => {
+                match rebased {
+                    Some(entry) => write!(f, "rebased as entry {entry} of the operation log")?,
+                    None => write!(f, "nothing was rebased")?,
+                }
+                if let Some(saved) = snapshot {
+                    write!(f, " (the working copy was saved first as entry {saved})")?;
+                }
+                write!(f, ", but the result could not be written: {source}")?;
+                match rebased {
+                    Some(entry) => write!(f, "; to undo it run `stemma op restore {entry}`"),
+                    None => Ok(()),
+                }
+            }
             Self::SwitchOutput {
                 switched,
                 snapshot,
@@ -1431,6 +1501,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Track(args) => track(args, out).map(|()| ExitCode::SUCCESS),
         Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
         Command::Switch(args) => switch(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Rebase(args) => rebase(args, out).map(|()| ExitCode::SUCCESS),
         Command::Status(args) => status(args, out).map(|()| ExitCode::SUCCESS),
         Command::Diff(args) => diff(args, out),
         Command::Log(args) => show_log(args, out).map(|()| ExitCode::SUCCESS),
@@ -1668,6 +1739,123 @@ fn switched_text(
         entry.number(),
         entry.number()
     )
+}
+
+/// Replays the commits of the current branch on a target (ADR-010). The core takes the snapshot
+/// first. As for `switch`, the result is written before an error that follows a rebase that was
+/// made (exit code 3), so that a script finds the entry that undoes it. A closed pipe is no
+/// failure for "up to date", and it is one after a rebase, because the output is the only place
+/// that names the entry.
+fn rebase(args: RebaseArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let repository = taking_over(repository, args.take_over);
+    let _note = TakeOverNote(&repository);
+    match repository.rebase(&args.target, &actor, &AllowAll) {
+        Ok(Rebased::UpToDate) => write_rebase(
+            out,
+            &format!("Already up to date with {}\n", args.target),
+            None,
+            None,
+        ),
+        Ok(done @ Rebased::Done { .. }) => {
+            let Rebased::Done {
+                snapshot, entry, ..
+            } = &done
+            else {
+                unreachable!("matched above")
+            };
+            write_rebase(
+                out,
+                &rebased_text(&args.target, &done),
+                Some(entry.number()),
+                snapshot.as_deref().map(oplog::Entry::number),
+            )
+        }
+        Err(error) => {
+            if error.made() {
+                if let Some(entry) = error.entry() {
+                    // The message of the error names the entries too, so a failure to write is
+                    // not reported on top of it.
+                    let text = format!(
+                        "{}Rebased onto {} as entry {}\nTo undo it: stemma op restore {}\n",
+                        saved_text(error.snapshot()),
+                        args.target,
+                        entry.number(),
+                        entry.number()
+                    );
+                    let _ = out.write_all(text.as_bytes());
+                }
+            }
+            Err(CliError::Rebase(error))
+        }
+    }
+}
+
+/// Writes the result of a rebase. `rebased` and `snapshot` are the entries that the call made.
+fn write_rebase(
+    out: &mut dyn Write,
+    text: &str,
+    rebased: Option<u64>,
+    snapshot: Option<u64>,
+) -> Result<(), CliError> {
+    match out.write_all(text.as_bytes()) {
+        Ok(()) => Ok(()),
+        // The reader of a pipe has had enough, and nothing was made that only this text names.
+        Err(error)
+            if error.kind() == io::ErrorKind::BrokenPipe
+                && rebased.is_none()
+                && snapshot.is_none() =>
+        {
+            Ok(())
+        }
+        Err(source) => Err(CliError::RebaseOutput {
+            rebased,
+            snapshot,
+            source,
+        }),
+    }
+}
+
+/// What a rebase did: the snapshot, the move, the commits it replayed with their conflicts, the
+/// conflicts of the working copy, and how to undo it.
+fn rebased_text(target: &Revision, done: &Rebased) -> String {
+    let Rebased::Done {
+        snapshot,
+        entry,
+        branch,
+        replayed,
+        conflicts,
+        ..
+    } = done
+    else {
+        return String::new();
+    };
+    let mut text = saved_text(snapshot.as_deref());
+    let count = replayed.len();
+    text.push_str(&format!(
+        "Rebased {branch} onto {target} as entry {}: {count} commit{} replayed\n",
+        entry.number(),
+        if count == 1 { "" } else { "s" }
+    ));
+    for commit in replayed {
+        for file in &commit.conflicts {
+            text.push_str(&format!(
+                "Commit {} has an open conflict in {} ({} sides)\n",
+                commit.commit, file.path, file.sides
+            ));
+        }
+    }
+    for path in conflicts {
+        text.push_str(&format!(
+            "The working copy has an open conflict in {path}\n"
+        ));
+    }
+    text.push_str(&format!(
+        "To undo it: stemma op restore {}\n",
+        entry.number()
+    ));
+    text
 }
 
 /// Purges a blob (ADR-014), or shows what that would do. The core refuses an agent before it

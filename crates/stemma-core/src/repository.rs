@@ -38,6 +38,7 @@ mod difference;
 mod purge;
 #[cfg(any(fuzzing, test))]
 pub(crate) use purge::fuzz_journal;
+mod rebase;
 mod restore;
 mod rewrite;
 mod snapshot;
@@ -53,6 +54,7 @@ pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side, TextD
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
 };
+pub use rebase::{RebaseError, Rebased, Replayed};
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use rewrite::{RewriteError, Rewritten};
 pub use snapshot::{SnapshotError, Unsupported};

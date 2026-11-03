@@ -72,12 +72,12 @@ pub enum Rewritten {
 }
 
 /// A new working-copy commit, written to the store and not yet named by a pointer.
-struct Carried {
-    id: CommitId,
+pub(super) struct Carried {
+    pub(super) id: CommitId,
     /// The tree that the directory is to hold: the tree of the commit, or, for a conflict, the
     /// tree with the text of the conflicts in place of the conflicted files.
-    display: TreeId,
-    conflicts: Vec<String>,
+    pub(super) display: TreeId,
+    pub(super) conflicts: Vec<String>,
 }
 
 impl Repository {
@@ -278,69 +278,97 @@ impl Repository {
     /// The tree is `onto + (working - parent)` as a sum, merged by [`merge_trees`]. A working-copy
     /// commit without a parent has the empty tree as its base. One that holds no change (its
     /// sum equals that of its base) is replaced by an empty commit with a change ID of its own.
-    fn carry(
+    pub(super) fn carry(
         &self,
         working: &AnyCommit,
         onto: CommitId,
         actor: &Actor,
     ) -> Result<Carried, RewriteError> {
         let objects = self.objects();
-        let base = match working.parents() {
-            [] => Merge::resolved(
-                objects
-                    .put_tree(&Tree::try_new(vec![]).map_err(|e| RewriteError::Merge(e.into()))?)
-                    .map_err(|error| RewriteError::Store(Box::new(error)))?,
-            ),
-            [parent] => read_any_commit(objects, *parent)
-                .map_err(RewriteError::Read)?
-                .tree_sum(),
-            _ => {
-                return Err(RewriteError::Parents {
-                    working: working.id(),
-                })
-            }
-        };
+        let base = self.base_sum(working)?;
         let target = read_any_commit(objects, onto).map_err(RewriteError::Read)?;
         if target.change() == working.change() {
             return Err(RewriteError::SameChange { onto });
         }
-        let new_base = target.tree_sum();
-        let own = working.tree_sum();
-        let commit = if own.is_equivalent(&base) {
+        let commit = if working.tree_sum().is_equivalent(&base) {
             AnyCommit::from_sum(
-                &new_base,
+                &target.tree_sum(),
                 vec![onto],
                 ChangeId::generate().map_err(RewriteError::ChangeId)?,
                 actor.clone(),
                 now(),
                 "",
             )
+            .map_err(RewriteError::Invalid)?
         } else {
-            // `onto + working - base`: the removed terms of the base are added, its added terms
-            // removed.
-            let mut adds: Vec<TreeId> = new_base.adds().copied().collect();
-            adds.extend(own.adds().copied());
-            adds.extend(base.removes().copied());
-            let mut removes: Vec<TreeId> = new_base.removes().copied().collect();
-            removes.extend(own.removes().copied());
-            removes.extend(base.adds().copied());
-            let merged = merge_trees(objects, &Merge::from_parts(adds, removes))
-                .map_err(RewriteError::Merge)?;
-            working.reparent(&merged, vec![onto])
-        }
-        .map_err(RewriteError::Invalid)?;
-        let id = match &commit {
-            AnyCommit::Commit(commit) => objects.put_commit(commit),
-            AnyCommit::Commit2(commit) => objects
-                .put_raw(Kind::Commit2, &commit.encode())
-                .map(CommitId::new),
-        }
-        .map_err(|error| RewriteError::Store(Box::new(error)))?;
+            self.replay(working, &base, &target)?
+        };
+        let id = self.store_commit(&commit)?;
         self.carried(id)
     }
 
+    /// The sum of trees that a commit is a change against: the tree of its only parent, or the
+    /// empty tree if it has none. A commit with several parents has no such base yet.
+    pub(super) fn base_sum(&self, commit: &AnyCommit) -> Result<Merge<TreeId>, RewriteError> {
+        let objects = self.objects();
+        match commit.parents() {
+            [] => Ok(Merge::resolved(
+                objects
+                    .put_tree(&Tree::try_new(vec![]).map_err(|e| RewriteError::Merge(e.into()))?)
+                    .map_err(|error| RewriteError::Store(Box::new(error)))?,
+            )),
+            [parent] => Ok(read_any_commit(objects, *parent)
+                .map_err(RewriteError::Read)?
+                .tree_sum()),
+            _ => Err(RewriteError::Parents {
+                working: commit.id(),
+            }),
+        }
+    }
+
+    /// The commit `commit` replayed onto the commit `onto`: the same change ID, author, time, and
+    /// message, `onto` as its only parent, and the tree `onto + (commit - base)` as a sum, merged
+    /// by [`merge_trees`]. `base` is the sum that `commit` is a change against
+    /// ([`base_sum`](Self::base_sum)). A conflict of the merge is data of the result, and an open
+    /// conflict of `commit` goes through the same sum. Writes the trees of the merge and nothing
+    /// else; the commit is not stored.
+    pub(super) fn replay(
+        &self,
+        commit: &AnyCommit,
+        base: &Merge<TreeId>,
+        onto: &AnyCommit,
+    ) -> Result<AnyCommit, RewriteError> {
+        let new_base = onto.tree_sum();
+        let own = commit.tree_sum();
+        // `onto + commit - base`: the removed terms of the base are added, its added terms
+        // removed.
+        let mut adds: Vec<TreeId> = new_base.adds().copied().collect();
+        adds.extend(own.adds().copied());
+        adds.extend(base.removes().copied());
+        let mut removes: Vec<TreeId> = new_base.removes().copied().collect();
+        removes.extend(own.removes().copied());
+        removes.extend(base.adds().copied());
+        let merged = merge_trees(self.objects(), &Merge::from_parts(adds, removes))
+            .map_err(RewriteError::Merge)?;
+        commit
+            .reparent(&merged, vec![onto.id()])
+            .map_err(RewriteError::Invalid)
+    }
+
+    /// Writes a commit of either kind to the store.
+    pub(super) fn store_commit(&self, commit: &AnyCommit) -> Result<CommitId, RewriteError> {
+        match commit {
+            AnyCommit::Commit(commit) => self.objects().put_commit(commit),
+            AnyCommit::Commit2(commit) => self
+                .objects()
+                .put_raw(Kind::Commit2, &commit.encode())
+                .map(CommitId::new),
+        }
+        .map_err(|error| RewriteError::Store(Box::new(error)))
+    }
+
     /// The directory tree of a stored working-copy commit, with the paths that are a conflict.
-    fn carried(&self, id: CommitId) -> Result<Carried, RewriteError> {
+    pub(super) fn carried(&self, id: CommitId) -> Result<Carried, RewriteError> {
         let commit = read_any_commit(self.objects(), id).map_err(RewriteError::Read)?;
         let view =
             conflicted::view(self.objects(), &commit.tree_sum()).map_err(RewriteError::Read)?;
@@ -404,19 +432,25 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<(), RewriteError> {
+        self.own_for_repeat_locked(lock, actor, authorizer)
+            .map_err(RewriteError::Snapshot)
+    }
+
+    /// The owner check that a snapshot makes, for a repeat of a stopped rewrite or rebase that
+    /// takes none.
+    pub(super) fn own_for_repeat_locked(
+        &self,
+        lock: &WriteLock,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<(), SnapshotError> {
         let (_, owner) = self
             .refs_store()
             .working_copy_and_owner()
-            .map_err(RewriteError::Refs)?;
-        if self
-            .check_owner(actor, owner.as_ref())
-            .map_err(RewriteError::Snapshot)?
-        {
-            let operation = self
-                .ask_take_over(actor, authorizer)
-                .map_err(RewriteError::Snapshot)?;
-            self.take_over_locked(lock, &operation, actor)
-                .map_err(RewriteError::Snapshot)?;
+            .map_err(SnapshotError::Refs)?;
+        if self.check_owner(actor, owner.as_ref())? {
+            let operation = self.ask_take_over(actor, authorizer)?;
+            self.take_over_locked(lock, &operation, actor)?;
         }
         Ok(())
     }
