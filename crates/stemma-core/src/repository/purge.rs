@@ -693,10 +693,25 @@ impl<'a> Planner<'a> {
         // A tree that stays holds what it names. Keeping a view tree makes it one of those, so
         // repeat until nothing more is kept.
         let deleted: HashSet<TreeId> = deleted.iter().copied().collect();
+        let mut written: HashSet<TreeId> = HashSet::new();
+        let mut pending: Vec<TreeId> = self
+            .rewrites
+            .iter()
+            .flat_map(|(_, new)| self.new_commits[new].tree_sum().terms().to_vec())
+            .collect();
+        while let Some(id) = pending.pop() {
+            if self.new_trees.contains_key(&id) && written.insert(id) {
+                pending.extend(&self.tree_links[&id].0);
+            }
+        }
         loop {
             let mut shielded: HashSet<ObjectId> = HashSet::new();
             for (id, (subtrees, _)) in &self.tree_links {
-                let goes = deleted.contains(id) || views.trees.contains(id);
+                // A new tree that is not written and not stored is only in memory (a rewritten leftover).
+                let unwritten = self.new_trees.contains_key(id)
+                    && !written.contains(id)
+                    && !self.objects.contains(&id.object_id()).map_err(store)?;
+                let goes = unwritten || deleted.contains(id) || views.trees.contains(id);
                 if !goes {
                     shielded.extend(subtrees.iter().map(|tree| tree.object_id()));
                     shielded.extend(self.tree_files[id].iter().copied());
