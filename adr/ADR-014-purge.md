@@ -109,10 +109,13 @@ Facts that bound the design:
   view of a commit with an open conflict (ADR-010) stores the text with markers of every
   conflicted path as a blob, and that text holds the content of every side. No tree or commit
   names it, so the rewrite does not find it. The plan therefore computes the view of each
-  commit it rewrites (also a leftover that the scan deletes), with a store that reads from the repository and records what the view would put
-  (`conflicted::view_objects`), so the plan still writes nothing. The blobs of the texts join
+  commit it rewrites (also a leftover that the scan deletes), with a store that reads from the
+  repository and records what the view would put (`conflicted::view_objects`), so the plan still writes nothing. The blobs of the texts join
   the delete set (`delete blob` in the journal; `PurgePlan::deleted_blobs`), and so do the trees
-  that lead to them. A view is derived data: the next `status`, `diff`, or `switch` stores it
+  that lead to them, but only those that the store holds: the view of most commits was never
+  shown. The plan reads the blobs of every side of such a conflict, which it did not do before
+  (it read headers only), so a missing side blob stops the plan (`PurgeError::View`, which
+  names the commit). A view is derived data: the next `status`, `diff`, or `switch` stores it
   again from the rewritten commit. Two ways were weighed. Collecting every blob that nothing
   names, with the garbage collection of ADR-007, would delete more than the purge replaced and
   would make the collection a precondition of a purge, which this ADR avoids. Building the view
@@ -266,9 +269,12 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
   cannot bring the secret back, and `status` lists it for a person to remove (STEMMA-75),
   outside a directory that `.stemmaignore` excludes. One that a version before that rule tracked
   stays tracked, and every snapshot saves its content again until it is removed. Other objects that
-  were unreachable before and name no blob stay. A text with markers is a copy of the content of the sides, not the blob, so a tracked file
-  that has the same bytes by chance or by a copy is kept, with the secret in it. The commit
-  messages and path names are kept as
+  were unreachable before and name no blob stay. A text with markers is a copy of the content
+  of the sides, not the blob, so a tracked file that has the same bytes by chance or by a copy
+  is kept, with the secret in it. The file of a conflicted path in the working directory holds
+  such a text; after the purge the next snapshot sees other bytes than the new view shows,
+  resolves the path with them (ADR-010), and saves the secret again, so the path named by
+  `purge --apply` has to be dealt with as well. The commit messages and path names are kept as
   they are and can hold the secret too; the unit of the purge is the blob. A file below `objects/`
   whose path is not that of an ID is not looked at, as no read reaches it, and the scan reads
   only the header of a blob, so a tree whose header was damaged into that of a blob is not

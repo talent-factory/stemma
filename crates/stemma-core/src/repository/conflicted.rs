@@ -865,4 +865,75 @@ mod tests {
         let resolved = resolve(store, &shown.conflicts, &index).unwrap();
         assert!(resolved.is_resolved());
     }
+
+    /// The IDs of everything in the store.
+    fn stored(repository: &Repository) -> BTreeSet<ObjectId> {
+        repository.objects().ids().unwrap().into_iter().collect()
+    }
+
+    #[test]
+    fn view_objects_are_what_a_view_stores_and_writing_them_is_left_out() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        // `dir/a.txt` conflicts two levels below the root; `b.txt` conflicts at the root; and
+        // `dir/other.txt` is the same everywhere, so no tree below `dir` is shared with a commit.
+        let sum = two_paths(&repository);
+        let before = stored(&repository);
+        let found = view_objects(store, &sum).unwrap();
+        assert_eq!(stored(&repository), before, "nothing is written");
+        assert_eq!(found.blobs.len(), 2);
+
+        view(store, &sum).unwrap();
+        let added: BTreeSet<ObjectId> = stored(&repository).difference(&before).copied().collect();
+        let listed: BTreeSet<ObjectId> = found
+            .blobs
+            .iter()
+            .map(|blob| blob.object_id())
+            .chain(found.trees.iter().map(|tree| tree.object_id()))
+            .collect();
+        assert_eq!(listed, added, "the list is the set that the view adds");
+        // The root and the tree of `dir` both lead to a text, so both are listed.
+        assert_eq!(found.trees.len(), 2);
+    }
+
+    #[test]
+    fn a_sum_of_one_tree_has_no_view_objects() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let tree = tree_of(&repository, &[("a", "x\n")]);
+        let found = view_objects(repository.objects(), &Merge::resolved(tree)).unwrap();
+        assert_eq!(found, ViewObjects::default());
+    }
+
+    #[test]
+    fn a_directory_against_a_file_lists_the_line_with_the_directory() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        let file = tree_of(&repository, &[("a", "file\n")]);
+        let base = tree_of(&repository, &[]);
+        let nested = tree_of(&repository, &[("a/x", "x\n")]);
+        let sum = Merge::try_from_terms(vec![file, base, nested]).unwrap();
+        let found = view_objects(store, &sum).unwrap();
+        let shown = view(store, &sum).unwrap();
+        let text = content(&repository, shown.tree, "a");
+        assert_eq!(found.blobs, [Blob::new(text).id()]);
+        assert_eq!(found.trees, [shown.tree]);
+    }
+
+    #[test]
+    fn a_missing_side_is_an_error_and_not_an_empty_list() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        let sum = two_paths(&repository);
+        let gone = TreeId::new(ObjectId::from_digest(blake3::hash(b"no tree behind it")));
+        let broken = Merge::try_from_terms(vec![sum.terms()[0], gone, sum.terms()[2]]).unwrap();
+        assert!(view_objects(store, &broken).is_err());
+    }
 }

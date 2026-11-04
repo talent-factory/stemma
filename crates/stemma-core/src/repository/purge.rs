@@ -659,22 +659,34 @@ impl<'a> Planner<'a> {
                 continue;
             }
             let sum = Merge::try_from_terms(terms).expect("the trees of a commit are a sum");
-            let found = conflicted::view_objects(self.objects, &sum).map_err(PurgeError::Read)?;
+            let found = conflicted::view_objects(self.objects, &sum).map_err(|source| {
+                PurgeError::View {
+                    commit: *old,
+                    source: Box::new(source),
+                }
+            })?;
             blobs.extend(found.blobs);
             trees.extend(found.trees);
         }
         // The purged blob goes with the delete set already.
         blobs.remove(&self.blob);
-        Ok(Views {
-            blobs: blobs
-                .into_iter()
-                .filter(|blob| !reached.contains(&blob.object_id()))
-                .collect(),
-            trees: trees
-                .into_iter()
-                .filter(|tree| !reached.contains(&tree.object_id()))
-                .collect(),
-        })
+        // Only what a command stored is deleted: the view of most commits was never shown.
+        let stored = |id: ObjectId| self.objects.contains(&id).map_err(store);
+        let mut views = Views {
+            blobs: Vec::new(),
+            trees: Vec::new(),
+        };
+        for blob in blobs {
+            if !reached.contains(&blob.object_id()) && stored(blob.object_id())? {
+                views.blobs.push(blob);
+            }
+        }
+        for tree in trees {
+            if !reached.contains(&tree.object_id()) && stored(tree.object_id())? {
+                views.trees.push(tree);
+            }
+        }
+        Ok(views)
     }
 
     /// The commits and trees that the roots reach after the purge, through the parents and the
@@ -803,6 +815,15 @@ pub enum PurgeError {
         /// The new parent that it would have twice.
         parent: CommitId,
     },
+    /// The working-copy view of a commit that the purge rewrites cannot be computed, for example
+    /// because a side of its conflict names a blob that is missing. Without the view, the plan
+    /// does not know which copies of the content the view stored (STEMMA-195).
+    View {
+        /// The commit.
+        commit: CommitId,
+        /// Why the view cannot be made.
+        source: Box<SnapshotError>,
+    },
     /// A rewrite of a commit gives a sum of trees that no commit can hold. The form of a commit
     /// follows from its sum, so this means a defect of the rewrite, not a damaged repository.
     Rewrite {
@@ -871,6 +892,11 @@ impl PurgeError {
             Self::Refs(error) => write!(f, "the references cannot be read: {error}"),
             Self::Log(error) => write!(f, "the operation log cannot be read: {error}"),
             Self::Read(error) => write!(f, "the history cannot be read: {error}"),
+            Self::View { commit, source } => write!(
+                f,
+                "the view of the conflict in commit {commit} cannot be made, so it is not known \
+                 whether it stored a copy of the blob: {source}"
+            ),
             Self::Store(error) => write!(
                 f,
                 "not every object can be looked at, so it is not known whether one names the \
@@ -953,6 +979,7 @@ impl Error for PurgeError {
             Self::Refs(error) => error.source(),
             Self::Log(error) => error.source(),
             Self::Read(error) => error.source(),
+            Self::View { source, .. } => source.source(),
             Self::Store(error) | Self::BlobUnreadable { source: error, .. } => error.source(),
             Self::Leftover { source, .. } => source.source(),
             Self::Rewrite { source, .. } => source.source(),
@@ -2048,6 +2075,25 @@ mod tests {
             before,
             "a plan writes nothing"
         );
+    }
+
+    #[test]
+    fn a_view_that_no_command_showed_is_not_listed() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let store = repository.objects();
+        let tree = |content: &str| {
+            let blob = store.put_blob(&Blob::new(content)).unwrap();
+            let entry = TreeEntry::file("key", FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let sides = vec![tree(SECRET), tree("base"), tree("other")];
+        conflict(&repository, sides, first);
+        let plan = plan(&repository);
+        assert!(plan.deleted_blobs().is_empty());
     }
 
     #[test]
