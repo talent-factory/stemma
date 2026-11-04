@@ -13,6 +13,8 @@ use std::process::{Child, Command, Stdio};
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
+use stemma_core::diff::DIFF_SIZE_LIMIT as SIZE_LIMIT;
+
 use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
 
 /// Commits and returns the identifier of the new commit, `b3:…`.
@@ -431,8 +433,6 @@ fn an_empty_added_file_is_a_difference_with_a_header_and_no_hunk() {
     );
     assert!(!section.contains("@@"), "{}", result.stdout);
 }
-
-use stemma_core::diff::DIFF_SIZE_LIMIT as SIZE_LIMIT;
 
 #[test]
 fn a_file_above_the_size_limit_is_named_without_its_lines() {

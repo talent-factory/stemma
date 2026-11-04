@@ -3439,10 +3439,10 @@ fn split_operands<'a>(
 /// is `/dev/null`. The header has no time stamp, because the time changes with every call
 /// (ADR-010). A binary file then says `Binary files <old> and <new> differ`, and a text file above
 /// the size limit says `Files <old> and <new> differ and are too large to compare`. Any other text
-/// file has the `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`. A path is
-/// written with [`escape_path`]. With `colour`, the `diff`, `---`, and `+++` lines are bold, the
-/// `@@` lines cyan, and the removed and added lines red and green, as git colours them. The other
-/// lines stay plain.
+/// file has the `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`.
+/// A path is written with [`escape_path`]. With `colour`, the `diff`, `---`, and `+++` lines are
+/// bold, the `@@` lines cyan, and the removed and added lines red and green, as git colours them.
+/// The other lines stay plain.
 fn diff_text(diff: &Diff, colour: bool) -> String {
     let [bold, cyan, red, green, reset] =
         [BOLD, CYAN, RED, GREEN, RESET].map(|code| paint(colour, code));

@@ -399,7 +399,7 @@ die Grenze hält beide in Schranken.
 Seite, auf der die Datei fehlt, gilt als leer.
 \item Ist eine der beiden Fassungen binär, ist die ganze Datei binär. Der Kern vergleicht dann
 keine Zeilen und bildet keine Hunks.
-\item Ist keine Fassung binär, aber eine länger als 10 MiB, ist die Datei zu gross. Der Kern
+\item Ist keine Fassung binär, aber eine grösser als 10 MiB, ist die Datei zu gross. Der Kern
 vergleicht auch dann keine Zeilen und bildet keine Hunks.
 \item Sonst vergleicht der Kern die Zeilen und bildet die Hunks.
 \item Die Anzeige schreibt für eine binäre Datei die Zeile \type{Binary files ... and ... differ}
@@ -656,7 +656,8 @@ Exit-Code 1, ehe er etwas liest oder speichert.
 \item Ein Tabulator erscheint als vier Leerzeichen, nicht ausgerichtet auf Tabulatorstopps, denn
 ratatui verwirft Steuerzeichen. Ein Wagenrücklauf (CR) vor dem Zeilenende erscheint nicht.
 \item Eine Zeile ohne Zeilenende erhält die Zeile \type{\ No newline at end of file}.
-\item Eine binäre Datei zeigt die Meldung \type{Binary file differs}, und sie hat keinen Hunk.
+\item Eine binäre Datei zeigt die Meldung \type{Binary file differs}, eine zu grosse Datei die
+Meldung \type{File too large to compare}; beide haben keinen Hunk.
 Eine leere neue oder gelöschte Datei zeigt ein leeres Feld.
 \item Ein \type{SIGKILL} lässt sich nicht abfangen, und bei einem Signal ohne Handler bleibt das
 Terminal im Raw-Modus. \type{reset} stellt es wieder her.

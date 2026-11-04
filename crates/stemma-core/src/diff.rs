@@ -595,8 +595,9 @@ pub fn is_binary(content: &[u8]) -> bool {
 }
 
 /// The size in bytes above which a file is too large to compare line by line: 10 MiB on either
-/// side. The linear-space Myers diff bounds the memory, but time and output grow with the file,
-/// so the diff names such a file as it names a binary file.
+/// side. The linear-space Myers diff bounds the working memory of the comparison, but time and
+/// output grow with the file. The diff therefore names such a file without its lines, as it does
+/// a binary file; a binary file stays binary above the limit (see [`is_binary`]).
 pub const DIFF_SIZE_LIMIT: usize = 10 * 1024 * 1024;
 
 /// Tells whether a file is too large to compare: more than [`DIFF_SIZE_LIMIT`] bytes.

@@ -7,8 +7,8 @@
 //! first saved as a snapshot, as [`Repository::status`] does, so that the diff shows the files as
 //! they are now. The lines of a text file are compared as stored, with their line ends, by the
 //! shortest edit script of [`crate::diff`], with the boundaries of the changes placed by the indent
-//! heuristic and the deletions of a group before its insertions. A binary file, and a file above
-//! [`crate::diff::DIFF_SIZE_LIMIT`] on either side, is named without its lines.
+//! heuristic and the deletions of a group before its insertions. A file that is binary, or above
+//! [`crate::diff::DIFF_SIZE_LIMIT`], on either side is named without its lines.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
