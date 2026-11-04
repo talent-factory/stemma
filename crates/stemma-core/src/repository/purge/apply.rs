@@ -1230,14 +1230,51 @@ mod tests {
 
     #[test]
     fn no_object_keeps_a_copy_of_the_secret_in_the_text_of_a_conflict() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let view = shown_secret_conflict(&repository, first);
+        let store = repository.objects();
+        assert!(holders(&repository).len() > 1, "the text is stored");
+
+        let purged = apply(&repository);
+        assert_purged(&dir, &repository, &purged);
+        assert!(!store.contains(&view.object_id()).unwrap());
+        assert_eq!(
+            holders(&repository),
+            Vec::<ObjectId>::new(),
+            "no object holds the secret"
+        );
+    }
+
+    #[test]
+    fn a_resume_deletes_the_text_of_a_conflict_after_a_crash() {
+        for stop in [Stop::Journal, Stop::Stubs, Stop::Delete] {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            let [first, ..] = history(&dir, &repository);
+            let view = shown_secret_conflict(&repository, first);
+            stop_at(&repository, stop);
+            let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+            assert_purged(&dir, &repository, &purged);
+            let store = repository.objects();
+            assert!(!store.contains(&view.object_id()).unwrap(), "{stop:?}");
+            assert_eq!(
+                holders(&repository),
+                Vec::<ObjectId>::new(),
+                "{stop:?}: no object holds the secret"
+            );
+        }
+    }
+
+    /// Stores a branch on a `commit2` whose sides hold the secret and other texts, and shows its
+    /// view, which stores the text with markers. Returns the root tree of the view.
+    fn shown_secret_conflict(repository: &Repository, first: CommitId) -> crate::object::TreeId {
         use crate::change::ChangeId;
         use crate::conflict::Merge;
         use crate::object::{Commit2, FileMode, TreeEntry};
         use crate::repository::conflicted;
 
-        let dir = TempDir::new();
-        let repository = repository(&dir);
-        let [first, ..] = history(&dir, &repository);
         let store = repository.objects();
         let tree = |content: &str| {
             let blob = store.put_blob(&Blob::new(content)).unwrap();
@@ -1267,17 +1304,7 @@ mod tests {
             )
             .unwrap();
         // Showing the conflict stores the text with markers, which holds every side.
-        let view = conflicted::view(store, &sum).unwrap().tree;
-        assert!(holders(&repository).len() > 1, "the text is stored");
-
-        let purged = apply(&repository);
-        assert_purged(&dir, &repository, &purged);
-        assert!(!store.contains(&view.object_id()).unwrap());
-        assert_eq!(
-            holders(&repository),
-            Vec::<ObjectId>::new(),
-            "no object holds the secret"
-        );
+        conflicted::view(store, &sum).unwrap().tree
     }
 
     /// The blobs whose content holds the secret, the blob itself included.

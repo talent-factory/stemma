@@ -281,7 +281,7 @@ impl Repository {
             .collect();
         trees.sort();
         let reached = planner.check(&kept_roots, &commits, &trees)?;
-        let views = planner.views(&reached)?;
+        let views = planner.views(&reached, &trees)?;
         trees.extend(views.trees);
         trees.sort();
         trees.dedup();
@@ -627,6 +627,7 @@ impl<'a> Planner<'a> {
     /// after it. The check makes a mistake in that reasoning an error instead of a secret that
     /// stays. A kept tree that holds the blob is found by the walk; the comparison with the delete
     /// set is a second net for links that disagree with the delete set, and does not fire today.
+    /// On success it returns the set of objects that the kept roots reach (see `reached`).
     fn check(
         &mut self,
         kept: &[CommitId],
@@ -649,8 +650,11 @@ impl<'a> Planner<'a> {
     /// commit that held the blob can hold a copy of it. The commits that are deleted are the
     /// ones that held it, and the views are computed from them, so the plan stays free of writes.
     /// An object that something kept reaches stays, as it is no longer only a view: a tracked
-    /// file with the same bytes as a text with markers, for example.
-    fn views(&self, reached: &HashSet<ObjectId>) -> Result<Views, PurgeError> {
+    /// file with the same bytes as a text with markers, for example. So does an object that a
+    /// tree in the store names which the purge does not delete, such as the stored view of a kept
+    /// conflict commit with the same sides: deleting it would leave that tree dangling and make
+    /// the next scan fail. `deleted` are the trees that the purge deletes anyway.
+    fn views(&self, reached: &HashSet<ObjectId>, deleted: &[TreeId]) -> Result<Views, PurgeError> {
         let mut blobs = BTreeSet::new();
         let mut trees = BTreeSet::new();
         for (old, _) in &self.rewrites {
@@ -686,11 +690,35 @@ impl<'a> Planner<'a> {
                 views.trees.push(tree);
             }
         }
+        // A tree that stays holds what it names. Keeping a view tree makes it one of those, so
+        // repeat until nothing more is kept.
+        let deleted: HashSet<TreeId> = deleted.iter().copied().collect();
+        loop {
+            let mut shielded: HashSet<ObjectId> = HashSet::new();
+            for (id, (subtrees, _)) in &self.tree_links {
+                let goes = deleted.contains(id) || views.trees.contains(id);
+                if !goes {
+                    shielded.extend(subtrees.iter().map(|tree| tree.object_id()));
+                    shielded.extend(self.tree_files[id].iter().copied());
+                }
+            }
+            let (blobs, trees) = (views.blobs.len(), views.trees.len());
+            views
+                .blobs
+                .retain(|blob| !shielded.contains(&blob.object_id()));
+            views
+                .trees
+                .retain(|tree| !shielded.contains(&tree.object_id()));
+            if (blobs, trees) == (views.blobs.len(), views.trees.len()) {
+                break;
+            }
+        }
         Ok(views)
     }
 
-    /// The commits and trees that the roots reach after the purge, through the parents and the
-    /// trees, from the links in memory. A root that the plan did not walk is read from the store.
+    /// The commits, the trees, and the files named by those trees that the roots reach after the
+    /// purge, through the parents and the trees, from the links in memory. A root that the plan
+    /// did not walk is read from the store.
     ///
     /// # Errors
     ///
@@ -2114,6 +2142,49 @@ mod tests {
         conflicted::view(store, &sum).unwrap();
         let plan = plan(&repository);
         assert!(plan.deleted_blobs().is_empty());
+    }
+
+    #[test]
+    fn a_view_object_that_the_stored_view_of_a_kept_conflict_shares_stays() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let store = repository.objects();
+        // `dir/a.txt` conflicts in a kept commit and in its child, which also adds the secret, so
+        // both views store the same subtree and the same text with markers.
+        let side = |content: &str, with_secret: bool| {
+            let blob = store.put_blob(&Blob::new(content)).unwrap();
+            let entry = TreeEntry::file("a.txt", FileMode::File, blob).unwrap();
+            let sub = store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap();
+            let mut entries = vec![TreeEntry::directory("dir", sub).unwrap()];
+            if with_secret {
+                let secret = store.put_blob(&Blob::new(SECRET)).unwrap();
+                entries.push(TreeEntry::file("key", FileMode::File, secret).unwrap());
+            }
+            store.put_tree(&Tree::try_new(entries).unwrap()).unwrap()
+        };
+        let sides = |with_secret| {
+            Merge::try_from_terms(vec![
+                side("x", with_secret),
+                side("base", with_secret),
+                side("y", with_secret),
+            ])
+            .unwrap()
+        };
+        let (kept, child) = (sides(false), sides(true));
+        let parent = conflict(&repository, kept.terms().to_vec(), first);
+        conflict(&repository, child.terms().to_vec(), parent);
+        let shown = conflicted::view(store, &kept).unwrap().tree;
+        conflicted::view(store, &child).unwrap();
+        let shared = read_tree(store, shown).unwrap();
+        let subtree = TreeId::new(shared.entries()[0].id());
+        let text = read_tree(store, subtree).unwrap();
+        let text = BlobId::new(text.entries()[0].id());
+        let plan = plan(&repository);
+        assert!(!plan.deleted_trees().contains(&subtree), "{plan:?}");
+        assert!(!plan.deleted_blobs().contains(&text), "{plan:?}");
     }
 
     #[test]

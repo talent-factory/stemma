@@ -878,7 +878,7 @@ mod tests {
             Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
         let store = repository.objects();
         // `dir/a.txt` conflicts two levels below the root; `b.txt` conflicts at the root; and
-        // `dir/other.txt` is the same everywhere, so no tree below `dir` is shared with a commit.
+        // `dir/other.txt` is not conflicted, so its blob is not listed.
         let sum = two_paths(&repository);
         let before = stored(&repository);
         let found = view_objects(store, &sum).unwrap();

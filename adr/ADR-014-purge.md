@@ -110,10 +110,12 @@ Facts that bound the design:
   conflicted path as a blob, and that text holds the content of every side. No tree or commit
   names it, so the rewrite does not find it. The plan therefore computes the view of each
   commit it rewrites (also a leftover that the scan deletes), with a store that reads from the
-  repository and records what the view would put (`conflicted::view_objects`), so the plan still writes nothing. The blobs of the texts join
-  the delete set (`delete blob` in the journal; `PurgePlan::deleted_blobs`), and so do the trees
+  repository and records what the view would put (`conflicted::view_objects`), so the plan
+  still writes nothing. The blobs of the texts join the delete set (`delete blob` in the journal; `PurgePlan::deleted_blobs`), and so do the trees
   that lead to them, but only those that the store holds: the view of most commits was never
-  shown. The plan reads the blobs of every side of such a conflict, which it did not do before
+  shown. An object that a stored tree which stays also names is kept, such as the stored view
+  of a kept conflict commit with the same sides: deleting it would leave that tree dangling
+  and make the scan of the next purge fail. The plan reads the blobs of every side of such a conflict, which it did not do before
   (it read headers only), so a missing side blob stops the plan (`PurgeError::View`, which
   names the commit). A view is derived data: the next `status`, `diff`, or `switch` stores it
   again from the rewritten commit. Two ways were weighed. Collecting every blob that nothing
