@@ -559,6 +559,48 @@ delete tree b3:663b315585172b0607e7ac60812b96184466d70e558070dbd3c95bf6f9349184
         assert_eq!(Journal::parse(GOLDEN_V1.as_bytes()), Some(sample()));
     }
 
+    /// The journal that the program of phase 2 (before STEMMA-176, commit `71244e7`) wrote for a
+    /// purge that stopped at its entry, taken from a run of that program and not from this code.
+    /// It checks the golden text above against the real writer: the resume of a purge that such a
+    /// program began reads exactly these bytes.
+    const WRITTEN_BY_PHASE_2: &str = "stemma-purge 1
+blob b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55
+last 7
+rewrite b3:7f580ba96ee02637db479b343356270c2255ec86c8b4a6116e570216cee726ea b3:a5887db62de08fdc63a0d0a3bc97f961a7371e78f503edaf2dadadfe7cb3257b
+rewrite b3:08fefbf906c0030702b130a2f9362de0d549f0c0d8749257d77c684dbcfff311 b3:a7b773819e1ed29c0b32bfd8686eb25eda665ab6686f1cc5aafcc8cf9114c1b1
+rewrite b3:c7204eccaf13455a4c0575a0eca5c48a0d04cfa5b078a91091a7a37ba8143550 b3:522c713f78251deb9259b04b336f89844bb00df98c4a6a935bbbe4f987f9efa0
+rewrite b3:ad9d38c539faace1c0f61a705d6c6758908885c2efb6f45d161eebd1888fc1f8 b3:7c8dabfa5df7902674853c0e1ca028f85ca68caf3f0baf2e296a3134f5b0d931
+rewrite b3:820e26a630e8d5da8e7a2b0e5c3aec2f3d6a58eb6dc84d69363b3870b8c3f687 b3:8cdd12cc7c9ed7c5743de0d91b6ffc88810038edf19972e14e07d86e65ff05bb
+rewrite b3:d4e062857dfaa343e274686bde6eec552987caa63c862212e9ffdac91355298a b3:be7bb524dc5693c5c07a2fc69c6971a28e47087468c58e7bd8280114a4af4e68
+working-copy b3:c7204eccaf13455a4c0575a0eca5c48a0d04cfa5b078a91091a7a37ba8143550 b3:522c713f78251deb9259b04b336f89844bb00df98c4a6a935bbbe4f987f9efa0
+branch main b3:08fefbf906c0030702b130a2f9362de0d549f0c0d8749257d77c684dbcfff311 b3:a7b773819e1ed29c0b32bfd8686eb25eda665ab6686f1cc5aafcc8cf9114c1b1
+stubs 4-7
+new b3:522c713f78251deb9259b04b336f89844bb00df98c4a6a935bbbe4f987f9efa0
+new b3:5fa3ebc83171eaad9c2f77d21f3c842e06a8bd38a11aa864a0ccafcccfb181c5
+new b3:8cdd12cc7c9ed7c5743de0d91b6ffc88810038edf19972e14e07d86e65ff05bb
+new b3:a5887db62de08fdc63a0d0a3bc97f961a7371e78f503edaf2dadadfe7cb3257b
+new b3:a7b773819e1ed29c0b32bfd8686eb25eda665ab6686f1cc5aafcc8cf9114c1b1
+new b3:be7bb524dc5693c5c07a2fc69c6971a28e47087468c58e7bd8280114a4af4e68
+delete commit b3:08fefbf906c0030702b130a2f9362de0d549f0c0d8749257d77c684dbcfff311
+delete commit b3:7f580ba96ee02637db479b343356270c2255ec86c8b4a6116e570216cee726ea
+delete commit b3:820e26a630e8d5da8e7a2b0e5c3aec2f3d6a58eb6dc84d69363b3870b8c3f687
+delete commit b3:ad9d38c539faace1c0f61a705d6c6758908885c2efb6f45d161eebd1888fc1f8
+delete commit b3:c7204eccaf13455a4c0575a0eca5c48a0d04cfa5b078a91091a7a37ba8143550
+delete commit b3:d4e062857dfaa343e274686bde6eec552987caa63c862212e9ffdac91355298a
+delete tree b3:400ae8ec4302756083aa9edfbdca35c70d6ee7e0c993dc59be0260e5802f3005
+delete tree b3:fd9dafeffe1626e22d7e119b8a7e99b3bb18b966da274397e10825b9da228fc5
+";
+
+    #[test]
+    fn a_journal_written_by_the_program_before_worktrees_is_read_and_written_back_unchanged() {
+        let journal = Journal::parse(WRITTEN_BY_PHASE_2.as_bytes()).expect("version 1 is read");
+        assert_eq!(journal.last, 7);
+        assert_eq!(journal.plan.heads, []);
+        assert_eq!(journal.plan.working_copies.len(), 1);
+        assert_eq!(journal.plan.working_copies[0].0, "main");
+        assert_eq!(journal.encode(), WRITTEN_BY_PHASE_2.as_bytes());
+    }
+
     #[test]
     fn a_journal_reads_back_as_it_was_written() {
         let journal = sample();

@@ -1463,3 +1463,352 @@ fn a_state_directory_without_head_is_explained_by_remove_and_taken_over_by_add()
     let listed = ok(&repo, &["worktree", "list"]).stdout;
     assert!(listed.contains("nested"), "{listed}");
 }
+
+// STEMMA-196: the refusals of `op restore`, in the order of ADR-013, one test each.
+
+#[test]
+fn op_restore_of_an_entry_of_the_main_worktree_is_refused_in_a_linked_one() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&repo, "c.txt", "three");
+    ok(&repo, &["track", "c.txt", "--actor", ACTOR]);
+    let entry = common::numbers(&repo).last().unwrap().to_string();
+
+    let refused = run(&linked, &["op", "restore", &entry, "--actor", ACTOR]);
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("worktree `main`")
+            && refused.stderr.contains(&format!("op restore {entry}")),
+        "{}",
+        refused.stderr
+    );
+    assert!(repo.join("c.txt").exists(), "nothing was restored");
+    assert!(!linked.join("c.txt").exists());
+
+    ok(&repo, &["op", "restore", &entry, "--actor", ACTOR]);
+
+    assert!(!repo.join("c.txt").exists());
+}
+
+#[test]
+fn op_restore_of_an_entry_of_a_worktree_that_was_added_again_is_refused() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    let entry = common::numbers(&repo).last().unwrap().to_string();
+    ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    // The same name and the same place stand for another worktree now.
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "second",
+            "../linked",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    let refused = run(
+        &sandbox.at("linked"),
+        &["op", "restore", &entry, "--actor", ACTOR],
+    );
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("worktree `linked`")
+            && refused.stderr.contains("removed or added again"),
+        "{}",
+        refused.stderr
+    );
+    // `--force` does not lift it: the name may stand for another worktree.
+    let forced = run(
+        &sandbox.at("linked"),
+        &["op", "restore", &entry, "--force", "--actor", ACTOR],
+    );
+    assert_eq!(forced.code, 1, "{}", forced.stderr);
+    assert!(
+        forced.stderr.contains("removed or added again"),
+        "{}",
+        forced.stderr
+    );
+}
+
+#[test]
+fn the_refusals_of_op_restore_come_in_the_order_of_adr_013() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    let added = common::numbers(&repo).last().unwrap().to_string();
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    let tracked = common::numbers(&repo).last().unwrap().to_string();
+    ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    let removed = common::numbers(&repo).last().unwrap().to_string();
+
+    // The entries of `worktree add` and `worktree remove` come first, also for a worktree that
+    // is gone and is not the one where the restore runs.
+    for entry in [&added, &removed] {
+        let refused = run(&repo, &["op", "restore", entry, "--actor", ACTOR]);
+        assert_eq!(refused.code, 1, "{}", refused.stderr);
+        assert!(
+            refused.stderr.contains("added or removed a worktree"),
+            "{entry}: {}",
+            refused.stderr
+        );
+    }
+    // A worktree that is gone is named before the worktree where the entry would have to run.
+    let gone = run(&repo, &["op", "restore", &tracked, "--actor", ACTOR]);
+    assert_eq!(gone.code, 1, "{}", gone.stderr);
+    assert!(
+        gone.stderr.contains("removed or added again"),
+        "{}",
+        gone.stderr
+    );
+    assert!(!gone.stderr.contains("run `op restore"), "{}", gone.stderr);
+}
+
+/// A repository with the secret committed, and a linked worktree made from that history, in which
+/// a file is tracked. Returns the sandbox and the number of the entry of that file.
+fn with_secret_in_linked() -> (Sandbox, String) {
+    let sandbox = Sandbox::new();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&repo, "key", SECRET);
+    ok(&repo, &["track", "key", "--actor", ACTOR]);
+    ok(&repo, &["commit", "-m", "second", "--actor", ACTOR]);
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            "../linked",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    let entry = common::numbers(&repo).last().unwrap().to_string();
+    (sandbox, entry)
+}
+
+#[test]
+fn op_restore_of_an_entry_of_another_worktree_is_refused_by_the_journal_of_a_purge_first() {
+    let (sandbox, entry) = with_secret_in_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    let oplog = repo.join(".stemma/oplog");
+    let stopped = common::run_failing(
+        &repo,
+        &["purge", &secret(), "--apply", "--actor", ACTOR],
+        &[("write", &oplog)],
+    );
+    assert_eq!(stopped.code, 3, "{}", stopped.stderr);
+    assert!(repo.join(".stemma/purge-pending").exists());
+
+    // The journal keeps every writer out, in every worktree, before the entry is looked at: the
+    // refusal does not depend on whether the entry belongs to the worktree where it runs.
+    for dir in [&repo, &linked] {
+        let refused = run(dir, &["op", "restore", &entry, "--actor", ACTOR]);
+        assert_eq!(refused.code, 1, "{}", refused.stderr);
+        assert!(
+            refused.stderr.contains("a purge has not finished")
+                && refused.stderr.contains("stemma purge --resume"),
+            "{}",
+            refused.stderr
+        );
+    }
+    assert_eq!(read(&linked, "b.txt"), "two", "nothing was restored");
+
+    ok(&repo, &["purge", "--resume", "--actor", ACTOR]);
+    assert!(!repo.join(".stemma/purge-pending").exists());
+}
+
+// STEMMA-196: hardening.
+
+#[test]
+fn remove_with_force_lists_at_most_twenty_files_and_counts_the_others() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    for number in 0..25 {
+        write(&linked, &format!("junk/{number:02}.txt"), "gone");
+    }
+
+    let removed = ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+
+    assert!(
+        removed
+            .stdout
+            .contains("Also removed 25 files that no commit holds:\n"),
+        "{}",
+        removed.stdout
+    );
+    assert!(
+        removed.stdout.contains("    junk/19.txt\n"),
+        "{}",
+        removed.stdout
+    );
+    assert!(
+        !removed.stdout.contains("junk/20.txt"),
+        "{}",
+        removed.stdout
+    );
+    assert!(
+        removed.stdout.contains("    and 5 more\n"),
+        "{}",
+        removed.stdout
+    );
+    assert!(!linked.exists());
+}
+
+#[test]
+fn remove_with_force_lists_all_files_up_to_twenty() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    for number in 0..20 {
+        write(&linked, &format!("junk/{number:02}.txt"), "gone");
+    }
+
+    let removed = ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+
+    assert!(
+        removed.stdout.contains("    junk/19.txt\n"),
+        "{}",
+        removed.stdout
+    );
+    assert!(!removed.stdout.contains("more\n"), "{}", removed.stdout);
+}
+
+/// Makes the state directory `linked` also exist under a name that no worktree can have, as a copy
+/// or a hand-made directory would.
+fn with_bad_state_name(sandbox: &Sandbox, name: &str) {
+    let states = sandbox.repo().join(".stemma/worktrees");
+    fs::create_dir(states.join(name)).unwrap();
+    for file in ["HEAD", "working-copy", "location"] {
+        fs::copy(
+            states.join("linked").join(file),
+            states.join(name).join(file),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn a_state_directory_with_a_name_no_worktree_can_have_is_damage_and_stops_a_purge_before_its_journal(
+) {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    write(&repo, "key", SECRET);
+    ok(&repo, &["track", "key", "--actor", ACTOR]);
+    ok(&repo, &["commit", "-m", "second", "--actor", ACTOR]);
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            "../linked",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    with_bad_state_name(&sandbox, "bad name");
+
+    let purge = run(&repo, &["purge", &secret(), "--apply", "--actor", ACTOR]);
+    let list = run(&repo, &["worktree", "list"]);
+
+    // No journal that the reader of the journal would refuse: nothing is written.
+    assert_eq!(purge.code, 5, "{}", purge.stderr);
+    assert!(purge.stderr.contains("bad name"), "{}", purge.stderr);
+    assert!(!repo.join(".stemma/purge-pending").exists());
+    assert_eq!(list.code, 5, "{}", list.stderr);
+    assert!(
+        list.stderr.contains("none that a worktree can have"),
+        "{}",
+        list.stderr
+    );
+    // The damaged name does not hide the others: the real worktree is removed.
+    let removed = run(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    assert_eq!(removed.code, 0, "{}", removed.stderr);
+}
+
+#[test]
+fn a_line_break_in_a_path_cannot_forge_a_line_of_an_error() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.repo();
+    // A directory that is not empty is refused, and the message names its path as it is on disk.
+    let crowded = sandbox.at("a\n\u{1b}[31mstemma: forged\u{202e}");
+    fs::create_dir(&crowded).unwrap();
+    fs::write(crowded.join("file"), "x").unwrap();
+
+    let failed = run(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "x",
+            crowded.to_str().unwrap(),
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    assert_eq!(failed.code, 1, "{}", failed.stderr);
+    assert_eq!(failed.stderr.lines().count(), 1, "{:?}", failed.stderr);
+    assert!(
+        failed.stderr.contains("is not an empty directory"),
+        "{:?}",
+        failed.stderr
+    );
+    assert!(
+        !failed.stderr.contains('\u{1b}') && !failed.stderr.contains('\u{202e}'),
+        "{:?}",
+        failed.stderr
+    );
+}
+
+#[test]
+fn a_refused_removal_after_a_snapshot_names_the_entry_and_ends_with_code_1() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "a.txt", "changed");
+    write(&linked, "loose.txt", "three");
+
+    let refused = run(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+
+    // The snapshot wrote an entry, the worktree is as it was, and the same call with `--force` is
+    // safe: the code is the one of the refusal (ADR-018), and the message names the entry.
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("saved first as entry") && refused.stderr.contains("loose.txt"),
+        "{}",
+        refused.stderr
+    );
+    assert!(linked.join("loose.txt").exists());
+    ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    assert!(!linked.exists());
+}

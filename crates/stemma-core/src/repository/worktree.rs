@@ -23,8 +23,8 @@ use crate::fault;
 use crate::object::{Commit, CommitId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName};
 use crate::refs::{
-    BranchName, Head, Logged, NewWorktree, NewWorktreeBranch, RefError, LOCATION_FILE,
-    MAIN_WORKTREE,
+    BranchName, Head, Logged, NewWorktree, NewWorktreeBranch, RefError, RefMalformed,
+    RefParseError, LOCATION_FILE, MAIN_WORKTREE,
 };
 use crate::store::{ObjectStore, StoreError};
 use crate::{Actor, Authorizer};
@@ -205,24 +205,13 @@ impl Repository {
                 Err(error) => return Err(WorktreeError::Snapshot(Box::new(error))),
             };
         }
-        // A failure before the entry of the removal names the snapshot that came first.
-        let after = |snapshot: &Option<Box<Entry>>| {
-            let snapshot = snapshot.clone();
-            move |error: WorktreeError| match &snapshot {
-                Some(saved) if error.entry().is_none() => WorktreeError::AfterSnapshot {
-                    snapshot: saved.clone(),
-                    source: Box::new(error),
-                },
-                _ => error,
-            }
-        };
         let refs = crate::refs::FsRefStore::for_worktree(&shared, &state);
         let head = crate::refs::RefStore::head(&refs).map_err(WorktreeError::Refs);
-        let head = head.map_err(after(&snapshot))?;
+        let head = head.map_err(|error| after_snapshot(&snapshot, &mut late, error))?;
         let (working_copy, _) = refs
             .working_copy_and_owner()
             .map_err(WorktreeError::Refs)
-            .map_err(after(&snapshot))?;
+            .map_err(|error| after_snapshot(&snapshot, &mut late, error))?;
         let text = info.path.to_string_lossy().into_owned();
         let mut discarded = Vec::new();
         let logged = self
@@ -323,7 +312,7 @@ impl Repository {
                 source,
             }),
         };
-        result.map_err(after(&snapshot))
+        result.map_err(|error| after_snapshot(&snapshot, &mut late, error))
     }
 
     /// The worktree that `name` names: the name of a linked worktree, or the path of its
@@ -774,6 +763,17 @@ impl Repository {
         }
         states.sort();
         for (name, state) in states {
+            // The log and the journal of a purge can name only a valid name, so a state directory
+            // with another one is damage that the command names, and the other worktrees stay
+            // usable. The check comes before the read, which would take its pointers for good.
+            if !crate::oplog::valid_worktree_name(&name) {
+                let source = RefError::Corrupt {
+                    path: state.clone(),
+                    source: RefParseError::Malformed(RefMalformed::WorktreeName),
+                };
+                damaged.push((name, WorktreeError::Refs(source)));
+                continue;
+            }
             match read_linked(&shared, &state, &name) {
                 Ok(Some(info)) => rows.push(info),
                 Ok(None) => {}
@@ -812,6 +812,23 @@ fn read_linked(
 /// [`resolve`], or the path as it is if it cannot be resolved.
 fn resolve_or(path: &Path) -> PathBuf {
     resolve(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A failure before the entry of the removal names the snapshot that came first, and the flush of
+/// it that did not succeed (`late`). A failure that has an entry of its own is returned as it is.
+fn after_snapshot(
+    snapshot: &Option<Box<Entry>>,
+    late: &mut Option<RefError>,
+    error: WorktreeError,
+) -> WorktreeError {
+    match snapshot {
+        Some(saved) if error.entry().is_none() => WorktreeError::AfterSnapshot {
+            snapshot: saved.clone(),
+            late: late.take(),
+            source: Box::new(error),
+        },
+        _ => error,
+    }
 }
 
 /// Checks that the directory `path` holds the pointer file of the worktree whose state directory
@@ -1188,6 +1205,9 @@ pub enum WorktreeError {
     AfterSnapshot {
         /// The entry of the snapshot.
         snapshot: Box<Entry>,
+        /// The error of the flush, if a directory of the snapshot could not be flushed: the saved
+        /// files may not survive a crash.
+        late: Option<RefError>,
         /// The failure.
         source: Box<WorktreeError>,
     },
@@ -1308,16 +1328,24 @@ impl WorktreeError {
         )
     }
 
-    /// Whether a pointer moved although the call failed.
+    /// Whether a pointer moved although the call failed. The snapshot that came first moved the
+    /// working-copy commit, but its entry can be undone and the call can be repeated, so it counts
+    /// only if its flush did not succeed (ADR-018).
     pub fn pointer_moved(&self) -> bool {
-        matches!(
-            self,
-            Self::AfterSnapshot { .. }
-                | Self::PartlyMoved { .. }
-                | Self::NotDurable { .. }
-                | Self::RemovePartlyMoved { .. }
-                | Self::RemoveNotDurable { .. }
-        )
+        match self {
+            Self::AfterSnapshot { late, .. } => late.is_some(),
+            Self::PartlyMoved { .. }
+            | Self::NotDurable { .. }
+            | Self::RemovePartlyMoved { .. }
+            | Self::RemoveNotDurable { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Whether the call wrote the entry of the add or of the removal: the entry that the snapshot
+    /// before it wrote does not count.
+    pub fn wrote_its_entry(&self) -> bool {
+        self.entry().is_some() && !matches!(self, Self::AfterSnapshot { .. })
     }
 }
 
@@ -1446,11 +1474,25 @@ impl fmt::Display for WorktreeError {
                 "the files of the worktree could not be saved first, and nothing was removed: \
                  {error}"
             ),
-            Self::AfterSnapshot { snapshot, source } => write!(
-                f,
-                "the files of the worktree were saved first as entry {}; {source}",
-                snapshot.number()
-            ),
+            Self::AfterSnapshot {
+                snapshot,
+                late,
+                source,
+            } => {
+                write!(
+                    f,
+                    "the files of the worktree were saved first as entry {}; {source}",
+                    snapshot.number()
+                )?;
+                match late {
+                    Some(late) => write!(
+                        f,
+                        "; the save could not be flushed to disk and may not survive a crash: \
+                         {late}"
+                    ),
+                    None => Ok(()),
+                }
+            }
             Self::Dirty { path, listed, more } => {
                 let names: Vec<String> = listed
                     .iter()
@@ -1550,5 +1592,117 @@ impl Error for WorktreeError {
             | Self::NotItsPointer { .. }
             | Self::Dirty { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::refs::LockHolder;
+    use crate::repository::InitOptions;
+    use crate::testutil::TempDir;
+    use crate::AllowAll;
+
+    fn actor() -> Actor {
+        Actor::human("daniel").unwrap()
+    }
+
+    fn locked() -> RefError {
+        RefError::Locked {
+            path: "x".into(),
+            holder: LockHolder::Unknown,
+        }
+    }
+
+    #[test]
+    fn a_removal_that_stops_after_its_snapshot_names_it_and_the_flush_that_failed() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let entry = Box::new(repository.oplog().read(1).unwrap());
+        let dirty = || WorktreeError::Dirty {
+            path: "/w".into(),
+            listed: vec!["a.txt".to_owned()],
+            more: 0,
+        };
+
+        let mut late = Some(locked());
+        let flushed_badly = after_snapshot(&Some(entry.clone()), &mut late, dirty());
+        assert!(late.is_none(), "the flush error moves into the failure");
+        assert!(
+            flushed_badly.pointer_moved(),
+            "the saved work may not survive a crash"
+        );
+        assert!(!flushed_badly.wrote_its_entry());
+        assert!(
+            flushed_badly
+                .to_string()
+                .contains("could not be flushed to disk"),
+            "{flushed_badly}"
+        );
+
+        let plain = after_snapshot(&Some(entry.clone()), &mut None, dirty());
+        assert!(!plain.pointer_moved());
+        assert!(!plain.wrote_its_entry());
+        assert!(
+            plain.entry().is_some(),
+            "the entry of the snapshot is named"
+        );
+        assert!(!plain.to_string().contains("flushed"), "{plain}");
+
+        // Without a snapshot the failure is returned as it is, and the entry of a removal that
+        // failed after its own entry is not wrapped.
+        assert!(matches!(
+            after_snapshot(&None, &mut None, dirty()),
+            WorktreeError::Dirty { .. }
+        ));
+        let removal = WorktreeError::RemoveFailed {
+            entry: entry.clone(),
+            path: "/w".into(),
+            source: io::Error::other("busy"),
+        };
+        let kept = after_snapshot(&Some(entry), &mut None, removal);
+        assert!(matches!(kept, WorktreeError::RemoveFailed { .. }));
+        assert!(kept.wrote_its_entry());
+    }
+
+    #[test]
+    fn a_dirty_directory_after_a_snapshot_is_reported_with_the_entry_of_the_snapshot() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        fs::write(dir.path().join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor(), &AllowAll)
+            .unwrap();
+        let _first = repository.commit("first", &actor(), &AllowAll).unwrap();
+        let place = TempDir::new();
+        let path = place.path().join("linked");
+        let _added = repository
+            .add_worktree(
+                &path,
+                &WorktreeBranch::Create(BranchName::try_new("feat").unwrap()),
+                Some(&actor()),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        fs::write(path.join("loose.txt"), "three").unwrap();
+        // An unsaved tracked change makes the snapshot write an entry.
+        fs::write(path.join("a.txt"), "changed").unwrap();
+
+        let error = repository
+            .remove_worktree("linked", false, &actor(), &AllowAll)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, WorktreeError::AfterSnapshot { late: None, .. }),
+            "{error}"
+        );
+        assert!(!error.pointer_moved());
+        assert!(!error.wrote_its_entry());
+        assert!(path.join("loose.txt").exists(), "nothing was removed");
     }
 }

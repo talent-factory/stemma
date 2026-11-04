@@ -397,7 +397,11 @@ Den Eigentümer prüft der Befehl auch dann.
 \item Die Dateien gehen zuerst in einen Snapshot des Worktrees. Der Eigentümer der Arbeitskopie
 wird wie bei jedem Snapshot geprüft, ein Agent kann den Worktree eines Menschen also nicht
 wegräumen. Verfolgt der Working-Copy-Commit eine Datei nicht, bricht der Befehl ab und nennt die
-ersten Dateien; mit \type{--force} gehen sie mit dem Verzeichnis verloren.
+ersten Dateien; mit \type{--force} gehen sie mit dem Verzeichnis verloren,
+und die Ausgabe listet davon die ersten 20 und zählt die übrigen.
+Bricht der Befehl nach diesem Snapshot ab, behält er den Exit-Code des Fehlers
+und nennt den Eintrag des Snapshots;
+nur ein Snapshot, den das Dateisystem nicht gesichert hat, macht daraus Exit-Code 3.
 \item Der Eintrag \type{worktree-remove} wird geschrieben und gesichert. Er nennt den Worktree,
 sein Verzeichnis und HEAD und den Working-Copy-Commit mit \type{-} als neuem Wert.
 \item Das Verzeichnis wird entfernt: erst unter einem versteckten Namen neben seinen Platz
