@@ -23,6 +23,7 @@ use std::collections::{hash_map, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
+use super::conflicted;
 use super::snapshot::{read_any_commit, read_object, SnapshotError};
 use super::{Repository, UpdateError};
 use crate::conflict::{AnyCommit, FromSumError, Merge};
@@ -53,6 +54,7 @@ pub struct PurgePlan {
     entries: Vec<u64>,
     commits: Vec<CommitId>,
     trees: Vec<TreeId>,
+    blobs: Vec<BlobId>,
 }
 
 impl PurgePlan {
@@ -100,6 +102,15 @@ impl PurgePlan {
     /// a commit or left in the store. Nothing that is kept reaches them; the plan checks it.
     pub fn deleted_trees(&self) -> &[TreeId] {
         &self.trees
+    }
+
+    /// The blobs that are deleted besides the purged one, sorted by ID: the texts with markers
+    /// that the working-copy view of a rewritten conflict stored. They hold the content of every
+    /// side, so a copy of the secret can be among them (STEMMA-195). The trees that name them
+    /// are among [`deleted_trees`](Self::deleted_trees). A view is derived data, so the next
+    /// command that needs one stores it again.
+    pub fn deleted_blobs(&self) -> &[BlobId] {
+        &self.blobs
     }
 }
 
@@ -269,7 +280,11 @@ impl Repository {
             .map(|(old, _)| *old)
             .collect();
         trees.sort();
-        planner.check(&kept_roots, &commits, &trees)?;
+        let reached = planner.check(&kept_roots, &commits, &trees)?;
+        let views = planner.views(&reached)?;
+        trees.extend(views.trees);
+        trees.sort();
+        trees.dedup();
         // A log with 2^24 entries is too large for a test, so no test notices if this goes.
         // Without it, a purge writes a journal that `--resume` and `--abort` cannot read.
         check_entries(replaced.len())?;
@@ -283,6 +298,7 @@ impl Repository {
             entries: replaced.iter().map(|entry| entry.number()).collect(),
             commits,
             trees,
+            blobs: views.blobs,
         };
         Ok((plan, planner))
     }
@@ -350,6 +366,9 @@ struct Planner<'a> {
     trees: HashMap<TreeId, Option<TreeId>>,
     /// The subtrees of every tree, old and new, and whether it names the blob itself.
     tree_links: HashMap<TreeId, (Vec<TreeId>, bool)>,
+    /// The IDs of the files of every tree, old and new, that the walk of what is kept needs to
+    /// know which blobs are reached.
+    tree_files: HashMap<TreeId, Vec<ObjectId>>,
     /// The new trees, by their IDs.
     new_trees: HashMap<TreeId, Tree>,
     /// Where each tree that holds the blob holds it, for [`paths`](Self::paths).
@@ -373,6 +392,7 @@ impl<'a> Planner<'a> {
             blob,
             trees: HashMap::new(),
             tree_links: HashMap::new(),
+            tree_files: HashMap::new(),
             new_trees: HashMap::new(),
             places: HashMap::new(),
             commits: HashMap::new(),
@@ -504,6 +524,14 @@ impl<'a> Planner<'a> {
             }
         }
         self.tree_links.insert(id, (old_subtrees, holds_blob));
+        self.tree_files.insert(
+            id,
+            tree.entries()
+                .iter()
+                .filter(|entry| FileMode::from_entry_mode(entry.mode()).is_some())
+                .map(TreeEntry::id)
+                .collect(),
+        );
         if !changed {
             self.trees.insert(id, None);
             return Ok(None);
@@ -512,6 +540,14 @@ impl<'a> Planner<'a> {
         let new = Tree::try_new(entries).expect("the entries of a valid tree");
         let new_id = new.id();
         self.tree_links.insert(new_id, (new_subtrees, false));
+        self.tree_files.insert(
+            new_id,
+            new.entries()
+                .iter()
+                .filter(|entry| FileMode::from_entry_mode(entry.mode()).is_some())
+                .map(TreeEntry::id)
+                .collect(),
+        );
         self.new_trees.insert(new_id, new);
         self.trees.insert(id, Some(new_id));
         Ok(Some(new_id))
@@ -596,7 +632,7 @@ impl<'a> Planner<'a> {
         kept: &[CommitId],
         commits: &[CommitId],
         trees: &[TreeId],
-    ) -> Result<(), PurgeError> {
+    ) -> Result<HashSet<ObjectId>, PurgeError> {
         let reached = self.reached(kept)?;
         let deleted = commits
             .iter()
@@ -604,8 +640,41 @@ impl<'a> Planner<'a> {
             .chain(trees.iter().map(|tree| tree.object_id()));
         match deleted.into_iter().find(|id| reached.contains(id)) {
             Some(id) => Err(PurgeError::Unsound { id }),
-            None => Ok(()),
+            None => Ok(reached),
         }
+    }
+
+    /// The objects that the working-copy views of the rewritten conflicts stored (ADR-014): the
+    /// text with markers of each conflicted path holds the content of every side, so a view of a
+    /// commit that held the blob can hold a copy of it. The commits that are deleted are the
+    /// ones that held it, and the views are computed from them, so the plan stays free of writes.
+    /// An object that something kept reaches stays, as it is no longer only a view: a tracked
+    /// file with the same bytes as a text with markers, for example.
+    fn views(&self, reached: &HashSet<ObjectId>) -> Result<Views, PurgeError> {
+        let mut blobs = BTreeSet::new();
+        let mut trees = BTreeSet::new();
+        for (old, _) in &self.rewrites {
+            let terms = self.commit_links[old].0.clone();
+            if terms.len() < 2 {
+                continue;
+            }
+            let sum = Merge::try_from_terms(terms).expect("the trees of a commit are a sum");
+            let found = conflicted::view_objects(self.objects, &sum).map_err(PurgeError::Read)?;
+            blobs.extend(found.blobs);
+            trees.extend(found.trees);
+        }
+        // The purged blob goes with the delete set already.
+        blobs.remove(&self.blob);
+        Ok(Views {
+            blobs: blobs
+                .into_iter()
+                .filter(|blob| !reached.contains(&blob.object_id()))
+                .collect(),
+            trees: trees
+                .into_iter()
+                .filter(|tree| !reached.contains(&tree.object_id()))
+                .collect(),
+        })
     }
 
     /// The commits and trees that the roots reach after the purge, through the parents and the
@@ -641,6 +710,7 @@ impl<'a> Planner<'a> {
                 return Err(PurgeError::Unsound { id: id.object_id() });
             }
             trees.extend(subtrees);
+            seen.extend(self.tree_files[&id].iter().copied());
         }
         Ok(seen)
     }
@@ -674,6 +744,12 @@ impl<'a> Planner<'a> {
         }
         objects.push(NewObject::Tree(tree.clone()));
     }
+}
+
+/// The objects of the views of the rewritten conflicts that the purge deletes.
+struct Views {
+    blobs: Vec<BlobId>,
+    trees: Vec<TreeId>,
 }
 
 /// Wraps an error of the store.
@@ -1928,6 +2004,93 @@ mod tests {
         let plan = plan(&repository);
         assert!(!plan.deleted_commits().contains(&old), "{plan:?}");
         assert!(!plan.rewrites().iter().any(|(from, _)| *from == old));
+    }
+
+    /// Stores a `commit2` whose sides are `key` files with the secret and with other texts, shows
+    /// its working-copy view (which stores the text with markers), and returns the commit, the
+    /// tree of the view, and the blob with the markers.
+    fn secret_conflict(repository: &Repository, parent: CommitId) -> (CommitId, TreeId, BlobId) {
+        let store = repository.objects();
+        let tree = |content: &str| {
+            let blob = store.put_blob(&Blob::new(content)).unwrap();
+            let entry = TreeEntry::file("key", FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let sum = Merge::try_from_terms(vec![tree(SECRET), tree("base"), tree("other")]).unwrap();
+        let commit = conflict(repository, sum.terms().to_vec(), parent);
+        let view = conflicted::view(store, &sum).unwrap().tree;
+        let entries = read_tree(store, view).unwrap();
+        let text = BlobId::new(entries.entries()[0].id());
+        let stored = read_object(store, text.object_id(), Kind::Blob).unwrap();
+        assert!(
+            String::from_utf8(stored.into_body())
+                .unwrap()
+                .contains(SECRET),
+            "the text with markers holds the secret"
+        );
+        (commit, view, text)
+    }
+
+    #[test]
+    fn the_text_with_markers_of_a_rewritten_conflict_and_its_view_tree_are_deleted() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let (_, view, text) = secret_conflict(&repository, first);
+        let before = repository.objects().ids().unwrap();
+        let plan = plan(&repository);
+        assert_eq!(plan.deleted_blobs(), [text]);
+        assert!(plan.deleted_trees().contains(&view));
+        assert_eq!(
+            repository.objects().ids().unwrap(),
+            before,
+            "a plan writes nothing"
+        );
+    }
+
+    #[test]
+    fn a_view_that_a_commit_without_the_secret_stored_is_not_touched() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let store = repository.objects();
+        let tree = |content: &str| {
+            let blob = store.put_blob(&Blob::new(content)).unwrap();
+            let entry = TreeEntry::file("key", FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let sum = Merge::try_from_terms(vec![tree("one"), tree("base"), tree("two")]).unwrap();
+        conflict(&repository, sum.terms().to_vec(), first);
+        conflicted::view(store, &sum).unwrap();
+        let plan = plan(&repository);
+        assert!(plan.deleted_blobs().is_empty());
+    }
+
+    #[test]
+    fn a_text_with_markers_that_a_kept_file_has_too_stays() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let (_, _, text) = secret_conflict(&repository, first);
+        let stored = read_object(repository.objects(), text.object_id(), Kind::Blob).unwrap();
+        // A tracked file with the same bytes is no longer only a view: the commit keeps it.
+        write(
+            &dir,
+            "copy.txt",
+            &String::from_utf8(stored.into_body()).unwrap(),
+        );
+        track(&repository, &["copy.txt"]);
+        commit(&repository, "copy");
+        let plan = plan(&repository);
+        assert!(
+            plan.deleted_blobs().is_empty(),
+            "{:?}",
+            plan.deleted_blobs()
+        );
     }
 
     #[test]

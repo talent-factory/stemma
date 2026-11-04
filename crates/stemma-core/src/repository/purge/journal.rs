@@ -17,6 +17,7 @@
 //! new <id>                        each object that the purge writes and the store did not have
 //! delete commit <id>              each commit that is deleted, sorted
 //! delete tree <id>                each tree that is deleted, sorted
+//! delete blob <id>                each blob that is deleted besides the purged one, sorted
 //! ```
 //!
 //! The lines `new` name what `--abort` removes; an object that the store had before the purge
@@ -100,6 +101,9 @@ impl Journal {
         for tree in &plan.trees {
             out.push_str(&format!("delete tree {tree}\n"));
         }
+        for blob in &plan.blobs {
+            out.push_str(&format!("delete blob {blob}\n"));
+        }
         out.into_bytes()
     }
 
@@ -124,6 +128,7 @@ impl Journal {
             entries: Vec::new(),
             commits: Vec::new(),
             trees: Vec::new(),
+            blobs: Vec::new(),
         };
         let mut new = Vec::new();
         for line in lines {
@@ -156,6 +161,7 @@ impl Journal {
                 "delete" => match rest.split_once(' ')? {
                     ("commit", id_text) => plan.commits.push(CommitId::new(id(id_text)?)),
                     ("tree", id_text) => plan.trees.push(TreeId::new(id(id_text)?)),
+                    ("blob", id_text) => plan.blobs.push(BlobId::new(id(id_text)?)),
                     _ => return None,
                 },
                 _ => return None,
@@ -164,6 +170,7 @@ impl Journal {
         let sorted = plan.branches.is_sorted_by(|a, b| a.0 < b.0)
             && plan.commits.is_sorted_by(|a, b| a < b)
             && plan.trees.is_sorted_by(|a, b| a < b)
+            && plan.blobs.is_sorted_by(|a, b| a < b)
             && new.is_sorted_by(|a, b| a < b);
         let journal = Self { plan, last, new };
         (sorted && journal.encode() == bytes).then_some(journal)
@@ -467,6 +474,7 @@ mod tests {
                 entries: vec![3, 4, 5, 7],
                 commits,
                 trees,
+                blobs: vec![BlobId::new(commit("e").object_id())],
             },
             last: 9,
             new,
@@ -480,6 +488,7 @@ mod tests {
         assert!(text.starts_with("stemma-purge 1\nblob b3:"));
         assert!(text.contains("\nlast 9\n"));
         assert!(text.contains("\nstubs 3-5 7\n"));
+        assert!(text.contains("\ndelete blob b3:"));
         assert_eq!(Journal::parse(text.as_bytes()), Some(journal));
     }
 
@@ -493,6 +502,7 @@ mod tests {
         journal.plan.entries.clear();
         journal.plan.commits.clear();
         journal.plan.trees.clear();
+        journal.plan.blobs.clear();
         journal.new.clear();
         let bytes = journal.encode();
         assert!(String::from_utf8(bytes.clone())
@@ -647,6 +657,7 @@ mod tests {
             entries,
             commits: sorted(rng, 3, random_commit),
             trees: sorted(rng, 3, |rng| TreeId::new(random_id(rng))),
+            blobs: sorted(rng, 3, random_blob),
         };
         Journal {
             plan,

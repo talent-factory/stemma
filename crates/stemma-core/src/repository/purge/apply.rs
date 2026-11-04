@@ -875,6 +875,7 @@ impl Repository {
             .iter()
             .map(|commit| commit.object_id())
             .chain(plan.trees.iter().map(|tree| tree.object_id()))
+            .chain(plan.blobs.iter().map(|blob| blob.object_id()))
             .chain([plan.blob.object_id()]);
         for id in deleted {
             self.objects()
@@ -1087,6 +1088,9 @@ mod tests {
         for tree in plan.deleted_trees() {
             assert!(!store.contains(&tree.object_id()).unwrap());
         }
+        for blob in plan.deleted_blobs() {
+            assert!(!store.contains(&blob.object_id()).unwrap());
+        }
         for id in ids(repository) {
             if store.kind_of(&id).unwrap() == Some(Kind::Tree) {
                 let raw = store.get(&id).unwrap().unwrap();
@@ -1222,6 +1226,73 @@ mod tests {
         };
         assert_eq!(purge.commits(), 0);
         assert!(purge.stubs().is_empty());
+    }
+
+    #[test]
+    fn no_object_keeps_a_copy_of_the_secret_in_the_text_of_a_conflict() {
+        use crate::change::ChangeId;
+        use crate::conflict::Merge;
+        use crate::object::{Commit2, FileMode, TreeEntry};
+        use crate::repository::conflicted;
+
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let store = repository.objects();
+        let tree = |content: &str| {
+            let blob = store.put_blob(&Blob::new(content)).unwrap();
+            let entry = TreeEntry::file("key", FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let sum = Merge::try_from_terms(vec![tree(SECRET), tree("base"), tree("other")]).unwrap();
+        let commit = Commit2::try_new(
+            sum.terms().to_vec(),
+            vec![first],
+            ChangeId::generate().unwrap(),
+            actor(),
+            8,
+            "conflict",
+        )
+        .unwrap();
+        let commit = store.put_raw(Kind::Commit2, &commit.encode()).unwrap();
+        repository
+            .create_branch(
+                &OperationName::try_new("branch").unwrap(),
+                &BranchName::try_new("conflict").unwrap(),
+                commit,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        // Showing the conflict stores the text with markers, which holds every side.
+        let view = conflicted::view(store, &sum).unwrap().tree;
+        assert!(holders(&repository).len() > 1, "the text is stored");
+
+        let purged = apply(&repository);
+        assert_purged(&dir, &repository, &purged);
+        assert!(!store.contains(&view.object_id()).unwrap());
+        assert_eq!(
+            holders(&repository),
+            Vec::<ObjectId>::new(),
+            "no object holds the secret"
+        );
+    }
+
+    /// The blobs whose content holds the secret, the blob itself included.
+    fn holders(repository: &Repository) -> Vec<ObjectId> {
+        let store = repository.objects();
+        ids(repository)
+            .into_iter()
+            .filter(|id| store.kind_of(id).unwrap() == Some(Kind::Blob))
+            .filter(|id| {
+                let raw = store.get(id).unwrap().unwrap();
+                raw.body()
+                    .windows(SECRET.len())
+                    .any(|w| w == SECRET.as_bytes())
+            })
+            .collect()
     }
 
     #[test]

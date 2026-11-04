@@ -453,6 +453,15 @@ $O(n \cdot k)$ bis auf logarithmische Faktoren für $n$ Einträge in den Verzeic
 unterscheiden, und $k$ Terme. Ein Commit ohne Konflikt kostet nichts zusätzlich und schreibt
 nichts.
 
+{\bf Der Text im Objektspeicher.} Die Checkout-Schicht und \type{diff} lesen die Dateien der
+Ansicht aus dem Objektspeicher, darum legt die Ansicht den Text mit Markierungen als Blob und die
+Trees bis zu ihm als Trees ab. Kein Commit nennt sie; sie sind abgeleitet und entstehen beim
+nächsten Befehl neu. Der Text enthält aber den Inhalt jeder Seite. Ein \type{purge} löscht darum
+nicht nur den Blob, den man ihm nennt, sondern auch die Texte und Trees der Ansichten aller
+Commits, die er umschreibt (ADR-014); der Plan berechnet sie, ohne etwas zu schreiben.
+Eine getrackte Datei mit denselben Bytes wie ein solcher Text bleibt, denn sie gehört dann
+einem Commit, der bleibt.
+
 {\bf Warum Bytes statt Markierungen.} Der Snapshot liest keine Markierungen, denn jede Regel zum
 Lesen hätte Grenzfälle in beide Richtungen: Eine Datei, die Markierungen dokumentiert, wäre
 ein Konflikt, und eine halb bearbeitete Markierung liesse sich nicht sicher deuten.

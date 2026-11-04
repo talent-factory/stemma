@@ -105,6 +105,23 @@ Facts that bound the design:
   that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
   The scratch files of `tmp/` are removed when the purge takes the lock (ADR-011); see the
   limits.
+- **The delete set holds the views of the rewritten conflicts** (STEMMA-195). The working-copy
+  view of a commit with an open conflict (ADR-010) stores the text with markers of every
+  conflicted path as a blob, and that text holds the content of every side. No tree or commit
+  names it, so the rewrite does not find it. The plan therefore computes the view of each
+  commit it rewrites (also a leftover that the scan deletes), with a store that reads from the repository and records what the view would put
+  (`conflicted::view_objects`), so the plan still writes nothing. The blobs of the texts join
+  the delete set (`delete blob` in the journal; `PurgePlan::deleted_blobs`), and so do the trees
+  that lead to them. A view is derived data: the next `status`, `diff`, or `switch` stores it
+  again from the rewritten commit. Two ways were weighed. Collecting every blob that nothing
+  names, with the garbage collection of ADR-007, would delete more than the purge replaced and
+  would make the collection a precondition of a purge, which this ADR avoids. Building the view
+  in memory for the read-only commands would need an overlay store in every caller of the view
+  (`status`, `diff`, `switch`, `restore`, `rebase`, and the rewrite), and the checkout layer
+  reads the files of the view from the store. An object that the commits and the pointers that
+  are kept reach stays, also if it is a text of a view: a tracked file with the same bytes is
+  no longer only a view (see the limits). The journal gets the line `delete blob`; a journal
+  without it reads as before.
 - **A synchronized repository stays open** *(confirmed)*. A secret that was pushed (phase 5) is
   also on the hub, and a purge here does not reach it. The rule for users is that a pushed secret
   counts as compromised and has to be replaced, whatever a purge does. The hub needs a removal of
@@ -249,7 +266,9 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
   cannot bring the secret back, and `status` lists it for a person to remove (STEMMA-75),
   outside a directory that `.stemmaignore` excludes. One that a version before that rule tracked
   stays tracked, and every snapshot saves its content again until it is removed. Other objects that
-  were unreachable before and name no blob stay. The commit messages and path names are kept as
+  were unreachable before and name no blob stay. A text with markers is a copy of the content of the sides, not the blob, so a tracked file
+  that has the same bytes by chance or by a copy is kept, with the secret in it. The commit
+  messages and path names are kept as
   they are and can hold the secret too; the unit of the purge is the blob. A file below `objects/`
   whose path is not that of an ID is not looked at, as no read reaches it, and the scan reads
   only the header of a blob, so a tree whose header was damaged into that of a blob is not
@@ -298,11 +317,11 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
 
 ## Open items
 
-- [ ] The view of a commit with an open conflict writes the text with markers as a blob (ADR-010),
-      and that blob holds the content of every side. A purge rewrites the trees and commits and
-      deletes the blob it was asked for, but no tree or commit names the text blob, so a copy of
-      a purged secret can stay in it. Decide with the garbage collection of ADR-007: collect
-      the blobs that nothing names, or build the view in memory for the commands that only read.
+- [x] The view of a commit with an open conflict writes the text with markers as a blob
+      (ADR-010), and that blob holds the content of every side, so a copy of a purged secret
+      could stay in it (found in the review of STEMMA-169). Decided in the delete set above
+      (STEMMA-195): the plan computes the view of every commit it rewrites or deletes, without
+      writing, and deletes the blobs of the texts and the trees on the way to them.
 - [x] The format of the stub and of the `purge` entry, in the strict text form of ADR-011: entry
       encoding `stemma-oplog 2`, written only for these two (STEMMA-47; see ADR-011). A
       `purge` entry has `commits <n>` and `stubs <ranges>`, and a list that does not fit is

@@ -2493,6 +2493,10 @@ enthielt, fällt aus dem Baum, wie es auch ein Snapshot nie anlegen würde.
 Der Plan nennt die Zeiger, die auf die neuen Commits gehen, die Einträge des Logs, die
 einen umgeschriebenen Commit nennen und deshalb zu Stubs werden, und die Objekte, die
 gelöscht werden: die alten Commits, die Bäume mit dem Blob und den Blob selbst.
+Hat ein umgeschriebener Commit einen offenen Konflikt, nennt der Plan auch die Texte mit
+Markierungen, die seine Ansicht gespeichert hat, als weitere Zeilen \type{delete blob},
+und die Bäume bis zu ihnen als \type{delete tree}. Diese Texte enthalten den Inhalt jeder Seite,
+also unter Umständen eine Kopie des Geheimnisses.
 Danach durchsucht der Plan den ganzen Objektspeicher nach Bäumen und Commits, die
 kein Zeiger und kein Eintrag erreicht, etwa Reste eines Absturzes. Enthält ein solcher Rest
 den Blob oder folgt er auf einen Commit, der ihn enthält, wird er gelöscht und nicht
