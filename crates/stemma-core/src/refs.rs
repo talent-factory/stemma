@@ -1516,7 +1516,8 @@ impl FsRefStore {
     /// The state directories of the worktrees other than this one, each with its name: the main
     /// worktree (`root` itself, called `main`) and every directory below `root/worktrees/`. An
     /// entry that is no directory (a `.DS_Store`, say) and a state directory without `HEAD` (an
-    /// add that stopped) are no worktrees and are left out. A name that is not UTF-8 is damage.
+    /// add or a removal that stopped) are no worktrees and are left out. A name that is not UTF-8
+    /// is damage.
     pub(crate) fn other_states(&self) -> Result<Vec<(String, PathBuf)>, RefError> {
         let mut states = Vec::new();
         if self.local != self.root {

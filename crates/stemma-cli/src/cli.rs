@@ -1715,8 +1715,11 @@ fn worktree_remove(args: WorktreeRemoveArgs, out: &mut dyn Write) -> Result<(), 
     }
     if !removed.discarded.is_empty() {
         text.push_str(&format!(
-            "Also removed {} files that no commit holds:\n",
-            removed.discarded.len()
+            "Also removed {} that no commit holds:\n",
+            match removed.discarded.len() {
+                1 => "1 file".to_owned(),
+                count => format!("{count} files"),
+            }
         ));
         for path in &removed.discarded {
             text.push_str(&format!("    {}\n", escape_path(path)));

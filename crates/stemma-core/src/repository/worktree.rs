@@ -126,9 +126,11 @@ impl Repository {
     /// `worktree` is the name of the worktree or the path of its directory. The branch of the
     /// worktree stays, and so do its commits.
     ///
-    /// The steps are: the authorizer is asked for `worktree-remove` (the target is `worktree`);
-    /// the worktree is found, and the main worktree and the one of this call are refused; the
-    /// lock of the references is taken and held to the last move; if the directory exists, it
+    /// The steps are: an open purge refuses the call; the authorizer is asked for
+    /// `worktree-remove` (the target is `worktree`); the lock of the references is taken and held
+    /// to the last move; the worktree is found under the lock, and the main worktree and the one
+    /// of this call are refused; the owner of the working copy is checked; if the directory
+    /// exists, it
     /// must hold the pointer file of this worktree, and the files are saved in a snapshot of the
     /// worktree first (a second question to the authorizer, `snapshot`, and the owner of the
     /// working copy is checked as for every snapshot), then every file that the working-copy
@@ -307,12 +309,16 @@ impl Repository {
     fn find_worktree(&self, name: &str) -> Result<WorktreeInfo, WorktreeError> {
         let rows = self.worktrees()?;
         let path = resolve(Path::new(name)).ok();
-        let found = rows.into_iter().find(|row| {
-            row.name == name
-                || path
-                    .as_ref()
-                    .is_some_and(|path| *path == resolve_or(&row.path))
-        });
+        // A name wins over a path: the argument `feat` removes the worktree called `feat`, even if
+        // `./feat` is the directory of another worktree. Write `./feat` to mean the directory.
+        let found = rows
+            .iter()
+            .position(|row| row.name == name)
+            .or_else(|| {
+                let path = path.as_ref()?;
+                rows.iter().position(|row| *path == resolve_or(&row.path))
+            })
+            .map(|index| rows[index].clone());
         let Some(found) = found else {
             return Err(WorktreeError::NoSuchWorktree(name.to_owned()));
         };

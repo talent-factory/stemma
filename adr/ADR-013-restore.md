@@ -41,7 +41,10 @@ So the restore needs a checkout layer first, and that layer is also what phase 3
   back the old `HEAD` and working-copy commit of that worktree only. An entry that moved `HEAD`
   or the working-copy commit of another worktree is refused (`OtherWorktree`), and the message
   names the worktree: `op restore` is run in that worktree. An entry of another worktree that
-  names branches only is restored from anywhere, as the branches are shared. The check that a
+  names branches only is restored from anywhere, as the branches are shared. An entry that
+  moved `HEAD` or the working-copy commit of a worktree that was removed or made again since
+  is refused (`GoneWorktree`, exit code 1, not lifted by `--force`), as its name may stand for
+  another worktree now; a removal that failed after its entry does not count. The check that a
   branch is checked out in one worktree only (ADR-009) stays. The outcome of the entry that is
   judged before the restore is the one of its own worktree (ADR-011). The entries of
   `worktree add` and `worktree remove` are refused (`WorktreeEntry`): a restore does not make a

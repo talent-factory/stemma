@@ -2054,17 +2054,23 @@ nicht verfolgt. Ohne die Option bricht der Befehl ab, wenn es solche gibt.
 aus der Befehl es öffnet; es darf nicht im Worktree liegen, der entfernt wird.
 Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Er ist nötig; fehlt die Option, gilt
-\type{STEMMA_ACTOR}. Der Akteur muss der Eigentümer der Arbeitskopie des Worktrees sein, denn der
-Befehl nimmt dort einen Snapshot.
+\type{STEMMA_ACTOR}. Der Akteur muss der Eigentümer der Arbeitskopie des Worktrees sein; der Befehl
+prüft das auch, wenn das Verzeichnis fehlt. Hat der Befehl dort einen Snapshot zu nehmen,
+gilt dieselbe Prüfung wie bei jedem Snapshot.
 \stopitemize
 
 Der Befehl hat keine JSON-Form.
 
 {\bf Verhalten.} Der Kern fragt den Autorisierer nach der Operation \type{worktree-remove} und
 übergibt ihm das Argument als Ziel; bis zur Richtlinie der Phase 4 übergibt der Befehl
-\type{AllowAll}. Dann sucht er den Worktree, nimmt die Sperre der Referenzen und prüft, dass das
-Verzeichnis die Zeigerdatei \type{.stemma} enthält, die das Zustandsverzeichnis dieses Worktrees
-nennt; sonst ist es ein anderes Verzeichnis, und der Befehl lässt alle Dateien darin liegen.
+\type{AllowAll}. Dann nimmt er die Sperre der Referenzen und sucht unter der Sperre den
+Worktree. Ein Name gilt vor einem Pfad: Das Argument \type{feat} meint den Worktree mit diesem
+Namen, auch wenn \type{./feat} das Verzeichnis eines anderen ist; für das Verzeichnis schreibt man
+\type{./feat}.
+
+Der Befehl prüft, dass das Verzeichnis die Zeigerdatei \type{.stemma} enthält, die das
+Zustandsverzeichnis dieses Worktrees nennt; sonst ist es ein anderes Verzeichnis, und der Befehl
+lässt alle Dateien darin liegen.
 Er speichert die Dateien in einem Snapshot des Worktrees (eine zweite Frage an den Autorisierer,
 \type{snapshot}, und die Prüfung des Eigentümers wie bei jedem Snapshot) und sucht danach
 Dateien, die der Working-Copy-Commit nicht verfolgt.
@@ -2074,8 +2080,9 @@ Verzeichnis und danach das Zustandsverzeichnis, die Datei \type{HEAD} zuerst.
 Der Eintrag trägt den Namen des Worktrees und sein Verzeichnis und nennt HEAD und den
 Working-Copy-Commit mit \type{-} als neuem Wert. Der Branch wird frei, und der Working-Copy-Commit
 bleibt im Log erhalten.
-Fehlt das Verzeichnis des Worktrees, weil es ohne Stemma gelöscht wurde, entfernt der Befehl nur
-das Zustandsverzeichnis.
+Fehlt das Verzeichnis des Worktrees, weil es ohne Stemma gelöscht wurde, entfällt die Prüfung der
+Zeigerdatei, der Snapshot und die Suche nach nicht verfolgten Dateien; der Befehl prüft den
+Eigentümer und entfernt nur das Zustandsverzeichnis.
 
 Die Ausgabe nennt Name, Pfad und Eintrag, danach den Snapshot, falls einer entstand, die Dateien,
 die \type{--force} mit dem Verzeichnis entfernt hat (kein Commit hält sie), und den
@@ -2095,12 +2102,23 @@ removed}.
 Worktree, den es nicht gibt, dem Worktree der Wurzel, dem Worktree des Aufrufs, einem Verzeichnis
 ohne die Zeigerdatei dieses Worktrees, einem Eigentümer, der nicht der Akteur ist, nicht
 verfolgten Dateien ohne \type{--force} (die Meldung nennt die ersten) und bei einem offenen Purge.
+Hat der Befehl die Dateien schon in einem Snapshot gesichert, bevor er auf einen dieser Fehler
+stösst, endet er mit Exit-Code 3, und die Meldung nennt den Eintrag des Snapshots; der Worktree
+ist dann unverändert, und der Aufruf mit \type{--force} ist sicher.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
-Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet er mit Exit-Code 3: Die Meldung
-nennt den Eintrag und sagt, was von Hand zu entfernen ist (das Verzeichnis, oder der Rest des
-Zustandsverzeichnisses unter \type{.stemma/worktrees}) und dass derselbe Aufruf danach nur das
-Zustandsverzeichnis wegnimmt. Mit Exit-Code 3 endet er auch, wenn der Worktree weg
-ist, aber die Ausgabe sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
+
+Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die
+Meldung nennt den Eintrag und sagt, was von Hand zu entfernen ist. Konnte er das Verzeichnis
+nicht entfernen, oder bewegte sich noch kein Zeiger, nimmt derselbe Aufruf danach nur das
+Zustandsverzeichnis weg. Ist das Zustandsverzeichnis nur zum Teil entfernt, zählt der Worktree
+nicht mehr; der Rest unter \type{.stemma/worktrees} ist von Hand zu löschen, und ein neuer Aufruf
+endet mit Exit-Code 1. Mit Exit-Code 3 endet er auch, wenn der Worktree weg ist, aber die Ausgabe
+sich nicht schreiben liess oder ein Verzeichnis nicht gesichert ist.
+
+{\bf Ein- und Ausgabe, Wiederholung.} Die Ausgabe steht auf der Standardausgabe; Fehler und
+Meldungen stehen auf der Fehlerausgabe. Der Text ist für Menschen und nicht zum Auswerten gedacht.
+Nach einem Erfolg endet ein zweiter Aufruf mit Exit-Code 1, denn der Worktree ist weg. Nach einer
+Ablehnung wegen nicht verfolgter Dateien lässt er sich unbedenklich wiederholen.
 
 {\bf Beispiele.}
 
@@ -2482,8 +2500,10 @@ einem Eintrag, der nur Tags gesetzt oder gelöscht hat (\type{tag}, \type{untag}
 bewegt sich nie und gehört nicht zum Zustand, den der Befehl zurückbringt (ADR-008, ADR-013),
 bei einem Eintrag, den ein Purge nennt, der noch nicht fertig ist, bei einem Eintrag von
 \type{worktree add} oder \type{worktree remove}, denn das Restore legt kein Verzeichnis an und
-löscht keines, und bei einem Eintrag, der HEAD oder den Working-Copy-Commit eines anderen
-Worktrees bewegte (die Meldung nennt den Worktree und rät, \type{op restore} dort aufzurufen);
+löscht keines, bei einem Eintrag eines Worktrees, der danach entfernt oder unter demselben Namen
+neu angelegt wurde (der Name steht dann für einen anderen Worktree oder für keinen), und bei
+einem Eintrag, der HEAD oder den Working-Copy-Commit eines anderen Worktrees bewegte (die
+Meldung nennt den Worktree und rät, \type{op restore} dort aufzurufen);
 diese Fälle hebt auch \type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren
 Zeigerbewegungen niemand mehr kennt; der Ausgang jedes Eintrags vor dem jüngsten Stub ist deshalb
 unbekannt, und er braucht \type{--force}. Nennt dagegen kein Purge einen Stub im Log, ist das ein
@@ -2696,10 +2716,6 @@ Agent ist, wenn das Verzeichnis kein Repository ist, wenn der Objektspeicher kei
 der ID hat (auch wenn die ID einen Commit oder einen Baum nennt)
 und wenn die Referenzen, das Log, ein Commit oder ein Baum sich nicht lesen lassen,
 ohne dass die Datei beschädigt ist.
-Mit Exit-Code 1 endet er auch, wenn das Repository mehr als einen Worktree hat: Ein Purge sieht nur
-die Zeiger des Worktrees, in dem er läuft, und würde Objekte löschen, die ein anderer braucht.
-Die Meldung nennt die anderen Worktrees; \type{--resume} und \type{--abort} sind davon nicht
-betroffen.
 Ist die Datei des Blobs oder ein Objekt im Speicher beschädigt, ist das ein Schaden:
 Dann ist nicht bekannt, ob es den Blob nennt.
 Betrifft der Fehler einen Rest, den nichts erreicht, nennt die Meldung ihn als solchen.

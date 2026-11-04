@@ -350,25 +350,41 @@ impl Repository {
         ) {
             return Err(RestoreError::WorktreeEntry { number });
         }
-        // The worktree of the entry was removed or made again since: its name stands for another
-        // worktree now, or for none.
-        if change.worktree().is_some()
-            && entries[position + 1..]
-                .iter()
-                .filter_map(Entry::change)
-                .any(|later| {
-                    matches!(
-                        later.operation().as_str(),
-                        "worktree-add" | "worktree-remove"
-                    ) && later.worktree() == change.worktree()
-                })
-        {
-            return Err(RestoreError::GoneWorktree {
-                number,
-                worktree: change.worktree_name().to_owned(),
-            });
-        }
         let here = self.refs_store().worktree_name();
+        // The worktree of the entry was removed or made again since: its name stands for another
+        // worktree now, or for none. Only an entry that moved a pointer of its worktree is
+        // concerned (branches are shared), and only a later add or remove that took effect
+        // counts: a removal that failed after its entry leaves the worktree where it was.
+        if change.worktree().is_some()
+            && (change.head().is_some() || change.working_copy().is_some())
+        {
+            let mut added_again = false;
+            let mut removed = false;
+            for later in entries[position + 1..].iter().filter_map(Entry::change) {
+                if later.worktree() != change.worktree() {
+                    continue;
+                }
+                match later.operation().as_str() {
+                    "worktree-add" => added_again = true,
+                    "worktree-remove" => removed = true,
+                    _ => {}
+                }
+            }
+            let name = change.worktree_name();
+            let exists = name == here
+                || self
+                    .refs_store()
+                    .other_states()
+                    .map_err(RestoreError::Refs)?
+                    .iter()
+                    .any(|(other, _)| other == name);
+            if added_again || (removed && !exists) {
+                return Err(RestoreError::GoneWorktree {
+                    number,
+                    worktree: name.to_owned(),
+                });
+            }
+        }
         if change.worktree_name() != here
             && (change.head().is_some() || change.working_copy().is_some())
         {
@@ -501,9 +517,10 @@ impl Repository {
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`, `OtherWorktree`, `WorktreeEntry`, `PurgePending`,
-/// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
-/// those with an `entry` wrote it.
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`,
+/// `WorktreeEntry`, `GoneWorktree`, `OtherWorktree`, `PurgePending`, `OutcomeUnknown`,
+/// `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore; those with an
+/// `entry` wrote it.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RestoreError {

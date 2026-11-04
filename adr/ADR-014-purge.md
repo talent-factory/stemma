@@ -54,8 +54,8 @@ Facts that bound the design:
   are the `HEAD` and the working-copy commit of every worktree, the one where the purge runs and
   all others, so no object that another worktree needs is deleted, and what the rewrite
   replaces is moved there too: the working-copy commit of each worktree, and its `HEAD` when it
-  names a commit. The plan names the worktree on each of these moves (`main` or the name of a
-  linked worktree). The journal names it as well: a journal whose moves of `HEAD` and the
+  names a commit. The plan names a linked worktree on its moves, and the lines of the main
+  worktree stay as they were. The journal names it as well: a journal whose moves of `HEAD` and the
   working-copy commit are all those of the main worktree has the form and the header
   `stemma-purge 1` that it had before worktrees, and any other has `stemma-purge 2` with the
   worktree on each of the two lines, `main` first and then by name, so one purge has one

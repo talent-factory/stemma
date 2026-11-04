@@ -74,7 +74,7 @@
     <text x="20" y="669">führt einen Branch in den Branch von HEAD ein</text>
     <text x="20" y="713">legt eine zweite Arbeitskopie mit eigenem HEAD an</text>
     <text x="20" y="757">spielt den Branch auf ein Ziel neu auf</text>
-    <text x="20" y="801">sichert, löscht ein Verzeichnis samt Zustand und gibt den Branch frei</text>
+    <text x="20" y="801">entfernt einen Worktree, der Branch bleibt</text>
   </g>
 
   <!-- init: changes working-copy commit, HEAD, log -->

@@ -1304,7 +1304,7 @@ fn remove_with_force_names_the_files_that_no_commit_holds() {
     assert!(
         removed
             .stdout
-            .contains("Also removed 1 files that no commit holds:\n    notes/todo.txt\n"),
+            .contains("Also removed 1 file that no commit holds:\n    notes/todo.txt\n"),
         "{}",
         removed.stdout
     );
@@ -1330,4 +1330,57 @@ fn op_restore_of_an_entry_of_a_removed_worktree_is_refused() {
         "{}",
         refused.stderr
     );
+}
+
+#[test]
+fn op_restore_of_a_branch_only_entry_of_a_removed_worktree_works_from_main() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    ok(&linked, &["branch", "topic", "--actor", ACTOR]);
+    let entry = common::numbers(&repo).last().unwrap().to_string();
+    ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+
+    let restored = run(&repo, &["op", "restore", &entry, "--actor", ACTOR]);
+
+    // Branches are shared, so the name of the removed worktree does not matter for this entry.
+    assert_eq!(restored.code, 0, "{}", restored.stderr);
+}
+
+#[test]
+fn a_remove_that_cannot_delete_the_directory_keeps_the_worktree_and_a_retry_finishes() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "b.txt", "two");
+    ok(&linked, &["track", "b.txt", "--actor", ACTOR]);
+    let older = common::numbers(&repo).last().unwrap().to_string();
+
+    // The directory `linked` is a name directly in the sandbox: its removal is refused.
+    let failed = common::run_failing(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+        &[("write", sandbox.dir.path())],
+    );
+
+    assert_eq!(failed.code, 3, "{}", failed.stderr);
+    assert!(linked.join("b.txt").exists(), "the files are still there");
+    let listed = ok(&repo, &["worktree", "list"]).stdout;
+    assert!(listed.contains("linked"), "{listed}");
+    // The removal did not take effect, so an older entry of the worktree is still restorable.
+    let restored = run(&linked, &["op", "restore", &older, "--actor", ACTOR]);
+    assert!(
+        !restored.stderr.contains("removed or added again"),
+        "{}",
+        restored.stderr
+    );
+
+    // Run again without the failure: the state and the directory go.
+    ok(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    assert!(!linked.exists());
+    assert!(!ok(&repo, &["worktree", "list"]).stdout.contains("linked"));
 }

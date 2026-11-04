@@ -47,8 +47,8 @@ use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 /// The first line of the journal, with the version of its form.
 const HEADER: &str = "stemma-purge 1";
 
-/// The first line of a journal that names the worktree of a move of HEAD or the working-copy
-/// commit that is not the main one.
+/// The first line of a journal with at least one move of HEAD or the working-copy commit of a
+/// linked worktree; such a journal names the worktree on every one of these moves.
 const HEADER_2: &str = "stemma-purge 2";
 
 /// The longest journal that is read: a journal names every rewritten commit and every deleted

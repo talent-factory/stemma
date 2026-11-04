@@ -386,13 +386,14 @@ Der Befehl \type{worktree remove} nimmt einen Worktree wieder weg.
 Er fragt den Autorisierer nach der Operation \type{worktree-remove}, nimmt den Namen oder den
 Pfad des Worktrees und lehnt zwei Fälle ab: den Worktree der Wurzel, denn dort liegt der
 gemeinsame Speicher, und den Worktree, in dem der Befehl selbst läuft, denn dessen Verzeichnis
-verschwände unter dem Aufruf.
+verschwindet unter dem Aufruf.
 
 \startitemize[n]
 \item Das Verzeichnis muss die Zeigerdatei dieses Worktrees enthalten, also die Datei, die sein
 Zustandsverzeichnis nennt. Sonst ist es ein anderes Verzeichnis, und der Befehl rührt keine Datei
-darin an. Ein Verzeichnis, das ohne Stemma gelöscht wurde, fehlt einfach; dann entfällt dieser
-Schritt und der nächste.
+darin an. Ein Verzeichnis, das ohne Stemma gelöscht wurde, fehlt einfach; dann entfallen
+diese Prüfung, der Snapshot und die Suche nach nicht verfolgten Dateien.
+Den Eigentümer prüft der Befehl auch dann.
 \item Die Dateien gehen zuerst in einen Snapshot des Worktrees. Der Eigentümer der Arbeitskopie
 wird wie bei jedem Snapshot geprüft, ein Agent kann den Worktree eines Menschen also nicht
 wegräumen. Verfolgt der Working-Copy-Commit eine Datei nicht, bricht der Befehl ab und nennt die
@@ -405,9 +406,12 @@ dann der Rest.
 \stopitemize
 
 Der Branch bleibt, und die Commits bleiben: Der Eintrag nennt den Working-Copy-Commit, also
-behalten Log und Purge ihn. Ein Absturz nach dem Eintrag endet mit Exit-Code 3, und die Meldung
-sagt, was von Hand zu entfernen ist; der Name eines entfernten Worktrees kann später ein anderer
-Worktree tragen, darum setzt \type{op restore} Einträge eines entfernten Worktrees nicht zurück.
+behalten Log und Purge ihn. Scheitert ein Schritt nach dem Eintrag, endet der Befehl mit
+Exit-Code 3, und die Meldung sagt, was von Hand zu entfernen ist. Nach einem Absturz ist der
+Worktree ganz oder als halb entfernt zu erkennen: Der Eintrag steht vor allen Änderungen, und
+\type{HEAD} geht zuerst, sodass ein halb entfernter Worktree keinen Branch mehr hält.
+Der Name eines entfernten Worktrees kann später ein anderer Worktree tragen; darum setzt
+\type{op restore} die Zeiger eines entfernten Worktrees nicht zurück.
 Ein \type{op restore} macht das Entfernen nicht rückgängig;
 wer den Worktree wieder braucht, legt ihn mit \type{worktree add} auf dem Branch neu an.
 
@@ -436,8 +440,9 @@ Worktrees (eine Zeile \type{worktree}, ADR-011); die Einträge der Wurzel bleibe
 \type{op log} beurteilt HEAD und den Working-Copy-Commit eines Eintrags am nächsten Eintrag
 desselben Worktrees; der neueste Eintrag eines anderen Worktrees ist dort unbekannt.
 Ein \type{op restore} setzt die Zeiger des Worktrees zurück, in dem er läuft, und lehnt einen
-Eintrag ab, der HEAD oder den Working-Copy-Commit eines anderen bewegte: Er läuft in diesem
-Worktree. Die Einträge von \type{worktree add} und \type{worktree remove} setzt er nicht zurück.
+Eintrag ab, der HEAD oder den Working-Copy-Commit eines anderen bewegte; man ruft ihn dann in
+jenem Worktree auf.
+Die Einträge von \type{worktree add} und \type{worktree remove} setzt er nicht zurück.
 \item Ein Purge nimmt HEAD und den Working-Copy-Commit jedes Worktrees als Wurzeln und bewegt,
 was er umschreibt, in jedem von ihnen. Die Verzeichnisse der anderen Worktrees liest und
 schreibt er nicht; eine Datei mit dem Geheimnis darin bleibt dort liegen, bis sie jemand entfernt.

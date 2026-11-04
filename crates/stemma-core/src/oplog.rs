@@ -404,8 +404,8 @@ pub enum EntryError {
     StubWithoutBody(u64),
     /// Entry 1 names the hash of an entry before it, but there is none.
     FirstAfter,
-    /// The name of a worktree is not one that a worktree has: letters, digits, `-`, `_`, and `.`
-    /// (not first), and not `main`, which the entry leaves out.
+    /// The name of a worktree is not one that a worktree has: ASCII letters, digits, `-`, `_`, and
+    /// `.` (not first), at most 255 bytes, and not `main`, which the entry leaves out.
     BadWorktree(String),
     /// The directory of a worktree holds a control character, or the entry names no worktree.
     BadLocation(String),
@@ -643,7 +643,7 @@ impl Change {
     }
 
     /// The directory of the worktree, in the entries that make or remove one (`worktree-add`,
-    /// `worktree-remove`) and in a restore that brings a removed worktree back (ADR-013).
+    /// `worktree-remove`); other entries leave it out.
     pub fn location(&self) -> Option<&str> {
         self.worktree.as_deref()?.location.as_deref()
     }
@@ -3261,9 +3261,10 @@ impl Current {
     }
 
     /// Names the worktree that HEAD, the working-copy commit, and the owner belong to; the default
-    /// is `main`. An entry of another worktree is judged by its branches and its tags only: its
-    /// HEAD and its working-copy commit are not known here, so their moves are confirmed or
-    /// refuted by a later entry of the same worktree, and else unknown (ADR-011).
+    /// is `main`. An entry of another worktree is judged by the entry of the same
+    /// worktree that follows it: that entry confirms or refutes its HEAD and working-copy moves.
+    /// The newest entry of another worktree has no later entry and no known current value here,
+    /// so those moves are unknown. Branches and tags are shared and judged as before (ADR-011).
     #[must_use]
     pub fn in_worktree(mut self, worktree: impl Into<String>) -> Self {
         self.worktree = worktree.into();

@@ -123,7 +123,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   did. `main` is never written, and the reader refuses it, so an entry has one encoding. The
   entries of `worktree add` and `worktree remove` name the worktree that they make or remove,
   and a line `location <path>` follows, with the absolute path of its directory on one line
-  (a path with a control character is refused). A program that does not know the line stops at
+  (a path with a control character or an empty path is refused). The name
+  holds ASCII letters, digits, `-`, `_`, and `.` (not first) and is at most 255 bytes long. A program that does not know the line stops at
   it: the reader refuses an unknown line, so an older program refuses the log and does not read
   it wrongly. The hash of the body covers both lines.
   `outcomes` judges the pointers by the worktree. The next move of `HEAD` and of the
