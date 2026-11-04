@@ -165,30 +165,33 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   a tag never moves and keeps the whole history of a name in the log. A purge that is refused
   for a tag (`TaggedCommit`) names `stemma tag --delete <name>` instead of the file.
 - **A name that is both a branch and a tag is an error, unless it is qualified**
-  *(confirmed, STEMMA-186)*. A command that reads a name (`switch`, `log`, `diff`, and the others
-  that take a revision) resolves the text it gets in this order:
-  1. `heads/<name>` is the branch `<name>`, and `tags/<name>` is the tag `<name>`. These two
+  *(confirmed, STEMMA-186)*. A command that takes a revision (today
+  `switch --detach`, the start of `switch -c`, and the target of `rebase`; `log` and `diff` as
+  soon as they accept names) resolves the text it gets in this order:
+  1. Text that starts with `b3:` is a commit ID (a name holds no colon) and is no name.
+  2. `heads/<name>` is the branch `<name>`, and `tags/<name>` is the tag `<name>`. These two
      prefixes are the qualified form, and they are tried first, so they are never ambiguous.
-  2. Any other text is looked up as a branch and as a tag. If exactly one exists, it is the
+  3. Any other text is looked up as a branch and as a tag. If exactly one exists, it is the
      answer. If none exists, the name is unknown. If both exist, the command fails with an
      error that names both and asks for `heads/<name>` or `tags/<name>`. It does not pick one,
      and it does not warn and continue.
 
-  Git prefers the tag and warns. That was rejected: a warning is easily missed in the output of
-  an agent (ADR-004), and the command would have done something other than the caller meant. An
+  Git prefers the tag and warns. That was rejected: a warning is no safe signal: only the
+  JSON, the anchor line, and the exit codes are a contract for an agent, and the text of a message is
+  for people (ADR-018). The command would have done something other than the caller meant. An
   error costs one more word in a rare case and cannot move a person or an agent to the wrong
   commit. A fixed winner (always the branch, or always the tag) was rejected for the same
   reason, and because the result of a command would change when somebody creates the tag later:
   a name that was clear yesterday must not change its meaning today. A command that needs a
-  branch by its nature (`switch` without `--detach`, `branch -d`) reads no tags and has no
-  ambiguity; the rule is for the commands that take any revision.
+  branch by its nature (`switch NAME`, `switch -c NAME` without a start, `branch -d`) reads no
+  tags and has no ambiguity; the rule is for the places that take any revision.
 
   The prefixes are reserved to keep the rule closed: a branch or a tag whose first component is
   `heads` or `tags` would be unreachable by its plain name, and `heads/x` could mean two
-  things. The first command that reads tags refuses such a name for a new branch or tag. A
-  repository that has one already is not rewritten; the qualified form wins for it as well,
-  and `verify` does not call it damage. The store keeps its name rules (the section on the name
-  of a branch), so the change touches no ID and no stored file; the rule lives in the layer
+  things. The first command that resolves a name to a tag refuses such a name for a new branch
+  or tag. A repository that has one already is not rewritten; the qualified form wins for it as
+  well, and `verify` does not call it damage. The store keeps its name rules (the section on the
+  name of a branch), so the change touches no ID and no stored file; the rule lives in the layer
   that resolves names, and the module does not know it (it stores and does not decide).
 - **Tags are partly known** *(STEMMA-54, STEMMA-183, STEMMA-184, STEMMA-186)*. Still open: a
   purge of a tagged commit. The name that is both a branch and a tag is decided above.
@@ -288,9 +291,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       with the operation `untag` (STEMMA-184). The name that is both a branch and a tag is an
       error that asks for `heads/<name>` or `tags/<name>` (STEMMA-186), see the decision above.
       Still open: how a purge deals with a tag on a commit that it rewrites (today it refuses).
-- [ ] The first command that reads tags implements the rule for names (STEMMA-186): the two
-      prefixes, the error for an ambiguous name, and the refusal of new names that start with
-      `heads` or `tags`. No command reads tags yet.
+- [ ] The first command that resolves a name to a tag implements the rule for names
+      (STEMMA-186): the two prefixes, the error for an ambiguous name, and the refusal of new
+      names that start with `heads` or `tags`. No command resolves a name to a tag yet.
 - [x] Checking that the branches, tags, and HEAD of a repository point to commits that the store
       has
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.

@@ -82,17 +82,19 @@ auch wenn er auf denselben Commit zeigt (ADR-008).
 Ein Tag, der falsch gesetzt wurde, wird mit \type{stemma tag --delete} gelöscht und neu gesetzt.
 
 Ein Branch und ein Tag dürfen denselben Namen haben.
-Ein Befehl, der einen Namen liest, löst ihn darum so auf (ADR-008):
+Ein Befehl, der eine Revision annimmt, löst den Text darum so auf (ADR-008):
 \type{heads/x} ist immer der Branch \type{x}, und \type{tags/x} ist immer der Tag \type{x}.
+Ein Text, der mit \type{b3:} beginnt, ist eine Commit-ID und kein Name.
 Bei jedem anderen Text sucht er einen Branch und einen Tag.
 Gibt es genau einen, ist er die Antwort; gibt es beide, bricht der Befehl mit einem Fehler ab,
 der beide nennt und \type{heads/x} oder \type{tags/x} verlangt.
 Er wählt keinen aus und warnt nicht nur, denn eine Warnung geht in der Ausgabe eines Agenten
 leicht unter, und ein Name, der gestern eindeutig war, soll seine Bedeutung nicht ändern,
 weil jemand später einen Tag mit demselben Namen setzt.
-Die beiden Präfixe sind reserviert: Der erste Befehl, der Tags liest, lehnt für neue Branches
-und Tags einen Namen ab, dessen erste Komponente \type{heads} oder \type{tags} ist.
-Noch liest kein Befehl Tags; die Regel gilt ab dem ersten.
+Die beiden Präfixe sind reserviert: Der erste Befehl, der einen Namen zu einem Tag auflöst,
+lehnt für neue Branches und Tags einen Namen ab,
+dessen erste Komponente \type{heads} oder \type{tags} ist.
+Noch löst kein Befehl einen Namen zu einem Tag auf; die Regel gilt ab dem ersten.
 
 Eine Datei je Branch kostet bei vielen Branches Zeit: Der Zugriff vergleicht die
 gespeicherte Schreibweise und liest dafür jeden Eintrag der Verzeichnisse auf dem Pfad
