@@ -3116,6 +3116,9 @@ impl FsRefStore {
         for (worktree, old, new) in &planned.heads {
             Self::require_commit(new, objects)?;
             let store = self.store_of(worktree);
+            if store.is_gone()? {
+                continue;
+            }
             let (old, new) = (Head::Detached(*old), Head::Detached(*new));
             let current = store.head()?;
             if current == old {
@@ -3128,6 +3131,9 @@ impl FsRefStore {
         for (worktree, old, new) in &planned.working_copies {
             Self::require_commit(new, objects)?;
             let store = self.store_of(worktree);
+            if store.is_gone()? {
+                continue;
+            }
             let current = store.working_copy()?;
             if current == *old {
                 working_copies.push((store, *new));
@@ -3182,6 +3188,22 @@ impl FsRefStore {
             found.push((name, store.head()?, store.working_copy()?));
         }
         Ok(found)
+    }
+
+    /// Whether this is a linked worktree whose state is gone since a purge planned its moves: its
+    /// `HEAD` does not exist, because someone removed the state directory by hand. Such a worktree
+    /// holds no root and has nothing to move, so a purge that was stopped can still be finished or
+    /// abandoned. The main worktree is never gone here.
+    fn is_gone(&self) -> Result<bool, RefError> {
+        if self.local == self.root {
+            return Ok(false);
+        }
+        let head = self.head_path();
+        match fs::symlink_metadata(&head) {
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(io_error("inspect", &head)(error)),
+        }
     }
 
     /// The store of the worktree `name`: `main` or the name of a state directory below

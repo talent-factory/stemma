@@ -22,7 +22,7 @@ fn init_makes_its_actor_the_owner_in_format_5() {
     assert_eq!(owner_line(dir.path()), format!("owner {ACTOR}"));
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 5\n"
+        "stemma-repository 6\n"
     );
 }
 
@@ -165,7 +165,7 @@ fn a_repository_of_format_4_rises_to_5_and_the_actor_of_its_next_entry_owns_it()
     assert_eq!(owner_line(dir.path()), format!("owner {OTHER}"));
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 5\n"
+        "stemma-repository 6\n"
     );
 }
 

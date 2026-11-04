@@ -1035,6 +1035,112 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_between_the_moves_of_a_linked_worktree_is_finished_by_its_next_commit() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        write(&dir, "a.txt", "one");
+        track(&repository, "a.txt");
+        let _first = commit(&repository, "first").unwrap();
+        let place = TempDir::new();
+        let path = place.path().join("linked");
+        let feat = BranchName::try_new("feat").unwrap();
+        let _added = repository
+            .add_worktree(
+                &path,
+                &crate::repository::WorktreeBranch::Create(feat.clone()),
+                Some(&actor()),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let linked = Repository::open(&path).unwrap();
+        fs::write(path.join("b.txt"), "two").unwrap();
+        track(&linked, "b.txt");
+        let tip = linked.refs().branch(&feat).unwrap();
+        let working = linked.refs().working_copy().unwrap();
+        let old = read(&linked, working);
+        let named = old.rewrite(old.tree(), actor(), now(), "stopped");
+        let named = linked.put(&AnyCommit::Commit(named)).unwrap();
+        let (_, next) = linked
+            .start_after(
+                &Merge::resolved(read(&linked, named).tree()),
+                named,
+                &actor(),
+            )
+            .unwrap();
+
+        // The commit of the linked worktree stops between its moves: the entry is written and the
+        // branch has moved, but the file `working-copy` of the state directory cannot be replaced.
+        let state = dir.path().join(".stemma/worktrees/linked");
+        let lock = linked.refs.lock_writer(&crate::Allowed::granted()).unwrap();
+        let denied = std::cell::RefCell::new(None);
+        let logged = linked
+            .refs
+            .update_branch_and_working_copy_after(
+                &lock,
+                &BranchMove {
+                    name: &feat,
+                    expected: tip,
+                    new: named,
+                },
+                &WorkingCopyMove {
+                    expected: working,
+                    new: next,
+                },
+                linked.objects(),
+                || {
+                    let change = Change::try_new(
+                        now(),
+                        actor(),
+                        OperationName::try_new("commit").unwrap(),
+                        None,
+                        Some(Moved::from_to(Some(working), Some(next))),
+                        vec![(feat.clone(), Moved::from_to(tip, Some(named)))],
+                    )
+                    .unwrap();
+                    let entry = linked.append(&lock, &change)?;
+                    *denied.borrow_mut() = Some(fault::deny_writes_in(&state));
+                    Ok::<_, OpLogError>(entry)
+                },
+            )
+            .unwrap();
+        drop(denied);
+        drop(lock);
+        let _ = fs::remove_file(linked.metadata_dir().join("refs.lock"));
+        assert!(
+            matches!(logged, Logged::PartlyMoved(..)),
+            "the second move fails"
+        );
+        assert_eq!(linked.refs().branch(&feat).unwrap(), Some(named));
+        assert_eq!(linked.refs().working_copy().unwrap(), working);
+
+        let done = commit(&linked, "ignored").unwrap();
+
+        assert!(done.resumed, "the stop of this worktree is finished");
+        assert_eq!(done.commit, named);
+        assert_eq!(linked.refs().working_copy().unwrap(), done.working_copy);
+        let commits: Vec<_> = linked
+            .oplog()
+            .entries()
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| entry.change().cloned())
+            .filter(|change| change.operation().as_str() == "commit")
+            .filter(|change| change.worktree() == Some("linked"))
+            .collect();
+        // The entry of the stop and the entry that finishes it, both of this worktree; only the
+        // first moves the branch, so the commit is not made twice.
+        assert_eq!(commits.len(), 2);
+        assert_eq!(
+            commits
+                .iter()
+                .filter(|change| !change.branches().is_empty())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn a_stop_between_the_moves_is_finished_by_the_next_commit() {
         let dir = TempDir::new();
         let repository = repository(&dir);

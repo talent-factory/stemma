@@ -4010,6 +4010,25 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_of_a_linked_worktree_is_the_golden_text_with_two_lines_more() {
+        let change = sample_change()
+            .in_worktree(Some("linked".to_owned()), Some("/work/linked".to_owned()))
+            .unwrap();
+        let entry = Entry::try_new(42, change).unwrap();
+        let text = golden().replace(
+            "operation snapshot\n",
+            "operation snapshot\nworktree linked\nlocation /work/linked\n",
+        );
+        assert_eq!(entry.encode(), text.clone().into_bytes());
+        let read = Entry::parse(text.as_bytes()).unwrap();
+        assert_eq!(read, entry);
+        assert_eq!(read.change().unwrap().worktree(), Some("linked"));
+        assert_eq!(read.change().unwrap().location(), Some("/work/linked"));
+        // The entry of the main worktree has not one line more than before worktrees.
+        assert!(!golden().contains("worktree"));
+    }
+
+    #[test]
     fn an_entry_is_read_back_from_its_encoding() {
         let entry = sample_entry();
         let read = Entry::parse(&entry.encode()).unwrap();

@@ -97,10 +97,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 5, the version of the owner of a working copy (ADR-010), and
-  `open` reads versions 2 to 5: a repository made before the purge existed (2), before the
-  chain (3), or before the owner (4) rises to 5 with its next entry or purge (ADR-014, ADR-011,
-  ADR-010). Version 4 is the version of the hash chain of the log (ADR-011). From version 5
+  supports: `init` writes version 6, the version of the worktree of an entry and of the journal
+  of a purge across worktrees (ADR-011, ADR-014), and `open` reads versions 2 to 6: a repository
+  made before the purge existed (2), before the chain (3), before the owner (4), or before the
+  worktree of an entry (5) rises to 6 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  Version 4 is the version of the hash chain of the log (ADR-011). From version 5
   on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that
   raises the version records none, and the next entry of a change does (ADR-010). A version
   never sinks, with one exception: if the directory cannot be flushed after the rise, the old
@@ -221,11 +222,13 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - [x] A purge over all worktrees: the roots are `HEAD` and the working-copy commit of every
       worktree, and a purge moves what it rewrites in each of them (STEMMA-176, ADR-014). The
       refusal `PurgeError::LinkedWorktrees` of STEMMA-175 is gone.
-- [ ] The format is not raised for linked worktrees: a program that knows only format 5 does not
-      open a worktree (the pointer file is a file in the way), but it opens the main worktree
-      and does not see that a branch is checked out elsewhere. Since STEMMA-176 it also stops at
-      the first entry of the log that has a line `worktree`, and refuses the log, instead of
-      reading it wrongly.
+- [x] A state directory without `HEAD` (what a removal or an add that stopped leaves) is no
+      worktree. `worktree remove` names it and says what to do (`WorktreeError::Unfinished`);
+      `worktree add` removes it under the lock when it chooses the name, so the name is free
+      again (STEMMA-176).
+- [x] The format is raised with the first entry that can carry the line `worktree`: version 6
+      (STEMMA-176). A program that knows only version 5 refuses such a repository with the
+      unsupported version and does not report damage for a log or a journal that it cannot read.
 - [ ] `worktree remove` does not undo with `op restore`: the entries of `worktree add` and
       `worktree remove` are refused by a restore. A removed worktree is added again with
       `worktree add` on its branch, and its last working-copy commit is named by the entry.

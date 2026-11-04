@@ -169,7 +169,10 @@ Die Übernahme ist Risikostufe 3 nach ADR-004: Sie entscheidet, wessen Änderung
 speichern darf, und nur ein Mensch darf sie machen. \type{purge --apply} hat die Option nicht;
 wer dort übernehmen muss, ruft vorher \type{stemma status --take-over} auf.
 Ein Programm, das nur Format 4 kennt, lehnt ein Repository im Format 5 ab, auch für Befehle,
-die nur lesen.
+die nur lesen. Dasselbe gilt für Format 6, das die Zeilen \type{worktree} und \type{location}
+im Log und das Journal des Purge über mehrere Worktrees einführt (ADR-009, ADR-011, ADR-014):
+Ein Repository steigt mit seinem nächsten Eintrag oder Purge auf Format 6, und ein Programm,
+das nur Format 5 kennt, meldet die unbekannte Version und keinen Schaden.
 
 Ein Git-Worktree ist keine eigene Arbeitskopie für Stemma. Ohne ein eigenes \type{stemma init}
 öffnet ein Befehl im Worktree das \type{.stemma} der Wurzel, weil die Suche die übergeordneten
@@ -964,8 +967,11 @@ der Befehl die Änderungen mitnähme.
 Schlägt der Merge der Änderungen fehl, nennt die Meldung die Ursache; der Befehl hat dann nur
 Objekte geschrieben, und der Snapshot, falls er einen Eintrag schrieb, steht im Log.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
-Ein Worktree, dessen Zustandsverzeichnis sich nicht lesen lässt, hindert das Entfernen eines
-anderen nicht; der Befehl nennt für ihn selbst, was von Hand zu löschen ist.
+Ein Zustandsverzeichnis ohne \type{HEAD} ist der Rest eines Befehls, der abbrach; es zählt nicht
+als Worktree, \type{worktree list} zeigt es nicht, und der Befehl endet mit Exit-Code 1 und sagt
+das. \type{worktree add} in einem Verzeichnis mit demselben letzten Pfadteil übernimmt den Namen
+und räumt den Rest. Ein Worktree, dessen Zustandsverzeichnis sich nicht lesen lässt, hindert das
+Entfernen eines anderen nicht; der Befehl nennt für ihn selbst, was von Hand zu löschen ist.
 
 Scheitert das Schreiben der Dateien oder die erste Zeigerbewegung, nachdem der Eintrag im Log
 steht, endet der Befehl mit Exit-Code 1 (bei einer gehaltenen Sperre mit 6).
@@ -2619,7 +2625,9 @@ bei der Wurzel ohne den Zusatz). Der Snapshot vorweg sichert nur das Verzeichnis
 in dem der Befehl läuft. Die Verzeichnisse der anderen liest und schreibt der Purge nicht: Liegt
 das Geheimnis dort in einer Datei, muss jemand sie entfernen oder ausschliessen, bevor der
 Worktree wieder einen Snapshot nimmt. \type{--resume} und \type{--abort} laufen in jedem
-Worktree.
+Worktree. Hat jemand das Zustandsverzeichnis eines Worktrees von Hand gelöscht, während ein Purge
+offen ist, überspringen sie dessen Bewegungen: Der Worktree hält keine Wurzel mehr, und der Purge
+lässt sich beenden oder abbrechen.
 
 {\bf Was der Plan enthält.} Jeder Commit, dessen Baum den Blob in irgendeiner Tiefe enthält,
 bekommt einen neuen Baum ohne ihn; jeder Commit danach bekommt neue Eltern. Die neuen

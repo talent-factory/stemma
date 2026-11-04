@@ -509,6 +509,7 @@ impl Classify for WorktreeError {
             Self::ChangeId(_)
             | Self::RemoveFailed { .. }
             | Self::NoSuchWorktree(_)
+            | Self::Unfinished(_)
             | Self::RemoveMain
             | Self::RemoveCurrent(_)
             | Self::NotItsPointer { .. }

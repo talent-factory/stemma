@@ -65,7 +65,10 @@ Facts that bound the design:
   file with the secret in one of them stays until its worktree takes a snapshot, which adds it to
   the working-copy commit again. The person purges, then removes the secret from the files of
   every worktree, or has `.stemmaignore` exclude it. Before STEMMA-176 the purge refused a
-  repository with more than one worktree (`PurgeError::LinkedWorktrees`).
+  repository with more than one worktree (`PurgeError::LinkedWorktrees`). A worktree whose state
+  directory someone removed by hand while a purge is pending (`HEAD` gone) has nothing to
+  move: `--resume` and `--abort` skip its moves, so that the purge can still be finished or
+  abandoned.
 - **The entries of the log that name a rewritten commit become stubs** *(confirmed)*. Every entry
   that names a rewritten commit as an old or a new value is replaced by a stub with the **same
   number**, so the numbering has no gap (ADR-011). The stub keeps the number, the time, and the

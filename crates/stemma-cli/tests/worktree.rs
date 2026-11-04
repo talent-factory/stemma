@@ -1425,3 +1425,41 @@ fn a_damaged_worktree_does_not_stop_the_removal_of_another() {
     );
     assert!(sandbox.at("other").exists() && state.exists());
 }
+
+#[test]
+fn a_state_directory_without_head_is_explained_by_remove_and_taken_over_by_add() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    // What a removal that stopped after the first step of the state leaves.
+    let state = repo.join(".stemma").join("worktrees").join("linked");
+    fs::remove_file(state.join("HEAD")).unwrap();
+
+    let removed = run(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+
+    assert_eq!(removed.code, 1, "{}", removed.stderr);
+    assert!(
+        removed.stderr.contains("holds no worktree"),
+        "{}",
+        removed.stderr
+    );
+    // An add in a directory with the same last part takes the name over and cleans the rest.
+    fs::create_dir(sandbox.at("nested")).unwrap();
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "again",
+            "../nested/linked",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert!(state.join("HEAD").exists());
+    let listed = ok(&repo, &["worktree", "list"]).stdout;
+    assert!(listed.contains("nested"), "{listed}");
+}

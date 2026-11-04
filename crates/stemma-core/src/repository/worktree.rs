@@ -349,6 +349,13 @@ impl Repository {
             })
             .map(|index| rows[index].clone());
         let Some(found) = found else {
+            let state = self.metadata_dir().join(WORKTREES_DIR).join(name);
+            if crate::oplog::valid_worktree_name(name)
+                && state.is_dir()
+                && !state.join("HEAD").exists()
+            {
+                return Err(WorktreeError::Unfinished(name.to_owned()));
+            }
             return Err(WorktreeError::NoSuchWorktree(name.to_owned()));
         };
         if found.name == MAIN_WORKTREE {
@@ -639,6 +646,21 @@ impl Repository {
         Ok((target, tip))
     }
 
+    /// Whether `state` is a state directory that holds a worktree. A directory without `HEAD` is
+    /// what an add or a removal that stopped left (the caller holds the lock of the references, so
+    /// no add is running): it holds no worktree, and it is removed here so that its name is free.
+    fn name_is_taken(&self, state: &Path) -> Result<bool, WorktreeError> {
+        if !exists(state).map_err(WorktreeError::io("inspect", state))? {
+            return Ok(false);
+        }
+        if exists(&state.join("HEAD")).map_err(WorktreeError::io("inspect", state))? {
+            return Ok(true);
+        }
+        fault::remove_dir_all(state)
+            .map_err(WorktreeError::io("remove the leftover state", state))?;
+        Ok(false)
+    }
+
     /// A name for the state directory of the worktree at `location`: the last part of the path,
     /// reduced to letters, digits, `-`, `_`, and `.` (not first), with a number added if the name is
     /// taken or is `main`.
@@ -661,9 +683,7 @@ impl Repository {
         let dir = self.metadata_dir().join(WORKTREES_DIR);
         let mut candidate = base.to_owned();
         let mut number = 1;
-        while candidate == MAIN_WORKTREE
-            || exists(&dir.join(&candidate)).map_err(WorktreeError::io("inspect", &dir))?
-        {
+        while candidate == MAIN_WORKTREE || self.name_is_taken(&dir.join(&candidate))? {
             number += 1;
             candidate = format!("{base}-{number}");
         }
@@ -1073,6 +1093,9 @@ pub enum WorktreeError {
     },
     /// The path has a part that is not UTF-8, which the pointer file cannot hold.
     PathNotUtf8(PathBuf),
+    /// The state directory is what an add or a removal that stopped left: it has no `HEAD`, so it
+    /// holds no worktree and `worktree list` does not show it. Nothing was written.
+    Unfinished(String),
     /// The state directory of the worktree cannot be read, so the worktree cannot be described or
     /// removed. The other worktrees are not affected. Nothing was written.
     Damaged {
@@ -1252,6 +1275,7 @@ impl WorktreeError {
             | Self::NoSuchBranch(_)
             | Self::NoStart(_)
             | Self::NoSuchWorktree(_)
+            | Self::Unfinished(_)
             | Self::RemoveMain
             | Self::RemoveCurrent(_)
             | Self::NotItsPointer { .. }
@@ -1458,6 +1482,12 @@ impl fmt::Display for WorktreeError {
                 entry.number(),
                 path.display()
             ),
+            Self::Unfinished(name) => write!(
+                f,
+                "`.stemma/worktrees/{name}` holds no worktree: it is what an add or a removal that \
+                 stopped left; remove it by hand, or add a worktree in a directory called `{name}`, \
+                 which takes the name over"
+            ),
             Self::Damaged { name, source } => write!(
                 f,
                 "the state of the worktree `{name}` cannot be read: {source}; the other worktrees \
@@ -1514,6 +1544,7 @@ impl Error for WorktreeError {
             | Self::NoSuchBranch(_)
             | Self::NoStart(_)
             | Self::NoSuchWorktree(_)
+            | Self::Unfinished(_)
             | Self::RemoveMain
             | Self::RemoveCurrent(_)
             | Self::NotItsPointer { .. }

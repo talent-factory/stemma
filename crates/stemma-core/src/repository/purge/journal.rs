@@ -534,6 +534,31 @@ mod tests {
         }
     }
 
+    /// The journal of a purge that moves only the main worktree, as programs wrote it before
+    /// there were linked worktrees. A change of this text would break the resume of a purge that
+    /// such a program began.
+    const GOLDEN_V1: &str = "stemma-purge 1
+blob b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55
+last 9
+rewrite b3:32b4623362e830880d9ef57b95286e4123cf7fbc078d77ba13a47c050acb2046 b3:b243b6dfc479bfa823f8bd3539c334af7a05aa91df361da730db755bea07fb6a
+rewrite b3:4236177a99993f283c86842409365b2be6a07cff41473a3da7740d18058a3ac4 b3:5706e403d5117d6f9e2bad4a2e09544a3758b75b18e552c7f59f9186ae04eb7f
+head b3:32b4623362e830880d9ef57b95286e4123cf7fbc078d77ba13a47c050acb2046 b3:b243b6dfc479bfa823f8bd3539c334af7a05aa91df361da730db755bea07fb6a
+working-copy b3:4236177a99993f283c86842409365b2be6a07cff41473a3da7740d18058a3ac4 b3:5706e403d5117d6f9e2bad4a2e09544a3758b75b18e552c7f59f9186ae04eb7f
+branch main b3:32b4623362e830880d9ef57b95286e4123cf7fbc078d77ba13a47c050acb2046 b3:b243b6dfc479bfa823f8bd3539c334af7a05aa91df361da730db755bea07fb6a
+stubs 3-5 7
+new b3:5706e403d5117d6f9e2bad4a2e09544a3758b75b18e552c7f59f9186ae04eb7f
+new b3:b243b6dfc479bfa823f8bd3539c334af7a05aa91df361da730db755bea07fb6a
+delete commit b3:32b4623362e830880d9ef57b95286e4123cf7fbc078d77ba13a47c050acb2046
+delete commit b3:4236177a99993f283c86842409365b2be6a07cff41473a3da7740d18058a3ac4
+delete tree b3:663b315585172b0607e7ac60812b96184466d70e558070dbd3c95bf6f9349184
+";
+
+    #[test]
+    fn a_journal_of_the_main_worktree_is_the_golden_text_of_version_1() {
+        assert_eq!(sample().encode(), GOLDEN_V1.as_bytes());
+        assert_eq!(Journal::parse(GOLDEN_V1.as_bytes()), Some(sample()));
+    }
+
     #[test]
     fn a_journal_reads_back_as_it_was_written() {
         let journal = sample();

@@ -1127,7 +1127,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 5\n");
+        assert_eq!(format(dir), "stemma-repository 6\n");
     }
 
     #[test]
@@ -1414,6 +1414,94 @@ mod tests {
         }
     }
 
+    /// A linked worktree on a new branch `feat`, made from the history of the main one, so that
+    /// its working-copy commit has the secret in its ancestry. Returns the directory of the
+    /// worktree (kept alive by the caller) and the file `working-copy` of its state directory.
+    fn linked(dir: &TempDir, repository: &Repository) -> (TempDir, std::path::PathBuf) {
+        let place = TempDir::new();
+        let path = place.path().join("linked");
+        let _added = repository
+            .add_worktree(
+                &path,
+                &crate::repository::WorktreeBranch::Create(BranchName::try_new("feat").unwrap()),
+                Some(&actor()),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let state = fs::read_dir(dir.path().join(".stemma/worktrees"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        (place, state)
+    }
+
+    #[test]
+    fn a_stopped_purge_across_worktrees_names_the_worktree_and_resume_moves_it() {
+        for stop in [Stop::Journal, Stop::Entry, Stop::Moves, Stop::Stubs] {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            history(&dir, &repository);
+            let (_place, state) = linked(&dir, &repository);
+            let before = fs::read_to_string(state.join("working-copy")).unwrap();
+            stop_at(&repository, stop);
+            let journal =
+                fs::read_to_string(dir.path().join(".stemma").join("purge-pending")).unwrap();
+            assert!(
+                journal.starts_with("stemma-purge 2\n"),
+                "{stop:?}: {journal}"
+            );
+            assert!(
+                journal.contains("\nworking-copy linked "),
+                "{stop:?}: {journal}"
+            );
+
+            let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+
+            assert_purged(&dir, &repository, &purged);
+            let after = fs::read_to_string(state.join("working-copy")).unwrap();
+            assert_ne!(
+                after, before,
+                "{stop:?}: the working-copy commit of the worktree moved"
+            );
+        }
+    }
+
+    #[test]
+    fn an_abort_before_the_entry_leaves_the_pointers_of_a_linked_worktree() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let (_place, state) = linked(&dir, &repository);
+        let before = fs::read_to_string(state.join("working-copy")).unwrap();
+        stop_at(&repository, Stop::Objects);
+
+        repository.abort_purge(&actor(), &AllowAll).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(state.join("working-copy")).unwrap(),
+            before
+        );
+        assert!(!journal_exists(&dir));
+    }
+
+    #[test]
+    fn a_linked_worktree_that_is_gone_after_the_crash_does_not_stop_the_resume() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let (_place, state) = linked(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        // Someone removes the state directory by hand while the purge is pending.
+        fs::remove_dir_all(&state).unwrap();
+
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+
+        assert_purged(&dir, &repository, &purged);
+    }
+
     #[test]
     fn a_resume_of_a_purge_from_before_the_chain_moves_the_repository_to_format_4() {
         let dir = TempDir::new();
@@ -1424,7 +1512,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 5\n");
+        assert_eq!(format(&dir), "stemma-repository 6\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -1546,7 +1634,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 5\n",
+            "stemma-repository 6\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -2169,7 +2257,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 5\n");
+        assert_eq!(format(&dir), "stemma-repository 6\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);
