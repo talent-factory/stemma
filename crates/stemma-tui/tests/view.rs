@@ -395,12 +395,17 @@ fn a_file_above_the_size_limit_says_so_and_has_no_hunks() {
     fixture.dir.write("big.txt", "small\n");
     fixture.track(&["big.txt"]);
     fixture.commit();
-    fixture
-        .dir
-        .write("big.txt", vec![b'a'; 10 * 1024 * 1024 + 1]);
+    fixture.dir.write(
+        "big.txt",
+        vec![b'a'; stemma_core::diff::DIFF_SIZE_LIMIT + 1],
+    );
     let diff = fixture.diff();
 
     let screen = screen(&State::default(), &diff);
 
     assert!(screen.contains("File too large to compare"), "{screen}");
+    // There is no hunk to step to.
+    let mut state = State::default();
+    state.apply(Input::NextHunk, &diff);
+    assert_eq!((state.file(), state.hunk(), state.scroll()), (0, 0, 0));
 }

@@ -432,8 +432,7 @@ fn an_empty_added_file_is_a_difference_with_a_header_and_no_hunk() {
     assert!(!section.contains("@@"), "{}", result.stdout);
 }
 
-/// The size limit of the diff in bytes (`DIFF_SIZE_LIMIT` in the core).
-const SIZE_LIMIT: usize = 10 * 1024 * 1024;
+use stemma_core::diff::DIFF_SIZE_LIMIT as SIZE_LIMIT;
 
 #[test]
 fn a_file_above_the_size_limit_is_named_without_its_lines() {
@@ -465,10 +464,39 @@ fn a_file_at_the_size_limit_is_still_compared() {
     let result = diff(dir.path(), &[]);
 
     assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(result.stdout.contains("@@ -1 +1 @@"), "{}", result.stdout);
+}
+
+#[test]
+fn a_file_that_grows_above_the_size_limit_is_named_without_its_lines() {
+    let dir = repository_with_edit("big.txt", b"small\n", &vec![b'a'; SIZE_LIMIT + 1]);
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
     assert!(
-        result.stdout.contains("@@ -1 +1 @@"),
+        result
+            .stdout
+            .ends_with(" big.txt differ and are too large to compare\n"),
         "{}",
-        result.stdout.len()
+        result.stdout
+    );
+}
+
+#[test]
+fn a_new_file_above_the_size_limit_has_dev_null_as_its_old_side() {
+    let dir = repository_with_edit("a.txt", b"x\n", b"x\n");
+    fs::write(dir.path().join("big.txt"), vec![b'a'; SIZE_LIMIT + 1]).unwrap();
+    track_ok(dir.path(), "big.txt");
+
+    let result = diff(dir.path(), &[]);
+
+    assert!(
+        result
+            .stdout
+            .contains("Files /dev/null and working-copy b3:"),
+        "{}",
+        result.stdout
     );
 }
 

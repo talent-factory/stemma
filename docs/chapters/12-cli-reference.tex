@@ -1420,7 +1420,7 @@ Eine Textdatei, die auf einer der beiden Seiten grösser als 10 MiB (10\,485\,76
 vergleicht der Befehl nicht Zeile für Zeile; er schreibt stattdessen die Zeile
 \type{Files ... and ... differ and are too large to compare} mit den beiden Seiten.
 Eine binäre Datei bleibt auch über dieser Grenze binär.
-Beide Zeilen zählen für \type{--exit-code} als Unterschied.
+Eine binäre und eine zu grosse Datei zählen für \type{--exit-code} als Unterschied.
 
 {\bf Konflikte.} Ein Commit mit offenem Konflikt vergleicht der Befehl als den Tree, der ihn
 zeigt (ADR-010): An jedem Pfad im Konflikt steht der Text mit Markierungen, derselbe, den ein

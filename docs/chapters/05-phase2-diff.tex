@@ -391,8 +391,8 @@ folgt git: Ein NUL-Byte unter den ersten 8000 Bytes macht die Datei binär. Der 
 
 Dieselbe Zusammenfassung gilt für eine Textdatei, die zu gross für den Zeilenvergleich ist.
 Die Grenze liegt bei 10 MiB je Seite (\type{DIFF_SIZE_LIMIT}, Prüfung \type{is_too_large}).
-Der Myers-Diff mit linearem Speicher begrenzt den Speicher,
-aber Zeit und Ausgabe wachsen mit der Datei; die Grenze hält beide in Schranken.
+Die Begründung steht in den Entscheidungen oben: Zeit und Ausgabe wachsen mit der Datei,
+die Grenze hält beide in Schranken.
 
 \startitemize[n]
 \item Für jede Datei, die sich unterscheidet, liest der Kern die Inhalte beider Seiten. Eine
@@ -421,6 +421,7 @@ vorausgeht, kostet $O(L)$.
 Die Prüfung ist eine reine Funktion des Inhalts. Der Kern entscheidet einmal, und die Textausgabe
 und die Oberfläche übernehmen das Ergebnis. Dieselbe Datei erscheint also in beiden gleich. Die
 Prüfung ändert nichts im Repository.
+Die Prüfung der Grösse vergleicht nur die Länge und kostet nach dem Lesen $O(1)$.
 
 \startinfobox
 {\bf Grenzfälle der Erkennung.}
@@ -435,7 +436,8 @@ auf der sie fehlt.
 \item Eine Datei, die binär ist, bleibt binär, auch wenn sie über der Grössengrenze liegt.
 Die Grenze gilt nur für Text.
 \item Der Kern liest eine grosse Datei ganz, ehe er ihre Grösse prüft. Die Grenze schützt also
-vor der Zeit und der Ausgabe des Vergleichs, nicht vor dem Lesen.
+vor der Zeit und der Ausgabe des Vergleichs, nicht vor dem Lesen und nicht vor dem Speicher,
+den beide Seiten dabei belegen.
 \stopitemize
 \stopinfobox
 

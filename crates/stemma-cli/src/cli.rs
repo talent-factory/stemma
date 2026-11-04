@@ -3437,9 +3437,9 @@ fn split_operands<'a>(
 /// The text of a diff: each file that differs, with its line `diff` and a header that names the
 /// two sides, as in git. A side is written as `op log` writes it, and a file that is not on a side
 /// is `/dev/null`. The header has no time stamp, because the time changes with every call
-/// (ADR-010). A binary file then says `Binary files <old> and <new> differ`; a text file above the size limit says `Files <old> and <new> differ and are too large
-/// to compare`; a text file has the
-/// `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`. A path is
+/// (ADR-010). A binary file then says `Binary files <old> and <new> differ`, and a text file above
+/// the size limit says `Files <old> and <new> differ and are too large to compare`. Any other text
+/// file has the `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`. A path is
 /// written with [`escape_path`]. With `colour`, the `diff`, `---`, and `+++` lines are bold, the
 /// `@@` lines cyan, and the removed and added lines red and green, as git colours them. The other
 /// lines stay plain.
