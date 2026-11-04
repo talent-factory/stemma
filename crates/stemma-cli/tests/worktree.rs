@@ -1844,3 +1844,23 @@ fn a_refused_removal_after_a_snapshot_names_the_entry_and_ends_with_code_1() {
     );
     assert!(!linked.exists());
 }
+
+#[test]
+fn an_empty_directory_with_a_strange_name_among_the_states_is_no_worktree_and_no_damage() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    fs::create_dir(repo.join(".stemma/worktrees/tmp dir")).unwrap();
+    fs::create_dir(repo.join(".stemma/worktrees/.hidden")).unwrap();
+
+    let list = run(&repo, &["worktree", "list"]);
+    let added = run(
+        &repo,
+        &[
+            "worktree", "add", "-b", "other", "../other", "--actor", ACTOR,
+        ],
+    );
+
+    assert_eq!(list.code, 0, "{}", list.stderr);
+    assert!(list.stdout.contains("linked") && !list.stdout.contains("tmp dir"));
+    assert_eq!(added.code, 0, "{}", added.stderr);
+}

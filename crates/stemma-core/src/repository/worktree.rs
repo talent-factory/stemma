@@ -767,6 +767,11 @@ impl Repository {
             // The log and the journal of a purge can name only a valid name, so a state directory
             // with another one is damage that the command names, and the other worktrees stay
             // usable. The check comes before the read, which would take its pointers for good.
+            // A directory without `HEAD` is no worktree (a stopped add or removal, a `@eaDir`), so
+            // it is no damage either, whatever its name.
+            if !state.join("HEAD").exists() {
+                continue;
+            }
             if !crate::oplog::valid_worktree_name(&name) {
                 let source = RefError::Corrupt {
                     path: state.clone(),
