@@ -559,8 +559,9 @@ delete tree b3:663b315585172b0607e7ac60812b96184466d70e558070dbd3c95bf6f9349184
         assert_eq!(Journal::parse(GOLDEN_V1.as_bytes()), Some(sample()));
     }
 
-    /// The journal that the program of phase 2 (before STEMMA-176, commit `71244e7`) wrote for a
-    /// purge that stopped at its entry, taken from a run of that program and not from this code.
+    /// The journal that the program before worktrees (a build of commit `71244e7`, the parent of
+    /// the commit that added them) wrote for a purge that stopped at its entry, taken from a run
+    /// of that program and not from this code.
     /// It checks the golden text above against the real writer: the resume of a purge that such a
     /// program began reads exactly these bytes.
     const WRITTEN_BY_PHASE_2: &str = "stemma-purge 1

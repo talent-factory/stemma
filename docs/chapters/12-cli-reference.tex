@@ -2035,7 +2035,7 @@ linked  /home/daniel/linked    feature  human anna
 \type{working-copy} sich nicht lesen lässt; beschädigte Referenzen enden mit Exit-Code 5.
 Dazu zählt ein Zustandsverzeichnis, dessen Name kein Worktree tragen kann (Leerzeichen, ein
 Punkt am Anfang, \type{main}): Ein Eintrag im Log und das Journal eines Purge könnten ihn nicht
-nennen, darum liest ihn kein Befehl, auch \type{purge --apply} nicht, und er schreibt vorher nichts.
+nennen, darum liest ihn kein Befehl; auch \type{purge --apply} nicht, das dann nichts schreibt.
 Schliesst der Leser die Pipe früh, endet der Befehl ohne Meldung mit Exit-Code 0.
 
 {\bf Beispiele.}

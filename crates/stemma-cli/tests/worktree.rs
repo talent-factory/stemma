@@ -1695,8 +1695,8 @@ fn remove_with_force_lists_all_files_up_to_twenty() {
     assert!(!removed.stdout.contains("more\n"), "{}", removed.stdout);
 }
 
-/// Makes the state directory `linked` also exist under a name that no worktree can have, as a copy
-/// or a hand-made directory would.
+/// Makes the state directory `linked` also exist under `name`, as a copy or a hand-made directory
+/// would.
 fn with_bad_state_name(sandbox: &Sandbox, name: &str) {
     let states = sandbox.repo().join(".stemma/worktrees");
     fs::create_dir(states.join(name)).unwrap();
@@ -1712,46 +1712,78 @@ fn with_bad_state_name(sandbox: &Sandbox, name: &str) {
 #[test]
 fn a_state_directory_with_a_name_no_worktree_can_have_is_damage_and_stops_a_purge_before_its_journal(
 ) {
-    let sandbox = Sandbox::new();
-    let repo = sandbox.repo();
-    write(&repo, "key", SECRET);
-    ok(&repo, &["track", "key", "--actor", ACTOR]);
-    ok(&repo, &["commit", "-m", "second", "--actor", ACTOR]);
-    ok(
-        &repo,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            "feature",
-            "../linked",
-            "--actor",
-            ACTOR,
-        ],
-    );
-    with_bad_state_name(&sandbox, "bad name");
+    // One name for each way `valid_worktree_name` refuses that a directory can have: a space, a
+    // dot first, and `main`. (A name of more than 255 bytes cannot exist on a disk.)
+    for bad in ["bad name", ".hidden", "main"] {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.repo();
+        write(&repo, "key", SECRET);
+        ok(&repo, &["track", "key", "--actor", ACTOR]);
+        ok(&repo, &["commit", "-m", "second", "--actor", ACTOR]);
+        ok(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                "../linked",
+                "--actor",
+                ACTOR,
+            ],
+        );
+        with_bad_state_name(&sandbox, bad);
 
-    let purge = run(&repo, &["purge", &secret(), "--apply", "--actor", ACTOR]);
-    let list = run(&repo, &["worktree", "list"]);
+        let purge = run(&repo, &["purge", &secret(), "--apply", "--actor", ACTOR]);
+        let list = run(&repo, &["worktree", "list"]);
 
-    // No journal that the reader of the journal would refuse: nothing is written.
-    assert_eq!(purge.code, 5, "{}", purge.stderr);
-    assert!(purge.stderr.contains("bad name"), "{}", purge.stderr);
-    assert!(!repo.join(".stemma/purge-pending").exists());
-    assert_eq!(list.code, 5, "{}", list.stderr);
-    assert!(
-        list.stderr.contains("none that a worktree can have"),
-        "{}",
-        list.stderr
-    );
-    // The damaged name does not hide the others: the real worktree is removed.
-    let removed = run(
-        &repo,
-        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
-    );
-    assert_eq!(removed.code, 0, "{}", removed.stderr);
+        // No journal that the reader of the journal would refuse: nothing is written.
+        assert_eq!(purge.code, 5, "{bad}: {}", purge.stderr);
+        assert!(!repo.join(".stemma/purge-pending").exists(), "{bad}");
+        assert_eq!(list.code, 5, "{bad}: {}", list.stderr);
+        assert!(
+            list.stderr.contains("none that a worktree can have"),
+            "{bad}: {}",
+            list.stderr
+        );
+        // The damaged name does not hide the others: the real worktree is removed.
+        let removed = run(
+            &repo,
+            &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+        );
+        assert_eq!(removed.code, 0, "{bad}: {}", removed.stderr);
+    }
 }
 
+#[test]
+fn a_snapshot_that_is_not_flushed_makes_a_refused_removal_code_3_and_the_message_says_so() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    write(&linked, "a.txt", "changed");
+    write(&linked, "loose.txt", "three");
+    // The snapshot moves the working-copy commit of the worktree, and the flush of its state
+    // directory fails; the refusal for the untracked file follows.
+    let state = repo.join(".stemma/worktrees/linked");
+
+    let refused = common::run_failing(
+        &repo,
+        &["worktree", "remove", "linked", "--actor", ACTOR],
+        &[("read", &state)],
+    );
+
+    assert_eq!(refused.code, 3, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("saved first as entry")
+            && refused.stderr.contains("loose.txt")
+            && refused.stderr.contains("may not survive a crash"),
+        "{}",
+        refused.stderr
+    );
+    assert!(linked.join("loose.txt").exists(), "nothing was removed");
+}
+
+// Windows refuses a line break and ESC in the name of a directory.
+#[cfg(unix)]
 #[test]
 fn a_line_break_in_a_path_cannot_forge_a_line_of_an_error() {
     let sandbox = Sandbox::new();

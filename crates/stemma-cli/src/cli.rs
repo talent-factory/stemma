@@ -43,6 +43,9 @@
 //! run again finishes it, a stop after some of the pointers is code 3, and the snapshot that came
 //! first stays in the log when a later step fails.
 //!
+//! `worktree remove` follows them: a stop after its snapshot and before its own entry keeps the
+//! code of the stop, a stop after its entry is code 3, and so is a failed flush of that snapshot.
+//!
 //! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
 //! log (`track`, `commit`, `tag`, `branch`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
@@ -51,7 +54,8 @@
 //! is refused for nothing to commit or for a branch that moved, or cannot read the log to tell a
 //! stopped commit from a restored working copy, `status` when it cannot read the
 //! repository or write its output, `op restore` when a later step fails, and `purge --apply`
-//! when the purge cannot be planned or started after it. The message of such a failure names the
+//! when the purge cannot be planned or started after it, and `worktree remove` when it is refused
+//! (untracked files without `--force`, say) after the files were saved. The message of such a failure names the
 //! entry, and repeating the command is safe.
 //!
 //! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
@@ -5272,7 +5276,8 @@ mod tests {
         assert_eq!(unflushed.exit_code(), ExitCode::from(3));
         let text = unflushed.to_string();
         assert!(
-            text.contains("may not survive a crash") && text.contains(&entry.number().to_string()),
+            text.contains("may not survive a crash")
+                && text.contains(&format!("saved first as entry {}", entry.number())),
             "{text}"
         );
         // The entry of the removal itself is code 3 as before.

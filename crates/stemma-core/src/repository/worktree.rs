@@ -149,7 +149,8 @@ impl Repository {
     /// [`WorktreeError::Snapshot`] (the owner, a file that cannot be saved, or a refused
     /// `snapshot`), [`WorktreeError::Dirty`], [`WorktreeError::Refs`], and the errors of the
     /// storage. The snapshot that came first stays in the log when a later step fails
-    /// ([`WorktreeError::AfterSnapshot`]). After the entry: [`WorktreeError::RemoveFailed`],
+    /// ([`WorktreeError::AfterSnapshot`], which carries the failed flush of that snapshot, if
+    /// there was one: then the call ends with code 3, else it can be repeated). After the entry: [`WorktreeError::RemoveFailed`],
     /// [`WorktreeError::RemoveMoveFailed`], [`WorktreeError::RemovePartlyMoved`], and
     /// [`WorktreeError::RemoveNotDurable`].
     pub fn remove_worktree(
@@ -815,14 +816,15 @@ fn resolve_or(path: &Path) -> PathBuf {
 }
 
 /// A failure before the entry of the removal names the snapshot that came first, and the flush of
-/// it that did not succeed (`late`). A failure that has an entry of its own is returned as it is.
+/// it that did not succeed (`late`). A failure that has an entry of its own is returned as it is,
+/// unless that flush failed: the message then names both, and the code is 3 either way.
 fn after_snapshot(
     snapshot: &Option<Box<Entry>>,
     late: &mut Option<RefError>,
     error: WorktreeError,
 ) -> WorktreeError {
     match snapshot {
-        Some(saved) if error.entry().is_none() => WorktreeError::AfterSnapshot {
+        Some(saved) if error.entry().is_none() || late.is_some() => WorktreeError::AfterSnapshot {
             snapshot: saved.clone(),
             late: late.take(),
             source: Box::new(error),
@@ -1080,8 +1082,11 @@ pub(super) fn open_linked(path: &Path, owned: bool) -> Result<Repository, OpenEr
     Ok(Repository::linked(path, shared, &name))
 }
 
-/// Why [`Repository::add_worktree`] or [`Repository::worktrees`] fails. The variants before
-/// [`CheckoutFailed`](Self::CheckoutFailed) wrote nothing of the add; the others wrote its entry.
+/// Why [`Repository::add_worktree`], [`Repository::remove_worktree`], or [`Repository::worktrees`]
+/// fails. The variants before [`CheckoutFailed`](Self::CheckoutFailed) wrote nothing of the add;
+/// the others of the add wrote its entry. For a removal, [`Snapshot`](Self::Snapshot),
+/// [`AfterSnapshot`](Self::AfterSnapshot), [`Dirty`](Self::Dirty), and the refusals before them
+/// wrote no entry of the removal; the `Remove*` variants wrote it.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WorktreeError {
@@ -1303,7 +1308,9 @@ impl WorktreeError {
         }
     }
 
-    /// The entry of the add or the removal, if the error leaves one in the log.
+    /// The entry that the error leaves in the log: the entry of the add or the removal, or, for
+    /// `AfterSnapshot`, the entry of the snapshot that came first (see
+    /// [`wrote_its_entry`](Self::wrote_its_entry) for the first two only).
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::Update(error) => error.entry(),
@@ -1343,7 +1350,8 @@ impl WorktreeError {
     }
 
     /// Whether the call wrote the entry of the add or of the removal: the entry that the snapshot
-    /// before it wrote does not count.
+    /// before it wrote does not count. A failure that is wrapped in `AfterSnapshot` because the
+    /// flush of that snapshot failed is `false` here and `true` for `pointer_moved`.
     pub fn wrote_its_entry(&self) -> bool {
         self.entry().is_some() && !matches!(self, Self::AfterSnapshot { .. })
     }

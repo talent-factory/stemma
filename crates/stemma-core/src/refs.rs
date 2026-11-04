@@ -229,8 +229,9 @@ impl fmt::Display for RefMalformed {
             Self::UnknownHeadKind => "the kind is neither `branch` nor `commit`",
             Self::OwnerShape => "expected `owner <actor>` on the second line",
             Self::WorktreeName => {
-                "the name of the state directory is none that a worktree can have (letters, \
-                 digits, `-`, `_`, and `.` but not first, and not `main`)"
+                "the name of the state directory is none that a worktree can have (1 to 255 \
+                 letters, digits, `-`, `_`, and `.` but not first, and not `main`); remove the \
+                 directory by hand"
             }
         })
     }
