@@ -594,9 +594,25 @@ pub fn is_binary(content: &[u8]) -> bool {
     probe.contains(&0)
 }
 
+/// The size in bytes above which a file is too large to compare line by line: 10 MiB on either
+/// side. The linear-space Myers diff bounds the memory, but time and output grow with the file,
+/// so the diff names such a file as it names a binary file.
+pub const DIFF_SIZE_LIMIT: usize = 10 * 1024 * 1024;
+
+/// Tells whether a file is too large to compare: more than [`DIFF_SIZE_LIMIT`] bytes.
+pub fn is_too_large(content: &[u8]) -> bool {
+    content.len() > DIFF_SIZE_LIMIT
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_is_too_large_only_above_the_limit() {
+        assert!(!is_too_large(&vec![b'a'; DIFF_SIZE_LIMIT]));
+        assert!(is_too_large(&vec![b'a'; DIFF_SIZE_LIMIT + 1]));
+    }
 
     #[test]
     fn a_text_file_is_not_binary() {

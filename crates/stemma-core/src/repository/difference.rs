@@ -7,8 +7,8 @@
 //! first saved as a snapshot, as [`Repository::status`] does, so that the diff shows the files as
 //! they are now. The lines of a text file are compared as stored, with their line ends, by the
 //! shortest edit script of [`crate::diff`], with the boundaries of the changes placed by the indent
-//! heuristic and the deletions of a group before its insertions. A binary file is named without
-//! its lines.
+//! heuristic and the deletions of a group before its insertions. A binary file, and a file above
+//! [`crate::diff::DIFF_SIZE_LIMIT`] on either side, is named without its lines.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -17,7 +17,7 @@ use std::fmt;
 use super::conflicted;
 use super::{Repository, SnapshotError, UpdateError};
 use crate::conflict::AnyCommit;
-use crate::diff::{diff_byte_lines, hunks, is_binary, Hunk};
+use crate::diff::{diff_byte_lines, hunks, is_binary, is_too_large, Hunk};
 use crate::object::{CommitId, EntryMode, Kind, ObjectId, Tree, TreeId};
 use crate::refs::RefError;
 use crate::store::{ObjectStore, RawObject, StoreError};
@@ -106,6 +106,9 @@ impl TextDiff {
 pub enum Content {
     /// The file is binary on at least one side, so its lines are not shown.
     Binary,
+    /// The file is text, but larger than [`crate::diff::DIFF_SIZE_LIMIT`] on at least one side, so
+    /// its lines are neither compared nor shown.
+    TooLarge,
     /// The file is text.
     Text(TextDiff),
 }
@@ -425,6 +428,8 @@ impl Repository {
             let new_bytes = self.blob_or_empty(after)?;
             let content = if is_binary(&old_bytes) || is_binary(&new_bytes) {
                 Content::Binary
+            } else if is_too_large(&old_bytes) || is_too_large(&new_bytes) {
+                Content::TooLarge
             } else {
                 // The lines are compared as bytes, with their line ends, so that a change of the
                 // line ends or of a byte that is not UTF-8 shows. Only the display decodes them.

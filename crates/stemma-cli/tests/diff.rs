@@ -432,6 +432,57 @@ fn an_empty_added_file_is_a_difference_with_a_header_and_no_hunk() {
     assert!(!section.contains("@@"), "{}", result.stdout);
 }
 
+/// The size limit of the diff in bytes (`DIFF_SIZE_LIMIT` in the core).
+const SIZE_LIMIT: usize = 10 * 1024 * 1024;
+
+#[test]
+fn a_file_above_the_size_limit_is_named_without_its_lines() {
+    let dir = repository_with_edit("big.txt", &vec![b'a'; SIZE_LIMIT + 1], b"small\n");
+
+    let result = diff(dir.path(), &["--exit-code"]);
+
+    assert_eq!(result.code, 4, "{}", result.stderr);
+    assert!(
+        result.stdout.starts_with("diff big.txt\nFiles b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains(" big.txt and working-copy b3:")
+            && result
+                .stdout
+                .ends_with(" big.txt differ and are too large to compare\n"),
+        "{}",
+        result.stdout
+    );
+    assert!(!result.stdout.contains("@@"), "{}", result.stdout);
+}
+
+#[test]
+fn a_file_at_the_size_limit_is_still_compared() {
+    let dir = repository_with_edit("big.txt", &vec![b'a'; SIZE_LIMIT], &vec![b'b'; SIZE_LIMIT]);
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result.stdout.contains("@@ -1 +1 @@"),
+        "{}",
+        result.stdout.len()
+    );
+}
+
+#[test]
+fn a_binary_file_above_the_size_limit_is_still_called_binary() {
+    let mut big = vec![b'a'; SIZE_LIMIT + 1];
+    big[0] = 0;
+    let dir = repository_with_edit("big.dat", &big, b"small\n");
+
+    let result = diff(dir.path(), &[]);
+
+    assert!(result.stdout.contains("Binary files "), "{}", result.stdout);
+}
+
 #[test]
 fn a_binary_file_names_both_sides_as_the_summary_line_does() {
     let dir = repository_with_edit("bin.dat", b"a\0b", b"a\0c");

@@ -1416,6 +1416,11 @@ Dateien, und \type{--exit-code} betrachtet nur die gewählten Dateien.
 Eine Datei mit einem NUL-Byte in den ersten 8000 Bytes ist binär: Der Befehl zeigt ihren
 Inhalt nicht, sondern nur die Zeile \type{Binary files ... and ... differ} mit den beiden
 Seiten, wie sie im Kopf stehen. Ist eine der beiden Fassungen binär, gilt das für die ganze Datei.
+Eine Textdatei, die auf einer der beiden Seiten grösser als 10 MiB (10\,485\,760 Bytes) ist,
+vergleicht der Befehl nicht Zeile für Zeile; er schreibt stattdessen die Zeile
+\type{Files ... and ... differ and are too large to compare} mit den beiden Seiten.
+Eine binäre Datei bleibt auch über dieser Grenze binär.
+Beide Zeilen zählen für \type{--exit-code} als Unterschied.
 
 {\bf Konflikte.} Ein Commit mit offenem Konflikt vergleicht der Befehl als den Tree, der ihn
 zeigt (ADR-010): An jedem Pfad im Konflikt steht der Text mit Markierungen, derselbe, den ein
@@ -1515,7 +1520,8 @@ Hat die letzte Zeile kein Zeilenende, folgt ihr die Zeile
 Ein Tabulator erscheint als vier Leerzeichen.
 Die Pfade stehen in der Liste und im Rahmen der Datei unmaskiert, anders als im Text des Befehls:
 Ein Backslash im Namen erscheint unverändert, im Text verdoppelt.
-Eine Binärdatei zeigt die Oberfläche mit der Zeile \type{Binary file differs}.
+Eine Binärdatei zeigt die Oberfläche mit der Zeile \type{Binary file differs}, eine zu grosse
+Datei mit der Zeile \type{File too large to compare}.
 Die unterste Zeile nennt die Tasten:
 
 \starttyping

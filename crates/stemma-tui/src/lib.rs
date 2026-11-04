@@ -180,6 +180,10 @@ fn file_lines(file: &FileDiff) -> FileLines {
             lines.push(Line::raw("Binary file differs"));
             return FileLines { lines, hunk_starts };
         }
+        Content::TooLarge => {
+            lines.push(Line::raw("File too large to compare"));
+            return FileLines { lines, hunk_starts };
+        }
         // A kind of content that this version of the interface does not know how to show.
         _ => {
             lines.push(Line::raw("The content of this file cannot be shown"));

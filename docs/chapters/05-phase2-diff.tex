@@ -31,7 +31,12 @@ Eine Markierung der Verschiebung als reine Anzeige, wie \type{--color-moved} in 
 lässt sich später ohne Änderung der Hunks nachrüsten.
 \item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten 8000 Bytes, wie git. Er zeigt
 dann eine Zusammenfassungszeile wie \quotation{Binary files differ} statt des Inhalts
-(\in{Abschnitt}[sec:binary]). Eine Grössengrenze gibt es in Phase 2 nicht.
+(\in{Abschnitt}[sec:binary]).
+\item Eine Textdatei über 10 MiB (10\,485\,760 Bytes) auf einer der beiden Seiten vergleicht der
+Diff nicht zeilenweise.
+Der Myers-Diff mit linearem Speicher begrenzt den Speicher, aber Zeit und Ausgabe
+wachsen mit der Datei. Der Diff zeigt dann eine Zusammenfassungszeile wie bei einer Binärdatei
+(\in{Abschnitt}[sec:binary]).
 \item Die Seiten des Diffs werden über ihre Kennungen benannt, wie \type{op log} sie
 anzeigt. Die Arbeitskopie erscheint als \type{working-copy} mit ihrer Snapshot-Kennung,
 ohne Zeitangabe, weil sich die Zeit bei jedem Aufruf ändert (ADR-010).
@@ -384,14 +389,24 @@ folgt git: Ein NUL-Byte unter den ersten 8000 Bytes macht die Datei binär. Der 
 \type{diff.rs} als \type{is_binary}. Der Kern wendet sie beim Vergleich der Seiten an
 (\type{repository/difference.rs}).
 
+Dieselbe Zusammenfassung gilt für eine Textdatei, die zu gross für den Zeilenvergleich ist.
+Die Grenze liegt bei 10 MiB je Seite (\type{DIFF_SIZE_LIMIT}, Prüfung \type{is_too_large}).
+Der Myers-Diff mit linearem Speicher begrenzt den Speicher,
+aber Zeit und Ausgabe wachsen mit der Datei; die Grenze hält beide in Schranken.
+
 \startitemize[n]
 \item Für jede Datei, die sich unterscheidet, liest der Kern die Inhalte beider Seiten. Eine
 Seite, auf der die Datei fehlt, gilt als leer.
 \item Ist eine der beiden Fassungen binär, ist die ganze Datei binär. Der Kern vergleicht dann
 keine Zeilen und bildet keine Hunks.
+\item Ist keine Fassung binär, aber eine länger als 10 MiB, ist die Datei zu gross. Der Kern
+vergleicht auch dann keine Zeilen und bildet keine Hunks.
 \item Sonst vergleicht der Kern die Zeilen und bildet die Hunks.
 \item Die Anzeige schreibt für eine binäre Datei die Zeile \type{Binary files ... and ... differ}
 mit den beiden Seiten wie im Kopf. Die Oberfläche zeigt \type{Binary file differs}.
+\item Für eine zu grosse Datei schreibt die Anzeige die Zeile
+\type{Files ... and ... differ and are too large to compare}, ebenfalls mit den beiden Seiten.
+Die Oberfläche zeigt \type{File too large to compare}.
 \stopitemize
 
 \subsection{Definition und Komplexität}
@@ -417,7 +432,10 @@ gilt als binär. Eine Binärdatei ohne NUL-Byte in den ersten 8000 Bytes gilt al
 \item Wird aus einer Textdatei eine Binärdatei oder umgekehrt, gilt die ganze Datei als binär.
 \item Eine neue oder gelöschte Binärdatei erscheint mit \type{/dev/null} auf der Seite,
 auf der sie fehlt.
-\item Eine Grössengrenze gibt es nicht. Der Kern liest eine grosse Datei ganz, ehe er sie prüft.
+\item Eine Datei, die binär ist, bleibt binär, auch wenn sie über der Grössengrenze liegt.
+Die Grenze gilt nur für Text.
+\item Der Kern liest eine grosse Datei ganz, ehe er ihre Grösse prüft. Die Grenze schützt also
+vor der Zeit und der Ausgabe des Vergleichs, nicht vor dem Lesen.
 \stopitemize
 \stopinfobox
 
@@ -856,7 +874,6 @@ Der Diff schreibt sonst nichts, ein erneuter Aufruf ist deshalb jederzeit sicher
 Die folgenden Fragen sind offen.
 
 \startitemize
-\item Grössengrenze für sehr grosse Dateien. In Phase 2 ist das eine bekannte Einschränkung.
 \item Eine Option oder Variable für die Farbe, etwa \type{NO_COLOR}, und die Wahl des Pagers
 über die Einstellungen von git.
 \item Markierung verschobener Zeilen als Anzeige, in einer Phase nach 2.

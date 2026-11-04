@@ -388,3 +388,19 @@ fn an_empty_diff_and_tiny_terminals_do_not_panic() {
         screen_of_size(&State::default(), &empty, width, height);
     }
 }
+
+#[test]
+fn a_file_above_the_size_limit_says_so_and_has_no_hunks() {
+    let fixture = Fixture::new();
+    fixture.dir.write("big.txt", "small\n");
+    fixture.track(&["big.txt"]);
+    fixture.commit();
+    fixture
+        .dir
+        .write("big.txt", vec![b'a'; 10 * 1024 * 1024 + 1]);
+    let diff = fixture.diff();
+
+    let screen = screen(&State::default(), &diff);
+
+    assert!(screen.contains("File too large to compare"), "{screen}");
+}
