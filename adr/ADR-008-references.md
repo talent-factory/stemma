@@ -4,6 +4,7 @@
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1. The decision on
 tags (STEMMA-54) was taken on 2026-10-29 and implemented in the store; the operation `tag` and
 the command followed on 2026-10-30 (STEMMA-183), and so did the deletion of a tag (STEMMA-184).
+The rule for a name that is both a branch and a tag was decided on 2026-11-04 (STEMMA-186).
 The command `branch` (create, list, rename, delete) was added in Phase 3 (STEMMA-166).
 The open items move to Phase 5 (remote references); packed references have no phase yet, and the
 rename on Windows waits for the CI run (STEMMA-33).
@@ -163,8 +164,34 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   again are two operations with two entries: no operation moves a tag, which keeps the rule that
   a tag never moves and keeps the whole history of a name in the log. A purge that is refused
   for a tag (`TaggedCommit`) names `stemma tag --delete <name>` instead of the file.
-- **Tags are partly known** *(STEMMA-54, STEMMA-183, STEMMA-184)*. Still open: a purge of a
-  tagged commit, and a name that is both a branch and a tag.
+- **A name that is both a branch and a tag is an error, unless it is qualified**
+  *(confirmed, STEMMA-186)*. A command that reads a name (`switch`, `log`, `diff`, and the others
+  that take a revision) resolves the text it gets in this order:
+  1. `heads/<name>` is the branch `<name>`, and `tags/<name>` is the tag `<name>`. These two
+     prefixes are the qualified form, and they are tried first, so they are never ambiguous.
+  2. Any other text is looked up as a branch and as a tag. If exactly one exists, it is the
+     answer. If none exists, the name is unknown. If both exist, the command fails with an
+     error that names both and asks for `heads/<name>` or `tags/<name>`. It does not pick one,
+     and it does not warn and continue.
+
+  Git prefers the tag and warns. That was rejected: a warning is easily missed in the output of
+  an agent (ADR-004), and the command would have done something other than the caller meant. An
+  error costs one more word in a rare case and cannot move a person or an agent to the wrong
+  commit. A fixed winner (always the branch, or always the tag) was rejected for the same
+  reason, and because the result of a command would change when somebody creates the tag later:
+  a name that was clear yesterday must not change its meaning today. A command that needs a
+  branch by its nature (`switch` without `--detach`, `branch -d`) reads no tags and has no
+  ambiguity; the rule is for the commands that take any revision.
+
+  The prefixes are reserved to keep the rule closed: a branch or a tag whose first component is
+  `heads` or `tags` would be unreachable by its plain name, and `heads/x` could mean two
+  things. The first command that reads tags refuses such a name for a new branch or tag. A
+  repository that has one already is not rewritten; the qualified form wins for it as well,
+  and `verify` does not call it damage. The store keeps its name rules (the section on the name
+  of a branch), so the change touches no ID and no stored file; the rule lives in the layer
+  that resolves names, and the module does not know it (it stores and does not decide).
+- **Tags are partly known** *(STEMMA-54, STEMMA-183, STEMMA-184, STEMMA-186)*. Still open: a
+  purge of a tagged commit. The name that is both a branch and a tag is decided above.
   `verify` checks the commits of the tags. A purge refuses (`TaggedCommit`) while a tag points
   to a commit that it would rewrite, because a tag cannot move (ADR-014). A restore does not
   touch tags: they are not part of the state it brings back, and a tag that a later entry
@@ -258,9 +285,12 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. The operation
       `tag` in the operation log (ADR-011), its level (ADR-004), and the command `stemma tag`
       are done (STEMMA-183), and so is deleting a tag, `delete_tag` and `stemma tag --delete`
-      with the operation `untag` (STEMMA-184). Still open: how a purge deals with a tag on a
-      commit that it rewrites (today it refuses), and the name that is both a branch and a tag,
-      for a command that resolves names.
+      with the operation `untag` (STEMMA-184). The name that is both a branch and a tag is an
+      error that asks for `heads/<name>` or `tags/<name>` (STEMMA-186), see the decision above.
+      Still open: how a purge deals with a tag on a commit that it rewrites (today it refuses).
+- [ ] The first command that reads tags implements the rule for names (STEMMA-186): the two
+      prefixes, the error for an ambiguous name, and the refusal of new names that start with
+      `heads` or `tags`. No command reads tags yet.
 - [x] Checking that the branches, tags, and HEAD of a repository point to commits that the store
       has
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.
