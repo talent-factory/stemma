@@ -203,7 +203,20 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   reads again and decides; the module does not retry.
 - Listing the branches walks the directory, and a lookup reads the listing of each directory on
   the path of the name, to compare the case that is stored. That costs a few directory reads per
-  call and is the price of exact names on file systems that ignore case.
+  call and is the price of exact names on file systems that ignore case. Measured on 2026-11-04
+  (STEMMA-55; release build, APFS, mean of 200 lookups, `FsRefStore` over branch files written
+  directly):
+
+  | Branches | Lookup, flat names | Lookup, nested names | List, flat | List, nested |
+  |---|---|---|---|---|
+  | 1,000 | 0.34 ms | 0.14 ms | 14 ms | 34 ms |
+  | 10,000 | 3.2 ms | 0.16 ms | 0.23 s | 0.30 s |
+  | 100,000 | 87 ms | 1.6 ms | 21.8 s | 26.4 s |
+
+  Flat names are `feat-TF-<n>`, nested names `feat/g<n mod 100>/b<n>`. Up to 10,000 branches the
+  cost is small. At 100,000 it is noticeable: a lookup in one large directory grows linearly with
+  the number of entries, and the listing grows faster than linearly (95 times from 10,000 to
+  100,000 for a tenfold count), which points to a cost in the code and not in the layout alone.
 - The names of `con` and its kind are refused on every platform, also for people who never use
   Windows.
 - `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
@@ -229,7 +242,10 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above: it is
       `Repository::delete_branch`, with the entry of the operation `branch` and the command
       `stemma branch -d` (STEMMA-166), see the decision above.
-- [ ] Packed references, when there are many branches.
+- [ ] Packed references, when there are many branches. Measured (STEMMA-55, see Consequences):
+      the cost is small up to 10,000 branches and noticeable at 100,000, mainly in the listing.
+      No packed form is built yet. A follow-up first finds out why the listing grows faster than
+      linearly, and builds a packed form only if the cost remains after that.
 - [x] Tags: layout, plain pointer, never moves (STEMMA-54), see the decision above. The store
       has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. The operation
       `tag` in the operation log (ADR-011), its level (ADR-004), and the command `stemma tag`
