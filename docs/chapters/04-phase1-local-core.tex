@@ -81,6 +81,57 @@ auch wenn er auf denselben Commit zeigt (ADR-008).
 (siehe \in{Abschnitt}[sec:tag-entry]).
 Ein Tag, der falsch gesetzt wurde, wird mit \type{stemma tag --delete} gelöscht und neu gesetzt.
 
+Eine Datei je Branch kostet bei vielen Branches Zeit: Der Zugriff vergleicht die
+gespeicherte Schreibweise und liest dafür jeden Eintrag der Verzeichnisse auf dem Pfad
+des Namens, und das Auflisten liest alle Branch-Dateien (ADR-008).
+Gemessen wurde mit \type{FsRefStore} auf APFS (Release-Build, ein Rechner, Zustand des Caches
+nicht kontrolliert). Ein Zugriff ist das Mittel über 200 Aufrufe, das Auflisten ein Lauf.
+Die Namen sind flach (\type{feat-TF-n}) oder auf 100 Unterverzeichnisse verteilt
+(\type{feat/gk/bn} mit k = n mod 100):
+
+\startxtable
+\startxrow
+\startxcell {\bf Branches} \stopxcell
+\startxcell {\bf Zugriff, flach} \stopxcell
+\startxcell {\bf Zugriff, verschachtelt} \stopxcell
+\startxcell {\bf Auflisten, flach} \stopxcell
+\startxcell {\bf Auflisten, verschachtelt} \stopxcell
+\stopxrow
+\startxrow
+\startxcell 1\,000 \stopxcell
+\startxcell 0,34 ms \stopxcell
+\startxcell 0,14 ms \stopxcell
+\startxcell 14 ms \stopxcell
+\startxcell 34 ms \stopxcell
+\stopxrow
+\startxrow
+\startxcell 10\,000 \stopxcell
+\startxcell 3,2 ms \stopxcell
+\startxcell 0,16 ms \stopxcell
+\startxcell 0,23 s \stopxcell
+\startxcell 0,30 s \stopxcell
+\stopxrow
+\startxrow
+\startxcell 100\,000 \stopxcell
+\startxcell 87 ms \stopxcell
+\startxcell 1,6 ms \stopxcell
+\startxcell 21,8 s \stopxcell
+\startxcell 26,4 s \stopxcell
+\stopxrow
+\stopxtable
+
+Bis 10\,000 Branches bleibt der Aufwand klein. Bei 100\,000 Branches ist er spürbar.
+Von 10\,000 auf 100\,000 Branches wächst der Zugriff in einem flachen Verzeichnis auf das
+27-Fache, das Auflisten auf rund das 95-Fache (flach) und das 88-Fache (verschachtelt),
+also schneller als die Zahl der Branches.
+Der Code liest je Eintrag mit gleichem Aufwand; warum die Zeit stärker wächst,
+ist nicht geklärt. Es kann am Dateisystem, am Cache oder an der Messung liegen.
+Das Auflisten brauchen nur \type{branch}, die Prüfung der Referenzen und die Planung eines
+Purge; Commit, Wechsel und die übrigen Befehle schlagen einzelne Namen nach.
+Mit verschachtelten Namen kostet ein Zugriff bei 100\,000 Branches 1,6 ms.
+Eine gepackte Form gibt es deshalb nicht (ADR-008).
+Zeigt sich ein Repository mit rund 100\,000 Branches, wird neu entschieden.
+
 Die Datei \type{format} trägt eine Versionsnummer. \type{init} schreibt die Version 4,
 die das Log mit der Hash-Kette kennzeichnet (siehe unten). Ein Repository der Version 2 oder 3
 steigt mit seinem nächsten Eintrag im Log auf 4. Beim Öffnen nimmt der Kern die Versionen 2

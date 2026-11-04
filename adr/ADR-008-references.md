@@ -203,7 +203,24 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   reads again and decides; the module does not retry.
 - Listing the branches walks the directory, and a lookup reads the listing of each directory on
   the path of the name, to compare the case that is stored. That costs a few directory reads per
-  call and is the price of exact names on file systems that ignore case.
+  call and is the price of exact names on file systems that ignore case. Measured on 2026-11-04
+  (STEMMA-55; release build, APFS, one machine, state of the cache not controlled; a lookup is
+  the mean of 200 calls, a listing is one run; `FsRefStore` over branch files written directly):
+
+  | Branches | Lookup, flat names | Lookup, nested names | List, flat | List, nested |
+  |---|---|---|---|---|
+  | 1,000 | 0.34 ms | 0.14 ms | 14 ms | 34 ms |
+  | 10,000 | 3.2 ms | 0.16 ms | 0.23 s | 0.30 s |
+  | 100,000 | 87 ms | 1.6 ms | 21.8 s | 26.4 s |
+
+  Flat names are `feat-TF-<n>`, nested names `feat/g<n mod 100>/b<n>`. Up to 10,000 branches the
+  cost is small. At 100,000 it is noticeable. A lookup reads every entry of each directory on the
+  path, and the listing reads every branch file. From 10,000 to 100,000 branches the time grows
+  faster than the count: a flat lookup 27 times, a listing about 95 times (flat) and 88 times
+  (nested). The code does a constant amount of work per entry plus one sort, and a control run of
+  the same system calls in a script grew linearly, so the cause is not known. It may lie in the
+  file system, in the state of the cache, or in the measurement. The factors are the result of one
+  run on one machine and no property of the design.
 - The names of `con` and its kind are refused on every platform, also for people who never use
   Windows.
 - `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
@@ -229,7 +246,14 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above: it is
       `Repository::delete_branch`, with the entry of the operation `branch` and the command
       `stemma branch -d` (STEMMA-166), see the decision above.
-- [ ] Packed references, when there are many branches.
+- [x] Packed references, when there are many branches. Measured (STEMMA-55, see Consequences):
+      the cost is small up to 10,000 branches and noticeable only at 100,000, mainly in the
+      listing. The listing is used by `branch`, by the check of the references, by the plan of a
+      purge, and in the rare conflict of a branch with a directory; commit, switch, and the other
+      commands only look up single names, and a lookup in nested names takes 1.6 ms at 100,000.
+      No packed form is built. Decide again if a repository with about 100,000 branches shows up;
+      then first find out why the time grows faster than the count (file system, cache, or
+      measurement; time the phases and repeat warm and cold).
 - [x] Tags: layout, plain pointer, never moves (STEMMA-54), see the decision above. The store
       has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. The operation
       `tag` in the operation log (ADR-011), its level (ADR-004), and the command `stemma tag`
