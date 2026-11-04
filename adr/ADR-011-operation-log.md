@@ -115,6 +115,24 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   The alternative, a line `owner` with the old and the new actor, was explicit, but it needed
   two lines (an actor has spaces) and changes to the reading of the outcomes and to the
   restore, for a value that no restore puts back.
+- **An entry of a linked worktree names it** *(confirmed; STEMMA-176)*. The log is one log for
+  all worktrees, but `HEAD`, the working-copy commit, and the owner belong to a worktree
+  (ADR-009). A change made in a linked worktree has the line `worktree <name>` right after the
+  line of the operation, with the name of its state directory; a change made in the main
+  worktree has no such line, so every log from before linked worktrees reads and hashes as it
+  did. `main` is never written, and the reader refuses it, so an entry has one encoding. The
+  entries of `worktree add` and `worktree remove` name the worktree that they make or remove,
+  and a line `location <path>` follows, with the absolute path of its directory on one line
+  (a path with a control character or an empty path is refused). The name
+  holds ASCII letters, digits, `-`, `_`, and `.` (not first) and is at most 255 bytes long. A program that does not know the line stops at
+  it: the reader refuses an unknown line, so an older program refuses the log and does not read
+  it wrongly. The hash of the body covers both lines.
+  `outcomes` judges the pointers by the worktree. The next move of `HEAD` and of the
+  working-copy commit that confirms or refutes an entry is the next one *of the same worktree*,
+  and the value now (`Current`, which `in_worktree` names, `main` by default) is compared
+  only with the entries of its own worktree: the `HEAD` of the entry of another worktree is
+  not known in the call, so the newest entry of it is unknown. The branches and the tags are
+  shared and are judged as before. `take-over` is judged in its own worktree only.
 - **Nothing is deleted** *(confirmed)*. No operation removes an entry, except the purge that
   replaces entries by stubs (ADR-014) and, later, a retention that does the same, and no garbage
   collection runs in phase 1 (ADR-007). Removing a secret replaces the entries that name it by a

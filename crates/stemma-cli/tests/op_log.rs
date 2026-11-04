@@ -125,7 +125,7 @@ fn the_json_form_is_one_object_per_line() {
         lines[0],
         format!(
             "{{\"schema\":1,\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
-             \"operation\":\"snapshot\",\"head\":null,\
+             \"operation\":\"snapshot\",\"worktree\":\"main\",\"location\":null,\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
              \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\"tags\":[],\
              \"purge_pending\":false,\"took_effect\":false}}"

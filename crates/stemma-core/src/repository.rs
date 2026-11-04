@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 5" and a newline; 2 to 4 before the owner (ADR-010)
+//! ├── format          "stemma-repository 6" and a newline; 2 to 5 before the worktree of an entry
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
@@ -65,7 +65,7 @@ pub use switch::{
     Changes, Handled, Planned, Revision, SwitchError, SwitchPlan, SwitchTarget, Switched,
 };
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
-pub use worktree::{AddedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
+pub use worktree::{AddedWorktree, RemovedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
 
 use crate::change::{ChangeId, GenerateError};
 use crate::fault;
@@ -86,8 +86,9 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` writes, and that a purge and every new entry
-/// of the log move a repository to: version 5, the owner of the working copy (ADR-010).
-const FORMAT_VERSION: u32 = 5;
+/// of the log move a repository to: version 6, the worktree of an entry and the journal of a
+/// purge across worktrees (ADR-009, ADR-011, ADR-014).
+const FORMAT_VERSION: u32 = 6;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -98,8 +99,11 @@ const FORMAT_VERSION: u32 = 5;
 /// that knows only version 3 would write entries outside the chain after it. Version 5 adds the
 /// owner to the file `working-copy`: a repository moves to it with its next entry, and the actor
 /// of the command that causes the rise becomes the owner, so that a program that knows only
-/// version 4 refuses a file that it cannot read.
-const READ_VERSIONS: [u32; 4] = [2, 3, 4, 5];
+/// version 4 refuses a file that it cannot read. Version 6 adds the lines `worktree` and
+/// `location` to an entry of the log and the journal `stemma-purge 2`: a repository moves to it
+/// with its next entry or purge, so that a program that knows only version 5 refuses a log or a
+/// journal that it cannot read, instead of reporting damage.
+const READ_VERSIONS: [u32; 5] = [2, 3, 4, 5, 6];
 
 // A purge and every new entry of the log move a repository to `FORMAT_VERSION` (ADR-011,
 // ADR-014). It is the highest that this code reads, so neither lowers a version.
@@ -670,7 +674,13 @@ impl Repository {
     /// [`raise_format`]); once it is raised, it stays raised, even if the entry fails after it.
     pub(crate) fn append(&self, lock: &WriteLock, change: &Change) -> Result<Entry, OpLogError> {
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
-        let entry = self.oplog.append(change)?;
+        // The entry names the linked worktree it was made in; an entry that names one already (the
+        // add and the removal of a worktree) keeps it. The main worktree leaves the name out.
+        let change = change
+            .clone()
+            .in_worktree(self.worktree.clone(), None)
+            .map_err(OpLogError::Entry)?;
+        let entry = self.oplog.append(&change)?;
         // Not an error of the change: the entry and its move stand without the owner.
         let _ = self.refs.adopt_owner(lock, change.actor());
         Ok(entry)
@@ -2721,7 +2731,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 5\n"
+            b"stemma-repository 6\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4054,7 +4064,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "6",
+            "7",
             "99",
             "4294967295",
             "4294967296",
@@ -4104,9 +4114,34 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 5\n"
+            "stemma-repository 6\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_repository_of_version_5_rises_to_6_with_its_next_entry() {
+        let dir = TempDir::new();
+        let repository = init(dir.path()).unwrap();
+        set_format(dir.path(), "stemma-repository 5\n");
+        let repository = Repository::open(dir.path()).unwrap_or(repository);
+
+        repository
+            .set_head(
+                &OperationName::try_new("checkout").unwrap(),
+                &repository.refs().head().unwrap(),
+                &Head::Branch(BranchName::try_new("other").unwrap()),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap()
+            .unwrap();
+
+        // A program that knows only version 5 refuses what the entry may now carry.
+        assert_eq!(
+            fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
+            "stemma-repository 6\n"
+        );
     }
 
     // The owner of the working copy (ADR-010)
@@ -4136,7 +4171,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 5\n"
+            "stemma-repository 6\n"
         );
     }
 
@@ -4169,7 +4204,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 5\n"
+            "stemma-repository 6\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -4412,7 +4447,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 5\n"
+            "stemma-repository 6\n"
         );
     }
 
@@ -4489,7 +4524,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 5\n");
+        assert_eq!(read(), "stemma-repository 6\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -4497,6 +4532,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 4\n");
         raise_format(&meta, 5).unwrap();
         assert_eq!(read(), "stemma-repository 5\n");
+        raise_format(&meta, 6).unwrap();
+        assert_eq!(read(), "stemma-repository 6\n");
     }
 
     #[test]
@@ -4537,12 +4574,12 @@ mod tests {
     }
 
     #[test]
-    fn open_reads_versions_2_to_4_and_init_writes_version_5() {
+    fn open_reads_versions_2_to_5_and_init_writes_version_6() {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 5\n");
-        for version in ["2", "3", "4"] {
+        assert_eq!(format, "stemma-repository 6\n");
+        for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
         }
@@ -4713,14 +4750,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 5",
+                "stemma-repository 6",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
                     found: "7".to_string(),
                 },
-                "version 7, but this code supports versions 2 to 5",
+                "version 7, but this code supports versions 2 to 6",
             ),
         ];
         for (error, text) in cases {

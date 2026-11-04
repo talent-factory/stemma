@@ -1,4 +1,4 @@
-//! Linked worktrees: `worktree add` and `worktree list` (ADR-009, ADR-010).
+//! Linked worktrees: `worktree add`, `worktree list`, and `worktree remove` (ADR-009, ADR-010).
 //!
 //! The shared store (`objects/`, `refs/`, `oplog/`, the lock) stays in the `.stemma` of the main
 //! worktree. A linked worktree has a state directory `.stemma/worktrees/<name>/` with its own
@@ -15,7 +15,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use super::checkout::{CheckoutError, CheckoutPlan};
-use super::snapshot::{read_commit, SnapshotError};
+use super::conflicted;
+use super::snapshot::{read_any_commit, read_commit, tracked_files, SnapshotError};
 use super::{exists, now, OpenError, Repository, UpdateError, METADATA_DIR, WORKTREES_DIR};
 use crate::change::{ChangeId, GenerateError};
 use crate::fault;
@@ -31,6 +32,12 @@ use crate::{Actor, Authorizer};
 /// The operation that the log and the authorizer know for `worktree add`. The name of an operation
 /// holds no space, so the subcommand is joined with a hyphen.
 const OPERATION: &str = "worktree-add";
+
+/// The operation that the log and the authorizer know for `worktree remove`.
+const REMOVE_OPERATION: &str = "worktree-remove";
+
+/// How many untracked files an error of `worktree remove` names; the others are counted.
+const DIRTY_LISTED: usize = 5;
 
 /// What the pointer file `.stemma` of a linked worktree starts with.
 pub(super) const POINTER_PREFIX: &str = "stemma-worktree ";
@@ -91,7 +98,316 @@ pub struct WorktreeInfo {
     pub owner: Option<Actor>,
 }
 
+/// What `worktree remove` removed.
+#[derive(Debug)]
+#[must_use]
+pub struct RemovedWorktree {
+    /// The entry of the log.
+    pub entry: Box<Entry>,
+    /// The entry of the snapshot that saved the files of the worktree first, if some were unsaved.
+    pub snapshot: Option<Box<Entry>>,
+    /// The name of the worktree.
+    pub name: String,
+    /// The directory of the worktree. It was removed with the worktree, unless it was gone before.
+    pub path: PathBuf,
+    /// Whether the directory was gone already, so that only the state directory was removed.
+    pub directory_missing: bool,
+    /// What HEAD of the worktree named. The branch stays.
+    pub head: Head,
+    /// The working-copy commit of the worktree. The entry names it, so a purge and the log keep it.
+    pub working_copy: CommitId,
+    /// The files that the working-copy commit did not track and `--force` removed with the
+    /// directory. They are in no commit, so nothing brings them back.
+    pub discarded: Vec<String>,
+}
+
 impl Repository {
+    /// Removes the linked worktree `worktree` (ADR-009): its directory and its state directory.
+    /// `worktree` is the name of the worktree or the path of its directory. The branch of the
+    /// worktree stays, and so do its commits.
+    ///
+    /// The steps are: an open purge refuses the call; the authorizer is asked for
+    /// `worktree-remove` (the target is `worktree`); the lock of the references is taken and held
+    /// to the last move; the worktree is found under the lock, and the main worktree and the one
+    /// of this call are refused; the owner of the working copy is checked; if the directory
+    /// exists, it
+    /// must hold the pointer file of this worktree, and the files are saved in a snapshot of the
+    /// worktree first (a second question to the authorizer, `snapshot`, and the owner of the
+    /// working copy is checked as for every snapshot), then every file that the working-copy
+    /// commit does not track is looked for: with `force` they are removed, else they stop the
+    /// call; the entry is written and flushed, naming the worktree, its directory, HEAD, and the
+    /// working-copy commit with the new value `-`; the directory is removed; and the state
+    /// directory goes: `HEAD` first, so that the worktree is gone from `worktree list` and
+    /// counts for no branch, then the rest. A worktree whose directory was removed outside
+    /// Stemma has only its state directory removed.
+    ///
+    /// # Errors
+    ///
+    /// Before the entry: [`WorktreeError::Update`] for a refusal of the question,
+    /// [`WorktreeError::NoSuchWorktree`], [`WorktreeError::RemoveMain`],
+    /// [`WorktreeError::RemoveCurrent`], [`WorktreeError::NotItsPointer`],
+    /// [`WorktreeError::Snapshot`] (the owner, a file that cannot be saved, or a refused
+    /// `snapshot`), [`WorktreeError::Dirty`], [`WorktreeError::Refs`], and the errors of the
+    /// storage. The snapshot that came first stays in the log when a later step fails
+    /// ([`WorktreeError::AfterSnapshot`]). After the entry: [`WorktreeError::RemoveFailed`],
+    /// [`WorktreeError::RemoveMoveFailed`], [`WorktreeError::RemovePartlyMoved`], and
+    /// [`WorktreeError::RemoveNotDurable`].
+    pub fn remove_worktree(
+        &self,
+        worktree: &str,
+        force: bool,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<RemovedWorktree, WorktreeError> {
+        let operation = OperationName::try_new(REMOVE_OPERATION)
+            .expect("`worktree-remove` is a valid operation name");
+        self.refs_store()
+            .refuse_pending_purge()
+            .map_err(WorktreeError::Refs)?;
+        let allowed = self
+            .authorize(actor, authorizer, &operation, worktree)
+            .map_err(WorktreeError::Update)?;
+        let shared = resolve(&self.metadata_dir())?;
+        let lock = self
+            .refs_store()
+            .lock_writer(&allowed)
+            .map_err(WorktreeError::Refs)?;
+        // Under the lock, so that a removal that ran in between is `NoSuchWorktree`.
+        let info = self.find_worktree(worktree)?;
+        let state = shared.join(WORKTREES_DIR).join(&info.name);
+        let exists = match fs::symlink_metadata(&info.path) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(WorktreeError::io("inspect", &info.path)(error)),
+        };
+        if exists {
+            check_pointer(&info.path, &state)?;
+        }
+        let view = Repository::linked(&info.path, &shared, &info.name);
+        // The owner decides, also when the directory is gone and nothing is saved: only the owner
+        // removes the state of a working copy (ADR-010).
+        let (_, owner) = crate::refs::FsRefStore::for_worktree(&shared, &state)
+            .working_copy_and_owner()
+            .map_err(WorktreeError::Refs)?;
+        view.check_owner(actor, owner.as_ref())
+            .map_err(|error| WorktreeError::Snapshot(Box::new(error)))?;
+        let mut snapshot = None;
+        let mut late = None;
+        if exists {
+            // The files go into the working-copy commit first, so that nothing that is tracked is
+            // lost with the directory. The owner of the working copy is checked as for a snapshot.
+            snapshot = match view.snapshot_locked(&lock, actor, authorizer) {
+                Ok(entry) => entry.map(Box::new),
+                Err(SnapshotError::Update(UpdateError::NotDurable { entry, source })) => {
+                    late = Some(source);
+                    Some(entry)
+                }
+                Err(error) => return Err(WorktreeError::Snapshot(Box::new(error))),
+            };
+        }
+        // A failure before the entry of the removal names the snapshot that came first.
+        let after = |snapshot: &Option<Box<Entry>>| {
+            let snapshot = snapshot.clone();
+            move |error: WorktreeError| match &snapshot {
+                Some(saved) if error.entry().is_none() => WorktreeError::AfterSnapshot {
+                    snapshot: saved.clone(),
+                    source: Box::new(error),
+                },
+                _ => error,
+            }
+        };
+        let refs = crate::refs::FsRefStore::for_worktree(&shared, &state);
+        let head = crate::refs::RefStore::head(&refs).map_err(WorktreeError::Refs);
+        let head = head.map_err(after(&snapshot))?;
+        let (working_copy, _) = refs
+            .working_copy_and_owner()
+            .map_err(WorktreeError::Refs)
+            .map_err(after(&snapshot))?;
+        let text = info.path.to_string_lossy().into_owned();
+        let mut discarded = Vec::new();
+        let logged = self
+            .refs_store()
+            .remove_worktree_after(&lock, &info.name, || {
+                if exists {
+                    let untracked = view.untracked_files(working_copy)?;
+                    discarded.clone_from(&untracked);
+                    if !force && !untracked.is_empty() {
+                        return Err(WorktreeError::Dirty {
+                            path: info.path.clone(),
+                            listed: untracked.iter().take(DIRTY_LISTED).cloned().collect(),
+                            more: untracked.len().saturating_sub(DIRTY_LISTED),
+                        });
+                    }
+                }
+                let change = Change::try_new(
+                    now(),
+                    actor.clone(),
+                    operation.clone(),
+                    Some(Moved::from_to(Some(head.clone()), None)),
+                    Some(Moved::from_to(Some(working_copy), None)),
+                    Vec::new(),
+                )
+                .and_then(|change| change.in_worktree(Some(info.name.clone()), Some(text.clone())))
+                .map_err(|error| {
+                    WorktreeError::Update(UpdateError::Log(OpLogError::Entry(error)))
+                })?;
+                let entry = self
+                    .append(&lock, &change)
+                    .map_err(|error| WorktreeError::Update(UpdateError::Log(error)))?;
+                if exists {
+                    // The directory leaves its place in one step, and only then is it deleted:
+                    // a stop in the middle of the delete leaves no half of the worktree at its
+                    // path, where a second call would take it for the worktree and save it.
+                    let doomed = match info.path.parent().zip(info.path.file_name()) {
+                        Some((parent, base)) => {
+                            let mut hidden = std::ffi::OsString::from(".stemma-removing-");
+                            hidden.push(base);
+                            hidden.push(format!("-{}", std::process::id()));
+                            let hidden = parent.join(hidden);
+                            match fault::rename(&info.path, &hidden) {
+                                Ok(()) => hidden,
+                                Err(source) => {
+                                    return Err(WorktreeError::RemoveFailed {
+                                        entry: Box::new(entry),
+                                        path: info.path.clone(),
+                                        source,
+                                    });
+                                }
+                            }
+                        }
+                        None => info.path.clone(),
+                    };
+                    if let Err(source) = fault::remove_dir_all(&doomed) {
+                        return Err(WorktreeError::RemoveFailed {
+                            entry: Box::new(entry),
+                            path: doomed,
+                            source,
+                        });
+                    }
+                }
+                Ok(entry)
+            });
+        let removed = |entry: Entry| RemovedWorktree {
+            entry: Box::new(entry),
+            snapshot: snapshot.clone(),
+            name: info.name.clone(),
+            path: info.path.clone(),
+            directory_missing: !exists,
+            head: head.clone(),
+            working_copy,
+            discarded: discarded.clone(),
+        };
+        let result = match logged.map_err(WorktreeError::Refs) {
+            Err(error) => Err(error),
+            Ok(Logged::Unchanged) => unreachable!("a removal always changes the pointers"),
+            Ok(Logged::Moved(entry)) => {
+                return match late {
+                    Some(source) => Err(WorktreeError::RemoveNotDurable {
+                        entry: Box::new(entry),
+                        source,
+                    }),
+                    None => Ok(removed(entry)),
+                };
+            }
+            Ok(Logged::StepFailed(error)) => Err(error),
+            Ok(Logged::MoveFailed(entry, source)) => Err(WorktreeError::RemoveMoveFailed {
+                entry: Box::new(entry),
+                source,
+            }),
+            Ok(Logged::PartlyMoved(entry, source)) => Err(WorktreeError::RemovePartlyMoved {
+                entry: Box::new(entry),
+                source,
+            }),
+            Ok(Logged::NotFlushed(entry, source)) => Err(WorktreeError::RemoveNotDurable {
+                entry: Box::new(entry),
+                source,
+            }),
+        };
+        result.map_err(after(&snapshot))
+    }
+
+    /// The worktree that `name` names: the name of a linked worktree, or the path of its
+    /// directory. The main worktree and the worktree of this call are refused.
+    fn find_worktree(&self, name: &str) -> Result<WorktreeInfo, WorktreeError> {
+        // The other worktrees may be damaged; only the one that is asked for must be readable.
+        let (rows, damaged) = self.scan_worktrees()?;
+        if let Some((_, error)) = damaged.into_iter().find(|(damaged, _)| damaged == name) {
+            return Err(WorktreeError::Damaged {
+                name: name.to_owned(),
+                source: Box::new(error),
+            });
+        }
+        let path = resolve(Path::new(name)).ok();
+        // A name wins over a path: the argument `feat` removes the worktree called `feat`, even if
+        // `./feat` is the directory of another worktree. Write `./feat` to mean the directory.
+        let found = rows
+            .iter()
+            .position(|row| row.name == name)
+            .or_else(|| {
+                let path = path.as_ref()?;
+                rows.iter().position(|row| *path == resolve_or(&row.path))
+            })
+            .map(|index| rows[index].clone());
+        let Some(found) = found else {
+            let state = self.metadata_dir().join(WORKTREES_DIR).join(name);
+            if crate::oplog::valid_worktree_name(name)
+                && state.is_dir()
+                && !state.join("HEAD").exists()
+            {
+                return Err(WorktreeError::Unfinished(name.to_owned()));
+            }
+            return Err(WorktreeError::NoSuchWorktree(name.to_owned()));
+        };
+        if found.name == MAIN_WORKTREE {
+            return Err(WorktreeError::RemoveMain);
+        }
+        if self.worktree_name() == Some(found.name.as_str()) {
+            return Err(WorktreeError::RemoveCurrent(found.name));
+        }
+        Ok(found)
+    }
+
+    /// The files in the working directory that the tree of the working-copy commit `commit` does
+    /// not hold, as paths with `/`, sorted. The pointer file at the top is not one of them. A
+    /// directory counts only through the files in it.
+    fn untracked_files(&self, commit: CommitId) -> Result<Vec<String>, WorktreeError> {
+        let commit = read_any_commit(self.objects(), commit).map_err(WorktreeError::Read)?;
+        let view =
+            conflicted::view(self.objects(), &commit.tree_sum()).map_err(WorktreeError::Read)?;
+        let tracked: std::collections::BTreeSet<String> = tracked_files(self.objects(), view.tree)
+            .map_err(WorktreeError::Read)?
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        let mut untracked = Vec::new();
+        let mut pending = vec![(self.path().to_path_buf(), String::new())];
+        while let Some((dir, prefix)) = pending.pop() {
+            let entries = fs::read_dir(&dir).map_err(WorktreeError::io("list", &dir))?;
+            for entry in entries {
+                let entry = entry.map_err(WorktreeError::io("list", &dir))?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                if prefix.is_empty() && name == METADATA_DIR {
+                    continue;
+                }
+                let kind = entry
+                    .file_type()
+                    .map_err(WorktreeError::io("inspect", &entry.path()))?;
+                if kind.is_dir() {
+                    pending.push((entry.path(), path));
+                } else if !tracked.contains(&path) {
+                    untracked.push(path);
+                }
+            }
+        }
+        untracked.sort();
+        Ok(untracked)
+    }
+
     /// Adds a linked worktree in `path` that has the branch checked out (ADR-009).
     ///
     /// The steps are: the authorizer is asked for `worktree-add` with the path as the target; the
@@ -257,6 +573,7 @@ impl Repository {
                         Vec::new()
                     },
                 )
+                .and_then(|change| change.in_worktree(Some(name.clone()), Some(text.to_owned())))
                 .map_err(|error| {
                     WorktreeError::Update(UpdateError::Log(OpLogError::Entry(error)))
                 })?;
@@ -329,6 +646,21 @@ impl Repository {
         Ok((target, tip))
     }
 
+    /// Whether `state` is a state directory that holds a worktree. A directory without `HEAD` is
+    /// what an add or a removal that stopped left (the caller holds the lock of the references, so
+    /// no add is running): it holds no worktree, and it is removed here so that its name is free.
+    fn name_is_taken(&self, state: &Path) -> Result<bool, WorktreeError> {
+        if !exists(state).map_err(WorktreeError::io("inspect", state))? {
+            return Ok(false);
+        }
+        if exists(&state.join("HEAD")).map_err(WorktreeError::io("inspect", state))? {
+            return Ok(true);
+        }
+        fault::remove_dir_all(state)
+            .map_err(WorktreeError::io("remove the leftover state", state))?;
+        Ok(false)
+    }
+
     /// A name for the state directory of the worktree at `location`: the last part of the path,
     /// reduced to letters, digits, `-`, `_`, and `.` (not first), with a number added if the name is
     /// taken or is `main`.
@@ -351,9 +683,7 @@ impl Repository {
         let dir = self.metadata_dir().join(WORKTREES_DIR);
         let mut candidate = base.to_owned();
         let mut number = 1;
-        while candidate == MAIN_WORKTREE
-            || exists(&dir.join(&candidate)).map_err(WorktreeError::io("inspect", &dir))?
-        {
+        while candidate == MAIN_WORKTREE || self.name_is_taken(&dir.join(&candidate))? {
             number += 1;
             candidate = format!("{base}-{number}");
         }
@@ -396,16 +726,28 @@ impl Repository {
     /// Returns [`WorktreeError::Refs`] if a `HEAD` or a `working-copy` cannot be read, and
     /// [`WorktreeError::Io`] if the directory of the worktrees cannot be listed.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>, WorktreeError> {
+        let (rows, damaged) = self.scan_worktrees()?;
+        match damaged.into_iter().next() {
+            Some((_, error)) => Err(error),
+            None => Ok(rows),
+        }
+    }
+
+    /// The worktrees that can be read, and for each linked one that cannot, its name and why. The
+    /// main worktree must be readable. A damaged worktree does not hide the others, so that the
+    /// command that removes one does not depend on the state of all.
+    fn scan_worktrees(&self) -> Result<Scanned, WorktreeError> {
         let shared = self.metadata_dir();
         let main_path = shared
             .parent()
             .map_or_else(|| shared.clone(), Path::to_path_buf);
         let main_path = resolve(&main_path)?;
         let mut rows = vec![read_info(&shared, &shared, MAIN_WORKTREE, main_path)?];
+        let mut damaged = Vec::new();
         let dir = shared.join(WORKTREES_DIR);
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(rows),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((rows, damaged)),
             Err(error) => return Err(WorktreeError::io("list the worktrees in", &dir)(error)),
         };
         let mut states = Vec::new();
@@ -432,22 +774,78 @@ impl Repository {
         }
         states.sort();
         for (name, state) in states {
-            // A state directory without `HEAD` is an add that stopped; it is left out.
-            let head = state.join("HEAD");
-            match fs::symlink_metadata(&head) {
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(WorktreeError::io("inspect", &head)(error)),
+            match read_linked(&shared, &state, &name) {
+                Ok(Some(info)) => rows.push(info),
+                Ok(None) => {}
+                Err(error) => damaged.push((name, error)),
             }
-            let located = state.join(LOCATION_FILE);
-            let text = fs::read_to_string(&located).map_err(WorktreeError::io(
-                "read the location of the worktree",
-                &located,
-            ))?;
-            let path = PathBuf::from(text.strip_suffix('\n').unwrap_or(&text));
-            rows.push(read_info(&shared, &state, &name, path)?);
         }
-        Ok(rows)
+        Ok((rows, damaged))
+    }
+}
+
+/// The readable worktrees, and the linked ones that are not, each with its name and why.
+type Scanned = (Vec<WorktreeInfo>, Vec<(String, WorktreeError)>);
+
+/// Reads the linked worktree whose state directory is `state`. A state directory without `HEAD`
+/// is an add that stopped and gives `None`.
+fn read_linked(
+    shared: &Path,
+    state: &Path,
+    name: &str,
+) -> Result<Option<WorktreeInfo>, WorktreeError> {
+    let head = state.join("HEAD");
+    match fs::symlink_metadata(&head) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(WorktreeError::io("inspect", &head)(error)),
+    }
+    let located = state.join(LOCATION_FILE);
+    let text = fs::read_to_string(&located).map_err(WorktreeError::io(
+        "read the location of the worktree",
+        &located,
+    ))?;
+    let path = PathBuf::from(text.strip_suffix('\n').unwrap_or(&text));
+    read_info(shared, state, name, path).map(Some)
+}
+
+/// [`resolve`], or the path as it is if it cannot be resolved.
+fn resolve_or(path: &Path) -> PathBuf {
+    resolve(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Checks that the directory `path` holds the pointer file of the worktree whose state directory
+/// is `state`, so that a removal never deletes the files of another directory.
+fn check_pointer(path: &Path, state: &Path) -> Result<(), WorktreeError> {
+    // A link to a directory is not the directory of the worktree: removing it would remove the
+    // link only.
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink()) {
+        return Err(WorktreeError::NotItsPointer {
+            path: path.to_path_buf(),
+            state: state.to_path_buf(),
+        });
+    }
+    let pointer = path.join(METADATA_DIR);
+    let expected = state
+        .to_str()
+        .map(|state| format!("{POINTER_PREFIX}{state}\n"));
+    let found = match fs::File::open(&pointer) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(POINTER_MAX_LEN + 1)
+                .read_to_end(&mut bytes)
+                .map_err(WorktreeError::io("read", &pointer))?;
+            Some(bytes)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(WorktreeError::io("read", &pointer)(error)),
+    };
+    match (found, expected) {
+        (Some(found), Some(expected)) if found == expected.as_bytes() => Ok(()),
+        _ => Err(WorktreeError::NotItsPointer {
+            path: path.to_path_buf(),
+            state: state.to_path_buf(),
+        }),
     }
 }
 
@@ -695,6 +1093,17 @@ pub enum WorktreeError {
     },
     /// The path has a part that is not UTF-8, which the pointer file cannot hold.
     PathNotUtf8(PathBuf),
+    /// The state directory is what an add or a removal that stopped left: it has no `HEAD`, so it
+    /// holds no worktree and `worktree list` does not show it. Nothing was written.
+    Unfinished(String),
+    /// The state directory of the worktree cannot be read, so the worktree cannot be described or
+    /// removed. The other worktrees are not affected. Nothing was written.
+    Damaged {
+        /// The name of the worktree.
+        name: String,
+        /// What cannot be read.
+        source: Box<WorktreeError>,
+    },
     /// The path exists and is not an empty directory: a directory with files, a file, or a link.
     NotEmpty(PathBuf),
     /// The path is the directory of a worktree already.
@@ -756,6 +1165,75 @@ pub enum WorktreeError {
         /// The error of the flush.
         source: RefError,
     },
+    /// There is no linked worktree with this name or at this path.
+    NoSuchWorktree(String),
+    /// The main worktree cannot be removed: it holds the shared store.
+    RemoveMain,
+    /// The call runs in the worktree it is to remove; run it in another worktree.
+    RemoveCurrent(String),
+    /// The directory of the worktree holds no pointer file that names its state directory, so it
+    /// is not the directory of this worktree and none of its files is removed.
+    NotItsPointer {
+        /// The directory.
+        path: PathBuf,
+        /// The state directory that its pointer file is to name.
+        state: PathBuf,
+    },
+    /// The files of the worktree could not be saved first (the owner of the working copy is
+    /// another actor, a file is refused, or the question `snapshot` was refused). Nothing was
+    /// removed.
+    Snapshot(Box<SnapshotError>),
+    /// The files were saved first, in the entry `snapshot`, and a later step before the entry of
+    /// the removal failed with `source`. Nothing was removed.
+    AfterSnapshot {
+        /// The entry of the snapshot.
+        snapshot: Box<Entry>,
+        /// The failure.
+        source: Box<WorktreeError>,
+    },
+    /// The directory holds files that the working-copy commit does not track, and `--force` was
+    /// not given. Nothing was removed.
+    Dirty {
+        /// The directory.
+        path: PathBuf,
+        /// The first of the files, with `/` in the paths.
+        listed: Vec<String>,
+        /// How many more files there are.
+        more: usize,
+    },
+    /// The entry of the removal was written, but the directory could not be removed. No pointer
+    /// moved; the part of the directory that is gone stays gone.
+    RemoveFailed {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// The directory.
+        path: PathBuf,
+        /// Why.
+        source: io::Error,
+    },
+    /// The entry of the removal was written and the directory is gone, but the first pointer did
+    /// not move: the state directory is whole.
+    RemoveMoveFailed {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// Why.
+        source: RefError,
+    },
+    /// The entry of the removal was written and the directory is gone, but the state directory
+    /// is removed in part only.
+    RemovePartlyMoved {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// Why.
+        source: RefError,
+    },
+    /// The worktree was removed, but a directory could not be flushed to disk.
+    RemoveNotDurable {
+        /// The entry that was written.
+        entry: Box<Entry>,
+        /// The error of the flush.
+        source: RefError,
+    },
 }
 
 impl WorktreeError {
@@ -777,7 +1255,13 @@ impl WorktreeError {
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
             | Self::PartlyMoved { source: error, .. }
-            | Self::NotDurable { source: error, .. } => error.io_error(),
+            | Self::NotDurable { source: error, .. }
+            | Self::RemoveMoveFailed { source: error, .. }
+            | Self::RemovePartlyMoved { source: error, .. }
+            | Self::RemoveNotDurable { source: error, .. } => error.io_error(),
+            Self::Snapshot(error) => error.io_error(),
+            Self::AfterSnapshot { source, .. } | Self::Damaged { source, .. } => source.io_error(),
+            Self::RemoveFailed { source, .. } => Some(source),
             Self::Read(error) => error.io_error(),
             Self::Store(error) => error.io_error(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.io_error(),
@@ -789,30 +1273,51 @@ impl WorktreeError {
             | Self::PathInUse { .. }
             | Self::Nested { .. }
             | Self::NoSuchBranch(_)
-            | Self::NoStart(_) => None,
+            | Self::NoStart(_)
+            | Self::NoSuchWorktree(_)
+            | Self::Unfinished(_)
+            | Self::RemoveMain
+            | Self::RemoveCurrent(_)
+            | Self::NotItsPointer { .. }
+            | Self::Dirty { .. } => None,
         }
     }
 
-    /// The entry of the add, if the error leaves one in the log.
+    /// The entry of the add or the removal, if the error leaves one in the log.
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::Update(error) => error.entry(),
             Self::CheckoutFailed { entry, .. }
             | Self::MoveFailed { entry, .. }
             | Self::PartlyMoved { entry, .. }
-            | Self::NotDurable { entry, .. } => Some(entry),
+            | Self::NotDurable { entry, .. }
+            | Self::RemoveFailed { entry, .. }
+            | Self::RemoveMoveFailed { entry, .. }
+            | Self::RemovePartlyMoved { entry, .. }
+            | Self::RemoveNotDurable { entry, .. } => Some(entry),
+            Self::AfterSnapshot { snapshot, .. } => Some(snapshot),
             _ => None,
         }
     }
 
-    /// Whether the worktree was added and only the flush failed.
+    /// Whether the worktree was added or removed and only the flush failed.
     pub fn made(&self) -> bool {
-        matches!(self, Self::NotDurable { .. })
+        matches!(
+            self,
+            Self::NotDurable { .. } | Self::RemoveNotDurable { .. }
+        )
     }
 
     /// Whether a pointer moved although the call failed.
     pub fn pointer_moved(&self) -> bool {
-        matches!(self, Self::PartlyMoved { .. } | Self::NotDurable { .. })
+        matches!(
+            self,
+            Self::AfterSnapshot { .. }
+                | Self::PartlyMoved { .. }
+                | Self::NotDurable { .. }
+                | Self::RemovePartlyMoved { .. }
+                | Self::RemoveNotDurable { .. }
+        )
     }
 }
 
@@ -913,6 +1418,101 @@ impl fmt::Display for WorktreeError {
                  it may not survive a crash: {source}",
                 entry.number()
             ),
+            Self::NoSuchWorktree(name) => write!(
+                f,
+                "there is no linked worktree `{}`; `worktree list` shows the names and the paths",
+                name.escape_debug()
+            ),
+            Self::RemoveMain => f.write_str(
+                "the main worktree holds the shared store and cannot be removed; remove the \
+                 linked worktrees and delete the repository by hand",
+            ),
+            Self::RemoveCurrent(name) => write!(
+                f,
+                "the command runs in the worktree `{name}`, which it is to remove; run it in \
+                 another worktree"
+            ),
+            Self::NotItsPointer { path, state } => write!(
+                f,
+                "`{}` does not hold the pointer file `.stemma` that names `{}`, so it is not the \
+                 directory of this worktree and nothing was removed; move or delete the \
+                 directory by hand, and remove the state directory below `.stemma/worktrees` if \
+                 the worktree is gone",
+                path.display(),
+                state.display()
+            ),
+            Self::Snapshot(error) => write!(
+                f,
+                "the files of the worktree could not be saved first, and nothing was removed: \
+                 {error}"
+            ),
+            Self::AfterSnapshot { snapshot, source } => write!(
+                f,
+                "the files of the worktree were saved first as entry {}; {source}",
+                snapshot.number()
+            ),
+            Self::Dirty { path, listed, more } => {
+                let names: Vec<String> = listed
+                    .iter()
+                    .map(|name| name.escape_debug().to_string())
+                    .collect();
+                write!(
+                    f,
+                    "`{}` holds files that the working-copy commit does not track ({}{}), and \
+                     nothing was removed; track them, remove them, or run the command with \
+                     `--force`",
+                    path.display(),
+                    names.join(", "),
+                    if *more > 0 {
+                        format!(", and {more} more")
+                    } else {
+                        String::new()
+                    }
+                )
+            }
+            Self::RemoveFailed {
+                entry,
+                path,
+                source,
+            } => write!(
+                f,
+                "entry {} was written, but the directory `{}` could not be removed and no pointer \
+                 moved: {source}; remove the directory by hand if it is still there, and run the \
+                 command again, which then removes the state directory only",
+                entry.number(),
+                path.display()
+            ),
+            Self::Unfinished(name) => write!(
+                f,
+                "`.stemma/worktrees/{name}` holds no worktree: it is what an add or a removal that \
+                 stopped left; remove it by hand, or add a worktree in a directory called `{name}`, \
+                 which takes the name over"
+            ),
+            Self::Damaged { name, source } => write!(
+                f,
+                "the state of the worktree `{name}` cannot be read: {source}; the other worktrees \
+                 are not affected; remove the directory `.stemma/worktrees/{name}` and the \
+                 directory of the worktree by hand"
+            ),
+            Self::RemoveMoveFailed { entry, source } => write!(
+                f,
+                "entry {} was written and the directory is gone, but the state directory is \
+                 whole: {source}; run the command again, which removes the state directory only",
+                entry.number()
+            ),
+            Self::RemovePartlyMoved { entry, source } => write!(
+                f,
+                "entry {} was written and the directory is gone, but the state directory is \
+                 removed in part only: {source}; remove the rest of it below \
+                 `.stemma/worktrees` by hand",
+                entry.number()
+            ),
+            Self::RemoveNotDurable { entry, source } => write!(
+                f,
+                "the worktree was removed as entry {}, but a directory could not be flushed, so \
+                 it may not survive a crash: {source}",
+                entry.number()
+            ),
         }
     }
 }
@@ -924,7 +1524,13 @@ impl Error for WorktreeError {
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
             | Self::PartlyMoved { source: error, .. }
-            | Self::NotDurable { source: error, .. } => error.source(),
+            | Self::NotDurable { source: error, .. }
+            | Self::RemoveMoveFailed { source: error, .. }
+            | Self::RemovePartlyMoved { source: error, .. }
+            | Self::RemoveNotDurable { source: error, .. } => error.source(),
+            Self::Snapshot(error) => error.source(),
+            Self::AfterSnapshot { source, .. } | Self::Damaged { source, .. } => source.source(),
+            Self::RemoveFailed { source, .. } => source.source(),
             Self::Read(error) => error.source(),
             Self::Store(error) => error.source(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.source(),
@@ -936,7 +1542,13 @@ impl Error for WorktreeError {
             | Self::PathInUse { .. }
             | Self::Nested { .. }
             | Self::NoSuchBranch(_)
-            | Self::NoStart(_) => None,
+            | Self::NoStart(_)
+            | Self::NoSuchWorktree(_)
+            | Self::Unfinished(_)
+            | Self::RemoveMain
+            | Self::RemoveCurrent(_)
+            | Self::NotItsPointer { .. }
+            | Self::Dirty { .. } => None,
         }
     }
 }

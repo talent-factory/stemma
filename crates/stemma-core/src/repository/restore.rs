@@ -344,6 +344,55 @@ impl Repository {
         {
             return Err(RestoreError::TagsOnly { number });
         }
+        if matches!(
+            change.operation().as_str(),
+            "worktree-add" | "worktree-remove"
+        ) {
+            return Err(RestoreError::WorktreeEntry { number });
+        }
+        let here = self.refs_store().worktree_name();
+        // The worktree of the entry was removed or made again since: its name stands for another
+        // worktree now, or for none. Only an entry that moved a pointer of its worktree is
+        // concerned (branches are shared), and only a later add or remove that took effect
+        // counts: a removal that failed after its entry leaves the worktree where it was.
+        if change.worktree().is_some()
+            && (change.head().is_some() || change.working_copy().is_some())
+        {
+            let mut added_again = false;
+            let mut removed = false;
+            for later in entries[position + 1..].iter().filter_map(Entry::change) {
+                if later.worktree() != change.worktree() {
+                    continue;
+                }
+                match later.operation().as_str() {
+                    "worktree-add" => added_again = true,
+                    "worktree-remove" => removed = true,
+                    _ => {}
+                }
+            }
+            let name = change.worktree_name();
+            let exists = name == here
+                || self
+                    .refs_store()
+                    .other_states()
+                    .map_err(RestoreError::Refs)?
+                    .iter()
+                    .any(|(other, _)| other == name);
+            if added_again || (removed && !exists) {
+                return Err(RestoreError::GoneWorktree {
+                    number,
+                    worktree: name.to_owned(),
+                });
+            }
+        }
+        if change.worktree_name() != here
+            && (change.head().is_some() || change.working_copy().is_some())
+        {
+            return Err(RestoreError::OtherWorktree {
+                number,
+                worktree: change.worktree_name().to_owned(),
+            });
+        }
         if pending_stubs(&entries).contains(&number) {
             return Err(RestoreError::PurgePending { number });
         }
@@ -459,6 +508,7 @@ impl Repository {
         }
         let locked_after = refs.is_locked().map_err(RestoreError::Refs)?;
         let current = Current::new(head, branches, !(locked_before || locked_after))
+            .in_worktree(self.refs_store().worktree_name())
             .with_working_copy(Some(working_copy))
             .with_tags(tags)
             .with_owner(owner);
@@ -467,9 +517,10 @@ impl Repository {
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`, `PurgePending`,
-/// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
-/// those with an `entry` wrote it.
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`,
+/// `WorktreeEntry`, `GoneWorktree`, `OtherWorktree`, `PurgePending`, `OutcomeUnknown`,
+/// `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore; those with an
+/// `entry` wrote it.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RestoreError {
@@ -499,6 +550,29 @@ pub enum RestoreError {
     /// the branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so
     /// the restore is refused and no file is written.
     TagsOnly {
+        /// The number.
+        number: u64,
+    },
+    /// The entry moved HEAD or the working-copy commit of another worktree. A restore puts back the
+    /// pointers of the worktree it runs in, so it is run there (ADR-013).
+    OtherWorktree {
+        /// The number.
+        number: u64,
+        /// The worktree of the entry: `main` or the name of a linked worktree.
+        worktree: String,
+    },
+    /// The worktree of the entry was removed, or added again under the same name, after the
+    /// entry. Its pointers are gone or belong to another worktree now (ADR-013).
+    GoneWorktree {
+        /// The number.
+        number: u64,
+        /// The name of the worktree.
+        worktree: String,
+    },
+    /// The entry added or removed a worktree (`worktree-add`, `worktree-remove`). A restore does
+    /// not make or remove a worktree: remove it with `worktree remove`, add it again with
+    /// `worktree add` (ADR-013).
+    WorktreeEntry {
         /// The number.
         number: u64,
     },
@@ -606,6 +680,9 @@ impl RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::TagsOnly { .. }
+            | Self::OtherWorktree { .. }
+            | Self::WorktreeEntry { .. }
+            | Self::GoneWorktree { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
@@ -683,6 +760,22 @@ impl fmt::Display for RestoreError {
                 f,
                 "entry {number} only made or deleted tags, which a restore does not touch (a tag \
                  never moves), so there is nothing to restore"
+            ),
+            Self::OtherWorktree { number, worktree } => write!(
+                f,
+                "entry {number} moved HEAD or the working-copy commit of the worktree \
+                 `{worktree}`, and a restore puts back the pointers of the worktree it runs in; \
+                 run `op restore {number}` in that worktree"
+            ),
+            Self::GoneWorktree { number, worktree } => write!(
+                f,
+                "entry {number} belongs to the worktree `{worktree}`, which was removed or added \
+                 again since, so its pointers cannot be put back"
+            ),
+            Self::WorktreeEntry { number } => write!(
+                f,
+                "entry {number} added or removed a worktree, which a restore does not undo; use \
+                 `worktree remove` or `worktree add`"
             ),
             Self::PurgePending { number } => write!(
                 f,
@@ -796,6 +889,9 @@ impl Error for RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::TagsOnly { .. }
+            | Self::OtherWorktree { .. }
+            | Self::WorktreeEntry { .. }
+            | Self::GoneWorktree { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,

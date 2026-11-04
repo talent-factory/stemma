@@ -99,6 +99,19 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
         }
     };
     let mut out = head(change.operation());
+    // The main worktree is left out, so that a repository without linked worktrees reads as
+    // before.
+    if let Some(worktree) = change.worktree() {
+        let _ = match change.location() {
+            Some(location) => writeln!(
+                out,
+                "    worktree {}  {}",
+                worktree.escape_debug(),
+                location.escape_debug()
+            ),
+            None => writeln!(out, "    worktree {}", worktree.escape_debug()),
+        };
+    }
     let mut line = |name: String, old: String, new: String| {
         // Writing to a string does not fail.
         let _ = writeln!(out, "    {name}  {old} -> {new}");
@@ -257,6 +270,7 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
         .collect();
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
+         \"worktree\":{},\"location\":{},\
          \"head\":{head},\
          \"working_copy\":{working_copy},\"branches\":[{}],\"tags\":[{}],\"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",
@@ -264,6 +278,8 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
         change.time(),
         quote(&change.actor().to_string()),
         quote(change.operation().as_str()),
+        quote(change.worktree_name()),
+        change.location().map_or_else(|| "null".to_owned(), quote),
         branches.join(","),
         tags.join(",")
     )

@@ -47,8 +47,8 @@ const OPERATION: &str = "purge";
 pub struct PurgePlan {
     blob: BlobId,
     rewrites: Vec<(CommitId, CommitId)>,
-    head: Option<Moved<Head>>,
-    working_copy: Option<Moved<CommitId>>,
+    heads: Vec<(String, Moved<Head>)>,
+    working_copies: Vec<(String, Moved<CommitId>)>,
     branches: Vec<(BranchName, Moved<CommitId>)>,
     entries: Vec<u64>,
     commits: Vec<CommitId>,
@@ -67,14 +67,32 @@ impl PurgePlan {
         &self.rewrites
     }
 
-    /// The move of HEAD, if it names a rewritten commit.
-    pub fn head(&self) -> Option<&Moved<Head>> {
-        self.head.as_ref()
+    /// The moves of HEAD of the worktrees whose HEAD names a rewritten commit, each with the name
+    /// of its worktree (`main` first, then the linked ones by name).
+    pub fn heads(&self) -> &[(String, Moved<Head>)] {
+        &self.heads
     }
 
-    /// The move of the working-copy commit, if it is rewritten.
-    pub fn working_copy(&self) -> Option<&Moved<CommitId>> {
-        self.working_copy.as_ref()
+    /// The moves of the working-copy commits that are rewritten, each with the name of its
+    /// worktree (`main` first, then the linked ones by name).
+    pub fn working_copies(&self) -> &[(String, Moved<CommitId>)] {
+        &self.working_copies
+    }
+
+    /// The move of HEAD of the worktree `worktree`, if it names a rewritten commit.
+    pub fn head(&self, worktree: &str) -> Option<&Moved<Head>> {
+        self.heads
+            .iter()
+            .find(|(name, _)| name == worktree)
+            .map(|(_, moved)| moved)
+    }
+
+    /// The move of the working-copy commit of the worktree `worktree`, if it is rewritten.
+    pub fn working_copy(&self, worktree: &str) -> Option<&Moved<CommitId>> {
+        self.working_copies
+            .iter()
+            .find(|(name, _)| name == worktree)
+            .map(|(_, moved)| moved)
     }
 
     /// The branches that move, sorted by name.
@@ -150,18 +168,6 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<(BlobId, Allowed), PurgeError> {
         refuse_agent(actor)?;
-        // The plan takes the roots from this worktree only; another worktree has a working-copy
-        // commit of its own, which a purge would neither keep nor rewrite (ADR-009).
-        let linked: Vec<String> = self
-            .refs_store()
-            .other_states()
-            .map_err(PurgeError::Refs)?
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        if !linked.is_empty() {
-            return Err(PurgeError::LinkedWorktrees { worktrees: linked });
-        }
         let allowed = self.authorize_purge(actor, authorizer, &blob.to_string())?;
         match self.objects().resolve_blob(&blob) {
             Ok(Some(found)) => Ok((found, allowed)),
@@ -197,18 +203,22 @@ impl Repository {
     /// objects in memory as well.
     fn plan_blob(&self, blob: BlobId) -> Result<(PurgePlan, Planner<'_>), PurgeError> {
         let refs = self.refs();
-        let head = refs.head().map_err(PurgeError::Refs)?;
-        let working_copy = refs.working_copy().map_err(PurgeError::Refs)?;
+        // HEAD and the working-copy commit of every worktree are roots: a purge in one worktree
+        // must not delete what another worktree needs, and it moves what it rewrites there too
+        // (ADR-014).
+        let worktrees = self.refs_store().all_pointers().map_err(PurgeError::Refs)?;
         let branches = refs.branches().map_err(PurgeError::Refs)?;
         let tags = refs.tags().map_err(PurgeError::Refs)?;
         let log = self.oplog().entries().map_err(PurgeError::Log)?;
 
         let mut planner = Planner::new(self.objects(), blob);
-        let mut roots = vec![working_copy];
+        let mut roots: Vec<CommitId> = worktrees.iter().map(|(_, _, commit)| *commit).collect();
         roots.extend(branches.iter().map(|(_, commit)| *commit));
         roots.extend(tags.iter().map(|(_, commit)| *commit));
-        if let Head::Detached(commit) = &head {
-            roots.push(*commit);
+        for (_, head, _) in &worktrees {
+            if let Head::Detached(commit) = head {
+                roots.push(*commit);
+            }
         }
         roots.extend(log.iter().flat_map(|entry| entry.commits()));
         for root in &roots {
@@ -222,16 +232,26 @@ impl Repository {
         check_tags(&tags, &rewritten)?;
         let new = |commit: CommitId| planner.commits[&commit];
 
-        let working_copy_move = rewritten
-            .contains(&working_copy)
-            .then(|| Moved::from_to(Some(working_copy), Some(new(working_copy))));
-        let head_move = match &head {
-            Head::Detached(commit) if rewritten.contains(commit) => Some(Moved::from_to(
-                Some(head.clone()),
-                Some(Head::Detached(new(*commit))),
-            )),
-            _ => None,
-        };
+        let working_copy_moves: Vec<(String, Moved<CommitId>)> = worktrees
+            .iter()
+            .filter(|(_, _, commit)| rewritten.contains(commit))
+            .map(|(name, _, commit)| {
+                (
+                    name.clone(),
+                    Moved::from_to(Some(*commit), Some(new(*commit))),
+                )
+            })
+            .collect();
+        let head_moves: Vec<(String, Moved<Head>)> = worktrees
+            .iter()
+            .filter_map(|(name, head, _)| match head {
+                Head::Detached(commit) if rewritten.contains(commit) => Some((
+                    name.clone(),
+                    Moved::from_to(Some(head.clone()), Some(Head::Detached(new(*commit)))),
+                )),
+                _ => None,
+            })
+            .collect();
         let branch_moves: Vec<(BranchName, Moved<CommitId>)> = branches
             .iter()
             .filter(|(_, commit)| rewritten.contains(commit))
@@ -251,11 +271,16 @@ impl Repository {
 
         // The roots that stay: the pointers after the purge, and the entries that are not
         // replaced.
-        let mut kept_roots = vec![new(working_copy)];
+        let mut kept_roots: Vec<CommitId> = worktrees
+            .iter()
+            .map(|(_, _, commit)| new(*commit))
+            .collect();
         kept_roots.extend(branches.iter().map(|(_, commit)| new(*commit)));
         kept_roots.extend(tags.iter().map(|(_, commit)| new(*commit)));
-        if let Head::Detached(commit) = &head {
-            kept_roots.push(new(*commit));
+        for (_, head, _) in &worktrees {
+            if let Head::Detached(commit) = head {
+                kept_roots.push(new(*commit));
+            }
         }
         kept_roots.extend(kept.iter().flat_map(|entry| entry.commits()));
 
@@ -277,8 +302,8 @@ impl Repository {
         let plan = PurgePlan {
             blob,
             rewrites,
-            head: head_move,
-            working_copy: working_copy_move,
+            heads: head_moves,
+            working_copies: working_copy_moves,
             branches: branch_moves,
             entries: replaced.iter().map(|entry| entry.number()).collect(),
             commits,
@@ -756,12 +781,6 @@ pub enum PurgeError {
         /// that does. Never empty.
         tags: Vec<(BranchName, CommitId)>,
     },
-    /// The repository has more than one worktree. The roots of a purge are the pointers of the
-    /// worktree where it runs, so it would delete objects that another worktree still needs.
-    LinkedWorktrees {
-        /// The other worktrees, the main one included.
-        worktrees: Vec<String>,
-    },
     /// The plan would keep an object reachable that holds the blob or that it deletes. This is a
     /// mistake of the plan and not of the repository; it is an error so that the secret does not
     /// stay without a word.
@@ -813,12 +832,6 @@ impl PurgeError {
                 )?;
                 source.reason(f)
             }
-            Self::LinkedWorktrees { worktrees } => write!(
-                f,
-                "the repository has other worktrees ({}), and a purge sees the pointers of one \
-                 worktree only; remove the other worktrees first",
-                worktrees.join(", ")
-            ),
             Self::TooManyEntries { count } => write!(
                 f,
                 "the purge would replace {count} entries of the operation log, more than the \
@@ -884,7 +897,6 @@ impl Error for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
-            | Self::LinkedWorktrees { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => None,
         }
@@ -1153,7 +1165,7 @@ mod tests {
                 .1
         };
         assert_eq!(
-            plan.working_copy(),
+            plan.working_copy("main"),
             Some(&Moved::from_to(Some(working_copy), Some(new(working_copy))))
         );
         let main = BranchName::try_new("main").unwrap();
@@ -1161,7 +1173,7 @@ mod tests {
             plan.branches(),
             [(main, Moved::from_to(Some(third), Some(new(third))))]
         );
-        assert_eq!(plan.head(), None, "HEAD names the branch");
+        assert_eq!(plan.head("main"), None, "HEAD names the branch");
     }
 
     /// Creates a tag directly in the store, without an entry in the operation log.
@@ -1352,7 +1364,7 @@ mod tests {
         assert!(plan.entries().is_empty());
         assert!(plan.deleted_commits().is_empty());
         assert!(plan.deleted_trees().is_empty());
-        assert_eq!(plan.working_copy(), None);
+        assert_eq!(plan.working_copy("main"), None);
     }
 
     #[test]
@@ -1408,7 +1420,7 @@ mod tests {
         assert!(plan.rewrites().iter().any(|(old, _)| *old == held));
         assert!(plan.deleted_commits().contains(&held));
         assert_eq!(
-            plan.working_copy(),
+            plan.working_copy("main"),
             None,
             "the working copy holds no secret now"
         );
@@ -1452,14 +1464,14 @@ mod tests {
             .unwrap()
             .1;
         assert_eq!(
-            detached.head(),
+            detached.head("main"),
             Some(&Moved::from_to(
                 Some(Head::Detached(second)),
                 Some(Head::Detached(new))
             ))
         );
         detach(first);
-        assert_eq!(plan(&repository).head(), None);
+        assert_eq!(plan(&repository).head("main"), None);
     }
 
     #[test]

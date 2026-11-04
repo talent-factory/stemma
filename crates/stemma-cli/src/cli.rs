@@ -156,6 +156,8 @@ enum WorktreeCommand {
     Add(WorktreeAddArgs),
     /// List the worktrees: name, path, branch, and owner
     List(WorktreeListArgs),
+    /// Remove a linked worktree: its directory and its state; its branch and commits stay
+    Remove(WorktreeRemoveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -182,6 +184,33 @@ struct WorktreeAddArgs {
     owner: Option<OsString>,
 
     /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct WorktreeRemoveArgs {
+    /// The name of the worktree, or the path of its directory; `worktree list` shows both
+    #[arg(value_name = "WORKTREE")]
+    worktree: String,
+
+    /// Also remove the files in the directory that the working-copy commit does not track
+    #[arg(long)]
+    force: bool,
+
+    /// A directory of the repository: the one that contains `.stemma`, or one below it. The
+    /// command may not run in the worktree that it removes
     #[arg(
         short = 'C',
         long = "repository",
@@ -1614,6 +1643,9 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Worktree {
             command: WorktreeCommand::List(args),
         } => worktree_list(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Worktree {
+            command: WorktreeCommand::Remove(args),
+        } => worktree_remove(args, out).map(|()| ExitCode::SUCCESS),
     }
 }
 
@@ -1652,6 +1684,61 @@ fn worktree_add(args: WorktreeAddArgs, out: &mut dyn Write) -> Result<(), CliErr
                 "added the worktree {} as entry {}",
                 added.name,
                 added.entry.number()
+            ),
+            source,
+        }),
+        Ok(()) => Ok(()),
+    }
+}
+
+/// Removes a linked worktree (ADR-009): the files of its directory are saved in a snapshot first,
+/// then the directory and the state of the worktree go, and one entry names the worktree, its
+/// directory, HEAD, and the working-copy commit. The branch and the commits stay. The core asks
+/// the authorizer for `worktree-remove`, and again for the snapshot.
+fn worktree_remove(args: WorktreeRemoveArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let removed = repository
+        .remove_worktree(&args.worktree, args.force, &actor, &AllowAll)
+        .map_err(CliError::Worktree)?;
+    let mut text = format!(
+        "Removed the worktree {} in {} as entry {}\n",
+        removed.name,
+        escape_path(&removed.path.display().to_string()),
+        removed.entry.number()
+    );
+    if let Some(saved) = &removed.snapshot {
+        text.push_str(&format!(
+            "The files were saved first as entry {}\n",
+            saved.number()
+        ));
+    }
+    if !removed.discarded.is_empty() {
+        text.push_str(&format!(
+            "Also removed {} that no commit holds:\n",
+            match removed.discarded.len() {
+                1 => "1 file".to_owned(),
+                count => format!("{count} files"),
+            }
+        ));
+        for path in &removed.discarded {
+            text.push_str(&format!("    {}\n", escape_path(path)));
+        }
+    }
+    if removed.directory_missing {
+        text.push_str("The directory was gone already; only the state was removed\n");
+    }
+    text.push_str(&format!(
+        "The working-copy commit {} is named by the entry; the branch stays\n",
+        removed.working_copy
+    ));
+    match out.write_all(text.as_bytes()) {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(CliError::WorktreeOutput {
+            made: format!(
+                "removed the worktree {} as entry {}",
+                removed.name,
+                removed.entry.number()
             ),
             source,
         }),
@@ -2305,16 +2392,27 @@ fn plan_lines(plan: &PurgePlan) -> String {
     for (old, new) in plan.rewrites() {
         text.push_str(&format!("    rewrite {old} -> {new}\n"));
     }
-    if let Some(head) = plan.head() {
+    // The worktree is named only if it is a linked one, so that a repository with the main
+    // worktree alone reads as before.
+    let at = |worktree: &str| {
+        if worktree == "main" {
+            String::new()
+        } else {
+            format!(" of the worktree {}", mask_controls(worktree))
+        }
+    };
+    for (worktree, head) in plan.heads() {
         text.push_str(&format!(
-            "    head  {} -> {}\n",
+            "    head{}  {} -> {}\n",
+            at(worktree),
             value(head.before().map(HeadValue).as_ref()),
             value(head.after().map(HeadValue).as_ref())
         ));
     }
-    if let Some(moved) = plan.working_copy() {
+    for (worktree, moved) in plan.working_copies() {
         text.push_str(&format!(
-            "    working-copy  {} -> {}\n",
+            "    working-copy{}  {} -> {}\n",
+            at(worktree),
             value(moved.before()),
             value(moved.after())
         ));
@@ -2602,7 +2700,9 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let current = match read() {
         Ok((head, working_copy, owner, branches, tags, locked)) => {
             let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
-            let current = oplog::Current::new(head, branches, !locked && unchanged).with_tags(tags);
+            let current = oplog::Current::new(head, branches, !locked && unchanged)
+                .in_worktree(repository.worktree_name().unwrap_or("main"))
+                .with_tags(tags);
             Some(match working_copy {
                 Some(commit) => current.with_working_copy(Some(commit)).with_owner(owner),
                 None => {

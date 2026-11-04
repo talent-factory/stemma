@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 810" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 854" font-family="Helvetica, Arial, sans-serif">
   <title>Welcher Befehl berührt welche Zone</title>
-  <rect x="0" y="0" width="740" height="810" fill="#FFFFFF"/>
+  <rect x="0" y="0" width="740" height="854" fill="#FFFFFF"/>
 
   <!-- Zone headers: one colour per zone, dark enough for print -->
   <g font-size="12" font-weight="bold" text-anchor="middle">
@@ -34,6 +34,7 @@
     <line x1="20" y1="678" x2="730" y2="678"/>
     <line x1="20" y1="722" x2="730" y2="722"/>
     <line x1="20" y1="766" x2="730" y2="766"/>
+    <line x1="20" y1="810" x2="730" y2="810"/>
   </g>
 
   <!-- Commands -->
@@ -54,6 +55,7 @@
     <text x="20" y="653" font-family="Courier, monospace" font-size="15" font-weight="bold">merge</text>
     <text x="20" y="697" font-family="Courier, monospace" font-size="15" font-weight="bold">worktree add</text>
     <text x="20" y="741" font-family="Courier, monospace" font-size="15" font-weight="bold">rebase</text>
+    <text x="20" y="785" font-family="Courier, monospace" font-size="15" font-weight="bold">worktree remove</text>
   </g>
   <g fill="#0F172A" font-size="12">
     <text x="20" y="97">legt das Repository an</text>
@@ -72,6 +74,7 @@
     <text x="20" y="669">führt einen Branch in den Branch von HEAD ein</text>
     <text x="20" y="713">legt eine zweite Arbeitskopie mit eigenem HEAD an</text>
     <text x="20" y="757">spielt den Branch auf ein Ziel neu auf</text>
+    <text x="20" y="801">entfernt einen Worktree, der Branch bleibt</text>
   </g>
 
   <!-- init: changes working-copy commit, HEAD, log -->
@@ -184,16 +187,24 @@
   <circle cx="580" cy="744" r="9" fill="#2F7D32"/>
   <circle cx="680" cy="744" r="9" fill="#6B46C1"/>
 
+  <!-- worktree remove: saves the directory of the worktree that goes in a snapshot, removes its
+       directory and its state (its HEAD and working-copy commit go; the branch stays), writes an
+       entry; the calling worktree is not touched. -->
+  <circle cx="380" cy="788" r="9" fill="#2B6CB0"/>
+  <circle cx="480" cy="788" r="9" fill="#B45309"/>
+  <circle cx="580" cy="788" r="9" fill="#2F7D32"/>
+  <circle cx="680" cy="788" r="9" fill="#6B46C1"/>
+
   <!-- Legend -->
   <g fill="#0F172A" font-size="12">
-    <circle cx="28" cy="789" r="8" fill="#0F172A"/>
-    <text x="44" y="793">ändert</text>
-    <circle cx="116" cy="789" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <text x="132" y="793">liest nur</text>
-    <circle cx="220" cy="789" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
-    <path d="M220,782 A7,7 0 0 0 220,796 Z" fill="#0F172A"/>
-    <text x="236" y="793">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
-    <text x="568" y="793" font-size="14" fill="#64748B">–</text>
-    <text x="584" y="793">unberührt</text>
+    <circle cx="28" cy="833" r="8" fill="#0F172A"/>
+    <text x="44" y="837">ändert</text>
+    <circle cx="116" cy="833" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <text x="132" y="837">liest nur</text>
+    <circle cx="220" cy="833" r="7" fill="none" stroke="#0F172A" stroke-width="2"/>
+    <path d="M220,826 A7,7 0 0 0 220,840 Z" fill="#0F172A"/>
+    <text x="236" y="837">ändert nur, wenn sich eine verfolgte Datei geändert hat</text>
+    <text x="568" y="837" font-size="14" fill="#64748B">–</text>
+    <text x="584" y="837">unberührt</text>
   </g>
 </svg>
