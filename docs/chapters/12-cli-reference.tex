@@ -964,6 +964,8 @@ der Befehl die Änderungen mitnähme.
 Schlägt der Merge der Änderungen fehl, nennt die Meldung die Ursache; der Befehl hat dann nur
 Objekte geschrieben, und der Snapshot, falls er einen Eintrag schrieb, steht im Log.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
+Ein Worktree, dessen Zustandsverzeichnis sich nicht lesen lässt, hindert das Entfernen eines
+anderen nicht; der Befehl nennt für ihn selbst, was von Hand zu löschen ist.
 
 Scheitert das Schreiben der Dateien oder die erste Zeigerbewegung, nachdem der Eintrag im Log
 steht, endet der Befehl mit Exit-Code 1 (bei einer gehaltenen Sperre mit 6).
@@ -2076,7 +2078,9 @@ Er speichert die Dateien in einem Snapshot des Worktrees (eine zweite Frage an d
 Dateien, die der Working-Copy-Commit nicht verfolgt.
 Findet er welche und fehlt \type{--force}, endet er, bevor er etwas entfernt; der Snapshot bleibt
 im Log. Sonst schreibt er den Eintrag \type{worktree-remove} und sichert ihn, entfernt das
-Verzeichnis und danach das Zustandsverzeichnis, die Datei \type{HEAD} zuerst.
+Verzeichnis und danach das Zustandsverzeichnis, die Datei \type{HEAD} zuerst. Das Verzeichnis
+wird dazu erst unter einem versteckten Namen (\type{.stemma-removing-...}) neben seinen Platz
+verschoben und dann gelöscht; ein Abbruch lässt also nie eine halbe Kopie am alten Pfad zurück.
 Der Eintrag trägt den Namen des Worktrees und sein Verzeichnis und nennt HEAD und den
 Working-Copy-Commit mit \type{-} als neuem Wert. Der Branch wird frei, und der Working-Copy-Commit
 bleibt im Log erhalten.

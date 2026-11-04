@@ -505,7 +505,7 @@ impl Classify for WorktreeError {
             | Self::RemovePartlyMoved { source, .. }
             | Self::RemoveNotDurable { source, .. } => source.kind(),
             Self::Snapshot(error) => error.kind(),
-            Self::AfterSnapshot { source, .. } => source.kind(),
+            Self::AfterSnapshot { source, .. } | Self::Damaged { source, .. } => source.kind(),
             Self::ChangeId(_)
             | Self::RemoveFailed { .. }
             | Self::NoSuchWorktree(_)

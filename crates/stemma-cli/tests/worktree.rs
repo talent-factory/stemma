@@ -1383,4 +1383,45 @@ fn a_remove_that_cannot_delete_the_directory_keeps_the_worktree_and_a_retry_fini
     );
     assert!(!linked.exists());
     assert!(!ok(&repo, &["worktree", "list"]).stdout.contains("linked"));
+    // The directory went through a hidden name; nothing of it is left.
+    let left: Vec<_> = fs::read_dir(sandbox.dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".stemma-removing-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn a_damaged_worktree_does_not_stop_the_removal_of_another() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    ok(
+        &repo,
+        &[
+            "worktree", "add", "-b", "other", "../other", "--actor", ACTOR,
+        ],
+    );
+    let state = repo.join(".stemma").join("worktrees").join("other");
+    fs::remove_file(state.join("location")).unwrap();
+
+    let removed = run(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    let damaged = run(
+        &repo,
+        &["worktree", "remove", "other", "--force", "--actor", ACTOR],
+    );
+
+    assert_eq!(removed.code, 0, "{}", removed.stderr);
+    assert!(!sandbox.at("linked").exists());
+    // The damaged worktree itself is named, with what to do, and nothing of it was touched.
+    assert_ne!(damaged.code, 0);
+    assert!(
+        damaged.stderr.contains("worktree `other` cannot be read"),
+        "{}",
+        damaged.stderr
+    );
+    assert!(sandbox.at("other").exists() && state.exists());
 }

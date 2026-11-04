@@ -400,9 +400,10 @@ wegräumen. Verfolgt der Working-Copy-Commit eine Datei nicht, bricht der Befehl
 ersten Dateien; mit \type{--force} gehen sie mit dem Verzeichnis verloren.
 \item Der Eintrag \type{worktree-remove} wird geschrieben und gesichert. Er nennt den Worktree,
 sein Verzeichnis und HEAD und den Working-Copy-Commit mit \type{-} als neuem Wert.
-\item Das Verzeichnis wird entfernt. Zuletzt geht das Zustandsverzeichnis: erst seine Datei
-\type{HEAD}, damit der Worktree aus der Liste verschwindet und keinen Branch mehr hält,
-dann der Rest.
+\item Das Verzeichnis wird entfernt: erst unter einem versteckten Namen neben seinen Platz
+verschoben, dann gelöscht, damit ein Abbruch keine halbe Kopie am alten Pfad lässt.
+Zuletzt geht das Zustandsverzeichnis: erst seine Datei \type{HEAD}, damit der Worktree
+aus der Liste verschwindet und keinen Branch mehr hält, dann der Rest.
 \stopitemize
 
 Der Branch bleibt, und die Commits bleiben: Der Eintrag nennt den Working-Copy-Commit, also

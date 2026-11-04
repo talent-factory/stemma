@@ -86,7 +86,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   working copy is checked as for every snapshot, so an agent cannot remove the worktree of a
   human; the owner is checked as well when the directory is gone and there is no snapshot), and every file that the working-copy commit does not track stops the call
   (`WorktreeError::Dirty`) unless `--force` is given. The order is the rule of ADR-011: the
-  entry is written and flushed, then the directory is removed, then `HEAD` of the state
+  entry is written and flushed, then the directory is renamed to a hidden sibling and
+  removed (a stop in the delete leaves no half of the worktree at its path), then `HEAD` of the state
   directory, so that the worktree is gone from `worktree list` and holds no branch, then the
   rest of the state directory. The entry names the worktree, its directory, and `HEAD` and the
   working-copy commit with the new value `-`. The branch and the commits stay: the branch is
