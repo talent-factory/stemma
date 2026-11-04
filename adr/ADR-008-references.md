@@ -246,11 +246,14 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       `Conflict`. The rule that the branch of HEAD is not deleted belongs to the layer above: it is
       `Repository::delete_branch`, with the entry of the operation `branch` and the command
       `stemma branch -d` (STEMMA-166), see the decision above.
-- [ ] Packed references, when there are many branches. Measured (STEMMA-55, see Consequences):
-      the cost is small up to 10,000 branches and noticeable at 100,000, mainly in the listing.
-      No packed form is built yet. A follow-up first finds out why the time grows faster than the
-      count (file system, cache, or measurement; time the phases and repeat warm and cold), and
-      builds a packed form only if the cost remains after that.
+- [x] Packed references, when there are many branches. Measured (STEMMA-55, see Consequences):
+      the cost is small up to 10,000 branches and noticeable only at 100,000, mainly in the
+      listing. The listing is used by `branch`, by the check of the references, by the plan of a
+      purge, and in the rare conflict of a branch with a directory; commit, switch, and the other
+      commands only look up single names, and a lookup in nested names takes 1.6 ms at 100,000.
+      No packed form is built. Decide again if a repository with about 100,000 branches shows up;
+      then first find out why the time grows faster than the count (file system, cache, or
+      measurement; time the phases and repeat warm and cold).
 - [x] Tags: layout, plain pointer, never moves (STEMMA-54), see the decision above. The store
       has `tag`, `tags`, and `create_tag`, and `verify` and the purge know them. The operation
       `tag` in the operation log (ADR-011), its level (ADR-004), and the command `stemma tag`
