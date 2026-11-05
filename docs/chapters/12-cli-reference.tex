@@ -173,6 +173,10 @@ die nur lesen. Dasselbe gilt für Format 6, das die Zeilen \type{worktree} und \
 im Log und das Journal des Purge über mehrere Worktrees einführt (ADR-009, ADR-011, ADR-014):
 Ein Repository steigt mit seinem nächsten Eintrag oder Purge auf Format 6, und ein Programm,
 das nur Format 5 kennt, meldet die unbekannte Version und keinen Schaden.
+Format 7 ist die neueste Stufe: Es führt die Zeile \type{tags} im Eintrag \type{purge} und das
+Journal \type{stemma-purge 3} für einen Purge ein, der Tags bewegt (ADR-014). Ein Repository
+steigt mit seinem nächsten Eintrag oder Purge auf Format 7, und ein Programm, das nur
+Format 6 kennt, meldet die unbekannte Version und keinen Schaden.
 
 Ein Git-Worktree ist keine eigene Arbeitskopie für Stemma. Ohne ein eigenes \type{stemma init}
 öffnet ein Befehl im Worktree das \type{.stemma} der Wurzel, weil die Suche die übergeordneten
