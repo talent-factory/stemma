@@ -13,6 +13,8 @@ use std::process::{Child, Command, Stdio};
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
+use stemma_core::diff::DIFF_SIZE_LIMIT as SIZE_LIMIT;
+
 use common::{operations, repository, run, stemma, track_ok, write, Dir, Run, ACTOR};
 
 /// Commits and returns the identifier of the new commit, `b3:…`.
@@ -430,6 +432,83 @@ fn an_empty_added_file_is_a_difference_with_a_header_and_no_hunk() {
         result.stdout
     );
     assert!(!section.contains("@@"), "{}", result.stdout);
+}
+
+#[test]
+fn a_file_above_the_size_limit_is_named_without_its_lines() {
+    let dir = repository_with_edit("big.txt", &vec![b'a'; SIZE_LIMIT + 1], b"small\n");
+
+    let result = diff(dir.path(), &["--exit-code"]);
+
+    assert_eq!(result.code, 4, "{}", result.stderr);
+    assert!(
+        result.stdout.starts_with("diff big.txt\nFiles b3:"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains(" big.txt and working-copy b3:")
+            && result
+                .stdout
+                .ends_with(" big.txt differ and are too large to compare\n"),
+        "{}",
+        result.stdout
+    );
+    assert!(!result.stdout.contains("@@"), "{}", result.stdout);
+}
+
+#[test]
+fn a_file_at_the_size_limit_is_still_compared() {
+    let dir = repository_with_edit("big.txt", &vec![b'a'; SIZE_LIMIT], &vec![b'b'; SIZE_LIMIT]);
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(result.stdout.contains("@@ -1 +1 @@"), "{}", result.stdout);
+}
+
+#[test]
+fn a_file_that_grows_above_the_size_limit_is_named_without_its_lines() {
+    let dir = repository_with_edit("big.txt", b"small\n", &vec![b'a'; SIZE_LIMIT + 1]);
+
+    let result = diff(dir.path(), &[]);
+
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(
+        result
+            .stdout
+            .ends_with(" big.txt differ and are too large to compare\n"),
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_new_file_above_the_size_limit_has_dev_null_as_its_old_side() {
+    let dir = repository_with_edit("a.txt", b"x\n", b"x\n");
+    fs::write(dir.path().join("big.txt"), vec![b'a'; SIZE_LIMIT + 1]).unwrap();
+    track_ok(dir.path(), "big.txt");
+
+    let result = diff(dir.path(), &[]);
+
+    assert!(
+        result
+            .stdout
+            .contains("Files /dev/null and working-copy b3:"),
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_binary_file_above_the_size_limit_is_still_called_binary() {
+    let mut big = vec![b'a'; SIZE_LIMIT + 1];
+    big[0] = 0;
+    let dir = repository_with_edit("big.dat", &big, b"small\n");
+
+    let result = diff(dir.path(), &[]);
+
+    assert!(result.stdout.contains("Binary files "), "{}", result.stdout);
 }
 
 #[test]
