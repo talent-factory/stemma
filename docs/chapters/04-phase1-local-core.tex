@@ -943,7 +943,8 @@ die neuen Commits liegen ohne Zeiger im Objektspeicher.
 \item Ein unveränderter Baum
 und ein Branch, der nicht beim Elternteil des Working-Copy-Commits steht,
 lassen nur den Snapshot zurück.
-Der zweite Fall wäre einer für einen Rebase (Phase 3).
+Den zweiten Fall löst das Umschreiben der Arbeitskopie, das \type{merge} und \type{rebase}
+benutzen (\in{Abschnitt}[sec:rewrite-wc]).
 \item Hat ein anderer Prozess einen Zeiger zuerst bewegt, scheitert der Commit;
 er lässt sich wiederholen.
 \item Bricht der Commit zwischen den beiden Zeigerbewegungen ab,
