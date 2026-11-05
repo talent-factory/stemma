@@ -2041,9 +2041,13 @@ linked  /home/daniel/linked    feature  human anna
 \type{working-copy} sich nicht lesen lässt; beschädigte Referenzen enden mit Exit-Code 5.
 Dazu zählt ein Zustandsverzeichnis, dessen Name kein Worktree tragen kann (Leerzeichen, ein
 Punkt am Anfang, \type{main}): Ein Eintrag im Log und das Journal eines Purge könnten ihn nicht
-nennen; darum endet jeder Befehl, der alle Worktrees lesen muss, mit Exit-Code 5, und
-\type{purge --apply} schreibt kein Journal. Ein Verzeichnis ohne \type{HEAD} ist kein Worktree
-und wird übersprungen, gleich unter welchem Namen.
+nennen, weil beim Lesen jeder Name geprüft wird; darum endet jeder Befehl, der alle Worktrees
+lesen muss (etwa \type{worktree list}), mit Exit-Code 5, und
+\type{purge --apply} schreibt kein Journal.
+Sind mehrere Worktrees beschädigt, nennt die Meldung alle mit dem Grund und nicht nur den ersten,
+damit nicht erst der nächste Aufruf den nächsten Schaden zeigt.
+Ein Verzeichnis ohne \type{HEAD} ist kein Worktree und wird übersprungen, gleich unter welchem
+Namen.
 Schliesst der Leser die Pipe früh, endet der Befehl ohne Meldung mit Exit-Code 0.
 
 {\bf Beispiele.}
@@ -2127,13 +2131,20 @@ verfolgten Dateien ohne \type{--force} (die Meldung nennt die ersten) und bei ei
 Hat der Befehl die Dateien schon in einem Snapshot gesichert, bevor er auf einen dieser Fehler
 stösst, behält er den Exit-Code des Fehlers, und die Meldung nennt den Eintrag des Snapshots; der
 Worktree ist dann unverändert, und der Aufruf mit \type{--force} ist sicher. Nur wenn sich das
-Verzeichnis dieses Snapshots nicht sichern liess oder der Snapshot einen Zeiger bewegte und dann
-stehen blieb, endet er mit Exit-Code 3, denn dann übersteht die gesicherte Arbeit einen Absturz
+Verzeichnis dieses Snapshots nicht sichern liess (der Flush auf den Datenträger scheiterte) oder
+der Snapshot einen Zeiger bewegte und dann stehen blieb, endet er mit Exit-Code 3,
+denn dann übersteht die gesicherte Arbeit einen Absturz
 vielleicht nicht; die Meldung sagt es.
 Ein Zustandsverzeichnis unter \type{.stemma/worktrees}, dessen Name kein Worktree tragen kann
 (erlaubt sind Buchstaben, Ziffern, \type{-}, \type{_} und \type{.}, nicht am Anfang, und nicht
 \type{main}), ist ein Schaden mit Exit-Code 5; der Befehl nennt den Namen und lässt die übrigen
 Worktrees unberührt.
+Gibt man ein Argument an, das kein gültiger Name ist (einen Pfad), und gehört es keinem
+lesbaren Worktree, während Zustandsverzeichnisse beschädigt sind, sagt der Befehl nicht, dass es
+den Worktree nicht gibt, sondern nennt alle beschädigten Worktrees, denn ohne die Datei
+\type{location} lässt sich der Pfad keinem Namen zuordnen. Der Exit-Code ist 5, wenn eines davon
+einen Schaden meldet, sonst der Code des ersten Fehlers (1 bei einem Fehler der Ein- und Ausgabe).
+Ein gültiger Name, den es nicht gibt, bleibt ein Fehler mit Exit-Code 1.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die

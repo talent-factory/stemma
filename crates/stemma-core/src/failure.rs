@@ -506,6 +506,13 @@ impl Classify for WorktreeError {
             | Self::RemoveNotDurable { source, .. } => source.kind(),
             Self::Snapshot(error) => error.kind(),
             Self::AfterSnapshot { source, .. } | Self::Damaged { source, .. } => source.kind(),
+            // Damage wins; else the first kind stands, as with one damaged worktree.
+            Self::SeveralDamaged { damaged, .. } => damaged
+                .iter()
+                .map(|(_, error)| error.kind())
+                .find(|kind| *kind == FailureKind::Damaged)
+                .or_else(|| damaged.first().map(|(_, error)| error.kind()))
+                .unwrap_or(FailureKind::Other),
             Self::ChangeId(_)
             | Self::RemoveFailed { .. }
             | Self::NoSuchWorktree(_)
@@ -618,6 +625,36 @@ mod tests {
             id: id(),
             kind: Kind::Commit,
         }
+    }
+
+    #[test]
+    fn several_damaged_worktrees_are_damage_if_one_is_and_else_keep_the_first_kind() {
+        let damaged = || {
+            WorktreeError::Refs(RefError::Corrupt {
+                path: path(),
+                source: crate::refs::RefParseError::Malformed(
+                    crate::refs::RefMalformed::WorktreeName,
+                ),
+            })
+        };
+        let io = || WorktreeError::Io {
+            operation: "inspect",
+            path: path(),
+            source: std::io::Error::other("denied"),
+        };
+        let several = |errors: Vec<WorktreeError>| WorktreeError::SeveralDamaged {
+            asked: None,
+            damaged: errors
+                .into_iter()
+                .map(|error| ("w".to_owned(), Box::new(error)))
+                .collect(),
+        };
+        assert_eq!(several(vec![io(), damaged()]).kind(), FailureKind::Damaged);
+        assert_eq!(several(vec![io(), io()]).kind(), FailureKind::Other);
+        assert_eq!(
+            several(vec![WorktreeError::Refs(locked()), io()]).kind(),
+            FailureKind::Locked
+        );
     }
 
     #[test]
