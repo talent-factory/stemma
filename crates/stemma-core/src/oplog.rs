@@ -65,9 +65,9 @@
 //! `-` for none. A purge that moved tags (STEMMA-185) has the line `tags <n>` between `commits`
 //! and `stubs`, with the number of tags and no name; it is left out for none, so the entries from
 //! before keep their encoding, and a `tags 0` is not read. A list that does not fit into one
-//! entry is split over several, and the first has the counts. A stub that no `purge` entry lists is an error of the log ([`check_stubs`]); a
-//! listed entry that is not a stub yet is not, as the purge writes its entry first. A change
-//! cannot have the operation `purge`.
+//! entry is split over several, and the first has the counts. A stub that no `purge` entry lists
+//! is an error of the log ([`check_stubs`]); a listed entry that is not a stub yet is not, as
+//! the purge writes its entry first. A change cannot have the operation `purge`.
 //!
 //! # The hash chain (version 3)
 //!
@@ -394,6 +394,8 @@ pub enum EntryError {
     },
     /// The count of commits of a purge is larger than [`MAX_NUMBER`].
     TooManyCommits(u64),
+    /// The count of tags that a purge moved is larger than [`MAX_NUMBER`].
+    TooManyTags(u64),
     /// A purge lists a number that is 0 or larger than [`MAX_NUMBER`] as a stub.
     StubOutOfRange(u64),
     /// The entry of a purge cannot become a stub. Carries its number.
@@ -439,6 +441,11 @@ impl fmt::Display for EntryError {
             Self::TooManyCommits(count) => write!(
                 f,
                 "a purge of {count} commits cannot be recorded; the count is at most {MAX_NUMBER}"
+            ),
+            Self::TooManyTags(count) => write!(
+                f,
+                "a purge that moved {count} tags cannot be recorded; the count is at most \
+                 {MAX_NUMBER}"
             ),
             Self::StubOutOfRange(number) => write!(
                 f,
@@ -888,11 +895,11 @@ impl Purge {
     ///
     /// # Errors
     ///
-    /// Returns [`EntryError::TooManyCommits`] if the count is larger than [`MAX_NUMBER`], which
+    /// Returns [`EntryError::TooManyTags`] if the count is larger than [`MAX_NUMBER`], which
     /// the reader would reject.
     pub(crate) fn with_tags(mut self, tags: u64) -> Result<Self, EntryError> {
         if tags > MAX_NUMBER {
-            return Err(EntryError::TooManyCommits(tags));
+            return Err(EntryError::TooManyTags(tags));
         }
         self.tags = tags;
         Ok(self)

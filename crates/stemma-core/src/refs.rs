@@ -3106,9 +3106,8 @@ impl FsRefStore {
     ///
     /// Every pointer is checked first: one that has its value after the purge already is skipped
     /// (a purge that is resumed), one at its value before is moved, and one at any other value is
-    /// [`RefError::PurgeStale`] before anything is written. The moves are made in the order of
-    /// [`restore_after`](Self::restore_after): branches, the tags, the working-copy commit, then
-    /// HEAD.
+    /// [`RefError::PurgeStale`] before anything is written. The moves are made in this order:
+    /// branches, the tags, the working-copy commit, then HEAD.
     ///
     /// # Errors
     ///

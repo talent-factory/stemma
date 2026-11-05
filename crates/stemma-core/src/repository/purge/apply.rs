@@ -1732,6 +1732,104 @@ mod tests {
         assert!(repository.objects().contains(&now.object_id()).unwrap());
     }
 
+    fn journal_new_value(dir: &TempDir, tag: &str) -> String {
+        let journal = fs::read_to_string(dir.path().join(".stemma/purge-pending")).unwrap();
+        let prefix = format!("tag {tag} ");
+        let line = journal.lines().find(|l| l.starts_with(&prefix)).unwrap();
+        line.rsplit(' ').next().unwrap().to_string()
+    }
+
+    #[test]
+    fn two_tags_on_one_commit_both_move_and_are_counted_as_two() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        tag(&dir, &repository, "v2", second);
+        let purged = move_tags(&repository);
+        let new_second = purged
+            .plan()
+            .rewrites()
+            .iter()
+            .find(|(old, _)| *old == second)
+            .map(|(_, new)| *new)
+            .unwrap();
+        let name = |text| crate::refs::BranchName::try_new(text).unwrap();
+        for text in ["v1", "v2"] {
+            assert_eq!(
+                repository.refs().tag(&name(text)).unwrap(),
+                Some(new_second)
+            );
+        }
+        let counted: Vec<u64> = purged
+            .entries()
+            .iter()
+            .map(|entry| match entry.record() {
+                Record::Purge(purge) => purge.tags(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(counted, [2]);
+        assert!(repository.verify_refs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_resume_finishes_when_only_one_of_two_tags_was_moved() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        tag(&dir, &repository, "v2", second);
+        stop_at_with_tags(&repository, Stop::Journal);
+        // A crash between the two tag writes: v1 has its new value, v2 still the old one.
+        let new = journal_new_value(&dir, "v1");
+        fs::write(dir.path().join(".stemma/refs/tags/v1"), format!("{new}\n")).unwrap();
+        repository.resume_purge(&actor(), &AllowAll).unwrap();
+        let name = |text| crate::refs::BranchName::try_new(text).unwrap();
+        let v1 = repository.refs().tag(&name("v1")).unwrap().unwrap();
+        let v2 = repository.refs().tag(&name("v2")).unwrap().unwrap();
+        assert_eq!(v1, v2);
+        assert_ne!(v1, second);
+        assert!(repository.objects().contains(&v1.object_id()).unwrap());
+        assert!(repository.verify_refs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_journalled_tag_moved_by_hand_after_the_entry_stops_the_resume_and_the_abort() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        stop_at_with_tags(&repository, Stop::Entry);
+        fs::write(
+            dir.path().join(".stemma/refs/tags/v1"),
+            format!("{first}\n"),
+        )
+        .unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ApplyPurgeError::Stopped { source, .. }
+                    if matches!(&**source, PurgeFailure::Refs(RefError::PurgeStale { .. }))
+            ),
+            "{error:?}"
+        );
+        let error = repository.abort_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(error, ApplyPurgeError::PastNoReturn { .. }),
+            "{error:?}"
+        );
+        // Restoring the old value (the journal still has it) lets the purge finish.
+        fs::write(
+            dir.path().join(".stemma/refs/tags/v1"),
+            format!("{second}\n"),
+        )
+        .unwrap();
+        repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert!(!journal_exists(&dir));
+    }
+
     #[test]
     fn an_abort_leaves_the_tag_and_a_later_purge_without_the_option_is_refused() {
         let dir = TempDir::new();
