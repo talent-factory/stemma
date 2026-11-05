@@ -55,8 +55,8 @@
 //! stopped commit from a restored working copy, `status` when it cannot read the
 //! repository or write its output, `op restore` when a later step fails, and `purge --apply`
 //! when the purge cannot be planned or started after it, and `worktree remove` when it is refused
-//! (untracked files without `--force`, say) after the files were saved. The message of such a failure names the
-//! entry, and repeating the command is safe.
+//! (untracked files without `--force`, say) after the files were saved. The message of such a
+//! failure names the entry, and repeating the command is safe.
 //!
 //! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
 //! status is written, for `commit` without a commit (it can be repeated), for `op restore` after
