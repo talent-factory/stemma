@@ -21,9 +21,9 @@ copy per actor with `stemma worktree add`. Update this file when a later phase l
 `track`, `commit`, `switch`, `merge`, `rebase`, `status`, `op restore`, and `purge --apply`
 first save the tracked files as a snapshot (ADR-010), and so does `diff` when one side is the
 working copy. The snapshot covers tracked files only, and it writes a log entry only if a tracked
-file changed. There is no file watcher and no background process. A state that no command has seen is not saved, and a command
-that fails before its snapshot saves nothing. So the way to keep an intermediate state is to run
-a command.
+file changed. There is no file watcher and no background process. A state that no command has
+seen is not saved, and a command that fails before its snapshot saves nothing. So the way to keep
+an intermediate state is to run a command.
 
 ## Setup (once per session)
 
