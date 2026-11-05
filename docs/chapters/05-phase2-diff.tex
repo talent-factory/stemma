@@ -22,7 +22,7 @@ Der Befehl \type{diff} ruft die Nachbearbeitung auf (\in{Abschnitt}[sec:slide]).
 die Dateien und Hunks (ADR-016, \in{Abschnitt}[sec:tui]). Sie liegt in der Crate
 \type{stemma-tui} und hängt vom Kern ab, der Kern nicht von ihr.
 \item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Risikostufe 1 nach ADR-004.
-Die Verwendung im Merge-Pfad, Risikostufe 2, folgt in Phase 3.
+Die Verwendung im Merge-Pfad, Risikostufe 2, kam in Phase 3 hinzu (\in{Kapitel}[chap:phase3]).
 \item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
 Verschiebungen. Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
 Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken

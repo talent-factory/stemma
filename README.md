@@ -2,7 +2,7 @@
 
 Versionskontrollsystem in Rust. API-first, mit Git-artiger CLI, ohne Git-Repository-Kompatibilität.
 
-**Status:** Phase 3 ist umgesetzt (Version 0.3.0): Branches, Merge, Rebase und eine zweite Arbeitskopie. Es gibt die Befehle `init`, `track`, `commit`, `status`, `diff`, `log`, `tag`, `branch`, `switch`, `merge`, `rebase`, `worktree`, `op log` und `op restore`; `purge` entfernt ein Geheimnis aus Verlauf und Log und zeigt ohne `--apply` nur den Plan (ADR-014). Die Arbeitskopie ist ein Commit, und jeder Befehl, der sie ändert, nimmt einen Snapshot (ADR-010). Die Befehle stehen in der Referenz des Buchs (`docs/chapters/12-cli-reference.tex`).
+**Status:** Phase 3 ist umgesetzt (Version 0.3.0): Branches, Merge, Rebase und eine zweite Arbeitskopie. Es gibt die Befehle `init`, `track`, `commit`, `status`, `diff`, `log`, `tag`, `branch`, `switch`, `merge`, `rebase`, `worktree`, `op log`, `op restore` und `op verify`; `purge` entfernt ein Geheimnis aus Verlauf und Log und zeigt ohne `--apply` nur den Plan (ADR-014). Die Arbeitskopie ist ein Commit, und jeder Befehl, der sie ändert, nimmt einen Snapshot (ADR-010). Die Befehle stehen in der Referenz des Buchs (`docs/chapters/12-cli-reference.tex`).
 
 **Ein Akteur pro Arbeitskopie.** Ein Snapshot trägt den Akteur des Befehls ein und speichert alles, was im Verzeichnis liegt. Deshalb arbeitet jeder Akteur, Mensch oder Agent, in einer eigenen Arbeitskopie. Zwei Akteure in einem Verzeichnis sind kein unterstützter Betrieb, und das Programm lehnt den Snapshot eines anderen Akteurs ab (ADR-010); ein zweiter Akteur bekommt mit `stemma worktree add` seine eigene Arbeitskopie.
 

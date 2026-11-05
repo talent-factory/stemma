@@ -97,11 +97,20 @@ Exit code 3, by case (the table `tab:exit3` of the reference has all of them):
 - `commit`, and only the branch moved: call `commit` again. It finishes the first commit and
   does not use the new message; `resumed` is `true` in the JSON.
 - `op restore` that says `Half made`: repeat the call.
+- `switch`, `merge`, or `rebase` interrupted after the files were written: repeat the same call
+  before any other command. It reads the log entry, takes no new snapshot, and reuses its
+  commits; a new message has no effect.
 - A result that is made, but the output could not be written or a directory is not saved:
   do not repeat.
 
 With `--json`, a failure writes no JSON. An object before a non-zero code says what was made,
 not that the command worked.
+
+## Conflicts
+
+A conflict after `merge`, `rebase`, or `switch` is data in the commit, not a failure: the exit
+code is 0 and the output names the paths. Read `stemma status --json`; edit the files until they
+carry no markers, and the next snapshot resolves the path.
 
 ## Only on the instruction of the human
 
@@ -157,5 +166,5 @@ does not take it away.
 ## Not yet there
 
 Phase 4 brings the agent identities and pull requests; phase 6 the API and the MCP server,
-with `--json` for `diff`, `restore`, and `purge`.
+with `--json` for `diff`, `op restore`, and `purge`.
 This file changes with each of them.

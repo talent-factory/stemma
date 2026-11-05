@@ -586,7 +586,8 @@ $W'$ und bewegt zuletzt den Zeiger des Working-Copy-Commits (ADR-013).
 Der Schritt bewegt nur den Working-Copy-Commit.
 HEAD und die Branches bleiben, wo sie sind.
 Der Befehl \type{merge} bewegt den Branch im selben Zug und schreibt einen Eintrag für beide
-Bewegungen (\in{Abschnitt}[sec:merge-command]); ein Rebase soll es ebenso tun.
+Bewegungen (\in{Abschnitt}[sec:merge-command]);
+\type{rebase} tut es ebenso (\in{Abschnitt}[sec:rebase]).
 Die ersetzten Commits bleiben im Log (ADR-011),
 und \type{op restore} macht den Schritt rückgängig.
 
