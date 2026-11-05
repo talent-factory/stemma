@@ -62,10 +62,12 @@
 //! A stub keeps the number, the time, and the actor, and drops the operation and every ID. The
 //! `purge` entry names no pointer and no ID: the count of rewritten commits, and the numbers of the
 //! stubs as ranges in ascending order that neither overlap nor touch, all below its own number, or
-//! `-` for none. A list that does not fit into one entry is split over several, and the first has
-//! the count. A stub that no `purge` entry lists is an error of the log ([`check_stubs`]); a
-//! listed entry that is not a stub yet is not, as the purge writes its entry first. A change
-//! cannot have the operation `purge`.
+//! `-` for none. A purge that moved tags (STEMMA-185) has the line `tags <n>` between `commits`
+//! and `stubs`, with the number of tags and no name; it is left out for none, so the entries from
+//! before keep their encoding, and a `tags 0` is not read. A list that does not fit into one
+//! entry is split over several, and the first has the counts. A stub that no `purge` entry lists
+//! is an error of the log ([`check_stubs`]); a listed entry that is not a stub yet is not, as
+//! the purge writes its entry first. A change cannot have the operation `purge`.
 //!
 //! # The hash chain (version 3)
 //!
@@ -392,6 +394,8 @@ pub enum EntryError {
     },
     /// The count of commits of a purge is larger than [`MAX_NUMBER`].
     TooManyCommits(u64),
+    /// The count of tags that a purge moved is larger than [`MAX_NUMBER`].
+    TooManyTags(u64),
     /// A purge lists a number that is 0 or larger than [`MAX_NUMBER`] as a stub.
     StubOutOfRange(u64),
     /// The entry of a purge cannot become a stub. Carries its number.
@@ -437,6 +441,11 @@ impl fmt::Display for EntryError {
             Self::TooManyCommits(count) => write!(
                 f,
                 "a purge of {count} commits cannot be recorded; the count is at most {MAX_NUMBER}"
+            ),
+            Self::TooManyTags(count) => write!(
+                f,
+                "a purge that moved {count} tags cannot be recorded; the count is at most \
+                 {MAX_NUMBER}"
             ),
             Self::StubOutOfRange(number) => write!(
                 f,
@@ -834,6 +843,7 @@ pub struct Purge {
     time: i64,
     actor: Actor,
     commits: u64,
+    tags: u64,
     stubs: Vec<(u64, u64)>,
 }
 
@@ -875,8 +885,24 @@ impl Purge {
             time,
             actor,
             commits,
+            tags: 0,
             stubs: ranges,
         })
+    }
+
+    /// Records that the purge moved `tags` tags to the new versions of their commits (ADR-014).
+    /// Only a count: the entry names no pointer and no ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::TooManyTags`] if the count is larger than [`MAX_NUMBER`], which
+    /// the reader would reject.
+    pub(crate) fn with_tags(mut self, tags: u64) -> Result<Self, EntryError> {
+        if tags > MAX_NUMBER {
+            return Err(EntryError::TooManyTags(tags));
+        }
+        self.tags = tags;
+        Ok(self)
     }
 
     /// The time that the writer claims.
@@ -893,6 +919,13 @@ impl Purge {
     /// writes several; the first has the count and the others 0.
     pub fn commits(&self) -> u64 {
         self.commits
+    }
+
+    /// How many tags the purge moved to the new versions of their commits (0 if it moved none;
+    /// the entry has no line `tags` then). Like the count of commits, it is in the first entry
+    /// of a purge that needs several.
+    pub fn tags(&self) -> u64 {
+        self.tags
     }
 
     /// The numbers of the entries that became stubs, as inclusive ranges in ascending order. Two
@@ -943,6 +976,7 @@ impl Purge {
                 let range = current.stubs.pop().expect("one was pushed above");
                 let next = Self {
                     commits: 0,
+                    tags: 0,
                     stubs: vec![range],
                     ..current.clone()
                 };
@@ -1098,8 +1132,15 @@ impl Entry {
                 } else {
                     ranges_text(&purge.stubs)
                 };
+                // The line is left out for no tags, so that an entry of a purge that moved none
+                // keeps its encoding and its hash.
+                let tags = if purge.tags == 0 {
+                    String::new()
+                } else {
+                    format!("tags {}\n", purge.tags)
+                };
                 Some(format!(
-                    "operation {PURGE}\ncommits {}\nstubs {stubs}\n",
+                    "operation {PURGE}\ncommits {}\n{tags}stubs {stubs}\n",
                     purge.commits
                 ))
             }
@@ -1496,19 +1537,33 @@ fn parse_stub_or_purge(
                 .ok_or_else(|| malformed(body + 2, EntryMalformed::ExpectedCommits))?;
             let commits = parse_count(commits)
                 .ok_or_else(|| malformed(body + 2, EntryMalformed::ExpectedCommits))?;
-            let stubs = lines
+            // The line `tags <n>` is optional, and `0` is not written: one encoding per entry.
+            let (tags, next) = match lines
                 .get(body + 2)
+                .and_then(|line| line.strip_prefix("tags "))
+            {
+                Some(count) => {
+                    let tags = parse_count(count)
+                        .filter(|tags| *tags > 0)
+                        .ok_or_else(|| malformed(body + 3, EntryMalformed::BadTags))?;
+                    (tags, body + 3)
+                }
+                None => (0, body + 2),
+            };
+            let stubs = lines
+                .get(next)
                 .and_then(|line| line.strip_prefix("stubs "))
-                .ok_or_else(|| malformed(body + 3, EntryMalformed::ExpectedStubs))?;
+                .ok_or_else(|| malformed(next + 1, EntryMalformed::ExpectedStubs))?;
             let stubs =
-                parse_ranges(stubs).ok_or_else(|| malformed(body + 3, EntryMalformed::BadStubs))?;
-            if lines.len() > body + 3 {
-                return Err(malformed(body + 4, EntryMalformed::TrailingLine));
+                parse_ranges(stubs).ok_or_else(|| malformed(next + 1, EntryMalformed::BadStubs))?;
+            if lines.len() > next + 1 {
+                return Err(malformed(next + 2, EntryMalformed::TrailingLine));
             }
             Record::Purge(Purge {
                 time,
                 actor,
                 commits,
+                tags,
                 stubs,
             })
         }
@@ -1679,7 +1734,9 @@ pub enum EntryMalformed {
     ExpectedStubOrPurge,
     /// The sixth line of a `purge` entry is not `commits <n>`.
     ExpectedCommits,
-    /// The seventh line of a `purge` entry is not `stubs <ranges>`.
+    /// The line `tags <n>` of a `purge` entry does not hold a count above 0.
+    BadTags,
+    /// The line after `commits <n>` (and `tags <n>`) of a `purge` entry is not `stubs <ranges>`.
     ExpectedStubs,
     /// The ranges of the stubs are not `-` or ascending ranges that neither overlap nor touch.
     BadStubs,
@@ -1714,6 +1771,7 @@ impl fmt::Display for EntryMalformed {
                 "expected `stub` (version 2), `stub <hash>` (version 3), or `operation purge`"
             }
             Self::ExpectedCommits => "expected `commits <n>`",
+            Self::BadTags => "expected `tags <n>` with a count above 0, or no line `tags`",
             Self::ExpectedStubs => "expected `stubs <ranges>`",
             Self::BadStubs => {
                 "expected `-` or ranges such as `4-5 7`, ascending, that neither overlap nor touch"
@@ -5695,6 +5753,64 @@ mod tests {
                     operation purge\ncommits 0\nstubs -\n";
         assert_eq!(String::from_utf8(none.encode()).unwrap(), text);
         assert_eq!(Entry::parse(text.as_bytes()).unwrap(), none);
+    }
+
+    #[test]
+    fn a_purge_that_moved_tags_counts_them_in_a_line_of_its_own() {
+        let purge = Entry::of(
+            9,
+            Record::Purge(
+                Purge::try_new(TIME, human(), 3, &[4, 5, 7])
+                    .unwrap()
+                    .with_tags(2)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        let text = "stemma-oplog 2\nnumber 9\ntime 1700000000\nactor human daniel\n\
+                    operation purge\ncommits 3\ntags 2\nstubs 4-5 7\n";
+        assert_eq!(String::from_utf8(purge.encode()).unwrap(), text);
+        assert_eq!(Entry::parse(text.as_bytes()).unwrap(), purge);
+        match purge.record() {
+            Record::Purge(purge) => assert_eq!(purge.tags(), 2),
+            other => panic!("{other:?}"),
+        }
+        // No tags: no line, so that the entries from before the line keep their encoding.
+        let none = Entry::of(
+            9,
+            Record::Purge(Purge::try_new(TIME, human(), 3, &[4, 5, 7]).unwrap()),
+        )
+        .unwrap();
+        assert!(!String::from_utf8(none.encode()).unwrap().contains("tags"));
+        // The hash of the body covers the count, so a change of it breaks the chain.
+        let chained = |entry: &Entry| {
+            Entry::linked(9, Chain::Start, entry.record().clone())
+                .unwrap()
+                .body_hash()
+        };
+        assert_ne!(chained(&none), chained(&purge));
+        // `tags 0`, a second line, and a line out of place are not canonical.
+        let start = "stemma-oplog 2\nnumber 9\ntime 1700000000\nactor human daniel\n";
+        let malformed = |rest: &str| match Entry::parse(format!("{start}{rest}").as_bytes()) {
+            Err(EntryParseError::Malformed { line, reason }) => (line, reason),
+            other => panic!("{rest:?}: {other:?}"),
+        };
+        assert_eq!(
+            malformed("operation purge\ncommits 3\ntags 0\nstubs 4\n"),
+            (7, EntryMalformed::BadTags)
+        );
+        assert_eq!(
+            malformed("operation purge\ncommits 3\ntags x\nstubs 4\n"),
+            (7, EntryMalformed::BadTags)
+        );
+        assert_eq!(
+            malformed("operation purge\ncommits 3\ntags 1\ntags 1\nstubs 4\n"),
+            (8, EntryMalformed::ExpectedStubs)
+        );
+        assert_eq!(
+            malformed("operation purge\ncommits 3\nstubs 4\ntags 1\n"),
+            (8, EntryMalformed::TrailingLine)
+        );
     }
 
     #[test]

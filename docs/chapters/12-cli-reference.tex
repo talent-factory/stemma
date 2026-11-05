@@ -173,6 +173,10 @@ die nur lesen. Dasselbe gilt für Format 6, das die Zeilen \type{worktree} und \
 im Log und das Journal des Purge über mehrere Worktrees einführt (ADR-009, ADR-011, ADR-014):
 Ein Repository steigt mit seinem nächsten Eintrag oder Purge auf Format 6, und ein Programm,
 das nur Format 5 kennt, meldet die unbekannte Version und keinen Schaden.
+Format 7 ist die neueste Stufe: Es führt die Zeile \type{tags} im Eintrag \type{purge} und das
+Journal \type{stemma-purge 3} für einen Purge ein, der Tags bewegt (ADR-014). Ein Repository
+steigt mit seinem nächsten Eintrag oder Purge auf Format 7, und ein Programm, das nur
+Format 6 kennt, meldet die unbekannte Version und keinen Schaden.
 
 Ein Git-Worktree ist keine eigene Arbeitskopie für Stemma. Ohne ein eigenes \type{stemma init}
 öffnet ein Befehl im Worktree das \type{.stemma} der Wurzel, weil die Suche die übergeordneten
@@ -2269,7 +2273,8 @@ Purge.
 
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
 \type{change}, \type{stub} oder \type{purge}. Ein Stub hat dazu nur \type{time} und \type{actor};
-ein Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits} und \type{stubs}, eine
+ein Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits}, \type{tags} (die Zahl
+der Tags, die er bewegt hat; das Feld kam ohne neues \type{schema} dazu) und \type{stubs}, eine
 Liste von Bereichen \type{[start, end]}. Für eine Änderung sind die weiteren Felder \type{time}
 (Sekunden seit dem 1.1.1970, wie im Eintrag), \type{actor}, \type{operation}, \type{head},
 \type{working_copy}, \type{branches}, \type{tags}, \type{purge_pending}
@@ -2618,7 +2623,7 @@ Mit \type{--apply} wird der Purge gemacht; er lässt sich nicht zurücksetzen.
 solange sein Eintrag nicht geschrieben ist.
 
 \starttyping
-stemma purge BLOB [--apply] [-C VERZEICHNIS] --actor AKTEUR
+stemma purge BLOB [--apply] [--move-tags] [-C VERZEICHNIS] --actor AKTEUR
 stemma purge --resume [-C VERZEICHNIS] --actor AKTEUR
 stemma purge --abort [-C VERZEICHNIS] --actor AKTEUR
 \stoptyping
@@ -2632,6 +2637,9 @@ Pfade oder Muster nimmt der Befehl noch nicht. Ohne \type{--resume} und
 \type{--abort} ist die ID nötig, mit ihnen ist sie ein Fehler der Argumente.
 \item {\bf \type{--apply}:} Macht den Purge: schreibt die neuen Commits, den Eintrag
 \type{purge} und die Stubs und löscht die alten Objekte.
+\item {\bf \type{--move-tags}:} Setzt jeden Tag, der auf einen umgeschriebenen Commit zeigt,
+am Ende wieder auf den Commit, den der Purge übrig lässt. Ohne die Option lehnt ein solcher Tag
+den Purge ab (siehe die Fehler). Die Option gilt für den Plan und für \type{--apply}.
 \item {\bf \type{--resume}:} Beendet einen Purge, der abbrach, aus seinem Journal.
 \item {\bf \type{--abort}:} Nimmt einen Purge zurück, der vor seinem Eintrag abbrach.
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
@@ -2640,7 +2648,9 @@ das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktu
 \stopitemize
 
 \type{--apply}, \type{--resume} und \type{--abort} schliessen einander aus; zwei davon sind
-ein Fehler der Argumente.
+ein Fehler der Argumente. \type{--move-tags} geht weder mit \type{--resume} noch mit
+\type{--abort}: Das Journal eines Purge nennt die Tags, die er bewegt, und \type{--resume}
+braucht die Option nicht noch einmal.
 
 {\bf Nur ein Mensch.} Ein Purge entfernt Verlauf, der sich nicht zurückholen lässt.
 Deshalb lehnt der Befehl einen Agenten ab, bevor er den Verlauf liest, gleich was die Rollen
@@ -2680,7 +2690,7 @@ löscht; schlägt das fehl, ist es ein Fehler von Stemma, und der Befehl bricht 
 {\bf Ablauf mit \type{--apply}.} Der Purge speichert zuerst das Verzeichnis in einem
 Snapshot, damit eine Änderung mit dem Geheimnis im Plan steht. Dann nimmt er die Sperre der
 Referenzen, hält sie bis zum Ende und plant unter ihr neu; sein Plan kann also von einem
-zuvor gezeigten abweichen. Er hebt das Repository auf das Format 4, falls es tiefer steht;
+zuvor gezeigten abweichen. Er hebt das Repository auf das Format 7, falls es tiefer steht;
 ältere Programme lehnen dieses Format ab. Dann schreibt er das Journal
 \type{.stemma/purge-pending}. Ab hier lehnt jeder andere Befehl ab, der schreibt (siehe die
 gemeinsamen Regeln). Dann schreibt der Purge die neuen
@@ -2701,7 +2711,7 @@ in der alten Form und meldet sonst die Sperre; dann ist die Datei von Hand zu en
 Jeder Schritt lässt sich wiederholen, und ein geschriebener Eintrag
 \type{purge} wird gefunden und nicht noch einmal geschrieben. \type{--abort} entfernt die
 Objekte, die der Purge neu geschrieben hat, und das Journal; ein Objekt, das der Speicher
-schon vorher hatte, bleibt. Das Format bleibt 4.
+schon vorher hatte, bleibt. Das Format bleibt, wo der Purge es hob.
 
 {\bf Ausgabe.} Ohne \type{--apply}:
 
@@ -2728,6 +2738,8 @@ Arbeitskopie danach und die Fassung der Arbeitskopie, die \type{track} gespeiche
 diese nennt nur noch das Log.
 Die Zeilen \type{rewrite} stehen in der Reihenfolge, in der die Commits entstehen,
 Eltern vor Kindern. Die Zeilen der Zeiger folgen der Form von \type{op restore --dry-run}.
+Mit \type{--move-tags} steht nach den Zeilen der Branches je eine Zeile
+\type{tag NAME  alt -> neu} für jeden Tag, der sich bewegt; ohne die Option gibt es sie nie.
 \type{stub entries} nennt die Nummern als Bereiche, zum Beispiel \type{3, 5-7}.
 Liegt der Blob in keinem Commit, fehlen die Zeilen \type{rewrite} und \type{stub entries};
 gelöscht werden der Blob und allenfalls Reste im Objektspeicher, die ihn enthalten.
@@ -2754,6 +2766,11 @@ Undid the purge of blob b3:f60c…; removed 2 new objects
 
 Danach zeigt \type{op log} den Eintrag \type{purge} mit der Zahl der Commits und den Stubs,
 und die ersetzten Einträge als \type{(purged)}; \type{op restore} lehnt beide ab.
+Hat der Purge Tags bewegt, nennt die zweite Zeile des Eintrags auch ihre Zahl
+(\type{commits 3  tags 1  stubs 4-5}); der Eintrag nennt weder Namen noch IDs der Tags,
+denn er hält nichts fest, was der Purge entfernt. Die Namen stehen in der Ausgabe von
+\type{purge --apply}. Ohne bewegte Tags fehlt die Angabe, und \type{op log --json} hat
+dann \type{"tags":0}.
 
 {\bf Fehler.} Die Ursache bestimmt den Code: Ein Schaden (Log, Referenz oder Objekt) endet mit
 Exit-Code 5, eine gehaltene Sperre mit Exit-Code 6, jeder andere Grund mit Exit-Code 1.
@@ -2769,14 +2786,17 @@ Ist das Repository geöffnet, beginnt jede dieser Meldungen ausser der Ablehnung
 mit \type{could not plan the purge, nothing was written}.
 Ebenso endet er, wenn ein Tag auf einen Commit zeigt, den der Purge umschreiben würde:
 Ein Tag bewegt sich nie, und er würde das Geheimnis erreichbar halten.
-Die Meldung nennt jeden solchen Tag und den Befehl \type{stemma tag --delete <name>}, der ihn
-löscht. Wer den Tag noch braucht, setzt ihn nach dem Purge auf den Commit, den der Purge übrig
-lässt.
+Die Meldung nennt jeden solchen Tag und zwei Wege: den Purge mit \type{--move-tags} wiederholen,
+dann setzt er jeden dieser Tags auf den Commit, den er übrig lässt, oder den Tag mit
+\type{stemma tag --delete <name>} löschen und nach dem Purge selbst neu setzen.
+Der Purge bewegt einen Tag also nur, wenn der Mensch es verlangt hat; ein Tag, der vor dem
+Geheimnis liegt, bleibt in jedem Fall, wo er ist.
 Solange ein Journal besteht, lehnt \type{stemma tag --delete} ab; dann gilt:
 erst \type{--abort}, dann den Tag löschen, dann den Purge neu planen.
 Dieselbe Prüfung läuft unter der Sperre vor dem ersten Schreiben noch einmal,
-auch bei \type{--resume}; ein Tag, der seit dem Plan entstand, hält den Purge dann an,
-und das Journal bleibt für \type{--abort} oder ein erneutes \type{--resume}.
+auch bei \type{--resume}; ein Tag, der seit dem Plan entstand und den das Journal nicht
+bewegt, hält den Purge dann an, und das Journal bleibt für \type{--abort} oder ein
+erneutes \type{--resume}.
 Ebenso endet er, wenn der Purge mehr als $2^{24}$ Einträge des Log ersetzen würde, mehr, als
 sein Journal aufnimmt.
 Werden zwei Eltern eines Merge-Commits beim Umschreiben zu einem, ist das kein Fehler:
@@ -2841,6 +2861,8 @@ stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55
     --actor "human daniel"
 stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55 \
     --apply --actor "human daniel"
+stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55 \
+    --apply --move-tags --actor "human daniel"
 stemma purge --resume -C projekt --actor "human daniel"
 stemma purge --abort --actor "human daniel"
 \stoptyping

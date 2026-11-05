@@ -163,7 +163,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   (ADR-004), and an authorizer can grant it apart from `tag`. Deleting a tag and setting it
   again are two operations with two entries: no operation moves a tag, which keeps the rule that
   a tag never moves and keeps the whole history of a name in the log. A purge that is refused
-  for a tag (`TaggedCommit`) names `stemma tag --delete <name>` instead of the file.
+  for a tag (`TaggedCommit`) names `stemma tag --delete <name>` instead of the file, and
+  `--move-tags` (STEMMA-185, ADR-014): the one case where a tag moves is a purge that the human
+  who runs it asked to move the tag, and the `purge` entry counts it.
 - **A name that is both a branch and a tag is an error, unless it is qualified**
   *(confirmed, STEMMA-186)*. No command resolves a name to a tag yet, so this is the rule for the
   first one. It applies to every place that takes any revision: today `switch --detach`, the
@@ -198,10 +200,11 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   and does not decide).
 - **Tags are partly known** *(STEMMA-54, STEMMA-183, STEMMA-184, STEMMA-186)*. `verify` checks
   the commits of the tags. A purge refuses (`TaggedCommit`) while a tag points to a commit that
-  it would rewrite, because a tag cannot move (ADR-014). A restore does not touch tags: they
+  it would rewrite, because a tag cannot move, unless the person asked it to move the tag
+  (`--move-tags`, ADR-014). A restore does not touch tags: they
   are not part of the state it brings back, and a tag that a later entry created stays
-  (ADR-013). Still open: a purge of a tagged commit. The name that is both a branch and a tag
-  is decided above.
+  (ADR-013). The purge of a tagged commit is decided (ADR-014, STEMMA-185). The name that is both
+  a branch and a tag is decided above.
 - **The module stores, and nothing more** *(confirmed)*. The module does not call the
   authorization hook (ADR-002) and does not write the operation log (ADR-011); the layer above
   does, because it knows the actor and the operation. The default branch of a new repository is

@@ -2377,7 +2377,9 @@ beim Working-Copy-Commit, bei jedem Branch und jedem Tag, bei einem abgekoppelte
 und bei jedem Commit, den ein Eintrag des Logs nennt.
 Ein Tag bewegt sich nie (ADR-008);
 nennt er einen Commit, den der Purge umschreiben würde,
-lehnt der Plan ihn ab (\type{TaggedCommit}).
+lehnt der Plan ihn ab (\type{TaggedCommit}), ausser der Mensch hat mit \type{--move-tags}
+entschieden, dass der Purge den Tag auf den neuen Commit setzt.
+Dann steht der Tag im Plan, im Journal und als Zahl im Eintrag \type{purge}.
 Ein Verlauf kann tausende Commits lang sein,
 deshalb hält der Durchlauf einen eigenen Stapel statt der Rekursion (\type{Planner::commit}):
 

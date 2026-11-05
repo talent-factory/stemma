@@ -13,7 +13,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::journal::{self, Journal, JournalError};
-use super::{check_tags, refuse_agent, Planner, PurgeError, PurgePlan};
+use super::{check_tags, refuse_agent, Planner, PurgeError, PurgePlan, TagPolicy};
 use crate::object::{BlobId, CommitId, ObjectId};
 use crate::oplog::{Entry, EntryError, OpLogError, Purge, Record};
 use crate::refs::{Logged, PurgeLock, RefError};
@@ -447,7 +447,26 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Purged, ApplyPurgeError> {
-        self.apply_purge_until(blob, actor, authorizer, None)
+        self.apply_purge_with(blob, actor, authorizer, TagPolicy::Refuse)
+    }
+
+    /// [`apply_purge`](Self::apply_purge) with the decision of the person about the tags that
+    /// point to a rewritten commit (ADR-014): with [`TagPolicy::Move`] the purge sets each such
+    /// tag again at the new version of its commit, in the same step as the branches, and the
+    /// `purge` entry counts them. A resume needs no policy: the journal names the tags that move.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`apply_purge`](Self::apply_purge); [`PurgeError::TaggedCommit`] (inside
+    /// [`ApplyPurgeError::Plan`]) only with [`TagPolicy::Refuse`].
+    pub fn apply_purge_with(
+        &self,
+        blob: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+        tags: TagPolicy,
+    ) -> Result<Purged, ApplyPurgeError> {
+        self.apply_purge_policy_until(blob, actor, authorizer, tags, None)
             .map(|purged| purged.expect("only a test stops a purge"))
     }
 
@@ -521,11 +540,24 @@ impl Repository {
 
     /// [`apply_purge`](Self::apply_purge), which a test can stop at a step. Returns `None` if it
     /// stopped.
+    #[cfg(test)]
     pub(super) fn apply_purge_until(
         &self,
         blob: ObjectId,
         actor: &Actor,
         authorizer: &dyn Authorizer,
+        stop: Option<Stop>,
+    ) -> Result<Option<Purged>, ApplyPurgeError> {
+        self.apply_purge_policy_until(blob, actor, authorizer, TagPolicy::Refuse, stop)
+    }
+
+    /// [`apply_purge_with`](Self::apply_purge_with), which a test can stop at a step.
+    pub(super) fn apply_purge_policy_until(
+        &self,
+        blob: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+        tags: TagPolicy,
         stop: Option<Stop>,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
         let (blob, allowed) = self
@@ -545,7 +577,7 @@ impl Repository {
                 }
                 other => ApplyPurgeError::Snapshot(other),
             })?;
-        let purged = self.start_purge(blob, actor, &allowed, stop, pending);
+        let purged = self.start_purge(blob, actor, &allowed, tags, stop, pending);
         match (purged, snapshot) {
             (Ok(purged), snapshot) => Ok(purged.map(|purged| Purged { snapshot, ..purged })),
             (Err(error), Some(snapshot)) => Err(ApplyPurgeError::AfterSnapshot {
@@ -562,12 +594,13 @@ impl Repository {
         blob: BlobId,
         actor: &Actor,
         allowed: &Allowed,
+        tags: TagPolicy,
         stop: Option<Stop>,
         pending: impl Fn(RefError) -> ApplyPurgeError,
     ) -> Result<Option<Purged>, ApplyPurgeError> {
         let lock = self.refs_store().lock_purge(allowed).map_err(pending)?;
         let left = scratch_left(&self.metadata_dir());
-        let (plan, planner) = self.plan_blob(blob).map_err(ApplyPurgeError::Plan)?;
+        let (plan, planner) = self.plan_blob(blob, tags).map_err(ApplyPurgeError::Plan)?;
         let paths = planner.paths();
         let start = |source| ApplyPurgeError::Start(source);
         let last = self
@@ -766,16 +799,17 @@ impl Repository {
             .copied()
             .filter(|number| !listed(*number))
             .collect();
-        let commits = if written.is_empty() {
-            plan.rewrites.len() as u64
+        let (commits, tags) = if written.is_empty() {
+            (plan.rewrites.len() as u64, plan.tags.len() as u64)
         } else {
-            0
+            (0, 0)
         };
         let step = || {
             let mut entries = Vec::new();
             if written.is_empty() || !missing.is_empty() {
-                let purge =
-                    Purge::try_new(now(), actor.clone(), commits, &missing).map_err(|error| {
+                let purge = Purge::try_new(now(), actor.clone(), commits, &missing)
+                    .and_then(|purge| purge.with_tags(tags))
+                    .map_err(|error| {
                         EntryStep::Failed(Vec::new(), Box::new(PurgeFailure::Entry(error)))
                     })?;
                 entries = self.append_purge(&lock, purge).map_err(|error| {
@@ -891,9 +925,9 @@ impl Repository {
         Ok(Some(written))
     }
 
-    /// Refuses the delete set of `plan` if a tag points to a commit that it rewrites. Tags are
-    /// read again under the lock, because the plan may be older than a tag (a resume, or a tag
-    /// that was written by hand).
+    /// Refuses the delete set of `plan` if a tag points to a commit that it rewrites and the plan
+    /// does not move it. Tags are read again under the lock, because the plan may be older than a
+    /// tag (a resume, or a tag that was written by hand).
     fn check_tags_against(
         &self,
         plan: &PurgePlan,
@@ -906,7 +940,9 @@ impl Repository {
             PurgeFailure::Refs,
         ))?;
         let rewritten = plan.rewrites.iter().map(|(old, _)| *old).collect();
-        check_tags(&tags, &rewritten).map_err(|error| ApplyPurgeError::Stopped {
+        // A tag that the journal moves is the person's decision; any other is refused.
+        let moving: Vec<_> = plan.tags.iter().map(|(name, _)| name.clone()).collect();
+        check_tags(&tags, &rewritten, &moving).map_err(|error| ApplyPurgeError::Stopped {
             step: PurgeStep::Objects,
             entries,
             source: Box::new(PurgeFailure::Plan(Box::new(error))),
@@ -1131,7 +1167,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 6\n");
+        assert_eq!(format(dir), "stemma-repository 7\n");
     }
 
     #[test]
@@ -1397,6 +1433,40 @@ mod tests {
     }
 
     #[test]
+    fn a_tag_on_a_merge_whose_parents_become_one_follows_the_rewritten_merge() {
+        use crate::change::ChangeId;
+        use crate::object::Commit;
+
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (one, two, other, without) = twin_parents(&repository);
+        let merge = Commit::try_new(
+            without,
+            vec![one, other, two],
+            ChangeId::generate().unwrap(),
+            actor(),
+            6,
+            "merge",
+        )
+        .unwrap();
+        let merge = repository.objects().put_commit(&merge).unwrap();
+        branch_at(&repository, "merge", merge.object_id());
+        tag(&dir, &repository, "v1", merge);
+
+        let purged = move_tags(&repository);
+
+        let name = crate::refs::BranchName::try_new("v1").unwrap();
+        let moved = repository.refs().tag(&name).unwrap().unwrap();
+        assert_ne!(moved, merge);
+        let branch = BranchName::try_new("merge").unwrap();
+        assert_eq!(repository.refs().branch(&branch).unwrap(), Some(moved));
+        assert!(repository.objects().contains(&moved.object_id()).unwrap());
+        assert!(!repository.objects().contains(&merge.object_id()).unwrap());
+        assert!(repository.verify_refs().unwrap().is_empty());
+        assert!(purged.plan().tags().iter().any(|(n, _)| n == &name));
+    }
+
+    #[test]
     fn a_conflict_whose_parents_become_one_is_purged_and_stays_a_conflict() {
         use crate::change::ChangeId;
         use crate::conflict::AnyCommit;
@@ -1525,6 +1595,310 @@ mod tests {
             repository.verify_refs().unwrap().is_empty(),
             "verify is clean"
         );
+    }
+
+    fn move_tags(repository: &Repository) -> Purged {
+        repository
+            .apply_purge_with(secret(), &actor(), &AllowAll, TagPolicy::Move)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_plan_lists_the_tags_that_move_only_when_the_person_asks_for_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v0", first);
+        tag(&dir, &repository, "v1", second);
+        let refused = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(&refused, PurgeError::TaggedCommit { tags } if tags.len() == 1),
+            "{refused:?}"
+        );
+        assert!(refused.to_string().contains("--move-tags"), "{refused}");
+        let plan = repository
+            .plan_purge_with(secret(), &actor(), &AllowAll, TagPolicy::Move)
+            .unwrap();
+        let [(name, moved)] = plan.tags() else {
+            panic!("one tag moves: {:?}", plan.tags());
+        };
+        assert_eq!(name.as_str(), "v1", "v0 is before the secret and stays");
+        assert_eq!(moved.before(), Some(&second));
+        let rewritten = plan.rewrites().iter().find(|(old, _)| *old == second);
+        assert_eq!(moved.after(), rewritten.map(|(_, new)| new));
+    }
+
+    #[test]
+    fn a_purge_that_moves_the_tag_leaves_it_at_the_new_commit_and_counts_it() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v0", first);
+        tag(&dir, &repository, "v1", second);
+        let purged = move_tags(&repository);
+        assert_purged(&dir, &repository, &purged);
+        let new_second = purged
+            .plan()
+            .rewrites()
+            .iter()
+            .find(|(old, _)| *old == second)
+            .map(|(_, new)| *new)
+            .unwrap();
+        let name = |text| crate::refs::BranchName::try_new(text).unwrap();
+        assert_eq!(
+            repository.refs().tag(&name("v1")).unwrap(),
+            Some(new_second)
+        );
+        assert_eq!(repository.refs().tag(&name("v0")).unwrap(), Some(first));
+        assert!(!repository.objects().contains(&second.object_id()).unwrap());
+        let counted: Vec<u64> = purged
+            .entries()
+            .iter()
+            .map(|entry| match entry.record() {
+                Record::Purge(purge) => purge.tags(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(counted, [1]);
+        assert!(
+            repository.verify_refs().unwrap().is_empty(),
+            "verify is clean"
+        );
+        assert_eq!(format(&dir), "stemma-repository 7\n");
+    }
+
+    #[test]
+    fn a_purge_that_stopped_after_its_entry_moves_the_tags_on_resume() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        let stopped = repository
+            .apply_purge_policy_until(
+                secret(),
+                &actor(),
+                &AllowAll,
+                TagPolicy::Move,
+                Some(Stop::Entry),
+            )
+            .unwrap();
+        assert!(stopped.is_none());
+        let name = crate::refs::BranchName::try_new("v1").unwrap();
+        assert_eq!(
+            repository.refs().tag(&name).unwrap(),
+            Some(second),
+            "the tag has not moved yet"
+        );
+        // The journal names the tag, so the resume needs no policy and the check of the tags
+        // under the lock accepts it.
+        let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
+        let now = repository.refs().tag(&name).unwrap().unwrap();
+        assert_ne!(now, second);
+        assert!(repository.objects().contains(&now.object_id()).unwrap());
+        assert!(!journal_exists(&dir));
+        assert!(!lock_exists(&dir));
+        assert_eq!(purged.plan().tags().len(), 1);
+        assert!(repository.verify_refs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tag_that_the_journal_does_not_move_still_stops_the_resume() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        stop_at_with_tags(&repository, Stop::Journal);
+        // Another tag appears at the same commit after the plan, by a program that ignores the
+        // lock: the person decided on `v1` only.
+        fs::write(
+            dir.path().join(".stemma/refs/tags/v2"),
+            format!("{second}\n"),
+        )
+        .unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("v2") && !text.contains("tag `v1`"), "{text}");
+        assert!(repository.objects().contains(&second.object_id()).unwrap());
+    }
+
+    #[test]
+    fn a_journalled_tag_that_was_set_elsewhere_is_stale_and_nothing_is_deleted() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        stop_at_with_tags(&repository, Stop::Journal);
+        // The tag is set to a third commit by a program that ignores the lock.
+        fs::write(
+            dir.path().join(".stemma/refs/tags/v1"),
+            format!("{first}\n"),
+        )
+        .unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(error.to_string().contains("v1"), "{error}");
+        assert!(repository.objects().contains(&second.object_id()).unwrap());
+        assert!(repository.objects().contains(&secret()).unwrap());
+        // A tag that is gone is stale as well.
+        fs::remove_file(dir.path().join(".stemma/refs/tags/v1")).unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(error.to_string().contains("v1"), "{error}");
+        assert!(repository.objects().contains(&secret()).unwrap());
+    }
+
+    #[test]
+    fn a_journalled_tag_that_is_at_its_new_value_is_skipped_on_resume() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        stop_at_with_tags(&repository, Stop::Journal);
+        // Read the new value from the journal.
+        let journal = fs::read_to_string(dir.path().join(".stemma/purge-pending")).unwrap();
+        let line = journal.lines().find(|l| l.starts_with("tag v1 ")).unwrap();
+        let new = line.rsplit(' ').next().unwrap();
+        fs::write(dir.path().join(".stemma/refs/tags/v1"), format!("{new}\n")).unwrap();
+        repository.resume_purge(&actor(), &AllowAll).unwrap();
+        let name = crate::refs::BranchName::try_new("v1").unwrap();
+        let now = repository.refs().tag(&name).unwrap().unwrap();
+        assert_eq!(now.to_string(), new);
+        assert!(repository.objects().contains(&now.object_id()).unwrap());
+    }
+
+    fn journal_new_value(dir: &TempDir, tag: &str) -> String {
+        let journal = fs::read_to_string(dir.path().join(".stemma/purge-pending")).unwrap();
+        let prefix = format!("tag {tag} ");
+        let line = journal.lines().find(|l| l.starts_with(&prefix)).unwrap();
+        line.rsplit(' ').next().unwrap().to_string()
+    }
+
+    #[test]
+    fn two_tags_on_one_commit_both_move_and_are_counted_as_two() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        tag(&dir, &repository, "v2", second);
+        let purged = move_tags(&repository);
+        let new_second = purged
+            .plan()
+            .rewrites()
+            .iter()
+            .find(|(old, _)| *old == second)
+            .map(|(_, new)| *new)
+            .unwrap();
+        let name = |text| crate::refs::BranchName::try_new(text).unwrap();
+        for text in ["v1", "v2"] {
+            assert_eq!(
+                repository.refs().tag(&name(text)).unwrap(),
+                Some(new_second)
+            );
+        }
+        let counted: Vec<u64> = purged
+            .entries()
+            .iter()
+            .map(|entry| match entry.record() {
+                Record::Purge(purge) => purge.tags(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(counted, [2]);
+        assert!(repository.verify_refs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_resume_finishes_when_only_one_of_two_tags_was_moved() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        tag(&dir, &repository, "v2", second);
+        stop_at_with_tags(&repository, Stop::Journal);
+        // A crash between the two tag writes: v1 has its new value, v2 still the old one.
+        let new = journal_new_value(&dir, "v1");
+        fs::write(dir.path().join(".stemma/refs/tags/v1"), format!("{new}\n")).unwrap();
+        repository.resume_purge(&actor(), &AllowAll).unwrap();
+        let name = |text| crate::refs::BranchName::try_new(text).unwrap();
+        let v1 = repository.refs().tag(&name("v1")).unwrap().unwrap();
+        let v2 = repository.refs().tag(&name("v2")).unwrap().unwrap();
+        assert_eq!(v1, v2);
+        assert_ne!(v1, second);
+        assert!(repository.objects().contains(&v1.object_id()).unwrap());
+        assert!(repository.verify_refs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_journalled_tag_moved_by_hand_after_the_entry_stops_the_resume_and_the_abort() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        stop_at_with_tags(&repository, Stop::Entry);
+        fs::write(
+            dir.path().join(".stemma/refs/tags/v1"),
+            format!("{first}\n"),
+        )
+        .unwrap();
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ApplyPurgeError::Stopped { source, .. }
+                    if matches!(&**source, PurgeFailure::Refs(RefError::PurgeStale { .. }))
+            ),
+            "{error:?}"
+        );
+        let error = repository.abort_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(error, ApplyPurgeError::PastNoReturn { .. }),
+            "{error:?}"
+        );
+        // Restoring the old value (the journal still has it) lets the purge finish.
+        fs::write(
+            dir.path().join(".stemma/refs/tags/v1"),
+            format!("{second}\n"),
+        )
+        .unwrap();
+        repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert!(!journal_exists(&dir));
+    }
+
+    #[test]
+    fn an_abort_leaves_the_tag_and_a_later_purge_without_the_option_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        tag(&dir, &repository, "v1", second);
+        stop_at_with_tags(&repository, Stop::Journal);
+        repository.abort_purge(&actor(), &AllowAll).unwrap();
+        let name = crate::refs::BranchName::try_new("v1").unwrap();
+        assert_eq!(repository.refs().tag(&name).unwrap(), Some(second));
+        assert!(!journal_exists(&dir) && !lock_exists(&dir));
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, PurgeError::TaggedCommit { .. }),
+            "{error:?}"
+        );
+
+        // After the entry there is no way back, and the resume still moves the tag.
+        stop_at_with_tags(&repository, Stop::Entry);
+        let error = repository.abort_purge(&actor(), &AllowAll).unwrap_err();
+        assert!(
+            matches!(error, ApplyPurgeError::PastNoReturn { .. }),
+            "{error:?}"
+        );
+        repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert_ne!(repository.refs().tag(&name).unwrap(), Some(second));
+    }
+
+    fn stop_at_with_tags(repository: &Repository, stop: Stop) {
+        let stopped = repository
+            .apply_purge_policy_until(secret(), &actor(), &AllowAll, TagPolicy::Move, Some(stop))
+            .unwrap();
+        assert!(stopped.is_none());
     }
 
     #[test]
@@ -1738,7 +2112,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 6\n");
+        assert_eq!(format(&dir), "stemma-repository 7\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -1860,7 +2234,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 6\n",
+            "stemma-repository 7\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -2483,7 +2857,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 6\n");
+        assert_eq!(format(&dir), "stemma-repository 7\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);

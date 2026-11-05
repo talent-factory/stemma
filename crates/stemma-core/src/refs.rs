@@ -817,7 +817,8 @@ impl fmt::Display for RefError {
             Self::PurgeStale { pointer } => write!(
                 f,
                 "`{pointer}` is at neither the value before the purge nor the one after it; \
-                 another change came first"
+                 another change came first. Set it back to one of the two values, which the \
+                 journal `.stemma/purge-pending` lists, and resume the purge"
             ),
         }
     }
@@ -1398,6 +1399,9 @@ pub(crate) struct PurgeMoves {
     pub(crate) heads: Vec<(String, CommitId, CommitId)>,
     pub(crate) working_copies: Vec<(String, CommitId, CommitId)>,
     pub(crate) branches: Vec<(BranchName, CommitId, CommitId)>,
+    /// The tags that move. A tag never moves otherwise (ADR-008); a purge moves one only at the
+    /// request of the person who runs it (ADR-014).
+    pub(crate) tags: Vec<(BranchName, CommitId, CommitId)>,
 }
 
 impl FsRefStore {
@@ -3103,8 +3107,8 @@ impl FsRefStore {
     ///
     /// Every pointer is checked first: one that has its value after the purge already is skipped
     /// (a purge that is resumed), one at its value before is moved, and one at any other value is
-    /// [`RefError::PurgeStale`] before anything is written. The moves are made in the order of
-    /// [`restore_after`](Self::restore_after): branches, the working-copy commit, then HEAD.
+    /// [`RefError::PurgeStale`] before anything is written. The moves are made in this order:
+    /// branches, the tags, the working-copy commit, then HEAD.
     ///
     /// # Errors
     ///
@@ -3167,11 +3171,34 @@ impl FsRefStore {
                 return Err(stale(name.as_str().to_owned()));
             }
         }
+        let mut tags = Vec::new();
+        for (name, old, new) in &planned.tags {
+            Self::require_commit(new, objects)?;
+            let current = self.current(RefKind::Tag, name)?.commit;
+            if current == Some(*old) {
+                tags.push((name, *new));
+            } else if current != Some(*new) {
+                return Err(stale(format!("tag {}", name.as_str())));
+            }
+        }
         let done = match step() {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
         let mut steps = self.branch_steps(&moves);
+        // The tags move with the branches: they belong to the references of the repository, not
+        // to a worktree, and a stop between them leaves each at one of its two values, which the
+        // check above accepts on a resume.
+        for (name, new) in &tags {
+            steps.push(Box::new(move || {
+                self.write_replacing(
+                    &self.reference_path(RefKind::Tag, name),
+                    &encode_branch(new),
+                    &self.namespace_dir(RefKind::Tag),
+                )
+                .map(|()| true)
+            }));
+        }
         for (store, new) in &working_copies {
             steps.push(Box::new(move || {
                 store.write_working_copy(new).map(|()| true)

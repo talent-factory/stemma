@@ -36,6 +36,20 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 /// The operation that the authorizer is asked for.
 const OPERATION: &str = "purge";
 
+/// What a purge does with a tag that points to a commit it rewrites (ADR-014).
+///
+/// A tag never moves (ADR-008), so the default is to refuse. The person who runs the purge may
+/// decide that the purge sets the tag again at the new version of its commit: the name stays, and
+/// the commit that held the secret is deleted like every other one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TagPolicy {
+    /// Refuse the purge and name every such tag ([`PurgeError::TaggedCommit`]).
+    #[default]
+    Refuse,
+    /// Move every such tag to the new version of its commit.
+    Move,
+}
+
 /// What a purge would do: the commits it rewrites, the pointers it moves, the entries it replaces
 /// by stubs, and the objects it deletes.
 ///
@@ -49,6 +63,7 @@ pub struct PurgePlan {
     heads: Vec<(String, Moved<Head>)>,
     working_copies: Vec<(String, Moved<CommitId>)>,
     branches: Vec<(BranchName, Moved<CommitId>)>,
+    tags: Vec<(BranchName, Moved<CommitId>)>,
     entries: Vec<u64>,
     commits: Vec<CommitId>,
     trees: Vec<TreeId>,
@@ -98,6 +113,13 @@ impl PurgePlan {
     /// The branches that move, sorted by name.
     pub fn branches(&self) -> &[(BranchName, Moved<CommitId>)] {
         &self.branches
+    }
+
+    /// The tags that move to the new version of their commit, sorted by name. Empty unless the
+    /// purge was planned with [`TagPolicy::Move`]; with [`TagPolicy::Refuse`] such a tag is an
+    /// error, not a move.
+    pub fn tags(&self) -> &[(BranchName, Moved<CommitId>)] {
+        &self.tags
     }
 
     /// The numbers of the entries of the log that are replaced by stubs, in ascending order: every
@@ -163,8 +185,26 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<PurgePlan, PurgeError> {
+        self.plan_purge_with(blob, actor, authorizer, TagPolicy::Refuse)
+    }
+
+    /// [`plan_purge`](Self::plan_purge) with the decision of the person about the tags that
+    /// point to a rewritten commit: refuse ([`TagPolicy::Refuse`]) or move them
+    /// ([`TagPolicy::Move`], which lists them in [`PurgePlan::tags`]).
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`plan_purge`](Self::plan_purge); [`PurgeError::TaggedCommit`] only with
+    /// [`TagPolicy::Refuse`].
+    pub fn plan_purge_with(
+        &self,
+        blob: ObjectId,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+        tags: TagPolicy,
+    ) -> Result<PurgePlan, PurgeError> {
         let (blob, _) = self.check_purge(blob, actor, authorizer)?;
-        self.plan_blob(blob).map(|(plan, _)| plan)
+        self.plan_blob(blob, tags).map(|(plan, _)| plan)
     }
 
     /// Refuses an agent, asks the authorizer, and finds the blob: what comes before a plan. The
@@ -209,7 +249,11 @@ impl Repository {
 
     /// Plans the purge of a blob that is in the store, and returns the planner with the new
     /// objects in memory as well.
-    fn plan_blob(&self, blob: BlobId) -> Result<(PurgePlan, Planner<'_>), PurgeError> {
+    fn plan_blob(
+        &self,
+        blob: BlobId,
+        policy: TagPolicy,
+    ) -> Result<(PurgePlan, Planner<'_>), PurgeError> {
         let refs = self.refs();
         // HEAD and the working-copy commit of every worktree are roots: a purge in one worktree
         // must not delete what another worktree needs, and it moves what it rewrites there too
@@ -234,11 +278,23 @@ impl Repository {
         }
         let rewrites = planner.rewrites.clone();
         let rewritten: HashSet<CommitId> = rewrites.iter().map(|(old, _)| *old).collect();
-        // A tag never moves (ADR-008), so a purge cannot rewrite the commit of a tag, and a tag
-        // that is left would keep the secret reachable. The purge is refused until the tag is
-        // dealt with (ADR-014).
-        check_tags(&tags, &rewritten)?;
+        // A tag never moves (ADR-008), and a tag that is left would keep the secret reachable.
+        // The purge is refused unless the person decided that it sets the tag again at the new
+        // commit (ADR-014).
+        if policy == TagPolicy::Refuse {
+            check_tags(&tags, &rewritten, &[])?;
+        }
         let new = |commit: CommitId| planner.commits[&commit];
+        let tag_moves: Vec<(BranchName, Moved<CommitId>)> = tags
+            .iter()
+            .filter(|(_, commit)| rewritten.contains(commit))
+            .map(|(name, commit)| {
+                (
+                    name.clone(),
+                    Moved::from_to(Some(*commit), Some(new(*commit))),
+                )
+            })
+            .collect();
 
         let working_copy_moves: Vec<(String, Moved<CommitId>)> = worktrees
             .iter()
@@ -317,6 +373,7 @@ impl Repository {
             heads: head_moves,
             working_copies: working_copy_moves,
             branches: branch_moves,
+            tags: tag_moves,
             entries: replaced.iter().map(|entry| entry.number()).collect(),
             commits,
             trees,
@@ -988,10 +1045,10 @@ impl PurgeError {
                 }
                 write!(
                     f,
-                    ", which the purge would rewrite; delete each tag with `stemma tag --delete \
-                     <name>` (if a purge is pending, abort it first with `stemma purge \
-                     --abort`), run the purge again, and then set the tag again at the commit \
-                     that the purge leaves if it is still needed"
+                    ", which the purge would rewrite; run the purge with `--move-tags` to set \
+                     each tag again at the commit that the purge leaves, or delete each tag \
+                     with `stemma tag --delete <name>` first (if a purge is pending, abort it \
+                     first with `stemma purge --abort`)"
                 )
             }
             Self::Unsound { id } => write!(
@@ -1038,14 +1095,16 @@ impl Error for PurgeError {
 }
 
 /// Refuses a purge that would rewrite the commit of a tag (ADR-008, ADR-014): lists every such
-/// tag, so that one refusal names them all.
+/// tag, so that one refusal names them all. A tag in `moving` is one that the purge moves by the
+/// decision of the person, so it is not refused.
 fn check_tags(
     tags: &[(BranchName, CommitId)],
     rewritten: &HashSet<CommitId>,
+    moving: &[BranchName],
 ) -> Result<(), PurgeError> {
     let tagged: Vec<(BranchName, CommitId)> = tags
         .iter()
-        .filter(|(_, commit)| rewritten.contains(commit))
+        .filter(|(name, commit)| rewritten.contains(commit) && !moving.contains(name))
         .cloned()
         .collect();
     if tagged.is_empty() {
