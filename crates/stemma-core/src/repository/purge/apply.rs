@@ -1433,6 +1433,40 @@ mod tests {
     }
 
     #[test]
+    fn a_tag_on_a_merge_whose_parents_become_one_follows_the_rewritten_merge() {
+        use crate::change::ChangeId;
+        use crate::object::Commit;
+
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (one, two, other, without) = twin_parents(&repository);
+        let merge = Commit::try_new(
+            without,
+            vec![one, other, two],
+            ChangeId::generate().unwrap(),
+            actor(),
+            6,
+            "merge",
+        )
+        .unwrap();
+        let merge = repository.objects().put_commit(&merge).unwrap();
+        branch_at(&repository, "merge", merge.object_id());
+        tag(&dir, &repository, "v1", merge);
+
+        let purged = move_tags(&repository);
+
+        let name = crate::refs::BranchName::try_new("v1").unwrap();
+        let moved = repository.refs().tag(&name).unwrap().unwrap();
+        assert_ne!(moved, merge);
+        let branch = BranchName::try_new("merge").unwrap();
+        assert_eq!(repository.refs().branch(&branch).unwrap(), Some(moved));
+        assert!(repository.objects().contains(&moved.object_id()).unwrap());
+        assert!(!repository.objects().contains(&merge.object_id()).unwrap());
+        assert!(repository.verify_refs().unwrap().is_empty());
+        assert!(purged.plan().tags().iter().any(|(n, _)| n == &name));
+    }
+
+    #[test]
     fn a_conflict_whose_parents_become_one_is_purged_and_stays_a_conflict() {
         use crate::change::ChangeId;
         use crate::conflict::AnyCommit;

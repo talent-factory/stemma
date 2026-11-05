@@ -817,7 +817,8 @@ impl fmt::Display for RefError {
             Self::PurgeStale { pointer } => write!(
                 f,
                 "`{pointer}` is at neither the value before the purge nor the one after it; \
-                 another change came first"
+                 another change came first. Set it back to one of the two values, which the \
+                 journal `.stemma/purge-pending` lists, and resume the purge"
             ),
         }
     }
