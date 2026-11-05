@@ -629,6 +629,36 @@ mod tests {
     }
 
     #[test]
+    fn several_damaged_worktrees_are_damage_if_one_is_and_else_keep_the_first_kind() {
+        let damaged = || {
+            WorktreeError::Refs(RefError::Corrupt {
+                path: path(),
+                source: crate::refs::RefParseError::Malformed(
+                    crate::refs::RefMalformed::WorktreeName,
+                ),
+            })
+        };
+        let io = || WorktreeError::Io {
+            operation: "inspect",
+            path: path(),
+            source: std::io::Error::other("denied"),
+        };
+        let several = |errors: Vec<WorktreeError>| WorktreeError::SeveralDamaged {
+            asked: None,
+            damaged: errors
+                .into_iter()
+                .map(|error| ("w".to_owned(), Box::new(error)))
+                .collect(),
+        };
+        assert_eq!(several(vec![io(), damaged()]).kind(), FailureKind::Damaged);
+        assert_eq!(several(vec![io(), io()]).kind(), FailureKind::Other);
+        assert_eq!(
+            several(vec![WorktreeError::Refs(locked()), io()]).kind(),
+            FailureKind::Locked
+        );
+    }
+
+    #[test]
     fn a_stale_tag_is_no_damage_and_no_held_lock() {
         let stale = RefError::StaleTag {
             name: "v1".parse().unwrap(),

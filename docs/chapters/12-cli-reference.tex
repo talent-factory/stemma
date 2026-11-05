@@ -2041,7 +2041,8 @@ linked  /home/daniel/linked    feature  human anna
 \type{working-copy} sich nicht lesen lässt; beschädigte Referenzen enden mit Exit-Code 5.
 Dazu zählt ein Zustandsverzeichnis, dessen Name kein Worktree tragen kann (Leerzeichen, ein
 Punkt am Anfang, \type{main}): Ein Eintrag im Log und das Journal eines Purge könnten ihn nicht
-nennen; darum endet jeder Befehl, der alle Worktrees lesen muss, mit Exit-Code 5, und
+nennen, weil beim Lesen jeder Name geprüft wird; darum endet jeder Befehl, der alle Worktrees
+lesen muss (etwa \type{worktree list}), mit Exit-Code 5, und
 \type{purge --apply} schreibt kein Journal.
 Sind mehrere Worktrees beschädigt, nennt die Meldung alle mit dem Grund und nicht nur den ersten,
 damit nicht erst der nächste Aufruf den nächsten Schaden zeigt.
@@ -2130,8 +2131,9 @@ verfolgten Dateien ohne \type{--force} (die Meldung nennt die ersten) und bei ei
 Hat der Befehl die Dateien schon in einem Snapshot gesichert, bevor er auf einen dieser Fehler
 stösst, behält er den Exit-Code des Fehlers, und die Meldung nennt den Eintrag des Snapshots; der
 Worktree ist dann unverändert, und der Aufruf mit \type{--force} ist sicher. Nur wenn sich das
-Verzeichnis dieses Snapshots nicht sichern liess oder der Snapshot einen Zeiger bewegte und dann
-stehen blieb, endet er mit Exit-Code 3, denn dann übersteht die gesicherte Arbeit einen Absturz
+Verzeichnis dieses Snapshots nicht sichern liess (der Flush auf den Datenträger scheiterte) oder
+der Snapshot einen Zeiger bewegte und dann stehen blieb, endet er mit Exit-Code 3,
+denn dann übersteht die gesicherte Arbeit einen Absturz
 vielleicht nicht; die Meldung sagt es.
 Ein Zustandsverzeichnis unter \type{.stemma/worktrees}, dessen Name kein Worktree tragen kann
 (erlaubt sind Buchstaben, Ziffern, \type{-}, \type{_} und \type{.}, nicht am Anfang, und nicht

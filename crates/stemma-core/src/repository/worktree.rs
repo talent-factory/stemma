@@ -321,6 +321,13 @@ impl Repository {
 
     /// The worktree that `name` names: the name of a linked worktree, or the path of its
     /// directory. The main worktree and the worktree of this call are refused.
+    ///
+    /// # Errors
+    ///
+    /// [`WorktreeError::Damaged`] if the state of the worktree called `name` cannot be read,
+    /// [`WorktreeError::SeveralDamaged`] if `name` is no valid name, matches no readable worktree,
+    /// and some state directory is damaged, [`WorktreeError::Unfinished`] for a state directory
+    /// without `HEAD`, and [`WorktreeError::NoSuchWorktree`] otherwise.
     fn find_worktree(&self, name: &str) -> Result<WorktreeInfo, WorktreeError> {
         // The other worktrees may be damaged; only the one that is asked for must be readable.
         let (rows, mut damaged) = self.scan_worktrees()?;
@@ -725,13 +732,16 @@ impl Repository {
     }
 
     /// Lists the worktrees: the main one first, then the linked ones by name (ADR-009). A state
-    /// directory without `HEAD` is an add that stopped and is left out.
+    /// directory without `HEAD` is no worktree (an add or a removal that stopped, a foreign
+    /// directory) and is left out.
     ///
     /// # Errors
     ///
-    /// Returns [`WorktreeError::Refs`] if a `HEAD` or a `working-copy` cannot be read, and
-    /// [`WorktreeError::Io`] if the directory of the worktrees cannot be listed. When more than
-    /// one worktree is damaged, [`WorktreeError::SeveralDamaged`] names all of them.
+    /// Returns the error of the damaged worktree (usually [`WorktreeError::Refs`] when a `HEAD` or
+    /// a `working-copy` cannot be read, [`WorktreeError::Io`] when a file cannot be inspected)
+    /// when one worktree is damaged, and [`WorktreeError::SeveralDamaged`], which names all of them,
+    /// when more than one is. [`WorktreeError::Io`] also stands for a directory of the worktrees
+    /// that cannot be listed.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>, WorktreeError> {
         let (rows, damaged) = self.scan_worktrees()?;
         if damaged.len() > 1 {
@@ -747,7 +757,9 @@ impl Repository {
     }
 
     /// The worktrees that can be read, and for each linked one that cannot, its name and why. The
-    /// main worktree must be readable. A damaged worktree does not hide the others, so that the
+    /// main worktree must be readable. A state directory without `HEAD` is skipped; a name that
+    /// no worktree can have (see [`crate::oplog::valid_worktree_name`]) and a `HEAD` that cannot
+    /// be inspected count as damaged. A damaged worktree does not hide the others, so that the
     /// command that removes one does not depend on the state of all.
     fn scan_worktrees(&self) -> Result<Scanned, WorktreeError> {
         let shared = self.metadata_dir();
@@ -1337,6 +1349,7 @@ impl WorktreeError {
             | Self::RemoveNotDurable { source: error, .. } => error.io_error(),
             Self::Snapshot(error) => error.io_error(),
             Self::AfterSnapshot { source, .. } | Self::Damaged { source, .. } => source.io_error(),
+            // The first file error of the list; `kind()` may rest on another entry.
             Self::SeveralDamaged { damaged, .. } => {
                 damaged.iter().find_map(|(_, error)| error.io_error())
             }
@@ -1363,8 +1376,9 @@ impl WorktreeError {
     }
 
     /// The entry that the error leaves in the log: the entry of the add or the removal, or, for
-    /// `AfterSnapshot` and for a `Snapshot` that failed after its entry, the entry of the snapshot
-    /// that came first (see [`wrote_its_entry`](Self::wrote_its_entry) for the first two only).
+    /// `AfterSnapshot` whose failure has no entry of its own and for a `Snapshot` that failed after
+    /// its entry, the entry of the snapshot that came first (see
+    /// [`wrote_its_entry`](Self::wrote_its_entry) for the entry of the add or removal only).
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::Update(error) => error.entry(),
@@ -1376,7 +1390,10 @@ impl WorktreeError {
             | Self::RemoveMoveFailed { entry, .. }
             | Self::RemovePartlyMoved { entry, .. }
             | Self::RemoveNotDurable { entry, .. } => Some(entry),
-            Self::AfterSnapshot { snapshot, .. } => Some(snapshot),
+            // The entry of the removal is the later one, so it is the one that is named.
+            Self::AfterSnapshot {
+                snapshot, source, ..
+            } => source.entry().or(Some(snapshot)),
             Self::Snapshot(error) => match &**error {
                 SnapshotError::Update(update) => update.entry(),
                 _ => None,
@@ -1412,11 +1429,15 @@ impl WorktreeError {
     }
 
     /// Whether the call wrote the entry of the add or of the removal: the entry that the snapshot
-    /// before it wrote does not count, so `AfterSnapshot` and `Snapshot` are `false` here. A failure
-    /// that is wrapped in `AfterSnapshot` because the flush of that snapshot failed is `true` for
-    /// `pointer_moved`.
+    /// before it wrote does not count, so `Snapshot` is `false` here, and `AfterSnapshot` is `true`
+    /// only if the failure it wraps wrote an entry of its own. Such a failure that is wrapped
+    /// because the flush of the snapshot failed is `true` for `pointer_moved` as well.
     pub fn wrote_its_entry(&self) -> bool {
-        self.entry().is_some() && !matches!(self, Self::AfterSnapshot { .. } | Self::Snapshot(_))
+        match self {
+            Self::AfterSnapshot { source, .. } => source.wrote_its_entry(),
+            Self::Snapshot(_) => false,
+            _ => self.entry().is_some(),
+        }
     }
 }
 
@@ -1680,6 +1701,7 @@ impl Error for WorktreeError {
             | Self::NoStart(_)
             | Self::NoSuchWorktree(_)
             | Self::Unfinished(_)
+            // The causes are part of the message; each is one of the entries of the list.
             | Self::SeveralDamaged { .. }
             | Self::RemoveMain
             | Self::RemoveCurrent(_)
@@ -1757,9 +1779,21 @@ mod tests {
             path: "/w".into(),
             source: io::Error::other("busy"),
         };
-        let kept = after_snapshot(&Some(entry), &mut None, removal);
+        let kept = after_snapshot(&Some(entry.clone()), &mut None, removal);
         assert!(matches!(kept, WorktreeError::RemoveFailed { .. }));
         assert!(kept.wrote_its_entry());
+
+        // If the flush of the snapshot failed as well, the failure is wrapped, and it still names
+        // the entry of the removal and counts as its own entry.
+        let removal = WorktreeError::RemoveFailed {
+            entry: entry.clone(),
+            path: "/w".into(),
+            source: io::Error::other("busy"),
+        };
+        let both = after_snapshot(&Some(entry), &mut Some(locked()), removal);
+        assert!(matches!(both, WorktreeError::AfterSnapshot { .. }));
+        assert!(both.pointer_moved() && both.wrote_its_entry());
+        assert!(both.entry().is_some());
     }
 
     #[test]
