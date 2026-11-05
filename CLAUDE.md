@@ -72,7 +72,7 @@ worktree is removed.
 
 ### Issue tracker
 
-Issues live in the Plane project Stemma (`STEMMA-n`), accessed through the `plane-tf` MCP server. See `docs/agents/issue-tracker.md`.
+Issues live in the Plane project Stemma (`STEMMA-n`), accessed through the `plane` MCP server. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

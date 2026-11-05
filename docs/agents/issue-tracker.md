@@ -1,11 +1,11 @@
 # Issue tracker: Plane
 
 Issues and specs for this repo live in the Plane project **Stemma** (identifier `STEMMA`,
-work items such as `STEMMA-12`). Use the `plane-tf` MCP server for all operations; there is no CLI.
+work items such as `STEMMA-12`). Use the `plane` MCP server for all operations; there is no CLI.
 
 - Web UI: https://plane.talent-factory.ch/tf/projects/d988f244-ae6e-492d-a61e-c335c6c87de9/issues
 - Project id: `d988f244-ae6e-492d-a61e-c335c6c87de9` (pass it as `project_id` to every call)
-- Tools: `mcp__plane-tf__workitem`, `label`, `state`, `cycle`, `module`, `workitem_relation`.
+- Tools: `mcp__plane__workitem`, `label`, `state`, `cycle`, `module`, `workitem_relation`.
   Load them through `ToolSearch` first if they are deferred.
 
 ## Conventions

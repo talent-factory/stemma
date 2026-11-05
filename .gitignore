@@ -2,6 +2,7 @@ target/
 .DS_Store
 .claude/*
 !.claude/skills/
+!.claude/wave.md
 .worktrees/
 .headroom/
 .stemma/
