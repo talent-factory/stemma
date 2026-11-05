@@ -1869,3 +1869,32 @@ fn an_empty_directory_with_a_strange_name_among_the_states_is_no_worktree_and_no
     assert!(list.stdout.contains("linked") && !list.stdout.contains("tmp dir"));
     assert_eq!(added.code, 0, "{}", added.stderr);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_head_that_cannot_be_inspected_is_an_error_and_not_a_worktree_that_is_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    let state = repo.join(".stemma/worktrees/linked");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o000)).unwrap();
+    // A user who may read it anyway (root) cannot make the situation.
+    let unreadable = fs::symlink_metadata(state.join("HEAD")).is_err();
+
+    let list = run(&repo, &["worktree", "list"]);
+    let remove = run(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+    if !unreadable {
+        return;
+    }
+
+    assert_eq!(list.code, 1, "{}", list.stderr);
+    assert!(list.stderr.contains("inspect"), "{}", list.stderr);
+    assert_ne!(remove.code, 0, "{}", remove.stderr);
+    assert!(
+        !remove.stderr.contains("no worktree") && !remove.stderr.contains("unfinished"),
+        "{}",
+        remove.stderr
+    );
+}

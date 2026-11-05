@@ -58,7 +58,8 @@
 //! (untracked files without `--force`, say) after the files were saved. The message of such a
 //! failure names the entry, and repeating the command is safe.
 //!
-//! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
+//! A snapshot that moved the pointer and could not flush it, or that moved one pointer and stopped,
+//! is code 3: for `worktree remove` with the entry of the snapshot, for `status` after the
 //! status is written, for `commit` without a commit (it can be repeated), for `op restore` after
 //! the restore is made, for `purge --apply` before the purge, and for `track` as the other flush
 //! errors.

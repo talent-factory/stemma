@@ -1327,8 +1327,8 @@ impl WorktreeError {
     }
 
     /// The entry that the error leaves in the log: the entry of the add or the removal, or, for
-    /// `AfterSnapshot`, the entry of the snapshot that came first (see
-    /// [`wrote_its_entry`](Self::wrote_its_entry) for the first two only).
+    /// `AfterSnapshot` and for a `Snapshot` that failed after its entry, the entry of the snapshot
+    /// that came first (see [`wrote_its_entry`](Self::wrote_its_entry) for the first two only).
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::Update(error) => error.entry(),
@@ -1359,7 +1359,8 @@ impl WorktreeError {
 
     /// Whether a pointer moved although the call failed. The snapshot that came first moved the
     /// working-copy commit, but its entry can be undone and the call can be repeated, so it counts
-    /// only if its flush did not succeed (ADR-018).
+    /// only if its flush did not succeed (ADR-018). A snapshot that failed itself counts if it
+    /// moved a pointer and stopped (`PartlyMoved`, `NotDurable`).
     pub fn pointer_moved(&self) -> bool {
         match self {
             Self::AfterSnapshot { late, .. } => late.is_some(),
@@ -1375,8 +1376,9 @@ impl WorktreeError {
     }
 
     /// Whether the call wrote the entry of the add or of the removal: the entry that the snapshot
-    /// before it wrote does not count. A failure that is wrapped in `AfterSnapshot` because the
-    /// flush of that snapshot failed is `false` here and `true` for `pointer_moved`.
+    /// before it wrote does not count, so `AfterSnapshot` and `Snapshot` are `false` here. A failure
+    /// that is wrapped in `AfterSnapshot` because the flush of that snapshot failed is `true` for
+    /// `pointer_moved`.
     pub fn wrote_its_entry(&self) -> bool {
         self.entry().is_some() && !matches!(self, Self::AfterSnapshot { .. } | Self::Snapshot(_))
     }
@@ -1505,11 +1507,7 @@ impl fmt::Display for WorktreeError {
             Self::Snapshot(error) => write!(
                 f,
                 "the files of the worktree could not be saved first, and nothing was removed: \
-                 {error}{}",
-                self.entry().map_or_else(String::new, |entry| format!(
-                    " (the snapshot is entry {} in the log)",
-                    entry.number()
-                ))
+                 {error}"
             ),
             Self::AfterSnapshot {
                 snapshot,
@@ -1720,7 +1718,12 @@ mod tests {
         assert!(partly.pointer_moved());
         assert!(partly.entry().is_some());
         assert!(!partly.wrote_its_entry(), "the entry is the snapshot's");
-        assert!(partly.to_string().contains("entry 1"), "{partly}");
+        // The inner error names the entry; the wrapper must not name it a second time.
+        assert_eq!(
+            partly.to_string().matches("entry 1 ").count(),
+            1,
+            "{partly}"
+        );
 
         // The pointer did not move, so the call can be repeated: code 1, not 3.
         let refused =
