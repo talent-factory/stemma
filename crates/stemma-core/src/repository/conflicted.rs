@@ -18,14 +18,17 @@
 //! `(directory <id>)`, so that two different directories never cancel; the files below it stay in
 //! the commit and are not written.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use super::snapshot::{read_object, SnapshotError};
 use crate::conflict::{marker_text, Merge};
 use crate::index::Index;
 use crate::merge::Slot;
-use crate::object::{Blob, BlobId, EntryMode, FileMode, Kind, Tree, TreeEntry, TreeId};
-use crate::store::ObjectStore;
+use crate::object::{
+    Blob, BlobId, Commit, CommitId, EntryMode, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId,
+};
+use crate::store::{sealed, ObjectStore, RawObject, StoreError};
 
 /// A path with an open conflict, as `status` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +122,83 @@ pub(super) fn view(objects: &dyn ObjectStore, sum: &Merge<TreeId>) -> Result<Vie
     };
     conflicts.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(View { tree, conflicts })
+}
+
+/// The objects that [`view`] writes for a sum of trees and that hold the text of a conflict: the
+/// marker blobs, and the trees on the way from the root of the view to them.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct ViewObjects {
+    pub(super) blobs: Vec<BlobId>,
+    pub(super) trees: Vec<TreeId>,
+}
+
+/// Finds the objects that [`view`] would write for a sum of trees, without writing any. A purge
+/// uses it to delete the copies of a purged content that a view left in the store (ADR-014).
+///
+/// A blob is listed for every text that the view stores, so also for the content that all values
+/// of a path have when they differ in the mode only: that blob can be a real one, and the caller
+/// has to check that nothing it keeps reaches it. A tree is listed only if it names a listed blob
+/// or a listed tree, so a tree that the view shares with a commit without a conflict is not.
+pub(super) fn view_objects(
+    objects: &dyn ObjectStore,
+    sum: &Merge<TreeId>,
+) -> Result<ViewObjects, SnapshotError> {
+    let recorder = Recorder {
+        base: objects,
+        blobs: RefCell::new(Vec::new()),
+        trees: RefCell::new(Vec::new()),
+    };
+    view(&recorder, sum)?;
+    let blobs = recorder.blobs.into_inner();
+    let mut found = ViewObjects::default();
+    let mut named: BTreeSet<ObjectId> = blobs.iter().map(|blob| blob.object_id()).collect();
+    // The walk stores a tree after the trees below it, so one pass sees the children first.
+    for (tree, entries) in recorder.trees.into_inner() {
+        if entries.iter().any(|entry| named.contains(entry)) {
+            named.insert(tree.object_id());
+            found.trees.push(tree);
+        }
+    }
+    found.blobs = blobs;
+    Ok(found)
+}
+
+/// A store that reads from another one and keeps the blobs and trees it is asked to put, without
+/// writing them.
+struct Recorder<'a> {
+    base: &'a dyn ObjectStore,
+    blobs: RefCell<Vec<BlobId>>,
+    /// Each tree with the IDs of its entries.
+    trees: RefCell<Vec<(TreeId, Vec<ObjectId>)>>,
+}
+
+impl sealed::Sealed for Recorder<'_> {}
+
+impl ObjectStore for Recorder<'_> {
+    fn put_blob(&self, blob: &Blob) -> Result<BlobId, StoreError> {
+        let id = blob.id();
+        self.blobs.borrow_mut().push(id);
+        Ok(id)
+    }
+
+    fn put_tree(&self, tree: &Tree) -> Result<TreeId, StoreError> {
+        let id = tree.id();
+        let entries = tree.entries().iter().map(TreeEntry::id).collect();
+        self.trees.borrow_mut().push((id, entries));
+        Ok(id)
+    }
+
+    fn put_commit(&self, commit: &Commit) -> Result<CommitId, StoreError> {
+        Ok(commit.id())
+    }
+
+    fn get(&self, id: &ObjectId) -> Result<Option<RawObject>, StoreError> {
+        self.base.get(id)
+    }
+
+    fn contains(&self, id: &ObjectId) -> Result<bool, StoreError> {
+        self.base.contains(id)
+    }
 }
 
 /// Builds the tree of a sum of trees, level by level. A term that is `None` is the empty tree.
@@ -784,5 +864,76 @@ mod tests {
             .unwrap();
         let resolved = resolve(store, &shown.conflicts, &index).unwrap();
         assert!(resolved.is_resolved());
+    }
+
+    /// The IDs of everything in the store.
+    fn stored(repository: &Repository) -> BTreeSet<ObjectId> {
+        repository.objects().ids().unwrap().into_iter().collect()
+    }
+
+    #[test]
+    fn view_objects_are_what_a_view_stores_and_writing_them_is_left_out() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        // `dir/a.txt` conflicts two levels below the root; `b.txt` conflicts at the root; and
+        // `dir/other.txt` is not conflicted, so its blob is not listed.
+        let sum = two_paths(&repository);
+        let before = stored(&repository);
+        let found = view_objects(store, &sum).unwrap();
+        assert_eq!(stored(&repository), before, "nothing is written");
+        assert_eq!(found.blobs.len(), 2);
+
+        view(store, &sum).unwrap();
+        let added: BTreeSet<ObjectId> = stored(&repository).difference(&before).copied().collect();
+        let listed: BTreeSet<ObjectId> = found
+            .blobs
+            .iter()
+            .map(|blob| blob.object_id())
+            .chain(found.trees.iter().map(|tree| tree.object_id()))
+            .collect();
+        assert_eq!(listed, added, "the list is the set that the view adds");
+        // The root and the tree of `dir` both lead to a text, so both are listed.
+        assert_eq!(found.trees.len(), 2);
+    }
+
+    #[test]
+    fn a_sum_of_one_tree_has_no_view_objects() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let tree = tree_of(&repository, &[("a", "x\n")]);
+        let found = view_objects(repository.objects(), &Merge::resolved(tree)).unwrap();
+        assert_eq!(found, ViewObjects::default());
+    }
+
+    #[test]
+    fn a_directory_against_a_file_lists_the_line_with_the_directory() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        let file = tree_of(&repository, &[("a", "file\n")]);
+        let base = tree_of(&repository, &[]);
+        let nested = tree_of(&repository, &[("a/x", "x\n")]);
+        let sum = Merge::try_from_terms(vec![file, base, nested]).unwrap();
+        let found = view_objects(store, &sum).unwrap();
+        let shown = view(store, &sum).unwrap();
+        let text = content(&repository, shown.tree, "a");
+        assert_eq!(found.blobs, [Blob::new(text).id()]);
+        assert_eq!(found.trees, [shown.tree]);
+    }
+
+    #[test]
+    fn a_missing_side_is_an_error_and_not_an_empty_list() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        let store = repository.objects();
+        let sum = two_paths(&repository);
+        let gone = TreeId::new(ObjectId::from_digest(blake3::hash(b"no tree behind it")));
+        let broken = Merge::try_from_terms(vec![sum.terms()[0], gone, sum.terms()[2]]).unwrap();
+        assert!(view_objects(store, &broken).is_err());
     }
 }

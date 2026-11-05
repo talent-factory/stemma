@@ -265,6 +265,11 @@ art, not a template (ADR-015).
     the path is absent in the view (a mode change against a deletion), the view holds no file;
     the conflict shows in `status` and is resolved by creating the file and tracking it. The
     mode of a file with markers is not recorded: a `chmod` on it changes nothing.
+  - **The view stores its text, and a purge removes it** (STEMMA-195). The text with markers
+    of a path is stored as a blob, and the trees that lead to it as trees, because the checkout
+    layer and `diff` read them from the store. They are derived from the sum and no commit
+    names them. The text holds the content of every side, so a purge deletes the views of the
+    commits it rewrites (ADR-014); the next command that shows the conflict stores a view again.
   - **The snapshot keeps a conflict only on an exact match.** If the file at a conflicted path
     has the bytes of the text that Stemma wrote, the path keeps its values; the new commit holds
     the same terms for it. Any other text resolves the path with exactly that text, in every

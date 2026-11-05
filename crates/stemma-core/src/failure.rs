@@ -541,6 +541,7 @@ impl Classify for PurgeError {
             Self::Refs(error) => error.kind(),
             Self::Log(error) => error.kind(),
             Self::Read(error) => error.kind(),
+            Self::View { source, .. } => source.kind(),
             Self::Store(error) | Self::BlobUnreadable { source: error, .. } => error.kind(),
             Self::Leftover { source, .. } => source.kind(),
             Self::Agent

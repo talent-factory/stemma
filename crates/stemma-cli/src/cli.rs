@@ -2434,6 +2434,9 @@ fn plan_lines(plan: &PurgePlan) -> String {
     for tree in plan.deleted_trees() {
         text.push_str(&format!("    delete tree {tree}\n"));
     }
+    for blob in plan.deleted_blobs() {
+        text.push_str(&format!("    delete blob {blob}\n"));
+    }
     text.push_str(&format!("    delete blob {}\n", plan.blob()));
     text
 }
