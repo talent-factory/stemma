@@ -310,7 +310,8 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
   may already be deleted.
 - Commit IDs change for the rewritten commits and their descendants. Anything that holds an old ID
   outside the repository (a note, a message) points at nothing afterwards. Change IDs stay. Two
-  commits that differed only in the blob can become one. The rewrite takes new parents with
+  commits that differed only in the blob can become one, and so can the parents of a merge:
+  the merge then keeps that parent once. The rewrite takes new parents with
   `Commit::reparent`, as `Commit::rewrite` keeps them.
 - The log needs a reader that tells a stub from an entry. `outcomes` (ADR-011) takes entries, so
   it either takes the stubs as well or skips them. If it skips them, the entry before a stub
@@ -382,9 +383,12 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
 - [ ] A lasting record of purged blob IDs that `track` and `status` check, so that the secret
       does not come back by accident. Until then `purge --apply` names the paths and advises
       `.stemmaignore` (STEMMA-77), see Consequences.
-- [ ] The rewrite of commits with several parents (phase 3), where two parents can become one
-      (`CommitError::DuplicateParent`), and of commits that are signed (ADR-003): a signature does
-      not survive a rewrite.
+- [x] The rewrite of commits with several parents, where two parents can become one: the new
+      parent list drops the repeat and keeps the first place of each parent, so a merge whose
+      parents differed only in the blob ends with one parent, and the same holds for a `commit2`
+      (STEMMA-177). The purge no longer fails with `DuplicateParent`; a merge with one parent is
+      a valid commit.
+- [ ] The rewrite of commits that are signed (ADR-003): a signature does not survive a rewrite.
 - [ ] The reachability check of the last step has to know every kind of reference that holds
       objects, including those that come later (remote references). Tags are known (STEMMA-54).
 - [ ] A purge that deals with a tag on a commit that it would rewrite, instead of refusing:

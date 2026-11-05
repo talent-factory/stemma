@@ -27,9 +27,7 @@ use super::conflicted;
 use super::snapshot::{read_any_commit, read_object, SnapshotError};
 use super::{Repository, UpdateError};
 use crate::conflict::{AnyCommit, FromSumError, Merge};
-use crate::object::{
-    BlobId, Commit2Error, CommitError, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId,
-};
+use crate::object::{BlobId, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
 use crate::refs::{BranchName, Head, RefError};
 use crate::store::{Batch, FsObjectStore, ObjectStore, StoreError};
@@ -154,8 +152,7 @@ impl Repository {
     /// [`PurgeError::Refs`] and [`PurgeError::Log`] if the pointers or the log cannot be read,
     /// [`PurgeError::Read`] for a
     /// commit or a tree that is missing or cannot be read, [`PurgeError::Store`] if the store
-    /// cannot be listed or an object in it is damaged, [`PurgeError::DuplicateParent`] if a
-    /// rewrite makes two parents of a commit the same, [`PurgeError::Leftover`] for one of these
+    /// cannot be listed or an object in it is damaged, [`PurgeError::Leftover`] for one of these
     /// failures in an object that only the scan found, [`PurgeError::TooManyEntries`] if the
     /// plan would replace more entries of the log than a journal lists, and
     /// [`PurgeError::Unsound`] if the check fails, and [`PurgeError::TaggedCommit`] if a tag
@@ -460,11 +457,15 @@ impl<'a> Planner<'a> {
             let sum = commit.tree_sum();
             self.commit_links
                 .insert(id, (sum.terms().to_vec(), commit.parents().to_vec()));
-            let parents: Vec<CommitId> = commit
-                .parents()
-                .iter()
-                .map(|parent| self.commits[parent])
-                .collect();
+            // Two parents that differed only in the blob become one commit; a merge keeps it once,
+            // at the place of its first occurrence.
+            let mut parents: Vec<CommitId> = Vec::with_capacity(commit.parents().len());
+            for parent in commit.parents() {
+                let new = self.commits[parent];
+                if !parents.contains(&new) {
+                    parents.push(new);
+                }
+            }
             let mut changed = false;
             let mut terms = Vec::with_capacity(sum.terms().len());
             for &tree in sum.terms() {
@@ -481,13 +482,7 @@ impl<'a> Planner<'a> {
             // makes equal cancel, so that a conflict can end up as a `commit`.
             let rewritten = commit
                 .reparent(&terms, parents)
-                .map_err(|error| match error {
-                    FromSumError::Commit(CommitError::DuplicateParent(parent))
-                    | FromSumError::Commit2(Commit2Error::DuplicateParent(parent)) => {
-                        PurgeError::DuplicateParent { commit: id, parent }
-                    }
-                    source => PurgeError::Rewrite { commit: id, source },
-                })?;
+                .map_err(|source| PurgeError::Rewrite { commit: id, source })?;
             let new = rewritten.id();
             self.commits.insert(id, new);
             self.commit_links.insert(
@@ -882,14 +877,6 @@ pub enum PurgeError {
     /// The store cannot be listed, or an object in it is damaged, so it is not known whether it
     /// names the blob.
     Store(Box<StoreError>),
-    /// Two parents of a commit become the same commit, because they differed only in the blob.
-    /// A commit with two parents is a merge, which comes with phase 3.
-    DuplicateParent {
-        /// The commit.
-        commit: CommitId,
-        /// The new parent that it would have twice.
-        parent: CommitId,
-    },
     /// The working-copy view of a commit that the purge rewrites cannot be computed, for example
     /// because a side of its conflict names a blob that is missing. Without the view, the plan
     /// does not know which copies of the content the view stored (STEMMA-195).
@@ -971,11 +958,6 @@ impl PurgeError {
                 "not every object can be looked at, so it is not known whether one names the \
                  blob: {error}"
             ),
-            Self::DuplicateParent { commit, parent } => write!(
-                f,
-                "commit {commit} would have the parent {parent} twice after the purge, which a \
-                 commit cannot have"
-            ),
             Self::Leftover { id, source } => {
                 write!(
                     f,
@@ -1048,7 +1030,6 @@ impl Error for PurgeError {
             Self::Rewrite { source, .. } => source.source(),
             Self::Agent
             | Self::NoSuchBlob { .. }
-            | Self::DuplicateParent { .. }
             | Self::TooManyEntries { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => None,
@@ -1728,7 +1709,7 @@ mod tests {
     }
 
     #[test]
-    fn a_leftover_merge_whose_parents_become_one_is_an_error_that_names_it() {
+    fn a_merge_whose_parents_become_one_keeps_that_parent_once() {
         let dir = TempDir::new();
         let repository = repository(&dir);
         history(&dir, &repository);
@@ -1757,21 +1738,15 @@ mod tests {
         .unwrap();
         let merge = store.put_commit(&merge).unwrap();
 
-        let error = repository
-            .plan_purge(secret(), &actor(), &AllowAll)
-            .unwrap_err();
-        match &error {
-            PurgeError::Leftover { id, source } => {
-                assert_eq!(*id, merge.object_id());
-                assert!(matches!(
-                    **source,
-                    PurgeError::DuplicateParent { commit, parent }
-                        if commit == merge && parent == two
-                ));
-            }
-            other => panic!("expected a leftover, got {other:?}"),
-        }
-        assert!(error.to_string().contains("which nothing reaches"));
+        let plan = plan(&repository);
+        assert!(plan.deleted_commits().contains(&one), "{plan:?}");
+        let mut planner = Planner::new(repository.objects(), BlobId::new(secret()));
+        planner.scan().unwrap();
+        let AnyCommit::Commit(rewritten) = &planner.new_commits[&planner.commits[&merge]] else {
+            panic!("a merge stays a commit");
+        };
+        assert_eq!(rewritten.parents(), [two]);
+        assert_eq!(rewritten.message(), "merge");
     }
 
     #[test]
@@ -2011,7 +1986,7 @@ mod tests {
     }
 
     #[test]
-    fn a_leftover_commit2_whose_parents_become_one_is_an_error_that_names_it() {
+    fn a_commit2_whose_parents_become_one_keeps_that_parent_once() {
         let dir = TempDir::new();
         let repository = repository(&dir);
         history(&dir, &repository);
@@ -2041,20 +2016,13 @@ mod tests {
         .unwrap();
         let conflict = CommitId::new(store.put_raw(Kind::Commit2, &conflict.encode()).unwrap());
 
-        let error = repository
-            .plan_purge(secret(), &actor(), &AllowAll)
-            .unwrap_err();
-        match &error {
-            PurgeError::Leftover { id, source } => {
-                assert_eq!(*id, conflict.object_id());
-                assert!(matches!(
-                    **source,
-                    PurgeError::DuplicateParent { commit, parent }
-                        if commit == conflict && parent == two
-                ));
-            }
-            other => panic!("expected a leftover, got {other:?}"),
-        }
+        let mut planner = Planner::new(repository.objects(), BlobId::new(secret()));
+        planner.scan().unwrap();
+        let AnyCommit::Commit2(rewritten) = &planner.new_commits[&planner.commits[&conflict]]
+        else {
+            panic!("a conflict stays a commit2");
+        };
+        assert_eq!(rewritten.parents(), [two]);
     }
 
     #[test]

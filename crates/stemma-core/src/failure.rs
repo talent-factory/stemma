@@ -546,7 +546,6 @@ impl Classify for PurgeError {
             Self::Leftover { source, .. } => source.kind(),
             Self::Agent
             | Self::NoSuchBlob { .. }
-            | Self::DuplicateParent { .. }
             | Self::Rewrite { .. }
             | Self::TooManyEntries { .. }
             | Self::TaggedCommit { .. }

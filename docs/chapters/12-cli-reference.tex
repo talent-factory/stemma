@@ -2766,9 +2766,10 @@ erst \type{--abort}, dann den Tag löschen, dann den Purge neu planen.
 Dieselbe Prüfung läuft unter der Sperre vor dem ersten Schreiben noch einmal,
 auch bei \type{--resume}; ein Tag, der seit dem Plan entstand, hält den Purge dann an,
 und das Journal bleibt für \type{--abort} oder ein erneutes \type{--resume}.
-Ebenso endet er, wenn das Umschreiben zwei Eltern eines Commits gleich machen würde; das kann
-erst ein Merge (Phase 3). Er endet auch, wenn der Purge mehr als $2^{24}$ Einträge des Log
-ersetzen würde, mehr, als sein Journal aufnimmt.
+Ebenso endet er, wenn der Purge mehr als $2^{24}$ Einträge des Log ersetzen würde, mehr, als
+sein Journal aufnimmt.
+Werden zwei Eltern eines Merge-Commits beim Umschreiben zu einem, ist das kein Fehler:
+Der Merge nennt diesen Elternteil dann nur einmal, an der Stelle seines ersten Vorkommens.
 Mit \type{--apply} endet er mit Exit-Code 1 auch, wenn der Snapshot scheitert oder der Purge
 unter der Sperre nicht beginnen kann; dann besteht kein Journal, das Format kann aber schon 4
 sein. Eine gehaltene Sperre endet dabei mit Exit-Code 6, ein Schaden mit Exit-Code 5.
