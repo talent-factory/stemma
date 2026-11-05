@@ -95,14 +95,13 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   worktree whose directory was deleted outside Stemma has only its state directory removed.
   A failure after the snapshot that came first keeps the exit code of the failure and names the
   entry of the snapshot; it is code 3 only if the snapshot moved a pointer and stopped or its
-  flush failed (ADR-018). The
-  output lists the first 20 files that `--force` removed with the directory and counts the rest.
-  A state directory below `.stemma/worktrees` whose name no worktree can have (the name of an
-  entry or of the journal of a purge, ADR-011, ADR-014) is damage (exit code 5): every command
-  that has to read all worktrees (`worktree list`, `purge`, a switch, a branch delete or rename,
-  `op restore`) names it and stops, and `worktree remove` of another worktree still works. A
-  directory without `HEAD` is no worktree and is skipped, whatever its name; a `HEAD` that cannot
-  be inspected is an error (exit code 1), not a missing file.
+  flush failed (ADR-018). The output lists the first 20 files that `--force` removed with the
+  directory and counts the rest. A state directory below `.stemma/worktrees` whose name no
+  worktree can have (the name of an entry or of the journal of a purge, ADR-011, ADR-014) is
+  damage (exit code 5): every command that has to read all worktrees (`worktree list`, `purge`,
+  a switch, a branch delete) names it and stops, and `worktree remove` of another worktree still
+  works. A directory without `HEAD` is no worktree and is skipped, whatever its name; a `HEAD`
+  that cannot be inspected is an error (exit code 1), not a missing file.
 - **The format file** *(confirmed)*. `.stemma/format` holds `stemma-repository <version>` and a
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a

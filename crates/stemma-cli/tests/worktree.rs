@@ -1732,6 +1732,7 @@ fn a_state_directory_with_a_name_no_worktree_can_have_is_damage_and_stops_a_purg
                 ACTOR,
             ],
         );
+        ok(&repo, &["branch", "spare", "--actor", ACTOR]);
         with_bad_state_name(&sandbox, bad);
 
         let purge = run(&repo, &["purge", &secret(), "--apply", "--actor", ACTOR]);
@@ -1741,6 +1742,11 @@ fn a_state_directory_with_a_name_no_worktree_can_have_is_damage_and_stops_a_purg
         assert_eq!(purge.code, 5, "{bad}: {}", purge.stderr);
         assert!(!repo.join(".stemma/purge-pending").exists(), "{bad}");
         assert_eq!(list.code, 5, "{bad}: {}", list.stderr);
+        // The commands that ask which worktree has a branch checked out stop at it as well.
+        let delete = run(&repo, &["branch", "-d", "spare", "--actor", ACTOR]);
+        let switch = run(&repo, &["switch", "spare", "--actor", ACTOR]);
+        assert_eq!(delete.code, 5, "{bad}: {}", delete.stderr);
+        assert_eq!(switch.code, 5, "{bad}: {}", switch.stderr);
         assert!(
             list.stderr.contains("none that a worktree can have"),
             "{bad}: {}",
@@ -1866,6 +1872,9 @@ fn an_empty_directory_with_a_strange_name_among_the_states_is_no_worktree_and_no
 
     assert_eq!(list.code, 0, "{}", list.stderr);
     assert_eq!(purge.code, 0, "{}", purge.stderr);
+    assert!(purge.stdout.contains("branch main"), "{}", purge.stdout);
+    assert!(!repo.join(".stemma/purge-pending").exists());
+    ok(&repo, &["op", "verify"]);
     assert!(list.stdout.contains("linked") && !list.stdout.contains("tmp dir"));
     assert_eq!(added.code, 0, "{}", added.stderr);
 }
