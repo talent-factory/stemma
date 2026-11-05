@@ -756,24 +756,21 @@ impl Repository {
             if !is_dir {
                 continue;
             }
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| WorktreeError::Io {
-                    operation: "list the worktrees in",
-                    path: path.clone(),
-                    source: io::Error::new(io::ErrorKind::InvalidData, "the name is not UTF-8"),
-                })?;
-            states.push((name, path));
+            // A name that is not UTF-8 is a name that no worktree can have: it is judged below,
+            // after the check for `HEAD`, like any other name.
+            let file_name = entry.file_name();
+            let utf8 = file_name.to_str().is_some();
+            states.push((file_name.to_string_lossy().into_owned(), path, utf8));
         }
         states.sort();
-        for (name, state) in states {
+        for (name, state, utf8) in states {
             // The log and the journal of a purge can name only a valid name, so a state directory
             // with another one is damage that the command names, and the other worktrees stay
             // usable. The check comes before the read, which would take its pointers for good.
             // A directory without `HEAD` is no worktree (a stopped add or removal, a `@eaDir`), so
             // it is no damage either, whatever its name.
-            // Only a missing `HEAD` counts as absent: one that cannot be inspected is damage.
+            // Only a missing `HEAD` counts as absent: one that cannot be inspected is an error
+            // (code 1) for this worktree, and the others stay usable.
             match fs::symlink_metadata(state.join("HEAD")) {
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -785,7 +782,7 @@ impl Repository {
                     continue;
                 }
             }
-            if !crate::oplog::valid_worktree_name(&name) {
+            if !utf8 || !crate::oplog::valid_worktree_name(&name) {
                 let source = RefError::Corrupt {
                     path: state.clone(),
                     source: RefParseError::Malformed(RefMalformed::WorktreeName),

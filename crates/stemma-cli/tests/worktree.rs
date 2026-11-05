@@ -1745,8 +1745,14 @@ fn a_state_directory_with_a_name_no_worktree_can_have_is_damage_and_stops_a_purg
         // The commands that ask which worktree has a branch checked out stop at it as well.
         let delete = run(&repo, &["branch", "-d", "spare", "--actor", ACTOR]);
         let switch = run(&repo, &["switch", "spare", "--actor", ACTOR]);
-        assert_eq!(delete.code, 5, "{bad}: {}", delete.stderr);
-        assert_eq!(switch.code, 5, "{bad}: {}", switch.stderr);
+        for (what, run) in [("branch -d", &delete), ("switch", &switch)] {
+            assert_eq!(run.code, 5, "{bad}: {what}: {}", run.stderr);
+            assert!(
+                run.stderr.contains("none that a worktree can have"),
+                "{bad}: {what}: {}",
+                run.stderr
+            );
+        }
         assert!(
             list.stderr.contains("none that a worktree can have"),
             "{bad}: {}",
@@ -1879,6 +1885,18 @@ fn an_empty_directory_with_a_strange_name_among_the_states_is_no_worktree_and_no
     assert_eq!(added.code, 0, "{}", added.stderr);
 }
 
+/// Restores the mode of a directory when it goes out of scope, also after a panic, so that the
+/// removal of the sandbox can reach it.
+#[cfg(unix)]
+struct RestoreMode(std::path::PathBuf, std::fs::Permissions);
+
+#[cfg(unix)]
+impl Drop for RestoreMode {
+    fn drop(&mut self) {
+        let _restored = fs::set_permissions(&self.0, self.1.clone());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_head_that_cannot_be_inspected_is_an_error_and_not_a_worktree_that_is_missing() {
@@ -1887,23 +1905,61 @@ fn a_head_that_cannot_be_inspected_is_an_error_and_not_a_worktree_that_is_missin
     let sandbox = with_linked();
     let repo = sandbox.repo();
     let state = repo.join(".stemma/worktrees/linked");
+    let _restore = RestoreMode(state.clone(), fs::metadata(&state).unwrap().permissions());
     fs::set_permissions(&state, fs::Permissions::from_mode(0o000)).unwrap();
-    // A user who may read it anyway (root) cannot make the situation.
-    let unreadable = fs::symlink_metadata(state.join("HEAD")).is_err();
-
-    let list = run(&repo, &["worktree", "list"]);
-    let remove = run(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
-    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
-    if !unreadable {
+    // A user who may inspect it anyway (root) cannot make the situation.
+    if fs::symlink_metadata(state.join("HEAD")).is_ok() {
+        eprintln!("skipped: the user can inspect a directory without permissions");
         return;
     }
 
+    let list = run(&repo, &["worktree", "list"]);
+    let remove = run(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+
     assert_eq!(list.code, 1, "{}", list.stderr);
     assert!(list.stderr.contains("inspect"), "{}", list.stderr);
-    assert_ne!(remove.code, 0, "{}", remove.stderr);
+    assert_eq!(remove.code, 1, "{}", remove.stderr);
+    assert!(remove.stderr.contains("inspect"), "{}", remove.stderr);
     assert!(
         !remove.stderr.contains("no worktree") && !remove.stderr.contains("unfinished"),
         "{}",
         remove.stderr
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_head_that_is_a_dangling_link_is_no_missing_head() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    let head = repo.join(".stemma/worktrees/linked/HEAD");
+    fs::remove_file(&head).unwrap();
+    std::os::unix::fs::symlink("nowhere", &head).unwrap();
+
+    let list = run(&repo, &["worktree", "list"]);
+
+    // The link is there, so the directory is a worktree whose HEAD cannot be read: the scan
+    // must not skip it as a stopped add.
+    assert_ne!(list.code, 0, "{}", list.stdout);
+    assert!(!list.stdout.contains("linked"), "{}", list.stdout);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_empty_state_directory_with_a_name_that_is_not_utf8_is_skipped() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    let odd = std::ffi::OsStr::from_bytes(b"odd\xff");
+    // Some file systems (APFS) refuse such a name; there is nothing to test then.
+    if fs::create_dir(repo.join(".stemma/worktrees").join(odd)).is_err() {
+        eprintln!("skipped: the file system refuses a name that is not UTF-8");
+        return;
+    }
+
+    let list = run(&repo, &["worktree", "list"]);
+
+    assert_eq!(list.code, 0, "{}", list.stderr);
+    assert!(list.stdout.contains("linked"), "{}", list.stdout);
 }
