@@ -1307,6 +1307,134 @@ mod tests {
         conflicted::view(store, &sum).unwrap().tree
     }
 
+    /// Stores `one` (a tree with the secret), `two` (the same without it, otherwise the same
+    /// commit, so that the purge rewrites `one` to `two`), and an unrelated root `other`.
+    fn twin_parents(
+        repository: &Repository,
+    ) -> (CommitId, CommitId, CommitId, crate::object::TreeId) {
+        use crate::change::ChangeId;
+        use crate::object::{Commit, FileMode, TreeEntry};
+
+        let store = repository.objects();
+        let file = |name: &str, content: &str| {
+            TreeEntry::file(name, FileMode::File, Blob::new(content).id()).unwrap()
+        };
+        let put_tree = |entries: Vec<TreeEntry>| store.put_tree(&Tree::try_new(entries).unwrap());
+        for content in [SECRET, "one", "other"] {
+            store.put_blob(&Blob::new(content)).unwrap();
+        }
+        let with = put_tree(vec![file("a.txt", "one"), file("key", SECRET)]).unwrap();
+        let without = put_tree(vec![file("a.txt", "one")]).unwrap();
+        let unrelated = put_tree(vec![file("b.txt", "other")]).unwrap();
+        let change = ChangeId::generate().unwrap();
+        let root = |tree, change, message: &str| {
+            Commit::try_new(tree, vec![], change, actor(), 5, message).unwrap()
+        };
+        let one = store.put_commit(&root(with, change, "p")).unwrap();
+        let two = store.put_commit(&root(without, change, "p")).unwrap();
+        let other = store
+            .put_commit(&root(unrelated, ChangeId::generate().unwrap(), "o"))
+            .unwrap();
+        (one, two, other, without)
+    }
+
+    fn branch_at(repository: &Repository, name: &str, commit: ObjectId) {
+        repository
+            .create_branch(
+                &OperationName::try_new("branch").unwrap(),
+                &BranchName::try_new(name).unwrap(),
+                commit,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+    }
+
+    fn branch_tip(repository: &Repository, name: &str) -> crate::conflict::AnyCommit {
+        let tip = repository
+            .refs()
+            .branch(&BranchName::try_new(name).unwrap())
+            .unwrap()
+            .unwrap();
+        super::super::super::snapshot::read_any_commit(repository.objects(), tip).unwrap()
+    }
+
+    #[test]
+    fn a_merge_whose_parents_become_one_is_purged_with_the_parent_once_in_its_place() {
+        use crate::change::ChangeId;
+        use crate::object::Commit;
+
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (one, two, other, without) = twin_parents(&repository);
+        let merge = Commit::try_new(
+            without,
+            vec![one, other, two],
+            ChangeId::generate().unwrap(),
+            actor(),
+            6,
+            "merge",
+        )
+        .unwrap();
+        let merge = repository.objects().put_commit(&merge).unwrap();
+        branch_at(&repository, "merge", merge.object_id());
+
+        let purged = apply(&repository);
+
+        let tip = branch_tip(&repository, "merge");
+        assert_eq!(tip.message(), "merge");
+        // `one` is rewritten to `two`, which takes the first place; `other` follows.
+        assert_eq!(tip.parents(), [two, other]);
+        let store = repository.objects();
+        assert!(store.contains(&two.object_id()).unwrap());
+        assert!(store.contains(&other.object_id()).unwrap());
+        for old in [one, merge] {
+            assert!(!store.contains(&old.object_id()).unwrap(), "{old}");
+        }
+        assert!(holders(&repository).is_empty());
+        assert!(purged.plan().deleted_commits().contains(&one));
+        assert!(!purged.plan().deleted_commits().contains(&two));
+    }
+
+    #[test]
+    fn a_conflict_whose_parents_become_one_is_purged_and_stays_a_conflict() {
+        use crate::change::ChangeId;
+        use crate::conflict::AnyCommit;
+        use crate::object::{Commit2, FileMode, TreeEntry};
+
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (one, two, _, without) = twin_parents(&repository);
+        let store = repository.objects();
+        let tree = |content: &str| {
+            let blob = store.put_blob(&Blob::new(content)).unwrap();
+            let entry = TreeEntry::file("c.txt", FileMode::File, blob).unwrap();
+            store
+                .put_tree(&Tree::try_new(vec![entry]).unwrap())
+                .unwrap()
+        };
+        let conflict = Commit2::try_new(
+            vec![without, tree("base"), tree("side")],
+            vec![one, two],
+            ChangeId::generate().unwrap(),
+            actor(),
+            6,
+            "conflict",
+        )
+        .unwrap();
+        let conflict = store.put_raw(Kind::Commit2, &conflict.encode()).unwrap();
+        branch_at(&repository, "conflict", conflict);
+
+        apply(&repository);
+
+        let AnyCommit::Commit2(tip) = branch_tip(&repository, "conflict") else {
+            panic!("a conflict stays a conflict");
+        };
+        assert_eq!(tip.parents(), [two]);
+        assert!(!repository.objects().contains(&one.object_id()).unwrap());
+        assert!(holders(&repository).is_empty());
+    }
+
     /// The blobs whose content holds the secret, the blob itself included.
     fn holders(repository: &Repository) -> Vec<ObjectId> {
         let store = repository.objects();

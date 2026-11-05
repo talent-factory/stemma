@@ -542,9 +542,8 @@ mod tests {
         }
     }
 
-    /// The journal of a purge that moves only the main worktree, as programs wrote it before
-    /// there were linked worktrees. A change of this text would break the resume of a purge that
-    /// such a program began.
+    /// The version-1 text of a purge that moves only the main worktree. A change of this text
+    /// would break the resume of a purge that a program of this version began.
     const GOLDEN_V1: &str = "stemma-purge 1
 blob b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55
 last 9
