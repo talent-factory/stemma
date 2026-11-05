@@ -463,7 +463,8 @@ art, not a template (ADR-015).
       wants its own decision.
 
 - [x] Which commands take a snapshot. The commands that change something take one first:
-      `track`, `commit`, `switch`, `op restore` (ADR-013), and `purge --apply` (ADR-014);
+      `track`, `commit`, `switch`, `merge`, `rebase`, `op restore` (ADR-013), and
+      `purge --apply` (ADR-014);
       `status` takes one, as it reports the state of the files. The commands that only read take
       none, as a snapshot adds an entry and would change what they are about to show: `op log`,
       `op verify`, the plan of `purge`, and `op restore --dry-run` (STEMMA-77). The path `.` of

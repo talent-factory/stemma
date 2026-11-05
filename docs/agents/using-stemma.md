@@ -18,10 +18,10 @@ copy per actor with `stemma worktree add`. Update this file when a later phase l
 
 ## The rule behind all of it
 
-`track`, `commit`, `status`, `op restore`, and `purge --apply` first save the tracked files as a
-snapshot (ADR-010), and so does `diff` when one side is the working copy. The snapshot covers
-tracked files only, and it writes a log entry only if a tracked file changed. There is no file
-watcher and no background process. A state that no command has seen is not saved, and a command
+`track`, `commit`, `switch`, `merge`, `rebase`, `status`, `op restore`, and `purge --apply`
+first save the tracked files as a snapshot (ADR-010), and so does `diff` when one side is the
+working copy. The snapshot covers tracked files only, and it writes a log entry only if a tracked
+file changed. There is no file watcher and no background process. A state that no command has seen is not saved, and a command
 that fails before its snapshot saves nothing. So the way to keep an intermediate state is to run
 a command.
 
@@ -42,7 +42,8 @@ a command.
 2. Read the state: `stemma status --json`. Look at `clean`, `changes`, `untracked`, and
    `leftovers`. A `leftovers` entry is a `.stemma-checkout-...` file of an interrupted restore;
    report it, do not delete it. If a purge is pending (the file `.stemma/purge-pending`),
-   `track`, `commit`, `status`, and `op restore` fail with exit code 1: stop and report it.
+   `track`, `commit`, `switch`, `merge`, `rebase`, `status`, `op restore`, and `diff` against the
+   working copy fail with exit code 1: stop and report it.
 3. Note the number `N` of the newest log entry: `stemma op log -n 1 --json`; the field is
    `number`. `op restore` puts back the state *before* the entry it names, so the first entry
    that the task writes, `N+1`, is the point to go back to (`op restore N+1`, see below).
@@ -110,7 +111,9 @@ not that the command worked.
 
 A conflict after `merge`, `rebase`, or `switch` is data in the commit, not a failure: the exit
 code is 0 and the output names the paths. Read `stemma status --json`; edit the files until they
-carry no markers, and the next snapshot resolves the path.
+carry no markers. Stemma does not read markers: the next snapshot (`status`, `diff`, `commit`, and
+the others) resolves a path as soon as its file differs from the text shown, even with a half
+edited marker. Finish editing a conflicted file before you run a command that takes a snapshot.
 
 ## Only on the instruction of the human
 
