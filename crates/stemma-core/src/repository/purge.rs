@@ -281,7 +281,7 @@ impl Repository {
             .collect();
         trees.sort();
         let reached = planner.check(&kept_roots, &commits, &trees)?;
-        let views = planner.views(&reached, &trees)?;
+        let views = planner.views(&reached, &trees, &rewrites)?;
         trees.extend(views.trees);
         trees.sort();
         trees.dedup();
@@ -651,10 +651,17 @@ impl<'a> Planner<'a> {
     /// ones that held it, and the views are computed from them, so the plan stays free of writes.
     /// An object that something kept reaches stays, as it is no longer only a view: a tracked
     /// file with the same bytes as a text with markers, for example. So does an object that a
-    /// tree in the store names which the purge does not delete, such as the stored view of a kept
+    /// tree names which stays, stored or written by the purge, such as the stored view of a kept
     /// conflict commit with the same sides: deleting it would leave that tree dangling and make
-    /// the next scan fail. `deleted` are the trees that the purge deletes anyway.
-    fn views(&self, reached: &HashSet<ObjectId>, deleted: &[TreeId]) -> Result<Views, PurgeError> {
+    /// the next scan fail. A new tree that is only in memory (a rewritten leftover) does not
+    /// count, because it is never written. `deleted` are the trees that the purge deletes anyway,
+    /// and `written` are the rewrites that the purge writes (without the leftovers).
+    fn views(
+        &self,
+        reached: &HashSet<ObjectId>,
+        deleted: &[TreeId],
+        written: &[(CommitId, CommitId)],
+    ) -> Result<Views, PurgeError> {
         let mut blobs = BTreeSet::new();
         let mut trees = BTreeSet::new();
         for (old, _) in &self.rewrites {
@@ -693,23 +700,23 @@ impl<'a> Planner<'a> {
         // A tree that stays holds what it names. Keeping a view tree makes it one of those, so
         // repeat until nothing more is kept.
         let deleted: HashSet<TreeId> = deleted.iter().copied().collect();
-        let mut written: HashSet<TreeId> = HashSet::new();
-        let mut pending: Vec<TreeId> = self
-            .rewrites
+        let mut writes: HashSet<TreeId> = HashSet::new();
+        let mut pending: Vec<TreeId> = written
             .iter()
             .flat_map(|(_, new)| self.new_commits[new].tree_sum().terms().to_vec())
             .collect();
         while let Some(id) = pending.pop() {
-            if self.new_trees.contains_key(&id) && written.insert(id) {
+            if self.new_trees.contains_key(&id) && writes.insert(id) {
                 pending.extend(&self.tree_links[&id].0);
             }
         }
         loop {
             let mut shielded: HashSet<ObjectId> = HashSet::new();
             for (id, (subtrees, _)) in &self.tree_links {
-                // A new tree that is not written and not stored is only in memory (a rewritten leftover).
+                // A new tree that is not written and not stored is only in memory (a rewritten
+                // leftover).
                 let unwritten = self.new_trees.contains_key(id)
-                    && !written.contains(id)
+                    && !writes.contains(id)
                     && !self.objects.contains(&id.object_id()).map_err(store)?;
                 let goes = unwritten || deleted.contains(id) || views.trees.contains(id);
                 if !goes {
@@ -2200,6 +2207,39 @@ mod tests {
         let plan = plan(&repository);
         assert!(!plan.deleted_trees().contains(&subtree), "{plan:?}");
         assert!(!plan.deleted_blobs().contains(&text), "{plan:?}");
+    }
+
+    #[test]
+    fn a_rewritten_leftover_does_not_shield_the_text_of_a_conflict() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        let (_, _, text) = secret_conflict(&repository, first);
+        let store = repository.objects();
+        let stored = read_object(store, text.object_id(), Kind::Blob).unwrap();
+        let stored = String::from_utf8(stored.into_body()).unwrap();
+        // No pointer names this commit, so the plan rewrites it in memory and never writes it. Its
+        // new tree names the bytes of the text, but a tree that does not exist keeps nothing.
+        let secret = store.put_blob(&Blob::new(SECRET)).unwrap();
+        let copy = store.put_blob(&Blob::new(&*stored)).unwrap();
+        let entries = vec![
+            TreeEntry::file("copy.txt", FileMode::File, copy).unwrap(),
+            TreeEntry::file("key", FileMode::File, secret).unwrap(),
+        ];
+        let tree = store.put_tree(&Tree::try_new(entries).unwrap()).unwrap();
+        let orphan = Commit::try_new(
+            tree,
+            vec![],
+            crate::change::ChangeId::generate().unwrap(),
+            actor(),
+            0,
+            "left by a crash",
+        )
+        .unwrap();
+        store.put_commit(&orphan).unwrap();
+        assert_eq!(copy, text, "the same bytes are the same blob");
+        let plan = plan(&repository);
+        assert!(plan.deleted_blobs().contains(&text), "{plan:?}");
     }
 
     #[test]
