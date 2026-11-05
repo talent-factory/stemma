@@ -507,6 +507,11 @@ Commits, die er umschreibt (ADR-014); der Plan berechnet sie, ohne etwas zu schr
 Eine getrackte Datei mit denselben Bytes wie ein solcher Text bleibt, denn sie gehört dann
 einem Commit, der bleibt.
 
+{\bf Eltern, die zu einem werden.} Unterscheiden sich zwei Eltern eines Merge-Commits nur im
+Geheimnis, werden sie beim Purge ein und derselbe Commit. Der umgeschriebene Merge nennt diesen
+Elternteil dann nur einmal, an der Stelle seines ersten Vorkommens, denn ein Commit führt kein
+Elternteil doppelt (ADR-014). Das gilt auch für einen Konflikt-Commit.
+
 {\bf Warum Bytes statt Markierungen.} Der Snapshot liest keine Markierungen, denn jede Regel zum
 Lesen hätte Grenzfälle in beide Richtungen: Eine Datei, die Markierungen dokumentiert, wäre
 ein Konflikt, und eine halb bearbeitete Markierung liesse sich nicht sicher deuten.
