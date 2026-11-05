@@ -43,6 +43,9 @@
 //! run again finishes it, a stop after some of the pointers is code 3, and the snapshot that came
 //! first stays in the log when a later step fails.
 //!
+//! `worktree remove` follows them: a stop after its snapshot and before its own entry keeps the
+//! code of the stop, a stop after its entry is code 3, and so is a failed flush of that snapshot.
+//!
 //! Codes 1, 5, and 6 can leave two traces. A write that fails after its entry is in the operation
 //! log (`track`, `commit`, `tag`, `branch`, `op restore`, `UpdateError::MoveFailed`) leaves an entry for a move that
 //! did not happen, which `op log` marks as such. For `op restore` the files may be written then,
@@ -51,10 +54,12 @@
 //! is refused for nothing to commit or for a branch that moved, or cannot read the log to tell a
 //! stopped commit from a restored working copy, `status` when it cannot read the
 //! repository or write its output, `op restore` when a later step fails, and `purge --apply`
-//! when the purge cannot be planned or started after it. The message of such a failure names the
-//! entry, and repeating the command is safe.
+//! when the purge cannot be planned or started after it, and `worktree remove` when it is refused
+//! (untracked files without `--force`, say) after the files were saved. The message of such a
+//! failure names the entry, and repeating the command is safe.
 //!
-//! A snapshot that moved the pointer and could not flush it is code 3: for `status` after the
+//! A snapshot that moved the pointer and could not flush it, or that moved one pointer and stopped,
+//! is code 3: for `worktree remove` with the entry of the snapshot, for `status` after the
 //! status is written, for `commit` without a commit (it can be repeated), for `op restore` after
 //! the restore is made, for `purge --apply` before the purge, and for `track` as the other flush
 //! errors.
@@ -94,6 +99,10 @@ use stemma_core::repository::{
     WorktreeError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
+
+/// How many of the files that `worktree remove --force` deleted with the directory the output
+/// lists; it names the number of the others.
+const DISCARDED_LISTED: usize = 20;
 
 /// The name of the environment variable that holds the actor.
 const ACTOR_ENV: &str = "STEMMA_ACTOR";
@@ -1163,7 +1172,10 @@ impl CliError {
             Self::Merge(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Tag(error) if error.pointer_moved() => ExitCode::from(3),
             Self::Branch(error) if error.pointer_moved() => ExitCode::from(3),
-            Self::Worktree(error) if error.pointer_moved() || error.entry().is_some() => {
+            // The entry of the snapshot that came first does not make the code 3: the failure after
+            // it keeps its own code, as for `commit` and `op restore`, unless the flush of the
+            // snapshot failed.
+            Self::Worktree(error) if error.pointer_moved() || error.wrote_its_entry() => {
                 ExitCode::from(3)
             }
             Self::Commit(error) if pointer_moved(error) => ExitCode::from(3),
@@ -1721,8 +1733,11 @@ fn worktree_remove(args: WorktreeRemoveArgs, out: &mut dyn Write) -> Result<(), 
                 count => format!("{count} files"),
             }
         ));
-        for path in &removed.discarded {
+        for path in removed.discarded.iter().take(DISCARDED_LISTED) {
             text.push_str(&format!("    {}\n", escape_path(path)));
+        }
+        if let Some(left_out @ 1..) = removed.discarded.len().checked_sub(DISCARDED_LISTED) {
+            text.push_str(&format!("    and {left_out} more\n"));
         }
     }
     if removed.directory_missing {
@@ -4035,7 +4050,13 @@ pub fn main() -> ExitCode {
         Err(error) => {
             // The one result that is dropped on purpose: if stderr is closed, there is no channel
             // left to report on, and a panic would replace the exit code with 101.
-            let _ = writeln!(io::stderr(), "stemma: {error}");
+            // The message holds paths and names from the disk and from the arguments, so a control
+            // character or a line break in them must not steer the terminal: one place masks all.
+            let _ = writeln!(
+                io::stderr(),
+                "stemma: {}",
+                mask_controls(&error.to_string())
+            );
             error.exit_code()
         }
     }
@@ -5232,6 +5253,51 @@ mod tests {
             text.contains("the commit was not made") && text.contains("can be run again"),
             "{text}"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_removal_that_stops_after_its_snapshot_keeps_the_code_of_the_stop() {
+        let (dir, entry) = repository_with_entry("remove-after-snapshot");
+        let dirty = || WorktreeError::Dirty {
+            path: PathBuf::from("/w"),
+            listed: vec!["a.txt".to_owned()],
+            more: 0,
+        };
+        // The snapshot wrote an entry, and the removal stopped before its own: the worktree is
+        // as it was and the same call with `--force` is safe, so the code is the one of the stop.
+        let saved = CliError::Worktree(WorktreeError::AfterSnapshot {
+            snapshot: Box::new(entry.clone()),
+            late: None,
+            source: Box::new(dirty()),
+        });
+        assert_eq!(saved.exit_code(), ExitCode::from(1));
+        assert!(
+            saved
+                .to_string()
+                .contains(&format!("saved first as entry {}", entry.number())),
+            "{saved}"
+        );
+        // The flush of that snapshot failed: the entry may not survive a crash, so the code is 3.
+        let unflushed = CliError::Worktree(WorktreeError::AfterSnapshot {
+            snapshot: Box::new(entry.clone()),
+            late: Some(not_durable()),
+            source: Box::new(dirty()),
+        });
+        assert_eq!(unflushed.exit_code(), ExitCode::from(3));
+        let text = unflushed.to_string();
+        assert!(
+            text.contains("may not survive a crash")
+                && text.contains(&format!("saved first as entry {}", entry.number())),
+            "{text}"
+        );
+        // The entry of the removal itself is code 3 as before.
+        let failed = CliError::Worktree(WorktreeError::RemoveFailed {
+            entry: Box::new(entry.clone()),
+            path: PathBuf::from("/w"),
+            source: io::Error::other("busy"),
+        });
+        assert_eq!(failed.exit_code(), ExitCode::from(3));
         let _ = std::fs::remove_dir_all(dir);
     }
 

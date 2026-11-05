@@ -2039,6 +2039,11 @@ linked  /home/daniel/linked    feature  human anna
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl, wenn ein \type{HEAD} oder eine Datei
 \type{working-copy} sich nicht lesen lässt; beschädigte Referenzen enden mit Exit-Code 5.
+Dazu zählt ein Zustandsverzeichnis, dessen Name kein Worktree tragen kann (Leerzeichen, ein
+Punkt am Anfang, \type{main}): Ein Eintrag im Log und das Journal eines Purge könnten ihn nicht
+nennen; darum endet jeder Befehl, der alle Worktrees lesen muss, mit Exit-Code 5, und
+\type{purge --apply} schreibt kein Journal. Ein Verzeichnis ohne \type{HEAD} ist kein Worktree
+und wird übersprungen, gleich unter welchem Namen.
 Schliesst der Leser die Pipe früh, endet der Befehl ohne Meldung mit Exit-Code 0.
 
 {\bf Beispiele.}
@@ -2102,7 +2107,8 @@ Eigentümer und entfernt nur das Zustandsverzeichnis.
 
 Die Ausgabe nennt Name, Pfad und Eintrag, danach den Snapshot, falls einer entstand, die Dateien,
 die \type{--force} mit dem Verzeichnis entfernt hat (kein Commit hält sie), und den
-Working-Copy-Commit:
+Working-Copy-Commit. Von den entfernten Dateien listet sie die ersten 20 und zählt die übrigen
+(\type{and 5 more}), damit ein grosses Verzeichnis die Ausgabe nicht füllt:
 
 \starttyping
 Removed the worktree linked in /home/daniel/linked as entry 16
@@ -2119,8 +2125,15 @@ Worktree, den es nicht gibt, dem Worktree der Wurzel, dem Worktree des Aufrufs, 
 ohne die Zeigerdatei dieses Worktrees, einem Eigentümer, der nicht der Akteur ist, nicht
 verfolgten Dateien ohne \type{--force} (die Meldung nennt die ersten) und bei einem offenen Purge.
 Hat der Befehl die Dateien schon in einem Snapshot gesichert, bevor er auf einen dieser Fehler
-stösst, endet er mit Exit-Code 3, und die Meldung nennt den Eintrag des Snapshots; der Worktree
-ist dann unverändert, und der Aufruf mit \type{--force} ist sicher.
+stösst, behält er den Exit-Code des Fehlers, und die Meldung nennt den Eintrag des Snapshots; der
+Worktree ist dann unverändert, und der Aufruf mit \type{--force} ist sicher. Nur wenn sich das
+Verzeichnis dieses Snapshots nicht sichern liess oder der Snapshot einen Zeiger bewegte und dann
+stehen blieb, endet er mit Exit-Code 3, denn dann übersteht die gesicherte Arbeit einen Absturz
+vielleicht nicht; die Meldung sagt es.
+Ein Zustandsverzeichnis unter \type{.stemma/worktrees}, dessen Name kein Worktree tragen kann
+(erlaubt sind Buchstaben, Ziffern, \type{-}, \type{_} und \type{.}, nicht am Anfang, und nicht
+\type{main}), ist ein Schaden mit Exit-Code 5; der Befehl nennt den Namen und lässt die übrigen
+Worktrees unberührt.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die

@@ -215,6 +215,9 @@ pub enum RefMalformed {
     UnknownHeadKind,
     /// The second line of the file `working-copy` is not `owner <actor>`.
     OwnerShape,
+    /// The name of a state directory below `worktrees` is none that a worktree can have: the
+    /// operation log and the journal of a purge could not name the worktree.
+    WorktreeName,
 }
 
 impl fmt::Display for RefMalformed {
@@ -225,6 +228,11 @@ impl fmt::Display for RefMalformed {
             Self::HeadShape => "expected `branch <name>` or `commit <id>`",
             Self::UnknownHeadKind => "the kind is neither `branch` nor `commit`",
             Self::OwnerShape => "expected `owner <actor>` on the second line",
+            Self::WorktreeName => {
+                "the name of the state directory is none that a worktree can have (1 to 255 \
+                 letters, digits, `-`, `_`, and `.` but not first, and not `main`); remove the \
+                 directory by hand"
+            }
         })
     }
 }
@@ -1552,6 +1560,14 @@ impl FsRefStore {
                 path: path.clone(),
                 source: io::Error::new(io::ErrorKind::InvalidData, "the name is not UTF-8"),
             })?;
+            // A name that no entry and no journal can carry is damage: a purge that took the
+            // worktree as a root would write a journal that its own reader refuses.
+            if !crate::oplog::valid_worktree_name(&name) {
+                return Err(RefError::Corrupt {
+                    path,
+                    source: RefParseError::Malformed(RefMalformed::WorktreeName),
+                });
+            }
             states.push((name, path));
         }
         states.sort();
