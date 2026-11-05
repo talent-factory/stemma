@@ -144,7 +144,9 @@ impl Repository {
     /// # Errors
     ///
     /// Before the entry: [`WorktreeError::Update`] for a refusal of the question,
-    /// [`WorktreeError::NoSuchWorktree`], [`WorktreeError::RemoveMain`],
+    /// [`WorktreeError::NoSuchWorktree`], [`WorktreeError::Damaged`],
+    /// [`WorktreeError::SeveralDamaged`], [`WorktreeError::Unfinished`],
+    /// [`WorktreeError::RemoveMain`],
     /// [`WorktreeError::RemoveCurrent`], [`WorktreeError::NotItsPointer`],
     /// [`WorktreeError::Snapshot`] (the owner, a file that cannot be saved, or a refused
     /// `snapshot`), [`WorktreeError::Dirty`], [`WorktreeError::Refs`], and the errors of the
@@ -352,8 +354,9 @@ impl Repository {
                 return Err(WorktreeError::Unfinished(name.to_owned()));
             }
             // A path cannot be mapped to a name without the `location` of a damaged worktree, so
-            // it may be the one that is asked for: the message names all of them.
-            if !damaged.is_empty() {
+            // it may be the one that is asked for: the message names all of them. An argument
+            // that is a valid name stays `NoSuchWorktree`: no damaged state directory has it.
+            if !damaged.is_empty() && !crate::oplog::valid_worktree_name(name) {
                 return Err(WorktreeError::SeveralDamaged {
                     asked: Some(name.to_owned()),
                     damaged: boxed(damaged),
@@ -1165,9 +1168,9 @@ pub enum WorktreeError {
         /// What cannot be read.
         source: Box<WorktreeError>,
     },
-    /// Several worktrees are damaged, or the worktree that is asked for by a path is not among the
-    /// readable ones while others are damaged. A damaged worktree has no `location`, so a path
-    /// cannot be mapped to it. Nothing was written.
+    /// Several worktrees are damaged, or the argument of a removal that is no valid worktree name
+    /// (a path, usually) matches no readable worktree while at least one is damaged. A damaged
+    /// worktree has no readable `location`, so a path cannot be mapped to it. Nothing was written.
     SeveralDamaged {
         /// What the call asked for, if it asked for one worktree.
         asked: Option<String>,
@@ -1616,11 +1619,14 @@ impl fmt::Display for WorktreeError {
                 }
                 for (index, (name, source)) in damaged.iter().enumerate() {
                     f.write_str(if index == 0 { ": " } else { "; " })?;
-                    write!(f, "`{name}` ({source})")?;
+                    write!(f, "`{}` ({source})", name.escape_debug())?;
+                }
+                if asked.is_some() {
+                    f.write_str("; the worktree you named may be one of them")?;
                 }
                 f.write_str(
-                    "; the other worktrees are not affected; remove the directory \
-                     `.stemma/worktrees/NAME` and the directory of each damaged worktree by hand",
+                    "; if the state is damaged (not just unreadable for now), remove the directory \
+                     `.stemma/worktrees/NAME` and the directory of the worktree by hand",
                 )
             }
             Self::RemoveMoveFailed { entry, source } => write!(

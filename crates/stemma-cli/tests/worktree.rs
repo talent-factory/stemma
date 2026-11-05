@@ -1804,6 +1804,41 @@ fn a_path_that_is_no_readable_worktree_is_explained_with_the_damaged_worktrees_b
 }
 
 #[test]
+fn a_valid_name_that_matches_nothing_stays_no_such_worktree_beside_damaged_ones() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    let missing = run(&repo, &["worktree", "remove", "typo", "--actor", ACTOR]);
+    assert_eq!(missing.code, 1, "{}", missing.stderr);
+    with_bad_state_name(&sandbox, "bad name");
+    with_bad_state_name(&sandbox, ".hidden");
+
+    let beside = run(&repo, &["worktree", "remove", "typo", "--actor", ACTOR]);
+    let gone = sandbox.dir.path().join("gone");
+    let path = run(
+        &repo,
+        &[
+            "worktree",
+            "remove",
+            gone.to_str().unwrap(),
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    assert_eq!(beside.code, 1, "{}", beside.stderr);
+    assert!(beside.stderr.contains("there is no linked worktree `typo`"));
+    // Several damaged worktrees are all named, in order, for a path.
+    assert_eq!(path.code, 5, "{}", path.stderr);
+    assert!(
+        path.stderr
+            .contains("the state of worktrees cannot be read: `.hidden` (")
+            && path.stderr.contains("; `bad name` ("),
+        "{}",
+        path.stderr
+    );
+}
+
+#[test]
 fn every_damaged_worktree_is_named_and_not_only_the_first() {
     let sandbox = with_linked();
     let repo = sandbox.repo();

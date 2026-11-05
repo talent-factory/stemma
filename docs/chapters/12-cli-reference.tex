@@ -2137,10 +2137,12 @@ Ein Zustandsverzeichnis unter \type{.stemma/worktrees}, dessen Name kein Worktre
 (erlaubt sind Buchstaben, Ziffern, \type{-}, \type{_} und \type{.}, nicht am Anfang, und nicht
 \type{main}), ist ein Schaden mit Exit-Code 5; der Befehl nennt den Namen und lässt die übrigen
 Worktrees unberührt.
-Gibt man einen Pfad an, der keinem lesbaren Worktree gehört, während Zustandsverzeichnisse
-beschädigt sind, endet der Befehl ebenfalls mit Exit-Code 5, wenn eines davon einen Schaden
-meldet. Er sagt dann nicht, dass es den Worktree nicht gibt, sondern nennt alle beschädigten
-Worktrees, denn ohne die Datei \type{location} lässt sich der Pfad keinem Namen zuordnen.
+Gibt man ein Argument an, das kein gültiger Name ist (einen Pfad), und gehört es keinem
+lesbaren Worktree, während Zustandsverzeichnisse beschädigt sind, sagt der Befehl nicht, dass es
+den Worktree nicht gibt, sondern nennt alle beschädigten Worktrees, denn ohne die Datei
+\type{location} lässt sich der Pfad keinem Namen zuordnen. Der Exit-Code ist 5, wenn eines davon
+einen Schaden meldet, sonst der Code des ersten Fehlers (1 bei einem Fehler der Ein- und Ausgabe).
+Ein gültiger Name, den es nicht gibt, bleibt ein Fehler mit Exit-Code 1.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die
