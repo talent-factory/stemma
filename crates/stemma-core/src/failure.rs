@@ -506,6 +506,17 @@ impl Classify for WorktreeError {
             | Self::RemoveNotDurable { source, .. } => source.kind(),
             Self::Snapshot(error) => error.kind(),
             Self::AfterSnapshot { source, .. } | Self::Damaged { source, .. } => source.kind(),
+            // Damage wins: one damaged state directory is enough for code 5.
+            Self::SeveralDamaged { damaged, .. } => {
+                if damaged
+                    .iter()
+                    .any(|(_, error)| error.kind() == FailureKind::Damaged)
+                {
+                    FailureKind::Damaged
+                } else {
+                    FailureKind::Other
+                }
+            }
             Self::ChangeId(_)
             | Self::RemoveFailed { .. }
             | Self::NoSuchWorktree(_)

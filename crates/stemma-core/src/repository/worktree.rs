@@ -321,8 +321,9 @@ impl Repository {
     /// directory. The main worktree and the worktree of this call are refused.
     fn find_worktree(&self, name: &str) -> Result<WorktreeInfo, WorktreeError> {
         // The other worktrees may be damaged; only the one that is asked for must be readable.
-        let (rows, damaged) = self.scan_worktrees()?;
-        if let Some((_, error)) = damaged.into_iter().find(|(damaged, _)| damaged == name) {
+        let (rows, mut damaged) = self.scan_worktrees()?;
+        if let Some(index) = damaged.iter().position(|(damaged, _)| damaged == name) {
+            let (_, error) = damaged.swap_remove(index);
             return Err(WorktreeError::Damaged {
                 name: name.to_owned(),
                 source: Box::new(error),
@@ -349,6 +350,14 @@ impl Repository {
                 )
             {
                 return Err(WorktreeError::Unfinished(name.to_owned()));
+            }
+            // A path cannot be mapped to a name without the `location` of a damaged worktree, so
+            // it may be the one that is asked for: the message names all of them.
+            if !damaged.is_empty() {
+                return Err(WorktreeError::SeveralDamaged {
+                    asked: Some(name.to_owned()),
+                    damaged: boxed(damaged),
+                });
             }
             return Err(WorktreeError::NoSuchWorktree(name.to_owned()));
         };
@@ -718,9 +727,16 @@ impl Repository {
     /// # Errors
     ///
     /// Returns [`WorktreeError::Refs`] if a `HEAD` or a `working-copy` cannot be read, and
-    /// [`WorktreeError::Io`] if the directory of the worktrees cannot be listed.
+    /// [`WorktreeError::Io`] if the directory of the worktrees cannot be listed. When more than
+    /// one worktree is damaged, [`WorktreeError::SeveralDamaged`] names all of them.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>, WorktreeError> {
         let (rows, damaged) = self.scan_worktrees()?;
+        if damaged.len() > 1 {
+            return Err(WorktreeError::SeveralDamaged {
+                asked: None,
+                damaged: boxed(damaged),
+            });
+        }
         match damaged.into_iter().next() {
             Some((_, error)) => Err(error),
             None => Ok(rows),
@@ -798,6 +814,14 @@ impl Repository {
         }
         Ok((rows, damaged))
     }
+}
+
+/// The damaged worktrees with their errors boxed, as [`WorktreeError::SeveralDamaged`] holds them.
+fn boxed(damaged: Vec<(String, WorktreeError)>) -> Vec<(String, Box<WorktreeError>)> {
+    damaged
+        .into_iter()
+        .map(|(name, error)| (name, Box::new(error)))
+        .collect()
 }
 
 /// The readable worktrees, and the linked ones that are not, each with its name and why.
@@ -1141,6 +1165,15 @@ pub enum WorktreeError {
         /// What cannot be read.
         source: Box<WorktreeError>,
     },
+    /// Several worktrees are damaged, or the worktree that is asked for by a path is not among the
+    /// readable ones while others are damaged. A damaged worktree has no `location`, so a path
+    /// cannot be mapped to it. Nothing was written.
+    SeveralDamaged {
+        /// What the call asked for, if it asked for one worktree.
+        asked: Option<String>,
+        /// The damaged worktrees by name, each with what cannot be read.
+        damaged: Vec<(String, Box<WorktreeError>)>,
+    },
     /// The path exists and is not an empty directory: a directory with files, a file, or a link.
     NotEmpty(PathBuf),
     /// The path is the directory of a worktree already.
@@ -1301,6 +1334,9 @@ impl WorktreeError {
             | Self::RemoveNotDurable { source: error, .. } => error.io_error(),
             Self::Snapshot(error) => error.io_error(),
             Self::AfterSnapshot { source, .. } | Self::Damaged { source, .. } => source.io_error(),
+            Self::SeveralDamaged { damaged, .. } => {
+                damaged.iter().find_map(|(_, error)| error.io_error())
+            }
             Self::RemoveFailed { source, .. } => Some(source),
             Self::Read(error) => error.io_error(),
             Self::Store(error) => error.io_error(),
@@ -1568,6 +1604,25 @@ impl fmt::Display for WorktreeError {
                  are not affected; remove the directory `.stemma/worktrees/{name}` and the \
                  directory of the worktree by hand"
             ),
+            Self::SeveralDamaged { asked, damaged } => {
+                match asked {
+                    Some(asked) => write!(
+                        f,
+                        "there is no readable worktree `{}`, but the state of {} cannot be read",
+                        asked.escape_debug(),
+                        if damaged.len() == 1 { "a worktree" } else { "worktrees" }
+                    )?,
+                    None => f.write_str("the state of several worktrees cannot be read")?,
+                }
+                for (index, (name, source)) in damaged.iter().enumerate() {
+                    f.write_str(if index == 0 { ": " } else { "; " })?;
+                    write!(f, "`{name}` ({source})")?;
+                }
+                f.write_str(
+                    "; the other worktrees are not affected; remove the directory \
+                     `.stemma/worktrees/NAME` and the directory of each damaged worktree by hand",
+                )
+            }
             Self::RemoveMoveFailed { entry, source } => write!(
                 f,
                 "entry {} was written and the directory is gone, but the state directory is \
@@ -1619,6 +1674,7 @@ impl Error for WorktreeError {
             | Self::NoStart(_)
             | Self::NoSuchWorktree(_)
             | Self::Unfinished(_)
+            | Self::SeveralDamaged { .. }
             | Self::RemoveMain
             | Self::RemoveCurrent(_)
             | Self::NotItsPointer { .. }

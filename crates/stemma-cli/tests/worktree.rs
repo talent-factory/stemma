@@ -1768,6 +1768,59 @@ fn a_state_directory_with_a_name_no_worktree_can_have_is_damage_and_stops_a_purg
 }
 
 #[test]
+fn a_path_that_is_no_readable_worktree_is_explained_with_the_damaged_worktrees_by_remove() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    with_bad_state_name(&sandbox, "bad name");
+    // The directory of a worktree whose state is damaged: the path cannot be mapped to a name,
+    // because the damaged row has no readable `location`.
+    let gone = sandbox.dir.path().join("gone");
+
+    let removed = run(
+        &repo,
+        &[
+            "worktree",
+            "remove",
+            gone.to_str().unwrap(),
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    assert_eq!(removed.code, 5, "{}", removed.stderr);
+    assert!(
+        removed.stderr.contains("there is no readable worktree")
+            && removed.stderr.contains("`bad name`"),
+        "{}",
+        removed.stderr
+    );
+    // Nothing was touched, and the readable worktree is still removable.
+    assert!(sandbox.at("linked").exists());
+    let removed = run(
+        &repo,
+        &["worktree", "remove", "linked", "--force", "--actor", ACTOR],
+    );
+    assert_eq!(removed.code, 0, "{}", removed.stderr);
+}
+
+#[test]
+fn every_damaged_worktree_is_named_and_not_only_the_first() {
+    let sandbox = with_linked();
+    let repo = sandbox.repo();
+    with_bad_state_name(&sandbox, "bad name");
+    with_bad_state_name(&sandbox, ".hidden");
+
+    let list = run(&repo, &["worktree", "list"]);
+
+    assert_eq!(list.code, 5, "{}", list.stderr);
+    assert!(
+        list.stderr.contains("`bad name`") && list.stderr.contains("`.hidden`"),
+        "{}",
+        list.stderr
+    );
+}
+
+#[test]
 fn a_snapshot_that_is_not_flushed_makes_a_refused_removal_code_3_and_the_message_says_so() {
     let sandbox = with_linked();
     let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));

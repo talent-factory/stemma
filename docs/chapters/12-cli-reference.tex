@@ -2042,8 +2042,11 @@ linked  /home/daniel/linked    feature  human anna
 Dazu zählt ein Zustandsverzeichnis, dessen Name kein Worktree tragen kann (Leerzeichen, ein
 Punkt am Anfang, \type{main}): Ein Eintrag im Log und das Journal eines Purge könnten ihn nicht
 nennen; darum endet jeder Befehl, der alle Worktrees lesen muss, mit Exit-Code 5, und
-\type{purge --apply} schreibt kein Journal. Ein Verzeichnis ohne \type{HEAD} ist kein Worktree
-und wird übersprungen, gleich unter welchem Namen.
+\type{purge --apply} schreibt kein Journal.
+Sind mehrere Worktrees beschädigt, nennt die Meldung alle mit dem Grund und nicht nur den ersten,
+damit nicht erst der nächste Aufruf den nächsten Schaden zeigt.
+Ein Verzeichnis ohne \type{HEAD} ist kein Worktree und wird übersprungen, gleich unter welchem
+Namen.
 Schliesst der Leser die Pipe früh, endet der Befehl ohne Meldung mit Exit-Code 0.
 
 {\bf Beispiele.}
@@ -2134,6 +2137,10 @@ Ein Zustandsverzeichnis unter \type{.stemma/worktrees}, dessen Name kein Worktre
 (erlaubt sind Buchstaben, Ziffern, \type{-}, \type{_} und \type{.}, nicht am Anfang, und nicht
 \type{main}), ist ein Schaden mit Exit-Code 5; der Befehl nennt den Namen und lässt die übrigen
 Worktrees unberührt.
+Gibt man einen Pfad an, der keinem lesbaren Worktree gehört, während Zustandsverzeichnisse
+beschädigt sind, endet der Befehl ebenfalls mit Exit-Code 5, wenn eines davon einen Schaden
+meldet. Er sagt dann nicht, dass es den Worktree nicht gibt, sondern nennt alle beschädigten
+Worktrees, denn ohne die Datei \type{location} lässt sich der Pfad keinem Namen zuordnen.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die
