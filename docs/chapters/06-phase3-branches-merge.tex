@@ -2,14 +2,17 @@
 
 \section{Ziel}
 
-Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und zusammenführen.
+Parallele Arbeit ist lokal möglich. Branches lassen sich anlegen, wechseln und zusammenführen
+oder neu aufspielen, und ein zweiter Akteur bekommt eine zweite Arbeitskopie.
+Die Phase ist umgesetzt; das Programm trägt seither die Version 0.3.0.
 
 \section{Umfang}
 
 \startitemize
-\item Befehle \type{branch}, \type{checkout} und \type{log}.
+\item Befehle \type{branch}, \type{switch} und \type{log}.
 Der Befehl \type{branch} legt Branches an, benennt sie um, löscht sie und listet sie;
 \in{Abschnitt}[sec:branch-commands] beschreibt ihn.
+Der Befehl \type{switch} wechselt den Branch (nächster Abschnitt).
 Der Befehl \type{log} zeigt die Vorfahren des Working-Copy-Commits ohne Cache,
 jeden Commit vor seinen Eltern, mit \type{-n}, \type{--first-parent} und \type{--json}.
 \item Drei-Wege-Merge über die Merge-Basis, den besten gemeinsamen Vorfahren der beiden Seiten.
@@ -40,6 +43,8 @@ Algebra, weil sie beim erneuten Zusammenführen Information verliert.
 Der Befehl \type{merge} schreibt einen solchen Commit, wenn die beiden Seiten sich widersprechen;
 \type{snapshot}, \type{status}, \type{log}, \type{diff}, \type{commit} und \type{op restore}
 lesen ihn, und \type{snapshot} und \type{commit} führen ihn weiter.
+\item Der Befehl \type{rebase} spielt die Commits des Branchs auf einem Ziel neu auf
+(\in{Abschnitt}[sec:rebase]).
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
 \item Eigentümer der Arbeitskopie (Format 5, ADR-010): Ein Snapshot speichert nur die
 Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich

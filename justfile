@@ -182,7 +182,7 @@ norma:
 
 # Check before a release that the tag, `Cargo.toml`, and the program name the same version (the
 # book takes it from `Cargo.toml` as well), and that the program has no fault injection. Call it
-# with the tag: `just release-check v0.2.0`.
+# with the tag: `just release-check v0.3.0`.
 [group('Release')]
 release-check tag:
     #!/usr/bin/env bash

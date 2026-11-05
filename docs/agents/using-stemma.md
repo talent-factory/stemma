@@ -4,15 +4,17 @@ How an agent calls `stemma` during a task: at the start, in between, and at the 
 The command line reference (`docs/chapters/12-cli-reference.tex`) is the source for what each
 command does and how it fails. This file says which commands to call, and when.
 
-It describes the state of phase 2. Branches and workspaces per agent come with phase 3 (see
-"Until phase 3" below); update this file when they land.
+It describes the state of phase 3: branches, `switch`, `merge`, `rebase`, and a second working
+copy per actor with `stemma worktree add`. Update this file when a later phase lands.
 
 ## Which repository this is for
 
 - **In this repository**, Git stays the single source of truth: commits, branches and pull
   requests run through Git (see `CLAUDE.md`). Stemma runs next to it as the example of the book,
   so the history is double on purpose. Call `stemma` here only when the human asks for it.
-- **In any other repository** that uses Stemma, the rules below apply as written.
+- **In any other repository** that uses Stemma, the rules below apply as written. An agent gets
+  its own working copy there with `stemma worktree add <path> -b <branch>` (run by the human or
+  by the agent, as the authorizer allows); it works on its own branch and the human merges it.
 
 ## The rule behind all of it
 
@@ -114,10 +116,11 @@ not that the command worked.
 - `--take-over`. The program refuses it from an agent (ADR-004, ADR-010). If the working copy
   belongs to someone else, report it to the human.
 
-## Until phase 3: no `stemma` in a Git worktree
+## No `stemma` in a Git worktree
 
-An actor needs its own working copy (ADR-010), and the per-agent branch in its own workspace
-that the design foresees does not exist yet. Until it does, the rule is administrative:
+An actor needs its own working copy (ADR-010). The Stemma way to get one is `stemma worktree add`
+(ADR-009); a Git worktree is something else, and in this repository the agents work in Git
+worktrees. For those, the rule stays:
 
 - **One agent per directory.** Two actors in one directory are not supported. Since format 5
   the program refuses a snapshot of an actor who does not own the working copy (exit code 1),
@@ -131,11 +134,11 @@ that the design foresees does not exist yet. Until it does, the rule is administ
     as untracked paths such as `.worktrees/task/a.txt`, and a `track` or `commit` would write
     them into the history of the root.
   - With a `stemma init` of its own, the worktree is an independent repository, but its history
-    is lost with it. Git does not carry the ignored `.stemma/` into a merge, and Stemma has no
-    merge before phase 3. `git worktree remove` deletes the directory with the `.stemma` in it,
-    and on a clean worktree, which is the normal state after the merge, it does so without
-    `--force` and without a message. Only the content of the files survives, through the Git
-    merge.
+    is lost with it. Git does not carry the ignored `.stemma/` into a merge, and the merge of
+    Stemma joins branches of one repository only. `git worktree remove` deletes the directory
+    with the `.stemma` in it, and on a clean worktree, which is the normal state after the merge,
+    it does so without `--force` and without a message. Only the content of the files survives,
+    through the Git merge.
 - Never call `stemma` with `-C` pointing at the root from a worktree.
 - Commands for examples of the book (`docs/agents/book-review.md`) run in the checkout of the
   root or in a scratch repository, not in the worktree of the review.
@@ -147,11 +150,12 @@ A command in a Git worktree or a nested clone below the root warns on stderr
 (`stemma: warning: ... lies in the Git checkout ...`, STEMMA-132) and still runs, with the exit
 code of the command. The warning is a sign to stop, not a permission to continue. After a
 `stemma init` in the worktree there is no warning, because the repository is found at the start;
-that is the second case above, and nothing protects the history then. How a workspace keeps its
-history after the merge is decided in phase 3.
+that is the second case above, and nothing protects the history then. A worktree of Stemma
+(`stemma worktree add`) keeps its state in the `.stemma` of the root, so `git worktree remove`
+does not take it away.
 
 ## Not yet there
 
-Phase 3 brings branches, `switch`, and merge; phase 4 the agent identities and pull requests;
-phase 6 the API and the MCP server, with `--json` for `diff`, `restore`, and `purge`.
+Phase 4 brings the agent identities and pull requests; phase 6 the API and the MCP server,
+with `--json` for `diff`, `restore`, and `purge`.
 This file changes with each of them.

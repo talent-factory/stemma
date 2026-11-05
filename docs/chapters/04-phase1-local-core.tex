@@ -2687,7 +2687,8 @@ Das bleibt so, denn die Umstellung auf ein gehaltenes Handle wäre gross und der
 Dazu ersetzt \type{init} unter Unix ein leeres \type{.stemma},
 das ein anderer Prozess im falschen Augenblick anlegt (ADR-009).
 \item Die Regel, dass jeder Akteur in einer eigenen Arbeitskopie arbeitet,
-setzt der Kern noch nicht durch; das kommt mit der zweiten Arbeitskopie in Phase~3 (ADR-010).
+setzt der Kern seit Format 5 durch, und die zweite Arbeitskopie von Phase~3 gibt jedem Akteur
+ein eigenes Verzeichnis (ADR-010).
 \item Ein Repository ohne die Datei \type{working-copy} lässt sich nicht mehr reparieren,
 eine verfolgte Spezialdatei hält jeden Snapshot an,
 und ein verfolgtes Verzeichnis, das zum Link wird, verliert seine Dateien ohne Warnung.
