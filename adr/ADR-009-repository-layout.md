@@ -106,10 +106,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 6, the version of the worktree of an entry and of the journal
-  of a purge across worktrees (ADR-011, ADR-014), and `open` reads versions 2 to 6: a repository
-  made before the purge existed (2), before the chain (3), before the owner (4), or before the
-  worktree of an entry (5) rises to 6 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  supports: `init` writes version 7, the version of the tags that a purge moves (the line `tags`
+  of a `purge` entry and the journal `stemma-purge 3`, ADR-011, ADR-014), and `open` reads
+  versions 2 to 7: a repository made before the purge existed (2), before the chain (3), before
+  the owner (4), before the worktree of an entry (5), or before the tags of a purge (6) rises to
+  7 with its next entry or purge (ADR-014, ADR-011, ADR-010).
   Version 4 is the version of the hash chain of the log (ADR-011). From version 5
   on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that
   raises the version records none, and the next entry of a change does (ADR-010). A version
@@ -238,6 +239,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - [x] The format is raised with the first entry that can carry the line `worktree`: version 6
       (STEMMA-176). A program that knows only version 5 refuses such a repository with the
       unsupported version and does not report damage for a log or a journal that it cannot read.
+- [x] The format is raised with the first entry that can carry the line `tags` of a `purge`
+      entry: version 7 (STEMMA-185). A program that knows only version 6 refuses such a
+      repository with the unsupported version and does not report damage for a log or a journal
+      that it cannot read.
 - [ ] `worktree remove` does not undo with `op restore`: the entries of `worktree add` and
       `worktree remove` are refused by a restore. A removed worktree is added again with
       `worktree add` on its branch, and its last working-copy commit is named by the entry.

@@ -103,12 +103,13 @@ Facts that bound the design:
   versions of the rewritten commits, their trees that changed, and the blob. An object is deleted
   only if no kept root reaches it any more (the branches, the tags, HEAD, the
   working-copy commit, and the entries that remain). A tag does not move (ADR-008), so a purge
-  that would rewrite the commit of a tag is refused (`TaggedCommit`) and names every such tag.
-  The tags are read again under the lock before the first object is written, so a tag that
-  appeared after the plan, or before a resume, is refused as well. The message names the command
+  that would rewrite the commit of a tag is refused (`TaggedCommit`) and names every such tag,
+  unless the person who runs it decided otherwise (next item). The tags are read again under the
+  lock before the first object is written, so a tag that appeared after the plan, or before a
+  resume, is refused as well. The message names both ways out: `--move-tags`, and the command
   that removes a tag, `stemma tag --delete <name>` (STEMMA-184). While a purge is pending the
-  command is refused, so a refusal under the lock, or on a resume, needs `--abort` first. A person
-  who still needs the tag sets it again at the commit that the purge leaves. Everything else
+  command is refused, so a refusal under the lock, or on a resume, needs `--abort` first.
+  Everything else
   stays, also an object that only a replaced entry named and that holds no secret: it may become unreachable, but the purge
   does not decide that it is garbage. The purge is therefore not a general garbage collection and
   does not make ADR-007's collection necessary. The plan also scans the store for trees that name
@@ -125,6 +126,41 @@ Facts that bound the design:
   that nothing kept holds the blob or reaches the delete set, and fails if it does (STEMMA-46).
   The scratch files of `tmp/` are removed when the purge takes the lock (ADR-011); see the
   limits.
+- **The person may let the purge move a tag** (STEMMA-185). A purge that would rewrite the commit
+  of a tag has two ways out, and both are the decision of the human who runs it. The default is
+  the refusal above: the person deletes the tag with `stemma tag --delete`, purges, and sets the
+  tag again, which keeps the whole history of the name in the log (ADR-008). The option
+  `--move-tags` (`TagPolicy::Move`) lets the purge do the last two steps itself: the tag stays
+  under its name and points to the new version of its commit afterwards. Three reasons for an
+  option and not a default: a tag is a promise that it never moves (ADR-008), so moving it must
+  be asked for; a release tag is often exactly what a secret was committed under, so the person
+  needs a way that does not leave a window without the tag; and the plan shows the move, as it
+  shows the move of a branch, before anything is written. What follows from it:
+  - A tag that points to a commit before the secret stays where it is, with or without the
+    option. Only a tag on a rewritten commit moves, and it moves to the commit that
+    `rewrite <old> <new>` names.
+  - The plan lists the moves (`PurgePlan::tags`; the line `tag <name> <old> -> <new>`), sorted by
+    name, and the other roots stay as before: the new commit is a kept root of the check at the
+    end of the plan.
+  - The tags move in the same step as the branches, under the lock, after the `purge` entry:
+    each one is checked against its two values first (a tag at neither is `PurgeStale`, as for
+    a branch), so a stop between two moves is finished by `--resume`. The journal names them
+    (below), so `--resume` does not need the option again, and the check of the tags under the
+    lock accepts exactly the tags that the journal moves: a tag that appeared later at a
+    rewritten commit still stops the purge.
+  - **What the entry records.** Only the **number** of the tags that moved: the line `tags <n>`
+    of the `purge` entry, between `commits` and `stubs`, left out for 0 so that every entry
+    from before keeps its encoding and its hash. It names no tag and no ID, for the reason of
+    the rest of the entry: the audit must not keep what the purge removes, and an old commit ID
+    would make the commit reachable for a person who reads the log. The names of the tags that
+    moved are in the output of the command. No `tag` or `untag` entry is written for the move: a
+    tag still never moves through an operation of its own (ADR-008), and the `purge` entry says
+    that the purge moved some. `op log` shows the count and `op log --json` has the field
+    `tags` (ADR-018, an added field).
+  - **Format 7.** The line `tags` and the journal `stemma-purge 3` are new forms that an older
+    program cannot read, so a repository moves to version 7 with its next entry or purge, as it
+    did for the worktree line (ADR-009): a program that knows version 6 refuses the repository
+    and does not report damage.
 - **The delete set holds the views of the rewritten conflicts** (STEMMA-195). The working-copy
   view of a commit with an open conflict (ADR-010) stores the text with markers of every
   conflicted path as a blob, and that text holds the content of every side. No tree or commit
@@ -193,6 +229,11 @@ lock may be held.
      a few bytes cannot make it hold a trillion numbers (found by the property test of
      STEMMA-20). The plan refuses a purge that would replace more entries
      (`PurgeError::TooManyEntries`), so no purge writes a journal that its reader refuses.
+   - **The journal of a purge that moves tags** (STEMMA-185) has the header `stemma-purge 3` and
+     the lines `tag <name> <old> <new>` after the lines `branch`, sorted by name. It names the
+     worktree on every `head` and `working-copy` line, as the header 2 does, so the header 3 is
+     the form with the tags and the worktrees named; a journal has exactly one of the three
+     forms, and the header 3 is only for a journal with at least one `tag`.
    - **The format rises first.** The repository moves to format 4 just before the journal is
      written, as a temporary file and a rename of `format`. A program that knows only version 2
      does not know the journal either and would write past it; with the higher format it refuses
@@ -391,9 +432,9 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
 - [ ] The rewrite of commits that are signed (ADR-003): a signature does not survive a rewrite.
 - [ ] The reachability check of the last step has to know every kind of reference that holds
       objects, including those that come later (remote references). Tags are known (STEMMA-54).
-- [ ] A purge that deals with a tag on a commit that it would rewrite, instead of refusing:
-      deleting the tag and setting it again at the new commit is a decision for the human who
-      runs the purge.
+- [x] A purge that deals with a tag on a commit that it would rewrite, instead of refusing:
+      the human who runs the purge may let it move the tag to the new commit (`--move-tags`),
+      and the `purge` entry counts the tags that moved (STEMMA-185).
 - [ ] The removal on a hub and the rule for a repository that was synchronized (phase 5).
 - [ ] A secret blob whose file is damaged cannot be purged: the plan does not know that it is a
       blob. Deleting it needs no knowledge of its content, so a later version may allow it.

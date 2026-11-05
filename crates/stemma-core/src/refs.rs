@@ -1398,6 +1398,9 @@ pub(crate) struct PurgeMoves {
     pub(crate) heads: Vec<(String, CommitId, CommitId)>,
     pub(crate) working_copies: Vec<(String, CommitId, CommitId)>,
     pub(crate) branches: Vec<(BranchName, CommitId, CommitId)>,
+    /// The tags that move. A tag never moves otherwise (ADR-008); a purge moves one only at the
+    /// request of the person who runs it (ADR-014).
+    pub(crate) tags: Vec<(BranchName, CommitId, CommitId)>,
 }
 
 impl FsRefStore {
@@ -3167,11 +3170,34 @@ impl FsRefStore {
                 return Err(stale(name.as_str().to_owned()));
             }
         }
+        let mut tags = Vec::new();
+        for (name, old, new) in &planned.tags {
+            Self::require_commit(new, objects)?;
+            let current = self.current(RefKind::Tag, name)?.commit;
+            if current == Some(*old) {
+                tags.push((name, *new));
+            } else if current != Some(*new) {
+                return Err(stale(format!("tag {}", name.as_str())));
+            }
+        }
         let done = match step() {
             Ok(done) => done,
             Err(error) => return Ok(Logged::StepFailed(error)),
         };
         let mut steps = self.branch_steps(&moves);
+        // The tags move with the branches: they belong to the references of the repository, not
+        // to a worktree, and a stop between them leaves each at one of its two values, which the
+        // check above accepts on a resume.
+        for (name, new) in &tags {
+            steps.push(Box::new(move || {
+                self.write_replacing(
+                    &self.reference_path(RefKind::Tag, name),
+                    &encode_branch(new),
+                    &self.namespace_dir(RefKind::Tag),
+                )
+                .map(|()| true)
+            }));
+        }
         for (store, new) in &working_copies {
             steps.push(Box::new(move || {
                 store.write_working_copy(new).map(|()| true)

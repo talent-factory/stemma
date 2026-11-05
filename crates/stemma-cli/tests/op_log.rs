@@ -574,7 +574,7 @@ fn a_stub_and_a_purge_are_shown_without_ids() {
     assert_eq!(
         lines[0],
         "{\"schema\":1,\"number\":4,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
-         \"operation\":\"purge\",\"commits\":2,\"stubs\":[[2,3]]}"
+         \"operation\":\"purge\",\"commits\":2,\"tags\":0,\"stubs\":[[2,3]]}"
     );
     assert_eq!(
         lines[1],
@@ -612,7 +612,7 @@ fn a_purge_with_several_ranges_lists_each() {
     assert_eq!(
         result.stdout,
         "{\"schema\":1,\"number\":6,\"kind\":\"purge\",\"time\":1700000000,\"actor\":\"human daniel\",\
-         \"operation\":\"purge\",\"commits\":3,\"stubs\":[[2,3],[5,5]]}\n"
+         \"operation\":\"purge\",\"commits\":3,\"tags\":0,\"stubs\":[[2,3],[5,5]]}\n"
     );
 }
 

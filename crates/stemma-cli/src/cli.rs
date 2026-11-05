@@ -95,8 +95,8 @@ use stemma_core::repository::{
     DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
     OpenError, Planned, PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository,
     RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError, SwitchError,
-    SwitchPlan, SwitchTarget, Switched, TrackError, Tracking, UpdateError, WorktreeBranch,
-    WorktreeError,
+    SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking, UpdateError,
+    WorktreeBranch, WorktreeError,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -342,6 +342,11 @@ struct PurgeArgs {
     /// cannot be undone
     #[arg(long, conflicts_with_all = ["resume", "abort"])]
     apply: bool,
+
+    /// Set each tag that points to a rewritten commit again at the commit that the purge leaves;
+    /// without it, such a tag refuses the purge. A tag never moves otherwise
+    #[arg(long, conflicts_with_all = ["resume", "abort"])]
+    move_tags: bool,
 
     /// Finish a purge that stopped, from its journal
     #[arg(long, conflicts_with = "abort")]
@@ -2316,9 +2321,14 @@ fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
         let blob = args
             .blob
             .expect("the parser requires the blob without --resume or --abort");
+        let tags = if args.move_tags {
+            TagPolicy::Move
+        } else {
+            TagPolicy::Refuse
+        };
         if !args.apply {
             let plan = repository
-                .plan_purge(blob, &actor, &AllowAll)
+                .plan_purge_with(blob, &actor, &AllowAll, tags)
                 .map_err(CliError::Purge)?;
             return match out.write_all(purge_text(&plan).as_bytes()) {
                 Ok(()) => Ok(()),
@@ -2327,7 +2337,7 @@ fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
             };
         }
         let purged = repository
-            .apply_purge(blob, &actor, &AllowAll)
+            .apply_purge_with(blob, &actor, &AllowAll, tags)
             .map_err(CliError::ApplyPurge)?;
         warn_scratch_left(&purged);
         purged_text("Purged", &purged)
@@ -2435,6 +2445,14 @@ fn plan_lines(plan: &PurgePlan) -> String {
     for (name, moved) in plan.branches() {
         text.push_str(&format!(
             "    branch {}  {} -> {}\n",
+            name.to_string().escape_debug(),
+            value(moved.before()),
+            value(moved.after())
+        ));
+    }
+    for (name, moved) in plan.tags() {
+        text.push_str(&format!(
+            "    tag {}  {} -> {}\n",
             name.to_string().escape_debug(),
             value(moved.before()),
             value(moved.after())

@@ -159,6 +159,69 @@ fn a_tag_stops_the_purge_and_the_advice_of_the_refusal_works() {
 }
 
 #[test]
+fn move_tags_sets_the_tag_again_at_the_commit_that_the_purge_leaves() {
+    let dir = with_secret();
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    let before = std::fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap();
+
+    // The plan shows the move, and writes nothing.
+    let plan = ok(
+        dir.path(),
+        &["purge", &secret(), "--move-tags", "--actor", ACTOR],
+    );
+    assert!(plan.stdout.contains("    tag v1  "), "{}", plan.stdout);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap(),
+        before
+    );
+
+    let done = ok(
+        dir.path(),
+        &[
+            "purge",
+            &secret(),
+            "--apply",
+            "--move-tags",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert!(done.stdout.contains("    tag v1  "), "{}", done.stdout);
+    let after = std::fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap();
+    assert_ne!(after, before, "the tag points to the new commit");
+    assert!(
+        done.stdout.contains(&format!("-> {}", after.trim())),
+        "{}",
+        done.stdout
+    );
+    assert!(!object_path(dir.path(), before.trim()).exists());
+    assert!(object_path(dir.path(), after.trim()).exists());
+
+    // The entry counts the tag, in the text and in the JSON of the log, and the log is sound.
+    let log = ok(dir.path(), &["op", "log"]);
+    assert!(log.stdout.contains("  tags 1  "), "{}", log.stdout);
+    let json = ok(dir.path(), &["op", "log", "--json"]);
+    assert!(json.stdout.contains("\"tags\":1"), "{}", json.stdout);
+    ok(dir.path(), &["op", "verify"]);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
+        "stemma-repository 7\n"
+    );
+}
+
+#[test]
+fn move_tags_does_not_go_with_resume_or_abort() {
+    let dir = with_secret();
+    for other in ["--resume", "--abort"] {
+        let result = run(
+            dir.path(),
+            &["purge", other, "--move-tags", "--actor", ACTOR],
+        );
+        assert_eq!(result.code, 2, "{}", result.stderr);
+    }
+}
+
+#[test]
 fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
     let dir = with_secret();
     // An anchor kept before the purge: the stubs keep the hashes, so it still holds after it.
@@ -198,7 +261,7 @@ fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
     );
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 6\n"
+        "stemma-repository 7\n"
     );
     assert!(!dir.path().join(".stemma/purge-pending").exists());
 

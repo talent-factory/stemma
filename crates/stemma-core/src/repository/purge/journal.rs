@@ -13,6 +13,7 @@
 //! head <old> <new>                HEAD, if it moves (a commit; HEAD that names a branch stays)
 //! working-copy <old> <new>        the working-copy commit, if it moves
 //! branch <name> <old> <new>       each branch that moves, sorted by name
+//! tag <name> <old> <new>          each tag that moves, sorted by name (`stemma-purge 3` only)
 //! stubs <ranges>                  the entries that become stubs, as in the log (`4-5 7`, or `-`)
 //! new <id>                        each object that the purge writes and the store did not have
 //! delete commit <id>              each commit that is deleted, sorted
@@ -25,7 +26,9 @@
 //! worktrees could be purged together. Any other journal has the header `stemma-purge 2` and names
 //! the worktree on each of the two lines, `head <worktree> <old> <new>` and
 //! `working-copy <worktree> <old> <new>`, `main` first and then the linked worktrees by name, each
-//! once. A journal has exactly one of the two forms.
+//! once. A purge that moves tags (STEMMA-185) has the header `stemma-purge 3`: the form with the
+//! worktrees named, and the lines `tag` after the lines `branch`. A journal has exactly one of the
+//! three forms, and the header 3 is for a journal with at least one line `tag`.
 //!
 //! The lines `new` name what `--abort` removes; an object that the store had before the purge
 //! stays, even if the purge writes it too. The blob is deleted as well, after the trees. The IDs
@@ -52,6 +55,10 @@ const HEADER: &str = "stemma-purge 1";
 /// linked worktree; such a journal names the worktree on every one of these moves.
 const HEADER_2: &str = "stemma-purge 2";
 
+/// The first line of a journal with at least one move of a tag. It names the worktree on every
+/// move of HEAD and of the working-copy commit, as the header 2 does, and has the lines `tag`.
+const HEADER_3: &str = "stemma-purge 3";
+
 /// The longest journal that is read: a journal names every rewritten commit and every deleted
 /// object, so it is bounded only by the history. A larger file is damage.
 const MAX_LEN: u64 = 1 << 30;
@@ -76,13 +83,19 @@ impl Journal {
     /// The canonical form (see the module documentation).
     pub(super) fn encode(&self) -> Vec<u8> {
         let plan = &self.plan;
-        let named = plan
-            .heads
-            .iter()
-            .map(|(name, _)| name)
-            .chain(plan.working_copies.iter().map(|(name, _)| name))
-            .any(|name| name != MAIN_WORKTREE);
-        let header = if named { HEADER_2 } else { HEADER };
+        let tagged = !plan.tags.is_empty();
+        let named = tagged
+            || plan
+                .heads
+                .iter()
+                .map(|(name, _)| name)
+                .chain(plan.working_copies.iter().map(|(name, _)| name))
+                .any(|name| name != MAIN_WORKTREE);
+        let header = match (tagged, named) {
+            (true, _) => HEADER_3,
+            (false, true) => HEADER_2,
+            (false, false) => HEADER,
+        };
         let mut out = format!("{header}\nblob {}\nlast {}\n", plan.blob, self.last);
         for (old, new) in &plan.rewrites {
             out.push_str(&format!("rewrite {old} {new}\n"));
@@ -110,6 +123,11 @@ impl Journal {
         for (name, moved) in &plan.branches {
             if let Some((old, new)) = values(moved) {
                 out.push_str(&format!("branch {name} {old} {new}\n"));
+            }
+        }
+        for (name, moved) in &plan.tags {
+            if let Some((old, new)) = values(moved) {
+                out.push_str(&format!("tag {name} {old} {new}\n"));
             }
         }
         let stubs = ranges(&plan.entries);
@@ -143,7 +161,7 @@ impl Journal {
         let mut lines = text.strip_suffix('\n')?.split('\n');
         let named = match lines.next()? {
             HEADER => false,
-            HEADER_2 => true,
+            HEADER_2 | HEADER_3 => true,
             _ => return None,
         };
         let blob = BlobId::new(id(lines.next()?.strip_prefix("blob ")?)?);
@@ -154,6 +172,7 @@ impl Journal {
             heads: Vec::new(),
             working_copies: Vec::new(),
             branches: Vec::new(),
+            tags: Vec::new(),
             entries: Vec::new(),
             commits: Vec::new(),
             trees: Vec::new(),
@@ -198,6 +217,12 @@ impl Journal {
                     plan.branches
                         .push((BranchName::try_new(name).ok()?, moved(old, new)));
                 }
+                "tag" => {
+                    let (name, rest) = rest.split_once(' ')?;
+                    let (old, new) = pair(rest)?;
+                    plan.tags
+                        .push((BranchName::try_new(name).ok()?, moved(old, new)));
+                }
                 "stubs" if rest == "-" => {}
                 "stubs" => add_stubs(&mut plan.entries, rest, last)?,
                 "new" => new.push(id(rest)?),
@@ -216,6 +241,7 @@ impl Journal {
                 .working_copies
                 .is_sorted_by(|a, b| order(&a.0) < order(&b.0))
             && plan.branches.is_sorted_by(|a, b| a.0 < b.0)
+            && plan.tags.is_sorted_by(|a, b| a.0 < b.0)
             && plan.commits.is_sorted_by(|a, b| a < b)
             && plan.trees.is_sorted_by(|a, b| a < b)
             && plan.blobs.is_sorted_by(|a, b| a < b)
@@ -245,6 +271,13 @@ impl Journal {
                 .collect(),
             branches: plan
                 .branches
+                .iter()
+                .filter_map(|(name, moved)| {
+                    values(moved).map(|(old, new)| (name.clone(), old, new))
+                })
+                .collect(),
+            tags: plan
+                .tags
                 .iter()
                 .filter_map(|(name, moved)| {
                     values(moved).map(|(old, new)| (name.clone(), old, new))
@@ -532,6 +565,7 @@ mod tests {
                     BranchName::try_new("main").unwrap(),
                     Moved::from_to(Some(commit("a")), Some(commit("c"))),
                 )],
+                tags: Vec::new(),
                 entries: vec![3, 4, 5, 7],
                 commits,
                 trees,
@@ -599,6 +633,45 @@ delete commit b3:d4e062857dfaa343e274686bde6eec552987caa63c862212e9ffdac91355298
 delete tree b3:400ae8ec4302756083aa9edfbdca35c70d6ee7e0c993dc59be0260e5802f3005
 delete tree b3:fd9dafeffe1626e22d7e119b8a7e99b3bb18b966da274397e10825b9da228fc5
 ";
+
+    #[test]
+    fn a_journal_with_tags_has_the_header_3_and_names_the_worktrees() {
+        let mut journal = sample();
+        journal.plan.tags = vec![
+            (
+                BranchName::try_new("v1").unwrap(),
+                Moved::from_to(Some(commit("a")), Some(commit("c"))),
+            ),
+            (
+                BranchName::try_new("v2").unwrap(),
+                Moved::from_to(Some(commit("b")), Some(commit("d"))),
+            ),
+        ];
+        let text = String::from_utf8(journal.encode()).unwrap();
+        assert!(text.starts_with("stemma-purge 3\n"), "{text}");
+        assert!(text.contains("\nhead main "), "{text}");
+        assert_eq!(text.matches("\ntag v").count(), 2, "{text}");
+        assert_eq!(Journal::parse(text.as_bytes()), Some(journal.clone()));
+        // The moves reach the references in the order of the journal.
+        let moves = journal.moves();
+        assert_eq!(moves.tags.len(), 2);
+        assert_eq!(moves.tags[0].0.as_str(), "v1");
+        // A line `tag` under another header, and tags out of order, are not read.
+        let old_header = text.replacen("stemma-purge 3", "stemma-purge 2", 1);
+        assert_eq!(Journal::parse(old_header.as_bytes()), None);
+        let mut swapped = journal;
+        swapped.plan.tags.reverse();
+        assert_eq!(Journal::parse(&swapped.encode()), None);
+        // The header 3 is for a journal with a tag; without one it is not canonical.
+        let none = text.replacen("stemma-purge 3", "stemma-purge 2", 1);
+        let without: String = none
+            .lines()
+            .filter(|line| !line.starts_with("tag "))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let bare = without.replacen("stemma-purge 2", "stemma-purge 3", 1);
+        assert_eq!(Journal::parse(bare.as_bytes()), None);
+    }
 
     #[test]
     fn a_journal_written_by_the_program_before_worktrees_is_read_and_written_back_unchanged() {
@@ -819,6 +892,11 @@ delete tree b3:fd9dafeffe1626e22d7e119b8a7e99b3bb18b966da274397e10825b9da228fc5
             let moved = Moved::from_to(Some(random_commit(rng)), Some(random_commit(rng)));
             branches.push((name, moved));
         }
+        let mut tags: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
+        for name in sorted(rng, 2, random_branch) {
+            let moved = Moved::from_to(Some(random_commit(rng)), Some(random_commit(rng)));
+            tags.push((name, moved));
+        }
         let last = *rng.pick(&[0, 1, 9, 40, MAX_NUMBER - 1, MAX_NUMBER]);
         // The stubs are entries of the log up to `last`.
         let entries = sorted(rng, 6, |rng| match rng.below(3) {
@@ -835,6 +913,7 @@ delete tree b3:fd9dafeffe1626e22d7e119b8a7e99b3bb18b966da274397e10825b9da228fc5
             heads,
             working_copies,
             branches,
+            tags,
             entries,
             commits: sorted(rng, 3, random_commit),
             trees: sorted(rng, 3, |rng| TreeId::new(random_id(rng))),

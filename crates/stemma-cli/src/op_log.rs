@@ -90,8 +90,14 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
         Record::Change(change) => change,
         Record::Stub(_) => return head(&"(purged)"),
         Record::Purge(purge) => {
+            // The tags are named only when the purge moved some, so that an entry from before
+            // them reads as before.
+            let tags = match purge.tags() {
+                0 => String::new(),
+                count => format!("  tags {count}"),
+            };
             return format!(
-                "{}    commits {}  stubs {}\n",
+                "{}    commits {}{tags}  stubs {}\n",
                 head(&"purge"),
                 purge.commits(),
                 stubs_text(purge.stubs())
@@ -192,7 +198,7 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// that did not exist or does not exist any more has `null` as its old or new value.
 ///
 /// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, or `purge`. A stub has only
-/// `time` and `actor` besides; a purge has `time`, `actor`, `operation`, `commits`, and `stubs`, a
+/// `time` and `actor` besides; a purge has `time`, `actor`, `operation`, `commits`, `tags`, and `stubs`, a
 /// list of ranges `[start, end]` (ADR-014). The fields above are those of a change, which has
 /// `purge_pending` before `took_effect` as well: `true` if a purge lists it and has not replaced
 /// it yet.
@@ -217,11 +223,12 @@ fn purge_json(entry: &Entry, purge: &Purge) -> String {
         .collect();
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"purge\",\"time\":{},\"actor\":{},\"operation\":\"purge\",\
-         \"commits\":{},\"stubs\":[{}]}}",
+         \"commits\":{},\"tags\":{},\"stubs\":[{}]}}",
         entry.number(),
         entry.time(),
         quote(&entry.actor().to_string()),
         purge.commits(),
+        purge.tags(),
         stubs.join(",")
     )
 }

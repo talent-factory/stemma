@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 6" and a newline; 2 to 5 before the worktree of an entry
+//! ├── format          "stemma-repository 7" and a newline; 2 to 6 before the tags of a purge
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
@@ -55,6 +55,7 @@ pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side, TextD
 pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
+    TagPolicy,
 };
 pub use rebase::{RebaseError, Rebased, Replayed};
 pub use restore::{RestoreError, RestorePlan, Restored};
@@ -86,9 +87,9 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` writes, and that a purge and every new entry
-/// of the log move a repository to: version 6, the worktree of an entry and the journal of a
-/// purge across worktrees (ADR-009, ADR-011, ADR-014).
-const FORMAT_VERSION: u32 = 6;
+/// of the log move a repository to: version 7, the tags that a purge moves: the line `tags` of a
+/// `purge` entry and the journal `stemma-purge 3` (ADR-009, ADR-011, ADR-014).
+const FORMAT_VERSION: u32 = 7;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -102,8 +103,10 @@ const FORMAT_VERSION: u32 = 6;
 /// version 4 refuses a file that it cannot read. Version 6 adds the lines `worktree` and
 /// `location` to an entry of the log and the journal `stemma-purge 2`: a repository moves to it
 /// with its next entry or purge, so that a program that knows only version 5 refuses a log or a
-/// journal that it cannot read, instead of reporting damage.
-const READ_VERSIONS: [u32; 5] = [2, 3, 4, 5, 6];
+/// journal that it cannot read, instead of reporting damage. Version 7 adds the line `tags` to a
+/// `purge` entry and the journal `stemma-purge 3` for a purge that moves tags (STEMMA-185), with
+/// the same rise and for the same reason.
+const READ_VERSIONS: [u32; 6] = [2, 3, 4, 5, 6, 7];
 
 // A purge and every new entry of the log move a repository to `FORMAT_VERSION` (ADR-011,
 // ADR-014). It is the highest that this code reads, so neither lowers a version.
@@ -2731,7 +2734,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 6\n"
+            b"stemma-repository 7\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4064,7 +4067,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "7",
+            "8",
             "99",
             "4294967295",
             "4294967296",
@@ -4114,7 +4117,7 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 6\n"
+            "stemma-repository 7\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
     }
@@ -4140,7 +4143,7 @@ mod tests {
         // A program that knows only version 5 refuses what the entry may now carry.
         assert_eq!(
             fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
-            "stemma-repository 6\n"
+            "stemma-repository 7\n"
         );
     }
 
@@ -4171,7 +4174,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 6\n"
+            "stemma-repository 7\n"
         );
     }
 
@@ -4204,7 +4207,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 6\n"
+            "stemma-repository 7\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -4447,7 +4450,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 6\n"
+            "stemma-repository 7\n"
         );
     }
 
@@ -4524,7 +4527,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 6\n");
+        assert_eq!(read(), "stemma-repository 7\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -4534,6 +4537,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 5\n");
         raise_format(&meta, 6).unwrap();
         assert_eq!(read(), "stemma-repository 6\n");
+        raise_format(&meta, 7).unwrap();
+        assert_eq!(read(), "stemma-repository 7\n");
     }
 
     #[test]
@@ -4578,7 +4583,7 @@ mod tests {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 6\n");
+        assert_eq!(format, "stemma-repository 7\n");
         for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
@@ -4750,14 +4755,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 6",
+                "stemma-repository 7",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
-                    found: "7".to_string(),
+                    found: "8".to_string(),
                 },
-                "version 7, but this code supports versions 2 to 6",
+                "version 8, but this code supports versions 2 to 7",
             ),
         ];
         for (error, text) in cases {

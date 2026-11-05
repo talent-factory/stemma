@@ -85,7 +85,10 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   last entry that moves it unknown. A lock that a crashed writer left makes the newest entries
   unknown until the next writer of the same host takes it over (ADR-008, STEMMA-51)
   or someone removes it. A separate marker can come with a later version of the entry
-  encoding if a use appears; version 2 went to the stub and the `purge` entry (ADR-014).
+  encoding if a use appears; version 2 went to the stub and the `purge` entry (ADR-014). The
+  `purge` entry has an optional line `tags <n>` after `commits <n>`, the number of tags that the
+  purge moved (STEMMA-185, ADR-014); it is left out for 0, so an entry from before keeps its
+  encoding and its hash, and it is covered by the hash of the body.
   The reading has two limits, and both are accepted (STEMMA-32). A pointer that returns to an
   earlier value inside the log is decided correctly as long as nothing outside the log moves it,
   because each entry reads its old value under the lock. A change outside the log to one of the
