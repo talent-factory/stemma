@@ -458,8 +458,9 @@ art, not a template (ADR-015).
 - [x] What a rebase does with the change ID of a commit that has two parents, and what a merge
       does when the working-copy commit has one (phase 3). Both are refused for now: `rebase`
       refuses a merge commit in the range, because its change has no single base, and the
-      rewrite of the working copy (so `merge` and `switch`) refuses a working-copy commit with
-      more than one parent. Replaying a merge commit stays open and wants its own decision.
+      rewrite of the working copy (used by `merge`, `rebase`, and `switch` with changes) refuses
+      a working-copy commit with more than one parent. Replaying a merge commit stays open and
+      wants its own decision.
 
 - [x] Which commands take a snapshot. The commands that change something take one first:
       `track`, `commit`, `switch`, `op restore` (ADR-013), and `purge --apply` (ADR-014);
