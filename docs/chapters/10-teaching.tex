@@ -206,6 +206,13 @@ das Rendern ist eine Funktion von Zustand und Diff \stopxcell
 \startxcell Nicht im Buch; endlicher Automat \stopxcell
 \stopxrow
 \startxrow
+\startxcell Reihenfolge von \type{log}: topologische Ordnung nach Kahn mit einem Heap, der unter den
+bereiten Commits den mit dem neuesten Datum wählt; jeder Commit wird einmal gelesen,
+Kosten $O((V+E)\log V)$ \stopxcell
+\startxcell \type{topological} (\type{history.rs}) \stopxcell
+\startxcell Abschnitt 4.2, topologische Ordnung; Abschnitt 2.4, Vorrangwarteschlangen \stopxcell
+\stopxrow
+\startxrow
 \startxcell Merge-Basis: die Vorfahrenmengen beider Commits, je mit einer Tiefensuche mit Stapel,
 dann die Schnittmenge, aus der alle Kandidaten fallen, die Vorfahr eines anderen sind;
 jeder Commit wird einmal gelesen \stopxcell
@@ -394,6 +401,46 @@ Nennen Sie je eine Datei, die sie falsch als Text, und eine, die sie falsch als 
 Welchen Schaden kann die falsche Einstufung anrichten, wenn ein Agent den Diff liest
 und danach entscheidet?
 Warum erreicht ein falsch eingestufter Diff den Merge-Pfad nicht (Stufe 1 nach ADR-004)?
+\stopitemize
+
+\subsection{Phase 3}
+
+\startitemize[n]
+\item (DUA) Zeigen Sie, dass \type{merge_bases} genau die besten gemeinsamen Vorfahren liefert:
+die gemeinsamen Vorfahren, die kein Vorfahr eines anderen gemeinsamen Vorfahren sind
+(\in{Abschnitt}[sec:tree-merge]).
+Geben Sie die Kosten in der Zahl $V$ der erreichbaren Commits und $E$ der Elternkanten an.
+Zeichnen Sie eine Geschichte, in der ein Criss-Cross-Merge zwei Merge-Basen erzeugt,
+und rechnen Sie die flache Summe $O + T - L - R + W$ für eine Datei durch,
+die beide Seiten verschieden ändern.
+\item (DUA) Die Ordnung von \type{log} stellt jeden Commit vor seine Eltern
+(\in{Abschnitt}[sec:log]).
+Zeigen Sie, dass das Verfahren die Invariante hält, und leiten Sie $O((V+E)\log V)$ her.
+Zeigen Sie dann an einer Geschichte mit einem falschen Datum, dass die Sortierung allein nach
+dem Datum die Invariante verletzt. Warum genügt dem Verfahren das Datum als Tie-Break?
+\item (DUA) Die Regel \quotation{gleiche Änderung auf beiden Seiten} gehört nicht zur Algebra
+der Summen (\in{Abschnitt}[sec:tree-merge]).
+Konstruieren Sie drei Commits, bei denen zwei Seiten dieselbe Änderung machen und ein späterer
+Merge mit der aufgelösten Regel ein anderes Ergebnis liefert als die Summe ohne sie.
+Warum hängt das Ergebnis eines Zeilen-Merges nicht davon ab, welche Seite die eigene ist
+(\in{Abschnitt}[sec:line-merge])?
+\item (DUA) Ein Rebase spielt jeden Commit $C$ als $E' + (C - E)$ auf
+(\in{Abschnitt}[sec:rebase]).
+Zeigen Sie, dass ein Rebase von $k$ Commits ohne Konflikt denselben Baum ergibt wie ein Merge
+der Spitze mit dem Ziel. Geben Sie ein Beispiel an, in dem beide Wege verschiedene Konflikte
+tragen, und zählen Sie die Seiten der Summe im letzten Commit.
+\item (AISE) Zwei Agenten arbeiten parallel am selben Repository.
+Der Kern erlaubt einen Branch nur in einem Worktree und kennt keine Option zum Erzwingen
+(\in{Abschnitt}[sec:worktree]).
+Welchen Fehler des Zusammenspiels schliesst die Regel aus, und welchen nicht?
+Entwerfen Sie ein Protokoll, mit dem ein Agent seinen Worktree benennt, nutzt und entfernt,
+und prüfen Sie, welche Schritte nach einem Absturz des Agenten offen bleiben.
+\item (AISE) Ein Konflikt ist Daten im Commit, und der Snapshot liest keine Markierungen
+(\in{Abschnitt}[sec:conflict-commands]).
+Ein Agent löst einen Konflikt, indem er Zeilen der Markierung entfernt und eine davon vergisst.
+Was meldet \type{status} danach, was ein Git-Repository mit klassischen Markierungen?
+Begründen Sie, welche Form für Agenten mehr Fehler sichtbar macht, und protokollieren Sie
+einen Versuch mit einem Agenten, der einen Konflikt aus Ihrem Beispiel löst.
 \stopitemize
 
 \section[sec:agents]{Wie Stemma mit Agenten entsteht}

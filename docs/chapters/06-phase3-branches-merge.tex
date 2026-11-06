@@ -129,6 +129,48 @@ der Befehl schreibt nichts, auch keinen Snapshot.
 \stopitemize
 \stopinfobox
 
+\section[sec:log]{Die Vorfahren in Reihenfolge: log}
+
+Der Befehl \type{log} zeigt den Working-Copy-Commit und seine Vorfahren.
+Die Commits bilden einen gerichteten azyklischen Graphen, und eine Liste braucht eine Ordnung,
+in der jeder Commit vor allen seinen Eltern steht.
+Eine Ordnung nach dem Datum allein reicht nicht, denn das Datum stammt vom Autor
+und kann falsch sein (ADR-005).
+
+{\bf Definition.} Die Liste ist eine topologische Ordnung der erreichbaren Commits
+(Abschnitt 4.2 bei \cite[sedgewick2011algorithms]).
+Der Kern zählt für jeden Commit die Kanten seiner Kinder, die erreichbar sind.
+Ein Commit ist bereit, wenn alle seine Kinder in der Liste stehen.
+Aus den bereiten Commits wählt ein Heap den mit dem neuesten Datum,
+bei gleichem Datum den mit der grösseren ID (\type{topological}).
+
+{\bf Invariante.} Ein Commit kommt erst in die Liste, wenn alle seine Kinder darin stehen,
+und er kommt in den Heap, wenn sein Zähler null erreicht.
+Das Datum wählt also nur unter Commits, die einander nicht bedingen;
+ein falsches Datum stellt nie ein Kind hinter sein Elternteil.
+Die Reihenfolge hängt nur von der Geschichte ab, nicht von der Reihenfolge der Eltern,
+und die ID als zweites Kriterium macht sie bei gleichem Datum eindeutig.
+
+{\bf Kosten.} Mit $V$ erreichbaren Commits und $E$ Elternkanten liest der erste Durchlauf jeden
+Commit einmal und zählt die Kanten in $O(V+E)$. Jeder Commit geht einmal in den Heap und einmal
+heraus, das kostet $O((V+E)\log V)$. Das gilt auch mit \type{-n}, denn die Ordnung braucht die
+ganze Menge; \type{-n} kürzt nur die Liste.
+
+{\bf Korrektheit.} Der Zähler eines Commits fällt nur, wenn ein Kind in die Liste kommt,
+und jede Kante wird genau einmal gezählt. Weil der Graph keinen Kreis hat
+(\in{Abschnitt}[sec:object-guarantees]), erreicht jeder Commit den Zähler null,
+und die Liste enthält alle erreichbaren Commits.
+
+\startinfobox
+{\bf Grenzfälle von \type{log}.}
+\startitemize
+\item Mit \type{--first-parent} folgt der Befehl nur dem ersten Elternteil. Das Ergebnis ist eine
+Kette und kostet höchstens so viele Lesevorgänge, wie \type{-n} nennt.
+\item Ein Commit mit offenem Konflikt trägt in der Kopfzeile \type{conflict (N sides)}.
+\item Der Befehl führt keinen Cache. Ein Index für schnellere Abfragen ist Sache von ADR-017.
+\stopitemize
+\stopinfobox
+
 \section[sec:tree-merge]{Der Merge von Trees}
 
 Der Merge zweier Commits ist eine Funktion auf ihren Trees
@@ -509,7 +551,7 @@ Trees bis zu ihm als Trees ab. Kein Commit nennt sie; sie sind abgeleitet und en
 nächsten Befehl neu. Der Text enthält aber den Inhalt jeder Seite. Ein \type{purge} löscht darum
 nicht nur den Blob, den man ihm nennt, sondern auch die Texte und Trees der Ansichten aller
 Commits, die er umschreibt (ADR-014); der Plan berechnet sie, ohne etwas zu schreiben.
-Eine getrackte Datei mit denselben Bytes wie ein solcher Text bleibt, denn sie gehört dann
+Eine verfolgte Datei mit denselben Bytes wie ein solcher Text bleibt, denn sie gehört dann
 einem Commit, der bleibt.
 
 {\bf Eltern, die zu einem werden.} Unterscheiden sich zwei Eltern eines Merge-Commits nur im
@@ -658,7 +700,7 @@ er nimmt keinen Snapshot und verwendet die Commits des Eintrags.
 \item Ein Commit mit mehr als einem Elternteil im Bereich lehnt der Befehl ab,
 bevor er etwas schreibt: Seine Änderung hat keine einzelne Basis.
 Wie ein Rebase die Change-ID eines solchen Commits behandelt, bleibt offen.
-\item Haben Spitze und Ziel mehrere beste gemeinsame Vorfahren (ein Criss-cross-Merge)
+\item Haben Spitze und Ziel mehrere beste gemeinsame Vorfahren (ein Criss-Cross-Merge)
 oder keinen, lehnt der Befehl ab.
 \item Zeigt HEAD auf einen Commit und nicht auf einen Branch, gibt es nichts zu bewegen.
 Der Befehl lehnt ab.
@@ -740,4 +782,8 @@ Löschen kostet nur Zeit, und ein Purge entfernt ihn. Offen bleiben die erste Ar
 gespeichert wird, und die Bereinigung alter Einträge.
 Ein Kandidat ist eine Generationsnummer, die die Suche nach der Merge-Basis früh beenden
 würde; sie kommt erst, wenn eine Messung sie verlangt.
+\item Ein \type{worktree repair} für einen Worktree, dessen Verzeichnis verschoben wurde.
+\item Ein Merge, der einen offenen Konflikt als Operanden liest.
+\item Wie ein Rebase die Change-ID eines Merge-Commits im Bereich behandelt.
+Heute lehnt der Befehl einen solchen Bereich ab.
 \stopitemize
