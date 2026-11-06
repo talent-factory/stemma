@@ -3,7 +3,7 @@
 \section{Ziel}
 
 Schreibhoheit, Pull Requests und Freigaben werden im System erzwungen, nicht nur empfohlen.
-Dieses Kapitel setzt ADR-002 und ADR-004 um.
+Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate auf ADR-019.
 
 \section{Umfang}
 
@@ -11,19 +11,19 @@ Dieses Kapitel setzt ADR-002 und ADR-004 um.
 \item Lease pro Branch mit Heartbeat und Ablaufzeit.
 \item Owner-Override nur mit Begründung und Audit-Eintrag, ohne Umgehung des Merge-Gates.
 \item Pull Request als Objekt mit Reviewern, Prüfungen und Merge-Regeln.
-\item Ein Merge-Gate ohne globalen Lock (ADR-019, Vorschlag).
+\item Ein Merge-Gate ohne globale Sperre (ADR-019, Vorschlag).
 \item Freigaben mit Akteur, Modellversion, geprüftem Commit und Ergebnis, signiert.
 \item Verbot der Selbstfreigabe.
 \item Risikostufen 0 bis 3, festgelegt in einer Policy-Datei, die selbst Stufe 3 ist.
 \item Automatische Eskalation bei Lockerung bestehender Tests.
 \stopitemize
 
-\section{Das Merge-Gate ohne globalen Lock}
+\section{Das Merge-Gate ohne globale Sperre}
 
-Eine Merge-Queue mit globalem Lock hält jede Änderung an, solange eine andere getestet wird.
+Eine Merge-Queue mit globaler Sperre hält jede Änderung an, solange eine andere getestet wird.
 Bei vielen Schreibern, Menschen wie Agenten, wächst die Wartezeit mit ihrer Zahl und mit der
 Dauer einer Prüfung.
-Die Frage ist, was eine grüne Prüfung noch heisst, wenn während ihres Laufs Dutzende anderer
+Die Frage ist, was eine grüne Prüfung noch heisst, wenn während ihres Laufs viele andere
 Änderungen landen.
 ADR-019 beantwortet sie als Vorschlag; er ist noch nicht entschieden und nicht umgesetzt.
 
@@ -31,17 +31,21 @@ ADR-019 beantwortet sie als Vorschlag; er ist noch nicht entschieden und nicht u
 
 \startitemize[n]
 \item Das Gate liest die Spitze \type{T} von \type{main} und führt die Änderung darauf zusammen.
-Das Ergebnis ist der Commit \type{M}.
+Das Ergebnis ist der Commit \type{M}, der Squash-Commit der Änderung auf \type{T}
+(ADR-006); \type{main} bleibt linear.
 \item Es wendet die Regel nach Risikostufe (\in{Tabelle}[tab:gate-rule])
 auf die vorhandenen Prüfergebnisse an.
 \item Es setzt \type{main} von \type{T} auf \type{M}, per Compare-and-swap (ADR-008).
-Hat eine andere Änderung \type{main} inzwischen bewegt, scheitert der Tausch und das Gate beginnt
+Hat eine andere Änderung \type{main} inzwischen bewegt, scheitert die Zeigerbewegung (\type{Stale},
+oder \type{Locked}, solange deren Sperre noch gehalten wird) und das Gate beginnt
 bei Schritt 1 mit der neuen Spitze.
 \stopitemize
 
-Während eine Prüfung läuft, hält niemand einen Lock.
-Die einzige Serialisierung ist der Tausch des Zeigers; er hält den Lock der Referenzen für einen
-Vergleich und einen Schreibvorgang.
+Während eine Prüfung läuft, hält niemand eine Sperre.
+Die einzige Serialisierung ist die Zeigerbewegung von \type{main};
+die Sperre der Referenzen gilt für eine Änderung, nie für eine Prüfung.
+Sie bleibt gehalten, solange die Änderung ihre Objekte schreibt und den Eintrag des Operation Logs
+sichert (ADR-008, ADR-011); ein kürzeres Fenster ist ein offener Punkt von ADR-019.
 
 {\bf Was ein Prüfergebnis aussagt.}
 Eine Prüfung ist eine Aussage über einen Commit: Sein Tree hat bestanden oder nicht.
@@ -76,8 +80,12 @@ Sauber heisst: Der Tree-Merge liefert genau einen Tree (\in{Abschnitt}[sec:tree-
 {\bf Konflikte.}
 Ein Konflikt gelangt nie nach \type{main}.
 Hat der Merge in Schritt 1 einen, lehnt das Gate ab und gibt die Änderung an ihren Autor zurück.
-Es spielt den Branch auf die neue Spitze neu auf; das ergibt einen Commit, der den Konflikt als
-Daten trägt (\in{Kapitel}[chap:phase3]), und der Autor löst ihn und pusht erneut.
+Der Autor, der Schreibinhaber des Branches (ADR-004), spielt ihn mit \type{rebase} auf die neue
+Spitze neu auf; die umgeschriebenen Commits tragen den Konflikt als Daten
+(\in{Kapitel}[chap:phase3]).
+Er löst ihn und pusht erneut.
+Lehnt \type{rebase} ab, etwa bei einem Merge-Commit im Bereich, ist das ein gewöhnlicher Fehler,
+und der Autor entscheidet von Hand.
 Das Konfliktmodell der Phase 3 ist die Voraussetzung: Mit Markierungen in den Dateien liesse sich
 ein Konflikt nicht als Commit zurückgeben.
 
@@ -90,13 +98,15 @@ nächste Lauf ab.
 Ist die Spitze rot, behebt eine neue Änderung den Fehler, ein Fix oder ein Revert, und nicht ein
 Umschreiben von \type{main}.
 Solange die letzte geprüfte Spitze rot ist, landen keine Änderungen der Stufen 2 und 3; die
-Stufen 0 und 1 gehen weiter, denn sie sind oft die Behebung selbst.
-Die Ursache in einem Fenster ungeprüfter Commits findet eine Bisektion über die lineare Historie.
+Stufen 0 und 1 gehen weiter.
+Ausgenommen von der Pause ist die Änderung, die die rote Spitze behebt, etwa der Revert des
+Commits, den die Bisektion findet.
+Die Ursache in einem Fenster ungeprüfter Commits findet eine Bisektion über den linearen Verlauf.
 
 \startinfobox
 {\bf Was \quotation{main ist immer grün} jetzt heisst.}
 Jeder Commit von \type{main} ist der saubere Merge einer Änderung, deren Prüfungen im Augenblick
-des Tauschs nach der Regel oben bestanden hatten.
+der Zeigerbewegung nach der Regel oben bestanden hatten.
 Die letzte geprüfte Spitze ist grün, oder eine Behebung läuft.
 Zwischen dieser Spitze und der aktuellen liegen nur die Commits, die während eines Laufs landeten;
 ihre Zahl ist begrenzt, aber nicht null.
@@ -105,10 +115,13 @@ besteht jetzt}.
 \stopinfobox
 
 Der Entwurf ersetzt keine Queue durch eine andere.
-Der Durchsatz hängt von der Rate der sauberen Tausche ab, nicht von der Dauer der Prüfungen.
+Der Durchsatz hängt von der Rate der sauberen Zeigerbewegungen ab,
+nicht von der Dauer der Prüfungen.
 Dafür treten rote Spitzen auf, im Verhältnis zur Rate der semantischen Konflikte, und ein Teil der
 Änderungen muss repariert werden, statt dass alle warten.
-Verworfen sind eine Queue mit globalem Lock, eine Queue mit spekulativen Batches, die Prüfung
+Änderungen der Stufen 2 und 3 holen bei vielen Schreibern die Spitze womöglich nie ein;
+dafür braucht der Entwurf noch eine Grenze (offener Punkt von ADR-019).
+Verworfen sind eine Queue mit globaler Sperre, eine Queue mit spekulativen Batches, die Prüfung
 jeder Änderung bei jeder Bewegung von \type{main} und der Verzicht auf die Prüfung nach dem Merge;
 die Gründe stehen in ADR-019.
 

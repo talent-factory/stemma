@@ -93,6 +93,26 @@ matches (_fixed lines_, Fixzeilen) divide the file into pieces (_Zwischenstücke
 is decided as a sum of its own. One undecided piece makes the whole file a conflict. (Zeilen-Merge)
 _Avoid_: Text merge, anchor (the anchor is a number and a hash of the log)
 
+**Merge gate**:
+The rule that decides whether a change lands on `main`. It reads the tip of `main`, merges the
+change onto it, applies the rule of the risk level to the check results it holds, and moves
+`main` by compare and swap; a conflict never lands (ADR-019, proposal). (Merge-Gate)
+_Avoid_: Merge queue (a queue holds a lock while it tests)
+
+**Check result**:
+A statement that the tree of one commit passed or failed a set of tests, together with the tip of
+`main` that the commit was merged onto for the test. (Prüfergebnis)
+_Avoid_: Build status
+
+**Clean merge**:
+A tree merge that returns one tree, not a sum of several. (sauberer Merge)
+_Avoid_: Trivial merge
+
+**Semantic conflict**:
+Two changes that merge cleanly and break each other; only a run of the checks on the merged tip
+finds it. (semantischer Konflikt)
+_Avoid_: Logical conflict
+
 ## Working copy
 
 **Working directory**:
