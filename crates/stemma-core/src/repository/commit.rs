@@ -383,7 +383,7 @@ pub enum CommitError {
     /// The tree of the working-copy commit is that of its parent (or empty, if there is none).
     NothingToCommit,
     /// The branch is not at the parent of the working-copy commit, so a commit on top of that parent
-    /// would leave out what the branch has. A rebase (phase 3) is the way to bring the two
+    /// would leave out what the branch has. A rebase is the way to bring the two
     /// together.
     BranchMoved {
         /// The branch that HEAD names.
