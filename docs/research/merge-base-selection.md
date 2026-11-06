@@ -18,11 +18,11 @@ number, this note says so and does not estimate.
 Git defines the term. A common ancestor is better than another if the latter is an ancestor of
 the former. A best common ancestor has no better one. With criss-cross merges, two commits can
 have more than one best common ancestor, and none is better than the other
-([git-merge-base](https://raw.githubusercontent.com/git/git/master/Documentation/git-merge-base.adoc)).
+([git-merge-base](https://github.com/git/git/blob/master/Documentation/git-merge-base.adoc)).
 The documentation draws the topology: two branches that each merge the other's tip, so that
 commits `1` and `2` are both merge bases of `A` and `B`. Without `--all`, `git merge-base`
 prints an unspecified one of them
-([same page](https://raw.githubusercontent.com/git/git/master/Documentation/git-merge-base.adoc)).
+([same page](https://github.com/git/git/blob/master/Documentation/git-merge-base.adoc)).
 
 A three-way merge needs exactly one base. The two systems differ in how they reach one.
 
@@ -32,12 +32,13 @@ A three-way merge needs exactly one base. The two systems differ in how they rea
 
 `git merge-base --all` and the merge machinery use `get_merge_bases_many_0()` in
 `commit-reach.c`
-([source](https://raw.githubusercontent.com/git/git/master/commit-reach.c)):
+([source](https://github.com/git/git/blob/master/commit-reach.c)):
 
 1. `paint_down_to_common()` walks the graph from both sides. It uses a priority queue ordered by
    generation number, ties by commit date. A commit that has received both paints is a
    candidate and becomes `STALE`, so that its ancestors are known to be redundant
-   ([paint-down-to-common](https://raw.githubusercontent.com/git/git/master/Documentation/technical/paint-down-to-common.adoc)).
+   ([paint-down-to-common](
+   https://github.com/git/git/blob/master/Documentation/technical/paint-down-to-common.adoc)).
 2. Candidates can still contain commits that are ancestors of other candidates. When more than
    one result remains, `remove_redundant()` filters them
    (`commit-reach.c`, `get_merge_bases_many_0`, lines 568 to 615).
@@ -49,7 +50,8 @@ A three-way merge needs exactly one base. The two systems differ in how they rea
 
 The documentation says the walk may stop early when a stale queue remains, because
 `remove_redundant()` fixes the candidates afterwards
-([paint-down-to-common](https://raw.githubusercontent.com/git/git/master/Documentation/technical/paint-down-to-common.adoc)).
+([paint-down-to-common](
+https://github.com/git/git/blob/master/Documentation/technical/paint-down-to-common.adoc)).
 It gives no Big-O bound for the walk or for the filtering.
 
 ### 2.2 What `ort` does with several bases: a virtual base by recursive merging
@@ -58,17 +60,17 @@ The strategy documentation states it: when more than one common ancestor can be 
 "creates a merged tree of the common ancestors and uses that as the reference tree for the
 3-way merge". It reports fewer conflicts without mismerges, measured on Linux 2.6 merge
 commits
-([merge-strategies](https://raw.githubusercontent.com/git/git/master/Documentation/merge-strategies.adoc)).
+([merge-strategies](https://github.com/git/git/blob/master/Documentation/merge-strategies.adoc)).
 
 The implementation is `merge_ort_internal()` in `merge-ort.c`, lines 5333 to 5412
-([source](https://raw.githubusercontent.com/git/git/master/merge-ort.c)):
+([source](https://github.com/git/git/blob/master/merge-ort.c)):
 
 - The caller may pass the bases. Otherwise `repo_get_merge_bases()` computes them and the list
   is reversed (lines 5345 to 5353).
 - `merge-ort.h` documents the order: "empirically, the recursive algorithm will perform better
   if you pass the merge_bases in the order of oldest commit to the newest", and cites commit
   `8918b0c9c2` of 2006
-  ([merge-ort.h](https://raw.githubusercontent.com/git/git/master/merge-ort.h), lines 105 to
+  ([merge-ort.h](https://github.com/git/git/blob/master/merge-ort.h), lines 105 to
   112).
 - The first base is popped. Each further base is merged into the running result. The call
   `merge_ort_internal(opt, NULL, prev, next, result)` recurses with `call_depth` increased by
@@ -108,7 +110,7 @@ The sources state the structure of the cost, not measured numbers.
   was not checked.
 - Each inner merge is a full tree merge with rename detection, as the strategy documentation
   says that `ort` "can detect and handle merges involving renames"
-  ([merge-strategies](https://raw.githubusercontent.com/git/git/master/Documentation/merge-strategies.adoc)).
+  ([merge-strategies](https://github.com/git/git/blob/master/Documentation/merge-strategies.adoc)).
   `merge_ort_internal` reinitialises the internal state after each inner merge
   (`clear_or_reinit_internal_opts`, line 5406).
 - Candidate filtering: one graph walk per candidate (section 2.1).
@@ -124,7 +126,7 @@ The sources state the structure of the cost, not measured numbers.
 
 `CompositeIndex::common_ancestors_pos()` in `lib/src/default_index/composite.rs` (lines 413 to
 445)
-([source](https://raw.githubusercontent.com/jj-vcs/jj/main/lib/src/default_index/composite.rs)):
+([source](https://github.com/jj-vcs/jj/blob/main/lib/src/default_index/composite.rs)):
 
 - Two binary heaps hold the index positions of the two sets. The larger position is replaced
   by its parents until both heaps show the same position. Equal positions go to the result.
@@ -136,7 +138,7 @@ The sources state the structure of the cost, not measured numbers.
 ### 3.2 What jj does with several bases: sum algebra, no virtual commit
 
 `find_recursive_merge_commits()` in `core/src/commit.rs` (lines 312 to 385)
-([source](https://raw.githubusercontent.com/jj-vcs/jj/main/core/src/commit.rs)):
+([source](https://github.com/jj-vcs/jj/blob/main/core/src/commit.rs)):
 
 - The input is the list of commits to merge, for example the parents of a merge commit. The
   result is a `Merge<CommitId>`: an alternating list of "adds" and "removes", in the form
@@ -151,7 +153,7 @@ The sources state the structure of the cost, not measured numbers.
 - `Merge::flatten()` turns a merge of merges into one flat merge. The docs show that a 3-way
   merge of 3-way merges becomes a 9-way merge (`core/src/merge.rs`, doc comment of
   `flatten`, lines 674 to 693)
-  ([source](https://raw.githubusercontent.com/jj-vcs/jj/main/core/src/merge.rs)).
+  ([source](https://github.com/jj-vcs/jj/blob/main/core/src/merge.rs)).
 - `merge_commit_trees_no_resolve()` maps the commit-id merge to a merge of trees and calls
   `MergedTree::merge_no_resolve()` once (`core/src/commit.rs`, lines 290 to 310). No
   intermediate tree is merged, and no virtual commit is created. `merge_commit_trees()` then
@@ -160,14 +162,14 @@ The sources state the structure of the cost, not measured numbers.
 The data model is the one of first-class conflicts: a merge is an odd-numbered list of trees
 `A+(C-B)+(E-D)`, and a three-way merge is `A+(C-B)`. A nested conflict is inserted into the
 expression, then `Merge::flatten()` and `Merge::simplify()` remove cancelling terms
-([technical/conflicts](https://raw.githubusercontent.com/jj-vcs/jj/main/docs/technical/conflicts.md)).
+([technical/conflicts](https://github.com/jj-vcs/jj/blob/main/docs/technical/conflicts.md)).
 `simplify()` "join[s] diffs like A->B and B->C into A->C" and drops trivial diffs
 (`core/src/merge.rs`, around line 397).
 
 The user documentation claims that criss-cross and octopus merges "become trivial
 (implementation-wise)" and that some cases that Git cannot handle, or that give nested conflict
 markers, are resolved automatically
-([conflicts](https://raw.githubusercontent.com/jj-vcs/jj/main/docs/conflicts.md), the list of
+([conflicts](https://github.com/jj-vcs/jj/blob/main/docs/conflicts.md), the list of
 benefits). It is a project claim; the repository text gives no comparison data.
 
 ### 3.3 What it costs
@@ -179,31 +181,31 @@ The sources state the following; none gives a measurement.
   merge. A general formula is not stated in the sources read.
 - Tree work happens once, on the flat expression, and is lazy: only sub-trees that cannot be
   resolved by object id are descended into, and only paths that differ are checked
-  ([technical/conflicts](https://raw.githubusercontent.com/jj-vcs/jj/main/docs/technical/conflicts.md),
+  ([technical/conflicts](https://github.com/jj-vcs/jj/blob/main/docs/technical/conflicts.md),
   data model).
 - No intermediate resolution step exists, so no marker text enters a base. A conflict in the
   result keeps the alternatives as trees. The price is a result with more than three sides,
   which the conflict model, the materialised markers, and the resolution tools must handle.
 - The same-change rule resolves automatically when all sides make the same change. The
   project says this is "lossy in terms of conflict algebra" and cites bug #6369
-  ([technical/conflicts](https://raw.githubusercontent.com/jj-vcs/jj/main/docs/technical/conflicts.md),
+  ([technical/conflicts](https://github.com/jj-vcs/jj/blob/main/docs/technical/conflicts.md),
   "Same-change rule"). The setting `merge.same-change` switches between `accept` and `keep`.
 - Candidate search: heap walk over index positions plus `heads_pos()`; a recursive call for
   each non-unique ancestor set (section 3.2).
 
 ## 4. Side by side
 
-| Aspect                | Git `ort`                                  | Jujutsu                                 |
-|-----------------------|--------------------------------------------|-----------------------------------------|
-| Candidate search      | paint walk, then `remove_redundant`        | two-heap walk, then `heads_pos`         |
-| Several bases         | merge them into a virtual tree, one by one | recurse, combine as sum of diffs        |
-| Intermediate result   | tree with possible conflict markers        | none; terms stay in one expression      |
-| Virtual commit        | yes, in memory, with two parents           | no                                      |
-| Number of tree merges | `k - 1` inner merges plus one final        | one, on the flat expression             |
-| No common ancestor    | empty tree as base                         | root commit as base                     |
-| Order dependence      | yes, oldest first is better (empirical)    | not stated in the sources read          |
-| Result shape          | normal 3-way result                        | possibly a conflict with more sides     |
-| Published numbers     | none in the sources read                   | none in the sources read                |
+| Aspect | Git `ort` | Jujutsu |
+|---|---|---|
+| Candidate search | paint walk, then `remove_redundant` | two-heap walk, then `heads_pos` |
+| Several bases | merge them into a virtual tree, one by one | recurse, combine as sum of diffs |
+| Intermediate result | tree with possible conflict markers | none; terms stay in one expression |
+| Virtual commit | yes, in memory, with two parents | no |
+| Number of tree merges | `k - 1` inner merges plus one final | one, on the flat expression |
+| No common ancestor | empty tree as base | root commit as base |
+| Order dependence | yes, oldest first is better (empirical) | not stated in the sources read |
+| Result shape | normal 3-way result | possibly a conflict with more sides |
+| Published numbers | none in the sources read | none in the sources read |
 
 ## 5. Open points for the later decision
 
