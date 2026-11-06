@@ -229,11 +229,11 @@ art, not a template (ADR-015).
   snapshot refuses such a file unless it holds a target that a link on Unix can have: UTF-8,
   not empty, at most 4096 bytes, and without a NUL byte or a line break. A line break also
   catches content that was written over the file as if it were the target itself. To make such a
-  path a regular file on Windows, the user deletes the file, takes a snapshot (any command that
-  takes one, such as `stemma status`), which drops the path from the tree, writes the file
-  again, and tracks it: it enters the tree as a regular file. No new command or option is needed,
-  because a snapshot already treats a deleted path as untracked, and the remedy of the error
-  names these steps. Where the file system has them, a file is opened
+  path a regular file on Windows, the user moves the file aside, takes a snapshot (any command
+  that takes one, such as `stemma status`), which drops the missing path from the tree, moves
+  the file back, and tracks it: it enters the tree as a regular file. No new command or option
+  is needed, because a snapshot already drops a deleted tracked path from the tree, and the
+  remedy of the error names these steps. Where the file system has them, a file is opened
   and compared by device and inode with the one that was looked at, so a file or a directory
   swapped for a link between the two is an error and not a read outside the working directory.
   A file that vanishes between the two counts as gone.

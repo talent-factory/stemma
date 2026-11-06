@@ -669,9 +669,10 @@ UTF-8, nicht leer, höchstens 4096 Bytes, ohne Nullbyte und ohne Zeilenumbruch.
 Der Zeilenumbruch fängt auch einen Inhalt ab, der die Datei überschrieben hat,
 als wäre sie das Ziel selbst.
 Soll der Pfad unter Windows eine gewöhnliche Datei werden,
-löscht man die Datei und macht einen Snapshot (etwa mit \type{stemma status}),
-der den Pfad aus dem Baum nimmt;
-dann schreibt man die Datei neu und verfolgt sie mit \type{stemma track},
+legt man die Datei zur Seite
+und macht einen Snapshot (etwa mit \type{stemma status}),
+der den fehlenden Pfad aus dem Baum nimmt;
+dann legt man die Datei zurück und verfolgt sie mit \type{stemma track},
 und sie kommt als gewöhnliche Datei in den Baum.
 Einen eigenen Befehl braucht es nicht, und die Meldung des Fehlers nennt diese Schritte.
 \item Das Ausführbit gehört zum Dateimodus.
