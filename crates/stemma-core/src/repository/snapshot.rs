@@ -671,7 +671,11 @@ impl Unsupported {
             Self::SpecialFile => "remove it or put a regular file in its place",
             Self::NonUtf8Link => "point the link at a target with a UTF-8 name",
             Self::NonUtf8Name => "rename it",
-            Self::LinkFile => "write the target of the link into it, without a line break",
+            Self::LinkFile => {
+                "write the target of the link into it, without a line break; to make the path a \
+                 regular file instead, move it aside, run `stemma status` to take a snapshot, move \
+                 it back, and track it with `stemma track`"
+            }
         }
     }
 }
@@ -1624,6 +1628,69 @@ mod tests {
             );
             assert_eq!(repository.refs().working_copy().unwrap(), before);
             assert_eq!(repository.oplog().numbers().unwrap(), numbers);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_track_of_a_file_for_a_link_without_a_target_is_refused_like_a_snapshot() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        commit_files(&repository, &[("link", FileMode::Symlink, "target")]);
+        write(&dir, "link", "key = value\nother = 1\n");
+        let before = repository.refs().working_copy().unwrap();
+        let numbers = repository.oplog().numbers().unwrap();
+        // Track fails on the same refusal as the snapshot.
+        let error = repository
+            .track(&["link".to_owned()], &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                crate::repository::TrackError::Snapshot(SnapshotError::Unsupported {
+                    what: Unsupported::LinkFile,
+                    ..
+                })
+            ),
+            "{error}"
+        );
+        assert_eq!(repository.refs().working_copy().unwrap(), before);
+        assert_eq!(repository.oplog().numbers().unwrap(), numbers);
+    }
+
+    /// The way from a tracked link to a regular file (STEMMA-89). On Unix a regular file in the
+    /// place of a link is a regular file already, so the test starts from a link whose file is
+    /// gone, which is the state after the file was moved aside.
+    #[test]
+    fn a_path_that_left_the_tree_is_tracked_again_as_a_regular_file() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        commit_files(&repository, &[("link", FileMode::Symlink, "target")]);
+        assert!(snapshot(&repository).is_some());
+        assert!(tracked(&repository).is_empty());
+        write(&dir, "link", "key = value\nother = 1\n");
+        let tracking = repository
+            .track(&["link".to_owned()], &actor(), &AllowAll)
+            .unwrap();
+        assert_eq!(tracking.added, ["link"]);
+        assert_eq!(tracked(&repository), [("link".to_owned(), FileMode::File)]);
+        assert!(snapshot(&repository).is_none());
+    }
+
+    #[test]
+    fn the_remedy_of_a_file_for_a_link_names_the_way_to_a_regular_file() {
+        let error = SnapshotError::Unsupported {
+            path: "link".to_owned(),
+            what: Unsupported::LinkFile,
+        };
+        let text = error.to_string();
+        for part in [
+            "write the target of the link into it",
+            "move it aside",
+            "stemma status",
+            "stemma track",
+        ] {
+            assert!(text.contains(part), "{text}");
         }
     }
 
