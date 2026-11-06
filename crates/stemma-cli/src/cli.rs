@@ -126,7 +126,8 @@ enum Command {
     Track(TrackArgs),
     /// Name the working-copy commit and start a new one
     Commit(CommitArgs),
-    /// Change the branch that HEAD names, or detach HEAD, while the working-copy commit is empty
+    /// Change the branch that HEAD names, or detach HEAD; the working-copy changes move along, or
+    /// --discard drops them
     Switch(SwitchArgs),
     /// Replay the commits of the current branch on a target, and move the branch to the result
     Rebase(RebaseArgs),
@@ -151,7 +152,8 @@ enum Command {
     },
     /// Remove a secret from the history and the log; without --apply, only show what it would do
     Purge(PurgeArgs),
-    /// Add a second working copy of the repository on its own branch, or list the worktrees
+    /// Add a second working copy of the repository on its own branch, list the worktrees, or remove
+    /// one
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommand,
