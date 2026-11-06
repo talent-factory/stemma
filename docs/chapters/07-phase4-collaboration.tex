@@ -54,17 +54,18 @@ Die Dauer der Lease und das Verhalten bei abgestürzten Agenten sind offen
 Der Schreibinhaber eröffnet den Pull Request (\in{Abbildung}[fig:pull-request-flow]).
 Die Risikostufe folgt aus allen Pfaden, die die Änderung berührt, und der höchste Wert gilt.
 Sie bestimmt, wer freigeben muss, und kein Akteur gibt seine eigene Änderung frei.
-Ist die Freigabe vollständig, wendet das Merge-Gate die Regel an (nächster Abschnitt)
+Ist die Freigabe vollständig, wendet das Merge-Gate die Regel an (\in{Abschnitt}[sec:merge-gate])
 und bewegt \type{main}.
-Ein Konflikt oder eine Bewegung von \type{main} schickt die Änderung zurück,
-bevor sie landet.
+Ein Konflikt schickt die Änderung an ihren Autor zurück.
+Hat sich \type{main} inzwischen bewegt, wiederholt das Gate den Merge und die Regel
+auf der neuen Spitze.
 
 \startplacefigure[title={Ablauf eines Pull Requests bis zur Zeigerbewegung von main},
     reference=fig:pull-request-flow,location=here]
 \externalfigure[images/pull-request-flow.pdf][width=\textwidth]
 \stopplacefigure
 
-\section{Das Merge-Gate ohne globale Sperre}
+\section[sec:merge-gate]{Das Merge-Gate ohne globale Sperre}
 
 Eine Merge-Queue mit globaler Sperre hält jede Änderung an, solange eine andere getestet wird.
 Bei vielen Schreibern, Menschen wie Agenten, wächst die Wartezeit mit ihrer Zahl und mit der
@@ -174,7 +175,7 @@ die Gründe stehen in ADR-019.
 \section[sec:phase4-open]{Offene Fragen}
 
 \startitemize
-\item Dauer des Leases und Verhalten bei abgestürzten Agenten.
+\item Dauer der Lease und Verhalten bei abgestürzten Agenten.
 \item Agenten-Identitäten: eigene Rolle oder Rolle mit menschlichem Sponsor.
 \item Schnellweg für triviale Änderungen: Wer darf ihn nutzen?
 \item Konkrete Pfadlisten je Risikostufe.

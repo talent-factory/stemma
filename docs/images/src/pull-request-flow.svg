@@ -23,7 +23,7 @@
   <text x="32" y="218">3 Freigaben sammeln</text>
   <text x="32" y="308">4 Merge-Gate</text>
 </g>
-<text x="32" y="398" font-size="12.5" font-weight="bold" fill="#2F7D32">5 main bewegen</text>
+<text x="32" y="398" font-size="12.5" font-weight="bold" fill="#2F7D32">5 <tspan font-family="Courier, monospace">main</tspan> bewegen</text>
 <g font-size="11" fill="#0F172A">
   <text x="32" y="56">Der Schreibinhaber des Branches stellt ihn zur Prüfung.</text>
   <text x="32" y="146">Der höchste Wert aller berührten Pfade gilt.</text>
@@ -49,14 +49,14 @@
   <text x="340" y="234">Stufe 2: zwei Agenten und ein Mensch</text>
   <text x="340" y="248">Stufe 3: nur der Owner, dazu ein ADR</text>
 </g>
-<text x="340" y="268" font-size="11" fill="#B91C1C">Keine Selbstfreigabe.</text>
+<text x="340" y="268" font-size="11" fill="#0F172A">Keine Selbstfreigabe.</text>
 <!-- conflict return -->
-<line x1="310" y1="306" x2="400" y2="306" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="5 3"/>
-<text x="340" y="294" font-size="11" fill="#B91C1C">Konflikt im Merge:</text>
-<text x="408" y="310" font-size="11" fill="#B91C1C">zurück an den Autor,</text>
-<text x="408" y="324" font-size="11" fill="#B91C1C">der mit rebase neu aufspielt</text>
+<line x1="310" y1="306" x2="400" y2="306" stroke="#64748B" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="340" y="294" font-size="11" fill="#0F172A">Konflikt im Merge:</text>
+<text x="408" y="310" font-size="11" fill="#0F172A">zurück an den Autor,</text>
+<text x="408" y="324" font-size="11" fill="#0F172A">der mit <tspan font-family="Courier, monospace">rebase</tspan> neu aufspielt</text>
 <!-- stale loop back -->
-<path d="M310 404 L560 404 L560 345 L330 345 L310 320" fill="none" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arrow-red)"/>
-<text x="340" y="364" font-size="11" fill="#B91C1C">main hat sich bewegt (Stale):</text>
-<text x="340" y="378" font-size="11" fill="#B91C1C">neu bei Schritt 4 mit der neuen Spitze</text>
+<path d="M310 404 L560 404 L560 345 L330 345 L310 320" fill="none" stroke="#64748B" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
+<text x="340" y="364" font-size="11" fill="#0F172A"><tspan font-family="Courier, monospace">main</tspan> hat sich bewegt (Stale oder Locked):</text>
+<text x="340" y="378" font-size="11" fill="#0F172A">neu bei Schritt 4 mit der neuen Spitze</text>
 </svg>
