@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 334" font-family="Helvetica, Arial, sans-serif">
+<title>Git, Scion und Stemma im Vergleich</title>
+<rect x="0" y="0" width="600" height="334" fill="#FFFFFF"/>
+<rect x="140" y="8" width="140" height="28" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5"/>
+<text x="210.0" y="27" text-anchor="middle" font-size="14" font-weight="bold" fill="#0F172A">Git</text>
+<rect x="290" y="8" width="140" height="28" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5"/>
+<text x="360.0" y="27" text-anchor="middle" font-size="14" font-weight="bold" fill="#0F172A">Scion</text>
+<rect x="440" y="8" width="140" height="28" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="510.0" y="27" text-anchor="middle" font-size="14" font-weight="bold" fill="#0F172A">Stemma</text>
+<text x="10" y="71" font-size="12" font-weight="bold" fill="#0F172A">Daten</text>
+<rect x="140" y="46" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="148" y="63" font-size="11" fill="#0F172A">inhaltsadressiert,</text>
+<text x="148" y="77" font-size="11" fill="#0F172A">unveränderlich</text>
+<rect x="290" y="46" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="298" y="63" font-size="11" fill="#0F172A">inhaltsadressiert,</text>
+<text x="298" y="77" font-size="11" fill="#0F172A">unveränderlich</text>
+<rect x="440" y="46" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="448" y="63" font-size="11" fill="#0F172A">inhaltsadressiert,</text>
+<text x="448" y="77" font-size="11" fill="#0F172A">unveränderlich</text>
+<text x="10" y="115" font-size="12" font-weight="bold" fill="#0F172A">Klon</text>
+<rect x="140" y="90" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="148" y="114" font-size="11" fill="#0F172A">voller lokaler Klon</text>
+<rect x="290" y="90" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="298" y="107" font-size="11" fill="#0F172A">kein vollständiger Klon,</text>
+<text x="298" y="121" font-size="11" fill="#0F172A">Cache des Clients</text>
+<rect x="440" y="90" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="448" y="114" font-size="11" fill="#0F172A">voller lokaler Klon</text>
+<text x="10" y="159" font-size="12" font-weight="bold" fill="#0F172A">Arbeitskopie</text>
+<rect x="140" y="134" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="148" y="158" font-size="11" fill="#0F172A">Verzeichnis und Index</text>
+<rect x="290" y="134" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="298" y="158" font-size="11" fill="#0F172A">optional und sparse</text>
+<rect x="440" y="134" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="448" y="158" font-size="11" fill="#0F172A">Working-Copy-Commit</text>
+<text x="10" y="203" font-size="12" font-weight="bold" fill="#0F172A">Commit und Merge</text>
+<rect x="140" y="178" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="148" y="202" font-size="11" fill="#0F172A">lokal</text>
+<rect x="290" y="178" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="298" y="202" font-size="11" fill="#0F172A">auf dem Server</text>
+<rect x="440" y="178" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="448" y="195" font-size="11" fill="#0F172A">lokal; der Hub speichert</text>
+<text x="448" y="209" font-size="11" fill="#0F172A">nur Objekte, Referenzen</text>
+<text x="10" y="247" font-size="12" font-weight="bold" fill="#0F172A">Referenzen</text>
+<rect x="140" y="222" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="148" y="246" font-size="11" fill="#0F172A">beliebig viele Branches</text>
+<rect x="290" y="222" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="298" y="239" font-size="11" fill="#0F172A">fast nur main und</text>
+<text x="298" y="253" font-size="11" fill="#0F172A">Release-Branches</text>
+<rect x="440" y="222" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="448" y="239" font-size="11" fill="#0F172A">viele Branches, ein</text>
+<text x="448" y="253" font-size="11" fill="#0F172A">Schreibinhaber je Branch</text>
+<text x="10" y="291" font-size="12" font-weight="bold" fill="#0F172A">Zielgrösse</text>
+<rect x="140" y="266" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="148" y="290" font-size="11" fill="#0F172A">allgemeiner Gebrauch</text>
+<rect x="290" y="266" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="298" y="283" font-size="11" fill="#0F172A">riesige Monorepos,</text>
+<text x="298" y="297" font-size="11" fill="#0F172A">nicht öffentlich</text>
+<rect x="440" y="266" width="140" height="38" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+<text x="448" y="283" font-size="11" fill="#0F172A">kleine Teams aus</text>
+<text x="448" y="297" font-size="11" fill="#0F172A">Menschen und Agenten</text>
+<text x="10" y="326" font-size="11" fill="#64748B">Grün umrandet: ein Merkmal, das alle drei Systeme teilen.</text>
+</svg>

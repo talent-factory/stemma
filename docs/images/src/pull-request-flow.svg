@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 440" font-family="Helvetica, Arial, sans-serif">
+<title>Ablauf eines Pull Requests von der Eröffnung bis zur Zeigerbewegung von main</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+  </marker>
+  <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/>
+  </marker>
+</defs>
+<rect x="0" y="0" width="600" height="440" fill="#FFFFFF"/>
+<!-- steps -->
+<g stroke-width="1.5" fill="#FFFFFF">
+  <rect x="20" y="16" width="290" height="56" rx="4" stroke="#64748B"/>
+  <rect x="20" y="106" width="290" height="56" rx="4" stroke="#64748B"/>
+  <rect x="20" y="196" width="290" height="56" rx="4" stroke="#64748B"/>
+  <rect x="20" y="286" width="290" height="56" rx="4" stroke="#64748B"/>
+  <rect x="20" y="376" width="290" height="56" rx="4" stroke="#2F7D32"/>
+</g>
+<g font-size="12.5" font-weight="bold" fill="#0F172A">
+  <text x="32" y="38">1 Pull Request eröffnen</text>
+  <text x="32" y="128">2 Risikostufe bestimmen</text>
+  <text x="32" y="218">3 Freigaben sammeln</text>
+  <text x="32" y="308">4 Merge-Gate</text>
+</g>
+<text x="32" y="398" font-size="12.5" font-weight="bold" fill="#2F7D32">5 main bewegen</text>
+<g font-size="11" fill="#0F172A">
+  <text x="32" y="56">Der Schreibinhaber des Branches stellt ihn zur Prüfung.</text>
+  <text x="32" y="146">Der höchste Wert aller berührten Pfade gilt.</text>
+  <text x="32" y="236">Mit Akteur, geprüftem Commit und Ergebnis, signiert.</text>
+  <text x="32" y="326">Spitze T lesen, Merge M bilden, Regel anwenden.</text>
+  <text x="32" y="416">Compare-and-swap von T auf M (ADR-008).</text>
+</g>
+<g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
+  <line x1="165" y1="72" x2="165" y2="104"/>
+  <line x1="165" y1="162" x2="165" y2="194"/>
+  <line x1="165" y1="252" x2="165" y2="284"/>
+  <line x1="165" y1="342" x2="165" y2="374"/>
+</g>
+<!-- notes right -->
+<g font-size="11" fill="#64748B">
+  <text x="340" y="30">main ändert sich nur über</text>
+  <text x="340" y="44">einen Pull Request.</text>
+  <text x="340" y="120">Stufe 0 bis 3 nach ADR-004.</text>
+</g>
+<g font-size="11" fill="#0F172A">
+  <text x="340" y="206">Stufe 0: ein unabhängiger Agent</text>
+  <text x="340" y="220">Stufe 1: zwei unabhängige Agenten</text>
+  <text x="340" y="234">Stufe 2: zwei Agenten und ein Mensch</text>
+  <text x="340" y="248">Stufe 3: nur der Owner, dazu ein ADR</text>
+</g>
+<text x="340" y="268" font-size="11" fill="#B91C1C">Keine Selbstfreigabe.</text>
+<!-- conflict return -->
+<line x1="310" y1="306" x2="400" y2="306" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="340" y="294" font-size="11" fill="#B91C1C">Konflikt im Merge:</text>
+<text x="408" y="310" font-size="11" fill="#B91C1C">zurück an den Autor,</text>
+<text x="408" y="324" font-size="11" fill="#B91C1C">der mit rebase neu aufspielt</text>
+<!-- stale loop back -->
+<path d="M310 404 L560 404 L560 345 L330 345 L310 320" fill="none" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arrow-red)"/>
+<text x="340" y="364" font-size="11" fill="#B91C1C">main hat sich bewegt (Stale):</text>
+<text x="340" y="378" font-size="11" fill="#B91C1C">neu bei Schritt 4 mit der neuen Spitze</text>
+</svg>

@@ -18,6 +18,52 @@ Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate
 \item Automatische Eskalation bei Lockerung bestehender Tests.
 \stopitemize
 
+\section{Schreibhoheit und Pull Request}
+
+Dieser Abschnitt beschreibt den Entwurf von ADR-004 und ist ein Vorschlag: Das ADR ist noch nicht
+entschieden, und nichts davon ist umgesetzt.
+Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
+Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
+Request.
+
+{\bf Die Lease.}
+Der Server erzwingt die Schreibhoheit mit einer Lease, die ein Heartbeat erneuert und die nach einer
+Ablaufzeit endet (\in{Abbildung}[fig:branch-lease]).
+
+\startitemize[n]
+\item Ein Akteur erwirbt die Lease eines Branches und wird sein Schreibinhaber.
+\item Solange er arbeitet, verlängert jeder Heartbeat die Lease.
+\item Stürzt er ab, bleiben die Heartbeats aus.
+\item Die Lease läuft ab, und der Branch ist frei.
+\item Ein anderer Akteur erwirbt sie.
+\stopitemize
+
+Schreibt ein zweiter Akteur, solange die Lease gilt, lehnt der Server das ab.
+Wer nicht auf den Ablauf warten will, braucht einen Owner-Override.
+Ihn darf nur die Rolle Owner auslösen, mit einer Begründung und einem Audit-Eintrag, und er umgeht
+das Merge-Gate nie.
+Die Dauer der Lease und das Verhalten bei abgestürzten Agenten sind offen
+(\in{Abschnitt}[sec:phase4-open]).
+
+\startplacefigure[title={Zeitachse einer Branch-Lease},
+    reference=fig:branch-lease,location=here]
+\externalfigure[images/branch-lease.pdf][width=\textwidth]
+\stopplacefigure
+
+{\bf Der Pull Request.}
+Der Schreibinhaber eröffnet den Pull Request (\in{Abbildung}[fig:pull-request-flow]).
+Die Risikostufe folgt aus allen Pfaden, die die Änderung berührt, und der höchste Wert gilt.
+Sie bestimmt, wer freigeben muss, und kein Akteur gibt seine eigene Änderung frei.
+Ist die Freigabe vollständig, wendet das Merge-Gate die Regel an (nächster Abschnitt)
+und bewegt \type{main}.
+Ein Konflikt oder eine Bewegung von \type{main} schickt die Änderung zurück,
+bevor sie landet.
+
+\startplacefigure[title={Ablauf eines Pull Requests bis zur Zeigerbewegung von main},
+    reference=fig:pull-request-flow,location=here]
+\externalfigure[images/pull-request-flow.pdf][width=\textwidth]
+\stopplacefigure
+
 \section{Das Merge-Gate ohne globale Sperre}
 
 Eine Merge-Queue mit globaler Sperre hält jede Änderung an, solange eine andere getestet wird.
@@ -125,7 +171,7 @@ Verworfen sind eine Queue mit globaler Sperre, eine Queue mit spekulativen Batch
 jeder Änderung bei jeder Bewegung von \type{main} und der Verzicht auf die Prüfung nach dem Merge;
 die Gründe stehen in ADR-019.
 
-\section{Offene Fragen}
+\section[sec:phase4-open]{Offene Fragen}
 
 \startitemize
 \item Dauer des Leases und Verhalten bei abgestürzten Agenten.
