@@ -23,12 +23,13 @@ die Dateien und Hunks (ADR-016, \in{Abschnitt}[sec:tui]). Sie liegt in der Crate
 \type{stemma-tui} und hängt vom Kern ab, der Kern nicht von ihr.
 \item Der Diff wird in Phase 2 nur für die Anzeige berechnet, also auf Risikostufe 1 nach ADR-004.
 Die Verwendung im Merge-Pfad, Risikostufe 2, kam in Phase 3 hinzu (\in{Kapitel}[chap:phase3]).
-\item Verschobene Zeilen erscheinen als Löschung und Einfügung, ohne Erkennung von
-Verschiebungen. Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
+\item In den Hunks erscheinen verschobene Zeilen als Löschung und Einfügung; der Algorithmus
+des Diffs erkennt keine Verschiebungen.
+Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
 Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken
 (Vergleich der Verfahren in \type{docs/research/moved-lines-heuristics.md}).
 Eine Markierung der Verschiebung als reine Anzeige, wie \type{--color-moved} in git,
-ändert die Hunks nicht; sie kam nachträglich hinzu (\in{Abschnitt}[sec:moved]).
+ändert die Hunks nicht (\in{Abschnitt}[sec:moved]).
 \item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten 8000 Bytes, wie git. Er zeigt
 dann eine Zusammenfassungszeile wie \quotation{Binary files differ} statt des Inhalts
 (\in{Abschnitt}[sec:binary]).
@@ -460,8 +461,8 @@ mehr.
 \item Der Befehl baut den Text. Mit Farbe sind die Zeilen \type{diff}, \type{---} und
 \type{+++} fett, die Zeilen \type{@@} cyan, entfernte Zeilen rot und eingefügte grün. Entfernte
 Zeilen, die an anderer Stelle wieder auftauchen, und die dort eingefügten Zeilen haben eine
-eigene Farbe (\in{Abschnitt}[sec:moved]). Die Farbe
-endet vor dem Zeilenende, damit sie nicht in die nächste Zeile läuft.
+eigene Farbe (\in{Abschnitt}[sec:moved]).
+Die Farbe endet vor dem Zeilenende, damit sie nicht in die nächste Zeile läuft.
 \item Auf einem Terminal unter Unix startet er eine Shell, die den Befehl aus \type{PAGER}
 ausführt, ersatzweise \type{less}. Ist \type{LESS} nicht gesetzt, bekommt der Pager
 \type{LESS=FRX}. Der Befehl schreibt den Text in den Eingang des Pagers und wartet, bis der Pager
@@ -530,16 +531,19 @@ Diffs. Ein Block ist eine Folge von Zeilen, die auf ihrer Seite unmittelbar aufe
 beginnt und Zeile für Zeile gleich ist, Byte für Byte und samt Zeilenende.
 Bei gleicher Länge gilt der erste.
 \item Der Block zählt nur, wenn seine Zeilen zusammen mindestens 20 alphanumerische Zeichen
-haben, die Schwelle von git. Schliessende Klammern und Leerzeilen allein gelten deshalb nicht
-als Verschiebung.
+haben, dieselbe Zahl wie in git, gezählt über die Unicode-Zeichen.
+Schliessende Klammern und Leerzeilen allein gelten deshalb nicht als Verschiebung.
 \item Eine Zeile gehört zu höchstens einer Verschiebung. Pro gelöschter Zeile probiert die
-Funktion höchstens 256 Stellen auf der neuen Seite, damit eine oft wiederholte Zeile die Laufzeit
-nicht dehnt.
+Funktion höchstens 256 Stellen auf der neuen Seite, und insgesamt macht sie höchstens 20 Millionen
+Zeilenvergleiche pro Diff. Eine oft wiederholte Zeile dehnt die Laufzeit so nicht; ist das
+Budget aufgebraucht, behält die Funktion die bis dahin gefundenen Verschiebungen.
 \stopitemize
 
 Der Ablauf ist deterministisch: Derselbe Diff liefert dieselben Markierungen.
 Eine Zeile, die beim Verschieben geändert wurde, unterbricht den Block, und die geänderte
 Zeile bleibt eine gewöhnliche Löschung und Einfügung.
+Die Teile davor und danach zählen einzeln gegen die Schwelle.
+Binärdateien und Dateien über der Grössengrenze nehmen nicht teil.
 
 \subsection{Farben}
 

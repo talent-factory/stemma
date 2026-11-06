@@ -1,7 +1,7 @@
 //! Moved lines in a diff, as a display feature (like `git diff --color-moved`).
 //!
 //! A diff shows a line that moved as a deletion in one place and an insertion in another (chapter
-//! 5, decision of STEMMA-111). [`moved_lines`] finds the deleted lines that come back as inserted
+//! 5, section on moved lines). [`moved_lines`] finds the deleted lines that come back as inserted
 //! lines, so that a display can mark them. It reads a [`Diff`] and changes nothing in it: the
 //! hunks, the exit code, and the plain text stay as they are.
 //!
@@ -9,7 +9,9 @@
 //! block are the same move when their lines are equal, byte for byte, and in the same order.
 //! The blocks may lie in different files. Because a move of a few short lines is more often a
 //! coincidence (closing braces, blank lines) than a move, a block counts only if its lines hold at
-//! least [`MIN_ALPHANUMERIC`] alphanumeric characters, the threshold of git.
+//! least [`MIN_ALPHANUMERIC`] alphanumeric characters. The number is that of git; the count is over
+//! Unicode alphanumerics, where git counts ASCII. Only text files take part: a binary file and a
+//! file above the size limit have no lines to compare.
 
 use std::collections::{HashMap, HashSet};
 
@@ -22,6 +24,12 @@ pub const MIN_ALPHANUMERIC: usize = 20;
 /// The most places on the new side that are tried for one deleted line. It bounds the work for a
 /// line that is repeated thousands of times, such as a blank line.
 const MAX_CANDIDATES: usize = 256;
+
+/// The most line comparisons that the search makes for one diff. Without it, a diff of many equal
+/// lines costs the number of lines, times [`MAX_CANDIDATES`], times the length of a block. When
+/// the budget is spent, the search stops and keeps the moves found so far; the same diff always
+/// stops at the same place.
+const MAX_COMPARISONS: usize = 20_000_000;
 
 /// The lines of a diff that moved, found by [`moved_lines`].
 ///
@@ -45,7 +53,8 @@ impl MovedLines {
         self.to.contains(&(file, new))
     }
 
-    /// Tells whether no line moved.
+    /// Tells whether no line moved. A line is recorded on both sides at once, so the deleted side
+    /// is enough to look at.
     pub fn is_empty(&self) -> bool {
         self.from.is_empty()
     }
@@ -60,8 +69,10 @@ struct Entry<'a> {
 
 /// Finds the lines of `diff` that moved. The result is the same for the same diff.
 ///
-/// A deleted line is matched with the inserted block of equal lines that is longest, the first
-/// such block on a tie; a line belongs to at most one move.
+/// The deleted lines are taken in the order of the diff. A deleted line is matched with the
+/// longest inserted block of equal lines among the first 256 free places where its text occurs,
+/// the first such block on a tie; a line belongs to at most one move. The whole search makes at most
+/// 20 million line comparisons and keeps the moves found so far when they are spent.
 pub fn moved_lines(diff: &Diff) -> MovedLines {
     let mut deleted = Vec::new();
     let mut inserted = Vec::new();
@@ -101,18 +112,22 @@ pub fn moved_lines(diff: &Diff) -> MovedLines {
     let mut taken_inserted = vec![false; inserted.len()];
     let mut moved = MovedLines::default();
     let mut start = 0;
-    while start < deleted.len() {
+    let mut budget = MAX_COMPARISONS;
+    while start < deleted.len() && budget > 0 {
         let candidates = places
             .get(deleted[start].text)
             .map_or(&[][..], Vec::as_slice);
         let mut best = (0, 0);
-        for &place in candidates.iter().take(MAX_CANDIDATES) {
+        let free = candidates.iter().filter(|&&place| !taken_inserted[place]);
+        for &place in free.take(MAX_CANDIDATES) {
             let length = match_length(
                 &deleted,
                 &inserted,
                 (start, place),
                 (&taken_deleted, &taken_inserted),
             );
+            // A failed comparison costs one as well, so the budget is spent at least by one.
+            budget = budget.saturating_sub(length.max(1));
             if length > best.0 {
                 best = (length, place);
             }
@@ -282,5 +297,93 @@ mod tests {
             .map(|file| (0..3).filter(|&i| moved.is_moved_to(file, i)).count())
             .sum();
         assert_eq!(to, 3);
+    }
+
+    #[test]
+    fn the_first_of_two_equal_places_wins() {
+        let (moved, _) = moves(
+            &[("a.rs", BLOCK.concat())],
+            &[
+                ("a.rs", String::new()),
+                ("b.rs", BLOCK.concat()),
+                ("c.rs", BLOCK.concat()),
+            ],
+        );
+        assert!((0..3).all(|i| moved.is_moved_to(1, i)));
+        assert!(!(0..3).any(|i| moved.is_moved_to(2, i)));
+    }
+
+    #[test]
+    fn the_longer_of_two_places_wins() {
+        let two = BLOCK[..2].concat();
+        let (moved, _) = moves(
+            &[("a.rs", BLOCK.concat())],
+            &[
+                ("a.rs", String::new()),
+                ("b.rs", two),
+                ("c.rs", BLOCK.concat()),
+            ],
+        );
+        assert!((0..3).all(|i| moved.is_moved_to(2, i)));
+        assert!(!(0..2).any(|i| moved.is_moved_to(1, i)));
+    }
+
+    #[test]
+    fn the_indices_count_a_binary_file_before_the_text_files() {
+        let (moved, paths) = moves(
+            &[
+                ("a.bin", "\0one\n".to_owned()),
+                ("b.rs", BLOCK.concat()),
+                ("c.rs", "keep\n".to_owned()),
+            ],
+            &[
+                ("a.bin", "\0two\n".to_owned()),
+                ("b.rs", String::new()),
+                ("c.rs", lines(&["keep\n", &BLOCK.concat()])),
+            ],
+        );
+        assert_eq!(paths, ["a.bin", "b.rs", "c.rs"]);
+        assert!((0..3).all(|i| moved.is_moved_from(1, i)));
+        assert!((1..4).all(|i| moved.is_moved_to(2, i)));
+    }
+
+    #[test]
+    fn an_unchanged_line_between_two_deleted_runs_splits_the_block() {
+        let (first, second) = (BLOCK[..2].concat(), BLOCK[2..].concat());
+        let middle = "let the_unchanged_middle_line = 0;\n";
+        let (moved, _) = moves(
+            &[("a.rs", lines(&[&first, middle, &second]))],
+            &[("a.rs", middle.to_owned()), ("b.rs", BLOCK.concat())],
+        );
+        // The first run holds 54 alphanumeric characters and counts. The second run is one line of
+        // 19 and does not count on its own, although the whole block would.
+        assert!(moved.is_moved_from(0, 0) && moved.is_moved_from(0, 1));
+        assert!(!moved.is_moved_from(0, 2));
+        assert!(!moved.is_moved_from(0, 3));
+    }
+
+    #[test]
+    fn a_block_needs_twenty_alphanumeric_characters() {
+        // The lines hold 9 and 10 characters, or 10 and 10; the newline does not count.
+        for (text, marked) in [
+            ("abcdefghi\nabcdefghij\n", false),
+            ("abcdefghij\nabcdefghij\n", true),
+        ] {
+            let (moved, _) = moves(
+                &[("a.txt", text.to_owned())],
+                &[("a.txt", String::new()), ("b.txt", text.to_owned())],
+            );
+            assert_eq!(!moved.is_empty(), marked, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn thousands_of_equal_lines_without_letters_end_in_bounded_time() {
+        let braces = "}\n".repeat(5000);
+        let (moved, _) = moves(
+            &[("a.txt", braces.clone())],
+            &[("a.txt", String::new()), ("b.txt", braces)],
+        );
+        assert!(moved.is_empty());
     }
 }

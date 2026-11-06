@@ -180,9 +180,11 @@ struct FileLines {
     hunk_starts: Vec<usize>,
 }
 
-/// A removed line that moved to another place is bold magenta, and an added line that came from
-/// another place is bold cyan, as with `git diff --color-moved`. `index` is the position of
-/// `file` in the diff that `moved` was found for.
+/// The lines of the right pane for one file, and where its hunks start. A removed line that moved
+/// to another place is bold magenta, and an added line that came from another place is bold cyan,
+/// as with `git diff --color-moved`. `index` is the position of `file` in the diff that `moved`
+/// was found for. The colours never change the number or the order of the lines, so a caller that
+/// needs only the line count or the hunk starts passes `MovedLines::default()`.
 fn file_lines(index: usize, file: &FileDiff, moved: &MovedLines) -> FileLines {
     let mut lines = Vec::new();
     let mut hunk_starts = Vec::new();

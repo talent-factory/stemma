@@ -761,12 +761,12 @@ fn moved_lines_get_their_own_colour_on_a_terminal_and_no_mark_anywhere() {
     let block = "fn first_function_name() {}\nfn second_function_name() {}\n";
     let dir = repository();
     write(dir.path(), "a.txt", &format!("{block}keep\n"));
-    write(dir.path(), "b.txt", "stay\n");
+    write(dir.path(), "b.txt", "stay\nold\n");
     track_ok(dir.path(), "a.txt");
     track_ok(dir.path(), "b.txt");
     commit(dir.path(), "first");
     write(dir.path(), "a.txt", "keep\n");
-    write(dir.path(), "b.txt", &format!("stay\n{block}"));
+    write(dir.path(), "b.txt", &format!("stay\nnew\n{block}"));
 
     let output = diff_on_terminal(dir.path(), |command| {
         command.env("PAGER", "cat");
@@ -780,6 +780,9 @@ fn moved_lines_get_their_own_colour_on_a_terminal_and_no_mark_anywhere() {
         output.contains("\x1b[1;36m+fn second_function_name() {}\x1b[m"),
         "{output:?}"
     );
+    // A line that is only changed keeps the plain colours.
+    assert!(output.contains("\x1b[31m-old\x1b[m"), "{output:?}");
+    assert!(output.contains("\x1b[32m+new\x1b[m"), "{output:?}");
     // The text without colour is the one that a pipe gets: the marks of a move are colours only.
     assert_eq!(without_colour(&output), diff(dir.path(), &[]).stdout);
     assert!(!diff(dir.path(), &[]).stdout.contains('\x1b'));
