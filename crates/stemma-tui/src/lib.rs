@@ -16,6 +16,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListState, Paragraph};
 use ratatui::Frame;
 use stemma_core::diff::Edit;
+use stemma_core::moved::{moved_lines, MovedLines};
 use stemma_core::repository::{Content, Diff, FileDiff};
 
 /// What a key asks the view to do.
@@ -128,10 +129,13 @@ impl State {
                 }
             }
             Input::ScrollDown(lines) => {
-                let last = diff
-                    .files()
-                    .get(self.file)
-                    .map_or(0, |file| file_lines(file).lines.len().saturating_sub(1));
+                let last = diff.files().get(self.file).map_or(0, |file| {
+                    // The moves colour lines but do not change their number.
+                    file_lines(self.file, file, &MovedLines::default())
+                        .lines
+                        .len()
+                        .saturating_sub(1)
+                });
                 self.scroll = self.scroll.saturating_add(usize::from(lines)).min(last);
             }
             Input::ScrollUp(lines) => self.scroll = self.scroll.saturating_sub(usize::from(lines)),
@@ -153,7 +157,12 @@ impl State {
         self.scroll = diff
             .files()
             .get(self.file)
-            .and_then(|file| file_lines(file).hunk_starts.get(hunk).copied())
+            .and_then(|file| {
+                file_lines(self.file, file, &MovedLines::default())
+                    .hunk_starts
+                    .get(hunk)
+                    .copied()
+            })
             .unwrap_or(0);
     }
 }
@@ -171,7 +180,10 @@ struct FileLines {
     hunk_starts: Vec<usize>,
 }
 
-fn file_lines(file: &FileDiff) -> FileLines {
+/// A removed line that moved to another place is bold magenta, and an added line that came from
+/// another place is bold cyan, as with `git diff --color-moved`. `index` is the position of
+/// `file` in the diff that `moved` was found for.
+fn file_lines(index: usize, file: &FileDiff, moved: &MovedLines) -> FileLines {
     let mut lines = Vec::new();
     let mut hunk_starts = Vec::new();
     let text = match file.content() {
@@ -204,7 +216,17 @@ fn file_lines(file: &FileDiff) -> FileLines {
         for edit in &hunk.edits {
             let (mark, line, style) = match *edit {
                 Edit::Equal { old, .. } => (' ', old_lines.get(old), Style::new()),
+                Edit::Delete { old } if moved.is_moved_from(index, old) => (
+                    '-',
+                    old_lines.get(old),
+                    Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                ),
                 Edit::Delete { old } => ('-', old_lines.get(old), Style::new().fg(Color::Red)),
+                Edit::Insert { new } if moved.is_moved_to(index, new) => (
+                    '+',
+                    new_lines.get(new),
+                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
                 Edit::Insert { new } => ('+', new_lines.get(new), Style::new().fg(Color::Green)),
             };
             push_edit(&mut lines, mark, line, style);
@@ -261,7 +283,10 @@ pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
     frame.render_stateful_widget(list, files_area, &mut list_state);
 
     let (title, mut body) = match diff.files().get(state.file) {
-        Some(file) => (file.path().to_owned(), file_lines(file).lines),
+        Some(file) => (
+            file.path().to_owned(),
+            file_lines(state.file, file, &moved_lines(diff)).lines,
+        ),
         None if diff.files().is_empty() => ("No differences".to_owned(), Vec::new()),
         // A state that belongs to another diff.
         None => (String::new(), Vec::new()),

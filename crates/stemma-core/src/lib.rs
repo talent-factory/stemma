@@ -50,6 +50,7 @@ pub mod ignore;
 pub mod index;
 pub mod merge;
 pub mod merge_base;
+pub mod moved;
 pub mod object;
 pub mod oplog;
 #[cfg(test)]

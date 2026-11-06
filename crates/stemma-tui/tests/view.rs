@@ -409,3 +409,41 @@ fn a_file_above_the_size_limit_says_so_and_has_no_hunks() {
     state.apply(Input::NextHunk, &diff);
     assert_eq!((state.file(), state.hunk(), state.scroll()), (0, 0, 0));
 }
+
+#[test]
+fn a_moved_line_is_drawn_in_its_own_colour() {
+    use ratatui::style::Color;
+    let block = "fn first_function_name() {}\nfn second_function_name() {}\n";
+    let fixture = Fixture::new();
+    fixture.dir.write("a.txt", format!("{block}keep\n"));
+    fixture.dir.write("b.txt", "stay\n");
+    fixture.track(&["a.txt", "b.txt"]);
+    fixture.commit();
+    fixture.dir.write("a.txt", "keep\n");
+    fixture.dir.write("b.txt", format!("stay\n{block}"));
+    let diff = fixture.diff();
+
+    // The colour of the first cell of the line that holds `text`, on the screen of `state`.
+    let colour_of = |state: &State, text: &str| {
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|frame| render(frame, state, &diff)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let area = buffer.area;
+        (0..area.height)
+            .find_map(|y| {
+                let row: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
+                let x = row.find(text)?;
+                // The column of the mark, one cell before the text, as characters of ASCII.
+                Some(buffer[(u16::try_from(x).unwrap() - 1, y)].fg)
+            })
+            .unwrap_or_else(|| panic!("`{text}` is not on the screen"))
+    };
+
+    assert_eq!(
+        colour_of(&State::default(), "fn first_function_name"),
+        Color::Magenta
+    );
+    let mut state = State::default();
+    state.apply(Input::NextFile, &diff);
+    assert_eq!(colour_of(&state, "fn second_function_name"), Color::Cyan);
+}

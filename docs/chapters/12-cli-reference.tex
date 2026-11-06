@@ -1437,6 +1437,15 @@ vergleicht der Befehl nicht Zeile für Zeile; er schreibt stattdessen die Zeile
 Eine binäre Datei bleibt auch über dieser Grenze binär.
 Eine binäre und eine zu grosse Datei zählen für \type{--exit-code} als Unterschied.
 
+{\bf Verschobene Zeilen.} Auf einem Terminal und in \type{--tui} färbt der Befehl Zeilen, die
+an eine andere Stelle gewandert sind, anders als gewöhnliche Löschungen und Einfügungen:
+die entfernten fett magenta, die eingefügten fett cyan (wie \type{git diff --color-moved}).
+Ein Block gilt als verschoben, wenn eine Folge gelöschter Zeilen Zeile für Zeile gleich einer
+Folge eingefügter Zeilen ist, in derselben oder in einer anderen Datei, und wenn sie mindestens
+20 alphanumerische Zeichen enthält. Das ist nur Anzeige: Die Hunks, die Zeichen \type{-} und
+\type{+}, der Text in einer Pipe und der Exit-Code ändern sich nicht. Eine Option dafür gibt
+es nicht.
+
 {\bf Konflikte.} Ein Commit mit offenem Konflikt vergleicht der Befehl als den Tree, der ihn
 zeigt (ADR-010): An jedem Pfad im Konflikt steht der Text mit Markierungen, derselbe, den ein
 Restore für die Platte schreibt und mit dem der Snapshot die Datei vergleicht. Der Befehl
