@@ -728,6 +728,284 @@ Sie steht im Snapshot und im Log, auch wenn der Merge scheitert.
 \stopitemize
 \stopinfobox
 
+\section[sec:phase3-workflows]{Die Abläufe der Phase im Zusammenhang}
+
+Die Abschnitte dieses Kapitels beschreiben jeden Befehl für sich.
+Dieser Abschnitt setzt sie zu einer Sitzung zusammen und führt die Sitzung aus Kapitel 4 fort:
+Das Repository \type{notizen} hat zwei Commits auf \type{main}, \quotation{Erste Fassung} und
+\quotation{Gruss erweitern}, und \type{README.md} enthält die Zeile \type{Hallo Welt}.
+Daniel arbeitet im Verzeichnis der Wurzel, ein Agent in einem zweiten Worktree.
+Beide ändern dieselbe Zeile, sodass ein Konflikt entsteht.
+Die Ausgaben stammen aus einem echten Lauf.
+Die IDs sind gekürzt, und die Pfade stehen als \type{/home/daniel/...}.
+Ein neuer Lauf erzeugt andere Hashes, weil die Zeit zum Commit gehört.
+Zu jedem Schritt steht, was er im Arbeitsverzeichnis, im Working-Copy-Commit, in den Zeigern und
+im Operation Log ändert; \in{Tabelle}[tab:phase3-workflow-effects] fasst es am Ende zusammen.
+
+\subsection{Parallele Arbeit in einem zweiten Worktree}
+
+Daniel gibt dem Agenten einen eigenen Worktree auf einem neuen Branch.
+Der Agent legt eine Datei an, verfolgt sie und hält seinen Stand fest.
+Daniel ändert unterdessen die Zeile in \type{README.md} und macht einen Commit:
+
+\starttyping
+$ stemma worktree add -b agent-arbeit ../notizen-agent \
+>     --owner "agent claude model=opus-5-5 session=s1 sponsor=daniel"
+Added the worktree notizen-agent in /home/daniel/notizen-agent on the new branch
+agent-arbeit as entry 6
+$ cd ../notizen-agent
+$ echo "Hallo Welt, hier spricht der Agent" > README.md
+$ echo "pub fn gruss() {}" > src/lib.rs
+$ stemma track src/lib.rs
+tracked src/lib.rs
+$ stemma commit -m "Agent: Gruss und Bibliothek"
+Committed b3:867b…8636 on agent-arbeit
+$ cd ../notizen
+$ echo "Hallo Welt!" > README.md
+$ stemma commit -m "Ausrufezeichen"
+Committed b3:c9e6…cac3 on main
+\stoptyping
+
+Der Befehl \type{worktree add} (Eintrag 6) legt das Verzeichnis \type{notizen-agent} mit den
+Dateien der Spitze von \type{main} an, \type{b3:5cf9…57f3}.
+Der Working-Copy-Commit des neuen Worktrees ist leer und hat diese Spitze als Elternteil;
+sein Eigentümer ist der Agent.
+Neu sind der Branch \type{agent-arbeit} auf der Spitze sowie HEAD und der Working-Copy-Commit
+des Worktrees.
+Das Verzeichnis der Wurzel bleibt, wie es war.
+Danach gehören die Einträge des Agenten (7, \type{track}, und 8, \type{commit}) zum Worktree
+\type{notizen-agent}; jeder trägt eine Zeile \type{worktree} mit dessen Namen.
+Der Commit des Agenten bewegt nur \type{agent-arbeit}.
+Der Commit von Daniel (Einträge 9 und 10, ein \type{snapshot} und ein \type{commit}) bewegt nur
+\type{main}, und die Dateien des Agenten sind in dessen Verzeichnis geblieben.
+Beide Branches haben den Commit \quotation{Gruss erweitern} als Vorfahren und laufen seither
+auseinander.
+
+\subsection{Merge mit Konflikt und seine Lösung}
+
+Daniel führt die Arbeit des Agenten in \type{main} ein.
+Die Merge-Basis ist \quotation{Gruss erweitern}.
+Die Datei \type{src/lib.rs} hat nur der Agent geändert, also übernimmt der Merge sie.
+In \type{README.md} haben beide Seiten dieselbe Zeile verschieden geändert; das ist ein Konflikt:
+
+\starttyping
+$ stemma merge agent-arbeit
+Merged agent-arbeit into main (commit b3:62c4…b29b) as entry 11
+Conflicts:
+C README.md
+To undo it: stemma op restore 11
+$ stemma status
+Conflicts:
+C README.md (2 sides)
+$ cat README.md
+<<<<<<< conflict
++++++++ side 1
+Hallo Welt!
+------- base 1
+Hallo Welt
++++++++ side 2
+Hallo Welt, hier spricht der Agent
+>>>>>>>
+\stoptyping
+
+Der Merge macht einen Merge-Commit \type{b3:62c4…b29b} mit den Eltern \type{b3:c9e6…cac3} und
+\type{b3:867b…8636}, in dieser Reihenfolge.
+Der Commit trägt den Konflikt als Daten (ADR-005); \type{log} zeigt ihn mit
+\type{conflict (2 sides)}.
+Im Arbeitsverzeichnis steht \type{src/lib.rs} neu da, und \type{README.md} enthält den Text mit
+Markierungen.
+Der Working-Copy-Commit war leer und wird durch einen leeren Commit auf dem Merge-Commit ersetzt,
+mit neuer Change-ID; er erbt den Konflikt, denn sein Baum ist der des Merge-Commits.
+Bewegt haben sich der Branch \type{main} und der Working-Copy-Commit.
+HEAD bleibt, und \type{agent-arbeit} auch.
+Das Log erhält einen einzigen Eintrag, 11 \type{merge}, der beide Bewegungen nennt.
+
+Daniel löst den Konflikt, indem er die Datei bearbeitet und festhält.
+Der Snapshot im \type{commit} sieht, dass der Text nicht mehr der Text mit Markierungen ist,
+und löst den Pfad mit genau diesem Inhalt auf:
+
+\starttyping
+$ echo "Hallo Welt, hier spricht der Agent!" > README.md
+$ stemma status
+Working copy changes:
+M README.md
+$ stemma commit -m "Konflikt in README gelöst"
+Committed b3:114f…b521 on main
+\stoptyping
+
+Der Eintrag 12 ist der Snapshot, der den Working-Copy-Commit ohne Konflikt speichert, und der
+Eintrag 13 der Commit, der \type{main} auf \type{b3:114f…b521} setzt.
+Der Merge-Commit mit dem Konflikt bleibt im Verlauf; er ist der Elternteil der Lösung.
+
+\subsection{Einen Schritt zurücknehmen: op restore}
+
+Daniel verwirft den Merge samt Lösung, weil er den Branch lieber neu aufspielen lässt.
+Der Eintrag 11 nennt die Werte vor dem Merge, also stellt \type{op restore 11} sie her.
+Weil seither die Lösung hinzugekommen ist, nimmt das Restore auch sie zurück.
+Mit \type{--dry-run} zeigt der Befehl vorher den Plan und schreibt nichts:
+
+\starttyping
+$ stemma op restore --dry-run 11
+Would restore the state before entry 11; nothing is written
+    working-copy  b3:2d54…17ab -> b3:fb5a…f154
+    branch main  b3:114f…b521 -> b3:c9e6…cac3
+    write README.md
+    remove src/lib.rs
+A real run saves unsaved changes first; the files above are replaced all the same
+$ stemma op restore 11
+Restored the state before entry 11 as entry 14
+To undo it: stemma op restore 14
+$ cat README.md
+Hallo Welt!
+\stoptyping
+
+Das Arbeitsverzeichnis hat wieder den Stand von \quotation{Ausrufezeichen}: Die Datei
+\type{src/lib.rs} ist weg, und \type{README.md} hat die Zeile von Daniel.
+Der Working-Copy-Commit ist der leere Commit von vor dem Merge, und \type{main} steht auf
+\type{b3:c9e6…cac3}.
+Nichts davon löscht Objekte: Der Merge-Commit und die Lösung bleiben im Speicher, und das Log
+behält die Einträge 11 bis 13.
+Das Restore ist selbst der Eintrag 14.
+Ein \type{op restore 14} würde den Merge samt Lösung wieder herstellen.
+Der Branch \type{agent-arbeit} und der Worktree des Agenten haben sich nicht bewegt,
+denn die Einträge 11 bis 13 haben beide nicht berührt.
+Ein Restore wirkt auf die Zeiger des Worktrees, in dem es läuft; ein Eintrag, der HEAD oder den
+Working-Copy-Commit eines anderen Worktrees bewegt hat, gehört in jenen Worktree.
+
+\subsection{Rebase statt Merge}
+
+Daniel will keinen Merge-Commit.
+Der Agent spielt seinen Commit stattdessen auf \type{main} neu auf, in seinem Worktree:
+
+\starttyping
+$ stemma rebase main
+Rebased agent-arbeit onto main as entry 15: 1 commit replayed
+Commit b3:6673…1e4e has an open conflict in README.md (2 sides)
+The working copy has an open conflict in README.md
+To undo it: stemma op restore 15
+$ echo "Hallo Welt, hier spricht der Agent!" > README.md
+$ stemma commit -m "Konflikt in README gelöst"
+Committed b3:3be2…9acb on agent-arbeit
+\stoptyping
+
+Der Commit des Agenten ist ein anderer Wert: \type{b3:6673…1e4e} hat den Elternteil
+\type{b3:c9e6…cac3}, behält aber Change-ID, Autor, Zeit und Beschreibung.
+Wieder trägt er den Konflikt als Daten, denn beide Seiten haben dieselbe Zeile geändert.
+Der Befehl hält deshalb nicht an: Er hat weder \type{--continue} noch \type{--abort}.
+Der Agent löst den Konflikt wie Daniel, und sein \type{commit} setzt \type{agent-arbeit} auf
+den gelösten Commit \type{b3:3be2…9acb}.
+Der alte Commit \type{b3:867b…8636} bleibt im Speicher, und das Log nennt ihn in Eintrag 8.
+Der Branch bewegt sich im Eintrag 15 vor dem Working-Copy-Commit; HEAD bleibt.
+Das Verzeichnis der Wurzel und \type{main} bleiben unberührt.
+
+Jetzt liegt \type{agent-arbeit} über \type{main}, und Daniel führt den Branch ein:
+
+\starttyping
+$ stemma merge agent-arbeit
+Fast-forwarded main to agent-arbeit (commit b3:3be2…9acb) as entry 18
+To undo it: stemma op restore 18
+\stoptyping
+
+Es entsteht kein Commit.
+Der Branch \type{main} rückt auf \type{b3:3be2…9acb}, und der Working-Copy-Commit der Wurzel
+wird durch einen leeren Commit auf dieser Spitze ersetzt.
+Das Verzeichnis zeigt \type{src/lib.rs} und die gelöste \type{README.md}.
+Der Verlauf ist linear, und der Eintrag 18 ist der einzige, den der Fast-Forward schreibt.
+
+\startplacetable[title={Was die Schritte der Sitzung ändern},reference=tab:phase3-workflow-effects]
+\startxtable[frame=off]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Schritt} \stopxcell
+\startxcell {\bf Arbeitsverzeichnis} \stopxcell
+\startxcell {\bf Working-Copy-Commit} \stopxcell
+\startxcell {\bf Zeiger} \stopxcell
+\startxcell {\bf Operation Log} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{worktree add} \stopxcell
+\startxcell neues Verzeichnis mit den Dateien der Spitze \stopxcell
+\startxcell neuer, leerer Commit für den Worktree \stopxcell
+\startxcell neuer Branch, HEAD und Working-Copy-Commit des Worktrees \stopxcell
+\startxcell ein Eintrag \type{worktree-add} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{merge} mit Konflikt \stopxcell
+\startxcell neue Datei, Text mit Markierungen \stopxcell
+\startxcell leerer Commit auf dem Merge-Commit \stopxcell
+\startxcell \type{main} und Working-Copy-Commit \stopxcell
+\startxcell ein Eintrag \type{merge} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Konflikt lösen und \type{commit} \stopxcell
+\startxcell vom Benutzer bearbeitet \stopxcell
+\startxcell Snapshot ohne Konflikt, dann neuer leerer Commit \stopxcell
+\startxcell \type{main} und Working-Copy-Commit \stopxcell
+\startxcell \type{snapshot} und \type{commit} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{op restore} \stopxcell
+\startxcell Dateien des alten Stands \stopxcell
+\startxcell der Commit des alten Stands \stopxcell
+\startxcell \type{main} und Working-Copy-Commit auf ihre alten Werte \stopxcell
+\startxcell ein Eintrag \type{restore} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{rebase} \stopxcell
+\startxcell Text mit Markierungen, wenn Konflikt \stopxcell
+\startxcell neuer Commit auf dem neu aufgespielten \stopxcell
+\startxcell Branch und Working-Copy-Commit des Worktrees \stopxcell
+\startxcell ein Eintrag \type{rebase} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{merge}, Fast-Forward \stopxcell
+\startxcell Dateien der neuen Spitze \stopxcell
+\startxcell leerer Commit auf der Spitze \stopxcell
+\startxcell \type{main} und Working-Copy-Commit \stopxcell
+\startxcell ein Eintrag \type{merge} \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+\subsection{Abbruch und Absturz: derselbe Aufruf noch einmal}
+
+Jeder Schritt der Sitzung kann mitten in der Arbeit enden, etwa durch einen Absturz oder ein
+volles Dateisystem.
+Die Reihenfolge von \type{switch}, \type{merge}, \type{rebase} und \type{op restore} ist die von
+ADR-013: Snapshot, Plan der Dateien, Eintrag, Dateien, Zeiger.
+Wo der Abbruch fällt, bestimmt, was der Aufruf danach tut.
+
+\startitemize[n]
+\item Vor dem Eintrag hat der Befehl nichts geändert ausser seinem Snapshot, der ein eigener
+Eintrag ist. Der Aufruf lässt sich einfach wiederholen.
+\item Nach dem Eintrag und vor den Dateien steht der Eintrag im Log, aber kein Zeiger hat sich
+bewegt. \type{op log} zeigt ihn als nicht übernommen.
+\item Nach den Dateien und vor den Zeigern liegt das Ziel im Arbeitsverzeichnis, aber die Zeiger
+sind alt. Das gilt auch, wenn der Branch sich schon bewegt hat und der Working-Copy-Commit noch
+nicht.
+\stopitemize
+
+Im dritten Fall würde ein Snapshot die Dateien des Ziels als Änderung des alten
+Working-Copy-Commits speichern.
+Deshalb verlangt die Fehlermeldung denselben Aufruf noch einmal, bevor irgendein anderer Befehl
+läuft.
+Der zweite Aufruf erkennt den Eintrag des abgebrochenen, macht keinen Snapshot und bewegt die
+Zeiger auf die Commits des Eintrags.
+Seine Nachricht bleibt ohne Wirkung; ein Merge eines anderen Branchs lehnt der Kern in diesem
+Zustand ab und nennt den Eintrag, den \type{op restore} verwerfen kann.
+Der Exit-Code ist 1, solange kein Zeiger sich bewegt hat, und 3, wenn einige sich bewegt haben
+und andere nicht.
+Ein \type{op restore} wiederholt sich auf dieselbe Weise: Er setzt jeden Zeiger für sich, also
+bewegt der zweite Aufruf nur noch den Rest.
+
+Zwei Befehle der Sitzung folgen einer anderen Regel.
+Der Befehl \type{worktree add} schreibt den Eintrag vor den Dateien des Verzeichnisses und die
+Zeigerdatei \type{.stemma} zuletzt, sodass ein halber Worktree sich nicht öffnen lässt.
+Bricht er nach dem Eintrag ab, endet er mit Exit-Code 3, und die Meldung nennt, was von Hand zu
+entfernen ist, bevor der Aufruf wiederholt wird.
+Der Befehl \type{worktree remove} entfernt zuerst die Datei \type{HEAD} des Zustandsverzeichnisses,
+damit ein halb entfernter Worktree keinen Branch mehr hält.
+Ein \type{op restore} macht beide Befehle nicht rückgängig.
+
 \section{Offene Fragen}
 
 \startitemize
