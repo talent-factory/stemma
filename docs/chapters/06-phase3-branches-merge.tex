@@ -902,8 +902,8 @@ Wieder trägt er den Konflikt als Daten, denn beide Seiten haben dieselbe Zeile 
 Der Befehl hält deshalb nicht an: Er hat weder \type{--continue} noch \type{--abort}.
 Der Agent löst den Konflikt wie Daniel, und sein \type{commit} setzt \type{agent-arbeit} auf
 den gelösten Commit \type{b3:3be2…9acb}.
-Der alte Commit \type{b3:867b…8636} bleibt im Speicher, und das Log nennt ihn als alten Wert
-des Branchs in den Einträgen 8 und 15.
+Der alte Commit \type{b3:867b…8636} bleibt im Speicher, und das Log nennt ihn im Eintrag 8
+als neuen und im Eintrag 15 als alten Wert des Branchs.
 Der Branch bewegt sich im Eintrag 15 vor dem Working-Copy-Commit; HEAD bleibt.
 Das Verzeichnis der Wurzel und \type{main} bleiben unberührt.
 
@@ -948,7 +948,7 @@ Der Verlauf ist linear, und der Eintrag 18 ist der einzige, den der Fast-Forward
 \stopxrow
 \startxrow
 \startxcell Konflikt lösen und \type{commit} \stopxcell
-\startxcell vom Benutzer bearbeitet \stopxcell
+\startxcell vom Akteur bearbeitet \stopxcell
 \startxcell Snapshot ohne Konflikt, dann neuer leerer Commit \stopxcell
 \startxcell \type{main} und Working-Copy-Commit \stopxcell
 \startxcell \type{snapshot} und \type{commit} \stopxcell
