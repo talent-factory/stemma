@@ -33,7 +33,7 @@
 <rect x="602" y="122" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="655.0" y="141.0" font-size="12" text-anchor="middle" fill="#2F7D32">da</text>
 <line x1="20" y1="167.0" x2="710" y2="167.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="182.0" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, nichts ist entfernt; der Worktree ist ganz da.</text>
+<text x="20" y="182.0" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, nichts ist entfernt; bei einem Fehler Exit-Code 3.</text>
 <text x="20" y="217.0" font-size="12" font-weight="bold" fill="#0F172A">Verzeichnis entfernt (erst umbenannt)</text>
 <rect x="272" y="198" width="116" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="330.0" y="217.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>
@@ -44,7 +44,7 @@
 <rect x="602" y="198" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="655.0" y="217.0" font-size="12" text-anchor="middle" fill="#2F7D32">da</text>
 <line x1="20" y1="243.0" x2="710" y2="243.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="258.0" font-size="12" fill="#B91C1C">Absturz hier: Worktree bleibt in der Liste, sein Branch bleibt belegt.</text>
+<text x="20" y="258.0" font-size="12" fill="#B91C1C">Absturz hier: der Worktree bleibt in der Liste, sein Branch belegt; bei einem Fehler Exit-Code 3.</text>
 <text x="20" y="293.0" font-size="12" font-weight="bold" fill="#0F172A">Datei <tspan font-family="Courier, monospace">HEAD</tspan> gelöscht</text>
 <rect x="272" y="274" width="116" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="330.0" y="293.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>
@@ -55,7 +55,7 @@
 <rect x="602" y="274" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="655.0" y="293.0" font-size="12" text-anchor="middle" fill="#2F7D32">da</text>
 <line x1="20" y1="319.0" x2="710" y2="319.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="334.0" font-size="12" fill="#B91C1C">Fehler hier: halb entfernt, nicht in der Liste, hält keinen Branch mehr; Exit-Code 3.</text>
+<text x="20" y="334.0" font-size="12" fill="#B91C1C">Absturz hier: halb entfernt, nicht in der Liste, hält keinen Branch mehr; bei einem Fehler Exit-Code 3.</text>
 <text x="20" y="369.0" font-size="12" font-weight="bold" fill="#0F172A">Zustandsverzeichnis entfernt</text>
 <rect x="272" y="350" width="116" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="330.0" y="369.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>

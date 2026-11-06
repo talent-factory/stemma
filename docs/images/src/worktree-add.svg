@@ -25,7 +25,7 @@
 <rect x="575" y="46" width="96" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="623.0" y="65.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
 <line x1="20" y1="91.0" x2="673" y2="91.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="106.0" font-size="12" fill="#B91C1C">Absturz hier: kein Eintrag, nur unerreichbare Objekte; nichts zu entfernen.</text>
+<text x="20" y="106.0" font-size="12" fill="#B91C1C">Absturz hier: kein Eintrag; höchstens ein leeres Zielverzeichnis und unerreichbare Objekte.</text>
 <text x="20" y="141.0" font-size="12" font-weight="bold" fill="#0F172A">Eintrag gesichert</text>
 <rect x="237" y="122" width="72" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="273.0" y="141.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>
@@ -38,7 +38,7 @@
 <rect x="575" y="122" width="96" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="623.0" y="141.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
 <line x1="20" y1="167.0" x2="673" y2="167.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="182.0" font-size="12" fill="#B91C1C">Fehler hier: Eintrag ohne Worktree; Exit-Code 3, die Meldung nennt den Rest.</text>
+<text x="20" y="182.0" font-size="12" fill="#B91C1C">Absturz hier: Eintrag ohne Worktree; bei einem Fehler Exit-Code 3, die Meldung nennt den Rest.</text>
 <text x="20" y="217.0" font-size="12" font-weight="bold" fill="#0F172A">Dateien des Baumes</text>
 <rect x="237" y="198" width="72" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="273.0" y="217.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>
@@ -51,7 +51,7 @@
 <rect x="575" y="198" width="96" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="623.0" y="217.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
 <line x1="20" y1="243.0" x2="673" y2="243.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="258.0" font-size="12" fill="#B91C1C">Fehler hier: Dateien im Verzeichnis, kein Zeiger bewegt; die Meldung nennt den Rest.</text>
+<text x="20" y="258.0" font-size="12" fill="#B91C1C">Absturz hier: Dateien im Verzeichnis, kein Zeiger bewegt; bei einem Fehler Exit-Code 3 und Meldung.</text>
 <text x="20" y="293.0" font-size="12" font-weight="bold" fill="#0F172A">Neuer Branch (bei <tspan font-family="Courier, monospace">-b</tspan>)</text>
 <rect x="237" y="274" width="72" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="273.0" y="293.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>
@@ -64,7 +64,7 @@
 <rect x="575" y="274" width="96" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="623.0" y="293.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
 <line x1="20" y1="319.0" x2="673" y2="319.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="334.0" font-size="12" fill="#B91C1C">Absturz hier: Branch ohne Worktree; die Meldung nennt, was zu entfernen ist.</text>
+<text x="20" y="334.0" font-size="12" fill="#B91C1C">Absturz hier: Branch ohne Worktree; ein Zustandsverzeichnis ohne <tspan font-family="Courier, monospace">HEAD</tspan> gilt als abgebrochen.</text>
 <text x="20" y="369.0" font-size="12" font-weight="bold" fill="#0F172A">Zustandsverz. (<tspan font-family="Courier, monospace">HEAD</tspan> zuletzt)</text>
 <rect x="237" y="350" width="72" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="273.0" y="369.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>
@@ -77,7 +77,7 @@
 <rect x="575" y="350" width="96" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="623.0" y="369.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
 <line x1="20" y1="395.0" x2="673" y2="395.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="410.0" font-size="12" fill="#B91C1C">Absturz hier: Zustand vollständig, Zeigerdatei fehlt; der Worktree lässt sich nicht öffnen.</text>
+<text x="20" y="410.0" font-size="12" fill="#B91C1C">Absturz hier: Zeigerdatei fehlt; der Worktree steht in der Liste und hält den Branch, öffnen lässt er sich nicht.</text>
 <text x="20" y="445.0" font-size="12" font-weight="bold" fill="#0F172A">Zeigerdatei <tspan font-family="Courier, monospace">.stemma</tspan></text>
 <rect x="237" y="426" width="72" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="273.0" y="445.0" font-size="12" text-anchor="middle" fill="#6B46C1">ja</text>
