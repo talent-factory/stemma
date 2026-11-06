@@ -118,16 +118,25 @@ pub fn moved_lines(diff: &Diff) -> MovedLines {
             .get(deleted[start].text)
             .map_or(&[][..], Vec::as_slice);
         let mut best = (0, 0);
-        let free = candidates.iter().filter(|&&place| !taken_inserted[place]);
-        for &place in free.take(MAX_CANDIDATES) {
+        let mut tried = 0;
+        for &place in candidates {
+            // Every place that is looked at costs one comparison, a taken one included, so that a
+            // long list of taken places cannot be walked for free.
+            budget = budget.saturating_sub(1);
+            if budget == 0 || tried == MAX_CANDIDATES {
+                break;
+            }
+            if taken_inserted[place] {
+                continue;
+            }
+            tried += 1;
             let length = match_length(
                 &deleted,
                 &inserted,
                 (start, place),
                 (&taken_deleted, &taken_inserted),
             );
-            // A failed comparison costs one as well, so the budget is spent at least by one.
-            budget = budget.saturating_sub(length.max(1));
+            budget = budget.saturating_sub(length);
             if length > best.0 {
                 best = (length, place);
             }
