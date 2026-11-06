@@ -671,7 +671,11 @@ impl Unsupported {
             Self::SpecialFile => "remove it or put a regular file in its place",
             Self::NonUtf8Link => "point the link at a target with a UTF-8 name",
             Self::NonUtf8Name => "rename it",
-            Self::LinkFile => "write the target of the link into it, without a line break",
+            Self::LinkFile => {
+                "write the target of the link into it, without a line break; to make the path a \
+                 regular file instead, delete it, run `stemma status` to take a snapshot, write the \
+                 file again, and track it with `stemma track`"
+            }
         }
     }
 }
@@ -1625,6 +1629,39 @@ mod tests {
             assert_eq!(repository.refs().working_copy().unwrap(), before);
             assert_eq!(repository.oplog().numbers().unwrap(), numbers);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_tracked_link_becomes_a_regular_file_by_a_snapshot_without_it_and_a_track() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        commit_files(&repository, &[("link", FileMode::Symlink, "target")]);
+        write(&dir, "link", "key = value\nother = 1\n");
+        assert!(repository.snapshot(&actor(), &AllowAll).is_err());
+        // Tracking the path again does not change its mode.
+        repository
+            .track(&["link".to_owned()], &actor(), &AllowAll)
+            .unwrap_err();
+        fs::remove_file(dir.path().join("link")).unwrap();
+        assert!(snapshot(&repository).is_some());
+        assert!(tracked(&repository).is_empty());
+        write(&dir, "link", "key = value\nother = 1\n");
+        let tracking = repository
+            .track(&["link".to_owned()], &actor(), &AllowAll)
+            .unwrap();
+        assert_eq!(tracking.added, ["link"]);
+        assert_eq!(tracked(&repository), [("link".to_owned(), FileMode::File)]);
+        assert!(snapshot(&repository).is_none());
+    }
+
+    #[test]
+    fn the_remedy_of_a_file_for_a_link_names_the_way_to_a_regular_file() {
+        let remedy = Unsupported::LinkFile.remedy();
+        assert!(
+            remedy.contains("delete it") && remedy.contains("stemma track"),
+            "{remedy}"
+        );
     }
 
     #[test]
