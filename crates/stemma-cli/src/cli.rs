@@ -87,6 +87,7 @@ use stemma_core::conflict::AnyCommit;
 use stemma_core::diff::Edit;
 use stemma_core::failure::{Classify, FailureKind};
 use stemma_core::history::{self, HistoryError, Parents};
+use stemma_core::moved::{moved_lines, MovedLines};
 use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
@@ -3580,12 +3581,23 @@ fn split_operands<'a>(
 /// file has the `@@` line of each hunk, followed by its lines marked with a space, `-`, or `+`.
 /// A path is written with [`escape_path`]. With `colour`, the `diff`, `---`, and `+++` lines are
 /// bold, the `@@` lines cyan, and the removed and added lines red and green, as git colours them.
-/// The other lines stay plain.
+/// A removed line that moved to another place is bold magenta, and an added line that came from
+/// another place is bold cyan, as with `git diff --color-moved` (see [`moved_lines`]). The marks
+/// and the hunks stay the same; the plain text without colour shows no move. The other lines stay
+/// plain.
 fn diff_text(diff: &Diff, colour: bool) -> String {
     let [bold, cyan, red, green, reset] =
         [BOLD, CYAN, RED, GREEN, RESET].map(|code| paint(colour, code));
+    let [moved_from_colour, moved_to_colour] =
+        [MOVED_FROM, MOVED_TO].map(|code| paint(colour, code));
+    // The moves are only displayed in colour, so a diff without colour does not look for them.
+    let moved = if colour {
+        moved_lines(diff)
+    } else {
+        MovedLines::default()
+    };
     let mut text = String::new();
-    for file in diff.files() {
+    for (file_index, file) in diff.files().iter().enumerate() {
         let path = escape_path(file.path());
         let old_name = match diff.old_side() {
             Some(side) if file.old_exists() => format!("{side} {path}"),
@@ -3629,8 +3641,22 @@ fn diff_text(diff: &Diff, colour: bool) -> String {
             for edit in &hunk.edits {
                 match *edit {
                     Edit::Equal { old, .. } => push_line(&mut text, "", ' ', &old_lines[old]),
-                    Edit::Delete { old } => push_line(&mut text, red, '-', &old_lines[old]),
-                    Edit::Insert { new } => push_line(&mut text, green, '+', &new_lines[new]),
+                    Edit::Delete { old } => {
+                        let code = if moved.is_moved_from(file_index, old) {
+                            moved_from_colour
+                        } else {
+                            red
+                        };
+                        push_line(&mut text, code, '-', &old_lines[old]);
+                    }
+                    Edit::Insert { new } => {
+                        let code = if moved.is_moved_to(file_index, new) {
+                            moved_to_colour
+                        } else {
+                            green
+                        };
+                        push_line(&mut text, code, '+', &new_lines[new]);
+                    }
                 }
             }
         }
@@ -3644,6 +3670,8 @@ const BOLD: &str = "\x1b[1m";
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
 const CYAN: &str = "\x1b[36m";
+const MOVED_FROM: &str = "\x1b[1;35m";
+const MOVED_TO: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[m";
 
 /// The escape sequence `code` when `colour` is on, and nothing otherwise.
