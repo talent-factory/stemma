@@ -22,7 +22,7 @@ Ein Repository ohne die Datei \type{working-copy} lässt sich nicht reparieren,
 und eine verfolgte Datei, die zu einer Spezialdatei wurde, blockiert jeden Snapshot.
 Die Prüfung des Besitzers von \type{.stemma} ist unter Windows nicht frei von Wettläufen,
 unter Unix arbeiten die Speicher nach dem Öffnen wieder über den Pfad,
-was bewusst so bleibt (STEMMA-193, ADR-009),
+was bewusst so bleibt (ADR-009),
 und eine Liste vertrauenswürdiger Verzeichnisse wie bei Git fehlt (ADR-009).
 Die Ausschlussdatei vergleicht Namen ohne Rücksicht darauf,
 ob das Dateisystem Gross- und Kleinschreibung oder Unicode-Formen gleichsetzt,
@@ -50,7 +50,8 @@ Abgeleitete Daten wie Indizes für \type{log} und Blame liegen nach ADR-017 in e
 unter \type{.stemma/derived/}; offen sind die erste Art, die gespeichert wird, und die
 Bereinigung alter Einträge.
 Offen bleiben auch ein Log je Worktree, ein \type{worktree repair} für einen verschobenen
-Worktree und ein Merge, der einen offenen Konflikt als Operanden liest.
+Worktree, ein Merge, der einen offenen Konflikt als Operanden liest, und ein Rebase über
+Merge-Commits, den der Befehl heute ablehnt.
 
 \section{Zusammenarbeit}
 
