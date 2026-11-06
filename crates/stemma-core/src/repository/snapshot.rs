@@ -1639,7 +1639,8 @@ mod tests {
         commit_files(&repository, &[("link", FileMode::Symlink, "target")]);
         write(&dir, "link", "key = value\nother = 1\n");
         let before = repository.refs().working_copy().unwrap();
-        // While the file is there, track fails on the same refusal as the snapshot.
+        let numbers = repository.oplog().numbers().unwrap();
+        // Track fails on the same refusal as the snapshot.
         let error = repository
             .track(&["link".to_owned()], &actor(), &AllowAll)
             .unwrap_err();
@@ -1654,6 +1655,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(repository.refs().working_copy().unwrap(), before);
+        assert_eq!(repository.oplog().numbers().unwrap(), numbers);
     }
 
     /// The way from a tracked link to a regular file (STEMMA-89). On Unix a regular file in the
@@ -1682,7 +1684,12 @@ mod tests {
             what: Unsupported::LinkFile,
         };
         let text = error.to_string();
-        for part in ["move it aside", "stemma status", "stemma track"] {
+        for part in [
+            "write the target of the link into it",
+            "move it aside",
+            "stemma status",
+            "stemma track",
+        ] {
             assert!(text.contains(part), "{text}");
         }
     }
