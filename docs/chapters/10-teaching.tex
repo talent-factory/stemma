@@ -419,7 +419,7 @@ die beide Seiten verschieden ändern.
 (\in{Abschnitt}[sec:log]).
 Zeigen Sie, dass das Verfahren die Invariante hält, und leiten Sie $O(V\log V + E)$ her.
 Zeigen Sie dann an einer Geschichte mit einem falschen Datum, dass die Sortierung allein nach
-dem Datum die Invariante verletzt. Warum genügt dem Verfahren das Datum als Tie-Break?
+dem Datum die Invariante verletzt. Warum darf das Datum nur unter den bereiten Commits wählen?
 \item (DUA) Die Regel \quotation{gleiche Änderung auf beiden Seiten} gehört nicht zur Algebra
 der Summen (\in{Abschnitt}[sec:tree-merge]).
 Konstruieren Sie eine Geschichte aus der Basis, zwei Seiten mit derselben Änderung und einem
@@ -429,10 +429,11 @@ Warum hängt der Text eines gelingenden Zeilen-Merges nicht davon ab, welche Sei
 (\in{Abschnitt}[sec:line-merge])?
 \item (DUA) Ein Rebase spielt jeden Commit $C$ als $E' + (C - E)$ auf
 (\in{Abschnitt}[sec:rebase]).
-Zeigen Sie, dass ein Rebase von $k$ Commits denselben Baum ergibt wie ein Merge der Spitze
-mit dem Ziel, solange die Regel der gleichen Änderung nie greift (Übung 3).
-Geben Sie ein Beispiel an, in dem die Regel greift und die Bäume sich unterscheiden,
-und eines, in dem beide Wege verschiedene Konflikte tragen.
+Zeigen Sie, dass die Summe von Trees eines Rebase von $k$ Commits gleich der Summe des Merges
+der Spitze mit dem Ziel ist, solange die Regel der gleichen Änderung nie greift (Übung 3).
+Warum folgt daraus nicht, dass beide Wege denselben Baum schreiben, wenn ein Schritt eine Datei
+Zeile für Zeile auflöst? Geben Sie ein Beispiel an, in dem die Regel greift und die Bäume
+sich unterscheiden, und eines, in dem beide Wege verschiedene Konflikte tragen.
 \item (AISE) Zwei Agenten arbeiten parallel am selben Repository.
 Der Kern erlaubt einen Branch nur in einem Worktree und kennt keine Option zum Erzwingen
 (\in{Abschnitt}[sec:worktree]).

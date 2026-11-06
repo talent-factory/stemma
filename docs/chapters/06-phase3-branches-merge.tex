@@ -140,7 +140,7 @@ und kann falsch sein (ADR-005).
 {\bf Definition.} Die Liste ist eine topologische Ordnung der erreichbaren Commits
 (Abschnitt 4.2 bei \cite[sedgewick2011algorithms]).
 Der Kern zählt für jeden Commit die Kanten seiner Kinder, die erreichbar sind.
-Ein Commit ist bereit, wenn alle seine Kinder in der Liste stehen.
+Ein Commit ist bereit, wenn alle seine erreichbaren Kinder in der Liste stehen.
 Aus den bereiten Commits wählt ein Heap den mit dem neuesten Datum,
 bei gleichem Datum den mit der grösseren ID (\type{topological}).
 
