@@ -688,7 +688,7 @@ bei mehreren Basen die flache Summe aus \in{Abschnitt}[sec:tree-merge].
 Ein Konflikt hält den Merge nicht an.
 $M$ speichert ihn als Daten (ADR-005), und der Befehl nennt die Pfade in der Ausgabe.
 Wer ihn lösen will, bearbeitet die Datei im Verzeichnis; der Snapshot macht daraus einen
-Commit ohne Konflikt, sobald der Text keine Markierungen mehr trägt.
+Commit ohne Konflikt, sobald der Text nicht mehr der ist, den Stemma geschrieben hat.
 Der Merge-Commit bekommt eine neue Change-ID, weil er keine Änderung eines anderen Commits ist;
 Autor und Zeit sind die des Aufrufs.
 
@@ -731,7 +731,9 @@ Sie steht im Snapshot und im Log, auch wenn der Merge scheitert.
 \section[sec:phase3-workflows]{Die Abläufe der Phase im Zusammenhang}
 
 Die Abschnitte dieses Kapitels beschreiben jeden Befehl für sich.
-Dieser Abschnitt setzt sie zu einer Sitzung zusammen und führt die Sitzung aus Kapitel 4 fort:
+Dieser Abschnitt setzt sie zu einer Sitzung zusammen.
+Sie geht vom Stand der Sitzung aus Kapitel 4 nach dem zweiten Commit aus (Eintrag 5), ohne das
+Restore, das Kapitel 4 anschliessend zeigt:
 Das Repository \type{notizen} hat zwei Commits auf \type{main}, \quotation{Erste Fassung} und
 \quotation{Gruss erweitern}, und \type{README.md} enthält die Zeile \type{Hallo Welt}.
 Daniel arbeitet im Verzeichnis der Wurzel, ein Agent in einem zweiten Worktree.
@@ -751,9 +753,10 @@ Daniel ändert unterdessen die Zeile in \type{README.md} und macht einen Commit:
 \starttyping
 $ stemma worktree add -b agent-arbeit ../notizen-agent \
 >     --owner "agent claude model=opus-5-5 session=s1 sponsor=daniel"
-Added the worktree notizen-agent in /home/daniel/notizen-agent on the new branch
-agent-arbeit as entry 6
+Added the worktree notizen-agent in /home/daniel/notizen-agent on the new branch agent-arbeit as entry 6
+Owner: agent claude model=opus-5-5 session=s1 sponsor=daniel
 $ cd ../notizen-agent
+$ export STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel"
 $ echo "Hallo Welt, hier spricht der Agent" > README.md
 $ echo "pub fn gruss() {}" > src/lib.rs
 $ stemma track src/lib.rs
@@ -761,6 +764,7 @@ tracked src/lib.rs
 $ stemma commit -m "Agent: Gruss und Bibliothek"
 Committed b3:867b…8636 on agent-arbeit
 $ cd ../notizen
+$ export STEMMA_ACTOR="human daniel"
 $ echo "Hallo Welt!" > README.md
 $ stemma commit -m "Ausrufezeichen"
 Committed b3:c9e6…cac3 on main
@@ -821,8 +825,8 @@ HEAD bleibt, und \type{agent-arbeit} auch.
 Das Log erhält einen einzigen Eintrag, 11 \type{merge}, der beide Bewegungen nennt.
 
 Daniel löst den Konflikt, indem er die Datei bearbeitet und festhält.
-Der Snapshot im \type{commit} sieht, dass der Text nicht mehr der Text mit Markierungen ist,
-und löst den Pfad mit genau diesem Inhalt auf:
+Der Snapshot, den schon \type{status} macht, sieht, dass der Text nicht mehr der Text mit
+Markierungen ist, und löst den Pfad mit genau diesem Inhalt auf:
 
 \starttyping
 $ echo "Hallo Welt, hier spricht der Agent!" > README.md
@@ -833,8 +837,10 @@ $ stemma commit -m "Konflikt in README gelöst"
 Committed b3:114f…b521 on main
 \stoptyping
 
-Der Eintrag 12 ist der Snapshot, der den Working-Copy-Commit ohne Konflikt speichert, und der
-Eintrag 13 der Commit, der \type{main} auf \type{b3:114f…b521} setzt.
+Der Eintrag 12 ist der Snapshot von \type{status}, der den Working-Copy-Commit ohne Konflikt
+speichert.
+Der Snapshot des Commits findet danach nichts mehr; der Eintrag 13 ist der Commit, der
+\type{main} auf \type{b3:114f…b521} setzt.
 Der Merge-Commit mit dem Konflikt bleibt im Verlauf; er ist der Elternteil der Lösung.
 
 \subsection{Einen Schritt zurücknehmen: op restore}
@@ -870,7 +876,7 @@ Ein \type{op restore 14} würde den Merge samt Lösung wieder herstellen.
 Der Branch \type{agent-arbeit} und der Worktree des Agenten haben sich nicht bewegt,
 denn die Einträge 11 bis 13 haben beide nicht berührt.
 Ein Restore wirkt auf die Zeiger des Worktrees, in dem es läuft; ein Eintrag, der HEAD oder den
-Working-Copy-Commit eines anderen Worktrees bewegt hat, gehört in jenen Worktree.
+Working-Copy-Commit eines anderen Worktrees bewegt hat, lehnt es ab und nennt jenen Worktree.
 
 \subsection{Rebase statt Merge}
 
@@ -878,6 +884,8 @@ Daniel will keinen Merge-Commit.
 Der Agent spielt seinen Commit stattdessen auf \type{main} neu auf, in seinem Worktree:
 
 \starttyping
+$ cd ../notizen-agent
+$ export STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel"
 $ stemma rebase main
 Rebased agent-arbeit onto main as entry 15: 1 commit replayed
 Commit b3:6673…1e4e has an open conflict in README.md (2 sides)
@@ -894,13 +902,16 @@ Wieder trägt er den Konflikt als Daten, denn beide Seiten haben dieselbe Zeile 
 Der Befehl hält deshalb nicht an: Er hat weder \type{--continue} noch \type{--abort}.
 Der Agent löst den Konflikt wie Daniel, und sein \type{commit} setzt \type{agent-arbeit} auf
 den gelösten Commit \type{b3:3be2…9acb}.
-Der alte Commit \type{b3:867b…8636} bleibt im Speicher, und das Log nennt ihn in Eintrag 8.
+Der alte Commit \type{b3:867b…8636} bleibt im Speicher, und das Log nennt ihn als alten Wert
+des Branchs in den Einträgen 8 und 15.
 Der Branch bewegt sich im Eintrag 15 vor dem Working-Copy-Commit; HEAD bleibt.
 Das Verzeichnis der Wurzel und \type{main} bleiben unberührt.
 
 Jetzt liegt \type{agent-arbeit} über \type{main}, und Daniel führt den Branch ein:
 
 \starttyping
+$ cd ../notizen
+$ export STEMMA_ACTOR="human daniel"
 $ stemma merge agent-arbeit
 Fast-forwarded main to agent-arbeit (commit b3:3be2…9acb) as entry 18
 To undo it: stemma op restore 18
@@ -968,43 +979,55 @@ Der Verlauf ist linear, und der Eintrag 18 ist der einzige, den der Fast-Forward
 
 \subsection{Abbruch und Absturz: derselbe Aufruf noch einmal}
 
-Jeder Schritt der Sitzung kann mitten in der Arbeit enden, etwa durch einen Absturz oder ein
+Jeder Befehl der Sitzung kann mitten in der Arbeit enden, etwa durch einen Absturz oder ein
 volles Dateisystem.
-Die Reihenfolge von \type{switch}, \type{merge}, \type{rebase} und \type{op restore} ist die von
-ADR-013: Snapshot, Plan der Dateien, Eintrag, Dateien, Zeiger.
+Für \type{switch}, \type{merge} und \type{rebase} gilt die Reihenfolge von ADR-013: Snapshot, Plan
+der Dateien, Eintrag, Dateien, Zeiger.
+Beim \type{op restore} geht der Plan dem Snapshot voraus, damit ein fehlender Commit auffällt,
+bevor etwas geschrieben ist.
 Wo der Abbruch fällt, bestimmt, was der Aufruf danach tut.
 
 \startitemize[n]
-\item Vor dem Eintrag hat der Befehl nichts geändert ausser seinem Snapshot, der ein eigener
-Eintrag ist. Der Aufruf lässt sich einfach wiederholen.
-\item Nach dem Eintrag und vor den Dateien steht der Eintrag im Log, aber kein Zeiger hat sich
-bewegt. \type{op log} zeigt ihn als nicht übernommen.
-\item Nach den Dateien und vor den Zeigern liegt das Ziel im Arbeitsverzeichnis, aber die Zeiger
-sind alt. Das gilt auch, wenn der Branch sich schon bewegt hat und der Working-Copy-Commit noch
-nicht.
+\item Vor dem Eintrag hat der Befehl keinen Zeiger und keine Datei geändert; sein Snapshot ist ein
+eigener Eintrag. Der Aufruf lässt sich einfach wiederholen.
+\item Nach dem Eintrag steht dieser im Log, und die Zeiger sind alt oder erst zum Teil bewegt:
+Der Branch steht vielleicht schon auf dem neuen Commit, der Working-Copy-Commit noch nicht.
+Die Dateien sind nicht, zum Teil oder ganz geschrieben. \type{op log} zeigt den Eintrag als nicht
+übernommen, solange nicht alle Zeiger bewegt sind.
 \stopitemize
 
-Im dritten Fall würde ein Snapshot die Dateien des Ziels als Änderung des alten
-Working-Copy-Commits speichern.
+In beiden Zuständen des zweiten Falls würde ein Snapshot die Dateien des Ziels als Änderung des
+alten Working-Copy-Commits speichern.
 Deshalb verlangt die Fehlermeldung denselben Aufruf noch einmal, bevor irgendein anderer Befehl
 läuft.
-Der zweite Aufruf erkennt den Eintrag des abgebrochenen, macht keinen Snapshot und bewegt die
-Zeiger auf die Commits des Eintrags.
-Seine Nachricht bleibt ohne Wirkung; ein Merge eines anderen Branchs lehnt der Kern in diesem
-Zustand ab und nennt den Eintrag, den \type{op restore} verwerfen kann.
-Der Exit-Code ist 1, solange kein Zeiger sich bewegt hat, und 3, wenn einige sich bewegt haben
-und andere nicht.
-Ein \type{op restore} wiederholt sich auf dieselbe Weise: Er setzt jeden Zeiger für sich, also
-bewegt der zweite Aufruf nur noch den Rest.
+Bei \type{switch}, \type{merge} und \type{rebase} erkennt der zweite Aufruf den Eintrag des
+abgebrochenen, macht keinen Snapshot und bewegt die Zeiger auf die Commits des Eintrags.
+Die Nachricht eines wiederholten \type{merge} bleibt ohne Wirkung; ein Merge eines anderen Branchs
+lehnt der Kern in diesem Zustand ab und nennt den Eintrag, den \type{op restore} verwerfen kann.
+Der Exit-Code ist 3, sobald ein Zeiger sich bewegt hat und das Ergebnis nicht vollständig oder
+nicht dauerhaft ist.
+Sonst ist er 1, bei Beschädigung 5 und bei einer gehaltenen Sperre 6.
+Ein \type{op restore} erkennt den abgebrochenen Eintrag nicht.
+Der zweite Aufruf macht einen Snapshot und einen neuen Eintrag, setzt aber jeden Zeiger für sich,
+also bewegt er nur noch den Rest.
 
 Zwei Befehle der Sitzung folgen einer anderen Regel.
+Ein \type{commit}, der nur einen seiner beiden Zeiger bewegt hat, endet mit Exit-Code 3; erst der
+nächste \type{commit} beendet ihn, und dessen Nachricht ist ohne Wirkung.
+Ein \type{track}, dessen Ergebnis nach der Arbeit nicht gesichert werden konnte, endet ebenfalls
+mit Exit-Code 3.
+Ein Skript wiederholt beide nicht, bevor es das Log gelesen hat.
+
+Zwei weitere Befehle der Phase folgen wieder einer anderen Regel.
 Der Befehl \type{worktree add} schreibt den Eintrag vor den Dateien des Verzeichnisses und die
 Zeigerdatei \type{.stemma} zuletzt, sodass ein halber Worktree sich nicht öffnen lässt.
 Bricht er nach dem Eintrag ab, endet er mit Exit-Code 3, und die Meldung nennt, was von Hand zu
 entfernen ist, bevor der Aufruf wiederholt wird.
+Scheitert nur das Sichern auf den Datenträger, ist der Worktree fertig;
+es ist nichts zu entfernen.
 Der Befehl \type{worktree remove} entfernt zuerst die Datei \type{HEAD} des Zustandsverzeichnisses,
 damit ein halb entfernter Worktree keinen Branch mehr hält.
-Ein \type{op restore} macht beide Befehle nicht rückgängig.
+Ein \type{op restore} lehnt die Einträge beider Befehle ab.
 
 \section{Offene Fragen}
 
