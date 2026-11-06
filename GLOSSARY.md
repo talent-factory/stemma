@@ -271,6 +271,14 @@ _Avoid_: Owner, principal
 The time-limited right of one actor to write to a branch. (Lease)
 _Avoid_: Lock (for a branch)
 
+**Write owner**:
+The one actor that holds the lease of a branch and may write to it. (Schreibinhaber)
+_Avoid_: Owner of a branch
+
+**Owner override**:
+Taking a branch over before its lease expires. Only the owner role may do it, with a reason and an
+audit entry, and it never bypasses the merge gate. (Owner-Override)
+
 **Risk level**:
 A level from 0 to 3 that decides how many independent reviews a change needs. (Risikostufe)
 _Avoid_: Severity, tier
