@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 330" font-family="Helvetica, Arial, sans-serif">
+<title>Die Summe von Trees eines Konflikts und der Text mit Markierungen im Arbeitsverzeichnis</title>
+<defs>
+  <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2B6CB0"/></marker>
+  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B45309"/></marker>
+  <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6B46C1"/></marker>
+</defs>
+<rect x="0" y="0" width="660" height="330" fill="#FFFFFF"/>
+<text x="20" y="24" font-size="13" font-weight="bold" fill="#0F172A">Im Commit: die Summe von Trees</text>
+<rect x="20" y="40" width="108" height="70" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="28" y="58" font-size="12" font-weight="bold" fill="#0F172A">+ Seite 1</text>
+<text x="28" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">ch:7a41…</text>
+<text x="28" y="96" font-size="12" font-family="Courier, monospace" fill="#0F172A">timeout=45</text>
+<rect x="140" y="40" width="108" height="70" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="148" y="58" font-size="12" font-weight="bold" fill="#0F172A">− Basis 1</text>
+<text x="148" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">ch:1d09…</text>
+<text x="148" y="96" font-size="12" font-family="Courier, monospace" fill="#0F172A">timeout=30</text>
+<rect x="260" y="40" width="108" height="70" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="268" y="58" font-size="12" font-weight="bold" fill="#0F172A">+ Seite 2</text>
+<text x="268" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">ch:c9d0…</text>
+<text x="268" y="96" font-size="12" font-family="Courier, monospace" fill="#0F172A">timeout=60</text>
+<text x="20" y="134" font-size="12" fill="#64748B">Seite 1 − Basis 1 + Seite 2 hebt sich nicht auf.</text>
+<line x1="20" y1="168" x2="640" y2="168" stroke="#64748B" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="182" font-size="13" font-weight="bold" fill="#0F172A">Im Arbeitsverzeichnis: der Text der Ansicht</text>
+<rect x="20" y="194" width="300" height="120" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="30" y="210" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">&lt;&lt;&lt;&lt;&lt;&lt;&lt; conflict</text>
+<text x="30" y="223" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">+++++++ side 1</text>
+<text x="30" y="236" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">timeout=45</text>
+<text x="30" y="249" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">------- base 1</text>
+<text x="30" y="262" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">timeout=30</text>
+<text x="30" y="275" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">+++++++ side 2</text>
+<text x="30" y="288" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">timeout=60</text>
+<text x="30" y="301" font-size="11" font-family="Courier, monospace" fill="#2B6CB0">&gt;&gt;&gt;&gt;&gt;&gt;&gt;</text>
+<line x1="300" y1="120" x2="300" y2="192" stroke="#2B6CB0" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+<text x="312" y="142" font-size="12" font-weight="bold" fill="#2B6CB0">Ansicht</text>
+<text x="312" y="158" font-size="12" fill="#64748B">aus der Summe allein</text>
+<text x="345" y="214" font-size="12" font-weight="bold" fill="#0F172A">Snapshot: Gleiche Bytes wie der Text</text>
+<text x="345" y="232" font-size="12" fill="#0F172A">bedeuten, dass der Pfad im Konflikt bleibt.</text>
+<text x="345" y="258" font-size="12" font-weight="bold" fill="#0F172A">Jeder andere Inhalt löst den Pfad:</text>
+<text x="345" y="276" font-size="12" fill="#0F172A">ein neuer Commit mit diesem Inhalt</text>
+<text x="345" y="292" font-size="12" fill="#0F172A">in jedem Term, gleiche Change-ID.</text>
+</svg>

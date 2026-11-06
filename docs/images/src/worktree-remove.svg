@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 690 418" font-family="Helvetica, Arial, sans-serif">
+<title>Reihenfolge von worktree remove, mit den Zuständen nach einem Absturz</title>
+<defs>
+  <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2B6CB0"/></marker>
+  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B45309"/></marker>
+  <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6B46C1"/></marker>
+</defs>
+<rect x="0" y="0" width="690" height="418" fill="#FFFFFF"/>
+<text x="288.0" y="32" font-size="12" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag</text>
+<text x="398.0" y="32" font-size="12" font-weight="bold" text-anchor="middle" fill="#2B6CB0">Verzeichnis</text>
+<text x="503.0" y="32" font-size="12" font-weight="bold" text-anchor="middle" fill="#2F7D32">HEAD (Zustand)</text>
+<text x="613.0" y="32" font-size="12" font-weight="bold" text-anchor="middle" fill="#2F7D32">Rest (Zustand)</text>
+<text x="20" y="65.0" font-size="12" font-weight="bold" fill="#0F172A">Vor dem Aufruf</text>
+<rect x="232" y="46" width="116" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="290.0" y="65.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
+<rect x="352" y="46" width="96" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="400.0" y="65.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">da</text>
+<rect x="452" y="46" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="505.0" y="65.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">da</text>
+<rect x="562" y="46" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="615.0" y="65.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">da</text>
+<line x1="20" y1="91.0" x2="670" y2="91.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="106.0" font-size="12" fill="#B91C1C">Absturz hier: der Snapshot steht im Log, der Worktree ist unversehrt.</text>
+<text x="20" y="141.0" font-size="12" font-weight="bold" fill="#0F172A">Snapshot und Eintrag gesichert</text>
+<rect x="232" y="122" width="116" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="290.0" y="141.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">ja</text>
+<rect x="352" y="122" width="96" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="400.0" y="141.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">da</text>
+<rect x="452" y="122" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="505.0" y="141.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">da</text>
+<rect x="562" y="122" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="615.0" y="141.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">da</text>
+<line x1="20" y1="167.0" x2="670" y2="167.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="182.0" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, nichts ist entfernt; der Worktree ist ganz da.</text>
+<text x="20" y="217.0" font-size="12" font-weight="bold" fill="#0F172A">Verzeichnis entfernt</text>
+<rect x="232" y="198" width="116" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="290.0" y="217.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">ja</text>
+<rect x="352" y="198" width="96" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="400.0" y="217.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">weg</text>
+<rect x="452" y="198" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="505.0" y="217.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">da</text>
+<rect x="562" y="198" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="615.0" y="217.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">da</text>
+<line x1="20" y1="243.0" x2="670" y2="243.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="258.0" font-size="12" fill="#B91C1C">Absturz hier: Worktree bleibt in der Liste, sein Branch bleibt belegt.</text>
+<text x="20" y="293.0" font-size="12" font-weight="bold" fill="#0F172A">Datei HEAD gelöscht</text>
+<rect x="232" y="274" width="116" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="290.0" y="293.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">ja</text>
+<rect x="352" y="274" width="96" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="400.0" y="293.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">weg</text>
+<rect x="452" y="274" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="505.0" y="293.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">weg</text>
+<rect x="562" y="274" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="615.0" y="293.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">da</text>
+<line x1="20" y1="319.0" x2="670" y2="319.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="334.0" font-size="12" fill="#B91C1C">Absturz hier: halb entfernt, nicht in der Liste, ohne Branch; Rest von Hand (Exit-Code 3).</text>
+<text x="20" y="369.0" font-size="12" font-weight="bold" fill="#0F172A">Zustandsverzeichnis entfernt</text>
+<rect x="232" y="350" width="116" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="290.0" y="369.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">ja</text>
+<rect x="352" y="350" width="96" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="400.0" y="369.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">weg</text>
+<rect x="452" y="350" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="505.0" y="369.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">weg</text>
+<rect x="562" y="350" width="106" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="615.0" y="369.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">weg</text>
+</svg>
