@@ -144,8 +144,8 @@ Ein Commit ist bereit, wenn alle seine Kinder in der Liste stehen.
 Aus den bereiten Commits wählt ein Heap den mit dem neuesten Datum,
 bei gleichem Datum den mit der grösseren ID (\type{topological}).
 
-{\bf Invariante.} Ein Commit kommt erst in die Liste, wenn alle seine Kinder darin stehen,
-und er kommt in den Heap, wenn sein Zähler null erreicht.
+{\bf Invariante.} Ein Commit kommt erst in die Liste, wenn alle seine erreichbaren Kinder darin
+stehen, und er kommt in den Heap, wenn sein Zähler null erreicht.
 Das Datum wählt also nur unter Commits, die einander nicht bedingen;
 ein falsches Datum stellt nie ein Kind hinter sein Elternteil.
 Die Reihenfolge hängt nur von der Geschichte ab, nicht von der Reihenfolge der Eltern,
@@ -153,19 +153,21 @@ und die ID als zweites Kriterium macht sie bei gleichem Datum eindeutig.
 
 {\bf Kosten.} Mit $V$ erreichbaren Commits und $E$ Elternkanten liest der erste Durchlauf jeden
 Commit einmal und zählt die Kanten in $O(V+E)$. Jeder Commit geht einmal in den Heap und einmal
-heraus, das kostet $O((V+E)\log V)$. Das gilt auch mit \type{-n}, denn die Ordnung braucht die
+heraus, das kostet $O(V\log V + E)$. Das gilt auch mit \type{-n}, denn die Ordnung braucht die
 ganze Menge; \type{-n} kürzt nur die Liste.
+Der Speicher wächst mit $O(V+E)$, denn der Kern hält alle erreichbaren Commits.
 
 {\bf Korrektheit.} Der Zähler eines Commits fällt nur, wenn ein Kind in die Liste kommt,
-und jede Kante wird genau einmal gezählt. Weil der Graph keinen Kreis hat
-(\in{Abschnitt}[sec:object-guarantees]), erreicht jeder Commit den Zähler null,
-und die Liste enthält alle erreichbaren Commits.
+und jede Kante wird genau einmal gezählt, weil ein Commit jeden Elternteil nur einmal nennt.
+Weil der Graph keinen Kreis hat (\in{Abschnitt}[sec:object-guarantees], bis auf Hash-Kollision),
+erreicht jeder Commit den Zähler null, und die Liste enthält ohne \type{-n} alle
+erreichbaren Commits.
 
 \startinfobox
 {\bf Grenzfälle von \type{log}.}
 \startitemize
 \item Mit \type{--first-parent} folgt der Befehl nur dem ersten Elternteil. Das Ergebnis ist eine
-Kette und kostet höchstens so viele Lesevorgänge, wie \type{-n} nennt.
+Kette und kostet mit \type{-n} höchstens so viele Lesevorgänge, wie \type{-n} nennt.
 \item Ein Commit mit offenem Konflikt trägt in der Kopfzeile \type{conflict (N sides)}.
 \item Der Befehl führt keinen Cache. Ein Index für schnellere Abfragen ist Sache von ADR-017.
 \stopitemize
