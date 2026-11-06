@@ -42,9 +42,9 @@
 <text x="438.0" y="170" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">main</text>
 <line x1="438" y1="156" x2="438" y2="145" stroke="#2F7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
 <rect x="480" y="118" width="56" height="26" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="508.0" y="135" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">C1′</text>
+<text x="508.0" y="135" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">C1<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
 <rect x="550" y="118" width="56" height="26" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="578.0" y="135" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">C2′</text>
+<text x="578.0" y="135" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">C2<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
 <line x1="480" y1="131" x2="467" y2="131" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow-slate)"/>
 <line x1="550" y1="131" x2="537" y2="131" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow-slate)"/>
 <rect x="546" y="156" width="64" height="20" rx="3" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
@@ -92,7 +92,7 @@
 <rect x="222" y="464" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rebase</text>
 <rect x="350" y="464" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="393.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2′</text>
+<text x="393.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
 <rect x="440" y="464" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="523.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
 <rect x="610" y="464" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
@@ -103,9 +103,9 @@
 <rect x="222" y="540" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rebase</text>
 <rect x="350" y="540" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="393.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2′</text>
+<text x="393.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
 <rect x="440" y="540" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="523.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W′</text>
+<text x="523.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
 <rect x="610" y="540" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="654.0" y="559.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W′</text>
 </svg>

@@ -418,6 +418,8 @@ nur ein Snapshot, den das Dateisystem nicht gesichert hat, macht daraus Exit-Cod
 sein Verzeichnis und HEAD und den Working-Copy-Commit mit \type{-} als neuem Wert.
 \item Das Verzeichnis wird entfernt: erst unter einem versteckten Namen neben seinen Platz
 verschoben, dann gelöscht, damit ein Abbruch keine halbe Kopie am alten Pfad lässt.
+Ein Absturz dazwischen lässt das Verzeichnis unter dem versteckten Namen
+(\type{.stemma-removing-NAME-PID}) neben dem Pfad liegen; es ist von Hand zu löschen.
 Zuletzt geht das Zustandsverzeichnis: erst seine Datei \type{HEAD}, damit der Worktree
 aus der Liste verschwindet und keinen Branch mehr hält, dann der Rest.
 \stopitemize

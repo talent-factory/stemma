@@ -96,7 +96,7 @@
 <rect x="350" y="540" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="393.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">M</text>
 <rect x="440" y="540" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="523.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W′</text>
+<text x="523.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
 <rect x="610" y="540" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="654.0" y="559.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W′</text>
 </svg>
