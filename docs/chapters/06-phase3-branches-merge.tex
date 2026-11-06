@@ -386,6 +386,13 @@ sodass ein solcher Rest kein anderes Kommando blockiert.
 Bricht der Befehl nach dem Eintrag ab, endet er mit Exit-Code 3.
 Der Eintrag steht dann für einen Worktree, der nicht oder nur zum Teil entstand,
 und die Meldung nennt, was zu entfernen ist, bevor man den Aufruf wiederholt.
+\in{Abbildung}[fig:worktree-add] zeigt die Reihenfolge und die Zustände nach einem Absturz.
+
+\startplacefigure[title={Reihenfolge von \type{worktree add}, mit den Zuständen
+    nach einem Absturz},
+    reference=fig:worktree-add,location=here]
+\externalfigure[images/worktree-add.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Der Befehl \type{worktree remove} nimmt einen Worktree wieder weg.
 Er fragt den Autorisierer nach der Operation \type{worktree-remove}, nimmt den Namen oder den
@@ -411,9 +418,20 @@ nur ein Snapshot, den das Dateisystem nicht gesichert hat, macht daraus Exit-Cod
 sein Verzeichnis und HEAD und den Working-Copy-Commit mit \type{-} als neuem Wert.
 \item Das Verzeichnis wird entfernt: erst unter einem versteckten Namen neben seinen Platz
 verschoben, dann gelöscht, damit ein Abbruch keine halbe Kopie am alten Pfad lässt.
+Ein Absturz dazwischen lässt das Verzeichnis unter dem versteckten Namen
+(\type{.stemma-removing-NAME-PID}) neben dem Pfad liegen; es ist von Hand zu löschen.
 Zuletzt geht das Zustandsverzeichnis: erst seine Datei \type{HEAD}, damit der Worktree
 aus der Liste verschwindet und keinen Branch mehr hält, dann der Rest.
 \stopitemize
+
+\in{Abbildung}[fig:worktree-remove] zeigt die Reihenfolge des Entfernens und die Zustände
+nach einem Absturz.
+
+\startplacefigure[title={Reihenfolge von \type{worktree remove}, mit den Zuständen
+    nach einem Absturz},
+    reference=fig:worktree-remove,location=here]
+\externalfigure[images/worktree-remove.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Der Branch bleibt, und die Commits bleiben: Der Eintrag nennt den Working-Copy-Commit, also
 behalten Log und Purge ihn. Scheitert ein Schritt nach dem Eintrag, endet der Befehl mit
@@ -476,6 +494,13 @@ des Pfades. Steht an einem Pfad ein Verzeichnis gegen eine Datei, hat das Verzei
 Inhalt und erscheint im Text als Zeile \type{(directory ID)} mit der ID seines Trees, damit zwei
 verschiedene Verzeichnisse sich nie aufheben; seine Dateien bleiben im Commit und
 werden nicht geschrieben.
+\in{Abbildung}[fig:conflict-sum] zeigt für eine Datei mit zwei Seiten die Summe im Commit
+und den Text, den die Ansicht daraus ins Arbeitsverzeichnis schreibt.
+
+\startplacefigure[title={Die Summe von Trees eines Konflikts und der Text der Ansicht},
+    reference=fig:conflict-sum,location=here]
+\externalfigure[images/conflict-sum.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 \startitemize[n]
 \item Der Snapshot liest den Commit und baut die Ansicht. Die verfolgten Dateien sind die
@@ -651,6 +676,14 @@ Der Branch bewegt sich vor dem Working-Copy-Commit, damit ein Abbruch dazwischen
 keinen Commit unerreichbar macht.
 Nach einem Abbruch nach den Dateien verlangt die Fehlermeldung denselben Aufruf noch einmal;
 er nimmt keinen Snapshot und verwendet die Commits des Eintrags.
+\in{Abbildung}[fig:rebase-pointers] zeigt den Verlauf vor und nach dem Rebase
+und die Zeiger nach jedem Schritt.
+
+\startplacefigure[title={Verlauf und Zeiger beim Rebase von \type{feature} auf \type{main}, mit den
+    Zuständen nach einem Absturz},
+    reference=fig:rebase-pointers,location=here]
+\externalfigure[images/rebase-pointers.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 \startinfobox
 {\bf Grenzfälle des Aufspielens.}
@@ -707,6 +740,16 @@ Der Branch bewegt sich nur, wenn er noch auf $A$ steht (Compare-and-Swap unter d
 HEAD und die anderen Branches bleiben.
 Der Eintrag \type{merge} nennt beide Bewegungen, und \type{op restore} macht den Merge mit
 einem Aufruf rückgängig.
+\in{Abbildung}[fig:merge-pointers] zeigt den Verlauf vor und nach dem Merge
+und die Zeiger nach jedem Schritt, mit den Stellen, an denen ein Absturz möglich ist.
+Ab dem Eintrag bleibt $M$ nach jedem Absturz erreichbar:
+Der Eintrag steht vor jeder Bewegung, und der Branch bewegt sich vor dem Working-Copy-Commit.
+
+\startplacefigure[title={Verlauf und Zeiger beim Merge von \type{feature} in \type{main}, mit den
+    Zuständen nach einem Absturz},
+    reference=fig:merge-pointers,location=here]
+\externalfigure[images/merge-pointers.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 \startinfobox
 {\bf Grenzfälle des Merges.}
