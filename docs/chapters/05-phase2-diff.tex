@@ -534,9 +534,10 @@ Bei gleicher Länge gilt der erste.
 haben, dieselbe Zahl wie in git, gezählt über die Unicode-Zeichen.
 Schliessende Klammern und Leerzeilen allein gelten deshalb nicht als Verschiebung.
 \item Eine Zeile gehört zu höchstens einer Verschiebung. Pro gelöschter Zeile probiert die
-Funktion höchstens 256 Stellen auf der neuen Seite, und insgesamt macht sie höchstens 20 Millionen
-Zeilenvergleiche pro Diff. Eine oft wiederholte Zeile dehnt die Laufzeit so nicht; ist das
-Budget aufgebraucht, behält die Funktion die bis dahin gefundenen Verschiebungen.
+Funktion höchstens 256 Stellen auf der neuen Seite, und insgesamt hat sie ein Budget von
+20 Millionen Zeilenvergleichen pro Diff (der letzte Block kann es knapp überschreiten).
+Eine oft wiederholte Zeile dehnt die Laufzeit so nicht;
+ist das Budget aufgebraucht, behält die Funktion die bis dahin gefundenen Verschiebungen.
 \stopitemize
 
 Der Ablauf ist deterministisch: Derselbe Diff liefert dieselben Markierungen.

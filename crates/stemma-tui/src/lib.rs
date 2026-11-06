@@ -272,6 +272,12 @@ fn push_edit(lines: &mut Vec<Line<'static>>, mark: char, line: Option<&String>, 
 /// Draws the view: the files on the left with a marker for the selected one, and the lines of the
 /// selected file on the right, scrolled by the state.
 pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
+    render_with(frame, state, diff, &moved_lines(diff));
+}
+
+/// Like [`render`], with the moved lines of `diff` given, so that a loop that draws the same diff
+/// again and again finds them once. `moved` must come from [`moved_lines`] for this very `diff`.
+pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, moved: &MovedLines) {
     let [main, help] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
     let [files_area, text_area] =
@@ -287,7 +293,7 @@ pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
     let (title, mut body) = match diff.files().get(state.file) {
         Some(file) => (
             file.path().to_owned(),
-            file_lines(state.file, file, &moved_lines(diff)).lines,
+            file_lines(state.file, file, moved).lines,
         ),
         None if diff.files().is_empty() => ("No differences".to_owned(), Vec::new()),
         // A state that belongs to another diff.
@@ -334,8 +340,10 @@ fn event_loop(
     stop: &AtomicBool,
 ) -> io::Result<()> {
     let mut state = State::default();
+    // The diff does not change while the view is open, so the moves are found once.
+    let moved = moved_lines(diff);
     loop {
-        terminal.draw(|frame| render(frame, &state, diff))?;
+        terminal.draw(|frame| render_with(frame, &state, diff, &moved))?;
         // The request to stop is looked at between two keys, and also while no key comes.
         while !event::poll(STOP_POLL)? {
             if stop.load(Ordering::SeqCst) {

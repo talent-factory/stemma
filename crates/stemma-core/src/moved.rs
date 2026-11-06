@@ -71,9 +71,15 @@ struct Entry<'a> {
 ///
 /// The deleted lines are taken in the order of the diff. A deleted line is matched with the
 /// longest inserted block of equal lines among the first 256 free places where its text occurs,
-/// the first such block on a tie; a line belongs to at most one move. The whole search makes at most
-/// 20 million line comparisons and keeps the moves found so far when they are spent.
+/// the first such block on a tie; a line belongs to at most one move. The search has a budget of
+/// 20 million line comparisons, give or take the last block, and keeps the moves found so far when
+/// the budget is spent.
 pub fn moved_lines(diff: &Diff) -> MovedLines {
+    search(diff, MAX_COMPARISONS)
+}
+
+/// [`moved_lines`] with its own budget of line comparisons, so that a test can spend it up.
+fn search(diff: &Diff, comparisons: usize) -> MovedLines {
     let mut deleted = Vec::new();
     let mut inserted = Vec::new();
     for (file, entry) in diff.files().iter().enumerate() {
@@ -112,7 +118,7 @@ pub fn moved_lines(diff: &Diff) -> MovedLines {
     let mut taken_inserted = vec![false; inserted.len()];
     let mut moved = MovedLines::default();
     let mut start = 0;
-    let mut budget = MAX_COMPARISONS;
+    let mut budget = comparisons;
     while start < deleted.len() && budget > 0 {
         let candidates = places
             .get(deleted[start].text)
@@ -386,13 +392,82 @@ mod tests {
         }
     }
 
+    /// Commits `before`, writes `after`, and returns the diff.
+    fn diff_of(before: &[(&str, String)], after: &[(&str, String)]) -> Diff {
+        let dir = TempDir::new();
+        let actor = Actor::human("daniel").unwrap();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor, &AllowAll).unwrap();
+        for (path, content) in before {
+            std::fs::write(dir.path().join(path), content).unwrap();
+            repository
+                .track(&[(*path).to_owned()], &actor, &AllowAll)
+                .unwrap();
+        }
+        let _ = repository.commit("before", &actor, &AllowAll).unwrap();
+        for (path, content) in after {
+            std::fs::write(dir.path().join(path), content).unwrap();
+            repository
+                .track(&[(*path).to_owned()], &actor, &AllowAll)
+                .unwrap();
+        }
+        repository
+            .diff(&actor, &AllowAll, Comparison::WithParent)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_spent_budget_keeps_the_moves_found_so_far_and_stops_in_the_same_place() {
+        let braces = "}\n".repeat(400);
+        let diff = diff_of(
+            &[("a.rs", lines(&[&BLOCK.concat(), &braces]))],
+            &[
+                ("a.rs", String::new()),
+                ("b.rs", lines(&[&BLOCK.concat(), &braces])),
+            ],
+        );
+        let full = search(&diff, MAX_COMPARISONS);
+        assert!((0..3).all(|i| full.is_moved_from(0, i)));
+        // A budget that the block spends, and no more: the later lines are not looked at.
+        let short = search(&diff, 10);
+        assert!((0..3).all(|i| short.is_moved_from(0, i)));
+        assert_eq!(short, search(&diff, 10));
+        assert_eq!(search(&diff, 0), MovedLines::default());
+    }
+
+    #[test]
+    fn places_that_are_taken_cost_budget_when_they_are_walked_again() {
+        // Fifty copies of one long line, deleted and inserted as separate runs, so that each
+        // copy is a block of one line. The 50 places of the text are walked from every start.
+        let line = "let a_long_line_with_many_letters = 1;\n";
+        let separated = |text: &str| -> String {
+            (0..50)
+                .map(|n| format!("{text}unique_separator_{n}_line\n"))
+                .collect()
+        };
+        let diff = diff_of(
+            &[("a.rs", separated(line))],
+            &[("a.rs", separated("")), ("b.rs", separated(line))],
+        );
+        let moved_with = |budget| {
+            let moved = search(&diff, budget);
+            (0..50).filter(|&i| moved.is_moved_from(0, i)).count()
+        };
+        // Without a tight budget every copy finds its place. With one that is spent after a few
+        // visits, the search stops early although the places are still free to match.
+        assert!(moved_with(MAX_COMPARISONS) > 0);
+        assert!(moved_with(60) < moved_with(MAX_COMPARISONS));
+    }
+
     #[test]
     fn thousands_of_equal_lines_without_letters_end_in_bounded_time() {
         let braces = "}\n".repeat(5000);
+        let started = std::time::Instant::now();
         let (moved, _) = moves(
             &[("a.txt", braces.clone())],
             &[("a.txt", String::new()), ("b.txt", braces)],
         );
         assert!(moved.is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
     }
 }

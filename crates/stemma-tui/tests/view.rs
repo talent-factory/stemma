@@ -431,10 +431,14 @@ fn a_moved_line_is_drawn_in_its_own_colour() {
         let area = buffer.area;
         (0..area.height)
             .find_map(|y| {
-                let row: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
-                let x = row.find(text)?;
-                // The column of the mark, one cell before the text, as characters of ASCII.
-                Some(buffer[(u16::try_from(x).unwrap() - 1, y)].fg)
+                let symbols: Vec<&str> = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
+                let row: String = symbols.concat();
+                // The column counts cells, not bytes: the borders are wider than one byte.
+                let x = row[..row.find(text)?].chars().count();
+                // The mark is the cell before the text.
+                let cell = &buffer[(u16::try_from(x).unwrap() - 1, y)];
+                assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD));
+                Some(cell.fg)
             })
             .unwrap_or_else(|| panic!("`{text}` is not on the screen"))
     };
