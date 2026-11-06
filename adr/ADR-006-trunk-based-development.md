@@ -53,4 +53,5 @@ own design supports.
   and the platform-dependent code (ADR-007) is only tested on the system of the person who works
   on it unless the author starts the workflow (STEMMA-33).
 - An automatic run for every pull request, together with required checks, needs a new
-  decision that amends this ADR.
+  decision that amends this ADR. ADR-019 proposes it, including what "`main` is always green"
+  means then.
