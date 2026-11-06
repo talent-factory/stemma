@@ -186,7 +186,7 @@ des Worktrees, und es arbeiten zwei Akteure in einer Arbeitskopie. Mit einem eig
 dem Worktree verloren: Git überträgt ein ignoriertes \type{.stemma} nicht in einen Merge,
 und \type{git worktree remove} löscht bei einem sauberen Worktree das Verzeichnis samt
 \type{.stemma} ohne \type{--force} und ohne Meldung.
-Bis Phase 3 ruft ein Akteur \type{stemma} deshalb nicht in einem Git-Worktree auf.
+Ein Akteur ruft \type{stemma} deshalb nicht in einem Git-Worktree auf.
 Die zweite Arbeitskopie von Stemma ist ein Worktree von Stemma, den \type{worktree add} anlegt
 (siehe dort); er hat ein eigenes Zustandsverzeichnis im \type{.stemma} der Wurzel und geht mit
 \type{git worktree remove} nicht verloren.

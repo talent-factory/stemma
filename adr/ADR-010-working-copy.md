@@ -455,11 +455,16 @@ art, not a template (ADR-015).
       steps (STEMMA-173, below).
 - [x] `switch` refused a working-copy commit that holds changes. It carries them to the target
       with the rewrite below, or leaves them behind with `--discard` (STEMMA-174).
-- [ ] What a rebase does with the change ID of a commit that has two parents, and what a merge
-      does when the working-copy commit has one (phase 3).
+- [x] What a rebase does with the change ID of a commit that has two parents, and what a merge
+      does when the working-copy commit has one (phase 3). Both are refused for now: `rebase`
+      refuses a merge commit in the range, because its change has no single base, and the
+      rewrite of the working copy (used by `merge`, `rebase`, and `switch` with changes) refuses
+      a working-copy commit with more than one parent. Replaying a merge commit stays open and
+      wants its own decision.
 
 - [x] Which commands take a snapshot. The commands that change something take one first:
-      `track`, `commit`, `switch`, `op restore` (ADR-013), and `purge --apply` (ADR-014);
+      `track`, `commit`, `switch`, `merge`, `rebase`, `op restore` (ADR-013), and
+      `purge --apply` (ADR-014);
       `status` takes one, as it reports the state of the files. The commands that only read take
       none, as a snapshot adds an entry and would change what they are about to show: `op log`,
       `op verify`, the plan of `purge`, and `op restore --dry-run` (STEMMA-77). The path `.` of

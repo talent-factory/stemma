@@ -636,7 +636,7 @@ Deshalb gilt die Regel: Jeder Akteur arbeitet in einer eigenen Arbeitskopie (ADR
 Zwei Akteure in einem Verzeichnis sind kein unterstützter Betrieb.
 Lange galt die Regel nur als Konvention.
 Seit Format 5 des Repositories hält der Kern sie durch, als Vorarbeit für die zweite
-Arbeitskopie in Phase 3: Die Datei \type{working-copy} nennt neben dem Commit den Eigentümer,
+Arbeitskopie von Phase 3: Die Datei \type{working-copy} nennt neben dem Commit den Eigentümer,
 und \type{init} macht seinen Akteur dazu.
 Ein Snapshot eines anderen Akteurs bricht ab, bevor er eine Datei liest.
 Erst eine ausdrückliche Übernahme (\type{--take-over}) macht den neuen Akteur zum Eigentümer,
@@ -943,7 +943,8 @@ die neuen Commits liegen ohne Zeiger im Objektspeicher.
 \item Ein unveränderter Baum
 und ein Branch, der nicht beim Elternteil des Working-Copy-Commits steht,
 lassen nur den Snapshot zurück.
-Der zweite Fall wäre einer für einen Rebase (Phase 3).
+Den zweiten Fall bringt ein \type{rebase} wieder zusammen;
+er benutzt das Umschreiben der Arbeitskopie (\in{Abschnitt}[sec:rewrite-wc]).
 \item Hat ein anderer Prozess einen Zeiger zuerst bewegt, scheitert der Commit;
 er lässt sich wiederholen.
 \item Bricht der Commit zwischen den beiden Zeigerbewegungen ab,
@@ -1701,7 +1702,7 @@ in der Sitzung mit \type{op restore 6}.
 {\bf Wie das Restore das Verzeichnis schreibt.}
 \startitemize
 \item Das Schreiben übernimmt eine eigene Schicht,
-die auch der spätere Checkout von Branches braucht (\type{checkout.rs}).
+die auch \type{switch}, \type{merge} und \type{rebase} benutzen (\type{checkout.rs}).
 Sie plant zuerst und schreibt danach.
 \item Sie fasst nur Pfade an, die der alte oder der neue Baum nennt.
 Unverfolgte Dateien, \type{.stemma} und \type{.git} lässt sie in Ruhe.
@@ -2687,7 +2688,8 @@ Das bleibt so, denn die Umstellung auf ein gehaltenes Handle wäre gross und der
 Dazu ersetzt \type{init} unter Unix ein leeres \type{.stemma},
 das ein anderer Prozess im falschen Augenblick anlegt (ADR-009).
 \item Die Regel, dass jeder Akteur in einer eigenen Arbeitskopie arbeitet,
-setzt der Kern noch nicht durch; das kommt mit der zweiten Arbeitskopie in Phase~3 (ADR-010).
+setzt der Kern seit Format 5 durch, und die zweite Arbeitskopie von Phase~3 gibt jedem Akteur
+ein eigenes Verzeichnis (ADR-010).
 \item Ein Repository ohne die Datei \type{working-copy} lässt sich nicht mehr reparieren,
 eine verfolgte Spezialdatei hält jeden Snapshot an,
 und ein verfolgtes Verzeichnis, das zum Link wird, verliert seine Dateien ohne Warnung.

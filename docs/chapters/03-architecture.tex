@@ -6,8 +6,8 @@ Es beschreibt die Entscheidungen aus ADR-002 und den Vorschlag aus ADR-003.
 \section{Schichtenmodell}
 
 Der Kern enthält die gesamte Logik:
-Objektspeicher, Referenzen, Operation Log, Arbeitskopie, Autorisierung und Diff,
-später auch Merge.
+Objektspeicher, Referenzen, Operation Log, Arbeitskopie, Autorisierung, Diff
+und Merge.
 Er liegt in einer eigenen Bibliothek (\type{stemma-core}).
 Alle Oberflächen rufen denselben Kern auf (\in{Abbildung}[fig:layers]).
 In Phase 1 gibt es eine Oberfläche, die Kommandozeile (\type{stemma-cli})
@@ -124,9 +124,9 @@ Purge \stopxcell
 \stopxrow
 \startxrow
 \startxcell 3 \stopxcell
-\startxcell Branches, \type{checkout}, \type{log}, Merge \stopxcell
+\startxcell Branches, \type{switch}, \type{log}, Merge, Rebase, zweite Arbeitskopie \stopxcell
 \startxcell Parallele Arbeit lokal \stopxcell
-\startxcell offen \stopxcell
+\startxcell abgeschlossen \stopxcell
 \stopxrow
 \startxrow
 \startxcell 4 \stopxcell

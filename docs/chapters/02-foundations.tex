@@ -59,7 +59,7 @@ So geht der Zustand eines Agenten nicht verloren, auch wenn er nichts bestätigt
 Der Befehl \type{commit} gibt dem Working-Copy-Commit eine Nachricht,
 setzt den Branch darauf und beginnt einen neuen (\in{Abbildung}[fig:git-vs-stemma]).
 Die Change-ID überdauert dabei jeden neuen Snapshot derselben Änderung;
-ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue (Merge ab Phase 3).
+ein Merge-Commit führt zwei Änderungen zusammen und bekommt eine neue (Merge seit Phase 3).
 
 \startplacefigure[title={Arbeitsverzeichnis, Index und Commit in Git und in Stemma},
     reference=fig:git-vs-stemma,location=here]
@@ -108,7 +108,7 @@ und muss es erneut versuchen.
 Das Projekt nutzt andere Systeme als Ideengeber; Text und Code entstehen neu.
 Von Jujutsu übernimmt Stemma die stabilen Change-IDs, das Operation Log
 und die Arbeitskopie als Commit \cite[jujutsu].
-Konflikte als Daten erlaubt das Modell; entschieden wird darüber in Phase 3.
+Konflikte als Daten erlaubt das Modell, und Phase 3 hat sich dafür entschieden.
 Jujutsu nutzt standardmässig ein Git-Repository als Speicher, Stemma hat ein eigenes Format.
 Pijul baut auf Patches statt auf gespeicherten Ständen auf
 und zeigt damit eine andere Grundannahme \cite[pijul].
