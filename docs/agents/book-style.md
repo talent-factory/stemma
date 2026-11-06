@@ -38,6 +38,8 @@ why a guarantee holds, including after a crash.
 
 A phase chapter keeps the order `Ziel`, `Umfang`, the sections of what is implemented, and
 `Offene Fragen`. A phase that is not started yet has only `Ziel`, `Umfang`, and `Offene Fragen`.
+One exception: a design that an ADR proposes and an issue asks the book to describe gets a section
+before `Offene Fragen`, marked as a proposal in its first paragraph.
 
 A section that describes an implemented feature follows this pattern:
 
@@ -144,6 +146,11 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | atomares Ersetzen | atomares Schreiben | Temporary file, flush, rename or link, flush the directory (ADR-007) |
 | verfolgt, unverfolgt | getrackt | A file in the tree of the Working-Copy-Commit, or not |
 | Ausschlussdatei | Ignore-Datei | `.stemmaignore` (ADR-012) |
+| Merge-Gate | Merge-Queue | The rule that decides whether a change lands on `main` (ADR-019) |
+| Prüfergebnis | Build-Status | A statement about one commit and the tip of `main` it was tested on (ADR-019) |
+| sauberer Merge | trivialer Merge | A tree merge that returns one tree |
+| semantischer Konflikt | logischer Konflikt | Two changes that merge cleanly and break each other |
+| Spitze | Tip, Kopf | The commit that a branch points to |
 | Sperre der Referenzen | Lock | `refs.lock`: one writer at a time (ADR-008) |
 | verwaiste Sperre | tote Sperre, Stale Lock | `refs.lock` of a process that ended; the next writer of the host takes it over (ADR-008) |
 | Write-Ahead-Regel | Write-Ahead-Log (for the Operation Log) | The entry is flushed before its pointer moves (ADR-011) |
