@@ -740,8 +740,8 @@ Der Eintrag \type{merge} nennt beide Bewegungen, und \type{op restore} macht den
 einem Aufruf rückgängig.
 \in{Abbildung}[fig:merge-pointers] zeigt den Verlauf vor und nach dem Merge
 und die Zeiger nach jedem Schritt, mit den Stellen, an denen ein Absturz möglich ist.
-Der Eintrag steht vor jeder Bewegung, und der Branch bewegt sich vor dem Working-Copy-Commit;
-so bleibt $M$ nach jedem Absturz erreichbar.
+Ab dem Eintrag bleibt $M$ nach jedem Absturz erreichbar:
+Der Eintrag steht vor jeder Bewegung, und der Branch bewegt sich vor dem Working-Copy-Commit.
 
 \startplacefigure[title={Verlauf und Zeiger beim Merge von \type{feature} in \type{main}, mit den
     Zuständen nach einem Absturz},

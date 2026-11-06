@@ -11,15 +11,15 @@
 <text x="20" y="24" font-size="13" font-weight="bold" fill="#0F172A">Im Commit: die Summe von Trees</text>
 <rect x="20" y="40" width="108" height="70" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="28" y="58" font-size="12" font-weight="bold" fill="#0F172A">+ Seite 1</text>
-<text x="28" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">ch:7a41…</text>
+<text x="28" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:7a41…</text>
 <text x="28" y="96" font-size="12" font-family="Courier, monospace" fill="#0F172A">timeout=45</text>
 <rect x="140" y="40" width="108" height="70" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="148" y="58" font-size="12" font-weight="bold" fill="#0F172A">− Basis 1</text>
-<text x="148" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">ch:1d09…</text>
+<text x="148" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:1d09…</text>
 <text x="148" y="96" font-size="12" font-family="Courier, monospace" fill="#0F172A">timeout=30</text>
 <rect x="260" y="40" width="108" height="70" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="268" y="58" font-size="12" font-weight="bold" fill="#0F172A">+ Seite 2</text>
-<text x="268" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">ch:c9d0…</text>
+<text x="268" y="76" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:c9d0…</text>
 <text x="268" y="96" font-size="12" font-family="Courier, monospace" fill="#0F172A">timeout=60</text>
 <text x="20" y="134" font-size="12" fill="#64748B">Seite 1 − Basis 1 + Seite 2 hebt sich nicht auf.</text>
 <line x1="20" y1="168" x2="640" y2="168" stroke="#64748B" stroke-width="1.5" stroke-dasharray="6 4"/>
