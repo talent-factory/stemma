@@ -250,7 +250,9 @@ fn purge_apply_refused_by_the_owner_points_to_status_take_over() {
 
     assert_eq!(result.code, 1, "{}", result.stderr);
     assert!(
-        result.stderr.contains("run `status --take-over` first"),
+        result
+            .stderr
+            .contains("run `status --take-over` in that working copy first"),
         "{}",
         result.stderr
     );

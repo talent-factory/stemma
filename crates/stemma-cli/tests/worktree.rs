@@ -2106,9 +2106,13 @@ fn remove_refused_by_the_owner_points_to_status_take_over() {
 
     assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(
-        refused.stderr.contains("run `status --take-over` first"),
+        refused
+            .stderr
+            .contains("run `status --take-over` in that working copy first"),
         "{}",
         refused.stderr
     );
     assert!(!refused.stderr.contains("again"), "{}", refused.stderr);
+    // The refusal removes nothing.
+    assert!(sandbox.at("linked").join(".stemma").is_file());
 }

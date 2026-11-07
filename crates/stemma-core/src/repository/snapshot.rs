@@ -775,8 +775,8 @@ impl fmt::Display for SnapshotError {
                     ),
                     _ if *via_status => write!(
                         f,
-                        "this command has no `--take-over`, so run `status --take-over` first to \
-                         make `{actor}` its owner"
+                        "this command has no `--take-over`, so run `status --take-over` in that \
+                         working copy first to make `{actor}` its owner"
                     ),
                     _ => write!(
                         f,
@@ -903,6 +903,46 @@ mod tests {
 
     fn actor() -> Actor {
         Actor::human("daniel").unwrap()
+    }
+
+    fn refusal(actor: Actor, via_status: bool) -> String {
+        SnapshotError::NotOwner {
+            owner: Box::new(Actor::human("anna").unwrap()),
+            actor: Box::new(actor),
+            via_status,
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn the_refusal_of_the_owner_advises_the_option_or_the_detour_but_never_to_an_agent() {
+        let human = Actor::human("bob").unwrap();
+        let agent = Actor::agent("bot", "m", "s", "daniel").unwrap();
+
+        assert!(refusal(human.clone(), false).contains("again with `--take-over`"));
+        let detour = refusal(human.clone(), false);
+        assert!(!detour.contains("status --take-over"), "{detour}");
+        let detour = SnapshotError::NotOwner {
+            owner: Box::new(Actor::human("anna").unwrap()),
+            actor: Box::new(human),
+            via_status: false,
+        }
+        .without_take_over_option()
+        .to_string();
+        assert!(
+            detour.contains("`status --take-over` in that working copy"),
+            "{detour}"
+        );
+        assert!(!detour.contains("again"), "{detour}");
+        for via_status in [false, true] {
+            let text = refusal(agent.clone(), via_status);
+            assert!(text.contains("stop and ask a human"), "{text}");
+            assert!(!text.contains("--take-over"), "{text}");
+        }
+        assert!(matches!(
+            SnapshotError::AgentTakeOver.without_take_over_option(),
+            SnapshotError::AgentTakeOver
+        ));
     }
 
     fn repository(dir: &TempDir) -> Repository {
