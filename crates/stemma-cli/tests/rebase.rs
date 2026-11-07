@@ -163,7 +163,7 @@ fn an_unknown_target_a_detached_head_and_a_missing_actor_are_refused() {
     let unknown = run(dir.path(), &["rebase", "nope", "--actor", ACTOR]);
     assert_eq!(unknown.code, 1);
     assert!(
-        unknown.stderr.contains("no branch `nope`"),
+        unknown.stderr.contains("neither a branch nor a tag `nope`"),
         "{}",
         unknown.stderr
     );
@@ -200,4 +200,70 @@ fn the_target_is_required_and_a_commit_id_is_a_valid_target() {
     // The oldest commit lies below the branch, which has it already.
     let result = ok(dir.path(), &["rebase", &id, "--actor", ACTOR]);
     assert_eq!(result.stdout, format!("Already up to date with {id}\n"));
+}
+
+/// `diverged` with the tag `base` on `main` (the commit that `main` adds) and the tag `main` on
+/// the first commit, so that the name `main` is a branch and a tag.
+fn tagged() -> Dir {
+    let dir = diverged();
+    let path = dir.path();
+    ok(path, &["switch", "--detach", "main", "--actor", ACTOR]);
+    ok(path, &["tag", "base", "--actor", ACTOR]);
+    ok(path, &["switch", "feature", "--actor", ACTOR]);
+    ok(path, &["tag", "main", "--actor", ACTOR]);
+    dir
+}
+
+#[test]
+fn the_target_takes_a_tag_and_the_qualified_forms() {
+    let dir = tagged();
+
+    let result = ok(dir.path(), &["rebase", "base", "--actor", ACTOR]);
+
+    assert!(
+        result
+            .stdout
+            .starts_with("Rebased feature onto base as entry"),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(read(dir.path(), "c.txt"), "c\n");
+
+    let dir = tagged();
+    let result = ok(dir.path(), &["rebase", "heads/main", "--actor", ACTOR]);
+    assert!(
+        result
+            .stdout
+            .starts_with("Rebased feature onto heads/main as entry"),
+        "{}",
+        result.stdout
+    );
+    assert_eq!(read(dir.path(), "c.txt"), "c\n");
+
+    let dir = tagged();
+    let result = ok(dir.path(), &["rebase", "tags/base", "--actor", ACTOR]);
+    assert!(
+        result
+            .stdout
+            .starts_with("Rebased feature onto tags/base as entry"),
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_target_that_is_a_branch_and_a_tag_is_refused() {
+    let dir = tagged();
+    let before = newest(dir.path());
+
+    let result = run(dir.path(), &["rebase", "main", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("heads/main") && result.stderr.contains("tags/main"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+    assert!(!dir.path().join("c.txt").exists());
 }

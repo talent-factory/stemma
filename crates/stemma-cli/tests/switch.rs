@@ -557,26 +557,60 @@ fn a_new_branch_or_tag_cannot_start_with_a_reserved_prefix() {
 }
 
 #[test]
-fn the_start_of_a_new_branch_and_the_target_of_a_rebase_do_not_take_a_qualified_form_yet() {
+fn the_start_of_a_new_branch_takes_a_tag_and_the_qualified_forms() {
+    let dir = branches_and_tags();
+
+    ok(
+        dir.path(),
+        &["switch", "-c", "from-tag", "v1", "--actor", ACTOR],
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "one");
+    ok(
+        dir.path(),
+        &[
+            "switch",
+            "-c",
+            "from-qualified-tag",
+            "tags/main",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "one");
+    ok(
+        dir.path(),
+        &[
+            "switch",
+            "-c",
+            "from-branch",
+            "heads/main",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "two");
+}
+
+#[test]
+fn the_start_of_a_new_branch_refuses_a_name_that_is_a_branch_and_a_tag() {
     let dir = branches_and_tags();
     let before = newest(dir.path());
 
-    for args in [
-        vec!["switch", "-c", "x", "tags/v1"],
-        vec!["switch", "-c", "x", "heads/main"],
-        vec!["rebase", "tags/v1"],
-        vec!["rebase", "heads/main"],
-    ] {
-        let mut args = args;
-        args.extend(["--actor", ACTOR]);
-        let result = run(dir.path(), &args);
-        assert_eq!(result.code, 2, "{args:?}: {}", result.stderr);
-        assert!(
-            result.stderr.contains("qualified form"),
-            "{args:?}: {}",
-            result.stderr
-        );
-    }
+    let result = run(dir.path(), &["switch", "-c", "x", "main", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("heads/main") && result.stderr.contains("tags/main"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+
+    let missing = run(
+        dir.path(),
+        &["switch", "-c", "x", "tags/nowhere", "--actor", ACTOR],
+    );
+    assert_eq!(missing.code, 1, "{}", missing.stderr);
     assert_eq!(newest(dir.path()), before, "nothing was written");
 }
 

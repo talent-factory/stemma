@@ -581,11 +581,12 @@ struct SwitchArgs {
     /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch,
     /// the tag, or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. With
     /// `--detach`, a name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`
-    #[arg(value_name = "NAME", value_parser = parse_target)]
+    #[arg(value_name = "NAME", value_parser = parse_revision)]
     target: Revision,
 
-    /// With `-c`: where the new branch starts, a branch or a commit (`b3:` and 64 hexadecimal
-    /// digits); by default the commit that HEAD leads to
+    /// With `-c`: where the new branch starts, a branch, a tag, or a commit (`b3:` and 64
+    /// hexadecimal digits); by default the commit that HEAD leads to. A name that is a branch and
+    /// a tag is refused: write `heads/NAME` or `tags/NAME`
     #[arg(value_name = "START", value_parser = parse_revision, requires = "create")]
     start: Option<Revision>,
 
@@ -630,8 +631,8 @@ struct SwitchArgs {
 
 #[derive(Debug, Args)]
 struct RebaseArgs {
-    /// The branch or the commit (`b3:` and 64 hexadecimal digits) to replay the current branch on; a
-    /// qualified form (`heads/`, `tags/`) is not accepted yet
+    /// The branch, the tag, or the commit (`b3:` and 64 hexadecimal digits) to replay the current
+    /// branch on. A name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`
     #[arg(value_name = "TARGET", value_parser = parse_revision)]
     target: Revision,
 
@@ -688,32 +689,10 @@ struct MergeArgs {
     take_over: bool,
 }
 
-/// Reads a branch name, or a commit by its ID if the text starts with `b3:` (a branch name cannot
-/// hold a colon). A qualified form (`heads/NAME`, `tags/NAME`) is refused: the places that use this
-/// parser do not look up a tag yet.
+/// Reads a revision argument: a commit ID, `heads/NAME`, `tags/NAME`, or a name that the core
+/// looks up as a branch and as a tag (ADR-008). `switch` reads its target with the same rule, and
+/// decides afterwards which forms its mode accepts.
 fn parse_revision(text: &str) -> Result<Revision, String> {
-    if text.starts_with(BRANCH_PREFIX) || text.starts_with(TAG_PREFIX) {
-        return Err(format!(
-            "`{text}` is a qualified form; this argument takes a branch name or a commit ID, \
-             and not yet a tag"
-        ));
-    }
-    if text.starts_with("b3:") {
-        text.parse::<ObjectId>()
-            .map(Revision::Commit)
-            .map_err(|error| format!("invalid commit ID: {error}"))
-    } else {
-        text.parse::<BranchName>()
-            .map(Revision::Branch)
-            .map_err(|error| error.to_string())
-    }
-}
-
-/// Reads the target of `switch`: a commit ID, `heads/NAME`, `tags/NAME`, or a name that the core
-/// looks up as a branch and as a tag (ADR-008). Without `--detach`, `NAME` is a plain name or
-/// `heads/NAME`; `tags/NAME` and a commit ID are usage errors. With `-c`, a qualified form is a
-/// reserved name.
-fn parse_target(text: &str) -> Result<Revision, String> {
     text.parse::<Revision>().map_err(|error| error.to_string())
 }
 
@@ -2017,7 +1996,7 @@ fn rebase(args: RebaseArgs, out: &mut dyn Write) -> Result<(), CliError> {
     match repository.rebase(&args.target, &actor, &AllowAll) {
         Ok(Rebased::UpToDate) => write_rebase(
             out,
-            &format!("Already up to date with {}\n", args.target),
+            &format!("Already up to date with {}\n", qualified(&args.target)),
             None,
             None,
         ),
@@ -2097,7 +2076,8 @@ fn rebased_text(target: &Revision, done: &Rebased) -> String {
     let mut text = saved_text(snapshot.as_deref());
     let count = replayed.len();
     text.push_str(&format!(
-        "Rebased {branch} onto {target} as entry {}: {count} commit{} replayed\n",
+        "Rebased {branch} onto {} as entry {}: {count} commit{} replayed\n",
+        qualified(target),
         entry.number(),
         if count == 1 { "" } else { "s" }
     ));
