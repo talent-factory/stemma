@@ -181,7 +181,7 @@ Kette und kostet mit \type{-n} höchstens so viele Lesevorgänge, wie \type{-n} 
 
 Ein Drei-Wege-Merge misst die Änderungen beider Seiten an einem Bezug.
 Der Bezug ist ein gemeinsamer Vorfahre der beiden Commits, und zwar ein bester:
-Ein früherer Vorfahre würde Änderungen, die beide Seiten schon gemeinsam haben,
+Ein früherer Vorfahr würde Änderungen, die beide Seiten schon gemeinsam haben,
 noch einmal als Änderung zählen.
 Die Funktion \type{merge_bases} (\type{merge_base.rs}) liefert alle besten gemeinsamen Vorfahren
 zweier Commits.
@@ -190,17 +190,17 @@ Sie liest nur und schreibt nichts.
 {\bf Definition.} Ein Commit gilt als Vorfahr von sich selbst.
 Sei $A(x)$ die Menge der Vorfahren von $x$.
 Die gemeinsamen Vorfahren von $a$ und $b$ sind $A(a) \cap A(b)$.
-Eine Merge-Basis ist ein gemeinsamer Vorfahre $c$, der kein echter Vorfahre eines anderen
+Eine Merge-Basis ist ein gemeinsamer Vorfahr, der kein echter Vorfahr eines anderen
 gemeinsamen Vorfahren ist (ADR-017; Git nennt ihn \quotation{best common ancestor}).
 Bei einem linearen Verlauf und bei einer einfachen Gabelung gibt es genau eine Merge-Basis.
-Ist $a$ ein Vorfahre von $b$, ist $a$ selbst die einzige Merge-Basis.
+Ist $a$ ein Vorfahr von $b$, ist $a$ selbst die einzige Merge-Basis.
 Haben die Verläufe keinen gemeinsamen Vorfahren, ist das Ergebnis leer.
-Nach einem Criss-Cross-Merge gibt es mehrere, und keine ist besser als eine andere.
+Nach einem Criss-Cross-Merge kann es mehrere geben, und keine ist besser als eine andere.
 Die Funktion gibt alle zurück, nach ID sortiert;
 wie der Merge sie zu einem Bezug zusammenfasst, steht in \in{Abschnitt}[sec:tree-merge].
 
 {\bf Verfahren.} Der Kern läuft von jeder Spitze durch alle Elternkanten und sammelt die
-Vorfahren in einer Hashtabelle.
+Vorfahren in einer Hashtabelle (Abschnitte 4.2 und 3.4 bei \cite[sedgewick2011algorithms]).
 Die Schnittmenge beider Mengen sind die Kandidaten.
 Danach läuft er ein drittes Mal, von den Eltern aller Kandidaten aus.
 Diese Menge enthält jeden Commit, der echter Vorfahr eines Kandidaten ist.
@@ -209,20 +209,19 @@ Ein Speicher der Eltern sorgt dafür, dass jeder Commit nur einmal gelesen wird.
 Er kann nicht veralten, weil ein Commit nach seinem Inhalt benannt ist und sich nie ändert.
 
 {\bf Invariante.} Kein Commit des Ergebnisses ist Vorfahr eines anderen,
-und jeder gemeinsame Vorfahre ist entweder im Ergebnis oder Vorfahr eines Commits darin.
+und jeder gemeinsame Vorfahr ist entweder im Ergebnis oder Vorfahr eines Commits darin.
 Das Ergebnis hängt nur vom Graphen ab, nicht von der Reihenfolge der Argumente:
 \type{merge_bases(a, b)} und \type{merge_bases(b, a)} liefern dieselbe Liste.
 
 {\bf Warum nicht das Datum.} Das Datum eines Commits nennt sein Autor, und es kann falsch sein
 (ADR-005).
-Ein Verfahren, das den Verlauf nach dem Datum durchläuft und beim ersten gemeinsamen Commit hält,
-könnte einen Commit vor seinem Kind besuchen.
-Es würde dann einen Vorfahren als Basis wählen, der nicht der beste ist,
-oder eine Basis übersehen.
+Ein Verfahren, das den Verlauf nur nach dem Datum durchläuft und beim ersten gemeinsamen Commit
+hält, besucht bei einem falschen Datum einen Commit vor seinem Kind.
+Es kann dann einen Vorfahren als Basis wählen, der nicht der beste ist, oder eine Basis übersehen.
 Die Funktion benutzt deshalb kein Datum und keine Generationsnummer;
 das Ergebnis ist bei jeder Uhr dasselbe.
-Git sortiert seine Kandidaten dagegen nach dem Datum und wählt ohne \type{--all} eine
-unbestimmte Basis;
+Git ordnet seine Suche nach Generationsnummer und bei Gleichstand nach Datum,
+sortiert das Ergebnis nach Datum und wählt ohne \type{--all} eine unbestimmte Basis;
 \type{docs/research/merge-base-selection.md} vergleicht Git und Jujutsu mit diesem Weg.
 
 {\bf Kosten.} Seien $V$ die Zahl der Commits, die von einer der beiden Spitzen erreichbar sind,
@@ -240,9 +239,12 @@ Vorfahren.
 Der dritte Durchlauf beginnt bei den Eltern der Kandidaten und enthält deshalb genau die echten
 Vorfahren der Kandidaten; der Kandidat selbst ist nur dann darin, wenn ein anderer Kandidat ihn
 als echten Vorfahren hat, denn der Graph hat keinen Kreis
-(\in{Abschnitt}[sec:object-guarantees]).
+(\in{Abschnitt}[sec:object-guarantees], bis auf Hash-Kollision).
 Wer nicht ausscheidet, ist also kein echter Vorfahr eines anderen gemeinsamen Vorfahren.
 Das ist die Definition.
+Die Aussage der Invariante über die übrigen folgt daraus, dass \quotation{echter Vorfahr} eine
+strikte Halbordnung auf einer endlichen Menge ist:
+Jeder Kandidat liegt unter einem maximalen, und die maximalen sind das Ergebnis.
 Weil die Funktion nichts schreibt, gibt es keinen Absturzpunkt:
 Ein Abbruch an beliebiger Stelle ändert kein Repository.
 Fehlt dem Speicher ein Commit, den ein Durchlauf erreicht, oder ist einer beschädigt,
@@ -256,9 +258,10 @@ Sie findet die Merge-Basen (\in{Abschnitt}[sec:merge-base]), bildet aus den Tree
 und führt diese Pfad für Pfad zusammen.
 Das Ergebnis ist wieder eine Summe von Trees: ein einzelner Tree, wenn nichts in Konflikt steht,
 sonst die Trees eines Commits mit Konflikt (Summe von Trees, ADR-005).
-Der Ansatz ist der Drei-Wege-Merge, den Khanna, Kunal und Pierce \cite[khanna2007diff3]
-als Verfahren von \type{diff3} beschreiben und formal untersuchen:
+Für eine Basis ist der Ansatz der Drei-Wege-Merge, den Khanna, Kunal und Pierce
+\cite[khanna2007diff3] als Verfahren von \type{diff3} beschreiben und formal untersuchen:
 Er misst beide Seiten an der Basis; ist eine Seite gleich der Basis, ist das Ergebnis die andere.
+Für mehrere Basen dient die flache Summe des nächsten Unterabschnitts.
 Die Funktion schreibt Blobs und Trees in den Speicher, aber weder einen Commit noch einen Zeiger.
 Wer sie aufruft, entscheidet also allein, was aus dem Ergebnis wird.
 Ein Absturz mitten im Merge lässt höchstens unerreichbare Objekte zurück,
@@ -335,9 +338,10 @@ mit der ID eines Trees, der nie einen Konflikt hatte.
 Elternkanten.
 Die Suche nach den Basen kostet $O(V+E)$ (\in{Abschnitt}[sec:merge-base]).
 Bei $b > 1$ kommt die Summe der Basen hinzu: Für jede weitere Basis sucht der Kern die besten
-gemeinsamen Vorfahren mit jeder früheren und prüft die Kandidaten paarweise,
-und er bildet daraus dieselbe Summe noch einmal.
-Jeder dieser Schritte ruft \type{merge_bases} auf und kostet $O(V+E)$.
+gemeinsamen Vorfahren mit jeder früheren und prüft die Kandidaten paarweise;
+aus diesen Vorfahren bildet er dieselbe Summe rekursiv noch einmal.
+Jeder Schritt ruft \type{merge_bases} auf und kostet $O(V+E)$; die Paare allein machen bis zu
+quadratisch viele Aufrufe in der Zahl der Kandidaten.
 Im schlimmsten Fall wächst die Zahl der Aufrufe mit dem Verlauf.
 Der Merge der Trees danach hängt nicht vom Verlauf ab: Er vergleicht Einträge, die sich in der
 Summe unterscheiden, und liest einen Teilbaum nur, wenn seine ID sich nicht aufhebt.
@@ -387,7 +391,7 @@ Ein Fuzz-Ziel (\type{merge_lines}) prüft die Regeln auf beliebigen Eingaben.
 
 Der Merge liest je Term einen Diff gegen die Basis, der $O((N+M)\,D)$ kostet
 (\in{Abschnitt}[sec:myers]), und geht dann einmal linear durch die Zeilen;
-das Aufheben jedes Zwischenstücks ist quadratisch in $k$.
+das Aufheben jedes Zwischenstücks ist quadratisch in der Zahl $t$ der Terme.
 Die Kosten des Tree-Merges und der Suche nach den Merge-Basen stehen in
 \in{Abschnitt}[sec:tree-merge].
 
@@ -477,8 +481,9 @@ Zwei Agenten im selben Verzeichnis überschreiben die Dateien des anderen,
 und der nächste Snapshot schreibt beide Änderungen dem Akteur zu, der ihn auslöst.
 Mit einem Worktree je Agent hat jeder Agent einen eigenen Working-Copy-Commit und einen eigenen
 Eigentümer, und die Herkunft jeder Änderung bleibt am Commit erkennbar (ADR-010).
-Die Agenten teilen sich nur das, was unveränderlich ist, nämlich die Objekte, und die Branches,
-die ein Befehl atomar bewegt.
+Die Agenten teilen sich die Objekte, die Branches und das Operation Log;
+HEAD und Working-Copy-Commit hat jeder Worktree für sich (ADR-009).
+Einen Branch bewegt ein Befehl nur unter der Sperre der Referenzen.
 
 Das Layout (ADR-009) legt neben die Dateien des Repositories der Wurzel ein Zustandsverzeichnis
 je Worktree und eine Zeigerdatei im Worktree selbst:
@@ -632,10 +637,12 @@ wieder eine Summe zurück. Diese Umwandlung ist die einzige Stelle, die Konflikt
 
 Für die Arbeit mit Agenten ist das der Unterschied zu einem Merge, der das Arbeitsverzeichnis
 halb geschrieben zurücklässt.
-Ein Agent, der einen Konflikt nicht liest, übernimmt dort keine Markierungen als Inhalt:
 Der Konflikt ist Daten des Commits, \type{status} und \type{log} nennen ihn,
 und kein Zustand \quotation{Merge läuft} blockiert den nächsten Befehl.
 Ein zweiter Agent, der denselben Commit liest, sieht denselben Konflikt.
+Eine Datei, die ein Agent unverändert lässt, löst den Konflikt nicht ungewollt auf:
+Der Snapshot behält ihn, solange der Text der Markierungen gleich bleibt.
+Ein halb bearbeiteter Text gilt dagegen als Lösung.
 
 {\bf Definition.} Ein Pfad ist {\em im Konflikt}, wenn die Werte seines Namens in den Termen der
 vereinfachten Summe sich nicht aufheben und nicht alle Verzeichnisse sind. Verzeichnisse betritt
@@ -822,12 +829,14 @@ Es gibt deshalb weder \type{--continue} noch \type{--abort}:
 Wer das Ergebnis nicht will, setzt es mit \type{op restore} zurück.
 Das genügt, weil der Eintrag alle Bewegungen enthält, den Branch und den Working-Copy-Commit.
 
-Das Problem der Agenten ist hier die Zahl der Rebases:
-Viele Agenten spielen ihre Branches nacheinander auf einen \type{main} auf, der sich bewegt.
-Ein Befehl, der nach einem Konflikt auf \type{--continue} wartet, lässt solche Läufe stehen,
-und ein Agent muss den Zustand erraten.
-Hier endet jeder Aufruf in einem Zustand, den der Verlauf beschreibt,
-die Change-ID führt jede Änderung durch alle Aufspielungen,
+Für die Arbeit mit Agenten gilt eine Annahme: Viele Agenten spielen ihre Branches nacheinander
+auf einen \type{main} auf, der sich bewegt.
+Ein Befehl, der nach einem Konflikt auf \type{--continue} wartet, hinterlässt dann Läufe,
+deren Zustand ein Agent erraten muss.
+Hier ist ein Konflikt kein Halt: Der Aufruf läuft durch, und der Verlauf beschreibt das Ergebnis.
+Bricht ein Aufruf nach dem Eintrag ab, beendet derselbe Aufruf mit demselben Ziel den Lauf;
+ein anderes Ziel lehnt der Befehl ab.
+Die Change-ID führt jede Änderung durch alle Aufspielungen,
 und \type{op restore} nimmt einen ungewollten Lauf zurück.
 
 Die Reihenfolge ist die von ADR-013: Snapshot, Plan der Dateien, Eintrag, Dateien, Zeiger.
@@ -849,13 +858,15 @@ $k$ die Zahl der Commits im Bereich und $C$ die Kosten eines Tree-Merges mit dre
 (\in{Abschnitt}[sec:tree-merge]).
 Ein Aufruf von \type{merge_bases} kostet $O(V+E)$ (\in{Abschnitt}[sec:merge-base]),
 und der Bereich entsteht aus einer Kette von $k$ einzelnen Elternkanten.
-Jeder Commit des Bereichs ist ein eigener Merge, und der Baum des neuen Elternteils liegt dann
-schon im Speicher.
-Der Befehl kostet also $O(V+E+k\,C)$ und schreibt $O(k)$ neue Commits.
-Ein Konflikt vergrössert $M$ nicht, denn er bleibt Daten des Commits
-und hält das Aufspielen nicht an.
-Ein Branch mit vielen Commits ist teurer als ein Merge, der nur die beiden Spitzen vergleicht,
-weil dieser einen Tree-Merge macht und jener $k$.
+Jeder Commit des Bereichs ist ein eigener Merge, und der neue Elternteil ist der Commit,
+den der vorige Schritt eben berechnet hat.
+Der Befehl kostet also $O(V+E+k\,C)$ und schreibt $O(k)$ neue Commits;
+Snapshot, Plan der Dateien und Eintrag hängen vom Arbeitsverzeichnis ab, nicht vom Verlauf,
+und stehen nicht in der Summe.
+Ein Konflikt hält das Aufspielen nicht an, trägt sich aber in die folgenden Commits fort;
+dort sind $C$ die Kosten des Merges einer Summe mit fünf Termen statt drei.
+Bei einer Merge-Basis ist das Neu-Aufspielen eines Branches mit vielen Commits teurer als
+ein Merge der beiden Spitzen, weil dieser einen Tree-Merge macht und jenes $k$.
 
 \startinfobox
 {\bf Grenzfälle des Aufspielens.}
