@@ -334,8 +334,10 @@ them.
       of a blob that was never stored. A builder of trees from the index has to call it first. The
       check reads every blob completely; a lookup of the kind from the object header alone, or a
       read that returns the body together with the typed ID, would avoid that at the price of a
-      weaker check or a second API. The same kind of check is still needed for what `Tree::parse`
-      and `Commit::parse` return: nothing calls `resolve_*` on those IDs yet.
+      weaker check or a second API. The same check exists for what `Tree::parse` and `Commit::parse`
+      return: `Tree::verify` and `Commit::verify` confirm the kind of every tree entry, of the
+      tree of a commit, and of every parent with `resolve_*`. They are shallow, as the check of the
+      index is, and a caller has to use them where it relies on a kind.
 - [x] Validate `Actor` in its own type, so that other consumers, such as the authorization
       hook, never see an actor that a commit would reject. Done: `Actor` has private fields and
       is built by `Actor::human` and `Actor::agent`, which check every field and return an
