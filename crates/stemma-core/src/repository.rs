@@ -337,13 +337,12 @@ impl Repository {
     ///
     /// Returns [`InitError::ReservedName`] if the initial branch starts with `heads/` or `tags/`
     /// (before the authorizer is asked), [`InitError::Denied`] if the authorizer refuses,
-    /// [`InitError::AlreadyExists`] if
-    /// `.stemma` exists in `path` (nothing is changed), [`InitError::Io`] if the storage fails
-    /// (the temporary directory is removed), [`InitError::Log`] if the first entry could not be
-    /// written (among others an actor that is too long for an entry), [`InitError::Leftover`] if a
-    /// failure is followed by one to remove the temporary directory, and [`InitError::NotDurable`]
-    /// if the repository is complete but the final flush failed. After `NotDurable`,
-    /// [`Repository::open`] works.
+    /// [`InitError::AlreadyExists`] if `.stemma` exists in `path` (nothing is changed),
+    /// [`InitError::Io`] if the storage fails (the temporary directory is removed),
+    /// [`InitError::Log`] if the first entry could not be written (among others an actor that is
+    /// too long for an entry), [`InitError::Leftover`] if a failure is followed by one to remove
+    /// the temporary directory, and [`InitError::NotDurable`] if the repository is complete but
+    /// the final flush failed. After `NotDurable`, [`Repository::open`] works.
     pub fn init(
         path: impl AsRef<Path>,
         options: &InitOptions,
@@ -2113,7 +2112,8 @@ impl Error for InitError {
             // first link that it does not print yet.
             Self::Leftover { error, .. } => error.source(),
             Self::Denied { .. } | Self::AlreadyExists { .. } => None,
-            Self::ReservedName(error) => Some(error),
+            // The message is that of the inner error already (`Display`), so it is no cause.
+            Self::ReservedName(error) => error.source(),
         }
     }
 }
@@ -2771,6 +2771,8 @@ mod tests {
                 "{error}"
             );
             assert!(names(dir.path()).is_empty(), "{name}");
+            // The message names the prefix already, so the error has no cause of its own.
+            assert!(Error::source(&error).is_none(), "{name}");
         }
     }
 

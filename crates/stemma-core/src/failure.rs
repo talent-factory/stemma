@@ -603,6 +603,7 @@ mod tests {
     use super::*;
     use crate::object::{Kind, ObjectId};
     use crate::refs::LockHolder;
+    use crate::repository::ReservedPrefix;
 
     fn path() -> PathBuf {
         PathBuf::from(".stemma/x")
@@ -826,6 +827,11 @@ mod tests {
             InitError::AlreadyExists { path: path() }.kind(),
             FailureKind::Other
         );
+        let reserved = ReservedPrefix {
+            name: "heads/x".to_owned(),
+            prefix: "heads/",
+        };
+        assert_eq!(InitError::ReservedName(reserved).kind(), FailureKind::Other);
     }
 
     /// These stay with the other failures because the code cannot tell a wrong argument from

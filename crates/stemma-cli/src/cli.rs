@@ -2391,7 +2391,8 @@ fn purge_text(plan: &PurgePlan, move_tags: bool) -> String {
         "--apply"
     };
     format!(
-        "Would purge blob {}; nothing is written\n{}Run it with {options}; a purge cannot be undone\n",
+        "Would purge blob {}; nothing is written\n{}Run it with {options}; \
+         a purge cannot be undone\n",
         plan.blob(),
         plan_lines(plan),
     )
