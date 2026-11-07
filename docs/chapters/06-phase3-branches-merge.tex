@@ -224,8 +224,8 @@ Für jeden gilt die erste Regel, die zutrifft.
 \item Gleiche hinzugefügte und entfernte Terme heben sich auf.
 Hat nur eine Seite einen Pfad geändert, gilt ihr Wert.
 \item Sind alle Seiten gleich, gilt dieser Wert, für Inhalt und Modus.
-Die Algebra der Summe kennt diese Regel nicht, weil sie beim erneuten Zusammenführen Information
-kostet;
+Die Algebra der Summe kennt diese Regel nicht,
+weil sie beim erneuten Zusammenführen Information kostet;
 der Merge wendet sie an, und in Phase~3 lässt sie sich nicht abschalten.
 \item Sind alle Terme Verzeichnisse oder fehlen sie, wird die Summe ihrer Trees eine Ebene tiefer
 mit denselben Regeln zusammengeführt. Ein fehlender Term zählt als leerer Tree.
@@ -331,15 +331,15 @@ der Operation \type{branch}. Wer einen Branch angelegt, umbenannt oder gelöscht
 steht also im Log. Der Anhang beschreibt Aufruf, Ausgabe und Exit-Codes.
 
 Alle drei Änderungen folgen der Write-Ahead-Regel der Zeigerbewegung (\in{Kapitel}[chap:phase1]):
-Unter der Sperre
-der Referenzen prüft der Kern den Namen und den erwarteten Wert, schreibt dann den Eintrag und
-bewegt erst danach die Zeiger. Das Anlegen erwartet, dass es den Namen nicht gibt, und startet
+Unter der Sperre der Referenzen prüft der Kern den Namen und den erwarteten Wert,
+schreibt dann den Eintrag und bewegt erst danach die Zeiger.
+Das Anlegen erwartet, dass es den Namen nicht gibt, und startet
 ohne Angabe an dem Commit, den HEAD nennt (bei einem Branch dessen Spitze).
-Das Löschen übergibt dem
-Kern die Spitze, die der
-Befehl gelesen hat. Ein Branch, der inzwischen weitergerückt ist, wird nicht gelöscht. Das
-Löschen kennt weder eine Prüfung auf Zusammenführung noch eine Option zum Erzwingen, denn es ist
-umkehrbar: Der Eintrag nennt die Spitze als alten Wert, und \type{op restore} mit seiner Nummer
+Das Löschen übergibt dem Kern die Spitze, die der Befehl gelesen hat.
+Ein Branch, der inzwischen weitergerückt ist, wird nicht gelöscht.
+Das Löschen kennt weder eine Prüfung auf Zusammenführung noch eine Option zum Erzwingen,
+denn es ist umkehrbar:
+Der Eintrag nennt die Spitze als alten Wert, und \type{op restore} mit seiner Nummer
 bringt den Branch zurück (ADR-013). Den Branch, den HEAD nennt, löscht der Befehl nie; die Regel
 prüft der Kern unter derselben Sperre wie die Löschung, damit kein anderer Befehl HEAD dazwischen
 auf den Branch setzt.
@@ -762,8 +762,8 @@ Was geschieht, bestimmen die Merge-Basen der beiden Spitzen $A$ (eigener Branch)
 Branch):
 
 \startitemize
-\item Ist $B$ ein Vorfahre von $A$, ist alles eingeführt, und es geschieht nichts. Der Snapshot der
-Arbeitskopie entsteht trotzdem;
+\item Ist $B$ ein Vorfahre von $A$, ist alles eingeführt, und es geschieht nichts.
+Der Snapshot der Arbeitskopie entsteht trotzdem;
 \type{rebase} und \type{switch} schreiben in diesem Fall keinen.
 \item Ist $A$ ein Vorfahre von $B$, nimmt der Branch die Spitze $B$ (Fast-Forward).
 Es entsteht kein Commit.
@@ -829,9 +829,8 @@ Sie steht im Snapshot und im Log, auch wenn der Merge scheitert.
 
 Die Abschnitte dieses Kapitels beschreiben jeden Befehl für sich.
 Dieser Abschnitt setzt sie zu einer Sitzung zusammen.
-Sie geht vom Stand der Sitzung aus \in{Kapitel}[chap:phase1] nach dem zweiten Commit aus (Eintrag
-5), ohne das
-Restore, das \in{Kapitel}[chap:phase1] anschliessend zeigt:
+Sie geht vom Stand der Sitzung aus \in{Kapitel}[chap:phase1] nach dem zweiten Commit aus
+(Eintrag 5), ohne das Restore, das \in{Kapitel}[chap:phase1] anschliessend zeigt:
 Das Repository \type{notizen} hat zwei Commits auf \type{main}, \quotation{Erste Fassung} und
 \quotation{Gruss erweitern}, und \type{README.md} enthält die Zeile \type{Hallo Welt}.
 Daniel arbeitet im Verzeichnis der Wurzel, ein Agent in einem zweiten Worktree.

@@ -283,7 +283,7 @@ _Avoid_: Bot
 
 **Authorizer**:
 The component that decides whether an actor may run an operation on a target; the core asks it
-before every operation. (Autorisierer)
+before every operation that writes. (Autorisierer)
 
 **Sponsor**:
 The human who is accountable for an agent's actions. (Sponsor)

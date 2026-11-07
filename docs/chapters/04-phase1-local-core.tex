@@ -283,9 +283,9 @@ Gleiche Seiten und gleiche Basen sind dagegen erlaubt, weil sich zwei Seiten auf
 können.
 Die neue Art heisst \type{commit2}, weil eine geänderte Kodierung von \type{commit} die ID jedes
 gespeicherten Commits ändern würde (ADR-005). Weil die Art zum gehashten Kopf gehört, ergeben
-dieselben Bytes als \type{commit} ein anderes Objekt. Erst seit Phase 3 schreiben \type{merge} und
-\type{rebase}
-ein solches Objekt; was ein Konflikt bedeutet und wie er aufgelöst wird, beschreibt Phase 3.
+dieselben Bytes als \type{commit} ein anderes Objekt.
+Erst seit Phase 3 schreiben Befehle wie \type{merge} und \type{rebase} ein solches Objekt;
+was ein Konflikt bedeutet und wie er aufgelöst wird, beschreibt Phase 3.
 Eine \type{CommitId} nennt beide Arten, damit ein Konflikt dort stehen kann, wo ein Commit steht:
 Der Speicher löst sie nach der Art des gespeicherten Objekts zu einem \type{commit} oder
 einem \type{commit2} auf.

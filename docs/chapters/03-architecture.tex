@@ -54,8 +54,9 @@ Bei jeder solchen Operation fragt der Kern,
 ob der Akteur sie am Ziel ausführen darf (\type{authorize(actor, operation, target)}).
 Das gilt auch für einen Plan wie \type{purge} ohne \type{--apply},
 denn er liest, was die Änderung berühren würde.
-Die Befehle, die nur lesen (\type{log}, \type{op log}, \type{op verify}, die Listenformen von
-\type{branch} und \type{tag} und \type{worktree list}), haben keinen Akteur und fragen nicht.
+Die Befehle, die keinen Akteur verlangen
+(\type{log}, \type{op log}, \type{op verify}, die Listenformen von \type{branch} und \type{tag}
+und \type{worktree list}), fragen nicht.
 Der Diff fragt nur, wenn eine Seite der Working-Copy-Commit ist,
 weil er dann einen Snapshot der Arbeitskopie speichert.
 Mit zwei Kennungen fragt er nicht, verlangt aber trotzdem einen Akteur.

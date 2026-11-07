@@ -96,10 +96,10 @@ stemma help [Befehl]
 \type{stemma help Befehl} zeigt dasselbe wie \type{stemma Befehl --help}; bei einem Befehl mit
 Unterbefehl nennt man beide, etwa \type{stemma help op restore}.
 Ohne Befehl zeigt \type{stemma help} die Übersicht wie \type{stemma --help}.
-Der Aufruf \type{stemma} allein und \type{stemma op} allein zeigen die Hilfe ebenfalls,
-enden aber mit Exit-Code 2, denn es fehlt ein Befehl.
-Die Hilfe braucht weder einen Akteur noch ein Repository, schreibt auf die Standardausgabe
-und endet mit Exit-Code 0.
+Der Aufruf \type{stemma} allein und \type{stemma op} allein schreiben die Hilfe auf die
+Fehlerausgabe und enden mit Exit-Code 2, denn es fehlt ein Befehl.
+Die Hilfe von \type{--help} und \type{help} braucht weder einen Akteur noch ein Repository,
+schreibt auf die Standardausgabe und endet mit Exit-Code 0.
 
 {\bf Verzeichnis.} Jeder Befehl nimmt ein Verzeichnis des Repositories mit
 \type{-C} (\type{--repository}) entgegen, standardmässig das aktuelle. Es gibt kein
@@ -955,8 +955,8 @@ stemma switch --detach NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over]
 \item {\bf NAME:} Ohne Option der Branch, zu dem HEAD wechselt; er muss bestehen.
 Mit \type{-c} der Name des neuen Branchs, der noch nicht bestehen darf.
 Mit \type{--detach} ein Branch oder ein Commit (\type{b3:} und 64 Hexadezimalziffern).
-Eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) ist hier kein Name und ein Aufruffehler
-(Exit-Code 2).
+Ohne \type{--detach} ist eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) kein Name
+und ein Aufruffehler (Exit-Code 2).
 \item {\bf START:} Nur mit \type{-c}. Ein Branch oder ein Commit (\type{b3:} und 64
 Hexadezimalziffern), auf dem der neue Branch beginnt. Ohne START beginnt er auf dem Commit,
 zu dem HEAD führt: auf der Spitze des Branchs von HEAD oder auf dem abgekoppelten Commit.
@@ -1568,7 +1568,7 @@ Fehlt die Datei auf einer Seite, also bei einer neuen oder gelöschten Datei,
 steht dort \type{/dev/null}. Eine leere Datei ist vorhanden und hat keine Hunks.
 
 Ein Hunk beginnt mit einer Zeile \type{@@}, die Anfang und Anzahl der Zeilen auf beiden
-Seiten nennt, von eins gezählt, wie git.
+Seiten nennt, von eins gezählt, wie Git.
 Umfasst ein Bereich genau eine Zeile, entfällt die Anzahl:
 \type{@@ -1 +1 @@}. Ist der Bereich einer Seite leer, wie bei einer neuen Datei,
 steht dort die Zeile davor, also \type{0,0}. Seine Zeilen beginnen mit einem Leerzeichen für eine
