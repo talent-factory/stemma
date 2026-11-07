@@ -13,11 +13,11 @@
 | [ADR-009](ADR-009-repository-layout.md) | Repository layout and `init` | Accepted, implemented |
 | [ADR-010](ADR-010-working-copy.md) | The working copy is a commit | Accepted, implemented |
 | [ADR-011](ADR-011-operation-log.md) | The operation log | Accepted, implemented |
-| [ADR-012](ADR-012-exclusion-file.md) | The exclusion file `.stemmaignore` | Confirmed, implemented |
+| [ADR-012](ADR-012-exclusion-file.md) | The exclusion file `.stemmaignore` | Accepted, implemented |
 | [ADR-013](ADR-013-restore.md) | Restoring the state before an entry | Accepted, implemented |
 | [ADR-014](ADR-014-purge.md) | Removing a secret from the history and the operation log | Accepted, implemented |
 | [ADR-015](ADR-015-relation-to-scion.md) | Relation to Scion | Accepted |
 | [ADR-016](ADR-016-tui-library.md) | The library of the terminal interface of `diff --tui` | Accepted |
 | [ADR-017](ADR-017-derived-data.md) | Derived data | Accepted |
-| [ADR-018](ADR-018-machine-readable-output.md) | The machine-readable contract of the command output | Proposal, decided by the author |
+| [ADR-018](ADR-018-machine-readable-output.md) | The machine-readable contract of the command output | Accepted, implemented |
 | [ADR-019](ADR-019-merge-gate-without-global-lock.md) | The merge gate without a global lock | Proposal, open for decision |

@@ -1,8 +1,9 @@
 # ADR-018: the machine-readable contract of the command output
 
-**Status:** Proposal, decided by the author on 2026-10-27 in STEMMA-98. A change of an exit code
-that scripts rely on is level 2 under ADR-004, so the change that implements it needs two agents
-and a human maintainer.
+**Status:** Accepted, implemented. Decided by the author on 2026-10-27 in STEMMA-98 and
+implemented with the exit codes 5 and 6 and `--json` (PR #162). A change of an exit code that
+scripts rely on is level 2 under ADR-004, so the change that implements it needs two agents and
+a human maintainer.
 
 ## Context
 
