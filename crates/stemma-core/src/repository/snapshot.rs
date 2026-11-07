@@ -582,9 +582,8 @@ pub enum SnapshotError {
         owner: Box<Actor>,
         /// The actor of the command.
         actor: Box<Actor>,
-        /// Whether the command has no `--take-over` of its own, so that the advice names
-        /// `status --take-over` instead (see [`SnapshotError::without_take_over_option`]).
-        via_status: bool,
+        /// Which way to take the working copy over the refusal advises.
+        advice: TakeOverAdvice,
     },
     /// An agent asked to take the working copy over. Taking over is level 3 of ADR-004, so only
     /// a human may do it. Nothing was read or written.
@@ -736,8 +735,33 @@ impl SnapshotError {
     }
 }
 
+/// The way to take a working copy over that the refusal of the owner rule advises a human.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeOverAdvice {
+    /// Run the command again with its own `--take-over`.
+    Option,
+    /// The command has no `--take-over`: run `status --take-over` in the working copy first.
+    Status,
+    /// The directory of the working copy is gone, so no command can run in it: no advice.
+    DirectoryGone,
+}
+
 impl SnapshotError {
-    /// The same error for a command that has no `--take-over` (`worktree remove`,
+    /// The same error for a working copy whose directory is gone: `status` cannot run there, so
+    /// the refusal gives no way to take it over (`worktree remove` of a deleted directory).
+    #[must_use]
+    pub fn without_directory(self) -> Self {
+        match self {
+            Self::NotOwner { owner, actor, .. } => Self::NotOwner {
+                owner,
+                actor,
+                advice: TakeOverAdvice::DirectoryGone,
+            },
+            other => other,
+        }
+    }
+
+    /// The same error for a command that has no `--take-over' (`worktree remove`,
     /// `purge --apply`): a refusal of the owner rule then points to `status --take-over`, as the
     /// command cannot be run again with an option it does not have.
     #[must_use]
@@ -746,7 +770,7 @@ impl SnapshotError {
             Self::NotOwner { owner, actor, .. } => Self::NotOwner {
                 owner,
                 actor,
-                via_status: true,
+                advice: TakeOverAdvice::Status,
             },
             other => other,
         }
@@ -761,7 +785,7 @@ impl fmt::Display for SnapshotError {
             Self::NotOwner {
                 owner,
                 actor,
-                via_status,
+                advice,
             } => {
                 write!(
                     f,
@@ -773,10 +797,14 @@ impl fmt::Display for SnapshotError {
                         "an agent may not take it over, so stop and ask a human, for example \
                          the sponsor of the agent",
                     ),
-                    _ if *via_status => write!(
+                    _ if *advice == TakeOverAdvice::Status => write!(
                         f,
                         "this command has no `--take-over`, so run `status --take-over` in that \
                          working copy first to make `{actor}` its owner"
+                    ),
+                    _ if *advice == TakeOverAdvice::DirectoryGone => f.write_str(
+                        "its directory is gone, so it cannot be taken over there; only its owner \
+                         can remove it",
                     ),
                     _ => write!(
                         f,
@@ -905,11 +933,11 @@ mod tests {
         Actor::human("daniel").unwrap()
     }
 
-    fn refusal(actor: Actor, via_status: bool) -> String {
+    fn refusal(actor: Actor, advice: TakeOverAdvice) -> String {
         SnapshotError::NotOwner {
             owner: Box::new(Actor::human("anna").unwrap()),
             actor: Box::new(actor),
-            via_status,
+            advice,
         }
         .to_string()
     }
@@ -919,13 +947,13 @@ mod tests {
         let human = Actor::human("bob").unwrap();
         let agent = Actor::agent("bot", "m", "s", "daniel").unwrap();
 
-        assert!(refusal(human.clone(), false).contains("again with `--take-over`"));
-        let detour = refusal(human.clone(), false);
+        assert!(refusal(human.clone(), TakeOverAdvice::Option).contains("again with `--take-over`"));
+        let detour = refusal(human.clone(), TakeOverAdvice::Option);
         assert!(!detour.contains("status --take-over"), "{detour}");
         let detour = SnapshotError::NotOwner {
             owner: Box::new(Actor::human("anna").unwrap()),
             actor: Box::new(human),
-            via_status: false,
+            advice: TakeOverAdvice::Option,
         }
         .without_take_over_option()
         .to_string();
@@ -934,8 +962,15 @@ mod tests {
             "{detour}"
         );
         assert!(!detour.contains("again"), "{detour}");
-        for via_status in [false, true] {
-            let text = refusal(agent.clone(), via_status);
+        let gone = refusal(Actor::human("bob").unwrap(), TakeOverAdvice::DirectoryGone);
+        assert!(gone.contains("its directory is gone"), "{gone}");
+        assert!(!gone.contains("--take-over"), "{gone}");
+        for advice in [
+            TakeOverAdvice::Option,
+            TakeOverAdvice::Status,
+            TakeOverAdvice::DirectoryGone,
+        ] {
+            let text = refusal(agent.clone(), advice);
             assert!(text.contains("stop and ask a human"), "{text}");
             assert!(!text.contains("--take-over"), "{text}");
         }

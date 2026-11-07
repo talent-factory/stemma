@@ -193,8 +193,14 @@ impl Repository {
         let (_, owner) = crate::refs::FsRefStore::for_worktree(&shared, &state)
             .working_copy_and_owner()
             .map_err(WorktreeError::Refs)?;
-        view.check_owner(actor, owner.as_ref())
-            .map_err(|error| WorktreeError::Snapshot(Box::new(error.without_take_over_option())))?;
+        view.check_owner(actor, owner.as_ref()).map_err(|error| {
+            let error = if exists {
+                error.without_take_over_option()
+            } else {
+                error.without_directory()
+            };
+            WorktreeError::Snapshot(Box::new(error))
+        })?;
         let mut snapshot = None;
         let mut late = None;
         if exists {

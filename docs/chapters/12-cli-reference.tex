@@ -2196,6 +2196,8 @@ gilt dieselbe Prüfung wie bei jedem Snapshot.
 Der Befehl hat die Option \type{--take-over} nicht; wer übernehmen muss,
 ruft vorher \type{stemma status --take-over} im Worktree auf, der entfernt wird,
 und die Ablehnung nennt diesen Umweg.
+Fehlt das Verzeichnis, kann \type{status} dort nicht laufen; die Ablehnung nennt dann keinen Umweg,
+sondern sagt, dass nur der Eigentümer den Worktree entfernen kann.
 \stopitemize
 
 Der Befehl hat keine JSON-Form.
@@ -2270,6 +2272,9 @@ und räumt den Rest. Ein Worktree, dessen Zustandsverzeichnis sich nicht lesen l
 Entfernen eines anderen nicht; der Befehl nennt für ihn selbst, was von Hand zu löschen ist.
 Gehört der Worktree einem anderen Akteur, übernimmt man ihn zuerst mit \type{status --take-over}
 im Worktree, so wie vor einem \type{purge --apply}; \type{worktree remove} hat die Option nicht.
+Ist das Verzeichnis gelöscht und gehört der Worktree einem anderen Akteur, gibt es keinen Ort für
+\type{status --take-over}: Die Ablehnung rät dann nicht dazu, und nur der Eigentümer entfernt das
+Zustandsverzeichnis.
 
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die
 Meldung nennt den Eintrag und sagt, was von Hand zu entfernen ist. Konnte er das Verzeichnis
