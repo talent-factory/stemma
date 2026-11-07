@@ -212,8 +212,10 @@ Lehnt der Autorisierer ab, ist der Akteur ein Agent oder scheitert die Übernahm
 endet der Befehl dort; der Exit-Code folgt der Ursache wie bei den anderen Fehlern.
 Ist die Übernahme gemacht, aber nicht gesichert, endet er mit Exit-Code 3.
 Die Übernahme ist Risikostufe 3 nach ADR-004: Sie entscheidet, wessen Änderungen ein Snapshot
-speichern darf, und nur ein Mensch darf sie machen. \type{purge --apply} hat die Option nicht;
-wer dort übernehmen muss, ruft vorher \type{stemma status --take-over} auf.
+speichern darf, und nur ein Mensch darf sie machen. \type{purge --apply} und
+\type{worktree remove} haben die Option nicht;
+wer dort übernehmen muss, ruft vorher \type{stemma status --take-over} auf,
+und ihre Ablehnung nennt diesen Umweg statt der Option.
 Ein Programm, das nur Format 4 kennt, lehnt ein Repository im Format 5 ab, auch für Befehle,
 die nur lesen. Dasselbe gilt für Format 6, das die Zeilen \type{worktree} und \type{location}
 im Log und das Journal des Purge über mehrere Worktrees einführt (ADR-009, ADR-011, ADR-014):
@@ -2191,6 +2193,9 @@ Standard ist das aktuelle.
 \type{STEMMA_ACTOR}. Der Akteur muss der Eigentümer der Arbeitskopie des Worktrees sein; der Befehl
 prüft das auch, wenn das Verzeichnis fehlt. Hat der Befehl dort einen Snapshot zu nehmen,
 gilt dieselbe Prüfung wie bei jedem Snapshot.
+Der Befehl hat die Option \type{--take-over} nicht; wer übernehmen muss,
+ruft vorher \type{stemma status --take-over} im Worktree auf,
+und die Ablehnung nennt diesen Umweg.
 \stopitemize
 
 Der Befehl hat keine JSON-Form.

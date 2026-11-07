@@ -575,7 +575,7 @@ impl Repository {
                 SnapshotError::Update(UpdateError::Refs(RefError::PurgePending { path })) => {
                     ApplyPurgeError::Pending { path }
                 }
-                other => ApplyPurgeError::Snapshot(other),
+                other => ApplyPurgeError::Snapshot(other.without_take_over_option()),
             })?;
         let purged = self.start_purge(blob, actor, &allowed, tags, stop, pending);
         match (purged, snapshot) {

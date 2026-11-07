@@ -2080,3 +2080,35 @@ fn a_new_branch_of_a_worktree_cannot_start_with_a_reserved_prefix() {
         ],
     );
 }
+
+#[test]
+fn the_usage_line_of_add_names_the_path_before_the_branch() {
+    let sandbox = Sandbox::new();
+
+    let help = ok(&sandbox.repo(), &["worktree", "add", "--help"]);
+
+    assert!(
+        help.stdout
+            .contains("Usage: stemma worktree add [OPTIONS] <PATH> <BRANCH|--branch <NEW>>"),
+        "{}",
+        help.stdout
+    );
+}
+
+#[test]
+fn remove_refused_by_the_owner_points_to_status_take_over() {
+    let sandbox = with_linked();
+
+    let refused = run(
+        &sandbox.repo(),
+        &["worktree", "remove", "linked", "--actor", ANNA],
+    );
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("run `status --take-over` first"),
+        "{}",
+        refused.stderr
+    );
+    assert!(!refused.stderr.contains("again"), "{}", refused.stderr);
+}

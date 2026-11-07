@@ -236,3 +236,22 @@ fn status_refuses_another_actor_before_it_reads_the_exclusion_file() {
         result.stderr
     );
 }
+
+#[test]
+fn purge_apply_refused_by_the_owner_points_to_status_take_over() {
+    let dir = repository();
+    write(dir.path(), "a.txt", "key=hunter2");
+    track_ok(dir.path(), "a.txt");
+    let blob = stemma_core::object::Blob::new("key=hunter2")
+        .id()
+        .to_string();
+
+    let result = run(dir.path(), &["purge", &blob, "--apply", "--actor", OTHER]);
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("run `status --take-over` first"),
+        "{}",
+        result.stderr
+    );
+}

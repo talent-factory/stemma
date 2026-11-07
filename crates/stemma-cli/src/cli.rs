@@ -176,6 +176,7 @@ enum WorktreeCommand {
 #[command(group(
     ArgGroup::new("target").required(true).multiple(false).args(["branch", "new_branch"])
 ))]
+#[command(override_usage = "stemma worktree add [OPTIONS] <PATH> <BRANCH|--branch <NEW>>")]
 struct WorktreeAddArgs {
     /// The directory of the new worktree: it does not exist, or it is empty. It may not lie in
     /// another worktree or hold one
