@@ -288,6 +288,12 @@ bestimmt dieselbe Regel noch einmal.
 Haben $L$ und $R$ den gemeinsamen Vorfahren $W$, so ist die Summe der Basen $L + (R - W)$
 und die des Merges $O + T - L - R + W$.
 Sie hat drei Seiten und zwei Basen.
+Was sich aufhebt, fällt weg:
+Ein Pfad, den nur eine Seite geändert hat, trägt nur diese Änderung.
+Die Basen kommen von \type{merge_bases} nach ID sortiert, und das legt die Summe fest.
+Bei drei oder mehr Basen ist die Wahl der ersten willkürlich, aber jedes Mal dieselbe.
+Haben zwei Verläufe keinen gemeinsamen Vorfahren, ist der leere Tree die Basis.
+
 \in{Abbildung}[fig:criss-cross-sum] zeigt einen solchen Verlauf und rechnet die Summe für
 eine Datei mit drei Zeilen durch.
 
@@ -295,11 +301,6 @@ eine Datei mit drei Zeilen durch.
     reference=fig:criss-cross-sum,location=here]
 \externalfigure[images/criss-cross-sum.pdf][width=0.9\textwidth]
 \stopplacefigure
-Was sich aufhebt, fällt weg:
-Ein Pfad, den nur eine Seite geändert hat, trägt nur diese Änderung.
-Die Basen kommen von \type{merge_bases} nach ID sortiert, und das legt die Summe fest.
-Bei drei oder mehr Basen ist die Wahl der ersten willkürlich, aber jedes Mal dieselbe.
-Haben zwei Verläufe keinen gemeinsamen Vorfahren, ist der leere Tree die Basis.
 
 Ist ein Commit Vorfahr des anderen, ist er selbst die Basis,
 und die Summe $O + (T - O)$ hebt sich zu $T$ auf, ohne dass ein Tree gelesen wird.
