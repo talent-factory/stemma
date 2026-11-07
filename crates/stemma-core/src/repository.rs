@@ -2033,8 +2033,9 @@ impl InitError {
     }
 
     /// Returns the error of the file system if this is [`InitError::Io`], [`InitError::NotDurable`],
-    /// the error of a [`InitError::Log`], or the error of a [`InitError::Leftover`]. The chain of [`Error::source`] does not lead to
-    /// it (see the crate documentation).
+    /// the error of a [`InitError::Log`], [`InitError::Store`], or [`InitError::ChangeId`], or the
+    /// error of a [`InitError::Leftover`]. The chain of [`Error::source`] does not lead to it (see
+    /// the crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
             Self::Io { source, .. } | Self::NotDurable { source, .. } => Some(source),

@@ -101,6 +101,19 @@ fn a_reserved_prefix_in_the_initial_branch_is_refused_and_creates_nothing() {
 }
 
 #[test]
+fn a_name_that_only_resembles_a_reserved_prefix_is_accepted() {
+    for name in ["heads-up", "theads/x", "tags", "headsup", "a/heads/x"] {
+        let dir = Dir::new();
+        let result = run(
+            dir.path(),
+            &["init", "--initial-branch", name, "--actor", "human daniel"],
+        );
+        assert_eq!(result.code, 0, "{name:?}: {}", result.stderr);
+        assert_eq!(head(dir.path()), format!("branch {name}\n"), "{name:?}");
+    }
+}
+
+#[test]
 fn an_invalid_branch_is_a_usage_error_and_creates_nothing() {
     let dir = Dir::new();
     for bad in ["", "a b", "/a", "a/"] {
