@@ -1021,7 +1021,9 @@ enum CliError {
     /// `branch -d` or `branch -m` names a branch that does not exist, or a name that is only a
     /// directory of branches.
     NoSuchBranch(BranchName),
-    /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008).
+    /// `switch -c` got a qualified form (`heads/NAME`, `tags/NAME`) as the name of a new branch
+    /// (ADR-008). The core refuses a plain name with such a prefix as
+    /// [`UpdateError::ReservedName`].
     ReservedName(ReservedPrefix),
     /// The branches were read, but the output could not be written.
     BranchWrite {

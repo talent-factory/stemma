@@ -35,7 +35,7 @@ pub enum SwitchTarget {
     /// `switch <name>`: HEAD names the existing branch.
     Existing(BranchName),
     /// `switch -c <name> [<start>]`: the branch is made at `start` (by default the commit that HEAD
-    /// leads to) and HEAD names it.
+    /// leads to) and HEAD names it. The name must not start with `heads/` or `tags/` (ADR-008).
     Create {
         /// The name of the new branch.
         name: BranchName,
@@ -203,7 +203,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Before the snapshot: [`SwitchError::Update`] for a refusal of the question `switch`,
+    /// Before the snapshot: [`SwitchError::Update`] for a refusal of the question `switch` or for
+    /// a new branch whose name starts with `heads/` or `tags/` ([`UpdateError::ReservedName`]),
     /// [`SwitchError::NoSuchBranch`], [`SwitchError::NoSuchCommit`], [`SwitchError::BranchExists`],
     /// [`SwitchError::NoStart`], [`SwitchError::Refs`], [`SwitchError::Store`],
     /// [`SwitchError::Read`] for a commit that cannot be read, [`SwitchError::Next`] for the
@@ -756,7 +757,8 @@ fn target_name(target: &SwitchTarget) -> String {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SwitchError {
-    /// The authorizer refused `switch`, or the entry could not be written (see
+    /// The authorizer refused `switch`, the name of a new branch starts with `heads/` or `tags/`
+    /// ([`UpdateError::ReservedName`]), or the entry could not be written (see
     /// [`UpdateError::Log`]). No pointer moved and no file was written.
     Update(UpdateError),
     /// The references could not be read, a lock is held, a name is in the way of the new branch, or

@@ -725,7 +725,9 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`UpdateError::Denied`] if the authorizer refuses, and [`UpdateError::Refs`] for what
+    /// Returns [`UpdateError::ReservedName`] if the branch is made (`expected` is `None`) under a
+    /// name that starts with `heads/` or `tags/` (ADR-008), [`UpdateError::Denied`] if the
+    /// authorizer refuses, and [`UpdateError::Refs`] for what
     /// the checks find or for a failure of the references before an entry was written, among them
     /// [`RefError::Locked`] (another change is in progress: try again). If the entry could not be
     /// written the error is [`UpdateError::Log`], and the branch has not moved; an entry that is
@@ -741,6 +743,9 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, UpdateError> {
+        if expected.is_none() {
+            refuse_reserved(name)?;
+        }
         let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
         let lock = self.refs.lock_writer(&allowed)?;
         let outcome =
@@ -770,7 +775,9 @@ impl Repository {
     /// # Errors
     ///
     /// As [`update_branch`](Self::update_branch); a branch that exists is
-    /// [`RefError::Stale`] with `expected` `None`. A refusal writes no entry.
+    /// [`RefError::Stale`] with `expected` `None`. A name that starts with `heads/` or `tags/` is
+    /// [`UpdateError::ReservedName`] (ADR-008), checked before the authorizer is asked. A refusal
+    /// writes no entry.
     pub fn create_branch(
         &self,
         operation: &OperationName,
@@ -779,7 +786,6 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, UpdateError> {
-        refuse_reserved(name)?;
         let start = CommitId::new(start);
         Ok(self
             .update_branch(operation, name, None, start, actor, authorizer)?
@@ -797,8 +803,10 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
-    /// the checks find ([`RefError::TagExists`] for a tag that exists, at this commit or at
+    /// Returns [`UpdateError::ReservedName`] for a name that starts with `heads/` or `tags/`
+    /// (ADR-008), before the authorizer is asked, [`UpdateError::Denied`] if the authorizer
+    /// refuses, [`UpdateError::Refs`] for what the checks find
+    /// ([`RefError::TagExists`] for a tag that exists, at this commit or at
     /// another; [`RefError::Locked`]), and [`UpdateError::Log`], [`UpdateError::MoveFailed`], and
     /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
     /// writes no entry.
@@ -810,9 +818,9 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, UpdateError> {
+        refuse_reserved(name)?;
         // A claim only: the store confirms the kind under the lock, and an ID that names no commit
         // is refused there (`RefError::MissingCommit`, `RefError::NotACommit`).
-        refuse_reserved(name)?;
         let commit = CommitId::new(commit);
         let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
         let lock = self.refs.lock_writer(&allowed)?;
@@ -951,7 +959,9 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
+    /// Returns [`UpdateError::ReservedName`] if `new` starts with `heads/` or `tags/` (ADR-008;
+    /// `old` is not checked, so a branch that has such a name already can be renamed away),
+    /// [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
     /// the checks find ([`RefError::Stale`] for an `old` that is not at `expected` or does not
     /// exist, [`RefError::BranchExists`] for a `new` that exists, [`RefError::Conflict`] for a
     /// name that another entry holds, among them `a` and `a/b` renamed into each other,
@@ -1356,7 +1366,9 @@ pub enum UpdateError {
         /// The branch, or `HEAD`.
         target: String,
     },
-    /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008). No entry was
+    /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008). It comes from
+    /// `create_branch`, `create_tag`, `rename_branch` (the new name only), and through
+    /// [`Repository::switch`] and [`Repository::add_worktree`] for a new branch. No entry was
     /// written and nothing moved.
     ReservedName(ReservedPrefix),
     /// The checks refused, or the references failed before an entry was written: a name that is in
@@ -1531,14 +1543,17 @@ impl Error for UpdateError {
             | Self::PartlyMoved { source: error, .. }
             | Self::NotDurable { source: error, .. } => error.source(),
             Self::Log(error) => error.source(),
-            Self::ReservedName(error) => Some(error),
+            // The message is that of the inner error already (`Display`), so it is no cause.
+            Self::ReservedName(error) => error.source(),
             Self::Denied { .. } => None,
         }
     }
 }
 
-/// Refuses the name of a new branch or tag that starts with `heads/` or `tags/` (ADR-008). The
-/// layer that resolves names owns the rule; the ref store stores and does not decide.
+/// Applies [`require_unreserved`] (ADR-008) at the entry points that make a name: `create_branch`,
+/// `create_tag`, `rename_branch`, `switch`, and `add_worktree`, so that every caller gets the rule
+/// and not only the command line. A new entry point that makes a name must call it. The ref store
+/// stores and does not decide.
 pub(crate) fn refuse_reserved(name: &BranchName) -> Result<(), UpdateError> {
     require_unreserved(name.clone())
         .map(drop)

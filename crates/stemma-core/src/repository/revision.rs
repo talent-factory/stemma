@@ -4,6 +4,10 @@
 //! store (`RefStore`, `FsRefStore`) stores and does not decide: it keeps its name rules, and a
 //! branch or a tag called `heads/x` is a valid name for it.
 //!
+//! The refusal of a new name that starts with `heads/` or `tags/` ([`require_unreserved`]) is
+//! applied by the entry points of the core that make a name (`create_branch`, `create_tag`,
+//! `rename_branch`, `switch`, and `add_worktree`), so a caller need not call it.
+//!
 //! [`Revision::from_str`](std::str::FromStr) reads the text in this order:
 //!
 //! 1. `b3:` and 64 hexadecimal digits are a commit ID.

@@ -536,6 +536,16 @@ fn a_new_branch_or_tag_cannot_start_with_a_reserved_prefix() {
             "{args:?}: {}",
             result.stderr
         );
+        // The message names the refused name.
+        let name = args
+            .iter()
+            .find(|arg| arg.starts_with("heads/") || arg.starts_with("tags/"))
+            .unwrap();
+        assert!(
+            result.stderr.contains(&format!("`{name}`")),
+            "{args:?}: {}",
+            result.stderr
+        );
     }
     assert_eq!(newest(dir.path()), before, "nothing was written");
     // A plain name that is also a tag is a valid name for a new branch: `switch -c` reads no tags.
