@@ -47,7 +47,8 @@ lesen ihn, und \type{snapshot} und \type{commit} führen ihn weiter.
 \item Der Befehl \type{rebase} spielt die Commits des Branchs auf einem Ziel neu auf
 (\in{Abschnitt}[sec:rebase]).
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
-Ein Fehler im Merge fällt nicht auf: Das Ergebnis sieht wie eine gelungene Zusammenführung
+Ein Fehler im Merge fällt nicht von selbst auf:
+Das Ergebnis sieht wie eine gelungene Zusammenführung
 aus und ändert doch Inhalt, der auf \type{main} landet.
 Ein Agent, der diesen Code ändert, kann sein eigenes Urteil darüber nicht prüfen.
 Die Stufe verlangt deshalb zwei unabhängige Agenten und einen Menschen.
@@ -371,18 +372,17 @@ Löst sich der ganze Merge auf, ist das Ergebnis ein einziger Tree
 mit der ID eines Trees, der nie einen Konflikt hatte.
 
 {\bf Invariante.} Der Wert jedes Pfades im Ergebnis ist die vereinfachte Summe der Werte, die der
-Pfad in den Termen hat, und alle Pfade eines Ergebnisses haben dieselbe Zahl von Seiten.
-Das Ergebnis hängt von den Trees und der Reihenfolge der Basen ab, die \type{merge_bases} nach
-ID sortiert liefert; ein Datum geht nicht ein.
+Pfad in den Termen hat, soweit nicht die Gleichheit der Seiten oder der Zeilen-Merge ihn zu
+einem Wert entscheidet; alle Pfade eines Ergebnisses haben dieselbe Zahl von Seiten.
+Bei gegebener Summe hängt das Ergebnis von den Trees und ihrer Reihenfolge ab, und die Basen
+liefert \type{merge_bases} nach ID sortiert; ein Datum geht nicht ein.
 
 {\bf Korrektheit.} Ist eine Seite gleich der Basis, hebt sich $O + (T - B)$ zur anderen Seite auf;
-dieselbe Rechnung gilt für jeden Teilbaum, dessen ID auf beiden Seiten gleich ist,
-und deshalb liest der Merge ihn nicht.
+ebenso hebt sich jeder Teilbaum auf, den eine Seite nicht angefasst hat.
+Ein Teilbaum mit gleicher ID auf beiden Seiten fällt unter die Regel der Gleichheit.
+Beide liest der Merge nicht.
 Ein Ergebnis mit einem einzigen Term ist ein gewöhnlicher Tree mit der ID, die der gleiche
 Inhalt immer hat, denn Trees sind nach ihrem Inhalt benannt (\in{Abschnitt}[sec:object-guarantees]).
-Zwei Wege zum gleichen Zustand führen so zur gleichen Form.
-Die Funktion schreibt Objekte und sonst nichts, also hinterlässt ein Absturz nur unerreichbare
-Objekte, die ein zweiter Aufruf mit denselben Commits wieder schreibt.
 
 {\bf Kosten.} Sei $b$ die Zahl der Merge-Basen und $V$, $E$ die erreichbaren Commits und
 Elternkanten.
@@ -759,13 +759,16 @@ Elternteil dann nur einmal, an der Stelle seines ersten Vorkommens, denn ein Com
 Elternteil doppelt (ADR-014). Das gilt auch für einen Konflikt-Commit.
 
 {\bf Korrektheit.} Der Snapshot behält einen Pfad, wenn seine Datei Byte für Byte der Text ist,
-den \type{marker_text} aus der Summe macht.
-Das Verfahren ist eindeutig, weil die Summe schon vereinfacht im Commit steht und der Text eine
-Funktion dieser Summe allein ist; zwei Aufrufe schreiben dieselben Bytes.
-Die Länge der Markierung übersteigt jeden Lauf gleicher Zeichen am Anfang einer Zeile des Inhalts,
+den die Ansicht dieser Summe schreibt (\type{marker_text}).
+Das Verfahren ist eindeutig, weil \type{marker_text} die Summe selbst vereinfacht und der Text
+eine Funktion allein von ihr und ihrer Reihenfolge ist; zwei Aufrufe schreiben dieselben Bytes.
+Terme, die sich nur im Modus unterscheiden, haben keinen Text; dort zählt auch der Modus.
+Die Länge der Markierung übersteigt jeden Lauf eines Markierungszeichens (\type{<}, \type{+},
+\type{-}, \type{>}) am Anfang einer Zeile des Inhalts,
 und keine Zeile des Inhalts ist deshalb eine Markierung.
-Löst der Snapshot einen Pfad, setzt er den Inhalt der Datei in jeden Term ein,
-und die Summe hebt sich auf einen Tree auf.
+Löst der Snapshot einen Pfad, setzt er den Inhalt der Datei in jeden Term ein.
+Löst er alle Pfade im Konflikt, hebt sich die Summe auf einen Tree auf;
+bleibt ein Pfad offen, bleibt die Summe.
 Die Ansicht schreibt nur Objekte, die kein Commit nennt;
 ein Absturz lässt sie als unerreichbare Objekte liegen, und der nächste Befehl baut sie neu.
 
@@ -845,8 +848,11 @@ und die Zustände nach einem Absturz.
 \stopplacefigure
 
 {\bf Invariante.} Die Änderung der Arbeitskopie gegen ihren Elternteil bleibt dieselbe:
-In $W' - T = (T + (W - P)) - T$ hebt sich $T$ auf, und es bleibt $W - P$.
-$W'$ hat genau einen Elternteil, $T$, und behält Change-ID, Autor, Zeit und Beschreibung von $W$.
+In der Summe $W' - T = (T + (W - P)) - T$ hebt sich $T$ auf, und es bleibt $W - P$;
+der Merge entscheidet danach gleiche Änderungen beider Seiten, sodass sie nicht doppelt zählen.
+Trägt $W$ Änderungen, behält $W'$ Change-ID, Autor, Zeit und Beschreibung;
+ein leeres $W$ ersetzt ein leerer Commit mit neuer Change-ID.
+$W$ darf nur einen Elternteil haben.
 
 {\bf Korrektheit.} Die Rechnung ist der Merge von \in{Abschnitt}[sec:tree-merge] mit $P$ als
 Basis, also gelten seine Aussagen, auch für den Fall, dass $W$ schon einen Konflikt trägt.
@@ -943,22 +949,23 @@ und die Zeiger nach jedem Schritt.
 \stopplacefigure
 
 {\bf Kosten.} Seien $V$ und $E$ die Commits und Elternkanten, die Spitze und Ziel erreichen,
-$k$ die Zahl der Commits im Bereich und $C$ die Kosten eines Tree-Merges mit drei Termen
+$k$ die Zahl der Commits im Bereich und $K$ die Kosten eines Tree-Merges mit drei Termen
 (\in{Abschnitt}[sec:tree-merge]).
 Ein Aufruf von \type{merge_bases} kostet $O(V+E)$ (\in{Abschnitt}[sec:merge-base]),
 und der Bereich entsteht aus einer Kette von $k$ einzelnen Elternkanten.
 Jeder Commit des Bereichs ist ein eigener Merge, und der neue Elternteil ist der Commit,
 den der vorige Schritt eben berechnet hat.
-Der Befehl kostet also $O(V+E+k\,C)$ und schreibt $O(k)$ neue Commits;
+Der Befehl kostet also $O(V+E+k\,K)$ und schreibt $O(k)$ neue Commits;
 Snapshot, Plan der Dateien und Eintrag hängen vom Arbeitsverzeichnis ab, nicht vom Verlauf,
 und stehen nicht in der Summe.
 Ein Konflikt hält das Aufspielen nicht an, trägt sich aber in die folgenden Commits fort;
-dort sind $C$ die Kosten des Merges einer Summe mit fünf Termen statt drei.
+dort sind $K$ die Kosten des Merges einer Summe mit fünf Termen statt drei.
 Bei einer Merge-Basis ist das Neu-Aufspielen eines Branches mit vielen Commits teurer als
 ein Merge der beiden Spitzen, weil dieser einen Tree-Merge macht und jenes $k$.
 
 {\bf Invariante.} Nach dem Schritt $j$ ist der $j$-te neue Commit ein Kind des vorigen,
-sein Baum ist $E' + (C - E)$, und Change-ID, Autor, Zeit und Beschreibung sind die des alten
+sein Baum ist die Summe $E' + (C - E)$, vom Tree-Merge entschieden,
+und Change-ID, Autor, Zeit und Beschreibung sind die des alten
 Commits. Die alten Commits ändert der Befehl nie; nur der Branch und der Working-Copy-Commit
 bewegen sich.
 
@@ -968,10 +975,11 @@ trifft der Befehl auf einen Merge-Commit oder auf eine Wurzel ohne die Basis, le
 bevor er etwas schreibt.
 Jeder Schritt ist der Merge aus \in{Abschnitt}[sec:tree-merge] mit dem Ergebnis des vorigen
 Schritts als Elternteil, also gilt dort die Aussage über Konflikte als Daten.
-Die Zeigerbewegung folgt der Write-Ahead-Regel: Der Eintrag steht vor dem Branch,
-und der Branch bewegt sich vor dem Working-Copy-Commit.
-Ein Absturz lässt deshalb jeden neuen Commit erreichbar,
-und derselbe Aufruf mit demselben Ziel beendet den Lauf.
+Der Eintrag steht vor den Zeigern (Write-Ahead-Regel),
+und der Branch bewegt sich vor dem Working-Copy-Commit (ADR-013).
+Ein Absturz nach dem Eintrag lässt jeden neuen Commit erreichbar;
+davor sind sie unerreichbare Objekte, und derselbe Aufruf schreibt sie neu.
+Derselbe Aufruf mit demselben Ziel beendet den Lauf.
 
 \startinfobox
 {\bf Grenzfälle des Aufspielens.}
