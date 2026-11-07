@@ -82,9 +82,9 @@ auch wenn er auf denselben Commit zeigt (ADR-008).
 Ein Tag, der falsch gesetzt wurde, wird mit \type{stemma tag --delete} gelöscht und neu gesetzt.
 
 Ein Branch und ein Tag dürfen denselben Namen haben.
-Den ersten Befehl, der einen Namen zu einem Tag auflöst, gibt es jetzt: \type{switch --detach}.
-Er löst den Text in dieser Reihenfolge auf (ADR-008);
-\type{switch -c} und \type{rebase} übernehmen die Regel, wenn sie Tags annehmen:
+Drei Stellen lösen einen Namen zu einem Tag auf: das Ziel von \type{switch --detach},
+der Start von \type{switch -c} und das Ziel von \type{rebase}.
+Sie lösen den Text in dieser Reihenfolge auf (ADR-008):
 
 \startitemize[n]
 \item Ein Text, der mit \type{b3:} beginnt, ist eine Commit-ID und kein Name.

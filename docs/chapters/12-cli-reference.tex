@@ -963,11 +963,12 @@ und nicht mit \type{heads/} oder \type{tags/} beginnen darf (Exit-Code 1).
 Ohne \type{-c} sind eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) und ein Tag
 (\type{tags/NAME}) kein Name und ein Aufruffehler (Exit-Code 2);
 \type{heads/NAME} nennt dann den Branch \type{NAME}.
-\item {\bf START:} Nur mit \type{-c}. Ein Branch oder ein Commit (\type{b3:} und 64
-Hexadezimalziffern), auf dem der neue Branch beginnt. Ohne START beginnt er auf dem Commit,
+\item {\bf START:} Nur mit \type{-c}. Ein Branch, ein Tag oder ein Commit (\type{b3:} und 64
+Hexadezimalziffern), auf dem der neue Branch beginnt. START folgt derselben Regel für Namen wie
+\type{--detach} unten: \type{heads/NAME} ist nur der Branch, \type{tags/NAME} nur der Tag,
+ein blosser Name wird als Branch und als Tag gesucht, und ein Name, der beides ist, bricht den
+Befehl ab (Exit-Code 1, ADR-008). Ohne START beginnt er auf dem Commit,
 zu dem HEAD führt: auf der Spitze des Branchs von HEAD oder auf dem abgekoppelten Commit.
-Eine Form mit Präfix (\type{heads/} oder \type{tags/}) nimmt START noch nicht an
-(Aufruffehler, Exit-Code 2); ein Tag als START folgt, wenn \type{-c} Tags annimmt.
 \item {\bf \type{-c}, \type{--create}:} Legt den Branch an und wechselt zu ihm.
 Besteht der Name schon, ist es ein Fehler (Exit-Code 1).
 \item {\bf \type{--detach} REVISION:} Löst HEAD vom Branch, sodass er den Commit nennt,
@@ -1055,9 +1056,9 @@ Zeigt HEAD schon auf den Branch, schreibt auch der Plan \type{Already on NAME}.
 \type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Namen mit \type{-c},
 der mit \type{heads/} oder \type{tags/} beginnt, bei einem Namen mit \type{--detach}, der weder
 Branch noch Tag ist, bei einem Namen, der Branch und Tag ist (die Meldung nennt beide Formen), bei
-einem \type{tags/NAME} ohne Tag, bei einem Commit, den der Objektspeicher nicht hat,
-bei einem Branch von HEAD ohne Commit, wenn \type{-c} keinen START hat,
-und bei einem offenen Purge.
+einem \type{tags/NAME} ohne Tag (auch als START), bei einem Commit,
+den der Objektspeicher nicht hat, bei einem Branch von HEAD ohne Commit,
+wenn \type{-c} keinen START hat, und bei einem offenen Purge.
 Ebenso endet er, wenn eine Datei im Weg steht, die kein Commit verfolgt: Die Meldung nennt den Pfad,
 und der Befehl schreibt nichts, auch keinen Snapshot.
 Ebenso endet er bei einem Working-Copy-Commit mit Änderungen und mehr als einem Elternteil
@@ -1090,6 +1091,7 @@ endet der Befehl bei \type{Already on} mit Exit-Code 0 und nach einem Wechsel mi
 stemma switch -c feature --actor "human daniel"
 stemma switch main --actor "human daniel"
 stemma switch -c fix b3:4a0b66... --actor "human daniel"
+stemma switch -c fix tags/v1 --actor "human daniel"
 stemma switch --detach main -C projekt --actor "human daniel"
 stemma switch --detach tags/v1 --actor "human daniel"
 stemma switch feature --dry-run --actor "human daniel"
@@ -1106,10 +1108,11 @@ stemma rebase ZIEL [-C VERZEICHNIS] --actor AKTEUR [--take-over]
 \stoptyping
 
 \startitemize
-\item {\bf ZIEL:} Ein Branch oder ein Commit (\type{b3:} und 64 Hexadezimalziffern), auf dem der
-aktuelle Branch aufbauen soll. Ein unbekannter Branch ist ein Fehler.
-Eine Form mit Präfix (\type{heads/} oder \type{tags/}) nimmt ZIEL noch nicht an
-(Aufruffehler, Exit-Code 2); ein Tag als ZIEL folgt, wenn \type{rebase} Tags annimmt.
+\item {\bf ZIEL:} Ein Branch, ein Tag oder ein Commit (\type{b3:} und 64 Hexadezimalziffern),
+auf dem der aktuelle Branch aufbauen soll. Es gilt dieselbe Regel für Namen wie bei
+\type{switch --detach}: \type{heads/NAME} ist nur der Branch, \type{tags/NAME} nur der Tag,
+ein blosser Name wird als Branch und als Tag gesucht, und ein Name, der beides ist, bricht den
+Befehl ab (Exit-Code 1, ADR-008). Ein unbekannter Name ist ein Fehler.
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot und der
@@ -1166,8 +1169,9 @@ Ein Konflikt ändert den Exit-Code nicht: Der Befehl endet mit 0, und \type{stem
 nennt die Pfade, bis ein Snapshot sie aufgelöst hat.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem HEAD, der einen Commit nennt,
-bei einem Branch ohne Commit, bei einem unbekannten Branch oder einem Commit, den der
-Objektspeicher nicht hat, und bei einem offenen Purge.
+bei einem Branch ohne Commit, bei einem unbekannten Namen, einem \type{heads/NAME} ohne Branch,
+einem \type{tags/NAME} ohne Tag, einem Namen, der Branch und Tag ist,
+oder einem Commit, den der Objektspeicher nicht hat, und bei einem offenen Purge.
 Ebenso endet er, wenn Spitze und Ziel keinen gemeinsamen Commit haben,
 wenn sie mehrere beste gemeinsame Vorfahren haben (ein Criss-Cross-Merge)
 und wenn ein Commit des aufzuspielenden Bereichs mehr als einen Elternteil hat.
@@ -1200,6 +1204,8 @@ Exit-Code 3.
 \starttyping
 stemma rebase main --actor "human daniel"
 stemma rebase b3:4a0b66... -C projekt --actor "human daniel"
+stemma rebase tags/v1 --actor "human daniel"
+stemma rebase heads/main --actor "human daniel"
 \stoptyping
 
 \section{merge}

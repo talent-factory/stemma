@@ -580,7 +580,7 @@ pub enum RebaseError {
     NotOnBranch,
     /// The branch of HEAD has no commit yet.
     NoCommits(BranchName),
-    /// There is no branch with the name.
+    /// `heads/<name>` names no branch.
     NoSuchBranch(BranchName),
     /// The target is a tag that does not exist, neither a branch nor a tag, or both (ADR-008).
     Name(NameError),

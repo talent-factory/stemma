@@ -34,9 +34,7 @@ pub const TAG_PREFIX: &str = "tags/";
 /// A name for a commit in the arguments of a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Revision {
-    /// The commit at the tip of the branch, and only a branch: the qualified form `heads/<name>`, or
-    /// a plain name where a command takes no tag yet (the start of `switch -c`, the target of
-    /// `rebase`).
+    /// The commit at the tip of the branch, and only a branch: the qualified form `heads/<name>`.
     Branch(BranchName),
     /// The commit of the tag, and only a tag (`tags/<name>`). A tag name follows the rules of a
     /// branch name (ADR-008), so it is a [`BranchName`].
