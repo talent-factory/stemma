@@ -1237,7 +1237,7 @@ Wer einen Tag gesetzt hat und wann, steht damit im Log: im Akteur und in der Zei
 Das Format bekommt dafür keine neue Version. Ein Leser, der die Zeile \type{tag} nicht kennt,
 lehnt den Eintrag als unbekannten Zeiger ab; das ist richtig, denn er könnte nicht sagen, was der
 Eintrag tat. Den Ausgang liest \type{op log} am Tag, wie er jetzt ist (siehe
-\in{Abschnitt}[sec:outcome]). Eine Wiederherstellung rührt Tags nicht an (ADR-013): Sie gehören
+\in{Abschnitt}[sec:outcome]). Ein Restore rührt Tags nicht an (ADR-013): Sie gehören
 nicht zum Zustand, den \type{op restore} zurückbringt, und der Befehl lehnt darum einen Eintrag
 ab, der nur Tags gesetzt oder gelöscht hat. Ein Purge lehnt einen Commit ab, auf den
 ein Tag zeigt (ADR-014); die Meldung nennt den Befehl, der den Tag löscht.
@@ -1449,7 +1449,7 @@ Wer das Log nach $n$ abschneidet und neu schreibt, besteht die Prüfung mit dies
 Crosby und Wallach zeigen, dass ein Log, das sein Schreiber selbst neu berechnen kann,
 Manipulationen erst durch solche Zusagen an Prüfer ausserhalb erkennen lässt,
 und dass der Nachweis über eine Kette linear in der Zahl der Einträge dazwischen ist;
-ihr Baum der Geschichte senkt ihn auf $O(\log N)$ \cite[crosby2009tamper].
+ihr Baum des Verlaufs senkt ihn auf $O(\log N)$ \cite[crosby2009tamper].
 Für die Arbeit mit Agenten zählt das besonders:
 Ein Agent, der im Repository arbeitet, kann \type{.stemma} schreiben,
 und erst ein Anker beim Sponsor zeigt, ob das Log nach der Sitzung noch dasselbe ist.
@@ -2543,7 +2543,7 @@ Ein Rest, dessen Elternteil fehlt, hält ihn ebenfalls an, und die Meldung nennt
 der Liste und ersetzt jeden, der den Blob enthält.
 Der Commit wird in der Form neu geschrieben, die seine Summe danach hat:
 Wird ein weggenommener Baum der Liste einem hinzugefügten gleich, heben sich beide auf,
-und aus dem Konflikt kann ein \type{commit} mit derselben Änderungs-ID werden.
+und aus dem Konflikt kann ein \type{commit} mit derselben Change-ID werden.
 Das Anwenden eines Purge kann nicht laufen, solange die Arbeitskopie ein \type{commit2} ist,
 denn sein Snapshot meldet den offenen Konflikt; der Plan selbst schreibt nichts.
 \item Ein Objekt, das zwischen dem Auflisten des Speichers und dem Lesen seines Kopfs verschwindet,
