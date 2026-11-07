@@ -16,6 +16,7 @@ use std::io;
 
 use super::checkout::{CheckoutError, CheckoutPlan};
 use super::conflicted;
+use super::revision::{Missing, NameError, Revision};
 use super::rewrite::{Carried, RewriteError};
 use super::snapshot::{read_any_commit, SnapshotError};
 use super::{now, Repository, UpdateError, WriteLock};
@@ -27,24 +28,6 @@ use crate::{Actor, Authorizer};
 
 /// The operation that the log records for a switch.
 const OPERATION: &str = "switch";
-
-/// A name for a commit in the arguments of a switch: the tip of a branch, or a commit by its ID.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Revision {
-    /// The commit at the tip of the branch.
-    Branch(BranchName),
-    /// A commit. The ID is a claim until the store confirms it.
-    Commit(ObjectId),
-}
-
-impl fmt::Display for Revision {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Branch(name) => name.fmt(f),
-            Self::Commit(id) => id.fmt(f),
-        }
-    }
-}
 
 /// What a switch is asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -524,18 +507,19 @@ impl Repository {
 
     /// The commit that a revision names, which the store has.
     fn commit_of(&self, revision: &Revision) -> Result<CommitId, SwitchError> {
-        match revision {
-            Revision::Branch(name) => self
-                .refs()
-                .branch(name)
-                .map_err(SwitchError::Refs)?
-                .ok_or_else(|| SwitchError::NoSuchBranch(name.clone())),
-            Revision::Commit(id) => self
+        if let Revision::Commit(id) = revision {
+            return self
                 .objects()
                 .resolve_commit(id)
                 .map_err(|error| SwitchError::Store(Box::new(error)))?
-                .ok_or(SwitchError::NoSuchCommit(*id)),
+                .ok_or(SwitchError::NoSuchCommit(*id));
         }
+        self.named_commit(revision)
+            .map_err(SwitchError::Refs)?
+            .map_err(|missing| match missing {
+                Missing::Branch(name) => SwitchError::NoSuchBranch(name),
+                Missing::Name(error) => SwitchError::Name(error),
+            })
     }
 
     /// The checks that write nothing but objects: a name in the way of the new branch, the next
@@ -794,6 +778,9 @@ pub enum SwitchError {
     Checkout(CheckoutError),
     /// There is no branch with the name (`switch -c` makes one).
     NoSuchBranch(BranchName),
+    /// The name of a revision is a tag that does not exist, neither a branch nor a tag, or both
+    /// (ADR-008).
+    Name(NameError),
     /// The store has no commit with the ID.
     NoSuchCommit(ObjectId),
     /// `switch -c` names a branch that exists.
@@ -872,6 +859,7 @@ impl SwitchError {
             Self::Next(error) => error.io_error(),
             Self::AfterSnapshot { source, .. } => source.io_error(),
             Self::NoSuchBranch(_)
+            | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
             | Self::NoStart(_) => None,
@@ -947,6 +935,7 @@ impl fmt::Display for SwitchError {
                 f,
                 "there is no branch `{name}`; `stemma switch -c {name}` makes one"
             ),
+            Self::Name(error) => error.fmt(f),
             Self::NoSuchCommit(id) => write!(f, "the store has no commit {id}"),
             Self::BranchExists(name) => write!(
                 f,
@@ -1043,6 +1032,7 @@ impl Error for SwitchError {
             Self::Next(error) => error.source(),
             Self::AfterSnapshot { source, .. } => source.source(),
             Self::NoSuchBranch(_)
+            | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
             | Self::NoStart(_) => None,
@@ -1267,6 +1257,148 @@ mod tests {
             "{error}"
         );
         assert!(error.to_string().contains("switch -c"), "{error}");
+    }
+
+    /// Creates a tag directly in the store, without an entry in the operation log.
+    fn tag(dir: &TempDir, repository: &Repository, tag: &str, commit: CommitId) {
+        use crate::allowed::Allowed;
+        use crate::refs::{FsRefStore, RefStore};
+        FsRefStore::new(dir.path().join(".stemma"))
+            .create_tag(
+                &name(tag),
+                commit,
+                repository.objects(),
+                &Allowed::granted(),
+            )
+            .unwrap();
+    }
+
+    /// `main` and `feature` are branches at `second`; the tags `release` and `main` are at
+    /// `first`. So `feature` is only a branch, `release` only a tag, and `main` both.
+    fn branches_and_tags(dir: &TempDir, repository: &Repository) -> (CommitId, CommitId) {
+        first_commit(dir, repository);
+        let first = repository.refs().branch(&name("main")).unwrap().unwrap();
+        write(dir, "a.txt", "two");
+        repository
+            .commit("second", &actor(), &AllowAll)
+            .map(drop)
+            .unwrap();
+        let second = repository.refs().branch(&name("main")).unwrap().unwrap();
+        let operation = OperationName::try_new("branch").unwrap();
+        repository
+            .create_branch(
+                &operation,
+                &name("feature"),
+                second.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        tag(dir, repository, "release", first);
+        tag(dir, repository, "main", first);
+        (first, second)
+    }
+
+    /// The commit that a detached switch to the text would lead to, planned and not made.
+    fn detached_at(repository: &Repository, text: &str) -> Result<CommitId, SwitchError> {
+        let target = SwitchTarget::Detach(text.parse().unwrap());
+        match repository.plan_switch(&target, Changes::Carry, &actor(), &AllowAll)? {
+            Planned::Would(plan) => Ok(plan.commit()),
+            Planned::AlreadyOn(name) => panic!("already on {name}"),
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_only_a_branch_or_only_a_tag_leads_to_its_commit() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (first, second) = branches_and_tags(&dir, &repository);
+
+        assert_eq!(detached_at(&repository, "feature").unwrap(), second);
+        assert_eq!(detached_at(&repository, "release").unwrap(), first);
+    }
+
+    #[test]
+    fn a_name_that_is_a_branch_and_a_tag_is_an_error_and_writes_nothing() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        branches_and_tags(&dir, &repository);
+        let count = entries(&repository);
+        let head = repository.refs().head().unwrap();
+
+        let error = detached_at(&repository, "main").unwrap_err();
+        assert!(
+            matches!(&error, SwitchError::Name(NameError::Ambiguous(n)) if n == &name("main")),
+            "{error}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("heads/main") && message.contains("tags/main"),
+            "{message}"
+        );
+
+        let target = SwitchTarget::Detach("main".parse().unwrap());
+        assert!(matches!(
+            switch(&repository, &target),
+            Err(SwitchError::Name(NameError::Ambiguous(_)))
+        ));
+        assert_eq!(entries(&repository), count);
+        assert_eq!(repository.refs().head().unwrap(), head);
+    }
+
+    #[test]
+    fn the_qualified_forms_pick_the_branch_or_the_tag_of_a_name_that_is_both() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (first, second) = branches_and_tags(&dir, &repository);
+
+        assert_eq!(detached_at(&repository, "heads/main").unwrap(), second);
+        assert_eq!(detached_at(&repository, "tags/main").unwrap(), first);
+        assert_eq!(detached_at(&repository, "tags/release").unwrap(), first);
+        assert_eq!(detached_at(&repository, "heads/feature").unwrap(), second);
+    }
+
+    #[test]
+    fn a_qualified_form_never_falls_through_to_the_other_kind() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        branches_and_tags(&dir, &repository);
+
+        // `release` is a tag only, `feature` a branch only.
+        let no_branch = detached_at(&repository, "heads/release").unwrap_err();
+        assert!(matches!(no_branch, SwitchError::NoSuchBranch(ref n) if n == &name("release")));
+        let no_tag = detached_at(&repository, "tags/feature").unwrap_err();
+        assert!(
+            matches!(no_tag, SwitchError::Name(NameError::NoSuchTag(ref n)) if n == &name("feature"))
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_neither_a_branch_nor_a_tag_is_unknown() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        branches_and_tags(&dir, &repository);
+
+        let error = detached_at(&repository, "nowhere").unwrap_err();
+        assert!(
+            matches!(&error, SwitchError::Name(NameError::Unknown(n)) if n == &name("nowhere")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_detached_switch_to_a_tag_detaches_head_at_its_commit() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (first, _) = branches_and_tags(&dir, &repository);
+
+        done(switch(
+            &repository,
+            &SwitchTarget::Detach("release".parse().unwrap()),
+        ));
+
+        assert_eq!(repository.refs().head().unwrap(), Head::Detached(first));
+        assert_eq!(read(&dir, "a.txt"), "one");
     }
 
     const BASE: &str = "one\ntwo\nthree\n";

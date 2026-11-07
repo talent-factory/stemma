@@ -871,23 +871,29 @@ Wechselt den Branch, auf den HEAD zeigt, oder löst HEAD vom Branch (ADR-010).
 \starttyping
 stemma switch NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--discard] [--dry-run]
 stemma switch -c NAME [START] [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--discard] [--dry-run]
-stemma switch --detach COMMIT-ODER-BRANCH [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+stemma switch --detach REVISION [-C VERZEICHNIS] --actor AKTEUR [--take-over]
     [--discard] [--dry-run]
 \stoptyping
 
 \startitemize
 \item {\bf NAME:} Ohne Option der Branch, zu dem HEAD wechselt; er muss bestehen.
-Mit \type{-c} der Name des neuen Branchs, der noch nicht bestehen darf.
-Eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) ist hier kein Name und ein Aufruffehler
-(Exit-Code 2).
+Mit \type{-c} der Name des neuen Branchs, der noch nicht bestehen darf
+und nicht mit \type{heads/} oder \type{tags/} beginnen darf (Exit-Code 1).
+Eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) und ein Tag (\type{tags/NAME}) sind hier
+kein Name und ein Aufruffehler (Exit-Code 2). \type{heads/NAME} nennt den Branch \type{NAME}.
 \item {\bf START:} Nur mit \type{-c}. Ein Branch oder ein Commit (\type{b3:} und 64
 Hexadezimalziffern), auf dem der neue Branch beginnt. Ohne START beginnt er auf dem Commit,
 zu dem HEAD führt: auf der Spitze des Branchs von HEAD oder auf dem abgekoppelten Commit.
 \item {\bf \type{-c}, \type{--create}:} Legt den Branch an und wechselt zu ihm.
 Besteht der Name schon, ist es ein Fehler (Exit-Code 1).
-\item {\bf \type{--detach} COMMIT-ODER-BRANCH:} Löst HEAD vom Branch, sodass er den Commit nennt,
-auf den der Branch zeigt, oder den angegebenen Commit. Mit \type{-c} zusammen ist es ein
-Aufruffehler (Exit-Code 2).
+\item {\bf \type{--detach} REVISION:} Löst HEAD vom Branch, sodass er den Commit nennt,
+auf den die Revision zeigt. Eine Revision ist eine Commit-ID (\type{b3:} und 64
+Hexadezimalziffern), \type{heads/NAME} (nur der Branch), \type{tags/NAME} (nur der Tag) oder ein
+blosser Name. Einen blossen Namen sucht der Befehl als Branch und als Tag: Gibt es genau einen,
+gilt er; gibt es keinen, ist der Name unbekannt; gibt es beide, bricht der Befehl ab und verlangt
+\type{heads/NAME} oder \type{tags/NAME} (ADR-008). Er wählt keinen aus und warnt nicht nur.
+Die beiden Formen mit Präfix suchen nicht weiter: Fehlt der Branch oder der Tag, ist der Name
+unbekannt. Mit \type{-c} zusammen ist es ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot und der
@@ -960,8 +966,11 @@ abgebrochenen Wechsel, der Hinweis, dass ein echter Wechsel zuerst sichert.
 Zeigt HEAD schon auf den Branch, schreibt auch der Plan \type{Already on NAME}.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem unbekannten Branch (die Meldung nennt
-\type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Commit, den der
-Objektspeicher nicht hat, bei einem Branch von HEAD ohne Commit, wenn \type{-c} keinen START hat,
+\type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Namen mit \type{-c},
+der mit \type{heads/} oder \type{tags/} beginnt, bei einem Namen mit \type{--detach}, der weder
+Branch noch Tag ist, bei einem Namen, der Branch und Tag ist (die Meldung nennt beide Formen), bei
+einem \type{tags/NAME} ohne Tag, bei einem Commit, den der Objektspeicher nicht hat,
+bei einem Branch von HEAD ohne Commit, wenn \type{-c} keinen START hat,
 und bei einem offenen Purge.
 Ebenso endet er, wenn eine Datei im Weg steht, die kein Commit verfolgt: Die Meldung nennt den Pfad,
 und der Befehl schreibt nichts, auch keinen Snapshot.
@@ -1001,6 +1010,7 @@ stemma switch -c feature --actor "human daniel"
 stemma switch main --actor "human daniel"
 stemma switch -c fix b3:4a0b66... --actor "human daniel"
 stemma switch --detach main -C projekt --actor "human daniel"
+stemma switch --detach tags/v1 --actor "human daniel"
 stemma switch feature --dry-run --actor "human daniel"
 stemma switch feature --discard --actor "human daniel"
 \stoptyping
@@ -1740,8 +1750,9 @@ stemma tag [-C VERZEICHNIS] [--json]
 \stoptyping
 
 \startitemize
-\item {\bf NAME:} Der Name des Tags, nach den Regeln eines Branch-Namens. Ohne ihn listet der
-Befehl die Tags.
+\item {\bf NAME:} Der Name des Tags, nach den Regeln eines Branch-Namens. Ein neuer Tag darf nicht
+mit \type{heads/} oder \type{tags/} beginnen (Exit-Code 1, ADR-008); einen solchen Tag, den es
+schon gibt, löscht \type{--delete}. Ohne den Namen listet der Befehl die Tags.
 \item {\bf COMMIT:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern. Ohne sie nimmt der
 Befehl den Commit, zu dem HEAD führt: die Spitze des Branches von HEAD, bei einem abgekoppelten
 HEAD dessen Commit. Hat der Branch noch keinen Commit, ist das ein Fehler. Zusammen mit
@@ -1844,8 +1855,10 @@ stemma branch [-C VERZEICHNIS]
 \stoptyping
 
 \startitemize
-\item {\bf NAME:} Der Name des neuen Branches, nach den Regeln eines Branch-Namens. Ohne Name und
-ohne Option listet der Befehl die Branches. Der neue Branch ist nicht ausgecheckt: HEAD,
+\item {\bf NAME:} Der Name des neuen Branches, nach den Regeln eines Branch-Namens. Er darf nicht
+mit \type{heads/} oder \type{tags/} beginnen (Exit-Code 1, ADR-008); das gilt auch für NEU bei
+\type{-m}. Ohne Name und ohne Option listet der Befehl die Branches.
+Der neue Branch ist nicht ausgecheckt: HEAD,
 Arbeitsverzeichnis und Working-Copy-Commit bleiben, wie sie sind.
 \item {\bf START:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern, an dem der Branch
 beginnt. Ohne sie nimmt der Befehl den Commit, zu dem HEAD führt: die Spitze des Branches von HEAD,
@@ -1951,7 +1964,8 @@ der kein UTF-8 ist, lehnt der Befehl ihn ab.
 \item {\bf BRANCH:} Ein Branch, der besteht und den kein anderer Worktree ausgecheckt hat. Der
 Worktree beginnt auf seiner Spitze.
 \item {\bf \type{-b}, \type{--branch} NEU:} Legt den Branch NEU an der Spitze an, zu der HEAD des
-aufrufenden Worktrees führt, und checkt ihn aus. Besteht NEU, ist es ein Fehler. Genau eines von
+aufrufenden Worktrees führt, und checkt ihn aus. Besteht NEU, ist es ein Fehler, und ein Name,
+der mit \type{heads/} oder \type{tags/} beginnt, ebenso. Genau eines von
 BRANCH und \type{-b} ist nötig: Fehlt beides oder stehen beide da, ist es ein Aufruffehler
 (Exit-Code 2). Einen abgekoppelten Worktree legt der Befehl nicht an.
 \item {\bf \type{--owner} AKTEUR:} Der Eigentümer der neuen Arbeitskopie, in der Form der Option

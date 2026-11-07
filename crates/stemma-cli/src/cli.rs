@@ -92,12 +92,12 @@ use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
 use stemma_core::repository::{
-    normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
-    DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
-    OpenError, Planned, PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository,
-    RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError, SwitchError,
-    SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking, UpdateError,
-    WorktreeBranch, WorktreeError,
+    normalize_path_in, require_unreserved, ApplyPurgeError, Changes, CommitError, Committed,
+    Comparison, Content, Diff, DiffError, Discovered, Handled, InitError, InitOptions,
+    MergeBranchError, MergeKind, Merged, OpenError, Planned, PurgeError, PurgePlan, Purged,
+    RebaseError, Rebased, Repository, ReservedPrefix, RestoreError, RestorePlan, Revision,
+    SnapshotError, Status, StatusError, SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy,
+    TrackError, Tracking, UpdateError, WorktreeBranch, WorktreeError, BRANCH_PREFIX, TAG_PREFIX,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -577,9 +577,10 @@ struct CommitArgs {
 
 #[derive(Debug, Args)]
 struct SwitchArgs {
-    /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch
-    /// or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at
-    #[arg(value_name = "NAME", value_parser = parse_revision)]
+    /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch,
+    /// the tag, or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. A name
+    /// that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`
+    #[arg(value_name = "NAME", value_parser = parse_target)]
     target: Revision,
 
     /// With `-c`: where the new branch starts, a branch or a commit (`b3:` and 64 hexadecimal
@@ -697,6 +698,12 @@ fn parse_revision(text: &str) -> Result<Revision, String> {
             .map(Revision::Branch)
             .map_err(|error| error.to_string())
     }
+}
+
+/// Reads the target of `switch`: a commit ID, `heads/NAME`, `tags/NAME`, or a name that the core
+/// looks up as a branch and as a tag (ADR-008). `switch -c` and `switch NAME` take a name only.
+fn parse_target(text: &str) -> Result<Revision, String> {
+    text.parse::<Revision>().map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Args)]
@@ -1003,6 +1010,8 @@ enum CliError {
     /// `branch -d` or `branch -m` names a branch that does not exist, or a name that is only a
     /// directory of branches.
     NoSuchBranch(BranchName),
+    /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008).
+    ReservedName(ReservedPrefix),
     /// The branches were read, but the output could not be written.
     BranchWrite {
         /// The branch that was being written.
@@ -1244,6 +1253,7 @@ impl CliError {
             | Self::TagWrite { .. }
             | Self::NoCommitToBranch
             | Self::NoSuchBranch(_)
+            | Self::ReservedName(_)
             | Self::BranchWrite { .. }
             | Self::WorktreeWrite(_)
             | Self::Write { .. } => ExitCode::FAILURE,
@@ -1555,6 +1565,7 @@ impl fmt::Display for CliError {
                  name a commit",
             ),
             Self::NoSuchBranch(name) => write!(f, "there is no branch `{name}`"),
+            Self::ReservedName(error) => error.fmt(f),
             Self::BranchOutput { made, source } => write!(
                 f,
                 "the branch change is made ({made}), but the result could not be written to \
@@ -1675,7 +1686,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
 fn worktree_add(args: WorktreeAddArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let branch = match (args.branch, args.new_branch) {
         (Some(name), None) => WorktreeBranch::Existing(name),
-        (None, Some(name)) => WorktreeBranch::Create(name),
+        (None, Some(name)) => WorktreeBranch::Create(unreserved(name)?),
         // The argument group takes exactly one of the two.
         _ => unreachable!("the parser requires exactly one of the branch and `-b`"),
     };
@@ -1850,24 +1861,35 @@ impl Drop for TakeOverNote<'_> {
 /// no failure for "already on" or for a plan, and it is one after a switch, because the output is
 /// the only place that names the entry.
 fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    fn switch_usage_error(message: &str) -> ! {
+        Cli::command()
+            .bin_name("stemma")
+            .find_subcommand_mut("switch")
+            .expect("the switch command exists")
+            .error(ErrorKind::ValueValidation, message)
+            .exit()
+    }
+
     // A usage error comes first, as for the errors of the parser: before the actor is read or the
     // repository is looked for.
     let target = match (args.detach, args.create, args.target) {
         (true, _, revision) => SwitchTarget::Detach(revision),
-        (false, true, Revision::Branch(name)) => SwitchTarget::Create {
-            name,
+        (false, true, Revision::Name(name)) => SwitchTarget::Create {
+            name: unreserved(name)?,
             start: args.start,
         },
-        (false, false, Revision::Branch(name)) => SwitchTarget::Existing(name),
-        (false, _, Revision::Commit(id)) => Cli::command()
-            .bin_name("stemma")
-            .find_subcommand_mut("switch")
-            .expect("the switch command exists")
-            .error(
-                ErrorKind::ValueValidation,
-                format!("{id} is a commit and not a branch name; `--detach` detaches HEAD at it"),
-            )
-            .exit(),
+        // A qualified form as the name of a new branch is a reserved prefix (ADR-008).
+        (false, true, Revision::Branch(name)) => return Err(reserved(BRANCH_PREFIX, name)),
+        (false, true, Revision::Tag(name)) => return Err(reserved(TAG_PREFIX, name)),
+        (false, false, Revision::Name(name) | Revision::Branch(name)) => {
+            SwitchTarget::Existing(name)
+        }
+        (false, _, Revision::Tag(name)) => switch_usage_error(&format!(
+            "tags/{name} is a tag and not a branch name; `--detach` detaches HEAD at it"
+        )),
+        (false, _, Revision::Commit(id)) => switch_usage_error(&format!(
+            "{id} is a commit and not a branch name; `--detach` detaches HEAD at it"
+        )),
     };
     let changes = if args.discard {
         Changes::Discard
@@ -3178,6 +3200,18 @@ fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Resul
 /// operation log (the core asks the authorizer for it, and the command passes `AllowAll` until the
 /// policy of phase 4 exists); listing only reads. A tag that exists is refused, at this commit or
 /// at another, because a tag never moves: a tag that was set wrongly is deleted and set again.
+/// Refuses the name of a new branch or tag that starts with `heads/` or `tags/` (ADR-008).
+fn unreserved(name: BranchName) -> Result<BranchName, CliError> {
+    require_unreserved(name).map_err(CliError::ReservedName)
+}
+
+/// The error for a qualified form (`prefix` and `name`) given as the name of a new branch.
+fn reserved(prefix: &'static str, name: BranchName) -> CliError {
+    let name = BranchName::try_new(format!("{prefix}{name}"))
+        .expect("a valid name behind a valid prefix is a valid name");
+    CliError::ReservedName(ReservedPrefix { name, prefix })
+}
+
 fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let Some(name) = args.name else {
         return list_tags(&args.repository, args.json, out);
@@ -3187,6 +3221,7 @@ fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
     if args.delete {
         return delete_tag(&repository, &name, &actor, args.json, out);
     }
+    let name = unreserved(name)?;
     let commit = match args.commit {
         Some(id) => id,
         None => repository
@@ -3318,6 +3353,7 @@ fn branch(args: BranchArgs, out: &mut dyn Write) -> Result<(), CliError> {
         unreachable!("the argument parser takes exactly two names for --move");
     }
     if let Some([old, new]) = args.rename.as_deref() {
+        let new = &unreserved(new.clone())?;
         let actor = actor(args.actor)?;
         let repository = open(&args.repository)?;
         let tip = repository
@@ -3337,6 +3373,7 @@ fn branch(args: BranchArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let Some(name) = args.name else {
         return list_branches(&args.repository, out);
     };
+    let name = unreserved(name)?;
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
     let start = match args.start {

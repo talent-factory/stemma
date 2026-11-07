@@ -389,3 +389,156 @@ fn a_dry_run_of_a_discard_names_the_discard() {
         result.stdout
     );
 }
+
+/// The ID of the newest commit of `main`.
+fn tip(dir: &Path) -> String {
+    ok(dir, &["log", "--json"])
+        .stdout
+        .split('"')
+        .find(|part| part.starts_with("b3:"))
+        .unwrap()
+        .to_owned()
+}
+
+/// `a.txt` is "one" at the tag `v1`, and "two" at the tip of `main`. The branch `later` and the
+/// tag `main` exist as well: `v1` is only a tag, `later` only a branch, and `main` both.
+fn branches_and_tags() -> Dir {
+    let dir = committed();
+    ok(dir.path(), &["tag", "v1", "--actor", ACTOR]);
+    ok(dir.path(), &["tag", "main", "--actor", ACTOR]);
+    write(dir.path(), "a.txt", "two");
+    ok(dir.path(), &["commit", "-m", "second", "--actor", ACTOR]);
+    ok(dir.path(), &["branch", "later", "--actor", ACTOR]);
+    dir
+}
+
+#[test]
+fn a_detached_switch_takes_a_tag_and_a_branch_by_the_plain_name() {
+    let dir = branches_and_tags();
+
+    let tag = ok(dir.path(), &["switch", "--detach", "v1", "--actor", ACTOR]);
+    assert!(
+        tag.stdout.starts_with("Detached HEAD at "),
+        "{}",
+        tag.stdout
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "one");
+
+    ok(
+        dir.path(),
+        &["switch", "--detach", "later", "--actor", ACTOR],
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "two");
+}
+
+#[test]
+fn a_name_that_is_a_branch_and_a_tag_is_refused_and_the_qualified_forms_pick_one() {
+    let dir = branches_and_tags();
+    let before = newest(dir.path());
+
+    let result = run(
+        dir.path(),
+        &["switch", "--detach", "main", "--actor", ACTOR],
+    );
+
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("heads/main") && result.stderr.contains("tags/main"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+    assert_eq!(read(dir.path(), "a.txt"), "two");
+
+    ok(
+        dir.path(),
+        &["switch", "--detach", "tags/main", "--actor", ACTOR],
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "one");
+    ok(
+        dir.path(),
+        &["switch", "--detach", "heads/main", "--actor", ACTOR],
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "two");
+}
+
+#[test]
+fn a_qualified_form_of_a_missing_name_is_unknown_and_never_falls_through() {
+    let dir = branches_and_tags();
+    let before = newest(dir.path());
+
+    let no_branch = run(
+        dir.path(),
+        &["switch", "--detach", "heads/v1", "--actor", ACTOR],
+    );
+    assert_eq!(no_branch.code, 1, "{}", no_branch.stderr);
+    assert!(
+        no_branch.stderr.contains("no branch"),
+        "{}",
+        no_branch.stderr
+    );
+
+    let no_tag = run(
+        dir.path(),
+        &["switch", "--detach", "tags/later", "--actor", ACTOR],
+    );
+    assert_eq!(no_tag.code, 1, "{}", no_tag.stderr);
+    assert!(no_tag.stderr.contains("no tag"), "{}", no_tag.stderr);
+
+    let unknown = run(
+        dir.path(),
+        &["switch", "--detach", "nowhere", "--actor", ACTOR],
+    );
+    assert_eq!(unknown.code, 1, "{}", unknown.stderr);
+    assert!(
+        unknown.stderr.contains("neither a branch nor a tag"),
+        "{}",
+        unknown.stderr
+    );
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+}
+
+#[test]
+fn a_tag_is_no_branch_name_without_detach_and_the_parser_says_so() {
+    let dir = branches_and_tags();
+
+    let result = run(dir.path(), &["switch", "tags/v1", "--actor", ACTOR]);
+
+    assert_eq!(result.code, 2, "{}", result.stderr);
+    assert!(result.stderr.contains("--detach"), "{}", result.stderr);
+    // The plain name of a branch that is also a tag still changes to the branch: `switch NAME`
+    // reads no tags.
+    ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    ok(dir.path(), &["switch", "heads/later", "--actor", ACTOR]);
+}
+
+#[test]
+fn a_new_branch_or_tag_cannot_start_with_a_reserved_prefix() {
+    let dir = branches_and_tags();
+    let before = newest(dir.path());
+    let tip = tip(dir.path());
+
+    for args in [
+        vec!["switch", "-c", "heads/x"],
+        vec!["switch", "-c", "tags/x"],
+        vec!["branch", "heads/x"],
+        vec!["branch", "tags/x"],
+        vec!["branch", "-m", "later", "heads/x"],
+        vec!["tag", "heads/x"],
+        vec!["tag", "tags/x", &tip],
+    ] {
+        let mut args = args;
+        args.extend(["--actor", ACTOR]);
+        let result = run(dir.path(), &args);
+        assert_eq!(result.code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("reserved"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+    // A name that only contains the prefix further in is fine.
+    ok(dir.path(), &["branch", "feat/heads/x", "--actor", ACTOR]);
+    ok(dir.path(), &["tag", "feat/tags/x", "--actor", ACTOR]);
+}

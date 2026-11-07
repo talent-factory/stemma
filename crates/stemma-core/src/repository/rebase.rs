@@ -22,9 +22,9 @@ use std::io;
 
 use super::checkout::CheckoutError;
 use super::conflicted::{self, ConflictedFile};
+use super::revision::{Missing, NameError, Revision};
 use super::rewrite::{Carried, RewriteError};
 use super::snapshot::{read_any_commit, SnapshotError};
-use super::switch::Revision;
 use super::{now, Repository, UpdateError};
 use crate::conflict::AnyCommit;
 use crate::history::HistoryError;
@@ -274,15 +274,18 @@ impl Repository {
             .map_err(RebaseError::Refs)?
             .ok_or_else(|| RebaseError::NoCommits(branch.clone()))?;
         let onto = match target {
-            Revision::Branch(name) => refs
-                .branch(name)
-                .map_err(RebaseError::Refs)?
-                .ok_or_else(|| RebaseError::NoSuchBranch(name.clone()))?,
             Revision::Commit(id) => self
                 .objects()
                 .resolve_commit(id)
                 .map_err(|error| RebaseError::Store(Box::new(error)))?
                 .ok_or(RebaseError::NoSuchCommit(*id))?,
+            named => self
+                .named_commit(named)
+                .map_err(RebaseError::Refs)?
+                .map_err(|missing| match missing {
+                    Missing::Branch(name) => RebaseError::NoSuchBranch(name),
+                    Missing::Name(error) => RebaseError::Name(error),
+                })?,
         };
         let bases = merge_bases(self.objects(), old_tip, onto).map_err(RebaseError::History)?;
         let base = match bases.as_slice() {
@@ -583,6 +586,8 @@ pub enum RebaseError {
     NoCommits(BranchName),
     /// There is no branch with the name.
     NoSuchBranch(BranchName),
+    /// The target is a tag that does not exist, neither a branch nor a tag, or both (ADR-008).
+    Name(NameError),
     /// The store has no commit with the ID.
     NoSuchCommit(ObjectId),
     /// The branch and the target share no commit.
@@ -685,6 +690,7 @@ impl RebaseError {
             Self::NotOnBranch
             | Self::NoCommits(_)
             | Self::NoSuchBranch(_)
+            | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::NoCommonAncestor { .. }
             | Self::AmbiguousBase { .. }
@@ -770,6 +776,7 @@ impl fmt::Display for RebaseError {
                 "the branch `{name}` has no commit yet, so there is nothing to rebase"
             ),
             Self::NoSuchBranch(name) => write!(f, "there is no branch `{name}`"),
+            Self::Name(error) => error.fmt(f),
             Self::NoSuchCommit(id) => write!(f, "the store has no commit {id}"),
             Self::NoCommonAncestor { onto } => write!(
                 f,
@@ -864,6 +871,7 @@ impl Error for RebaseError {
             Self::NotOnBranch
             | Self::NoCommits(_)
             | Self::NoSuchBranch(_)
+            | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::NoCommonAncestor { .. }
             | Self::AmbiguousBase { .. }

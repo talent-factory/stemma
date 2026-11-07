@@ -403,6 +403,7 @@ impl Classify for SwitchError {
             | Self::SnapshotNotDurable { source, .. } => source.kind(),
             Self::AfterSnapshot { source, .. } => source.kind(),
             Self::NoSuchBranch(_)
+            | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
             | Self::NoStart(_) => FailureKind::Other,
@@ -480,6 +481,7 @@ impl Classify for RebaseError {
             Self::NotOnBranch
             | Self::NoCommits(_)
             | Self::NoSuchBranch(_)
+            | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::NoCommonAncestor { .. }
             | Self::AmbiguousBase { .. }

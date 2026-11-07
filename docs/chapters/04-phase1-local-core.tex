@@ -82,8 +82,9 @@ auch wenn er auf denselben Commit zeigt (ADR-008).
 Ein Tag, der falsch gesetzt wurde, wird mit \type{stemma tag --delete} gelöscht und neu gesetzt.
 
 Ein Branch und ein Tag dürfen denselben Namen haben.
-Noch löst kein Befehl einen Namen zu einem Tag auf; ab dem ersten gilt diese Regel (ADR-008).
-Ein Befehl, der eine Revision annimmt, löst den Text dann in dieser Reihenfolge auf:
+Den ersten Befehl, der einen Namen zu einem Tag auflöst, gibt es jetzt: \type{switch --detach}.
+Er löst den Text in dieser Reihenfolge auf (ADR-008);
+\type{switch -c} und \type{rebase} übernehmen die Regel, wenn sie Tags annehmen:
 
 \startitemize[n]
 \item Ein Text, der mit \type{b3:} beginnt, ist eine Commit-ID und kein Name.
@@ -99,9 +100,11 @@ Der Befehl wählt keinen von beiden aus und warnt auch nicht nur,
 denn eine Warnung geht in der Ausgabe eines Agenten leicht unter,
 und ein Name, der gestern eindeutig war, soll seine Bedeutung nicht ändern,
 weil jemand später einen Tag mit demselben Namen setzt.
-Die beiden Präfixe sind reserviert: Der erste Befehl, der einen Namen zu einem Tag auflöst,
-lehnt für neue Branches und Tags einen Namen ab,
+Die beiden Präfixe sind reserviert: \type{switch -c}, \type{branch}, \type{tag} und
+\type{worktree add -b} lehnen für neue Branches und Tags einen Namen ab,
 der mit \type{heads/} oder \type{tags/} beginnt.
+Namen, die es schon gibt, schreibt Stemma nicht um, und \type{verify} nennt sie keinen Schaden.
+Die Regel steht in der Schicht, die Namen auflöst; der Referenzspeicher behält seine Namensregeln.
 
 Eine Datei je Branch kostet bei vielen Branches Zeit: Der Zugriff vergleicht die
 gespeicherte Schreibweise und liest dafür jeden Eintrag der Verzeichnisse auf dem Pfad
