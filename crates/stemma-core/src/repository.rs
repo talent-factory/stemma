@@ -779,6 +779,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, UpdateError> {
+        refuse_reserved(name)?;
         let start = CommitId::new(start);
         Ok(self
             .update_branch(operation, name, None, start, actor, authorizer)?
@@ -811,6 +812,7 @@ impl Repository {
     ) -> Result<Entry, UpdateError> {
         // A claim only: the store confirms the kind under the lock, and an ID that names no commit
         // is refused there (`RefError::MissingCommit`, `RefError::NotACommit`).
+        refuse_reserved(name)?;
         let commit = CommitId::new(commit);
         let allowed = self.authorize(actor, authorizer, operation, name.as_str())?;
         let lock = self.refs.lock_writer(&allowed)?;
@@ -966,6 +968,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, UpdateError> {
+        refuse_reserved(new)?;
         let expected = CommitId::new(expected);
         let allowed = self.authorize(actor, authorizer, operation, old.as_str())?;
         // The proof of the second question is not needed: the lock takes one, and the first
@@ -1353,6 +1356,9 @@ pub enum UpdateError {
         /// The branch, or `HEAD`.
         target: String,
     },
+    /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008). No entry was
+    /// written and nothing moved.
+    ReservedName(ReservedPrefix),
     /// The checks refused, or the references failed before an entry was written: a name that is in
     /// the way, a branch that is not where the caller saw it, a commit that is not in the store,
     /// an unreadable HEAD, a lock that is held. No entry was written and nothing moved.
@@ -1405,7 +1411,7 @@ impl UpdateError {
             | Self::PartlyMoved { source: error, .. }
             | Self::NotDurable { source: error, .. } => error.io_error(),
             Self::Log(error) => error.io_error(),
-            Self::Denied { .. } => None,
+            Self::Denied { .. } | Self::ReservedName(_) => None,
         }
     }
 
@@ -1486,6 +1492,7 @@ impl fmt::Display for UpdateError {
                 path.display()
             ),
             Self::Log(error) => error.fmt(f),
+            Self::ReservedName(error) => error.fmt(f),
             Self::MoveFailed { entry, source } => {
                 // A tag that vanished after the checks is where the entry puts it.
                 let tail = if matches!(source, RefError::StaleTag { found: None, .. }) {
@@ -1524,9 +1531,18 @@ impl Error for UpdateError {
             | Self::PartlyMoved { source: error, .. }
             | Self::NotDurable { source: error, .. } => error.source(),
             Self::Log(error) => error.source(),
+            Self::ReservedName(error) => Some(error),
             Self::Denied { .. } => None,
         }
     }
+}
+
+/// Refuses the name of a new branch or tag that starts with `heads/` or `tags/` (ADR-008). The
+/// layer that resolves names owns the rule; the ref store stores and does not decide.
+pub(crate) fn refuse_reserved(name: &BranchName) -> Result<(), UpdateError> {
+    require_unreserved(name.clone())
+        .map(drop)
+        .map_err(UpdateError::ReservedName)
 }
 
 /// Reads the file `format`, at most [`FORMAT_MAX_LEN`] bytes of it. It must be a regular file or
@@ -2683,6 +2699,7 @@ mod tests {
 
     use super::*;
     use crate::change::ChangeId;
+    use crate::failure::{Classify, FailureKind};
     use crate::object::{Blob, ObjectId};
     use crate::store::ObjectStore;
     use crate::testutil::TempDir;
@@ -5292,6 +5309,53 @@ mod tests {
         let a = store_commit(&repository, "a");
         update(&repository, "main", None, a).unwrap();
         (dir, repository, a)
+    }
+
+    #[test]
+    fn a_new_name_with_a_reserved_prefix_is_refused_without_an_entry() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let before = numbers(&repository);
+        for name in ["heads/x", "tags/x", "heads/a/b"] {
+            let errors = [
+                create(&repository, name, a).unwrap_err(),
+                rename(&repository, "topic", name, a, &AllowAll).unwrap_err(),
+                repository
+                    .create_tag(
+                        &op("tag"),
+                        &branch(name),
+                        a.object_id(),
+                        &actor(),
+                        &AllowAll,
+                    )
+                    .unwrap_err(),
+            ];
+            for error in errors {
+                assert!(
+                    matches!(&error, UpdateError::ReservedName(reserved) if reserved.name == name),
+                    "{error}"
+                );
+                assert_eq!(error.kind(), FailureKind::Other);
+            }
+        }
+        assert_eq!(numbers(&repository), before);
+        assert_eq!(repository.refs().branch(&branch("heads/x")).unwrap(), None);
+        assert_eq!(repository.refs().tag(&branch("tags/x")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_name_that_only_contains_a_reserved_prefix_is_accepted() {
+        let (_dir, repository, a) = with_main_and_topic();
+        create(&repository, "feat/heads/x", a).unwrap();
+        create(&repository, "headsup", a).unwrap();
+        repository
+            .create_tag(
+                &op("tag"),
+                &branch("tags"),
+                a.object_id(),
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
     }
 
     #[test]

@@ -19,7 +19,7 @@ use super::conflicted;
 use super::revision::{Missing, NameError, Revision};
 use super::rewrite::{Carried, RewriteError};
 use super::snapshot::{read_any_commit, SnapshotError};
-use super::{now, Repository, UpdateError, WriteLock};
+use super::{now, refuse_reserved, Repository, UpdateError, WriteLock};
 use crate::object::{CommitId, ObjectId, TreeId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, TAKE_OVER};
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
@@ -222,6 +222,9 @@ impl Repository {
     ) -> Result<Switched, SwitchError> {
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
+        if let SwitchTarget::Create { name, .. } = target {
+            refuse_reserved(name).map_err(SwitchError::Update)?;
+        }
         self.refs_store()
             .refuse_pending_purge()
             .map_err(SwitchError::Refs)?;
@@ -1872,6 +1875,29 @@ mod tests {
         assert_eq!(handled, Handled::Carried { conflicts: vec![] });
         assert_eq!(working_copy(&repository).change(), before.change());
         assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nTHREE\n");
+    }
+
+    #[test]
+    fn switching_to_a_new_branch_with_a_reserved_prefix_is_refused_before_anything() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        let head = repository.refs().head().unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+        for text in ["heads/x", "tags/x"] {
+            let target = SwitchTarget::Create {
+                name: name(text),
+                start: None,
+            };
+            let error = switch(&repository, &target).unwrap_err();
+            assert!(
+                matches!(&error, SwitchError::Update(UpdateError::ReservedName(_))),
+                "{error}"
+            );
+            assert_eq!(repository.refs().branch(&name(text)).unwrap(), None);
+        }
+        assert_eq!(repository.refs().head().unwrap(), head);
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
     }
 
     #[test]

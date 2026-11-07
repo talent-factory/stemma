@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use super::checkout::{CheckoutError, CheckoutPlan};
 use super::conflicted;
 use super::snapshot::{read_any_commit, read_commit, tracked_files, SnapshotError};
-use super::{exists, now, OpenError, Repository, UpdateError, METADATA_DIR, WORKTREES_DIR};
+use super::{
+    exists, now, refuse_reserved, OpenError, Repository, UpdateError, METADATA_DIR, WORKTREES_DIR,
+};
 use crate::change::{ChangeId, GenerateError};
 use crate::fault;
 use crate::object::{Commit, CommitId};
@@ -460,6 +462,9 @@ impl Repository {
     ) -> Result<AddedWorktree, WorktreeError> {
         let operation =
             OperationName::try_new(OPERATION).expect("`worktree-add` is a valid operation name");
+        if let WorktreeBranch::Create(name) = branch {
+            refuse_reserved(name).map_err(WorktreeError::Update)?;
+        }
         self.refs_store()
             .refuse_pending_purge()
             .map_err(WorktreeError::Refs)?;
@@ -1831,6 +1836,38 @@ mod tests {
         assert!(!refused.pointer_moved());
         assert!(refused.entry().is_some());
         assert!(!refused.wrote_its_entry());
+    }
+
+    #[test]
+    fn a_new_branch_with_a_reserved_prefix_is_refused_and_adds_no_worktree() {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        fs::write(dir.path().join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor(), &AllowAll)
+            .unwrap();
+        let _first = repository.commit("first", &actor(), &AllowAll).unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+        let place = TempDir::new();
+        let path = place.path().join("linked");
+
+        let error = repository
+            .add_worktree(
+                &path,
+                &WorktreeBranch::Create(BranchName::try_new("tags/x").unwrap()),
+                None,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, WorktreeError::Update(UpdateError::ReservedName(_))),
+            "{error}"
+        );
+        assert!(!path.exists());
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
     }
 
     #[test]

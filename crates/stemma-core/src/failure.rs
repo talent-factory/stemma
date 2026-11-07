@@ -192,7 +192,7 @@ impl Classify for UpdateError {
             Self::MoveFailed { source, .. }
             | Self::PartlyMoved { source, .. }
             | Self::NotDurable { source, .. } => source.kind(),
-            Self::Denied { .. } => FailureKind::Other,
+            Self::Denied { .. } | Self::ReservedName(_) => FailureKind::Other,
         }
     }
 }
