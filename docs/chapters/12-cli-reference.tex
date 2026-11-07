@@ -635,6 +635,9 @@ Es wird angelegt, wenn es nicht existiert. Standard ist das aktuelle.
 \item {\bf \type{--initial-branch} NAME:} Der Branch, auf den HEAD zeigt.
 Standard ist \type{main}. Der Branch selbst entsteht erst mit dem ersten Commit.
 Ein ungültiger Name ist ein Aufruffehler (Exit-Code 2) und legt nichts an.
+Ein Name, der mit \type{heads/} oder \type{tags/} beginnt, ist reserviert
+(ADR-008): Er endet mit Exit-Code 1 und legt nichts an,
+denn ein solcher Branch liesse sich unter seinem einfachen Namen nicht erreichen.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
@@ -2871,6 +2874,10 @@ Die Zeilen \type{rewrite} stehen in der Reihenfolge, in der die Commits entstehe
 Eltern vor Kindern. Die Zeilen der Zeiger folgen der Form von \type{op restore --dry-run}.
 Mit \type{--move-tags} steht nach den Zeilen der Branches je eine Zeile
 \type{tag NAME  alt -> neu} für jeden Tag, der sich bewegt; ohne die Option gibt es sie nie.
+Die letzte Zeile nennt die Optionen, mit denen der Purge sich ausführen lässt:
+Wurde der Plan mit \type{--move-tags} verlangt, lautet sie
+\type{Run it with --apply --move-tags; a purge cannot be undone}, denn \type{--apply} allein
+bricht ab, sobald ein Tag sich bewegen müsste.
 \type{stub entries} nennt die Nummern als Bereiche, zum Beispiel \type{3, 5-7}.
 Liegt der Blob in keinem Commit, fehlen die Zeilen \type{rewrite} und \type{stub entries};
 gelöscht werden der Blob und allenfalls Reste im Objektspeicher, die ihn enthalten.

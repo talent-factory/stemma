@@ -74,6 +74,46 @@ fn init_uses_the_initial_branch() {
 }
 
 #[test]
+fn a_reserved_prefix_in_the_initial_branch_is_refused_and_creates_nothing() {
+    let dir = Dir::new();
+    for bad in ["heads/x", "tags/x"] {
+        let result = run(
+            dir.path(),
+            &[
+                "init",
+                "-C",
+                "target",
+                "--initial-branch",
+                bad,
+                "--actor",
+                "human daniel",
+            ],
+        );
+        assert_eq!(result.code, 1, "{bad:?}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("reserved"),
+            "{bad:?}: {}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "");
+        assert!(!dir.path().join("target").exists(), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_name_that_only_resembles_a_reserved_prefix_is_accepted() {
+    for name in ["heads-up", "theads/x", "tags", "headsup", "a/heads/x"] {
+        let dir = Dir::new();
+        let result = run(
+            dir.path(),
+            &["init", "--initial-branch", name, "--actor", "human daniel"],
+        );
+        assert_eq!(result.code, 0, "{name:?}: {}", result.stderr);
+        assert_eq!(head(dir.path()), format!("branch {name}\n"), "{name:?}");
+    }
+}
+
+#[test]
 fn an_invalid_branch_is_a_usage_error_and_creates_nothing() {
     let dir = Dir::new();
     for bad in ["", "a b", "/a", "a/"] {

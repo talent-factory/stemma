@@ -335,13 +335,14 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`InitError::Denied`] if the authorizer refuses, [`InitError::AlreadyExists`] if
-    /// `.stemma` exists in `path` (nothing is changed), [`InitError::Io`] if the storage fails
-    /// (the temporary directory is removed), [`InitError::Log`] if the first entry could not be
-    /// written (among others an actor that is too long for an entry), [`InitError::Leftover`] if a
-    /// failure is followed by one to remove the temporary directory, and [`InitError::NotDurable`]
-    /// if the repository is complete but the final flush failed. After `NotDurable`,
-    /// [`Repository::open`] works.
+    /// Returns [`InitError::ReservedName`] if the initial branch starts with `heads/` or `tags/`
+    /// (before the authorizer is asked), [`InitError::Denied`] if the authorizer refuses,
+    /// [`InitError::AlreadyExists`] if `.stemma` exists in `path` (nothing is changed),
+    /// [`InitError::Io`] if the storage fails (the temporary directory is removed),
+    /// [`InitError::Log`] if the first entry could not be written (among others an actor that is
+    /// too long for an entry), [`InitError::Leftover`] if a failure is followed by one to remove
+    /// the temporary directory, and [`InitError::NotDurable`] if the repository is complete but
+    /// the final flush failed. After `NotDurable`, [`Repository::open`] works.
     pub fn init(
         path: impl AsRef<Path>,
         options: &InitOptions,
@@ -349,6 +350,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Self, InitError> {
         let path = path.as_ref();
+        require_unreserved(options.initial_branch.clone()).map_err(InitError::ReservedName)?;
         let target = path.join(METADATA_DIR);
         let Some(allowed) = Allowed::ask(
             authorizer,
@@ -1999,6 +2001,9 @@ pub enum InitError {
         /// The error of the file system.
         source: io::Error,
     },
+    /// The initial branch starts with `heads/` or `tags/` (ADR-008). Such a branch could not be
+    /// reached by its plain name. Nothing was asked and nothing was changed.
+    ReservedName(ReservedPrefix),
     /// The first entry of the log could not be written.
     Log(OpLogError),
     /// The first working-copy commit could not be stored.
@@ -2028,8 +2033,9 @@ impl InitError {
     }
 
     /// Returns the error of the file system if this is [`InitError::Io`], [`InitError::NotDurable`],
-    /// the error of a [`InitError::Log`], or the error of a [`InitError::Leftover`]. The chain of [`Error::source`] does not lead to
-    /// it (see the crate documentation).
+    /// the error of a [`InitError::Log`], [`InitError::Store`], or [`InitError::ChangeId`], or the
+    /// error of a [`InitError::Leftover`]. The chain of [`Error::source`] does not lead to it (see
+    /// the crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
             Self::Io { source, .. } | Self::NotDurable { source, .. } => Some(source),
@@ -2037,7 +2043,7 @@ impl InitError {
             Self::Store(error) => error.io_error(),
             Self::ChangeId(error) => Some(error.io_error()),
             Self::Leftover { error, .. } => error.io_error(),
-            Self::Denied { .. } | Self::AlreadyExists { .. } => None,
+            Self::Denied { .. } | Self::AlreadyExists { .. } | Self::ReservedName(_) => None,
         }
     }
 }
@@ -2059,6 +2065,7 @@ impl fmt::Display for InitError {
                     path.display()
                 )
             }
+            Self::ReservedName(error) => error.fmt(f),
             Self::Io {
                 operation,
                 path,
@@ -2106,6 +2113,8 @@ impl Error for InitError {
             // first link that it does not print yet.
             Self::Leftover { error, .. } => error.source(),
             Self::Denied { .. } | Self::AlreadyExists { .. } => None,
+            // The message is that of the inner error already (`Display`), so it is no cause.
+            Self::ReservedName(error) => error.source(),
         }
     }
 }
@@ -2749,6 +2758,23 @@ mod tests {
 
     fn set_format(dir: &Path, content: impl AsRef<[u8]>) {
         fs::write(dir.join(".stemma").join("format"), content).unwrap();
+    }
+
+    #[test]
+    fn init_refuses_a_reserved_initial_branch_before_anything() {
+        for name in ["heads/x", "tags/x"] {
+            let dir = TempDir::new();
+            let options = InitOptions::new(BranchName::try_new(name).unwrap());
+            // `DenyAll` would give `Denied`: the name is refused before the authorizer is asked.
+            let error = Repository::init(dir.path(), &options, &actor(), &DenyAll).unwrap_err();
+            assert!(
+                matches!(&error, InitError::ReservedName(reserved) if reserved.name == name),
+                "{error}"
+            );
+            assert!(names(dir.path()).is_empty(), "{name}");
+            // The message names the prefix already, so the error has no cause of its own.
+            assert!(Error::source(&error).is_none(), "{name}");
+        }
     }
 
     #[test]

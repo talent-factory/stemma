@@ -2348,7 +2348,7 @@ fn purge(args: PurgeArgs, out: &mut dyn Write) -> Result<(), CliError> {
             let plan = repository
                 .plan_purge_with(blob, &actor, &AllowAll, tags)
                 .map_err(CliError::Purge)?;
-            return match out.write_all(purge_text(&plan).as_bytes()) {
+            return match out.write_all(purge_text(&plan, args.move_tags).as_bytes()) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
                 Err(error) => Err(CliError::PurgeOutput(error)),
@@ -2382,13 +2382,19 @@ fn warn_scratch_left(purged: &Purged) {
 }
 
 /// What a purge would do: a first line, the lines of [`plan_lines`], and a last line that says how
-/// to make it.
-fn purge_text(plan: &PurgePlan) -> String {
+/// to make it. The last line repeats `--move-tags` if it was given, because the purge refuses to
+/// move a tag without it.
+fn purge_text(plan: &PurgePlan, move_tags: bool) -> String {
+    let options = if move_tags {
+        "--apply --move-tags"
+    } else {
+        "--apply"
+    };
     format!(
-        "Would purge blob {}; nothing is written\n{}{}",
+        "Would purge blob {}; nothing is written\n{}Run it with {options}; \
+         a purge cannot be undone\n",
         plan.blob(),
         plan_lines(plan),
-        "Run it with --apply; a purge cannot be undone\n"
     )
 }
 

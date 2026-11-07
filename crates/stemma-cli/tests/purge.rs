@@ -170,22 +170,27 @@ fn move_tags_sets_the_tag_again_at_the_commit_that_the_purge_leaves() {
         &["purge", &secret(), "--move-tags", "--actor", ACTOR],
     );
     assert!(plan.stdout.contains("    tag v1  "), "{}", plan.stdout);
+    // The advice must work as it stands, so it names `--move-tags` too.
+    assert_eq!(
+        plan.stdout.lines().last(),
+        Some("Run it with --apply --move-tags; a purge cannot be undone")
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap(),
         before
     );
 
-    let done = ok(
-        dir.path(),
-        &[
-            "purge",
-            &secret(),
-            "--apply",
-            "--move-tags",
-            "--actor",
-            ACTOR,
-        ],
-    );
+    // Run exactly the options that the advice names; they must be enough.
+    let hint = plan.stdout.lines().last().unwrap();
+    let options = hint
+        .strip_prefix("Run it with ")
+        .and_then(|rest| rest.split(';').next())
+        .unwrap_or_else(|| panic!("unexpected advice: {hint}"));
+    let secret = secret();
+    let mut args = vec!["purge", secret.as_str()];
+    args.extend(options.split_whitespace());
+    args.extend(["--actor", ACTOR]);
+    let done = ok(dir.path(), &args);
     assert!(done.stdout.contains("    tag v1  "), "{}", done.stdout);
     let after = std::fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap();
     assert_ne!(after, before, "the tag points to the new commit");
