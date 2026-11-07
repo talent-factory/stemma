@@ -19,7 +19,7 @@ use super::conflicted;
 use super::revision::{Missing, NameError, Revision};
 use super::rewrite::{Carried, RewriteError};
 use super::snapshot::{read_any_commit, SnapshotError};
-use super::{now, Repository, UpdateError, WriteLock};
+use super::{now, refuse_reserved, Repository, UpdateError, WriteLock};
 use crate::object::{CommitId, ObjectId, TreeId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, TAKE_OVER};
 use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
@@ -35,7 +35,7 @@ pub enum SwitchTarget {
     /// `switch <name>`: HEAD names the existing branch.
     Existing(BranchName),
     /// `switch -c <name> [<start>]`: the branch is made at `start` (by default the commit that HEAD
-    /// leads to) and HEAD names it.
+    /// leads to) and HEAD names it. The name must not start with `heads/` or `tags/` (ADR-008).
     Create {
         /// The name of the new branch.
         name: BranchName,
@@ -203,7 +203,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Before the snapshot: [`SwitchError::Update`] for a refusal of the question `switch`,
+    /// Before the snapshot: [`SwitchError::Update`] for a refusal of the question `switch` or for
+    /// a new branch whose name starts with `heads/` or `tags/` ([`UpdateError::ReservedName`]),
     /// [`SwitchError::NoSuchBranch`], [`SwitchError::NoSuchCommit`], [`SwitchError::BranchExists`],
     /// [`SwitchError::NoStart`], [`SwitchError::Refs`], [`SwitchError::Store`],
     /// [`SwitchError::Read`] for a commit that cannot be read, [`SwitchError::Next`] for the
@@ -222,6 +223,9 @@ impl Repository {
     ) -> Result<Switched, SwitchError> {
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
+        if let SwitchTarget::Create { name, .. } = target {
+            refuse_reserved(name).map_err(SwitchError::Update)?;
+        }
         self.refs_store()
             .refuse_pending_purge()
             .map_err(SwitchError::Refs)?;
@@ -393,6 +397,9 @@ impl Repository {
     ) -> Result<Planned, SwitchError> {
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
+        if let SwitchTarget::Create { name, .. } = target {
+            refuse_reserved(name).map_err(SwitchError::Update)?;
+        }
         self.refs_store()
             .refuse_pending_purge()
             .map_err(SwitchError::Refs)?;
@@ -753,7 +760,8 @@ fn target_name(target: &SwitchTarget) -> String {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SwitchError {
-    /// The authorizer refused `switch`, or the entry could not be written (see
+    /// The authorizer refused `switch`, the name of a new branch starts with `heads/` or `tags/`
+    /// ([`UpdateError::ReservedName`]), or the entry could not be written (see
     /// [`UpdateError::Log`]). No pointer moved and no file was written.
     Update(UpdateError),
     /// The references could not be read, a lock is held, a name is in the way of the new branch, or
@@ -1872,6 +1880,44 @@ mod tests {
         assert_eq!(handled, Handled::Carried { conflicts: vec![] });
         assert_eq!(working_copy(&repository).change(), before.change());
         assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nTHREE\n");
+    }
+
+    #[test]
+    fn switching_to_a_new_branch_with_a_reserved_prefix_is_refused_before_anything() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        two_branches(&dir, &repository);
+        let head = repository.refs().head().unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+        for text in ["heads/x", "tags/x"] {
+            let target = SwitchTarget::Create {
+                name: name(text),
+                start: None,
+            };
+            let error = switch(&repository, &target).unwrap_err();
+            assert!(
+                matches!(&error, SwitchError::Update(UpdateError::ReservedName(_))),
+                "{error}"
+            );
+            assert_eq!(repository.refs().branch(&name(text)).unwrap(), None);
+            // The plan of the switch refuses the same name, and before the authorizer is asked.
+            let error = repository
+                .plan_switch(&target, Changes::Carry, &actor(), &AllowAll)
+                .unwrap_err();
+            assert!(
+                matches!(&error, SwitchError::Update(UpdateError::ReservedName(_))),
+                "{error}"
+            );
+            let error = repository
+                .switch(&target, Changes::Carry, &actor(), &DenyAll)
+                .unwrap_err();
+            assert!(
+                matches!(&error, SwitchError::Update(UpdateError::ReservedName(_))),
+                "{error}"
+            );
+        }
+        assert_eq!(repository.refs().head().unwrap(), head);
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
     }
 
     #[test]

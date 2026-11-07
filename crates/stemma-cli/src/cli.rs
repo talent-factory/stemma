@@ -92,12 +92,12 @@ use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
 use stemma_core::repository::{
-    normalize_path_in, require_unreserved, ApplyPurgeError, Changes, CommitError, Committed,
-    Comparison, Content, Diff, DiffError, Discovered, Handled, InitError, InitOptions,
-    MergeBranchError, MergeKind, Merged, OpenError, Planned, PurgeError, PurgePlan, Purged,
-    RebaseError, Rebased, Repository, ReservedPrefix, RestoreError, RestorePlan, Revision,
-    SnapshotError, Status, StatusError, SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy,
-    TrackError, Tracking, UpdateError, WorktreeBranch, WorktreeError, BRANCH_PREFIX, TAG_PREFIX,
+    normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
+    DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
+    OpenError, Planned, PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository,
+    ReservedPrefix, RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError,
+    SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking, UpdateError,
+    WorktreeBranch, WorktreeError, BRANCH_PREFIX, TAG_PREFIX,
 };
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
@@ -1021,7 +1021,9 @@ enum CliError {
     /// `branch -d` or `branch -m` names a branch that does not exist, or a name that is only a
     /// directory of branches.
     NoSuchBranch(BranchName),
-    /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008).
+    /// `switch -c` got a qualified form (`heads/NAME`, `tags/NAME`) as the name of a new branch
+    /// (ADR-008). The core refuses a plain name with such a prefix as
+    /// [`UpdateError::ReservedName`].
     ReservedName(ReservedPrefix),
     /// The branches were read, but the output could not be written.
     BranchWrite {
@@ -1697,7 +1699,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
 fn worktree_add(args: WorktreeAddArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let branch = match (args.branch, args.new_branch) {
         (Some(name), None) => WorktreeBranch::Existing(name),
-        (None, Some(name)) => WorktreeBranch::Create(unreserved(name)?),
+        (None, Some(name)) => WorktreeBranch::Create(name),
         // The argument group takes exactly one of the two.
         _ => unreachable!("the parser requires exactly one of the branch and `-b`"),
     };
@@ -1886,7 +1888,7 @@ fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let target = match (args.detach, args.create, args.target) {
         (true, _, revision) => SwitchTarget::Detach(revision),
         (false, true, Revision::Name(name)) => SwitchTarget::Create {
-            name: unreserved(name)?,
+            name,
             start: args.start,
         },
         // A qualified form as the name of a new branch is a reserved prefix (ADR-008).
@@ -3215,11 +3217,6 @@ fn qualified(revision: &Revision) -> String {
     }
 }
 
-/// Refuses the name of a new branch or tag that starts with `heads/` or `tags/` (ADR-008).
-fn unreserved(name: BranchName) -> Result<BranchName, CliError> {
-    require_unreserved(name).map_err(CliError::ReservedName)
-}
-
 /// The error for a qualified form (`prefix` and `name`) given as the name of a new branch.
 fn reserved(prefix: &'static str, name: &BranchName) -> CliError {
     CliError::ReservedName(ReservedPrefix {
@@ -3242,7 +3239,6 @@ fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
     if args.delete {
         return delete_tag(&repository, &name, &actor, args.json, out);
     }
-    let name = unreserved(name)?;
     let commit = match args.commit {
         Some(id) => id,
         None => repository
@@ -3374,7 +3370,6 @@ fn branch(args: BranchArgs, out: &mut dyn Write) -> Result<(), CliError> {
         unreachable!("the argument parser takes exactly two names for --move");
     }
     if let Some([old, new]) = args.rename.as_deref() {
-        let new = &unreserved(new.clone())?;
         let actor = actor(args.actor)?;
         let repository = open(&args.repository)?;
         let tip = repository
@@ -3394,7 +3389,6 @@ fn branch(args: BranchArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let Some(name) = args.name else {
         return list_branches(&args.repository, out);
     };
-    let name = unreserved(name)?;
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
     let start = match args.start {
