@@ -117,7 +117,7 @@
   <line x1="480" y1="546" x2="480" y2="560" stroke="#B45309" marker-end="url(#arrow-orange)"/>
 </g>
 <!-- Explanation -->
-<g font-size="12" fill="#0F172A">
+<g font-size="12" fill="#64748B">
   <text x="400" y="98">Die Pfeile zwischen den</text>
   <text x="400" y="114">Commits zeigen auf den</text>
   <text x="400" y="130">Elternteil.</text>

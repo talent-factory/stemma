@@ -8,7 +8,7 @@
     <text x="380" y="43" fill="#2B6CB0">verzeichnis</text>
     <text x="480" y="28" fill="#B45309">Working-Copy-</text>
     <text x="480" y="43" fill="#B45309">Commit</text>
-    <text x="580" y="28" fill="#2F7D32">Branch, HEAD</text>
+    <text x="580" y="28" fill="#2F7D32">Branch, <tspan font-family="Courier, monospace">HEAD</tspan></text>
     <text x="580" y="43" fill="#2F7D32">und Tags</text>
     <text x="680" y="28" fill="#6B46C1">Operation</text>
     <text x="680" y="43" fill="#6B46C1">Log</text>
@@ -70,9 +70,9 @@
     <text x="20" y="493">zeigt die Commits, Kinder vor Eltern</text>
     <text x="20" y="537">setzt einen Tag auf einen Commit oder listet die Tags</text>
     <text x="20" y="581">legt Branches an, benennt sie um, löscht sie oder listet sie</text>
-    <text x="20" y="625">wechselt den Branch oder löst HEAD vom Branch</text>
-    <text x="20" y="669">führt einen Branch in den Branch von HEAD ein</text>
-    <text x="20" y="713">legt eine zweite Arbeitskopie mit eigenem HEAD an</text>
+    <text x="20" y="625">wechselt den Branch oder löst <tspan font-family="Courier, monospace">HEAD</tspan> vom Branch</text>
+    <text x="20" y="669">führt einen Branch in den Branch von <tspan font-family="Courier, monospace">HEAD</tspan> ein</text>
+    <text x="20" y="713">legt eine zweite Arbeitskopie mit eigenem <tspan font-family="Courier, monospace">HEAD</tspan> an</text>
     <text x="20" y="757">spielt den Branch auf ein Ziel neu auf</text>
     <text x="20" y="801">entfernt einen Worktree, der Branch bleibt</text>
   </g>

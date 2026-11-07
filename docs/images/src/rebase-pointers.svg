@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 608" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 684" font-family="Helvetica, Arial, sans-serif">
 <title>Zeiger beim Rebase, mit den Zuständen nach einem Absturz</title>
 <defs>
   <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
@@ -7,7 +7,7 @@
   <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B45309"/></marker>
   <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6B46C1"/></marker>
 </defs>
-<rect x="0" y="0" width="720" height="608" fill="#FFFFFF"/>
+<rect x="0" y="0" width="720" height="684" fill="#FFFFFF"/>
 <text x="20" y="24" font-size="13" font-weight="bold" fill="#0F172A">Verlauf vor dem Rebase</text>
 <text x="340" y="24" font-size="13" font-weight="bold" fill="#0F172A">Verlauf danach</text>
 <rect x="20" y="93" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
@@ -65,10 +65,10 @@
 <rect x="610" y="236" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="654.0" y="255.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W</text>
 <line x1="20" y1="281.0" x2="700" y2="281.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="296.0" font-size="12" fill="#B91C1C">Absturz hier: höchstens unerreichbare Objekte (C1′, C2′, W′); kein Zeiger dieser Operation hat sich bewegt.</text>
-<text x="20" y="331.0" font-size="12" font-weight="bold" fill="#0F172A">Eintrag gesichert</text>
+<text x="20" y="296.0" font-size="12" fill="#B91C1C">Absturz hier: nichts geschrieben; der Aufruf lässt sich wiederholen.</text>
+<text x="20" y="331.0" font-size="12" font-weight="bold" fill="#0F172A">Snapshot</text>
 <rect x="222" y="312" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="284.0" y="331.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rebase</text>
+<text x="284.0" y="331.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">snapshot</text>
 <rect x="350" y="312" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="393.0" y="331.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2</text>
 <rect x="440" y="312" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
@@ -76,8 +76,8 @@
 <rect x="610" y="312" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="654.0" y="331.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W</text>
 <line x1="20" y1="357.0" x2="700" y2="357.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="372.0" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, kein Zeiger hat sich bewegt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang unbekannt.</text>
-<text x="20" y="407.0" font-size="12" font-weight="bold" fill="#0F172A">Dateien geschrieben</text>
+<text x="20" y="372.0" font-size="12" fill="#B91C1C">Absturz hier: nur der Eintrag <tspan font-family="Courier, monospace">snapshot</tspan> ist neu; höchstens unerreichbare Objekte (C1′, C2′, W′).</text>
+<text x="20" y="407.0" font-size="12" font-weight="bold" fill="#0F172A">Eintrag gesichert</text>
 <rect x="222" y="388" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="407.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rebase</text>
 <rect x="350" y="388" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
@@ -85,27 +85,38 @@
 <rect x="440" y="388" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="523.0" y="407.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
 <rect x="610" y="388" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="654.0" y="407.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W′</text>
+<text x="654.0" y="407.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W</text>
 <line x1="20" y1="433.0" x2="700" y2="433.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="448.0" font-size="12" fill="#B91C1C">Absturz hier: neue Dateien, alte Zeiger; derselbe Aufruf noch einmal setzt fort.</text>
-<text x="20" y="483.0" font-size="12" font-weight="bold" fill="#0F172A">Branch bewegt</text>
+<text x="20" y="448.0" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, kein Zeiger hat sich bewegt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang unbekannt, bis die Sperre übernommen ist.</text>
+<text x="20" y="483.0" font-size="12" font-weight="bold" fill="#0F172A">Dateien geschrieben</text>
 <rect x="222" y="464" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rebase</text>
 <rect x="350" y="464" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="393.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
+<text x="393.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2</text>
 <rect x="440" y="464" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="523.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
 <rect x="610" y="464" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="654.0" y="483.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W′</text>
 <line x1="20" y1="509.0" x2="700" y2="509.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="524.0" font-size="12" fill="#B91C1C">Absturz hier: Branch auf C2′, Working-Copy-Commit noch W; derselbe Aufruf setzt fort.</text>
-<text x="20" y="559.0" font-size="12" font-weight="bold" fill="#0F172A">Working-Copy-Commit bewegt</text>
+<text x="20" y="524.0" font-size="12" fill="#B91C1C">Absturz hier: neue Dateien, alte Zeiger; derselbe Aufruf noch einmal setzt fort.</text>
+<text x="20" y="559.0" font-size="12" font-weight="bold" fill="#0F172A">Branch bewegt</text>
 <rect x="222" y="540" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rebase</text>
 <rect x="350" y="540" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="393.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
 <rect x="440" y="540" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
-<text x="523.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
+<text x="523.0" y="559.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
 <rect x="610" y="540" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="654.0" y="559.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W′</text>
+<line x1="20" y1="585.0" x2="700" y2="585.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="600.0" font-size="12" fill="#B91C1C">Absturz hier: Branch auf C2′, Working-Copy-Commit noch W; derselbe Aufruf setzt fort.</text>
+<text x="20" y="635.0" font-size="12" font-weight="bold" fill="#0F172A">Working-Copy-Commit bewegt</text>
+<rect x="222" y="616" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="635.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rebase</text>
+<rect x="350" y="616" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="393.0" y="635.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">C2<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
+<rect x="440" y="616" width="166" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="523.0" y="635.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W<tspan font-family="Helvetica, Arial, sans-serif">′</tspan></text>
+<rect x="610" y="616" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="654.0" y="635.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W′</text>
 </svg>
