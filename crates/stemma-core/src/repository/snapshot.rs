@@ -735,14 +735,15 @@ impl SnapshotError {
     }
 }
 
-/// The way to take a working copy over that the refusal of the owner rule advises a human.
+/// What the refusal of the owner rule tells the actor to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TakeOverAdvice {
     /// Run the command again with its own `--take-over`.
     Option,
     /// The command has no `--take-over`: run `status --take-over` in the working copy first.
     Status,
-    /// The directory of the working copy is gone, so no command can run in it: no advice.
+    /// The directory of the working copy is gone, so no command can run in it and nobody can take
+    /// it over: only the owner removes it. This holds for an agent and a human alike.
     DirectoryGone,
 }
 
@@ -767,6 +768,16 @@ impl SnapshotError {
     #[must_use]
     pub fn without_take_over_option(self) -> Self {
         match self {
+            // A working copy without a directory stays that way: `status` cannot run in it.
+            Self::NotOwner {
+                owner,
+                actor,
+                advice: TakeOverAdvice::DirectoryGone,
+            } => Self::NotOwner {
+                owner,
+                actor,
+                advice: TakeOverAdvice::DirectoryGone,
+            },
             Self::NotOwner { owner, actor, .. } => Self::NotOwner {
                 owner,
                 actor,
@@ -787,6 +798,15 @@ impl fmt::Display for SnapshotError {
                 actor,
                 advice,
             } => {
+                if *advice == TakeOverAdvice::DirectoryGone {
+                    // Nothing is saved here, and nobody can take the working copy over.
+                    return write!(
+                        f,
+                        "the working copy belongs to `{owner}`, so `{actor}` may not remove it; \
+                         its directory is gone, so it cannot be taken over there, and only its \
+                         owner can remove it"
+                    );
+                }
                 write!(
                     f,
                     "the working copy belongs to `{owner}`, so `{actor}` may not save it; "
@@ -808,10 +828,7 @@ impl fmt::Display for SnapshotError {
                         "this command has no `--take-over`, so run `status --take-over` in that \
                          working copy first to make `{actor}` its owner"
                     ),
-                    TakeOverAdvice::DirectoryGone => f.write_str(
-                        "its directory is gone, so it cannot be taken over there; only its owner \
-                         can remove it",
-                    ),
+                    TakeOverAdvice::DirectoryGone => unreachable!("handled above"),
                 }
             }
             Self::AgentTakeOver => f.write_str(
@@ -967,15 +984,23 @@ mod tests {
         let gone = refusal(Actor::human("bob").unwrap(), TakeOverAdvice::DirectoryGone);
         assert!(gone.contains("its directory is gone"), "{gone}");
         assert!(!gone.contains("--take-over"), "{gone}");
-        for advice in [
-            TakeOverAdvice::Option,
-            TakeOverAdvice::Status,
-            TakeOverAdvice::DirectoryGone,
-        ] {
+        for advice in [TakeOverAdvice::Option, TakeOverAdvice::Status] {
             let text = refusal(agent.clone(), advice);
             assert!(text.contains("stop and ask a human"), "{text}");
             assert!(!text.contains("--take-over"), "{text}");
         }
+        // Nobody can take over a working copy without a directory, so an agent is not sent to ask.
+        let text = refusal(agent, TakeOverAdvice::DirectoryGone);
+        assert!(text.contains("only its owner can remove it"), "{text}");
+        assert!(!text.contains("ask a human"), "{text}");
+        let kept = SnapshotError::NotOwner {
+            owner: Box::new(Actor::human("anna").unwrap()),
+            actor: Box::new(Actor::human("bob").unwrap()),
+            advice: TakeOverAdvice::DirectoryGone,
+        }
+        .without_take_over_option()
+        .to_string();
+        assert!(kept.contains("its directory is gone"), "{kept}");
         assert!(matches!(
             SnapshotError::AgentTakeOver.without_take_over_option(),
             SnapshotError::AgentTakeOver
