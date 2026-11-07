@@ -57,5 +57,5 @@
 <text x="225" y="533" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#2F7D32" text-anchor="middle">trunk</text>
 <line x1="260" y1="529" x2="448" y2="517" stroke="#2F7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
 <line x1="70" y1="509" x2="188" y2="529" stroke="#2F7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
-<text x="20" y="580" font-size="12" fill="#64748B">Bis zur letzten Bewegung nennt <tspan font-family="Courier, monospace">op log</tspan> den Ausgang des Eintrags nicht stattgefunden.</text>
+<text x="20" y="580" font-size="12" fill="#64748B">Bis zur letzten Bewegung nennt <tspan font-family="Courier, monospace">op log</tspan> den Ausgang des Eintrags unbekannt.</text>
 </svg>

@@ -58,7 +58,7 @@
 <line x1="20" y1="281.0" x2="700" y2="281.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
 <text x="20" y="296.0" font-size="12" fill="#B91C1C">Absturz hier: nichts geschrieben; der Aufruf lässt sich wiederholen.</text>
 <text x="20" y="331.0" font-size="12" font-weight="bold" fill="#0F172A">Snapshot</text>
-<rect x="222" y="312" width="124" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<rect x="222" y="312" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="331.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">snapshot</text>
 <rect x="350" y="312" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="393.0" y="331.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">A</text>
@@ -78,7 +78,7 @@
 <rect x="610" y="388" width="88" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="654.0" y="407.0" font-size="12" text-anchor="middle" fill="#2B6CB0">von W</text>
 <line x1="20" y1="433.0" x2="700" y2="433.0" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="448.0" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, kein Zeiger hat sich bewegt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang nicht stattgefunden.</text>
+<text x="20" y="448.0" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, kein Zeiger hat sich bewegt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang unbekannt, bis die Sperre übernommen ist.</text>
 <text x="20" y="483.0" font-size="12" font-weight="bold" fill="#0F172A">Dateien geschrieben</text>
 <rect x="222" y="464" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="483.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">merge</text>

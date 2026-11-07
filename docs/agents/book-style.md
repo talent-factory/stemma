@@ -235,9 +235,10 @@ Rules:
   the state or the arrow that a crash leads to. A plain error that writes nothing, such as an
   invalid argument, is not a crash and is drawn in `#64748B`.
 - A dashed line has one of two meanings. Dashed red is a crash point. Dashed `#64748B` is a path
-  that is optional, a return path, or something that does not exist yet (a later phase).
-  A thing that exists is drawn solid. A figure with dashed grey lines says what they mean in a
-  legend.
+  or a box that is not the main flow: a return path, an optional or rejected attempt, something
+  that is only abridged or no longer referenced, or something that does not exist yet (a later
+  phase). The figure labels the line or the box, or a legend says what it means. A thing that
+  exists and belongs to the flow is drawn solid.
 - The four zone colors mark zones only. A column or a box that is not a zone, such as a state
   directory or a pointer file, is `#64748B`.
 - A figure that shows a design which an ADR only proposes says so in a line of its own in
@@ -246,8 +247,9 @@ Rules:
   `font-size * w / viewBox width`, where `w` is the width in the chapter (the text block is about
   455 pt wide, so `width=0.9\textwidth` is 410 pt). Cut empty space from the `viewBox` or raise the
   font; do not shrink the font to fit a line in.
-- In a table of states, the same state has the same name in every figure: the outcome of an
-  entry (`Ausgang`) is `nicht stattgefunden`, `stattgefunden`, or `unbekannt` (ADR-011).
+- The same state has the same name in every figure. The outcome of an entry (`Ausgang`) is
+  `stattgefunden` or `nicht stattgefunden` once the log can decide, and `unbekannt` while the lock
+  of a crashed writer is not taken over yet (ADR-011).
 
 ## Checks before a pull request
 

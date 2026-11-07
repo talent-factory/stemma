@@ -58,7 +58,7 @@
 <rect x="570" y="292" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="635.0" y="311.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
 <line x1="20" y1="330" x2="700" y2="330" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="345" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, die Zeiger sind alt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang nicht stattgefunden.</text>
+<text x="20" y="345" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, die Zeiger sind alt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang unbekannt, bis die Sperre übernommen ist.</text>
 <text x="20" y="387" font-size="12" font-weight="bold" fill="#0F172A">4b Dateien geschrieben</text>
 <rect x="222" y="368" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="387.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">switch</text>
