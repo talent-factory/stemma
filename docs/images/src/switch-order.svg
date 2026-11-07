@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 496" font-family="Helvetica, Arial, sans-serif">
+<title>Ablauf von switch, mit den Zuständen nach einem Absturz</title>
+<defs>
+  <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2B6CB0"/></marker>
+  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B45309"/></marker>
+  <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6B46C1"/></marker>
+  <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
+</defs>
+<rect x="0" y="0" width="720" height="496" fill="#FFFFFF"/>
+<text x="20" y="20" font-size="12" font-weight="bold" fill="#0F172A">switch feature mit Änderungen im Working-Copy-Commit W</text>
+<text x="284.0" y="48" font-size="12" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag im Log</text>
+<text x="393.0" y="48" font-size="12" font-weight="bold" text-anchor="middle" fill="#2F7D32">HEAD</text>
+<text x="503.0" y="48" font-size="12" font-weight="bold" text-anchor="middle" fill="#B45309">Working-Copy-Commit</text>
+<text x="635.0" y="48" font-size="12" font-weight="bold" text-anchor="middle" fill="#2B6CB0">Dateien</text>
+<text x="20" y="75" font-size="12" font-weight="bold" fill="#0F172A">1 Prüfen</text>
+<rect x="222" y="56" width="124" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="75.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
+<rect x="350" y="56" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="393.0" y="75.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">main</text>
+<rect x="440" y="56" width="126" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="503.0" y="75.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="570" y="56" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="635.0" y="75.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="94" x2="700" y2="94" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="109" font-size="12" fill="#B91C1C">Absturz hier: nichts geschrieben; der Aufruf lässt sich wiederholen.</text>
+<text x="20" y="151" font-size="12" font-weight="bold" fill="#0F172A">2 Snapshot</text>
+<rect x="222" y="132" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="151.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">snapshot</text>
+<rect x="350" y="132" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="393.0" y="151.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">main</text>
+<rect x="440" y="132" width="126" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="503.0" y="151.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="570" y="132" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="635.0" y="151.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="170" x2="700" y2="170" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="185" font-size="12" fill="#B91C1C">Absturz hier: nur der Eintrag <tspan font-family="Courier, monospace">snapshot</tspan> ist neu; der Aufruf lässt sich wiederholen.</text>
+<text x="20" y="227" font-size="12" font-weight="bold" fill="#0F172A">3 Neuer Commit</text>
+<rect x="222" y="208" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="227.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">snapshot</text>
+<rect x="350" y="208" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="393.0" y="227.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">main</text>
+<rect x="440" y="208" width="126" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="503.0" y="227.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="570" y="208" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="635.0" y="227.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="246" x2="700" y2="246" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="261" font-size="12" fill="#B91C1C">Absturz hier: höchstens der unerreichbare Commit W′; kein Zeiger hat sich bewegt.</text>
+<text x="20" y="303" font-size="12" font-weight="bold" fill="#0F172A">4 Eintrag gesichert</text>
+<rect x="222" y="284" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="303.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">switch</text>
+<rect x="350" y="284" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="393.0" y="303.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">main</text>
+<rect x="440" y="284" width="126" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="503.0" y="303.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="570" y="284" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="635.0" y="303.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="322" x2="700" y2="322" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="337" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, die Zeiger sind alt; <tspan font-family="Courier, monospace">op log</tspan> zeigt ihn als nicht übernommen.</text>
+<text x="20" y="379" font-size="12" font-weight="bold" fill="#0F172A">4 Dateien geschrieben</text>
+<rect x="222" y="360" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="379.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">switch</text>
+<rect x="350" y="360" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="393.0" y="379.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">main</text>
+<rect x="440" y="360" width="126" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="503.0" y="379.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="570" y="360" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="635.0" y="379.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W′</text>
+<line x1="20" y1="398" x2="700" y2="398" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="413" font-size="12" fill="#B91C1C">Absturz hier: Dateien des Ziels, alte Zeiger; derselbe Aufruf noch einmal setzt fort.</text>
+<text x="20" y="455" font-size="12" font-weight="bold" fill="#0F172A">5 Zeiger bewegt</text>
+<rect x="222" y="436" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="455.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">switch</text>
+<rect x="350" y="436" width="86" height="30" rx="4" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="393.0" y="455.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2F7D32">feature</text>
+<rect x="440" y="436" width="126" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="503.0" y="455.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W′</text>
+<rect x="570" y="436" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="635.0" y="455.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W′</text>
+</svg>

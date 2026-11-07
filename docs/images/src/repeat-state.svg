@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" font-family="Helvetica, Arial, sans-serif">
+<title>Abbruch und Wiederholung: Zustände eines Befehls mit Eintrag</title>
+<defs>
+  <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2B6CB0"/></marker>
+  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B45309"/></marker>
+  <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6B46C1"/></marker>
+  <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
+</defs>
+<rect x="0" y="0" width="720" height="340" fill="#FFFFFF"/>
+<rect x="30" y="130" width="150" height="56" rx="8" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="105.0" y="152" font-size="12" font-weight="bold" text-anchor="middle" fill="#64748B">Ruhe</text>
+<text x="105.0" y="170" font-size="10" text-anchor="middle" fill="#64748B">Zeiger und Log stimmen</text>
+<rect x="250" y="130" width="190" height="56" rx="8" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="345.0" y="152" font-size="12" font-weight="bold" text-anchor="middle" fill="#6B46C1">Befehl läuft</text>
+<text x="345.0" y="170" font-size="10" text-anchor="middle" fill="#64748B">Snapshot, Eintrag, Dateien, Zeiger</text>
+<rect x="540" y="40" width="150" height="56" rx="8" stroke="#2F7D32" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="615.0" y="62" font-size="12" font-weight="bold" text-anchor="middle" fill="#2F7D32">Fertig</text>
+<text x="615.0" y="80" font-size="10" text-anchor="middle" fill="#64748B">alle Zeiger bewegt</text>
+<rect x="520" y="220" width="170" height="56" rx="8" stroke="#B91C1C" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="605.0" y="242" font-size="12" font-weight="bold" text-anchor="middle" fill="#B91C1C">Abgebrochen</text>
+<text x="605.0" y="260" font-size="10" text-anchor="middle" fill="#64748B">Eintrag steht, Zeiger alt</text>
+<line x1="180" y1="158" x2="248" y2="158" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow-slate)"/>
+<text x="214" y="150" font-size="11" text-anchor="middle" fill="#64748B">Aufruf</text>
+<line x1="440" y1="140" x2="538" y2="80" stroke="#2F7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+<text x="500" y="98" font-size="11" text-anchor="end" fill="#2F7D32">Erfolg</text>
+<line x1="440" y1="176" x2="518" y2="236" stroke="#B91C1C" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+<text x="470" y="214" font-size="11" text-anchor="end" fill="#B91C1C">Abbruch nach dem Eintrag</text>
+<text x="470" y="228" font-size="10" text-anchor="end" fill="#64748B">(Exit-Code 3, wenn ein Zeiger bewegt ist)</text>
+<path d="M 345 130 C 345 80 105 80 105 128" stroke="#64748B" stroke-width="1.5" fill="none" stroke-dasharray="6 4" marker-end="url(#arrow-slate)"/>
+<text x="225" y="76" font-size="11" text-anchor="middle" fill="#64748B">Abbruch vor dem Eintrag: nichts geändert</text>
+<path d="M 520 262 C 470 320 130 320 105 188" stroke="#2F7D32" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+<text x="330" y="316" font-size="11" text-anchor="middle" fill="#2F7D32">derselbe Aufruf noch einmal: kein Snapshot, die Commits des Eintrags</text>
+<path d="M 690 236 C 715 236 715 262 692 262" stroke="#B91C1C" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+<text x="700" y="296" font-size="10" text-anchor="end" fill="#B91C1C">anderes Ziel oder anderer Befehl:</text>
+<text x="700" y="308" font-size="10" text-anchor="end" fill="#B91C1C">abgelehnt, die Meldung nennt den Eintrag</text>
+<text x="20" y="22" font-size="11" fill="#64748B">Es gibt weder <tspan font-family="Courier, monospace">--continue</tspan> noch <tspan font-family="Courier, monospace">--abort</tspan>: Der Verlauf beschreibt jeden Zustand.</text>
+</svg>

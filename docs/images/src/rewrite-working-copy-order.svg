@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 690" font-family="Helvetica, Arial, sans-serif">
+<title>Die Arbeitskopie umschreiben: Verlauf und Zustände nach einem Absturz</title>
+<defs>
+  <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2B6CB0"/></marker>
+  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B45309"/></marker>
+  <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6B46C1"/></marker>
+  <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
+</defs>
+<rect x="0" y="0" width="720" height="690" fill="#FFFFFF"/>
+<text x="20" y="24" font-size="12" font-weight="bold" fill="#0F172A">Verlauf vor dem Umschreiben</text>
+<text x="380" y="24" font-size="12" font-weight="bold" fill="#0F172A">Verlauf danach</text>
+<rect x="20" y="90" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="48.0" y="107.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">P</text>
+<rect x="100" y="50" width="56" height="26" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="128.0" y="67.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="100" y="130" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="128.0" y="147.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">T</text>
+<line x1="100" y1="63" x2="77" y2="100" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow-slate)"/>
+<text x="66" y="150" font-size="12" text-anchor="middle" fill="#64748B">…</text>
+<text x="170" y="67" font-size="12" fill="#B45309">Working-Copy-Commit</text>
+<text x="170" y="147" font-size="12" fill="#2F7D32">neue Spitze des Branches</text>
+<rect x="380" y="90" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="408.0" y="107.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">P</text>
+<rect x="460" y="130" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="488.0" y="147.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">T</text>
+<text x="446" y="150" font-size="12" text-anchor="middle" fill="#64748B">…</text>
+<rect x="540" y="130" width="56" height="26" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="568.0" y="147.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W′</text>
+<line x1="540" y1="143" x2="517" y2="143" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow-slate)"/>
+<rect x="460" y="50" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF" stroke-dasharray="6 4"/>
+<text x="488.0" y="67.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">W</text>
+<line x1="460" y1="63" x2="437" y2="100" stroke="#64748B" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-slate)"/>
+<text x="530" y="67" font-size="12" fill="#64748B">bleibt im Log</text>
+<text x="20" y="195" font-size="12" fill="#0F172A">Inhalt von W′ = T + (W − P); W′ behält Change-ID, Autor, Zeit und Beschreibung.</text>
+<text x="20" y="213" font-size="12" fill="#64748B">HEAD und die Branches bewegen sich nicht.</text>
+<text x="284.0" y="242" font-size="12" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag im Log</text>
+<text x="425.0" y="242" font-size="12" font-weight="bold" text-anchor="middle" fill="#B45309">Working-Copy-Commit</text>
+<text x="575.0" y="242" font-size="12" font-weight="bold" text-anchor="middle" fill="#2B6CB0">Dateien</text>
+<text x="20" y="269" font-size="12" font-weight="bold" fill="#0F172A">1 Autorisierer, Sperre</text>
+<rect x="222" y="250" width="124" height="30" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="269.0" font-size="12" text-anchor="middle" fill="#0F172A">–</text>
+<rect x="350" y="250" width="150" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="425.0" y="269.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="510" y="250" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="575.0" y="269.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="288" x2="700" y2="288" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="303" font-size="12" fill="#B91C1C">Absturz hier: nichts geschrieben; der Aufruf lässt sich wiederholen.</text>
+<text x="20" y="345" font-size="12" font-weight="bold" fill="#0F172A">2 Snapshot</text>
+<rect x="222" y="326" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="345.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">snapshot</text>
+<rect x="350" y="326" width="150" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="425.0" y="345.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="510" y="326" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="575.0" y="345.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="364" x2="700" y2="364" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="379" font-size="12" fill="#B91C1C">Absturz hier: nur der Eintrag <tspan font-family="Courier, monospace">snapshot</tspan> ist neu; der Aufruf lässt sich wiederholen.</text>
+<text x="20" y="421" font-size="12" font-weight="bold" fill="#0F172A">3 W′ in den Speicher</text>
+<rect x="222" y="402" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="421.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">snapshot</text>
+<rect x="350" y="402" width="150" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="425.0" y="421.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="510" y="402" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="575.0" y="421.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="440" x2="700" y2="440" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="455" font-size="12" fill="#B91C1C">Absturz hier: höchstens der unerreichbare Commit W′; kein Zeiger hat sich bewegt.</text>
+<text x="20" y="497" font-size="12" font-weight="bold" fill="#0F172A">4 Eintrag gesichert</text>
+<rect x="222" y="478" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="497.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag</text>
+<rect x="350" y="478" width="150" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="425.0" y="497.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="510" y="478" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="575.0" y="497.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
+<line x1="20" y1="516" x2="700" y2="516" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="531" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, der Zeiger ist alt; der Eintrag gilt als nicht übernommen.</text>
+<text x="20" y="573" font-size="12" font-weight="bold" fill="#0F172A">4 Dateien geschrieben</text>
+<rect x="222" y="554" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="573.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag</text>
+<rect x="350" y="554" width="150" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="425.0" y="573.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W</text>
+<rect x="510" y="554" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="575.0" y="573.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W′</text>
+<line x1="20" y1="592" x2="700" y2="592" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="20" y="607" font-size="12" fill="#B91C1C">Absturz hier: neue Dateien, alter Zeiger; derselbe Aufruf noch einmal, ohne Snapshot.</text>
+<text x="20" y="649" font-size="12" font-weight="bold" fill="#0F172A">4 Zeiger bewegt</text>
+<rect x="222" y="630" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="284.0" y="649.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag</text>
+<rect x="350" y="630" width="150" height="30" rx="4" stroke="#B45309" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="425.0" y="649.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#B45309">W′</text>
+<rect x="510" y="630" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="575.0" y="649.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W′</text>
+</svg>
