@@ -1150,6 +1150,7 @@ impl Repository {
                 Some(owner) => Err(SnapshotError::NotOwner {
                     owner: Box::new(owner.clone()),
                     actor: Box::new(actor.clone()),
+                    via_status: false,
                 }),
                 None => Ok(false),
             };
@@ -4251,6 +4252,7 @@ mod tests {
         let TrackError::Snapshot(SnapshotError::NotOwner {
             owner,
             actor: refused,
+            ..
         }) = &error
         else {
             panic!("refused as not the owner: {error:?}");

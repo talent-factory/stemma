@@ -194,7 +194,7 @@ impl Repository {
             .working_copy_and_owner()
             .map_err(WorktreeError::Refs)?;
         view.check_owner(actor, owner.as_ref())
-            .map_err(|error| WorktreeError::Snapshot(Box::new(error)))?;
+            .map_err(|error| WorktreeError::Snapshot(Box::new(error.without_take_over_option())))?;
         let mut snapshot = None;
         let mut late = None;
         if exists {
@@ -206,7 +206,11 @@ impl Repository {
                     late = Some(source);
                     Some(entry)
                 }
-                Err(error) => return Err(WorktreeError::Snapshot(Box::new(error))),
+                Err(error) => {
+                    return Err(WorktreeError::Snapshot(Box::new(
+                        error.without_take_over_option(),
+                    )))
+                }
             };
         }
         let refs = crate::refs::FsRefStore::for_worktree(&shared, &state);

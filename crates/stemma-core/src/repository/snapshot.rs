@@ -582,6 +582,9 @@ pub enum SnapshotError {
         owner: Box<Actor>,
         /// The actor of the command.
         actor: Box<Actor>,
+        /// Whether the command has no `--take-over` of its own, so that the advice names
+        /// `status --take-over` instead (see [`SnapshotError::without_take_over_option`]).
+        via_status: bool,
     },
     /// An agent asked to take the working copy over. Taking over is level 3 of ADR-004, so only
     /// a human may do it. Nothing was read or written.
@@ -733,12 +736,33 @@ impl SnapshotError {
     }
 }
 
+impl SnapshotError {
+    /// The same error for a command that has no `--take-over` (`worktree remove`,
+    /// `purge --apply`): a refusal of the owner rule then points to `status --take-over`, as the
+    /// command cannot be run again with an option it does not have.
+    #[must_use]
+    pub fn without_take_over_option(self) -> Self {
+        match self {
+            Self::NotOwner { owner, actor, .. } => Self::NotOwner {
+                owner,
+                actor,
+                via_status: true,
+            },
+            other => other,
+        }
+    }
+}
+
 impl fmt::Display for SnapshotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not record the snapshot: {error}"),
             Self::Refs(error) => write!(f, "could not read the working-copy commit: {error}"),
-            Self::NotOwner { owner, actor } => {
+            Self::NotOwner {
+                owner,
+                actor,
+                via_status,
+            } => {
                 write!(
                     f,
                     "the working copy belongs to `{owner}`, so `{actor}` may not save it; "
@@ -748,6 +772,11 @@ impl fmt::Display for SnapshotError {
                     ActorRef::Agent { .. } => f.write_str(
                         "an agent may not take it over, so stop and ask a human, for example \
                          the sponsor of the agent",
+                    ),
+                    _ if *via_status => write!(
+                        f,
+                        "this command has no `--take-over`, so run `status --take-over` in that \
+                         working copy first to make `{actor}` its owner"
                     ),
                     _ => write!(
                         f,
@@ -874,6 +903,46 @@ mod tests {
 
     fn actor() -> Actor {
         Actor::human("daniel").unwrap()
+    }
+
+    fn refusal(actor: Actor, via_status: bool) -> String {
+        SnapshotError::NotOwner {
+            owner: Box::new(Actor::human("anna").unwrap()),
+            actor: Box::new(actor),
+            via_status,
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn the_refusal_of_the_owner_advises_the_option_or_the_detour_but_never_to_an_agent() {
+        let human = Actor::human("bob").unwrap();
+        let agent = Actor::agent("bot", "m", "s", "daniel").unwrap();
+
+        assert!(refusal(human.clone(), false).contains("again with `--take-over`"));
+        let detour = refusal(human.clone(), false);
+        assert!(!detour.contains("status --take-over"), "{detour}");
+        let detour = SnapshotError::NotOwner {
+            owner: Box::new(Actor::human("anna").unwrap()),
+            actor: Box::new(human),
+            via_status: false,
+        }
+        .without_take_over_option()
+        .to_string();
+        assert!(
+            detour.contains("`status --take-over` in that working copy"),
+            "{detour}"
+        );
+        assert!(!detour.contains("again"), "{detour}");
+        for via_status in [false, true] {
+            let text = refusal(agent.clone(), via_status);
+            assert!(text.contains("stop and ask a human"), "{text}");
+            assert!(!text.contains("--take-over"), "{text}");
+        }
+        assert!(matches!(
+            SnapshotError::AgentTakeOver.without_take_over_option(),
+            SnapshotError::AgentTakeOver
+        ));
     }
 
     fn repository(dir: &TempDir) -> Repository {
