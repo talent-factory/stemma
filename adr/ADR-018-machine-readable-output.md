@@ -58,7 +58,7 @@ A caller can tell them apart only by the text of the message, which is written f
     or damage lay behind it; the message does.
   - A failure is classified by `stemma-core::failure`, which lists every variant of every error
     and has no fallback arm, so a new error cannot end with 1 unnoticed.
-- **`--json` for `status`, `commit`, and `log`**, the commands that agents read most.
+- **`--json` for `status`, `commit`, `log`, and `tag`**, the commands that agents read most.
   `diff` and the other commands follow with the API of phase 6; until then they have no JSON.
   - `status --json` writes one object: `schema`, `clean` (boolean), `conflicts` (a list of
     `{path, sides}`), `changes` (a list of `{kind, path}`), `untracked` (a list of paths), and
@@ -67,6 +67,11 @@ A caller can tell them apart only by the text of the message, which is written f
     text form escapes them. `clean` is false while a conflict is open. `conflicts` is empty
     for a working-copy commit without one; `sides` is the number of sides at that path, after
     the terms that cancel are gone (ADR-010).
+  - `tag --json` writes one object per tag: `schema`, `tag`, and `commit`; the list form writes
+    one such line per tag, sorted by name, and the form that sets or deletes a tag writes one.
+    `tag --delete --json` adds `deleted` (true),
+    and `commit` is then the commit the tag pointed at. `tag --json` is new in schema 1, and
+    `deleted` is added to it like the two fields of STEMMA-169.
   - `commit --json` writes one object: `schema`, `commit`, `branch`, and `resumed` (boolean).
   - `log --json` writes one object per line, one per commit, each commit before its parents:
     `schema`, `commit`,

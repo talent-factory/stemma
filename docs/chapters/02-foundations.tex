@@ -1,19 +1,16 @@
-\chapter{Grundlagen}
+\chapter[chap:foundations]{Grundlagen}
 
 Dieses Kapitel fasst die Konzepte zusammen, auf denen das System aufbaut.
 Die Abschnitte zu Datenmodell, Arbeitskopie und Operation Log beschreiben den Stand
-nach Phase~1; die übrigen werden mit den Phasen präzisiert.
+nach Phase~3; die übrigen werden mit den Phasen präzisiert.
 
 \section{Datenmodell}
 
-Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden.
-Es gibt drei Grundtypen: Blobs für Dateiinhalte, Trees für Verzeichnisse
-und Commits für gespeicherte Stände mit Verweis auf Vorgänger.
-Der Verlauf bildet damit einen gerichteten azyklischen Graphen aus unveränderlichen Knoten.
-Dieser Aufbau ist die Stärke des Modells,
-weil identische Inhalte nur einmal gespeichert werden
-und Änderungen nachträglich nicht unbemerkt verändert werden können
+Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden: Blobs für Dateiinhalte,
+Trees für Verzeichnisse und Commits für Stände mit Verweis auf ihre Vorgänger
 (\in{Abbildung}[fig:objects]).
+Identische Inhalte liegen so nur einmal vor, und eine nachträgliche Änderung bricht jeden Hash
+weiter oben im gerichteten azyklischen Graphen der Commits.
 
 \startplacefigure[title={Objektmodell: Commit, Tree und Blob},reference=fig:objects,location=here]
 \externalfigure[images/objects.pdf][width=\textwidth]
@@ -50,7 +47,7 @@ und lässt sich nicht zurückholen, wenn es überschrieben wird.
 
 Jujutsu betrachtet die Arbeitskopie selbst als Commit \cite[jujutsu],
 und Stemma folgt ihm (ADR-010).
-Ein Repository hat einen Working-Copy-Commit,
+Jeder Worktree eines Repositories (ADR-009) hat einen Working-Copy-Commit,
 dessen Baum die verfolgten Dateien im Arbeitsverzeichnis sind.
 Vor jedem Befehl, der das Arbeitsverzeichnis liest oder ändert,
 etwa \type{track}, \type{commit} und \type{status},
@@ -72,11 +69,11 @@ Eine neue Datei kommt erst mit \type{track} in den Baum,
 und eine Ausschlussdatei hält Pfade wie Build-Ausgaben und Geheimnisse heraus.
 Der Preis ist der Teil-Commit:
 Der Index von Git erlaubt einem Menschen, nur einen Teil seiner Änderungen zu committen,
-und das gibt es in Phase 1 nicht.
-Dafür geht in Phase 1 kein Stand der verfolgten Dateien verloren,
+und das gibt es bisher nicht.
+Dafür geht kein Stand der verfolgten Dateien verloren,
 den ein Snapshot festgehalten hat; nur ein Purge, das absichtliche Entfernen eines Geheimnisses
 aus Verlauf und Log (ADR-014), entfernt ihn.
-Zwischen zwei Aufrufen sichert Stemma nichts, denn einen Dateiwächter gibt es in Phase 1 nicht.
+Zwischen zwei Aufrufen sichert Stemma nichts, denn einen Dateiwächter gibt es bisher nicht.
 
 \section{Konflikte und Operation Log}
 

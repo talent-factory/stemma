@@ -1,6 +1,6 @@
-\chapter{Ausblick und offene Fragen}
+\chapter[chap:outlook]{Ausblick und offene Fragen}
 
-Dieses Kapitel sammelt die offenen Fragen der Kapitel 4 bis 10.
+Dieses Kapitel sammelt die offenen Fragen der Kapitel \in{}[chap:phase1] bis \in{}[chap:teaching].
 Die vollständigen Listen stehen in den ADRs; hier stehen die Punkte,
 die den Gebrauch oder die nächsten Phasen bestimmen.
 Sie werden bei jeder Phase neu bewertet.
@@ -33,15 +33,14 @@ wenn ein Zeiger seit dem Eintrag weitergezogen ist (ADR-013).
 
 \section{Nach Phase 2}
 
-Für den Diff sind die Markierung verschobener Zeilen
-und eine JSON-Form offen (\in{Kapitel}[chap:phase2], ADR-018).
+Für den Diff ist eine JSON-Form offen (\in{Kapitel}[chap:phase2], ADR-018).
 Ein eigener Exit-Code für \quotation{nichts zu committen} und einer für eine Sperre einer anderen
 Maschine fehlen ebenfalls (ADR-018).
 Unter Windows gibt es weder Farbe noch Pager noch \type{diff --tui}, bis die Konsole
 geprüft ist (ADR-016). Der Pager liest nur \type{PAGER}, nicht \type{GIT_PAGER} oder die
 Einstellungen von Git, und Farbe und Pager lassen sich auf einem Terminal nicht abschalten.
 
-\section{Branches und Merge}
+\section{Nach Phase 3}
 
 Phase 3 hat das Konfliktmodell entschieden, Daten im Commit statt klassischer Markierung;
 einen Rebase gibt es (\in{Kapitel}[chap:phase3]). Ein Branch ist in einem Worktree
@@ -50,8 +49,10 @@ Abgeleitete Daten wie Indizes für \type{log} und Blame liegen nach ADR-017 in e
 unter \type{.stemma/derived/}; offen sind die erste Art, die gespeichert wird, und die
 Bereinigung alter Einträge.
 Offen bleiben auch ein Log je Worktree, ein \type{worktree repair} für einen verschobenen
-Worktree, ein Merge, der einen offenen Konflikt als Operanden liest, und ein Rebase über
-Merge-Commits, den der Befehl heute ablehnt.
+Worktree, \type{--json} für \type{worktree list}, die Rücknahme von \type{worktree remove} mit
+\type{op restore} (ADR-009), ein Tag als Ziel von \type{switch}, \type{rebase} und
+\type{merge} (ADR-008), ein Merge, der einen offenen Konflikt als Operanden liest,
+und ein Rebase über Merge-Commits, den der Befehl heute ablehnt.
 
 \section{Zusammenarbeit}
 
@@ -59,6 +60,9 @@ Phase 4 legt die Dauer einer Lease und das Verhalten bei abgestürzten Agenten f
 ob Agenten eine eigene Rolle oder eine Rolle mit menschlichem Sponsor haben,
 wer den Schnellweg für triviale Änderungen nutzen darf und welche Pfade zu welcher
 Risikostufe gehören (\in{Kapitel}[chap:phase4], ADR-004).
+Das Merge-Gate ohne globale Sperre ist als Vorschlag in ADR-019 beschrieben; offen sind dort
+Form und Ablage der Prüfergebnisse, eine Obergrenze für das Fenster ungeprüfter Commits
+und ein billigerer Test als der saubere Merge (\in{Kapitel}[chap:phase4]).
 Strengere Mindeststufen für Firmenkunden werden erst mit konkreten Kunden relevant.
 
 \section{Netzwerk und Agenten-Schnittstellen}
