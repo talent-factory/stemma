@@ -194,10 +194,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   The prefixes are reserved to keep the rule closed: a branch or a tag whose name starts with
   `heads/` or `tags/` would be unreachable by its plain name, and `heads/x` could mean two
   things. `switch -c`, `branch`, `tag`, and `worktree add -b` refuse such a name for a new branch
-  or tag.
-  The core refuses it in `create_branch`, `create_tag`, `rename_branch` (the new name), `switch`,
-  and `add_worktree`, so the rule holds for every caller and not only for the command line
-  (STEMMA-207). A repository that has one already is not rewritten; the qualified form wins for it
+  or tag. The core refuses it in `update_branch` (for a new branch), `create_tag`,
+  `rename_branch` (the new name), `switch`, and `add_worktree`, so the rule holds for every caller
+  and not only for the command line (STEMMA-207). A repository that has one already is not rewritten; the qualified form wins for it
   as well, and `verify` does not call it damage. The store keeps its name rules (the section on the
   name of a branch), so the change touches no ID and no stored file; the rule lives in the layer
   that resolves names, and the ref store (`RefStore`, `FsRefStore`) does not know it (it stores

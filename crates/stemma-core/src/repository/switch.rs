@@ -397,6 +397,9 @@ impl Repository {
     ) -> Result<Planned, SwitchError> {
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
+        if let SwitchTarget::Create { name, .. } = target {
+            refuse_reserved(name).map_err(SwitchError::Update)?;
+        }
         self.refs_store()
             .refuse_pending_purge()
             .map_err(SwitchError::Refs)?;
@@ -1897,6 +1900,21 @@ mod tests {
                 "{error}"
             );
             assert_eq!(repository.refs().branch(&name(text)).unwrap(), None);
+            // The plan of the switch refuses the same name, and before the authorizer is asked.
+            let error = repository
+                .plan_switch(&target, Changes::Carry, &actor(), &AllowAll)
+                .unwrap_err();
+            assert!(
+                matches!(&error, SwitchError::Update(UpdateError::ReservedName(_))),
+                "{error}"
+            );
+            let error = repository
+                .switch(&target, Changes::Carry, &actor(), &DenyAll)
+                .unwrap_err();
+            assert!(
+                matches!(&error, SwitchError::Update(UpdateError::ReservedName(_))),
+                "{error}"
+            );
         }
         assert_eq!(repository.refs().head().unwrap(), head);
         assert_eq!(repository.oplog().entries().unwrap().len(), before);

@@ -1367,7 +1367,8 @@ pub enum UpdateError {
         target: String,
     },
     /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008). It comes from
-    /// `create_branch`, `create_tag`, `rename_branch` (the new name only), and through
+    /// `update_branch` for a new branch (and so `create_branch`), `create_tag`, `rename_branch`
+    /// (the new name only), and through
     /// [`Repository::switch`] and [`Repository::add_worktree`] for a new branch. No entry was
     /// written and nothing moved.
     ReservedName(ReservedPrefix),
@@ -1550,8 +1551,8 @@ impl Error for UpdateError {
     }
 }
 
-/// Applies [`require_unreserved`] (ADR-008) at the entry points that make a name: `create_branch`,
-/// `create_tag`, `rename_branch`, `switch`, and `add_worktree`, so that every caller gets the rule
+/// Applies [`require_unreserved`] (ADR-008) at the entry points that make a name: `update_branch`
+/// (for a new branch, so `create_branch` too), `create_tag`, `rename_branch`, `switch`, and `add_worktree`, so that every caller gets the rule
 /// and not only the command line. A new entry point that makes a name must call it. The ref store
 /// stores and does not decide.
 pub(crate) fn refuse_reserved(name: &BranchName) -> Result<(), UpdateError> {
@@ -5285,6 +5286,21 @@ mod tests {
         )
     }
 
+    fn create_with(
+        repository: &Repository,
+        name: &str,
+        start: CommitId,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, UpdateError> {
+        repository.create_branch(
+            &op("branch"),
+            &branch(name),
+            start.object_id(),
+            &actor(),
+            authorizer,
+        )
+    }
+
     fn delete(
         repository: &Repository,
         name: &str,
@@ -5355,6 +5371,67 @@ mod tests {
         assert_eq!(numbers(&repository), before);
         assert_eq!(repository.refs().branch(&branch("heads/x")).unwrap(), None);
         assert_eq!(repository.refs().tag(&branch("tags/x")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_reserved_name_is_refused_before_the_authorizer_is_asked() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let denied = |result: Result<Entry, UpdateError>| {
+            let error = result.unwrap_err();
+            assert!(matches!(error, UpdateError::ReservedName(_)), "{error}");
+        };
+        denied(repository.create_branch(
+            &op("branch"),
+            &branch("heads/x"),
+            a.object_id(),
+            &actor(),
+            &DenyAll,
+        ));
+        denied(rename(&repository, "topic", "tags/x", a, &DenyAll));
+        denied(repository.create_tag(
+            &op("tag"),
+            &branch("tags/x"),
+            a.object_id(),
+            &actor(),
+            &DenyAll,
+        ));
+        // A plain name is still the business of the authorizer.
+        let error = create_with(&repository, "plain", a, &DenyAll).unwrap_err();
+        assert!(matches!(error, UpdateError::Denied { .. }), "{error}");
+    }
+
+    #[test]
+    fn update_branch_refuses_a_reserved_name_only_when_it_makes_the_branch() {
+        let (_dir, repository, a) = with_main_and_topic();
+        let b = store_commit(&repository, "b");
+        let error = update(&repository, "heads/x", None, a).unwrap_err();
+        assert!(matches!(error, UpdateError::ReservedName(_)), "{error}");
+        // A branch of an older repository that has such a name moves, is renamed away, and is
+        // deleted: the rule is for new names (ADR-008).
+        repository
+            .refs
+            .update_branch(
+                &branch("heads/x"),
+                None,
+                a,
+                repository.objects(),
+                &Allowed::granted(),
+            )
+            .unwrap();
+        update(&repository, "heads/x", Some(a), b).unwrap();
+        rename(&repository, "heads/x", "plain", b, &AllowAll).unwrap();
+        rename(&repository, "plain", "heads/y", b, &AllowAll).unwrap_err();
+        repository
+            .refs
+            .update_branch(
+                &branch("tags/old"),
+                None,
+                a,
+                repository.objects(),
+                &Allowed::granted(),
+            )
+            .unwrap();
+        delete(&repository, "tags/old", a, &AllowAll).unwrap();
     }
 
     #[test]
