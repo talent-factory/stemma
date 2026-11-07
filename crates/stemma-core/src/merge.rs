@@ -74,8 +74,8 @@
 //! changed, enters the result by its ID, so a missing or damaged one is reported only by the
 //! reader of the result.
 //!
-//! Only commits without a conflict are meant as operands. A `CommitId` does not resolve to a
-//! `commit2` yet (ADR-005, STEMMA-179), so one that names it is reported as an error of the store.
+//! An operand may be a `commit` or a `commit2`: a `CommitId` names either kind (ADR-005,
+//! STEMMA-179), and the sum of a `commit2` enters the sum of the merge as its list of trees.
 
 use std::collections::BTreeSet;
 use std::error::Error;

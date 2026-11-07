@@ -296,9 +296,9 @@ fn finish_new(objects: Batch<'_>) -> Result<(), SnapshotError> {
 }
 
 /// Reads and parses the commit of the one tree that a command works on. A `commit2` holds a
-/// conflict and has no one tree, so it is [`SnapshotError::Conflicted`]. Only `switch` still reads
-/// commits this way (STEMMA-19); the other commands read the commit with [`read_any_commit`] and
-/// build the view of `conflicted`.
+/// conflict and has no one tree, so it is [`SnapshotError::Conflicted`]. The commands read the
+/// commit with [`read_any_commit`] and build the view of `conflicted`; only `worktree add` still
+/// reads commits this way.
 pub(super) fn read_commit(
     objects: &dyn ObjectStore,
     id: CommitId,
