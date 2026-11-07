@@ -92,6 +92,7 @@ impl Classify for InitError {
             Self::Leftover { error, .. } => error.kind(),
             Self::Denied { .. }
             | Self::AlreadyExists { .. }
+            | Self::ReservedName(_)
             | Self::Io { .. }
             | Self::NotDurable { .. }
             | Self::ChangeId(_) => FailureKind::Other,

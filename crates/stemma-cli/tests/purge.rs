@@ -170,6 +170,11 @@ fn move_tags_sets_the_tag_again_at_the_commit_that_the_purge_leaves() {
         &["purge", &secret(), "--move-tags", "--actor", ACTOR],
     );
     assert!(plan.stdout.contains("    tag v1  "), "{}", plan.stdout);
+    // The advice must work as it stands, so it names `--move-tags` too.
+    assert_eq!(
+        plan.stdout.lines().last(),
+        Some("Run it with --apply --move-tags; a purge cannot be undone")
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join(".stemma/refs/tags/v1")).unwrap(),
         before
