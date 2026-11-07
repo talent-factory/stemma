@@ -578,8 +578,8 @@ struct CommitArgs {
 #[derive(Debug, Args)]
 struct SwitchArgs {
     /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch,
-    /// the tag, or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. A name
-    /// that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`
+    /// the tag, or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. With
+    /// `--detach`, a name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`
     #[arg(value_name = "NAME", value_parser = parse_target)]
     target: Revision,
 
@@ -689,6 +689,12 @@ struct MergeArgs {
 /// Reads a branch name, or a commit by its ID if the text starts with `b3:` (a branch name cannot
 /// hold a colon).
 fn parse_revision(text: &str) -> Result<Revision, String> {
+    if text.starts_with(BRANCH_PREFIX) || text.starts_with(TAG_PREFIX) {
+        return Err(format!(
+            "`{text}` is a qualified form; this argument takes a branch name or a commit ID, \
+             and not yet a tag"
+        ));
+    }
     if text.starts_with("b3:") {
         text.parse::<ObjectId>()
             .map(Revision::Commit)
@@ -1879,8 +1885,8 @@ fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
             start: args.start,
         },
         // A qualified form as the name of a new branch is a reserved prefix (ADR-008).
-        (false, true, Revision::Branch(name)) => return Err(reserved(BRANCH_PREFIX, name)),
-        (false, true, Revision::Tag(name)) => return Err(reserved(TAG_PREFIX, name)),
+        (false, true, Revision::Branch(name)) => return Err(reserved(BRANCH_PREFIX, &name)),
+        (false, true, Revision::Tag(name)) => return Err(reserved(TAG_PREFIX, &name)),
         (false, false, Revision::Name(name) | Revision::Branch(name)) => {
             SwitchTarget::Existing(name)
         }
@@ -1980,7 +1986,7 @@ fn switched_text(
     let what = match target {
         SwitchTarget::Existing(name) => format!("Switched to branch {name}"),
         SwitchTarget::Create { name, .. } => format!("Switched to a new branch {name}"),
-        SwitchTarget::Detach(revision) => format!("Detached HEAD at {revision}"),
+        SwitchTarget::Detach(revision) => format!("Detached HEAD at {}", qualified(revision)),
     };
     format!(
         "{}{what} as entry {}\n{}To undo it: stemma op restore {}\n",
@@ -2144,7 +2150,7 @@ fn plan_switch_text(target: &SwitchTarget, plan: &SwitchPlan) -> String {
         match target {
             SwitchTarget::Existing(name) => format!("switch to branch {name}"),
             SwitchTarget::Create { name, .. } => format!("switch to a new branch {name}"),
-            SwitchTarget::Detach(revision) => format!("detach HEAD at {revision}"),
+            SwitchTarget::Detach(revision) => format!("detach HEAD at {}", qualified(revision)),
         }
     );
     if plan.repeats() {
@@ -3195,23 +3201,33 @@ fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Resul
     }
 }
 
-/// Creates the tag `NAME` at a commit, deletes it with `--delete`, or lists the tags if no name is
-/// given (ADR-008). Creating writes the operation `tag` and deleting the operation `untag` to the
-/// operation log (the core asks the authorizer for it, and the command passes `AllowAll` until the
-/// policy of phase 4 exists); listing only reads. A tag that exists is refused, at this commit or
-/// at another, because a tag never moves: a tag that was set wrongly is deleted and set again.
+/// The revision as the person wrote it: a branch of `heads/NAME` keeps its prefix, because the plain
+/// name can be a tag as well.
+fn qualified(revision: &Revision) -> String {
+    match revision {
+        Revision::Branch(name) => format!("{BRANCH_PREFIX}{name}"),
+        other => other.to_string(),
+    }
+}
+
 /// Refuses the name of a new branch or tag that starts with `heads/` or `tags/` (ADR-008).
 fn unreserved(name: BranchName) -> Result<BranchName, CliError> {
     require_unreserved(name).map_err(CliError::ReservedName)
 }
 
 /// The error for a qualified form (`prefix` and `name`) given as the name of a new branch.
-fn reserved(prefix: &'static str, name: BranchName) -> CliError {
-    let name = BranchName::try_new(format!("{prefix}{name}"))
-        .expect("a valid name behind a valid prefix is a valid name");
-    CliError::ReservedName(ReservedPrefix { name, prefix })
+fn reserved(prefix: &'static str, name: &BranchName) -> CliError {
+    CliError::ReservedName(ReservedPrefix {
+        name: format!("{prefix}{name}"),
+        prefix,
+    })
 }
 
+/// Creates the tag `NAME` at a commit, deletes it with `--delete`, or lists the tags if no name is
+/// given (ADR-008). Creating writes the operation `tag` and deleting the operation `untag` to the
+/// operation log (the core asks the authorizer for it, and the command passes `AllowAll` until the
+/// policy of phase 4 exists); listing only reads. A tag that exists is refused, at this commit or
+/// at another, because a tag never moves: a tag that was set wrongly is deleted and set again.
 fn tag(args: TagArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let Some(name) = args.name else {
         return list_tags(&args.repository, args.json, out);

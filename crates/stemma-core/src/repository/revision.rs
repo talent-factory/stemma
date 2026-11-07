@@ -32,7 +32,8 @@ pub const TAG_PREFIX: &str = "tags/";
 pub enum Revision {
     /// The commit at the tip of the branch, and only a branch (`heads/<name>`).
     Branch(BranchName),
-    /// The commit of the tag, and only a tag (`tags/<name>`).
+    /// The commit of the tag, and only a tag (`tags/<name>`). A tag name follows the rules of a
+    /// branch name (ADR-008), so it is a [`BranchName`].
     Tag(BranchName),
     /// A name that is looked up as a branch and as a tag; a name that is both is an error.
     Name(BranchName),
@@ -133,8 +134,9 @@ impl Error for NameError {}
 /// branch or a tag that has such a name already is not rewritten (ADR-008).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReservedPrefix {
-    /// The refused name.
-    pub name: BranchName,
+    /// The refused name, as text: with the prefix of a qualified form it may be longer than a
+    /// branch name can be.
+    pub name: String,
     /// The prefix that it starts with.
     pub prefix: &'static str,
 }
@@ -162,14 +164,17 @@ pub fn require_unreserved(name: BranchName) -> Result<BranchName, ReservedPrefix
         .into_iter()
         .find(|prefix| name.as_str().starts_with(prefix))
     {
-        Some(prefix) => Err(ReservedPrefix { name, prefix }),
+        Some(prefix) => Err(ReservedPrefix {
+            name: name.as_str().to_owned(),
+            prefix,
+        }),
         None => Ok(name),
     }
 }
 
 impl Repository {
     /// The commit that a branch, a tag, or a plain name leads to. A [`Revision::Commit`] is the
-    /// business of the caller: it needs the store.
+    /// business of the caller, which needs the store: it comes back as [`Missing::Commit`].
     ///
     /// The inner `Err` is a name that does not lead to one commit. A missing branch is told apart
     /// from the rest, so that a caller keeps the error of its own for it.
@@ -188,7 +193,7 @@ impl Repository {
                 (None, None) => Err(Missing::Name(NameError::Unknown(name.clone()))),
                 (Some(_), Some(_)) => Err(Missing::Name(NameError::Ambiguous(name.clone()))),
             },
-            Revision::Commit(_) => unreachable!("a commit ID is resolved by the store"),
+            Revision::Commit(id) => Err(Missing::Commit(*id)),
         })
     }
 }
@@ -196,6 +201,8 @@ impl Repository {
 /// What [`Repository::named_commit`] did not find.
 #[derive(Debug)]
 pub(super) enum Missing {
+    /// A commit ID: it names no reference, and the store resolves it.
+    Commit(ObjectId),
     /// The branch of `heads/<name>`: each command has an error of its own for it.
     Branch(BranchName),
     /// The tag, the name, or the clash of both.

@@ -884,6 +884,8 @@ kein Name und ein Aufruffehler (Exit-Code 2). \type{heads/NAME} nennt den Branch
 \item {\bf START:} Nur mit \type{-c}. Ein Branch oder ein Commit (\type{b3:} und 64
 Hexadezimalziffern), auf dem der neue Branch beginnt. Ohne START beginnt er auf dem Commit,
 zu dem HEAD führt: auf der Spitze des Branchs von HEAD oder auf dem abgekoppelten Commit.
+Eine Form mit Präfix (\type{heads/} oder \type{tags/}) nimmt START noch nicht an
+(Aufruffehler, Exit-Code 2); ein Tag als START folgt, wenn \type{-c} Tags annimmt.
 \item {\bf \type{-c}, \type{--create}:} Legt den Branch an und wechselt zu ihm.
 Besteht der Name schon, ist es ein Fehler (Exit-Code 1).
 \item {\bf \type{--detach} REVISION:} Löst HEAD vom Branch, sodass er den Commit nennt,

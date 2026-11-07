@@ -273,19 +273,15 @@ impl Repository {
             .branch(&branch)
             .map_err(RebaseError::Refs)?
             .ok_or_else(|| RebaseError::NoCommits(branch.clone()))?;
-        let onto = match target {
-            Revision::Commit(id) => self
+        let onto = match self.named_commit(target).map_err(RebaseError::Refs)? {
+            Ok(commit) => commit,
+            Err(Missing::Commit(id)) => self
                 .objects()
-                .resolve_commit(id)
+                .resolve_commit(&id)
                 .map_err(|error| RebaseError::Store(Box::new(error)))?
-                .ok_or(RebaseError::NoSuchCommit(*id))?,
-            named => self
-                .named_commit(named)
-                .map_err(RebaseError::Refs)?
-                .map_err(|missing| match missing {
-                    Missing::Branch(name) => RebaseError::NoSuchBranch(name),
-                    Missing::Name(error) => RebaseError::Name(error),
-                })?,
+                .ok_or(RebaseError::NoSuchCommit(id))?,
+            Err(Missing::Branch(name)) => return Err(RebaseError::NoSuchBranch(name)),
+            Err(Missing::Name(error)) => return Err(RebaseError::Name(error)),
         };
         let bases = merge_bases(self.objects(), old_tip, onto).map_err(RebaseError::History)?;
         let base = match bases.as_slice() {
@@ -1203,6 +1199,60 @@ mod tests {
         assert_eq!(repository.refs().working_copy().unwrap(), working);
         assert_eq!(read(&dir, "a.txt"), "ONE\ntwo\nthree\n");
         assert!(!dir.path().join("c.txt").exists());
+    }
+
+    /// Creates a tag directly in the store, without an entry in the operation log.
+    fn tag(dir: &TempDir, repository: &Repository, tag: &str, commit: CommitId) {
+        use crate::allowed::Allowed;
+        use crate::refs::{FsRefStore, RefStore};
+        FsRefStore::new(dir.path().join(".stemma"))
+            .create_tag(
+                &name(tag),
+                commit,
+                repository.objects(),
+                &Allowed::granted(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_target_is_found_by_the_rule_for_names_of_a_branch_and_a_tag() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        history(&dir, &repository);
+        let main = tip(&repository, "main");
+        tag(&dir, &repository, "release", main);
+        tag(&dir, &repository, "main", main);
+        let count = entries(&repository);
+        let feature = tip(&repository, "feature");
+
+        let both = rebase(&repository, &Revision::Name(name("main"))).unwrap_err();
+        assert!(
+            matches!(both, RebaseError::Name(NameError::Ambiguous(ref n)) if n == &name("main")),
+            "{both}"
+        );
+        let no_branch = rebase(&repository, &Revision::Branch(name("release"))).unwrap_err();
+        assert!(
+            matches!(no_branch, RebaseError::NoSuchBranch(_)),
+            "{no_branch}"
+        );
+        let no_tag = rebase(&repository, &Revision::Tag(name("feature"))).unwrap_err();
+        assert!(
+            matches!(no_tag, RebaseError::Name(NameError::NoSuchTag(_))),
+            "{no_tag}"
+        );
+        let unknown = rebase(&repository, &Revision::Name(name("nowhere"))).unwrap_err();
+        assert!(
+            matches!(unknown, RebaseError::Name(NameError::Unknown(_))),
+            "{unknown}"
+        );
+        assert_eq!(entries(&repository), count);
+        assert_eq!(tip(&repository, "feature"), feature);
+
+        let made = done(rebase(&repository, &Revision::Name(name("release"))));
+        assert_ne!(made.new_tip, feature);
+        let qualified = rebase(&repository, &Revision::Tag(name("main")));
+        assert!(qualified.is_ok(), "{qualified:?}");
     }
 
     #[test]

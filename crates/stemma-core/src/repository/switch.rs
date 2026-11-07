@@ -507,19 +507,16 @@ impl Repository {
 
     /// The commit that a revision names, which the store has.
     fn commit_of(&self, revision: &Revision) -> Result<CommitId, SwitchError> {
-        if let Revision::Commit(id) = revision {
-            return self
+        match self.named_commit(revision).map_err(SwitchError::Refs)? {
+            Ok(commit) => Ok(commit),
+            Err(Missing::Commit(id)) => self
                 .objects()
-                .resolve_commit(id)
+                .resolve_commit(&id)
                 .map_err(|error| SwitchError::Store(Box::new(error)))?
-                .ok_or(SwitchError::NoSuchCommit(*id));
+                .ok_or(SwitchError::NoSuchCommit(id)),
+            Err(Missing::Branch(name)) => Err(SwitchError::NoSuchBranch(name)),
+            Err(Missing::Name(error)) => Err(SwitchError::Name(error)),
         }
-        self.named_commit(revision)
-            .map_err(SwitchError::Refs)?
-            .map_err(|missing| match missing {
-                Missing::Branch(name) => SwitchError::NoSuchBranch(name),
-                Missing::Name(error) => SwitchError::Name(error),
-            })
     }
 
     /// The checks that write nothing but objects: a name in the way of the new branch, the next

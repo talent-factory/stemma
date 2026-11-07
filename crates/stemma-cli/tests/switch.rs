@@ -538,7 +538,61 @@ fn a_new_branch_or_tag_cannot_start_with_a_reserved_prefix() {
         );
     }
     assert_eq!(newest(dir.path()), before, "nothing was written");
+    // A plain name that is also a tag is a valid name for a new branch: `switch -c` reads no tags.
+    ok(dir.path(), &["switch", "-c", "v1", "--actor", ACTOR]);
+    ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
     // A name that only contains the prefix further in is fine.
     ok(dir.path(), &["branch", "feat/heads/x", "--actor", ACTOR]);
     ok(dir.path(), &["tag", "feat/tags/x", "--actor", ACTOR]);
+}
+
+#[test]
+fn the_start_of_a_new_branch_and_the_target_of_a_rebase_do_not_take_a_qualified_form_yet() {
+    let dir = branches_and_tags();
+    let before = newest(dir.path());
+
+    for args in [
+        vec!["switch", "-c", "x", "tags/v1"],
+        vec!["switch", "-c", "x", "heads/main"],
+        vec!["rebase", "tags/v1"],
+        vec!["rebase", "heads/main"],
+    ] {
+        let mut args = args;
+        args.extend(["--actor", ACTOR]);
+        let result = run(dir.path(), &args);
+        assert_eq!(result.code, 2, "{args:?}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("qualified form"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+}
+
+#[test]
+fn the_message_of_a_detached_switch_keeps_the_prefix_of_a_qualified_form() {
+    let dir = branches_and_tags();
+
+    let branch = ok(
+        dir.path(),
+        &["switch", "--detach", "heads/main", "--actor", ACTOR],
+    );
+    assert!(
+        branch
+            .stdout
+            .starts_with("Detached HEAD at heads/main as entry"),
+        "{}",
+        branch.stdout
+    );
+    let tag = ok(
+        dir.path(),
+        &["switch", "--detach", "tags/main", "--actor", ACTOR],
+    );
+    assert!(
+        tag.stdout
+            .starts_with("Detached HEAD at tags/main as entry"),
+        "{}",
+        tag.stdout
+    );
 }
