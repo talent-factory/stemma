@@ -761,7 +761,7 @@ impl SnapshotError {
         }
     }
 
-    /// The same error for a command that has no `--take-over' (`worktree remove`,
+    /// The same error for a command that has no `--take-over` (`worktree remove`,
     /// `purge --apply`): a refusal of the owner rule then points to `status --take-over`, as the
     /// command cannot be run again with an option it does not have.
     #[must_use]
@@ -792,23 +792,25 @@ impl fmt::Display for SnapshotError {
                     "the working copy belongs to `{owner}`, so `{actor}` may not save it; "
                 )?;
                 // Only a human may take over (ADR-004), so an agent is not told to.
-                match actor.view() {
-                    ActorRef::Agent { .. } => f.write_str(
+                if matches!(actor.view(), ActorRef::Agent { .. }) {
+                    return f.write_str(
                         "an agent may not take it over, so stop and ask a human, for example \
                          the sponsor of the agent",
+                    );
+                }
+                match advice {
+                    TakeOverAdvice::Option => write!(
+                        f,
+                        "run the command again with `--take-over` to make `{actor}` its owner"
                     ),
-                    _ if *advice == TakeOverAdvice::Status => write!(
+                    TakeOverAdvice::Status => write!(
                         f,
                         "this command has no `--take-over`, so run `status --take-over` in that \
                          working copy first to make `{actor}` its owner"
                     ),
-                    _ if *advice == TakeOverAdvice::DirectoryGone => f.write_str(
+                    TakeOverAdvice::DirectoryGone => f.write_str(
                         "its directory is gone, so it cannot be taken over there; only its owner \
                          can remove it",
-                    ),
-                    _ => write!(
-                        f,
-                        "run the command again with `--take-over` to make `{actor}` its owner"
                     ),
                 }
             }
