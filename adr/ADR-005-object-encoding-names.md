@@ -145,20 +145,21 @@ them.
   line after the first `parent` line, a removed tree (a base) that equals an added tree (a side),
   which would cancel, and everything that `Commit::parse` rejects. The same tree may stand more than
   once, as a side or as a base, since the sides of a conflict may agree; only a base that equals a
-  side is rejected. The rule only narrows what a writer may produce (`merge` is the first command
-  that writes a `commit2`, ADR-010), so no object that was stored before it is affected and the
+  side is rejected. The rule only narrows what a writer may produce (the commands that write a
+  `commit2` follow it, ADR-010), so no stored object is affected and the
   version of the format stays. The kind name is hashed with the body, so the bytes of a
   `commit2` are another object under the kind `commit`. `Commit::parse` still rejects more than one
   `tree` line. The type is `Commit2`, separate from `Commit`. What a conflict means, and how it is
-  resolved, stays with phase 3 (STEMMA-19). `Commit2::id` returns a `CommitId`, so that a conflict
+  resolved, is decided in ADR-010. `Commit2::id` returns a `CommitId`, so that a conflict
   can stand where a commit stands, and **a `CommitId` names either kind**: the store resolves it to
   a `commit` or to a `commit2` by the kind of the stored object (`resolve_commit`,
   `get_any_commit`, which returns `AnyCommit`), so that a `commit2` is a parent that passes
   `verify`, a step of the history, and the target of a branch or of the working copy. The reader
-  `get_commit` stays strict and returns a `Commit` only, since a caller that needs one tree has none
-  in a `commit2`, and reports it as a conflict (`Conflicted`) and not as a kind mismatch.
-  `switch`, `snapshot`, `status`, `diff`, `restore`, and `commit` read it through the tree that
-  shows the conflict (ADR-010), and `switch`, `merge`, and `rebase` carry it on as data.
+  `get_commit` stays strict and returns a `Commit` only: a `commit2` is a kind mismatch for it,
+  since a caller that needs one tree has none in a `commit2`. The commands read either kind with
+  `get_any_commit`, show the conflict through the tree of ADR-010, and `switch`, `merge`, and
+  `rebase` carry it on as data. `worktree add` needs one tree and reports a `commit2` as a
+  conflict (`SnapshotError::Conflicted`), not as a kind mismatch.
   The purge (ADR-014) follows the list of trees of a `commit2` and writes the new version of a
   rewritten one in the form that its sum has. The kind is part of the ID, so the same bytes under
   the kind `commit` and under the kind `commit2` are two objects (see above). The alternative, an
@@ -180,8 +181,8 @@ them.
   and the merge decides whether to apply it (see "Merge of trees"). The text with markers that
   shows a conflicted file is one function of the sum (`marker_text`), a pure function of the list
   of the contents of the terms, in order. The working copy, `status`, and `diff` show it, and the snapshot compares the bytes of a
-  file with it and does not parse markers (ADR-010). `merge` and `rebase` create a `commit2`
-  when a path conflicts (ADR-010).
+  file with it and does not parse markers (ADR-010). `merge`, `rebase`, and `switch` (through
+  the carry of the working copy) create a `commit2` when a path conflicts (ADR-010).
 - **Merge of trees** *(confirmed)*. The module `merge` of the core merges two commits into a sum of
   trees (STEMMA-170), at level 2 of ADR-004. It writes blobs and trees and no commit, and reads
   commits through `get_any_commit`, so an operand may be a `commit` or a `commit2`: the sum of a
