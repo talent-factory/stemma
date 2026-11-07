@@ -135,6 +135,13 @@ Lehnt \type{rebase} ab, etwa bei einem Merge-Commit im Bereich, ist das ein gew�
 und der Autor entscheidet von Hand.
 Das Konfliktmodell der Phase 3 ist die Voraussetzung: Mit Markierungen in den Dateien liesse sich
 ein Konflikt nicht als Commit zurückgeben.
+\in{Abbildung}[fig:conflict-gate] zeigt den Konflikt im Merge und den semantischen Konflikt,
+die das Gate an verschiedenen Stellen erkennt.
+
+\startplacefigure[title={Konflikte am Merge-Gate: im Merge und auf der Spitze von main},
+    reference=fig:conflict-gate,location=here]
+\externalfigure[images/conflict-gate.pdf][width=\textwidth]
+\stopplacefigure
 
 {\bf Die Prüfung nach dem Merge.}
 Zwei Änderungen können sauber zusammengehen und sich doch gegenseitig brechen, ein semantischer
