@@ -4,12 +4,6 @@
   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
     <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
   </marker>
-  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-    <path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/>
-  </marker>
-  <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-    <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
-  </marker>
 </defs>
 <rect x="0" y="0" width="600" height="460" fill="#FFFFFF"/>
 <!-- start -->
@@ -40,13 +34,13 @@
 <!-- right column: clean merge -->
 <rect x="320" y="108" width="260" height="46" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5"/>
 <text x="332" y="128" font-size="12.5" font-weight="bold" fill="#0F172A">Sauberer Merge</text>
-<text x="332" y="144" font-size="11" fill="#0F172A">Der Tree-Merge liefert einen Tree <tspan font-family="Courier, monospace">M</tspan>.</text>
+<text x="332" y="142" font-size="11" fill="#0F172A">Ein Tree; daraus wird der Commit <tspan font-family="Courier, monospace">M</tspan>.</text>
 <rect x="320" y="190" width="260" height="46" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
 <text x="332" y="210" font-size="12.5" font-weight="bold" fill="#2F7D32"><tspan font-family="Courier, monospace">main</tspan> von <tspan font-family="Courier, monospace">T</tspan> auf <tspan font-family="Courier, monospace">M</tspan></text>
 <text x="332" y="226" font-size="11" fill="#0F172A">Regel nach Risikostufe, Compare-and-swap.</text>
 <rect x="320" y="272" width="260" height="46" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5"/>
 <text x="332" y="292" font-size="12.5" font-weight="bold" fill="#0F172A">Prüfung auf der Spitze</text>
-<text x="332" y="308" font-size="11" fill="#0F172A">Lauf nach dem Merge (ADR-019).</text>
+<text x="332" y="308" font-size="11" fill="#0F172A">Ein Lauf deckt die Spitze bei seinem Start ab.</text>
 <g stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)">
   <line x1="450" y1="154" x2="450" y2="188"/>
   <line x1="450" y1="236" x2="450" y2="270"/>
