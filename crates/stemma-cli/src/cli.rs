@@ -2022,7 +2022,7 @@ fn rebase(args: RebaseArgs, out: &mut dyn Write) -> Result<(), CliError> {
                     let text = format!(
                         "{}Rebased onto {} as entry {}\nTo undo it: stemma op restore {}\n",
                         saved_text(error.snapshot()),
-                        args.target,
+                        qualified(&args.target),
                         entry.number(),
                         entry.number()
                     );

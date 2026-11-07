@@ -548,7 +548,8 @@ fn a_new_branch_or_tag_cannot_start_with_a_reserved_prefix() {
         );
     }
     assert_eq!(newest(dir.path()), before, "nothing was written");
-    // A plain name that is also a tag is a valid name for a new branch: `switch -c` reads no tags.
+    // A plain name that is also a tag is a valid name for a new branch: `switch -c` reads tags
+    // for START, not for the name.
     ok(dir.path(), &["switch", "-c", "v1", "--actor", ACTOR]);
     ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
     // A name that only contains the prefix further in is fine.
@@ -589,6 +590,17 @@ fn the_start_of_a_new_branch_takes_a_tag_and_the_qualified_forms() {
         ],
     );
     assert_eq!(read(dir.path(), "a.txt"), "two");
+    ok(
+        dir.path(),
+        &["switch", "-c", "from-plain", "later", "--actor", ACTOR],
+    );
+    assert_eq!(read(dir.path(), "a.txt"), "two");
+    let branches = ok(dir.path(), &["branch", "--actor", ACTOR]);
+    assert!(
+        branches.stdout.contains("from-plain"),
+        "{}",
+        branches.stdout
+    );
 }
 
 #[test]
@@ -611,6 +623,11 @@ fn the_start_of_a_new_branch_refuses_a_name_that_is_a_branch_and_a_tag() {
         &["switch", "-c", "x", "tags/nowhere", "--actor", ACTOR],
     );
     assert_eq!(missing.code, 1, "{}", missing.stderr);
+    assert!(
+        missing.stderr.contains("no tag `nowhere`"),
+        "{}",
+        missing.stderr
+    );
     assert_eq!(newest(dir.path()), before, "nothing was written");
 }
 

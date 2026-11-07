@@ -252,6 +252,30 @@ fn the_target_takes_a_tag_and_the_qualified_forms() {
 }
 
 #[test]
+fn the_up_to_date_line_keeps_the_prefix_of_a_qualified_form() {
+    let dir = tagged();
+
+    let tag = ok(dir.path(), &["rebase", "tags/main", "--actor", ACTOR]);
+    assert_eq!(tag.stdout, "Already up to date with tags/main\n");
+
+    ok(dir.path(), &["rebase", "heads/main", "--actor", ACTOR]);
+    let branch = ok(dir.path(), &["rebase", "heads/main", "--actor", ACTOR]);
+    assert_eq!(branch.stdout, "Already up to date with heads/main\n");
+}
+
+#[test]
+fn a_qualified_target_that_does_not_exist_is_refused() {
+    let dir = tagged();
+    let before = newest(dir.path());
+
+    for target in ["heads/nowhere", "tags/nowhere"] {
+        let result = run(dir.path(), &["rebase", target, "--actor", ACTOR]);
+        assert_eq!(result.code, 1, "{target}: {}", result.stderr);
+        assert_eq!(newest(dir.path()), before, "nothing was written");
+    }
+}
+
+#[test]
 fn a_target_that_is_a_branch_and_a_tag_is_refused() {
     let dir = tagged();
     let before = newest(dir.path());

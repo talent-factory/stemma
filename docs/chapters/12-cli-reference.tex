@@ -1091,6 +1091,7 @@ endet der Befehl bei \type{Already on} mit Exit-Code 0 und nach einem Wechsel mi
 stemma switch -c feature --actor "human daniel"
 stemma switch main --actor "human daniel"
 stemma switch -c fix b3:4a0b66... --actor "human daniel"
+stemma switch -c fix tags/v1 --actor "human daniel"
 stemma switch --detach main -C projekt --actor "human daniel"
 stemma switch --detach tags/v1 --actor "human daniel"
 stemma switch feature --dry-run --actor "human daniel"
@@ -1168,9 +1169,9 @@ Ein Konflikt ändert den Exit-Code nicht: Der Befehl endet mit 0, und \type{stem
 nennt die Pfade, bis ein Snapshot sie aufgelöst hat.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem HEAD, der einen Commit nennt,
-bei einem Branch ohne Commit, bei einem unbekannten Namen, einem \type{tags/NAME} ohne Tag,
-einem Namen, der Branch und Tag ist, oder einem Commit, den der Objektspeicher nicht hat,
-und bei einem offenen Purge.
+bei einem Branch ohne Commit, bei einem unbekannten Namen, einem \type{heads/NAME} ohne Branch,
+einem \type{tags/NAME} ohne Tag, einem Namen, der Branch und Tag ist,
+oder einem Commit, den der Objektspeicher nicht hat, und bei einem offenen Purge.
 Ebenso endet er, wenn Spitze und Ziel keinen gemeinsamen Commit haben,
 wenn sie mehrere beste gemeinsame Vorfahren haben (ein Criss-Cross-Merge)
 und wenn ein Commit des aufzuspielenden Bereichs mehr als einen Elternteil hat.
@@ -1203,6 +1204,8 @@ Exit-Code 3.
 \starttyping
 stemma rebase main --actor "human daniel"
 stemma rebase b3:4a0b66... -C projekt --actor "human daniel"
+stemma rebase tags/v1 --actor "human daniel"
+stemma rebase heads/main --actor "human daniel"
 \stoptyping
 
 \section{merge}
