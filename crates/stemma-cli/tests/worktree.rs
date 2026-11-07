@@ -2116,3 +2116,28 @@ fn remove_refused_by_the_owner_points_to_status_take_over() {
     // The refusal removes nothing.
     assert!(sandbox.at("linked").join(".stemma").is_file());
 }
+
+#[test]
+fn remove_of_a_deleted_directory_with_a_foreign_owner_gives_no_take_over_advice() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    fs::remove_dir_all(&linked).unwrap();
+
+    let refused = run(&repo, &["worktree", "remove", "linked", "--actor", ANNA]);
+
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("its directory is gone"),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        !refused.stderr.contains("--take-over"),
+        "{}",
+        refused.stderr
+    );
+    // The refusal removes nothing: the state is still there, and the owner can remove it.
+    assert!(repo.join(".stemma/worktrees/linked").exists());
+    ok(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
+    assert!(!repo.join(".stemma/worktrees/linked").exists());
+}

@@ -65,7 +65,7 @@ pub use revision::{
     TAG_PREFIX,
 };
 pub use rewrite::{RewriteError, Rewritten};
-pub use snapshot::{SnapshotError, Unsupported};
+pub use snapshot::{SnapshotError, TakeOverAdvice, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use switch::{Changes, Handled, Planned, SwitchError, SwitchPlan, SwitchTarget, Switched};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
@@ -1150,7 +1150,7 @@ impl Repository {
                 Some(owner) => Err(SnapshotError::NotOwner {
                     owner: Box::new(owner.clone()),
                     actor: Box::new(actor.clone()),
-                    via_status: false,
+                    advice: TakeOverAdvice::Option,
                 }),
                 None => Ok(false),
             };
