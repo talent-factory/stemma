@@ -596,3 +596,61 @@ fn the_message_of_a_detached_switch_keeps_the_prefix_of_a_qualified_form() {
         tag.stdout
     );
 }
+
+/// Plants the refs `heads/x` (a branch) and `tags/x` (a tag) that the CLI can no longer create, by
+/// copying the files of `later` and `v1`: a repository from before the rule has such names.
+fn legacy_reserved_names(dir: &Path) {
+    let refs = dir.join(".stemma").join("refs");
+    fs::create_dir_all(refs.join("heads/heads")).unwrap();
+    fs::create_dir_all(refs.join("tags/tags")).unwrap();
+    fs::copy(refs.join("heads/later"), refs.join("heads/heads/x")).unwrap();
+    fs::copy(refs.join("tags/v1"), refs.join("tags/tags/x")).unwrap();
+}
+
+#[test]
+fn a_branch_or_tag_with_a_reserved_prefix_that_exists_can_still_be_renamed_and_deleted() {
+    let dir = branches_and_tags();
+    legacy_reserved_names(dir.path());
+
+    ok(
+        dir.path(),
+        &["branch", "-m", "heads/x", "renamed", "--actor", ACTOR],
+    );
+    ok(dir.path(), &["branch", "-d", "renamed", "--actor", ACTOR]);
+    ok(dir.path(), &["tag", "--delete", "tags/x", "--actor", ACTOR]);
+}
+
+#[test]
+fn a_dry_run_of_a_detach_keeps_the_prefix_and_refuses_an_ambiguous_name() {
+    let dir = branches_and_tags();
+    let before = newest(dir.path());
+
+    let qualified = ok(
+        dir.path(),
+        &[
+            "switch",
+            "--detach",
+            "heads/main",
+            "--dry-run",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert!(
+        qualified.stdout.contains("heads/main"),
+        "{}",
+        qualified.stdout
+    );
+
+    let ambiguous = run(
+        dir.path(),
+        &["switch", "--detach", "main", "--dry-run", "--actor", ACTOR],
+    );
+    assert_eq!(ambiguous.code, 1, "{}", ambiguous.stderr);
+    assert!(
+        ambiguous.stderr.contains("tags/main"),
+        "{}",
+        ambiguous.stderr
+    );
+    assert_eq!(newest(dir.path()), before, "nothing was written");
+}

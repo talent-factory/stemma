@@ -879,8 +879,9 @@ stemma switch --detach REVISION [-C VERZEICHNIS] --actor AKTEUR [--take-over]
 \item {\bf NAME:} Ohne Option der Branch, zu dem HEAD wechselt; er muss bestehen.
 Mit \type{-c} der Name des neuen Branchs, der noch nicht bestehen darf
 und nicht mit \type{heads/} oder \type{tags/} beginnen darf (Exit-Code 1).
-Eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) und ein Tag (\type{tags/NAME}) sind hier
-kein Name und ein Aufruffehler (Exit-Code 2). \type{heads/NAME} nennt den Branch \type{NAME}.
+Ohne \type{-c} sind eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) und ein Tag
+(\type{tags/NAME}) kein Name und ein Aufruffehler (Exit-Code 2);
+\type{heads/NAME} nennt dann den Branch \type{NAME}.
 \item {\bf START:} Nur mit \type{-c}. Ein Branch oder ein Commit (\type{b3:} und 64
 Hexadezimalziffern), auf dem der neue Branch beginnt. Ohne START beginnt er auf dem Commit,
 zu dem HEAD führt: auf der Spitze des Branchs von HEAD oder auf dem abgekoppelten Commit.
@@ -1029,6 +1030,8 @@ stemma rebase ZIEL [-C VERZEICHNIS] --actor AKTEUR [--take-over]
 \startitemize
 \item {\bf ZIEL:} Ein Branch oder ein Commit (\type{b3:} und 64 Hexadezimalziffern), auf dem der
 aktuelle Branch aufbauen soll. Ein unbekannter Branch ist ein Fehler.
+Eine Form mit Präfix (\type{heads/} oder \type{tags/}) nimmt ZIEL noch nicht an
+(Aufruffehler, Exit-Code 2); ein Tag als ZIEL folgt, wenn \type{rebase} Tags annimmt.
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot und der

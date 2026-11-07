@@ -629,7 +629,8 @@ struct SwitchArgs {
 
 #[derive(Debug, Args)]
 struct RebaseArgs {
-    /// The branch or the commit (`b3:` and 64 hexadecimal digits) to replay the current branch on
+    /// The branch or the commit (`b3:` and 64 hexadecimal digits) to replay the current branch on; a
+    /// qualified form (`heads/`, `tags/`) is not accepted yet
     #[arg(value_name = "TARGET", value_parser = parse_revision)]
     target: Revision,
 
@@ -687,7 +688,8 @@ struct MergeArgs {
 }
 
 /// Reads a branch name, or a commit by its ID if the text starts with `b3:` (a branch name cannot
-/// hold a colon).
+/// hold a colon). A qualified form (`heads/NAME`, `tags/NAME`) is refused: the places that use this
+/// parser do not look up a tag yet.
 fn parse_revision(text: &str) -> Result<Revision, String> {
     if text.starts_with(BRANCH_PREFIX) || text.starts_with(TAG_PREFIX) {
         return Err(format!(
@@ -707,7 +709,9 @@ fn parse_revision(text: &str) -> Result<Revision, String> {
 }
 
 /// Reads the target of `switch`: a commit ID, `heads/NAME`, `tags/NAME`, or a name that the core
-/// looks up as a branch and as a tag (ADR-008). `switch -c` and `switch NAME` take a name only.
+/// looks up as a branch and as a tag (ADR-008). Without `--detach`, `NAME` is a plain name or
+/// `heads/NAME`; `tags/NAME` and a commit ID are usage errors. With `-c`, a qualified form is a
+/// reserved name.
 fn parse_target(text: &str) -> Result<Revision, String> {
     text.parse::<Revision>().map_err(|error| error.to_string())
 }
@@ -3201,8 +3205,8 @@ fn finish_commit_as(result: Committed, json: bool, out: &mut dyn Write) -> Resul
     }
 }
 
-/// The revision as the person wrote it: a branch of `heads/NAME` keeps its prefix, because the plain
-/// name can be a tag as well.
+/// The revision as the person wrote it: a branch given as `heads/NAME` keeps its prefix, because the
+/// plain name can be a tag as well.
 fn qualified(revision: &Revision) -> String {
     match revision {
         Revision::Branch(name) => format!("{BRANCH_PREFIX}{name}"),

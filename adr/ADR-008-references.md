@@ -169,8 +169,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - **A name that is both a branch and a tag is an error, unless it is qualified**
   *(confirmed, STEMMA-186)*. `switch --detach` is the first command that resolves a name to a tag
   (STEMMA-198), and this is its rule. It applies to every place that takes any revision: today
-  `switch --detach`, and the start of `switch -c`, the target of `rebase`, and `log` and `diff` as
-  soon as they accept a tag. Such a place resolves the text it gets in this order:
+  `switch --detach`, and the start of `switch -c`, the target of `rebase`, `log` and `diff` as
+  soon as they accept a tag (the core resolver of `rebase` has the rule already).
+  Such a place resolves the text it gets in this order:
   1. Text that starts with `b3:` is a commit ID (a name holds no colon) and is no name.
   2. `heads/<name>` is the branch `<name>`, and `tags/<name>` is the tag `<name>`. These two
      prefixes are the qualified form. They are tried before the lookup and never fall through
