@@ -219,7 +219,8 @@ Kosten $O(V\log V + E)$ \stopxcell
 Abschnitt 2.4, Vorrangwarteschlangen \stopxcell
 \stopxrow
 \startxrow
-\startxcell Merge-Basis: die Vorfahrenmengen beider Commits, je mit einer Tiefensuche mit Stapel,
+\startxcell Merge-Basis (\in{Abschnitt}[sec:merge-base]): die Vorfahrenmengen beider Commits,
+je mit einer Tiefensuche mit Stapel,
 dann die Schnittmenge, aus der alle Kandidaten fallen, die Vorfahr eines anderen sind;
 jeder Commit wird einmal gelesen \stopxcell
 \startxcell \type{merge_bases}, \type{Walk::ancestors} (\type{merge_base.rs}) \stopxcell
@@ -423,10 +424,12 @@ Warum erreicht ein falsch eingestufter Diff den Merge-Pfad nicht (Stufe 1 nach A
 \startitemize[n]
 \item (DUA) Zeigen Sie, dass \type{merge_bases} genau die besten gemeinsamen Vorfahren liefert:
 die gemeinsamen Vorfahren, die kein Vorfahr eines anderen gemeinsamen Vorfahren sind
-(\in{Abschnitt}[sec:tree-merge]).
+(\in{Abschnitt}[sec:merge-base]).
 Geben Sie die Kosten in der Zahl $V$ der erreichbaren Commits und $E$ der Elternkanten an.
+Warum darf die Suche das Datum der Commits nicht benutzen?
 Zeichnen Sie einen Verlauf, in dem ein Criss-Cross-Merge zwei Merge-Basen erzeugt,
-und rechnen Sie die flache Summe $O + T - L - R + W$ für eine Datei durch,
+und rechnen Sie die flache Summe $O + T - L - R + W$ (\in{Abschnitt}[sec:tree-merge])
+für eine Datei durch,
 die beide Seiten verschieden ändern.
 \item (DUA) Die Ordnung von \type{log} stellt jeden Commit vor seine Eltern
 (\in{Abschnitt}[sec:log]).
