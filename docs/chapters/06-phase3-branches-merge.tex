@@ -427,8 +427,9 @@ Beim erneuten Zusammenführen kann das Information kosten; deshalb gehört sie n
 Ein Konflikt in einem Zwischenstück macht die ganze Datei zum Konflikt.
 \item Der Modus wird unabhängig vom Inhalt entschieden. Wird er auf einer Seite geändert
 und der Inhalt auf der anderen, gelten beide Änderungen.
-\item Einen offenen Konflikt als Operanden liest der Merge noch nicht.
-Dazu muss eine \type{CommitId} auf beide Arten von Commits zeigen können.
+\item Ein offener Konflikt darf ein Operand sein: Eine \type{CommitId} nennt beide Arten von
+Commits, und die Summe eines \type{commit2} geht als Liste seiner Bäume in die Summe des
+Merges ein.
 \stopitemize
 \stopinfobox
 
@@ -1573,7 +1574,6 @@ gespeichert wird, und die Bereinigung alter Einträge.
 Ein Kandidat ist eine Generationsnummer, die die Suche nach der Merge-Basis früh beenden
 würde; sie kommt erst, wenn eine Messung sie verlangt.
 \item Ein \type{worktree repair} für einen Worktree, dessen Verzeichnis verschoben wurde.
-\item Ein Merge, der einen offenen Konflikt als Operanden liest.
 \item Wie ein Rebase die Change-ID eines Merge-Commits im Bereich behandelt.
 Heute lehnt der Befehl einen solchen Bereich ab.
 \stopitemize

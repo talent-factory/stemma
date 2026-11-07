@@ -297,9 +297,10 @@ Der Speicher löst sie nach der Art des gespeicherten Objekts zu einem \type{com
 einem \type{commit2} auf.
 Ein \type{commit2} ist deshalb ein Elternteil, der \type{verify} besteht, ein Schritt des Verlaufs
 und das Ziel eines Branches oder der Arbeitskopie.
-Wer einen einzigen Baum braucht, etwa \type{switch}, findet in einem \type{commit2} keinen und
-meldet einen offenen Konflikt, statt eine falsche Art zu beklagen; \type{status}, \type{diff},
-\type{restore} und \type{commit} lesen ihn über den Baum, der den Konflikt zeigt
+Wer einen einzigen Baum braucht, etwa \type{worktree add}, findet in einem \type{commit2}
+keinen und meldet einen offenen Konflikt, statt eine falsche Art zu beklagen; \type{status},
+\type{diff}, \type{restore}, \type{commit} und \type{switch} lesen ihn über den Baum,
+der den Konflikt zeigt
 (\in{Kapitel}[chap:phase3]).
 
 Zum Graphen gehören weitere Invarianten.
