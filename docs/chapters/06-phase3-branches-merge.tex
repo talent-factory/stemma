@@ -1001,6 +1001,7 @@ Daniel arbeitet im Verzeichnis der Wurzel, ein Agent in einem zweiten Worktree.
 Beide ändern dieselbe Zeile, sodass ein Konflikt entsteht.
 Die Ausgaben stammen aus einem echten Lauf.
 Die IDs sind gekürzt, und die Pfade stehen als \type{/home/daniel/...}.
+Die Sitzung endet mit dem Aufräumen und einem Wechsel, der abbricht (Einträge 19 bis 28).
 Ein neuer Lauf erzeugt andere Hashes, weil die Zeit zum Commit gehört.
 Zu jedem Schritt steht, was er im Arbeitsverzeichnis, im Working-Copy-Commit, in den Zeigern und
 im Operation Log ändert; \in{Tabelle}[tab:phase3-workflow-effects] fasst es am Ende zusammen.
@@ -1245,8 +1246,252 @@ Der Verlauf ist linear, und der Eintrag 18 ist der einzige, den der Fast-Forward
 \startxcell \type{main} und Working-Copy-Commit \stopxcell
 \startxcell ein Eintrag \type{merge} \stopxcell
 \stopxrow
+\startxrow
+\startxcell \type{tag} \stopxcell
+\startxcell unberührt \stopxcell
+\startxcell unberührt \stopxcell
+\startxcell neuer Tag \stopxcell
+\startxcell ein Eintrag \type{tag} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{status --take-over} \stopxcell
+\startxcell unberührt \stopxcell
+\startxcell unberührt, neuer Eigentümer \stopxcell
+\startxcell keine \stopxcell
+\startxcell ein Eintrag \type{take-over} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{worktree remove} \stopxcell
+\startxcell Verzeichnis des Worktrees entfernt \stopxcell
+\startxcell von den Zeigern genommen, im Verlauf \stopxcell
+\startxcell HEAD des Worktrees entfernt \stopxcell
+\startxcell ein Eintrag \type{worktree-remove} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{branch -d} \stopxcell
+\startxcell unberührt \stopxcell
+\startxcell unberührt \stopxcell
+\startxcell Branch gelöscht \stopxcell
+\startxcell ein Eintrag \type{branch} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{switch -c} auf einen Tag \stopxcell
+\startxcell unverändert, wenn die Bäume gleich sind \stopxcell
+\startxcell neuer, leerer Commit auf dem Tag \stopxcell
+\startxcell neuer Branch, HEAD und Working-Copy-Commit \stopxcell
+\startxcell ein Eintrag \type{switch} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{switch --dry-run} \stopxcell
+\startxcell unberührt \stopxcell
+\startxcell unberührt \stopxcell
+\startxcell keine \stopxcell
+\startxcell keiner \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{switch -c}, abgebrochen \stopxcell
+\startxcell Dateien des Ziels geschrieben \stopxcell
+\startxcell Snapshot, sonst unberührt \stopxcell
+\startxcell keine \stopxcell
+\startxcell Eintrag \type{switch} ohne Wirkung \stopxcell
+\stopxrow
+\startxrow
+\startxcell derselbe Aufruf noch einmal \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell mit den Änderungen auf dem Ziel \stopxcell
+\startxcell neuer Branch, HEAD und Working-Copy-Commit \stopxcell
+\startxcell ein Eintrag \type{switch} \stopxcell
+\stopxrow
 \stopxtable
 \stopplacetable
+
+\subsection{Aufräumen: Tag, Worktree und Branch}
+
+Die Arbeit des Agenten ist eingeführt, und Daniel schliesst die Sitzung ab.
+Er setzt einen Tag auf den Stand und sieht sich die Zeiger an.
+Ein Tag benennt einen Commit und bewegt sich nie (ADR-008);
+ohne Angabe nimmt der Befehl den Commit, auf den HEAD führt:
+
+\starttyping
+$ stemma tag v0.1
+Tagged v0.1 at b3:4c66…1590
+$ stemma tag
+v0.1 b3:4c66…1590
+$ stemma branch
+  agent-arbeit 4c66e94e203f Konflikt in README gelöst
+* main         4c66e94e203f Konflikt in README gelöst
+$ stemma worktree list
+main           /home/daniel/notizen        main          human daniel
+notizen-agent  /home/daniel/notizen-agent  agent-arbeit  agent claude model=opus-5-5 ...
+\stoptyping
+
+Der Tag ist der Eintrag 19 und bewegt nur den Zeiger \type{v0.1}.
+Beide Branches stehen auf demselben Commit, und der Worktree des Agenten hält
+\type{agent-arbeit}.
+Solange er besteht, lehnt \type{branch -d agent-arbeit} ab und nennt den Worktree;
+Exit-Code 1, und nichts ändert sich.
+Auch \type{worktree remove} lehnt zunächst ab, mit Exit-Code 1:
+
+\starttyping
+$ stemma worktree remove notizen-agent
+stemma: the files of the worktree could not be saved first, and nothing was removed: the
+working copy belongs to `agent claude ...`, so `human daniel` may not save it; this command
+has no `--take-over`, so run `status --take-over` in that working copy first to make
+`human daniel` its owner
+\stoptyping
+
+Der Befehl sichert vor dem Entfernen die Dateien des Worktrees mit einem Snapshot,
+und ein Snapshot gehört dem Eigentümer der Arbeitskopie (ADR-010).
+Daniel übernimmt sie deshalb zuerst, in der Arbeitskopie des Agenten;
+nur ein Mensch darf das:
+
+\starttyping
+$ cd ../notizen-agent
+$ stemma status --take-over
+Working copy is clean
+stemma: took the working copy over as entry 20
+$ cd ../notizen
+$ stemma worktree remove notizen-agent
+Removed the worktree notizen-agent in /home/daniel/notizen-agent as entry 21
+The working-copy commit b3:f1bc…bfb9 is named by the entry; the branch stays
+$ stemma branch -d agent-arbeit
+Deleted branch agent-arbeit, which was at b3:4c66…1590
+To bring it back: stemma op restore 22
+\stoptyping
+
+Die Übernahme ist der Eintrag 20 und ändert nur den Eigentümer.
+Das Entfernen (Eintrag 21) löscht das Verzeichnis \type{notizen-agent} und das Zustandsverzeichnis
+des Worktrees; HEAD und Working-Copy-Commit des Worktrees verlassen die Zeiger.
+Der Working-Copy-Commit und der Branch bleiben im Verlauf, und der Eintrag nennt den Commit.
+Das Löschen des Branchs (Eintrag 22) bewegt nur den Zeiger \type{agent-arbeit};
+die Commits bleiben erreichbar, denn \type{main} und der Tag nennen sie.
+Ein \type{op restore 22} stellt den Branch wieder her;
+der Eintrag 21 des Worktrees lässt sich nicht zurücksetzen (\in{Abschnitt}[sec:worktree]).
+\type{log} zeigt zum Schluss, dass der Verlauf linear endet:
+
+\starttyping
+$ stemma log -n 2
+@ b3:dfe8…25ad
+  change   ch:293e…
+  parents  b3:4c66…1590
+  author   human daniel
+  time     2026-11-07T17:03:04Z
+
+o b3:4c66…1590
+  change   ch:4923…
+  parents  b3:b226…8b5c
+  author   agent claude model=opus-5-5 session=s1 sponsor=daniel
+  time     2026-11-07T17:03:04Z
+
+    Konflikt in README gelöst
+\stoptyping
+
+Das \type{@} ist der leere Working-Copy-Commit von Daniel, das \type{o} die Spitze von \type{main}
+mit dem Tag \type{v0.1}.
+
+\subsection{Wechseln mit Änderungen, ein Abbruch und seine Wiederholung}
+
+Daniel will eine Fassung des Grusses ausprobieren.
+Er legt einen Branch am Tag an, ändert die Datei und macht einen Commit.
+Danach ändert er das Programm und lässt \type{status} den Stand sichern:
+
+\starttyping
+$ stemma switch -c ueberarbeitung v0.1
+Switched to a new branch ueberarbeitung as entry 23
+To undo it: stemma op restore 23
+$ echo "Hallo Welt, überarbeitet." > README.md
+$ stemma commit -m "Gruss überarbeiten"
+Committed b3:394d…3860 on ueberarbeitung
+$ echo 'fn main() { println!("Hallo Welt!"); }' > src/main.rs
+$ stemma status
+Working copy changes:
+M src/main.rs
+\stoptyping
+
+Als Start nimmt \type{switch -c} einen Branch, einen Tag oder einen Commit.
+Ein einfacher Name wird als Branch und als Tag gesucht, und ein Name, der beides ist, lehnt der
+Befehl ab; \type{heads/NAME} und \type{tags/NAME} sind eindeutig (ADR-008).
+Der Eintrag 23 legt den Branch an, setzt HEAD darauf und ersetzt den Working-Copy-Commit
+durch einen leeren Commit auf dem Tag.
+Die Dateien ändern sich nicht, denn der Tree des Tags ist der von \type{main}.
+Die Einträge 24 und 25 sind der Snapshot und der Commit, der Eintrag 26 der Snapshot von
+\type{status}.
+
+Jetzt soll ein weiterer Branch \type{ergaenzung} auf \type{main} entstehen, und die Änderung am
+Programm geht mit.
+Daniel sieht sich den Plan vorher an.
+\type{--dry-run} schreibt nichts, auch keinen Snapshot, und geht vom gesicherten
+Working-Copy-Commit aus; deshalb stand \type{status} vorher:
+
+\starttyping
+$ stemma switch -c ergaenzung --dry-run main
+Would switch to a new branch ergaenzung; nothing is written
+    head  branch:ergaenzung
+    branch ergaenzung  (none) -> b3:4c66…1590
+    base  b3:4c66…1590
+    carry the changes of the working copy to the new base
+    write README.md
+A real run saves unsaved changes first; the plan is made from the saved working copy
+\stoptyping
+
+Der Plan nennt die Zeiger, die sich bewegen würden, was aus den Änderungen wird (sie gehen auf
+die neue Basis mit) und die Datei, die sich ändert: \type{README.md} kehrt zum Text von
+\type{main} zurück.
+Daniel führt den Wechsel aus, und der Aufruf bricht ab.
+Um das vorzuführen, lässt ein Testbau des Programms das Anlegen von Dateien im Verzeichnis der
+Branches scheitern (Fehlereinspritzung, Variable \type{STEMMA_FAULT});
+ein Programm aus einem Release enthält sie nicht.
+Der Abbruch fällt, nachdem der Eintrag und die Dateien geschrieben sind und bevor ein Zeiger
+sich bewegt:
+
+\starttyping
+$ STEMMA_FAULT=write=.stemma/refs/heads stemma switch -c ergaenzung main
+stemma: entry 27 was written and the files are at the target, but no pointer moved: could
+not move the reference into place at `./.stemma/refs/heads/ergaenzung`: injected failure;
+run the same switch again before any other command, as a snapshot saves only the files
+that the working-copy commit tracks and would miss the files that only the target has
+$ echo $?
+1
+$ cat README.md
+Hallo Welt, hier spricht der Agent!
+$ stemma op log -n 2
+27  2026-11-07T17:03:05Z  human daniel  switch
+    head  branch:ueberarbeitung -> branch:ergaenzung
+    working-copy  b3:7a2a…b6f0 -> b3:7279…c40c
+    branch ergaenzung  - -> b3:4c66…1590
+    ! the move did not take effect
+26  2026-11-07T17:03:05Z  human daniel  snapshot
+    working-copy  b3:5a41…aaf5 -> b3:7a2a…b6f0
+\stoptyping
+
+Das Verzeichnis zeigt schon den Text von \type{main}, aber HEAD steht noch auf
+\type{ueberarbeitung}, und der Branch \type{ergaenzung} fehlt.
+Der Exit-Code ist 1, weil kein Zeiger sich bewegt hat; hätte ein Zeiger sich bewegt, wäre er 3.
+Der Eintrag 27 steht im Log und trägt die Zeile, dass die Bewegung nicht wirksam wurde.
+Die Fehlermeldung verlangt denselben Aufruf noch einmal, bevor ein anderer Befehl läuft:
+Ein Snapshot würde \type{README.md} als Änderung von \type{ueberarbeitung} speichern.
+Der zweite Aufruf macht keinen Snapshot und führt den Wechsel zu Ende:
+
+\starttyping
+$ stemma switch -c ergaenzung main
+Switched to a new branch ergaenzung as entry 28
+Carried the changes of the working copy to the new base
+To undo it: stemma op restore 28
+$ stemma status
+Working copy changes:
+M src/main.rs
+$ stemma branch
+* ergaenzung     4c66e94e203f Konflikt in README gelöst
+  main           4c66e94e203f Konflikt in README gelöst
+  ueberarbeitung 394d5f0b6cb7 Gruss überarbeiten
+\stoptyping
+
+Der Eintrag 28 bewegt HEAD, den neuen Branch und den Working-Copy-Commit in einem Zug.
+Die Änderung an \type{src/main.rs} ist mitgekommen und liegt auf \type{ergaenzung}, nicht auf
+\type{ueberarbeitung}.
+Es gibt weder \type{--continue} noch \type{--abort}: Der Zustand nach dem Abbruch ist im Verlauf
+und im Log beschrieben, und der gleiche Aufruf führt ihn zu Ende
+(\in{Abbildung}[fig:repeat-state]).
 
 \subsection{Abbruch und Absturz: derselbe Aufruf noch einmal}
 
