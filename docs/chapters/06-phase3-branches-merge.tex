@@ -1175,6 +1175,8 @@ Der alte Commit \type{b3:867b…8636} bleibt im Speicher, und das Log nennt ihn 
 als neuen und im Eintrag 15 als alten Wert des Branchs.
 Der Branch bewegt sich im Eintrag 15 vor dem Working-Copy-Commit; HEAD bleibt.
 Das Verzeichnis der Wurzel und \type{main} bleiben unberührt.
+Das \type{commit} des Agenten schreibt zwei Einträge, wie das von Daniel:
+den Snapshot als Eintrag 16 und den Commit als Eintrag 17.
 
 Jetzt liegt \type{agent-arbeit} über \type{main}, und Daniel führt den Branch ein:
 
@@ -1255,13 +1257,6 @@ der Dateien, Eintrag, Dateien, Zeiger.
 Beim \type{op restore} geht der Plan dem Snapshot voraus, damit ein fehlender Commit auffällt,
 bevor etwas geschrieben ist.
 Wo der Abbruch fällt, bestimmt, was der Aufruf danach tut.
-\in{Abbildung}[fig:repeat-state] zeigt die Zustände und was jeden Übergang auslöst.
-
-\startplacefigure[title={Abbruch und Wiederholung: die Zustände eines Befehls mit Eintrag},
-    reference=fig:repeat-state,location=here]
-\externalfigure[images/repeat-state.pdf][width=0.9\textwidth]
-\stopplacefigure
-
 \startitemize[n]
 \item Vor dem Eintrag hat der Befehl keinen Zeiger und keine Datei geändert; sein Snapshot ist ein
 eigener Eintrag. Der Aufruf lässt sich einfach wiederholen.
@@ -1285,6 +1280,14 @@ Sonst ist er 1, bei Beschädigung 5 und bei einer gehaltenen Sperre 6.
 Ein \type{op restore} erkennt den abgebrochenen Eintrag nicht.
 Der zweite Aufruf macht einen Snapshot und einen neuen Eintrag, setzt aber jeden Zeiger für sich,
 also bewegt er nur noch den Rest.
+
+\in{Abbildung}[fig:repeat-state] zeigt die Zustände und was jeden Übergang auslöst.
+
+\startplacefigure[title={Abbruch und Wiederholung: die Zustände von \type{switch},
+    \type{merge}, \type{rebase} und dem Umschreiben},
+    reference=fig:repeat-state,location=here]
+\externalfigure[images/repeat-state.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Zwei Befehle der Sitzung folgen einer anderen Regel.
 Ein \type{commit}, der nur einen seiner beiden Zeiger bewegt hat, endet mit Exit-Code 3; erst der
