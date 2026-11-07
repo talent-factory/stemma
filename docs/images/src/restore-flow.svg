@@ -34,7 +34,7 @@
   <text x="40" y="267" fill="#6B46C1">4  Eintrag schreiben</text>
   <text x="40" y="343" fill="#2B6CB0">5  Verzeichnis schreiben</text>
   <text x="40" y="419" fill="#2F7D32">6  Branches bewegen</text>
-  <text x="40" y="495" fill="#2F7D32">7  Working-Copy-Commit, HEAD</text>
+  <text x="40" y="495" fill="#2F7D32">7  Working-Copy-Commit, <tspan font-family="Courier, monospace">HEAD</tspan></text>
   <text x="40" y="571">8  Sperre freigeben</text>
 </g>
 <g font-size="11.5" fill="#64748B">
@@ -44,7 +44,7 @@
   <text x="56" y="285">Operation <tspan font-family="Courier, monospace">restore</tspan></text>
   <text x="56" y="361">Dateien des alten Baums</text>
   <text x="56" y="437">auf die Werte vor dem Eintrag</text>
-  <text x="56" y="513">ebenso, HEAD zuletzt</text>
+  <text x="56" y="513">ebenso, <tspan font-family="Courier, monospace">HEAD</tspan> zuletzt</text>
   <text x="56" y="589"><tspan font-family="Courier, monospace">refs.lock</tspan> entfernen</text>
 </g>
 <!-- Arrows between the steps -->

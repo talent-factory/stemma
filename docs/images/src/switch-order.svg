@@ -9,10 +9,10 @@
   <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
 </defs>
 <rect x="0" y="0" width="720" height="504" fill="#FFFFFF"/>
-<text x="20" y="20" font-size="12" font-weight="bold" fill="#0F172A">switch feature mit Änderungen im Working-Copy-Commit W</text>
-<text x="20" y="36" font-size="11" fill="#64748B">W: der Working-Copy-Commit mit den Änderungen; ab Schritt 2 ist er gesichert. W′ trägt sie auf feature.</text>
+<text x="20" y="20" font-size="12" font-weight="bold" fill="#0F172A"><tspan font-family="Courier, monospace">switch feature</tspan> mit Änderungen im Working-Copy-Commit W</text>
+<text x="20" y="36" font-size="12" fill="#64748B">W: der Working-Copy-Commit mit den Änderungen; ab Schritt 2 ist er gesichert. W′ trägt sie auf feature.</text>
 <text x="284.0" y="56" font-size="12" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag im Log</text>
-<text x="393.0" y="56" font-size="12" font-weight="bold" text-anchor="middle" fill="#2F7D32">HEAD</text>
+<text x="393.0" y="56" font-size="12" font-weight="bold" text-anchor="middle" font-family="Courier, monospace" fill="#2F7D32">HEAD</text>
 <text x="503.0" y="56" font-size="12" font-weight="bold" text-anchor="middle" fill="#B45309">Working-Copy-Commit</text>
 <text x="635.0" y="56" font-size="12" font-weight="bold" text-anchor="middle" fill="#2B6CB0">Dateien</text>
 <text x="20" y="83" font-size="12" font-weight="bold" fill="#0F172A">1 Prüfen</text>
@@ -58,7 +58,7 @@
 <rect x="570" y="292" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="635.0" y="311.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
 <line x1="20" y1="330" x2="700" y2="330" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="345" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, die Zeiger sind alt; <tspan font-family="Courier, monospace">op log</tspan> zeigt ihn als nicht übernommen.</text>
+<text x="20" y="345" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, die Zeiger sind alt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang nicht stattgefunden.</text>
 <text x="20" y="387" font-size="12" font-weight="bold" fill="#0F172A">4b Dateien geschrieben</text>
 <rect x="222" y="368" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="387.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">switch</text>

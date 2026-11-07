@@ -34,8 +34,8 @@
 <line x1="460" y1="63" x2="437" y2="100" stroke="#64748B" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-slate)"/>
 <text x="530" y="67" font-size="12" fill="#64748B">bleibt im Log</text>
 <text x="20" y="195" font-size="12" fill="#0F172A">Inhalt von W′ = T + (W − P); W′ behält Change-ID, Autor, Zeit und Beschreibung.</text>
-<text x="20" y="213" font-size="11" fill="#64748B">HEAD und die Branches bewegen sich nicht. Als eigener Schritt schreibt er den Eintrag <tspan font-family="Courier, monospace">rewrite</tspan>;</text>
-<text x="20" y="229" font-size="11" fill="#64748B"><tspan font-family="Courier, monospace">merge</tspan> und <tspan font-family="Courier, monospace">rebase</tspan> führen ihn zusammen mit dem Branch in einem Eintrag aus.</text>
+<text x="20" y="213" font-size="12" fill="#64748B">HEAD und die Branches bewegen sich nicht. Als eigener Schritt schreibt er den Eintrag <tspan font-family="Courier, monospace">rewrite</tspan>;</text>
+<text x="20" y="229" font-size="12" fill="#64748B"><tspan font-family="Courier, monospace">merge</tspan> und <tspan font-family="Courier, monospace">rebase</tspan> führen ihn zusammen mit dem Branch in einem Eintrag aus.</text>
 <text x="284.0" y="256" font-size="12" font-weight="bold" text-anchor="middle" fill="#6B46C1">Eintrag im Log</text>
 <text x="425.0" y="256" font-size="12" font-weight="bold" text-anchor="middle" fill="#B45309">Working-Copy-Commit</text>
 <text x="575.0" y="256" font-size="12" font-weight="bold" text-anchor="middle" fill="#2B6CB0">Dateien</text>
@@ -74,7 +74,7 @@
 <rect x="510" y="492" width="130" height="30" rx="4" stroke="#2B6CB0" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="575.0" y="511.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#2B6CB0">von W</text>
 <line x1="20" y1="530" x2="700" y2="530" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="20" y="545" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, der Zeiger ist alt; der Eintrag gilt als nicht übernommen.</text>
+<text x="20" y="545" font-size="12" fill="#B91C1C">Absturz hier: der Eintrag steht, der Zeiger ist alt; <tspan font-family="Courier, monospace">op log</tspan> nennt den Ausgang nicht stattgefunden.</text>
 <text x="20" y="587" font-size="12" font-weight="bold" fill="#0F172A">4b Dateien geschrieben</text>
 <rect x="222" y="568" width="124" height="30" rx="4" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284.0" y="587.0" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#6B46C1">rewrite</text>

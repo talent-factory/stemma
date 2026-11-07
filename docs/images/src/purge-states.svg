@@ -47,7 +47,7 @@
   <text x="56" y="245"><tspan font-family="Courier, monospace">.stemma/purge-pending</tspan></text>
   <text x="56" y="309">ohne den Blob</text>
   <text x="56" y="373">Zahl der Commits, Nummern der Stubs</text>
-  <text x="56" y="437">Branches, Working-Copy-Commit, HEAD</text>
+  <text x="56" y="437">Branches, Working-Copy-Commit, <tspan font-family="Courier, monospace">HEAD</tspan></text>
   <text x="56" y="501">Nummer, Zeit und Akteur bleiben</text>
   <text x="56" y="565">Commits, Bäume, zuletzt der Blob</text>
 </g>
@@ -66,12 +66,22 @@
 <line x1="20" y1="392" x2="292" y2="392" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
 <text x="302" y="388" font-size="12.5" font-weight="bold" fill="#B91C1C">Punkt ohne Rückkehr</text>
 <text x="302" y="404" font-size="12" fill="#0F172A">Ab hier nur noch <tspan font-family="Courier, monospace">--resume</tspan>.</text>
-<!-- Before the journal -->
-<g font-size="12" fill="#0F172A">
-  <text x="302" y="90">Abbruch vor dem Journal: Es gibt</text>
-  <text x="302" y="105">nichts fortzusetzen, der Purge lässt</text>
-  <text x="302" y="120">sich wiederholen. Ein Snapshot und</text>
-  <text x="302" y="135">das Format 4 können schon bestehen.</text>
+<!-- Crash points before the journal -->
+<line x1="20" y1="72" x2="292" y2="72" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<g font-size="12" fill="#B91C1C">
+  <text x="302" y="54">Absturz hier: nichts geschrieben;</text>
+  <text x="302" y="69">der Purge lässt sich wiederholen.</text>
+</g>
+<line x1="20" y1="136" x2="292" y2="136" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<g font-size="12" fill="#B91C1C">
+  <text x="302" y="118">Absturz hier: nur der Eintrag</text>
+  <text x="302" y="133"><tspan font-family="Courier, monospace">snapshot</tspan> ist neu; wiederholbar.</text>
+</g>
+<line x1="20" y1="200" x2="292" y2="200" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<g font-size="12" fill="#B91C1C">
+  <text x="302" y="167">Absturz hier: höchstens ein Snapshot;</text>
+  <text x="302" y="182">die Sperre ist verwaist, der nächste</text>
+  <text x="302" y="197">Befehl übernimmt sie.</text>
 </g>
 <!-- Brackets: where abort and resume work -->
 <g stroke="#64748B" stroke-width="1.5" fill="none">

@@ -1,81 +1,73 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 760" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 760" font-family="Helvetica, Arial, sans-serif">
 <title>Die Sitzung der Phase 3: Daniel und der Agent</title>
-<defs>
-  <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
-  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
-  <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2B6CB0"/></marker>
-  <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B45309"/></marker>
-  <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6B46C1"/></marker>
-  <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
-</defs>
-<rect x="0" y="0" width="720" height="760" fill="#FFFFFF"/>
+<rect x="0" y="0" width="740" height="760" fill="#FFFFFF"/>
 <text x="300" y="24" font-size="12" font-weight="bold" text-anchor="middle" fill="#0F172A">Daniel</text>
-<text x="300" y="38" font-size="11" text-anchor="middle" fill="#64748B">Wurzel</text>
+<text x="300" y="38" font-size="12" text-anchor="middle" fill="#64748B">Haupt-Worktree</text>
 <text x="540" y="24" font-size="12" font-weight="bold" text-anchor="middle" fill="#0F172A">Agent</text>
-<text x="540" y="38" font-size="11" text-anchor="middle" fill="#64748B">Worktree <tspan font-family="Courier, monospace">notizen-agent</tspan>, Branch <tspan font-family="Courier, monospace">agent-arbeit</tspan></text>
-<text x="20" y="38" font-size="11" font-weight="bold" fill="#6B46C1">Eintrag im Log</text>
+<text x="540" y="38" font-size="12" text-anchor="middle" fill="#64748B">Worktree <tspan font-family="Courier, monospace">notizen-agent</tspan>, Branch <tspan font-family="Courier, monospace">agent-arbeit</tspan></text>
+<text x="20" y="38" font-size="12" font-weight="bold" fill="#6B46C1">Eintrag im Log</text>
 <line x1="300" y1="48" x2="300" y2="684" stroke="#E2E8F0" stroke-width="2"/>
 <line x1="540" y1="48" x2="540" y2="505" stroke="#E2E8F0" stroke-width="2"/>
 <text x="20" y="74" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">6</text>
 <circle cx="300" cy="70" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="68" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">worktree add</text>
-<text x="284" y="82" font-size="11" text-anchor="end" fill="#64748B">legt Worktree und <tspan font-family="Courier, monospace">agent-arbeit</tspan> an</text>
+<text x="284" y="82" font-size="12" text-anchor="end" fill="#64748B">legt Worktree und <tspan font-family="Courier, monospace">agent-arbeit</tspan> an</text>
 <text x="20" y="116" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">7, 8</text>
 <circle cx="540" cy="112" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="556" y="110" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">track, commit</text>
-<text x="556" y="124" font-size="11" fill="#64748B">Commit: Gruss und Bibliothek</text>
+<text x="556" y="124" font-size="12" fill="#64748B">Commit: Gruss und Bibliothek</text>
 <text x="20" y="158" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">9, 10</text>
 <circle cx="300" cy="154" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="152" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">commit</text>
-<text x="284" y="166" font-size="11" text-anchor="end" fill="#64748B">Ausrufezeichen</text>
+<text x="284" y="166" font-size="12" text-anchor="end" fill="#64748B">Ausrufezeichen</text>
 <text x="20" y="200" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">11</text>
 <circle cx="300" cy="196" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="194" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">merge agent-arbeit</text>
-<text x="284" y="208" font-size="11" text-anchor="end" fill="#64748B">Merge-Commit mit Konflikt in <tspan font-family="Courier, monospace">README.md</tspan></text>
+<text x="284" y="208" font-size="12" text-anchor="end" fill="#64748B">Merge-Commit mit Konflikt in <tspan font-family="Courier, monospace">README.md</tspan></text>
 <text x="20" y="242" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">12, 13</text>
 <circle cx="300" cy="238" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="236" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">status, commit</text>
-<text x="284" y="250" font-size="11" text-anchor="end" fill="#64748B">Konflikt gelöst; <tspan font-family="Courier, monospace">main</tspan> auf der Lösung</text>
+<text x="284" y="250" font-size="12" text-anchor="end" fill="#64748B">Konflikt gelöst; <tspan font-family="Courier, monospace">main</tspan> auf der Lösung</text>
 <text x="20" y="284" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">14</text>
 <circle cx="300" cy="280" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="278" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">op restore 11</text>
-<text x="284" y="292" font-size="11" text-anchor="end" fill="#64748B"><tspan font-family="Courier, monospace">main</tspan> und Dateien wie vor dem Merge</text>
+<text x="284" y="292" font-size="12" text-anchor="end" fill="#64748B"><tspan font-family="Courier, monospace">main</tspan> und Dateien wie vor dem Merge</text>
 <text x="20" y="326" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">15</text>
 <circle cx="540" cy="322" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="556" y="320" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">rebase main</text>
-<text x="556" y="334" font-size="11" fill="#64748B">Konflikt als Daten</text>
+<text x="556" y="334" font-size="12" fill="#64748B">Konflikt als Daten</text>
 <text x="20" y="368" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">16, 17</text>
 <circle cx="540" cy="364" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="556" y="362" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">commit</text>
-<text x="556" y="376" font-size="11" fill="#64748B">Konflikt gelöst, Branch bewegt</text>
+<text x="556" y="376" font-size="12" fill="#64748B">Konflikt gelöst, Branch bewegt</text>
 <text x="20" y="410" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">18</text>
 <circle cx="300" cy="406" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="404" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">merge agent-arbeit</text>
-<text x="284" y="418" font-size="11" text-anchor="end" fill="#64748B">Fast-Forward von <tspan font-family="Courier, monospace">main</tspan></text>
+<text x="284" y="418" font-size="12" text-anchor="end" fill="#64748B">Fast-Forward von <tspan font-family="Courier, monospace">main</tspan></text>
 <text x="20" y="452" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">19</text>
 <circle cx="300" cy="448" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="446" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">tag v0.1</text>
-<text x="284" y="460" font-size="11" text-anchor="end" fill="#64748B">Tag auf der Spitze von <tspan font-family="Courier, monospace">main</tspan></text>
+<text x="284" y="460" font-size="12" text-anchor="end" fill="#64748B">Tag auf der Spitze von <tspan font-family="Courier, monospace">main</tspan></text>
 <text x="20" y="494" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">20–22</text>
 <circle cx="300" cy="490" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="488" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">take-over, remove, branch -d</text>
-<text x="284" y="502" font-size="11" text-anchor="end" fill="#64748B">Worktree und Branch aufgeräumt</text>
+<text x="284" y="502" font-size="12" text-anchor="end" fill="#64748B">Worktree und Branch aufgeräumt</text>
 <text x="20" y="536" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">23</text>
 <circle cx="300" cy="532" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="530" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">switch -c ueberarbeitung v0.1</text>
-<text x="284" y="544" font-size="11" text-anchor="end" fill="#64748B">neuer Branch am Tag</text>
+<text x="284" y="544" font-size="12" text-anchor="end" fill="#64748B">neuer Branch am Tag</text>
 <text x="20" y="578" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">24–26</text>
 <circle cx="300" cy="574" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="572" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">commit, status</text>
-<text x="284" y="586" font-size="11" text-anchor="end" fill="#64748B">Snapshot, Commit, Snapshot</text>
+<text x="284" y="586" font-size="12" text-anchor="end" fill="#64748B">Snapshot, Commit, Snapshot</text>
 <text x="20" y="620" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">27</text>
 <circle cx="300" cy="616" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="614" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">switch -c ergaenzung main</text>
-<text x="284" y="628" font-size="11" text-anchor="end" fill="#64748B">abgebrochen: Eintrag ohne Wirkung</text>
+<text x="284" y="628" font-size="12" text-anchor="end" fill="#64748B">abgebrochen: Eintrag ohne Wirkung</text>
 <text x="20" y="662" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">28</text>
 <circle cx="300" cy="658" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="284" y="656" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="end" fill="#0F172A">switch -c ergaenzung main</text>
-<text x="284" y="670" font-size="11" text-anchor="end" fill="#64748B">derselbe Aufruf noch einmal</text>
-<text x="20" y="728" font-size="11" fill="#64748B">Ein Punkt steht für einen oder, bei mehreren Nummern, für mehrere Einträge im Operation Log, auf der Spur des Akteurs.</text>
-<text x="20" y="744" font-size="11" fill="#64748B">Die Beschriftung nennt den Befehl; im Log heissen die Einträge etwa <tspan font-family="Courier, monospace">worktree-add</tspan>, <tspan font-family="Courier, monospace">restore</tspan> und <tspan font-family="Courier, monospace">take-over</tspan>.</text>
+<text x="284" y="670" font-size="12" text-anchor="end" fill="#64748B">derselbe Aufruf noch einmal</text>
+<text x="20" y="728" font-size="12" fill="#64748B">Ein Punkt steht für einen oder, bei mehreren Nummern, für mehrere Einträge im Operation Log, auf der Spur des Akteurs.</text>
+<text x="20" y="744" font-size="12" fill="#64748B">Die Beschriftung nennt den Befehl; im Log heissen die Einträge etwa <tspan font-family="Courier, monospace">worktree-add</tspan>, <tspan font-family="Courier, monospace">restore</tspan> und <tspan font-family="Courier, monospace">take-over</tspan>.</text>
 </svg>

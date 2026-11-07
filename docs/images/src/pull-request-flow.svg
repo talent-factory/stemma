@@ -1,14 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 440" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 466" font-family="Helvetica, Arial, sans-serif">
 <title>Ablauf eines Pull Requests von der Eröffnung bis zur Zeigerbewegung von main</title>
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
     <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
   </marker>
-  <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-    <path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/>
-  </marker>
 </defs>
-<rect x="0" y="0" width="600" height="440" fill="#FFFFFF"/>
+<rect x="0" y="0" width="600" height="466" fill="#FFFFFF"/>
 <!-- steps -->
 <g stroke-width="1.5" fill="#FFFFFF">
   <rect x="20" y="16" width="290" height="56" rx="4" stroke="#64748B"/>
@@ -59,4 +56,5 @@
 <path d="M310 404 L560 404 L560 345 L330 345 L310 320" fill="none" stroke="#64748B" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
 <text x="340" y="364" font-size="11" fill="#0F172A"><tspan font-family="Courier, monospace">main</tspan> hat sich bewegt (Stale oder Locked):</text>
 <text x="340" y="378" font-size="11" fill="#0F172A">neu bei Schritt 4 mit der neuen Spitze</text>
+<text x="20" y="458" font-size="12" fill="#64748B">Vorschlag: ADR-019 hat den Status Proposal, der Ablauf ist noch nicht umgesetzt.</text>
 </svg>

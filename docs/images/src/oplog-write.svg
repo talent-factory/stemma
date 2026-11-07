@@ -40,7 +40,7 @@
   <text x="56" y="209">Zeiger lesen, Commit prüfen</text>
   <text x="56" y="285">in <tspan font-family="Courier, monospace">tmp/</tspan>, sichern, als n verweisen</text>
   <text x="56" y="361">Nummer und Hash von n</text>
-  <text x="56" y="437">Branch, HEAD, Working-Copy-Commit</text>
+  <text x="56" y="437">Branch, <tspan font-family="Courier, monospace">HEAD</tspan>, Working-Copy-Commit</text>
   <text x="56" y="513"><tspan font-family="Courier, monospace">refs.lock</tspan> entfernen</text>
 </g>
 <!-- Arrows between the steps -->
