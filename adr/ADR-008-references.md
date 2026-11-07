@@ -167,10 +167,11 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   `--move-tags` (STEMMA-185, ADR-014): the one case where a tag moves is a purge that the human
   who runs it asked to move the tag, and the `purge` entry counts it.
 - **A name that is both a branch and a tag is an error, unless it is qualified**
-  *(confirmed, STEMMA-186)*. No command resolves a name to a tag yet, so this is the rule for the
-  first one. It applies to every place that takes any revision: today `switch --detach`, the
-  start of `switch -c`, and the target of `rebase`, and `log` and `diff` as soon as they accept
-  names. Such a place resolves the text it gets in this order:
+  *(confirmed, STEMMA-186)*. `switch --detach` is the first command that resolves a name to a tag
+  (STEMMA-198), and this is its rule. It applies to every place that takes any revision: today
+  `switch --detach`, and the start of `switch -c`, the target of `rebase`, `log` and `diff` as
+  soon as they accept a tag (the core resolver of `rebase` has the rule already).
+  Such a place resolves the text it gets in this order:
   1. Text that starts with `b3:` is a commit ID (a name holds no colon) and is no name.
   2. `heads/<name>` is the branch `<name>`, and `tags/<name>` is the tag `<name>`. These two
      prefixes are the qualified form. They are tried before the lookup and never fall through
@@ -192,7 +193,7 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 
   The prefixes are reserved to keep the rule closed: a branch or a tag whose name starts with
   `heads/` or `tags/` would be unreachable by its plain name, and `heads/x` could mean two
-  things. The first command that resolves a name to a tag refuses such a name for a new branch
+  things. `switch -c`, `branch`, `tag`, and `worktree add -b` refuse such a name for a new branch
   or tag. A repository that has one already is not rewritten; the qualified form wins for it as
   well, and `verify` does not call it damage. The store keeps its name rules (the section on the
   name of a branch), so the change touches no ID and no stored file; the rule lives in the layer
@@ -298,9 +299,11 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       error that asks for `heads/<name>` or `tags/<name>` (STEMMA-186), see the decision above.
       A purge that would rewrite the commit of a tag refuses by default, and `--move-tags` lets it
       move the tag (ADR-014).
-- [ ] The first command that resolves a name to a tag implements the rule for names
-      (STEMMA-186): the two prefixes, the error for an ambiguous name, and the refusal of new
-      names that start with `heads/` or `tags/`. No command resolves a name to a tag yet.
+- [x] The first command that resolves a name to a tag implements the rule for names
+      (STEMMA-186, STEMMA-198): the two prefixes, the error for an ambiguous name, and the
+      refusal of new names that start with `heads/` or `tags/`. The first command is
+      `switch --detach`; the rule lives in `repository/revision.rs`, so that `switch -c` and
+      `rebase` reuse it when they take a tag.
 - [x] Checking that the branches, tags, and HEAD of a repository point to commits that the store
       has
       (as `Tree::verify` does for a tree): `FsRefStore::verify` (STEMMA-50), see Consequences.

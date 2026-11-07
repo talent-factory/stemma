@@ -2051,3 +2051,32 @@ fn an_empty_state_directory_with_a_name_that_is_not_utf8_is_skipped() {
     assert_eq!(list.code, 0, "{}", list.stderr);
     assert!(list.stdout.contains("linked"), "{}", list.stdout);
 }
+
+#[test]
+fn a_new_branch_of_a_worktree_cannot_start_with_a_reserved_prefix() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.at("anna");
+    let path = path.to_str().unwrap();
+
+    for name in ["heads/x", "tags/x"] {
+        let result = run(
+            &sandbox.repo(),
+            &["worktree", "add", "-b", name, path, "--actor", ACTOR],
+        );
+        assert_eq!(result.code, 1, "{name}: {}", result.stderr);
+        assert!(result.stderr.contains("reserved"), "{}", result.stderr);
+        assert!(!sandbox.at("anna").exists(), "{name} made the directory");
+    }
+    ok(
+        &sandbox.repo(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/heads/x",
+            path,
+            "--actor",
+            ACTOR,
+        ],
+    );
+}

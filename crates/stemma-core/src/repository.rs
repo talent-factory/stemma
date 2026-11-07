@@ -41,6 +41,7 @@ mod purge;
 pub(crate) use purge::fuzz_journal;
 mod rebase;
 mod restore;
+mod revision;
 mod rewrite;
 mod snapshot;
 mod status;
@@ -59,12 +60,14 @@ pub use purge::{
 };
 pub use rebase::{RebaseError, Rebased, Replayed};
 pub use restore::{RestoreError, RestorePlan, Restored};
+pub use revision::{
+    require_unreserved, NameError, ReservedPrefix, Revision, RevisionParseError, BRANCH_PREFIX,
+    TAG_PREFIX,
+};
 pub use rewrite::{RewriteError, Rewritten};
 pub use snapshot::{SnapshotError, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
-pub use switch::{
-    Changes, Handled, Planned, Revision, SwitchError, SwitchPlan, SwitchTarget, Switched,
-};
+pub use switch::{Changes, Handled, Planned, SwitchError, SwitchPlan, SwitchTarget, Switched};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 pub use worktree::{AddedWorktree, RemovedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
 
