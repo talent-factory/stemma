@@ -126,7 +126,6 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Arbeitsverzeichnis | Arbeitsordner | The directory on disk that holds the files |
 | Worktree | Workspace, zweite Kopie | A further working directory of the repository with its own HEAD, working-copy commit, and owner; the working directory of the root is the main worktree (ADR-009). Not a Git worktree: say \quotation{Git-Worktree} for that |
 | Snapshot | Schnappschuss | Recording the working directory into the Working-Copy-Commit |
-| Verlauf | Historie, History | The commit graph |
 | Merge-Basis | gemeinsamer Vorfahre (alone) | A best common ancestor of two commits (ADR-017) |
 | Criss-Cross-Merge | | A history in which two merges each take in the other side, so that there are several merge bases |
 | Konflikt | Merge-Konflikt (alone) | An open conflict, kept as data in the commit (ADR-005) |
@@ -185,14 +184,14 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Rebase, neu aufspielen | rebasen (as a verb) | `rebase`: the commits of a branch are written again on a new target; the verb is \quotation{neu aufspielen} |
 | Eigentümer der Arbeitskopie | Besitzer (of a working copy; that is the owner of a file in the file system) | The one actor whose changes a snapshot saves (ADR-010) |
 | Haupt-Worktree | Root-Worktree | The worktree of the root of the repository, named `main` (ADR-009) |
-| Konfliktansicht | Ansicht (alone), Marker-Datei | The tree that shows an open conflict as files with markers (ADR-010) |
+| Konfliktansicht, Ansicht | Marker-Datei | The tree that shows an open conflict as files with markers (ADR-010) |
 | Tree-Merge | Merge der Trees (as a name) | The function that merges two commits on their trees (ADR-005) |
 | Zeilen-Merge | Text-Merge | The merge of the contents of one file by lines |
 | Term | Summand | One tree in a sum of trees, with a sign (ADR-005) |
 | Autorisierer | Authorizer | The component that decides whether an actor may run an operation on a target (ADR-002) |
 | Algebra | | Do not use as a name for the sum of trees; say \quotation{Summe von Trees} |
 | Elternteil | Elter | A parent of a commit |
-| Verlauf | Geschichte, Historie | The commit graph; \quotation{Geschichte} only for the history of the project |
+| Verlauf | Geschichte, Historie, History | The commit graph; \quotation{Geschichte} only for the history of the project |
 | Akteur | Benutzer, Nutzer | The one who runs a command; \quotation{Benutzer} only for the user of the operating system |
 | Seite (eines Merges) | Zweig | One of the two commits that a merge joins |
 | Git | git (lower case, except in a command) | The version control system |

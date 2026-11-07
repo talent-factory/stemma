@@ -63,7 +63,8 @@ Dass ein Name auf einen Tag zeigen darf, ist ein offener Punkt von ADR-008.
 Der Befehl \type{switch} wechselt den Branch, auf den HEAD zeigt, oder löst HEAD vom Branch.
 Mit \type{switch NAME} wechselt er zu einem Branch, der besteht;
 mit \type{switch -c NAME [START]} legt er den Branch an und wechselt dorthin;
-mit \type{switch --detach COMMIT-ODER-BRANCH} nennt HEAD einen Commit und keinen Branch.
+mit \type{switch --detach NAME} nennt HEAD den Commit, den NAME bezeichnet (ein Branch oder ein
+Commit), und keinen Branch.
 Ein unbekannter Name ohne \type{-c} ist ein Fehler.
 Hat der Working-Copy-Commit Änderungen, nimmt der Befehl sie mit (ADR-010):
 Sie stehen danach auf der Spitze des Ziels und bleiben nicht auf dem alten Branch zurück.
@@ -301,7 +302,7 @@ Der Merge liest je Term einen Diff gegen die Basis, der $O((N+M)\,D)$ kostet
 (\in{Abschnitt}[sec:myers]), und geht dann einmal linear durch die Zeilen;
 das Aufheben jedes Zwischenstücks ist quadratisch in $k$.
 Bei einer Summe aus $k$ Termen und $n$ Einträgen in den Verzeichnissen, die sich unterscheiden,
-kostet der Merge der Trees $O(n \cdot k)$ bis auf logarithmische Faktoren;
+kostet der Tree-Merge $O(n \cdot k)$ bis auf logarithmische Faktoren;
 ein Tree, der sich aufhebt, wird nicht gelesen.
 Dazu kommt die Suche nach den Merge-Basen, die den ganzen Verlauf durchgeht.
 Mit mehreren Basen läuft sie für jede weitere Basis noch einmal, und für die gemeinsamen
@@ -755,7 +756,7 @@ Die ersetzten Commits bleiben im Log (ADR-011).
 \section[sec:merge-command]{Branches zusammenführen: merge}
 
 Der Befehl \type{merge} führt einen Branch in den Branch ein, auf den HEAD zeigt.
-Er verbindet den Merge der Trees (\in{Abschnitt}[sec:tree-merge]) mit dem Umschreiben der
+Er verbindet den Tree-Merge (\in{Abschnitt}[sec:tree-merge]) mit dem Umschreiben der
 Arbeitskopie (\in{Abschnitt}[sec:rewrite-wc]) und bewegt den Branch und den
 Working-Copy-Commit in einer Operation.
 Was geschieht, bestimmen die Merge-Basen der beiden Spitzen $A$ (eigener Branch) und $B$ (anderer
@@ -764,11 +765,12 @@ Branch):
 \startitemize
 \item Ist $B$ ein Vorfahre von $A$, ist alles eingeführt, und es geschieht nichts.
 Der Snapshot der Arbeitskopie entsteht trotzdem;
-\type{rebase} und \type{switch} schreiben in diesem Fall keinen.
+\type{rebase} schreibt im entsprechenden Fall keinen, \type{switch} bei \type{Already on NAME}
+ebenfalls nicht.
 \item Ist $A$ ein Vorfahre von $B$, nimmt der Branch die Spitze $B$ (Fast-Forward).
 Es entsteht kein Commit.
 \item Sonst entsteht ein Merge-Commit $M$ mit den Eltern $A$ und $B$, in dieser Reihenfolge.
-Sein Baum ist die Summe $A + B - \mathrm{Basis}$ nach dem Merge der Trees,
+Sein Baum ist die Summe $A + B - \mathrm{Basis}$ nach dem Tree-Merge,
 bei mehreren Basen die flache Summe aus \in{Abschnitt}[sec:tree-merge].
 \stopitemize
 

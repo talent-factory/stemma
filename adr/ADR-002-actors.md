@@ -12,7 +12,8 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   `authorize(actor, operation, target)`** *(confirmed)*. Phase 1: everything is allowed, but the
   call is mandatory. A plan counts, as it reads what the change would touch: `purge` without
   `--apply` and `op restore --dry-run` have an actor and call the hook. The commands that only
-  read the log (`op log`, `op verify`) have no actor and call no hook; who may read a repository
+  read (`log`, `op log`, `op verify`, the list forms of `branch` and `tag`, and
+  `worktree list`) have no actor and call no hook; who may read a repository
   is the question of ADR-003, for the hub of Phase 5. Objects stored directly through
   `Repository::objects()` are not authorized; no command does that (ADR-007, ADR-009).
 - **A write cannot start without the answer of the authorizer** *(confirmed)*. The answer is a

@@ -47,7 +47,7 @@ und lässt sich nicht zurückholen, wenn es überschrieben wird.
 
 Jujutsu betrachtet die Arbeitskopie selbst als Commit \cite[jujutsu],
 und Stemma folgt ihm (ADR-010).
-Ein Repository hat einen Working-Copy-Commit,
+Jeder Worktree eines Repositories (ADR-009) hat einen Working-Copy-Commit,
 dessen Baum die verfolgten Dateien im Arbeitsverzeichnis sind.
 Vor jedem Befehl, der das Arbeitsverzeichnis liest oder ändert,
 etwa \type{track}, \type{commit} und \type{status},

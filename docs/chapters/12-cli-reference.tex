@@ -96,7 +96,8 @@ stemma help [Befehl]
 \type{stemma help Befehl} zeigt dasselbe wie \type{stemma Befehl --help}; bei einem Befehl mit
 Unterbefehl nennt man beide, etwa \type{stemma help op restore}.
 Ohne Befehl zeigt \type{stemma help} die Übersicht wie \type{stemma --help}.
-Der Aufruf \type{stemma} allein und \type{stemma op} allein schreiben die Hilfe auf die
+Der Aufruf \type{stemma} allein und jede Befehlsgruppe ohne Unterbefehl
+(\type{stemma op}, \type{stemma worktree}) schreiben die Hilfe auf die
 Fehlerausgabe und enden mit Exit-Code 2, denn es fehlt ein Befehl.
 Die Hilfe von \type{--help} und \type{help} braucht weder einen Akteur noch ein Repository,
 schreibt auf die Standardausgabe und endet mit Exit-Code 0.
@@ -478,7 +479,8 @@ aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesic
 \startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree remove}} \stopxcell
 \startxcell[width=0.41\textwidth] Ein Schritt scheiterte, nachdem der Eintrag im Log stand;
 Verzeichnis oder Zustandsverzeichnis sind noch da. \stopxcell
-\startxcell Die Meldung nennt, was von Hand zu entfernen ist; war noch kein Zeiger bewegt,
+\startxcell Die Meldung nennt, was von Hand zu entfernen ist; konnte der Befehl das Verzeichnis
+nicht entfernen oder war noch kein Zeiger bewegt,
 nimmt derselbe Aufruf das Zustandsverzeichnis weg. \stopxcell
 \stopxrow
 \startxrow
@@ -635,7 +637,7 @@ Ein ungültiger Name ist ein Aufruffehler (Exit-Code 2) und legt nichts an.
 \stopitemize
 
 {\bf Verhalten.} \type{init} legt den Ordner \type{.stemma} an (Aufbau
-im Abschnitt «Aufbau eines Repositories» von \in{Kapitel}[chap:phase1]) und gibt eine Zeile aus:
+in \in{Abschnitt}[sec:layout]) und gibt eine Zeile aus:
 
 \starttyping
 Initialized empty Stemma repository in /pfad/zum/projekt/.stemma
@@ -2073,7 +2075,7 @@ nicht frei ist (die Meldung nennt ihn und den Worktree, mit dem er kollidiert), 
 es nicht gibt (\type{-b} legt ihn an), den es schon gibt (mit \type{-b}) oder den ein Worktree
 ausgecheckt hat (die Meldung nennt ihn), einem Branch von HEAD ohne Commit bei \type{-b},
 einer Datei, die im Weg steht, einem Branch, dessen Commit einen offenen Konflikt festhält
-(die Meldung lautet \type{records an open conflict, which this command cannot read as one
+(die Meldung enthält \type{records an open conflict, which this command cannot read as one
 tree}), und bei einem offenen Purge. Das Verzeichnis, das der Aufruf selbst
 angelegt hat, entfernt er dann wieder; ein bestehendes leeres bleibt. Eine gehaltene Sperre
 beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
