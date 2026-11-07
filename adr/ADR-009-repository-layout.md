@@ -2,8 +2,10 @@
 
 **Status:** Accepted. The layout, the format file, the initial branch, the actor of `init`, and
 the bundle of the stores were confirmed by the author on 2026-10-19, the other decisions on
-2026-10-24 (STEMMA-9); all are implemented in Phase 1. The reason for a denial moves
-to Phase 4, bare repositories to Phase 5; the other open items stay open.
+2026-10-24 (STEMMA-9); all are implemented in Phase 1, and the linked worktrees of Phase 3
+(STEMMA-175, STEMMA-176) came on top. The reason for a denial moves to Phase 4, bare
+repositories to Phase 5; the other open items stay open, among them `worktree repair`,
+`--json` for `worktree list`, and the undo of `worktree remove`.
 
 ## Context
 

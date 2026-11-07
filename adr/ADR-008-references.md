@@ -297,7 +297,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       are done (STEMMA-183), and so is deleting a tag, `delete_tag` and `stemma tag --delete`
       with the operation `untag` (STEMMA-184). The name that is both a branch and a tag is an
       error that asks for `heads/<name>` or `tags/<name>` (STEMMA-186), see the decision above.
-      Still open: how a purge deals with a tag on a commit that it rewrites (today it refuses).
+      A purge that would rewrite the commit of a tag refuses by default, and `--move-tags` lets it
+      move the tag (ADR-014).
 - [x] The first command that resolves a name to a tag implements the rule for names
       (STEMMA-186, STEMMA-198): the two prefixes, the error for an ambiguous name, and the
       refusal of new names that start with `heads/` or `tags/`. The first command is

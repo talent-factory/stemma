@@ -19,12 +19,12 @@ jeden Commit vor seinen Eltern, mit \type{-n}, \type{--first-parent} und \type{-
 Die Funktion \type{merge_bases} liefert alle Merge-Basen zweier Commits.
 Nach einem Criss-Cross-Merge, bei dem sich zwei Seiten gegenseitig einmischen,
 sind es mehrere, und der Merge muss sie zusammenführen.
-Die Funktion liest kein Commit-Datum, sondern geht die ganze Vorfahrenmenge beider Seiten durch.
+Die Funktion geht die ganze Vorfahrenmenge beider Seiten durch und liest kein Commit-Datum.
 Der Kern führt die Trees zweier Commits über ihre Merge-Basen zusammen
 (\in{Abschnitt}[sec:tree-merge]); der Befehl \type{merge} macht daraus einen Fast-Forward
 oder einen Merge-Commit (\in{Abschnitt}[sec:merge-command]).
 \item Konflikte als Daten im Commit, nicht als Markierung in der Arbeitskopie.
-Kapitel 2 beschreibt das Vorbild Jujutsu.
+\in{Kapitel}[chap:foundations] beschreibt das Vorbild Jujutsu.
 Ein Konflikt ist eine Summe von Trees: Der erste Tree wird genommen, und die Änderung von jedem
 entfernten Tree zum hinzugefügten danach wird angewandt.
 Gleiche hinzugefügte und entfernte Terme heben sich auf.
@@ -38,8 +38,9 @@ Der Text mit Markierungen entsteht aus einer einzigen Funktion der Summe.
 Er erscheint in der Arbeitskopie, in \type{status} und im \type{diff};
 der Snapshot vergleicht Bytes und
 liest keine Markierungen (\in{Abschnitt}[sec:conflict-commands]).
-Die Regel, dass zwei Seiten mit gleicher Änderung sofort als gelöst gelten, gehört nicht zur
-Algebra, weil sie beim erneuten Zusammenführen Information verliert.
+Die Algebra der Summe kennt nur eine Regel: Gleiche Terme mit entgegengesetztem Vorzeichen heben
+sich auf. Dass zwei Seiten mit gleicher Änderung sofort als gelöst gelten, gehört nicht zu ihr,
+weil es beim erneuten Zusammenführen Information verliert.
 Der Befehl \type{merge} schreibt einen solchen Commit, wenn die beiden Seiten sich widersprechen;
 \type{snapshot}, \type{status}, \type{log}, \type{diff}, \type{commit} und \type{op restore}
 lesen ihn, und \type{snapshot} und \type{commit} führen ihn weiter.
@@ -48,11 +49,13 @@ lesen ihn, und \type{snapshot} und \type{commit} führen ihn weiter.
 \item Berechnung des Merges ist Risikostufe 2 nach ADR-004.
 \item Eigentümer der Arbeitskopie (Format 5, ADR-010): Ein Snapshot speichert nur die
 Änderungen des Akteurs, dem die Arbeitskopie gehört; ein anderer übernimmt sie ausdrücklich
-mit \type{--take-over} (Risikostufe 3). Umgesetzt; Kapitel 4 beschreibt die Regel,
+mit \type{--take-over} (Risikostufe 3). Umgesetzt; \in{Kapitel}[chap:phase1] beschreibt die Regel,
 der Anhang die Befehle. Die zweite Arbeitskopie baut darauf auf.
 \item Eine zweite Arbeitskopie desselben Repositories: ein Worktree mit eigenem HEAD, eigenem
 Working-Copy-Commit und eigenem Eigentümer, auf einem Branch, den sonst kein Worktree ausgecheckt
 hat. Umgesetzt; \in{Abschnitt}[sec:worktree] beschreibt ihn.
+\item \type{switch}, \type{rebase} und \type{merge} lösen nur Branch-Namen auf, nie Tags.
+Dass ein Name auf einen Tag zeigen darf, ist ein offener Punkt von ADR-008.
 \stopitemize
 
 \section{Den Branch wechseln: switch}
@@ -60,10 +63,11 @@ hat. Umgesetzt; \in{Abschnitt}[sec:worktree] beschreibt ihn.
 Der Befehl \type{switch} wechselt den Branch, auf den HEAD zeigt, oder löst HEAD vom Branch.
 Mit \type{switch NAME} wechselt er zu einem Branch, der besteht;
 mit \type{switch -c NAME [START]} legt er den Branch an und wechselt dorthin;
-mit \type{switch --detach COMMIT-ODER-BRANCH} nennt HEAD einen Commit und keinen Branch.
+mit \type{switch --detach NAME} nennt HEAD den Commit, den NAME bezeichnet (ein Branch oder ein
+Commit), und keinen Branch.
 Ein unbekannter Name ohne \type{-c} ist ein Fehler.
 Hat der Working-Copy-Commit Änderungen, nimmt der Befehl sie mit (ADR-010):
-Sie bleiben nicht auf dem alten Branch zurück, sondern stehen danach auf der Spitze des Ziels.
+Sie stehen danach auf der Spitze des Ziels und bleiben nicht auf dem alten Branch zurück.
 Mit \type{--discard} lässt er sie stattdessen zurück, und mit \type{--dry-run} zeigt er nur,
 was er täte.
 
@@ -148,7 +152,7 @@ bei gleichem Datum den mit der grösseren ID (\type{topological}).
 stehen, und er kommt in den Heap, wenn sein Zähler null erreicht.
 Das Datum wählt also nur unter Commits, die einander nicht bedingen;
 ein falsches Datum stellt nie ein Kind hinter sein Elternteil.
-Die Reihenfolge hängt nur von der Geschichte ab, nicht von der Reihenfolge der Eltern,
+Die Reihenfolge hängt nur vom Verlauf ab, nicht von der Reihenfolge der Eltern,
 und die ID als zweites Kriterium macht sie bei gleichem Datum eindeutig.
 
 {\bf Kosten.} Mit $V$ erreichbaren Commits und $E$ Elternkanten liest der erste Durchlauf jeden
@@ -190,7 +194,8 @@ und ein zweiter Aufruf mit denselben Commits schreibt dieselben Objekte noch ein
 
 Mit einer Merge-Basis $B$ ist die Summe $O + (T - B)$, wenn $O$ der Tree der eigenen Seite
 und $T$ der der anderen ist. Nach einem Criss-Cross-Merge gibt es mehrere Merge-Basen.
-Stemma bildet daraus keinen virtuellen Commit und merged nicht rekursiv, wie git es tut.
+Stemma bildet daraus keinen virtuellen Commit und führt die Basen nicht rekursiv zusammen,
+wie Git es tut.
 Die Basen gehen als flache Summe in den Merge ein, wie bei Jujutsu \cite[jujutsu].
 Die Summe der Basen ist die erste Basis, plus die Änderung zu jeder weiteren Basis von deren
 besten gemeinsamen Vorfahren mit je einer der früheren Basen; diese Vorfahren
@@ -198,7 +203,8 @@ bestimmt dieselbe Regel noch einmal.
 Haben $L$ und $R$ den gemeinsamen Vorfahren $W$, so ist die Summe der Basen $L + (R - W)$
 und die des Merges $O + T - L - R + W$.
 Sie hat drei Seiten und zwei Basen.
-Was sich aufhebt, fällt weg: Ein Pfad, den nur ein Zweig geändert hat, trägt nur diese Änderung.
+Was sich aufhebt, fällt weg:
+Ein Pfad, den nur eine Seite geändert hat, trägt nur diese Änderung.
 Die Basen kommen von \type{merge_bases} nach ID sortiert, und das legt die Summe fest.
 Bei drei oder mehr Basen ist die Wahl der ersten willkürlich, aber jedes Mal dieselbe.
 Haben zwei Verläufe keinen gemeinsamen Vorfahren, ist der leere Tree die Basis.
@@ -219,7 +225,8 @@ Für jeden gilt die erste Regel, die zutrifft.
 \item Gleiche hinzugefügte und entfernte Terme heben sich auf.
 Hat nur eine Seite einen Pfad geändert, gilt ihr Wert.
 \item Sind alle Seiten gleich, gilt dieser Wert, für Inhalt und Modus.
-Die Algebra kennt diese Regel nicht, weil sie beim erneuten Zusammenführen Information kostet;
+Die Algebra der Summe kennt diese Regel nicht,
+weil sie beim erneuten Zusammenführen Information kostet;
 der Merge wendet sie an, und in Phase~3 lässt sie sich nicht abschalten.
 \item Sind alle Terme Verzeichnisse oder fehlen sie, wird die Summe ihrer Trees eine Ebene tiefer
 mit denselben Regeln zusammengeführt. Ein fehlender Term zählt als leerer Tree.
@@ -281,7 +288,7 @@ Eine Binärdatei und eine Datei, die kein UTF-8 ist, werden nie zeilenweise zusa
 Das Ergebnis eines Merges enthält nur Zeilen, die einer der Terme hat,
 und es hängt nicht davon ab, welche Seite die eigene ist: Vertauscht man die beiden Seiten,
 kommt derselbe Text heraus. Ist eine Seite gleich der Basis, ist das Ergebnis die andere Seite.
-Der Beweis liegt in den Zwischenstücken: In jedem gilt der Satz für die Summe der Teile,
+Die Beweisskizze: In jedem Zwischenstück gilt der Satz für die Summe der Teile,
 und die Fixzeilen stehen in allen Termen in derselben Reihenfolge,
 weil der Diff sie monoton zuordnet.
 Ein Test erzeugt Dateien mit Änderungen an zufälligen Zeilen
@@ -295,12 +302,11 @@ Der Merge liest je Term einen Diff gegen die Basis, der $O((N+M)\,D)$ kostet
 (\in{Abschnitt}[sec:myers]), und geht dann einmal linear durch die Zeilen;
 das Aufheben jedes Zwischenstücks ist quadratisch in $k$.
 Bei einer Summe aus $k$ Termen und $n$ Einträgen in den Verzeichnissen, die sich unterscheiden,
-kostet der Merge der Trees $O(n \cdot k)$ bis auf logarithmische Faktoren;
+kostet der Tree-Merge $O(n \cdot k)$ bis auf logarithmische Faktoren;
 ein Tree, der sich aufhebt, wird nicht gelesen.
 Dazu kommt die Suche nach den Merge-Basen, die den ganzen Verlauf durchgeht.
-Mit mehreren Basen läuft sie für jede weitere Basis noch einmal, und in jeder Ebene der Rekursion
-über die gemeinsamen Vorfahren wieder; im schlimmsten Fall wachsen Tiefe und Zahl der Aufrufe
-mit dem Verlauf. Tiefe Gitter solcher Merges sind in der Praxis nicht zu erwarten.
+Mit mehreren Basen läuft sie für jede weitere Basis noch einmal, und für die gemeinsamen
+Vorfahren der Basen wieder; im schlimmsten Fall wächst die Zahl der Aufrufe mit dem Verlauf.
 
 \startinfobox
 {\bf Grenzfälle des Merges.}
@@ -325,13 +331,16 @@ macht keinen Snapshot. Jede Änderung ist ein Aufruf mit einem einzigen Eintrag 
 der Operation \type{branch}. Wer einen Branch angelegt, umbenannt oder gelöscht hat und wann,
 steht also im Log. Der Anhang beschreibt Aufruf, Ausgabe und Exit-Codes.
 
-Alle drei Änderungen folgen der Write-Ahead-Regel der Zeigerbewegung (Kapitel 4): Unter der Sperre
-der Referenzen prüft der Kern den Namen und den erwarteten Wert, schreibt dann den Eintrag und
-bewegt erst danach die Zeiger. Das Anlegen erwartet, dass es den Namen nicht gibt, und startet
-ohne Angabe an der Spitze des Branches von HEAD. Das Löschen übergibt dem Kern die Spitze, die der
-Befehl gelesen hat. Ein Branch, der inzwischen weitergerückt ist, wird nicht gelöscht. Das
-Löschen kennt weder eine Prüfung auf Zusammenführung noch eine Option zum Erzwingen, denn es ist
-umkehrbar: Der Eintrag nennt die Spitze als alten Wert, und \type{op restore} mit seiner Nummer
+Alle drei Änderungen folgen der Write-Ahead-Regel der Zeigerbewegung (\in{Kapitel}[chap:phase1]):
+Unter der Sperre der Referenzen prüft der Kern den Namen und den erwarteten Wert,
+schreibt dann den Eintrag und bewegt erst danach die Zeiger.
+Das Anlegen erwartet, dass es den Namen nicht gibt, und startet
+ohne Angabe an dem Commit, den HEAD nennt (bei einem Branch dessen Spitze).
+Das Löschen übergibt dem Kern die Spitze, die der Befehl gelesen hat.
+Ein Branch, der inzwischen weitergerückt ist, wird nicht gelöscht.
+Das Löschen kennt weder eine Prüfung auf Zusammenführung noch eine Option zum Erzwingen,
+denn es ist umkehrbar:
+Der Eintrag nennt die Spitze als alten Wert, und \type{op restore} mit seiner Nummer
 bringt den Branch zurück (ADR-013). Den Branch, den HEAD nennt, löscht der Befehl nie; die Regel
 prüft der Kern unter derselben Sperre wie die Löschung, damit kein anderer Befehl HEAD dazwischen
 auf den Branch setzt.
@@ -487,7 +496,7 @@ Der Name eines entfernten Worktrees kann später ein anderer Worktree tragen; da
 Ein \type{op restore} macht das Entfernen nicht rückgängig;
 wer den Worktree wieder braucht, legt ihn mit \type{worktree add} auf dem Branch neu an.
 
-Der Grundsatz hinter allem ist, dass ein Branch in einem Worktree ausgecheckt ist.
+Alles folgt aus einer Regel: Ein Branch ist in einem Worktree ausgecheckt.
 Zwei Worktrees auf demselben Branch würden den Branch unter dem anderen bewegen, und die Dateien
 des einen entsprächen nicht mehr dem Branch. Die Regel hat keine Ausnahme und keine Option zum
 Erzwingen. Der Kern prüft sie an einer Stelle, unter der Sperre, in der Planung der Zeiger: Sie
@@ -524,15 +533,15 @@ schreibt er nicht; eine Datei mit dem Geheimnis darin bleibt dort liegen, bis si
 \section[sec:conflict-commands]{Konflikte in den Befehlen}
 
 Ein Konflikt liegt als Summe von Trees im Commit (ADR-005), das Arbeitsverzeichnis aber besteht
-aus Dateien. Die Befehle, die einen Commit lesen oder zeigen, brauchen deshalb eine Brücke:
+aus Dateien. Die Befehle, die einen Commit lesen oder zeigen, brauchen deshalb eine Umwandlung:
 Aus der Summe entsteht ein einzelner Tree, der den Konflikt zeigt, und aus den Dateien kommt
-wieder eine Summe zurück. Diese Brücke ist die einzige Stelle, die Konflikte kennt;
+wieder eine Summe zurück. Diese Umwandlung ist die einzige Stelle, die Konflikte kennt;
 \type{status}, \type{diff} und die Checkout-Schicht arbeiten danach wie immer auf einem Tree
 (ADR-010).
 
 {\bf Definition.} Ein Pfad ist {\em im Konflikt}, wenn die Werte seines Namens in den Termen der
 vereinfachten Summe sich nicht aufheben und nicht alle Verzeichnisse sind. Verzeichnisse betritt
-die Brücke, sie zeigt sie nicht; die Namen darunter sind eigene Pfade. Der Tree der Ansicht
+die Umwandlung, sie zeigt sie nicht; die Namen darunter sind eigene Pfade. Der Tree der Ansicht
 enthält an jedem Pfad im Konflikt eine Datei mit dem Text der Markierungen und sonst den Wert
 des Pfades. Steht an einem Pfad ein Verzeichnis gegen eine Datei, hat das Verzeichnis keinen
 Inhalt und erscheint im Text als Zeile \type{(directory ID)} mit der ID seines Trees, damit zwei
@@ -576,7 +585,7 @@ nichts.
 Ansicht aus dem Objektspeicher, darum legt die Ansicht den Text mit Markierungen als Blob und die
 Trees bis zu ihm als Trees ab. Kein Commit nennt sie; sie sind abgeleitet und entstehen beim
 nächsten Befehl neu. Der Text enthält aber den Inhalt jeder Seite. Ein \type{purge} löscht darum
-nicht nur den Blob, den man ihm nennt, sondern auch die Texte und Trees der Ansichten aller
+den Blob, den man ihm nennt, und dazu die Texte und Trees der Ansichten aller
 Commits, die er umschreibt (ADR-014); der Plan berechnet sie, ohne etwas zu schreiben.
 Eine verfolgte Datei mit denselben Bytes wie ein solcher Text bleibt, denn sie gehört dann
 einem Commit, der bleibt.
@@ -618,7 +627,7 @@ den gemeinsamen Inhalt, und ihr Modus zählt beim Vergleich: Wer ihn ändert, l�
 Datei geschrieben.
 \item \type{switch} nimmt einen Working-Copy-Commit mit Konflikt mit und wechselt auch zu einem
 Ziel, das einen Konflikt enthält; die Rechnung ist dieselbe wie beim Umschreiben.
-\item Ein Pfad im Konflikt, den der Benutzer durch ein Verzeichnis ersetzt, ist aufgelöst:
+\item Ein Pfad im Konflikt, den der Akteur durch ein Verzeichnis ersetzt, ist aufgelöst:
 Es steht dann keine Datei an diesem Pfad.
 \stopitemize
 \stopinfobox
@@ -654,7 +663,7 @@ $W'$ und bewegt zuletzt den Zeiger des Working-Copy-Commits (ADR-013).
 
 Der Schritt bewegt nur den Working-Copy-Commit.
 HEAD und die Branches bleiben, wo sie sind.
-Der Befehl \type{merge} bewegt den Branch im selben Zug und schreibt einen Eintrag für beide
+Der Befehl \type{merge} bewegt den Branch zugleich und schreibt einen Eintrag für beide
 Bewegungen (\in{Abschnitt}[sec:merge-command]);
 \type{rebase} tut es ebenso (\in{Abschnitt}[sec:rebase]).
 Die ersetzten Commits bleiben im Log (ADR-011),
@@ -682,8 +691,8 @@ aus demselben Grund.
 weil sonst zwei Commits derselben Änderung entstünden.
 \item Ein Working-Copy-Commit mit mehr als einem Elternteil lehnt der Schritt ab,
 weil seine Basis noch nicht festgelegt ist.
-\item Ein Pfad, bei dem ein Verzeichnis gegen eine Datei steht, erscheint wie in
-\in{Abschnitt}[sec:conflict-commands]; der Commit behält die Trees.
+\item Steht an einem Pfad ein Verzeichnis gegen eine Datei, erscheint der Pfad
+als Konflikt (\in{Abschnitt}[sec:conflict-commands]); der Commit behält die Trees.
 \stopitemize
 \stopinfobox
 
@@ -691,7 +700,7 @@ weil seine Basis noch nicht festgelegt ist.
 Der Befehl \type{stemma rebase ZIEL} spielt die Commits des Branchs, auf den HEAD zeigt,
 auf dem Ziel neu auf.
 Er baut auf dem Umschreiben der Arbeitskopie (\in{Abschnitt}[sec:rewrite-wc]) auf und bewegt
-im selben Zug den Branch.
+zugleich den Branch.
 
 Der Befehl nimmt die Commits der Spitze, die das Ziel nicht hat.
 Den Anfang dieses Bereichs liefert die Merge-Basis von Spitze und Ziel,
@@ -747,7 +756,7 @@ Die ersetzten Commits bleiben im Log (ADR-011).
 \section[sec:merge-command]{Branches zusammenführen: merge}
 
 Der Befehl \type{merge} führt einen Branch in den Branch ein, auf den HEAD zeigt.
-Er verbindet den Merge der Trees (\in{Abschnitt}[sec:tree-merge]) mit dem Umschreiben der
+Er verbindet den Tree-Merge (\in{Abschnitt}[sec:tree-merge]) mit dem Umschreiben der
 Arbeitskopie (\in{Abschnitt}[sec:rewrite-wc]) und bewegt den Branch und den
 Working-Copy-Commit in einer Operation.
 Was geschieht, bestimmen die Merge-Basen der beiden Spitzen $A$ (eigener Branch) und $B$ (anderer
@@ -755,10 +764,13 @@ Branch):
 
 \startitemize
 \item Ist $B$ ein Vorfahre von $A$, ist alles eingeführt, und es geschieht nichts.
+Der Snapshot der Arbeitskopie entsteht trotzdem;
+\type{rebase} schreibt im entsprechenden Fall keinen, \type{switch} bei \type{Already on NAME}
+ebenfalls nicht.
 \item Ist $A$ ein Vorfahre von $B$, nimmt der Branch die Spitze $B$ (Fast-Forward).
 Es entsteht kein Commit.
 \item Sonst entsteht ein Merge-Commit $M$ mit den Eltern $A$ und $B$, in dieser Reihenfolge.
-Sein Baum ist die Summe $A + B - \mathrm{Basis}$ nach dem Merge der Trees,
+Sein Baum ist die Summe $A + B - \mathrm{Basis}$ nach dem Tree-Merge,
 bei mehreren Basen die flache Summe aus \in{Abschnitt}[sec:tree-merge].
 \stopitemize
 
@@ -819,8 +831,8 @@ Sie steht im Snapshot und im Log, auch wenn der Merge scheitert.
 
 Die Abschnitte dieses Kapitels beschreiben jeden Befehl für sich.
 Dieser Abschnitt setzt sie zu einer Sitzung zusammen.
-Sie geht vom Stand der Sitzung aus Kapitel 4 nach dem zweiten Commit aus (Eintrag 5), ohne das
-Restore, das Kapitel 4 anschliessend zeigt:
+Sie geht vom Stand der Sitzung aus \in{Kapitel}[chap:phase1] nach dem zweiten Commit aus
+(Eintrag 5), ohne das Restore, das \in{Kapitel}[chap:phase1] anschliessend zeigt:
 Das Repository \type{notizen} hat zwei Commits auf \type{main}, \quotation{Erste Fassung} und
 \quotation{Gruss erweitern}, und \type{README.md} enthält die Zeile \type{Hallo Welt}.
 Daniel arbeitet im Verzeichnis der Wurzel, ein Agent in einem zweiten Worktree.

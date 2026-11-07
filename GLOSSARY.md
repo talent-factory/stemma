@@ -93,6 +93,19 @@ matches (_fixed lines_, Fixzeilen) divide the file into pieces (_Zwischenstücke
 is decided as a sum of its own. One undecided piece makes the whole file a conflict. (Zeilen-Merge)
 _Avoid_: Text merge, anchor (the anchor is a number and a hash of the log)
 
+**Merge commit**:
+A commit with two parents, made by `merge` when neither side is an ancestor of the other. (Merge-Commit)
+
+**Fast-forward**:
+A merge in which the branch moves to the tip of the other side and no commit is made. (Fast-Forward)
+
+**Rebase**:
+The commits of a branch are written again on a new target; the working-copy commit moves with
+them. (Rebase, neu aufspielen)
+
+**Term**:
+One tree in a sum of trees, added or removed. (Term)
+
 **Merge gate**:
 The rule that decides whether a change lands on `main`. It reads the tip of `main`, merges the
 change onto it, applies the rule of the risk level to the check results it holds, and moves
@@ -137,6 +150,11 @@ _Avoid_: Schnappschuss, autosave
 An additional working directory of a repository, with its own HEAD, working-copy commit, and
 owner. The working directory of the repository itself is the main worktree. (Worktree)
 _Avoid_: Workspace, second checkout
+
+**Owner of the working copy**:
+The one actor whose changes a snapshot saves; another actor takes the working copy over
+explicitly (ADR-010). (Eigentümer der Arbeitskopie)
+_Avoid_: Owner (of a file in the file system)
 
 **Tracked file**:
 A file that the tree of the working-copy commit lists, and that a snapshot therefore saves.
@@ -262,6 +280,10 @@ _Avoid_: User, author (for an agent)
 **Agent**:
 An actor that is a program, named with its model, session, and sponsor. (Agent)
 _Avoid_: Bot
+
+**Authorizer**:
+The component that decides whether an actor may run an operation on a target; the core asks it
+before every operation that changes a repository or plans a change. (Autorisierer)
 
 **Sponsor**:
 The human who is accountable for an agent's actions. (Sponsor)
