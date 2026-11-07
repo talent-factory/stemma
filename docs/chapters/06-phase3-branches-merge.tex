@@ -92,6 +92,14 @@ Sind die Bäume gleich, bewegen sich nur die Zeiger.
 \item Zuletzt bewegen sich die Zeiger: der neue Branch, der Working-Copy-Commit und HEAD.
 \stopitemize
 
+\in{Abbildung}[fig:switch-order] zeigt die Zustände nach jedem Schritt und die Folgen eines
+Absturzes.
+
+\startplacefigure[title={Reihenfolge von \type{switch}, mit den Zuständen nach einem Absturz},
+    reference=fig:switch-order,location=here]
+\externalfigure[images/switch-order.pdf][width=0.9\textwidth]
+\stopplacefigure
+
 Der Befehl schreibt einen Eintrag für alle Bewegungen.
 Dieselbe Reihenfolge wie beim \type{op restore} gilt nach einem Absturz:
 Bricht der Befehl nach dem Eintrag ab, steht der alte Stand in den Zeigern, und der Eintrag
@@ -286,6 +294,14 @@ Die Basen kommen von \type{merge_bases} nach ID sortiert, und das legt die Summe
 Bei drei oder mehr Basen ist die Wahl der ersten willkürlich, aber jedes Mal dieselbe.
 Haben zwei Verläufe keinen gemeinsamen Vorfahren, ist der leere Tree die Basis.
 
+\in{Abbildung}[fig:criss-cross-sum] zeigt einen solchen Verlauf und rechnet die Summe für
+eine Datei mit drei Zeilen durch.
+
+\startplacefigure[title={Ein Criss-Cross-Merge und die flache Summe der Merge-Basen},
+    reference=fig:criss-cross-sum,location=here]
+\externalfigure[images/criss-cross-sum.pdf][width=0.9\textwidth]
+\stopplacefigure
+
 Ist ein Commit Vorfahr des anderen, ist er selbst die Basis,
 und die Summe $O + (T - O)$ hebt sich zu $T$ auf, ohne dass ein Tree gelesen wird.
 Ebenso hebt sich jeder Teilbaum auf, den eine Seite nicht angefasst hat:
@@ -368,6 +384,13 @@ Die Teile zwischen denselben Fixzeilen bilden eine Summe von Zeilenfolgen, ein Z
 Hebt sie sich auf oder sind alle Seiten gleich, ist ihr Wert der Text des Zwischenstücks.
 Sonst ist die Datei als Ganzes ein Konflikt, und der Konflikt des Pfades enthält die ganzen Blobs.
 Marken stehen nur auf der Platte, als Text von \type{marker_text}.
+\in{Abbildung}[fig:line-merge-pieces] zeigt die Fixzeilen und die Zwischenstücke
+eines Beispiels, in dem sich beide Änderungen auflösen.
+
+\startplacefigure[title={Fixzeilen und Zwischenstücke beim Merge der Zeilen},
+    reference=fig:line-merge-pieces,location=here]
+\externalfigure[images/line-merge-pieces.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Zwei Änderungen, die sich berühren, ohne sich zu überlappen, liegen im selben Zwischenstück
 und sind ein Konflikt, wenn sie nicht gleich sind.
@@ -766,6 +789,15 @@ $W'$ hat $T$ als einzigen Elternteil und behält Change-ID, Autor, Zeit und Besc
 $W'$ und bewegt zuletzt den Zeiger des Working-Copy-Commits (ADR-013).
 \stopitemize
 
+\in{Abbildung}[fig:rewrite-working-copy-order] zeigt den Verlauf vor und nach dem Schritt
+und die Zustände nach einem Absturz.
+
+\startplacefigure[title={Den Working-Copy-Commit auf eine neue Spitze umschreiben,
+    mit den Zuständen nach einem Absturz},
+    reference=fig:rewrite-working-copy-order,location=here]
+\externalfigure[images/rewrite-working-copy-order.pdf][width=0.9\textwidth]
+\stopplacefigure
+
 Der Schritt bewegt nur den Working-Copy-Commit.
 HEAD und die Branches bleiben, wo sie sind.
 Der Befehl \type{merge} bewegt den Branch zugleich und schreibt einen Eintrag für beide
@@ -972,6 +1004,14 @@ Die IDs sind gekürzt, und die Pfade stehen als \type{/home/daniel/...}.
 Ein neuer Lauf erzeugt andere Hashes, weil die Zeit zum Commit gehört.
 Zu jedem Schritt steht, was er im Arbeitsverzeichnis, im Working-Copy-Commit, in den Zeigern und
 im Operation Log ändert; \in{Tabelle}[tab:phase3-workflow-effects] fasst es am Ende zusammen.
+\in{Abbildung}[fig:phase3-session] zeigt die Sitzung als Folge der Einträge im Operation Log,
+getrennt nach dem Akteur, dessen Befehl sie schreibt.
+
+\startplacefigure[title={Die Sitzung der Phase 3: Einträge im Operation Log
+    von Daniel und vom Agenten},
+    reference=fig:phase3-session,location=here]
+\externalfigure[images/phase3-session.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 \subsection{Parallele Arbeit in einem zweiten Worktree}
 
@@ -1135,6 +1175,8 @@ Der alte Commit \type{b3:867b…8636} bleibt im Speicher, und das Log nennt ihn 
 als neuen und im Eintrag 15 als alten Wert des Branchs.
 Der Branch bewegt sich im Eintrag 15 vor dem Working-Copy-Commit; HEAD bleibt.
 Das Verzeichnis der Wurzel und \type{main} bleiben unberührt.
+Das \type{commit} des Agenten schreibt zwei Einträge, wie das von Daniel:
+den Snapshot als Eintrag 16 und den Commit als Eintrag 17.
 
 Jetzt liegt \type{agent-arbeit} über \type{main}, und Daniel führt den Branch ein:
 
@@ -1215,7 +1257,6 @@ der Dateien, Eintrag, Dateien, Zeiger.
 Beim \type{op restore} geht der Plan dem Snapshot voraus, damit ein fehlender Commit auffällt,
 bevor etwas geschrieben ist.
 Wo der Abbruch fällt, bestimmt, was der Aufruf danach tut.
-
 \startitemize[n]
 \item Vor dem Eintrag hat der Befehl keinen Zeiger und keine Datei geändert; sein Snapshot ist ein
 eigener Eintrag. Der Aufruf lässt sich einfach wiederholen.
@@ -1239,6 +1280,14 @@ Sonst ist er 1, bei Beschädigung 5 und bei einer gehaltenen Sperre 6.
 Ein \type{op restore} erkennt den abgebrochenen Eintrag nicht.
 Der zweite Aufruf macht einen Snapshot und einen neuen Eintrag, setzt aber jeden Zeiger für sich,
 also bewegt er nur noch den Rest.
+
+\in{Abbildung}[fig:repeat-state] zeigt die Zustände und was jeden Übergang auslöst.
+
+\startplacefigure[title={Abbruch und Wiederholung: die Zustände von \type{switch},
+    \type{merge}, \type{rebase} und dem Umschreiben},
+    reference=fig:repeat-state,location=here]
+\externalfigure[images/repeat-state.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Zwei Befehle der Sitzung folgen einer anderen Regel.
 Ein \type{commit}, der nur einen seiner beiden Zeiger bewegt hat, endet mit Exit-Code 3; erst der
