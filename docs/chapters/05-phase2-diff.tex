@@ -9,12 +9,12 @@
 \startitemize
 \item Eigene Implementierung des Myers-Diff-Algorithmus mit Tests gegen bekannte Fälle.
 Der Algorithmus sucht eine kürzeste Folge von Einfügungen und Löschungen.
-\item Nachbearbeitung der Grenzen nach dem Verfahren von git: Verschieben von Blöcken
+\item Nachbearbeitung der Grenzen nach dem Verfahren von Git: Verschieben von Blöcken
 und Bewertung von Einrückungen. Sie ändert nur die Lage der Grenzen, nicht die Zahl der
 Änderungen.
 Eine Ersetzung, also eine Folge aus Löschungen und Einfügungen, bleibt dabei zusammen,
-und eine reine Löschung oder Einfügung rückt nicht an sie heran. Das ist einfacher als bei git.
-Die Einrückung zählt in Bytes, ein Tabulator gilt also als ein Zeichen, bei git als mehrere.
+und eine reine Löschung oder Einfügung rückt nicht an sie heran. Das ist einfacher als bei Git.
+Die Einrückung zählt in Bytes, ein Tabulator gilt also als ein Zeichen, bei Git als mehrere.
 Der Befehl \type{diff} ruft die Nachbearbeitung auf (\in{Abschnitt}[sec:slide]).
 \item Gruppierung in Hunks und Darstellung mit Kontextzeilen (\in{Abschnitt}[sec:hunks]).
 \item Farbausgabe und Einbindung eines Pagers (\in{Abschnitt}[sec:pager]).
@@ -28,9 +28,9 @@ des Diffs erkennt keine Verschiebungen.
 Patience und Histogram verankern auf eindeutigen Zeilen, zeigen verschobene
 Blöcke aber ebenfalls nicht und brauchen Myers für die Lücken
 (Vergleich der Verfahren in \type{docs/research/moved-lines-heuristics.md}).
-Eine Markierung der Verschiebung als reine Anzeige, wie \type{--color-moved} in git,
+Eine Markierung der Verschiebung als reine Anzeige, wie \type{--color-moved} in Git,
 ändert die Hunks nicht (\in{Abschnitt}[sec:moved]).
-\item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten 8000 Bytes, wie git. Er zeigt
+\item Binärdateien erkennt der Diff an einem NUL-Byte in den ersten 8000 Bytes, wie Git. Er zeigt
 dann eine Zusammenfassungszeile wie \quotation{Binary files differ} statt des Inhalts
 (\in{Abschnitt}[sec:binary]).
 \item Eine Textdatei über 10 MiB (10\,485\,760 Bytes) auf einer der beiden Seiten vergleicht der
@@ -145,7 +145,7 @@ Reihenfolge.
 Ein kürzestes Skript ist nicht eindeutig. Dieselben Änderungen lassen sich oft an mehreren Stellen
 unterbringen, weil die erste Zeile einer Änderungsgruppe gleich der unveränderten Zeile hinter ihr
 sein kann. Die Nachbearbeitung wählt unter diesen Lagen die, die sich am besten liest
-(\type{slide} in \type{diff.rs}). Sie folgt dem Verfahren von git \cite[git-xdiff]. Sie ändert nur
+(\type{slide} in \type{diff.rs}). Sie folgt dem Verfahren von Git \cite[git-xdiff]. Sie ändert nur
 die Lage der Grenzen. Beide Folgen und die Zahl $D$ der Änderungen
 bleiben, wie sie sind.
 Der Kern bietet sie als \type{diff_lines} für Text und als \type{diff_byte_lines}
@@ -157,7 +157,7 @@ sie verlässt, der Zeile gleicht, die sie aufnimmt. \in{Abbildung}[fig:slide] ze
 eingefügte Zeilen. Ein kürzestes Skript kann sie bei der schliessenden Klammer der Funktion a
 beginnen lassen (links). Nach dem Gleiten um zwei Zeilen besteht die Gruppe aus der Funktion b
 samt der Leerzeile danach (rechts). Unter den möglichen Lagen
-wählt die Einrückungsregel, die ihre Gewichte aus dem Code von git übernimmt: Sie vergleicht die
+wählt die Einrückungsregel, die ihre Gewichte aus dem Code von Git übernimmt: Sie vergleicht die
 Einrückung der Zeilen an der Grenze und beachtet Leerzeilen davor und danach.
 
 \startplacefigure[title={Eine Gruppe vor und nach der Nachbearbeitung der Grenzen},
@@ -186,13 +186,13 @@ Leerzeilen an der Schnittstelle senken die Strafe, der Dateianfang erhöht sie u
 Dateiende um 21. Das Dateiende zählt zugleich als Leerzeile; seine Strafe sinkt dadurch netto
 um 3, und seine wirksame Einrückung ist $-1$.
 Springt die Einrückung an der Schnittstelle zurück, kostet das je nach Fall 17 bis 24 Punkte.
-Die Gewichte sind die von git. Zwei Lagen $A$ und $B$ vergleicht der Ausdruck
+Die Gewichte sind die von Git. Zwei Lagen $A$ und $B$ vergleicht der Ausdruck
 $60 \cdot \mathrm{sgn}(w_A - w_B) + (p_A - p_B)$; ist er negativ, ist $A$ besser. Die flachere
 Einrückung gibt also einen Vorsprung von 60 Punkten, den eine grosse Differenz der Strafen
 aufwiegen kann. Bei Gleichstand gewinnt die spätere Lage, also die weiter unten.
 
 Das Verfahren prüft nicht alle Lagen. Das Fenster reicht von der untersten Lage höchstens $g+1$
-Schritte nach oben, wie bei git, und nie weiter als 100. Eine Lage, in der die Gruppe an eine
+Schritte nach oben, wie bei Git, und nie weiter als 100. Eine Lage, in der die Gruppe an eine
 andere geänderte Zeile grenzte, überspringt es, damit zwei Gruppen nicht verschmelzen.
 
 \subsection{Invariante}
@@ -233,18 +233,18 @@ Folge behalten. Die Paare sind also gleich, und das Ergebnis ist ein gültiges S
 der Änderungen ist die der geänderten Zeilen beider Seiten, und die hat sich nicht geändert. Das
 Skript ist damit weiter kürzest.
 
-Dass die Wahl der Lage mit git übereinstimmt, beweist dieses Argument nicht. Wo der Myers-Diff
-und der von git verschiedene Skripte wählen, weichen auch die Ergebnisse ab. Ein Test in
+Dass die Wahl der Lage mit Git übereinstimmt, beweist dieses Argument nicht. Wo der Myers-Diff
+und der von Git verschiedene Skripte wählen, weichen auch die Ergebnisse ab. Ein Test in
 \type{tests/diff_against_git.rs} vergleicht auf zufälligen Dateien beide Ergebnisse und findet
 keinen Unterschied, wo die einfachen Diffs übereinstimmen.
 
 \startinfobox
 {\bf Grenzfälle beim Verschieben.}
 \startitemize
-\item Eine Ersetzung bleibt stehen. Das ist einfacher als bei git, das die Gruppen beider Seiten
+\item Eine Ersetzung bleibt stehen. Das ist einfacher als bei Git, das die Gruppen beider Seiten
 im Einzelnen aufeinander abstimmt.
-\item Die Einrückung zählt in Bytes, ein Tabulator also als eines, bei git als mehrere.
-Rückt eine Datei mit Tabulatoren ein, kann das Ergebnis von dem von git abweichen.
+\item Die Einrückung zählt in Bytes, ein Tabulator also als eines, bei Git als mehrere.
+Rückt eine Datei mit Tabulatoren ein, kann das Ergebnis von dem von Git abweichen.
 \item Das Dateiende zählt wie eine Leerzeile und hat die wirksame Einrückung $-1$. Es zieht eine
 Gruppe am Ende eher nach unten als nach oben; ob sie rutscht, entscheiden die Einrückungen.
 \item Ein Skript ohne Änderung hat keine Gruppe, und das Ergebnis ist das Skript selbst.
@@ -258,7 +258,7 @@ rutschen könnte.
 Ein Skript wird für die Anzeige in Hunks zerlegt. Ein Hunk fasst benachbarte Änderungen mit den
 unveränderten Zeilen davor und danach zusammen. Jede Änderung bekommt so viele Kontextzeilen auf
 beiden Seiten, wie die Anzeige verlangt. Die Anzahl $c$ setzt der Aufruf; der Befehl \type{diff}
-nimmt drei. Die Zerlegung folgt dem Unified-Format von diff und git. Eine eigene Quelle nennt das
+nimmt drei. Die Zerlegung folgt dem Unified-Format von diff und Git. Eine eigene Quelle nennt das
 Buch nicht, denn sie ist ein Durchlauf über das Skript. Der Code steht in \type{diff.rs} als
 \type{hunks}.
 
@@ -339,7 +339,8 @@ die der Kopf des Diffs nennen kann. Der Befehl liest die Arbeitskopie deshalb ni
 Er kann den Working-Copy-Commit und das Operation Log ändern.
 
 \in{Abbildung}[fig:diff-flow] zeigt den Ablauf. Die Schritte 2 bis 4 sind der Snapshot aus
-Kapitel 4, und sie entfallen, wenn der Befehl zwei Commits vergleicht. Der Vergleich und die
+\in{Kapitel}[chap:phase1], und sie entfallen, wenn der Befehl zwei Commits vergleicht. Der Vergleich
+und die
 Ausgabe lesen nur.
 
 \startplacefigure[title={Ablauf von \type{diff} mit dem Working-Copy-Commit und Absturzpunkten},
@@ -386,7 +387,7 @@ verfolgten Dateien.
 
 Ein Zeilenvergleich einer Binärdatei ist sinnlos und kann sehr gross werden. Der Diff erkennt
 darum eine Binärdatei und zeigt statt der Zeilen nur, dass sie sich unterscheidet. Die Erkennung
-folgt git: Ein NUL-Byte unter den ersten 8000 Bytes macht die Datei binär. Der Code steht in
+folgt Git: Ein NUL-Byte unter den ersten 8000 Bytes macht die Datei binär. Der Code steht in
 \type{diff.rs} als \type{is_binary}. Der Kern wendet sie beim Vergleich der Seiten an
 (\type{repository/difference.rs}).
 
@@ -427,7 +428,7 @@ Die Prüfung der Grösse vergleicht nur die Länge und kostet nach dem Lesen $O(
 \startinfobox
 {\bf Grenzfälle der Erkennung.}
 \startitemize
-\item Die Erkennung ist eine Heuristik wie in git. Eine Textdatei in UTF-16 enthält NUL-Bytes und
+\item Die Erkennung ist eine Heuristik wie in Git. Eine Textdatei in UTF-16 enthält NUL-Bytes und
 gilt als binär. Eine Binärdatei ohne NUL-Byte in den ersten 8000 Bytes gilt als Text.
 \item Steht das erste NUL-Byte erst ab dem 8001. Byte, ist die Datei Text.
 \item Eine leere Datei ist keine Binärdatei.
@@ -445,7 +446,7 @@ den beide Seiten dabei belegen.
 \section[sec:pager]{Farbe und Pager}
 
 Der Text des Befehls \type{diff} ist die Referenz für Skripte und Tests. Auf einem Terminal soll er
-auch bequem zu lesen sein. Darum färbt der Befehl die Zeilen wie git und gibt den Text an einen
+auch bequem zu lesen sein. Darum färbt der Befehl die Zeilen wie Git und gibt den Text an einen
 Pager weiter, wenn die Standardausgabe ein Terminal ist (\in{Abbildung}[fig:diff-output]). Der
 Code steht in \type{cli.rs} als \type{diff_text} und \type{write_paged}.
 
@@ -497,7 +498,7 @@ an die Shell des Pagers, und er endet mit 143, bei \type{SIGHUP} mit 129.
 {\bf Grenzfälle von Farbe und Pager.}
 \startitemize
 \item Der Pager ist der Befehl in \type{PAGER}. Eine leere oder fehlende Variable gilt als nicht
-gesetzt. \type{GIT_PAGER} und die Einstellung \type{core.pager} von git beachtet der Befehl nicht.
+gesetzt. \type{GIT_PAGER} und die Einstellung \type{core.pager} von Git beachtet der Befehl nicht.
 \item Der Buchstabe \type{R} in \type{LESS=FRX} reicht die Farben durch, \type{F} beendet
 \type{less} bei einer einzigen Seite, und \type{X} lässt den Bildschirm des Terminals stehen.
 \item Ist \type{PAGER} eine längere Befehlszeile, bleibt die Shell bestehen. Trifft ein
@@ -513,7 +514,8 @@ nicht.
 \section[sec:moved]{Verschobene Zeilen}
 
 Ein Block, der von einer Stelle an eine andere wandert, erscheint im Diff als Löschung und als
-Einfügung (Entscheidung von STEMMA-111). Das bleibt so, denn die Hunks sind die Grundlage für
+Einfügung (die Entscheidung steht in \type{docs/research/moved-lines-heuristics.md}).
+Das bleibt so, denn die Hunks sind die Grundlage für
 Skripte, Tests und den Merge-Pfad. Auf dem Terminal markiert die Anzeige jedoch, welche Zeilen
 verschoben wurden, wie \type{git diff --color-moved}. Die Markierung ist reine Anzeige: Sie
 ändert weder die Hunks noch den Text ohne Farbe noch den Exit-Code.
@@ -531,7 +533,7 @@ Diffs. Ein Block ist eine Folge von Zeilen, die auf ihrer Seite unmittelbar aufe
 beginnt und Zeile für Zeile gleich ist, Byte für Byte und samt Zeilenende.
 Bei gleicher Länge gilt der erste.
 \item Der Block zählt nur, wenn seine Zeilen zusammen mindestens 20 alphanumerische Zeichen
-haben, dieselbe Zahl wie in git, gezählt über die Unicode-Zeichen.
+haben, dieselbe Zahl wie in Git, gezählt über die Unicode-Zeichen.
 Schliessende Klammern und Leerzeilen allein gelten deshalb nicht als Verschiebung.
 \item Eine Zeile gehört zu höchstens einer Verschiebung. Pro gelöschter Zeile probiert die
 Funktion höchstens 256 Stellen auf der neuen Seite, und insgesamt hat sie ein Budget von
@@ -548,7 +550,7 @@ Binärdateien und Dateien über der Grössengrenze nehmen nicht teil.
 
 \subsection{Farben}
 
-Die Farben sind die von git. Eine entfernte Zeile, die verschoben wurde, ist fett magenta,
+Die Farben sind die von Git. Eine entfernte Zeile, die verschoben wurde, ist fett magenta,
 und eine eingefügte Zeile, die von anderswo kommt, ist fett cyan. Das Zeichen am Zeilenanfang
 bleibt \type{-} oder \type{+}. Der Text ohne Farbe zeigt deshalb keine Verschiebung, und eine
 Pipe oder eine Datei bekommt weiter reinen Text. Die Oberfläche von \type{diff --tui} verwendet
@@ -721,16 +723,16 @@ macht er zuerst einen Snapshot der verfolgten Dateien (ADR-010), wie \type{statu
 Der Snapshot schreibt einen Eintrag nur, wenn sich eine verfolgte Datei geändert hat.
 Vergleicht der Aufruf zwei Commits, liest er nur Objekte und schreibt gar nichts.
 Einen Akteur verlangt er in beiden Fällen, auch wenn nichts zu schreiben ist.
-Die folgenden Abläufe greifen Stellen der Sitzung aus Kapitel 4 auf.
+Die folgenden Abläufe greifen Stellen der Sitzung aus \in{Kapitel}[chap:phase1] auf.
 Die Ausgaben stammen aus einem echten Lauf. Die Zeit gehört zum Commit, ein neuer Lauf
 erzeugt also andere Hashes; die Beispiele zeigen deshalb die gekürzten IDs der Sitzung aus
-Kapitel 4. Ein Aufruf braucht die volle Kennung.
+\in{Kapitel}[chap:phase1]. Ein Aufruf braucht die volle Kennung.
 Die Synopsis, die Exit-Codes und die Fehler jeder Option stehen in der Befehlsreferenz.
 
 \subsection{Änderungen vor dem Commit ansehen}
 
 Wer \type{README.md} geändert hat, will vor dem Commit lesen, was er festhält.
-Der Ablauf ist der des zweiten Commits in Kapitel 4:
+Der Ablauf ist der des zweiten Commits in \in{Kapitel}[chap:phase1]:
 
 \starttyping
 $ echo "Hallo Welt" > README.md
@@ -917,7 +919,7 @@ und der nur bei einer geänderten verfolgten Datei.
 \stopxtable
 \stopplacetable
 
-Nach einem Absturz im Snapshot gilt, was Kapitel 4 für den Snapshot sagt.
+Nach einem Absturz im Snapshot gilt, was \in{Kapitel}[chap:phase1] für den Snapshot sagt.
 Der Diff schreibt sonst nichts, ein erneuter Aufruf ist deshalb jederzeit sicher.
 
 \section{Offene Fragen}
@@ -926,7 +928,7 @@ Die folgenden Fragen sind offen.
 
 \startitemize
 \item Eine Option oder Variable für die Farbe, etwa \type{NO_COLOR}, und die Wahl des Pagers
-über die Einstellungen von git.
+über die Einstellungen von Git.
 \item Eine JSON-Form für \type{diff} und die übrigen Befehle ohne \type{--json},
 mit der Schnittstelle der Phase 6 (ADR-018).
 \stopitemize

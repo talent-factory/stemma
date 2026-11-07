@@ -7,13 +7,17 @@ eingesetzt werden kann.
 
 Der Kurs DUA, Datenstrukturen und Algorithmen, findet in Stemma Inhaltsadressierung
 und Merkle-Graphen, Hash-Ketten, absturzsicheres Schreiben, Tiefensuche und Erreichbarkeit
-sowie Musterabgleich mit dynamischer Programmierung, ab Phase~2 den Myers-Diff.
+sowie Musterabgleich mit dynamischer Programmierung, ab Phase~2 den Myers-Diff
+und ab Phase~3 die Merge-Basis in einem Graphen, die Summe von Trees und den Zeilen-Merge.
 Welche Algorithmen des Codes im Kursbuch stehen, zeigt \in{Tabelle}[tab:algorithms].
 
 Der Kurs AISE, AI Assisted Software Engineering, findet Akteure mit Sponsor und die Herkunft
 jedes Commits, das Operation Log und das Restore als Rückweg nach dem Fehler eines Agenten
 und Operationen, die nur ein Mensch ausführen darf; ab Phase~4 kommen Branch-Regeln,
 Freigaben und Risikostufen dazu.
+In Phase~3 zeigen die Konflikte als Daten, dass ein Agent, der abbricht, keine zerbrochene
+Arbeitskopie hinterlässt, und der Worktree je Akteur,
+dass parallele Agenten einander nicht stören.
 Die Agentenfunktionen von Phase~2 beantworten je ein Problem der Arbeit mit Agenten.
 \type{diff --exit-code} gibt einem Skript die Antwort \quotation{gibt es Änderungen?}
 ohne das Parsen von Text.
@@ -220,14 +224,15 @@ dann die Schnittmenge, aus der alle Kandidaten fallen, die Vorfahr eines anderen
 jeder Commit wird einmal gelesen \stopxcell
 \startxcell \type{merge_bases}, \type{Walk::ancestors} (\type{merge_base.rs}) \stopxcell
 \startxcell Abschnitt 4.2, Erreichbarkeit in gerichteten Graphen;
-Abschnitt 3.4, Hashtabellen \stopxcell
+Abschnitt 3.4, Hashtabellen; Vergleich mit Git und Jujutsu in
+\type{docs/research/merge-base-selection.md} \stopxcell
 \stopxrow
 \startxrow
 \startxcell Summe von Trees: hinzugefügte und entfernte Terme, gleiche Paare heben sich auf;
 die Zahl der Terme ist ungerade, eine Seite mehr als Basen;
 Auffüllen mit aufhebenden Paaren; Kosten quadratisch in der Zahl der Terme \stopxcell
 \startxcell \type{Merge::simplify}, \type{Merge::padded} (\type{conflict.rs}) \stopxcell
-\startxcell Nicht im Buch \stopxcell
+\startxcell Nicht im Buch; die Summe von Trees folgt Jujutsu \cite[jujutsu] \stopxcell
 \stopxrow
 \startxrow
 \startxcell Merge von Trees: flache Summe der Merge-Basen, je Name Aufheben, Gleichheit der Seiten,
@@ -236,6 +241,14 @@ gepaart sind, und Zwischenstücken als eigenen Summen \stopxcell
 \startxcell \type{merge_commits}, \type{merge_lines} (\type{merge.rs}) \stopxcell
 \startxcell Nicht im Buch; Drei-Wege-Merge nach Khanna, Kunal und Pierce
 \cite[khanna2007diff3] \stopxcell
+\stopxrow
+\startxrow
+\startxcell Verschobene Zeilen: Blöcke gelöschter und eingefügter Zeilen, die in den Bytes
+und der Reihenfolge übereinstimmen, über eine Hashtabelle der Zeilen der neuen Seite;
+Grenzen für Kandidaten und Vergleiche \stopxcell
+\startxcell \type{moved_lines} (\type{moved.rs}) \stopxcell
+\startxcell Abschnitt 3.4, Hashtabellen; Heuristiken in
+\type{docs/research/moved-lines-heuristics.md} \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
@@ -412,17 +425,17 @@ Warum erreicht ein falsch eingestufter Diff den Merge-Pfad nicht (Stufe 1 nach A
 die gemeinsamen Vorfahren, die kein Vorfahr eines anderen gemeinsamen Vorfahren sind
 (\in{Abschnitt}[sec:tree-merge]).
 Geben Sie die Kosten in der Zahl $V$ der erreichbaren Commits und $E$ der Elternkanten an.
-Zeichnen Sie eine Geschichte, in der ein Criss-Cross-Merge zwei Merge-Basen erzeugt,
+Zeichnen Sie einen Verlauf, in dem ein Criss-Cross-Merge zwei Merge-Basen erzeugt,
 und rechnen Sie die flache Summe $O + T - L - R + W$ für eine Datei durch,
 die beide Seiten verschieden ändern.
 \item (DUA) Die Ordnung von \type{log} stellt jeden Commit vor seine Eltern
 (\in{Abschnitt}[sec:log]).
 Zeigen Sie, dass das Verfahren die Invariante hält, und leiten Sie $O(V\log V + E)$ her.
-Zeigen Sie dann an einer Geschichte mit einem falschen Datum, dass die Sortierung allein nach
+Zeigen Sie dann an einem Verlauf mit einem falschen Datum, dass die Sortierung allein nach
 dem Datum die Invariante verletzt. Warum darf das Datum nur unter den bereiten Commits wählen?
 \item (DUA) Die Regel \quotation{gleiche Änderung auf beiden Seiten} gehört nicht zur Algebra
 der Summen (\in{Abschnitt}[sec:tree-merge]).
-Konstruieren Sie eine Geschichte aus der Basis, zwei Seiten mit derselben Änderung und einem
+Konstruieren Sie einen Verlauf aus der Basis, zwei Seiten mit derselben Änderung und einem
 weiteren Commit, in der ein späterer Merge mit angewandter Regel ein anderes Ergebnis
 liefert als die Summe ohne sie.
 Warum hängt der Text eines gelingenden Zeilen-Merges nicht davon ab, welche Seite die eigene ist
@@ -519,7 +532,7 @@ und ein eigenes \type{.stemma} im Worktree geht mit \type{git worktree remove} v
 denn Git trägt das ignorierte Verzeichnis nicht in den Merge
 und der Merge von Stemma führt nur Branches desselben Repositories zusammen.
 Eine zweite Arbeitskopie von Stemma ist deshalb ein Worktree von Stemma, den
-\type{worktree add} anlegt; er behält seine Historie im gemeinsamen Speicher.
+\type{worktree add} anlegt; er behält seinen Verlauf im gemeinsamen Speicher.
 Ein kleiner Pull Request passt zur Arbeit mit Agenten,
 weil der Mensch das Ergebnis einer Sitzung vollständig prüfen kann,
 bevor die nächste darauf aufbaut.
@@ -557,6 +570,15 @@ und verlangte, dass \type{just book} ohne Fehler durchläuft.
 Fehlt einem Issue eine solche Angabe, muss der Agent raten oder nachfragen,
 und beides kostet die Zeit, die das Label sparen soll.
 
+Mit Phase~3 hat das Projekt den Ablauf für mehrere Agenten nebeneinander geordnet.
+Das Skill \type{plane-wave} ordnet die Unter-Issues eines Epics nach ihren Abhängigkeiten
+in Wellen und startet je Issue einen eigenen Git-Worktree;
+\type{.claude/wave.md} nennt dafür das CI-Kommando, die Hotspots und die Verbote.
+Jedes Issue steht im Tracker Plane, und der Pull Request schreibt \type{Closes} für ein
+vollständig erledigtes Issue und \type{Refs} für Teilarbeit, die bewusst offen bleibt.
+Wie ein Agent \type{stemma} im Repository aufruft, steht in \type{docs/agents/using-stemma.md}.
+Recherchen, auf die ein ADR sich stützt, liegen als Notizen in \type{docs/research/}.
+
 \subsection{Prüfschleifen}
 
 Ein Agent, der Code und Tests schreibt, teilt in beiden dieselben blinden Flecken.
@@ -578,11 +600,22 @@ und sie prüfen, dass jeder Leser genau das annimmt, was der Kodierer schreibt,
 und bei keiner Eingabe abbricht.
 Ein Fuzzer geht weiter: \type{just fuzz} erzeugt für einen der Leser zufällige Eingaben,
 ausgehend von gültigen Kodierungen in \type{fuzz/seeds/},
-und \type{just fuzz-all} tut das für alle sechs nacheinander.
+und \type{just fuzz-all} tut das für alle acht nacheinander.
 Er braucht die Nightly-Toolchain und läuft deshalb nicht in \type{just ci}.
 Beide Verfahren kennen die Absicht des Autors nicht und finden deshalb Eingaben,
 an die beim Schreiben der Tests niemand gedacht hat.
 Tests, die eine Invariante über zufälligen Folgen von Befehlen prüfen, gibt es noch nicht.
+
+Drei Prüfungen kamen mit Phase~3 dazu.
+Die Fehlereinspritzung (\type{fault.rs}) lässt in Tests einen Aufruf des Dateisystems
+für bestimmte Pfade scheitern, auf jeder Plattform und für jeden Benutzer,
+anders als ein Verzeichnis ohne Rechte.
+\type{just norma} prüft den Rust-Code gegen die Regeln in \type{norma/rule-packs/};
+\type{just coverage} fasst die Abdeckung der Tests zusammen.
+Beide gehören nicht zu \type{just ci}, weil sie Werkzeuge ausserhalb des Projekts brauchen.
+\type{just release-check} prüft vor einem Release-Tag, dass Tag, \type{Cargo.toml} und Programm
+dieselbe Version nennen und dass das Programm keine Fehlereinspritzung enthält;
+die Version steht nur in \type{Cargo.toml}, und eine Phase ist eine Minor-Version.
 
 Jeder Pull Request füllt eine Vorlage aus:
 \type{just ci} ist grün, das betroffene Kapitel und die Befehlsreferenz sind nachgeführt,
@@ -592,8 +625,9 @@ etwa auf die Regeln des Projekts und auf die Richtigkeit des Textes.
 Ihre Befunde behebt der Autor in eigenen Commits, bevor der Mensch merget;
 eine Datei des Repositories schreibt das nicht vor.
 Nach jeder Phase prüft ein Agent nach \type{docs/agents/book-review.md}
-das Kapitel der Phase, die berührten Teile der Kapitel 1 bis 3,
-die Befehlsreferenz und die Kapitel 10 und 11.
+das Kapitel der Phase,
+die berührten Teile der Kapitel \in{}[chap:introduction] bis \in{}[chap:architecture],
+die Befehlsreferenz und die Kapitel \in{}[chap:teaching] und \in{}[chap:outlook].
 
 \subsection{Abhängigkeiten, Stufen und Oberflächen}
 
@@ -669,7 +703,7 @@ damit jede Zahl im Buch und in einem ADR wiederholt werden kann.
 
 Git bleibt im Projekt die einzige Wahrheit über den Verlauf: Commits, Branches und Pull Requests
 laufen über Git. Stemma läuft im selben Verzeichnis daneben, als Beispiel für das Buch.
-Die beiden Historien sind deshalb absichtlich doppelt, und keine ersetzt die andere.
+Die beiden Verläufe sind deshalb absichtlich doppelt, und keine ersetzt die andere.
 Die Fallstudie beschreibt, was dabei aufgefallen ist.
 
 Der erste Befund betrifft den Akteur.

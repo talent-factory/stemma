@@ -8,7 +8,7 @@
   <g fill="#FFFFFF" stroke="#0F172A" stroke-width="2">
     <circle cx="40" cy="40" r="16" fill="#0F172A"/>
     <circle cx="40" cy="96" r="16" fill="#0F172A"/>
-    <circle cx="40" cy="152" r="16"/>
+    <circle cx="40" cy="152" r="16" fill="#0F172A"/>
     <circle cx="40" cy="208" r="16"/>
     <circle cx="40" cy="264" r="16"/>
     <circle cx="40" cy="320" r="16"/>
@@ -16,7 +16,7 @@
   <g text-anchor="middle" font-size="15" font-weight="bold" fill="#0F172A">
     <text x="40" y="45" fill="#FFFFFF">1</text>
     <text x="40" y="101" fill="#FFFFFF">2</text>
-    <text x="40" y="157">3</text>
+    <text x="40" y="157" fill="#FFFFFF">3</text>
     <text x="40" y="213">4</text>
     <text x="40" y="269">5</text>
     <text x="40" y="325">6</text>
@@ -36,7 +36,7 @@
   <g font-size="12" fill="#64748B">
     <text x="72" y="55">Ein Repository, ein Akteur: Commits, Status, Operation Log, Restore, Purge</text>
     <text x="72" y="111">Änderungen zwischen Working-Copy-Commit und Commits lesbar anzeigen</text>
-    <text x="72" y="167">Parallele Arbeit lokal: Branches anlegen, wechseln, zusammenführen</text>
+    <text x="72" y="167">Parallele Arbeit lokal: Branches, Merge, Rebase und eine Arbeitskopie je Akteur</text>
     <text x="72" y="223">Schreibhoheit, Pull Requests und Freigaben im System erzwingen</text>
     <text x="72" y="279">Klone und Server synchronisieren, der Server setzt Berechtigungen durch</text>
     <text x="72" y="335">Agenten arbeiten über Werkzeuge, jeder Aufruf autorisiert und protokolliert</text>
@@ -46,7 +46,7 @@
   <g font-size="12" fill="#64748B" text-anchor="end">
     <text x="680" y="36">Kapitel 4, abgeschlossen</text>
     <text x="680" y="92">Kapitel 5, abgeschlossen</text>
-    <text x="680" y="148">Kapitel 6</text>
+    <text x="680" y="148">Kapitel 6, abgeschlossen</text>
     <text x="680" y="204">Kapitel 7</text>
     <text x="680" y="260">Kapitel 8</text>
     <text x="680" y="316">Kapitel 9</text>

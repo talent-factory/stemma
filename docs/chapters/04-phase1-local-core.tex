@@ -1,4 +1,4 @@
-\chapter{Phase 1: Lokaler Kern}
+\chapter[chap:phase1]{Phase 1: Lokaler Kern}
 
 \section{Ziel}
 
@@ -279,21 +279,22 @@ einem einzigen Baum ist immer ein \type{commit}, damit er nur eine Kodierung und
 Ähnlich nimmt der Leser keine Liste an, in der ein weggenommener Baum einem hinzugefügten gleicht:
 Beide heben sich auf, und die Summe hat eine kürzere, gültige Form. Eine Summe, die sich aufhebt,
 hat so keine zweite, unvereinfachte Kodierung.
-Gleiche Seiten und gleiche Basen sind dagegen erlaubt, weil sich zwei Zweige auf dasselbe einigen
+Gleiche Seiten und gleiche Basen sind dagegen erlaubt, weil sich zwei Seiten auf dasselbe einigen
 können.
 Die neue Art heisst \type{commit2}, weil eine geänderte Kodierung von \type{commit} die ID jedes
 gespeicherten Commits ändern würde (ADR-005). Weil die Art zum gehashten Kopf gehört, ergeben
-dieselben Bytes als \type{commit} ein anderes Objekt. In Phase 1 schreibt noch kein Befehl
+dieselben Bytes als \type{commit} ein anderes Objekt. Erst seit Phase 3 schreiben \type{merge} und
+\type{rebase}
 ein solches Objekt; was ein Konflikt bedeutet und wie er aufgelöst wird, beschreibt Phase 3.
 Eine \type{CommitId} nennt beide Arten, damit ein Konflikt dort stehen kann, wo ein Commit steht:
 Der Speicher löst sie nach der Art des gespeicherten Objekts zu einem \type{commit} oder
 einem \type{commit2} auf.
-Ein \type{commit2} ist deshalb ein Elter, der \type{verify} besteht, ein Schritt der Geschichte
+Ein \type{commit2} ist deshalb ein Elternteil, der \type{verify} besteht, ein Schritt des Verlaufs
 und das Ziel eines Zweigs oder der Arbeitskopie.
 Wer einen einzigen Baum braucht, etwa \type{switch}, findet in einem \type{commit2} keinen und
 meldet einen offenen Konflikt, statt eine falsche Art zu beklagen; \type{status}, \type{diff},
 \type{restore} und \type{commit} lesen ihn über den Baum, der den Konflikt zeigt
-(Kapitel 6).
+(\in{Kapitel}[chap:phase3]).
 
 Zum Graphen gehören weitere Invarianten.
 {\em Jedes Objekt hat genau eine Kodierung.}
@@ -946,11 +947,10 @@ die neuen Commits liegen ohne Zeiger im Objektspeicher.
 \startinfobox
 {\bf Wann ein Commit abgelehnt wird oder halb stehen bleibt.}
 \startitemize
-\item Ein unveränderter Baum
-und ein Branch, der nicht beim Elternteil des Working-Copy-Commits steht,
-lassen nur den Snapshot zurück.
-Den zweiten Fall bringt ein \type{rebase} wieder zusammen;
-er benutzt das Umschreiben der Arbeitskopie (\in{Abschnitt}[sec:rewrite-wc]).
+\item Ein unveränderter Baum lässt nur den Snapshot zurück.
+Dasselbe gilt für einen Branch, der nicht beim Elternteil des Working-Copy-Commits steht.
+Den zweiten Fall bringt ein \type{rebase} wieder zusammen,
+der das Umschreiben der Arbeitskopie benutzt (\in{Abschnitt}[sec:rewrite-wc]).
 \item Hat ein anderer Prozess einen Zeiger zuerst bewegt, scheitert der Commit;
 er lässt sich wiederholen.
 \item Bricht der Commit zwischen den beiden Zeigerbewegungen ab,
@@ -1707,8 +1707,8 @@ in der Sitzung mit \type{op restore 6}.
 \startinfobox
 {\bf Wie das Restore das Verzeichnis schreibt.}
 \startitemize
-\item Das Schreiben übernimmt eine eigene Schicht,
-die auch \type{switch}, \type{merge} und \type{rebase} benutzen (\type{checkout.rs}).
+\item Das Schreiben übernimmt eine eigene Schicht (\type{checkout.rs}),
+die auch \type{switch}, \type{merge} und \type{rebase} benutzen.
 Sie plant zuerst und schreibt danach.
 \item Sie fasst nur Pfade an, die der alte oder der neue Baum nennt.
 Unverfolgte Dateien, \type{.stemma} und \type{.git} lässt sie in Ruhe.
@@ -2410,10 +2410,10 @@ Schritt~3 trägt einen Commit erst ein, wenn seine Eltern eingetragen sind,
 und berechnet $f(c)$ aus deren Werten.
 Ein Commit wird also fertig, nachdem alle seine Eltern fertig sind.
 Die Reihenfolge, in der die Commits fertig werden, ist die Postorder einer Tiefensuche
-entlang der Kanten vom Kind zum Elter.
+entlang der Kanten vom Kind zum Elternteil.
 In einem gerichteten azyklischen Graphen ist die umgekehrte Postorder eine topologische Ordnung
 \cite[sedgewick2011algorithms] (Abschnitt 4.2), die hier jedes Kind vor seine Eltern stellt;
-die Postorder selbst stellt jeden Elter vor seine Kinder.
+die Postorder selbst stellt jeden Elternteil vor seine Kinder.
 In dieser Reihenfolge stehen die Umschreibungen im Plan und im Journal,
 und in ihr schreibt der Purge die neuen Objekte,
 so dass kein neues Objekt eines nennt, das noch fehlt.
@@ -2530,9 +2530,9 @@ weil jeder Stub den Hash des Rumpfs behält, den er ersetzt (\in{Abschnitt}[sec:
 {\bf Grenzfälle des Plans.}
 \startitemize
 \item Ein Commit, dessen Eltern nach dem Umschreiben zusammenfallen, hält den Plan an,
-und die Meldung nennt ihn, denn ein Commit darf keinen Elter zweimal nennen.
+und die Meldung nennt ihn, denn ein Commit darf keinen Elternteil zweimal nennen.
 \item Ein beschädigter Baum oder Commit hält den Plan an, denn er könnte den Blob nennen.
-Ein Rest, dessen Elter fehlt, hält ihn ebenfalls an, und die Meldung nennt den Rest.
+Ein Rest, dessen Elternteil fehlt, hält ihn ebenfalls an, und die Meldung nennt den Rest.
 \item Bei einem Commit mit einer Liste von Bäumen (\type{commit2}) folgt der Plan jedem Baum
 der Liste und ersetzt jeden, der den Blob enthält.
 Der Commit wird in der Form neu geschrieben, die seine Summe danach hat:
@@ -2638,9 +2638,10 @@ Eingaben prüfen. Golden Vectors und Property-Tests laufen in \type{just ci}.
 
 Der Generator sieht aber nicht, welche Zweige eines Lesers er erreicht. Das tut ein Fuzzer,
 der der Abdeckung folgt: \type{cargo fuzz} mit libFuzzer verändert die Eingaben so, dass sie
-neue Zweige erreichen. Im Verzeichnis \type{fuzz/} gibt es dafür sieben Ziele, eines je Leser:
-\type{tree}, \type{commit}, \type{commit2}, \type{actor}, \type{index}, \type{entry} und
-\type{journal}.
+neue Zweige erreichen. Im Verzeichnis \type{fuzz/} gibt es dafür acht Ziele, eines je Leser und
+eines für den Zeilen-Merge:
+\type{tree}, \type{commit}, \type{commit2}, \type{actor}, \type{index}, \type{entry},
+\type{journal} und \type{merge_lines}.
 Die Leser von HEAD und einer Branch-Datei lesen nur eine Zeile; für sie genügen die
 Property-Tests. Die Ziele beginnen bei gültigen Kodierungen in \type{fuzz/seeds/}.
 libFuzzer braucht die Nightly-Version von Rust, deshalb gehört das Fuzzing nicht zu

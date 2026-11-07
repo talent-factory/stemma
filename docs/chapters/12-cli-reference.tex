@@ -1,10 +1,9 @@
 \startappendices
 
-\chapter{Befehlsreferenz}
+\chapter[chap:cli]{Befehlsreferenz}
 
 Dieser Anhang beschreibt die Kommandozeile \type{stemma}, so wie sie heute vorliegt.
-Er wächst mit jedem Befehl: Wer einen Befehl hinzufügt oder ändert, ergänzt hier den
-Abschnitt im selben Pull Request. Die Ausgabe von \type{stemma --help} und
+Die Ausgabe von \type{stemma --help} und
 \type{stemma <Befehl> --help} ist die maschinelle Quelle, dieser Anhang erklärt Zweck,
 Verhalten und Fehlerfälle. Wo beide abweichen, gilt das Programm.
 
@@ -12,31 +11,74 @@ Die Übersicht (\in{Abbildung}[fig:commands]) zeigt auf einen Blick, welche Zone
 ein Befehl berührt: das Arbeitsverzeichnis, den Working-Copy-Commit,
 die Zeiger (Branch, HEAD und Tags) oder das Operation Log.
 Der Zeiger auf den Working-Copy-Commit gehört zur Zone des Working-Copy-Commits.
-Bei \type{op restore} hängt es vom Eintrag ab, welche Zeiger und Dateien sich bewegen;
-die Zeile zeigt den Höchstfall. Bei \type{switch} bewegt sich ein neuer Branch nur mit
-\type{-c}, und die Dateien nur, wenn sich die Bäume unterscheiden; auch hier zeigt die Zeile
-den Höchstfall. Bei \type{merge} bewegt sich der Branch von HEAD, HEAD selbst bleibt,
-und ist der andere Branch schon ein Vorfahre, ändert der Befehl ausser dem Snapshot nichts.
-Bei \type{diff} ist der Working-Copy-Commit als Seite der Höchstfall:
-Der Snapshot ändert nur dann etwas, wenn sich eine verfolgte Datei geändert hat,
-und bei zwei Commits ändert der Befehl nichts.
-Bei \type{log} liest der Befehl nur die Commits ab dem Working-Copy-Commit;
-er macht keinen Snapshot und berührt weder Branch noch HEAD noch das Log.
-Beim Setzen schreibt \type{tag} den Tag-Zeiger und einen Eintrag ins Log,
-bewegt aber weder HEAD noch einen Branch und ändert weder Arbeitsverzeichnis noch
-Working-Copy-Commit. Beim Auflisten ändert der Befehl nichts; die Zeile zeigt den Höchstfall.
-Auch \type{branch} schreibt einen Eintrag ins Log und bewegt nur Zeiger: Beim Anlegen einen Branch,
-beim Löschen einen Branch, beim Umbenennen zwei Branches und HEAD, wenn HEAD den Branch nennt.
-Arbeitsverzeichnis und Working-Copy-Commit bleiben, wie sie sind; auch hier zeigt die Zeile
-den Höchstfall.
-Der Befehl \type{worktree add} schreibt die Dateien eines neuen Verzeichnisses und legt dort
-Working-Copy-Commit, HEAD und, mit \type{-b}, einen Branch an; die Zeile zeigt diesen neuen
-Worktree und nicht den des Aufrufs. \type{worktree remove} sichert zuerst die Dateien des
-Worktrees, den es entfernt, in einem Snapshot dieses Worktrees, löscht dann sein Verzeichnis und
-sein Zustandsverzeichnis und nimmt dort HEAD und Working-Copy-Commit weg; die Zeile zeigt diesen
-Worktree. \type{worktree list} liest nur und hat keine Zeile.
-Bei \type{rebase} bewegen sich der Branch, auf den HEAD zeigt, und der Working-Copy-Commit;
-HEAD bleibt. Die Dateien ändern sich, wenn der neue Baum sich vom alten unterscheidet.
+\in{Tabelle}[tab:zones] nennt für die Befehle, bei denen die Zeile mehr zeigt als eine feste
+Wirkung, was sich im Einzelfall bewegt.
+
+\startplacetable[title={Was ein Befehl in seiner Zone bewegt},reference=tab:zones]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Befehl} \stopxcell
+\startxcell {\bf Wirkung auf die Zonen} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{op restore} \stopxcell
+\startxcell Es hängt vom Eintrag ab, welche Zeiger und Dateien sich bewegen; die Zeile zeigt den Höchstfall. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{switch} \stopxcell
+\startxcell Ein neuer Branch entsteht nur mit \type{-c}, und die Dateien ändern sich nur, wenn sich die
+Bäume unterscheiden; die Zeile zeigt den Höchstfall. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{merge} \stopxcell
+\startxcell Der Branch von HEAD bewegt sich, HEAD selbst bleibt. Ist der andere Branch schon ein Vorfahre,
+ändert der Befehl ausser dem Snapshot nichts. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{rebase} \stopxcell
+\startxcell Der Branch, auf den HEAD zeigt, und der Working-Copy-Commit bewegen sich, HEAD bleibt. Die
+Dateien ändern sich, wenn der neue Baum sich vom alten unterscheidet. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{diff} \stopxcell
+\startxcell Der Working-Copy-Commit als Seite ist der Höchstfall: Der Snapshot ändert nur dann etwas, wenn
+sich eine verfolgte Datei geändert hat. Bei zwei Commits ändert der Befehl nichts. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{log} \stopxcell
+\startxcell Der Befehl liest nur die Commits ab dem Working-Copy-Commit; er macht keinen Snapshot und
+berührt weder Branch noch HEAD noch das Log. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{tag} \stopxcell
+\startxcell Beim Setzen schreibt der Befehl den Tag-Zeiger und einen Eintrag ins Log, bewegt aber weder HEAD
+noch einen Branch und ändert weder Arbeitsverzeichnis noch Working-Copy-Commit. Beim Auflisten
+ändert er nichts; die Zeile zeigt den Höchstfall. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{branch} \stopxcell
+\startxcell Der Befehl schreibt einen Eintrag ins Log und bewegt nur Zeiger: beim Anlegen einen Branch, beim
+Löschen einen Branch, beim Umbenennen zwei Branches und HEAD, wenn HEAD den Branch nennt.
+Arbeitsverzeichnis und Working-Copy-Commit bleiben; die Zeile zeigt den Höchstfall. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{worktree add} \stopxcell
+\startxcell Der Befehl schreibt die Dateien eines neuen Verzeichnisses und legt dort Working-Copy-Commit,
+HEAD und, mit \type{-b}, einen Branch an; die Zeile zeigt diesen neuen Worktree und nicht den
+des Aufrufs. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{worktree remove} \stopxcell
+\startxcell Der Befehl sichert zuerst die Dateien des Worktrees, den er entfernt, in einem Snapshot dieses
+Worktrees, löscht dann sein Verzeichnis und sein Zustandsverzeichnis und nimmt dort HEAD und
+Working-Copy-Commit weg; die Zeile zeigt diesen Worktree. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{worktree list} \stopxcell
+\startxcell Der Befehl liest nur und hat keine Zeile. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
 
 \startplacefigure[title={Welcher Befehl berührt welche Zone},reference=fig:commands,location=here]
 \externalfigure[images/commands.pdf][width=\textwidth]
@@ -54,6 +96,8 @@ stemma help [Befehl]
 \type{stemma help Befehl} zeigt dasselbe wie \type{stemma Befehl --help}; bei einem Befehl mit
 Unterbefehl nennt man beide, etwa \type{stemma help op restore}.
 Ohne Befehl zeigt \type{stemma help} die Übersicht wie \type{stemma --help}.
+Der Aufruf \type{stemma} allein und \type{stemma op} allein zeigen die Hilfe ebenfalls,
+enden aber mit Exit-Code 2, denn es fehlt ein Befehl.
 Die Hilfe braucht weder einen Akteur noch ein Repository, schreibt auf die Standardausgabe
 und endet mit Exit-Code 0.
 
@@ -119,7 +163,8 @@ dem Benutzernamen gibt es nicht. Die Angabe belegt nicht, wer den Befehl wirklic
 sie nennt nur, in wessen Namen er läuft.
 
 Ein Befehl, der einen Snapshot macht (\type{track}, \type{commit}, \type{status},
-\type{diff} mit dem Working-Copy-Commit, \type{restore}, \type{purge --apply}), trägt diesen
+\type{diff} mit dem Working-Copy-Commit, \type{switch}, \type{merge}, \type{rebase},
+\type{worktree remove}, \type{op restore}, \type{purge --apply}), trägt diesen
 Akteur für alles ein, was er im Verzeichnis speichert.
 Deshalb arbeitet jeder Akteur in einer eigenen Arbeitskopie; zwei Akteure in einem
 Verzeichnis sind kein unterstützter Betrieb (ADR-010).
@@ -194,7 +239,8 @@ Die zweite Arbeitskopie von Stemma ist ein Worktree von Stemma, den \type{worktr
 Auch \type{op restore --dry-run}, \type{switch --dry-run} und \type{purge} ohne \type{--apply}
 verlangen einen Akteur,
 obwohl sie nichts schreiben; sie prüfen ihn, bevor sie das Repository öffnen.
-Nur \type{log}, \type{op log} und \type{op verify} laufen ohne Akteur.
+Ohne Akteur laufen \type{log}, \type{op log}, \type{op verify}, die Listenformen von
+\type{branch} und \type{tag} und \type{worktree list}.
 Eine Akteur-Zeile in falscher Form endet wie ein fehlender Akteur mit Exit-Code 1,
 nicht mit Exit-Code 2.
 
@@ -416,6 +462,32 @@ oder beim Umbenennen bewegte sich nur ein Teil der Zeiger. \stopxcell
 \startxcell Nicht wiederholen; \type{stemma branch} zeigt, welche Branches es gibt. \stopxcell
 \stopxrow
 \startxrow
+\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree add}} \stopxcell
+\startxcell[width=0.41\textwidth] Ein Schritt scheiterte, nachdem der Eintrag im Log stand;
+der Worktree entstand nicht oder nur zum Teil. \stopxcell
+\startxcell Die Meldung nennt den Eintrag und sagt, was von Hand zu entfernen ist;
+danach den Aufruf wiederholen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree add}} \stopxcell
+\startxcell[width=0.41\textwidth] Der Worktree ist angelegt,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen; \type{worktree list} zeigt die Worktrees. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree remove}} \stopxcell
+\startxcell[width=0.41\textwidth] Ein Schritt scheiterte, nachdem der Eintrag im Log stand;
+Verzeichnis oder Zustandsverzeichnis sind noch da. \stopxcell
+\startxcell Die Meldung nennt, was von Hand zu entfernen ist; war noch kein Zeiger bewegt,
+nimmt derselbe Aufruf das Zustandsverzeichnis weg. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree remove}} \stopxcell
+\startxcell[width=0.41\textwidth] Der Worktree ist weg,
+aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
+\startxcell Nicht wiederholen; ein zweiter Aufruf endet mit Exit-Code 1. \stopxcell
+\stopxrow
+\startxrow
 \startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
 \startxcell[width=0.41\textwidth] Nur ein Teil der Zeiger hat sich bewegt
 (\type{Half made}). \stopxcell
@@ -469,7 +541,8 @@ und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
 \stopplacetable
 
 {\bf Sperre.} Ein Befehl, der schreibt (\type{track}, \type{commit}, \type{switch},
-\type{merge}, \type{rebase}, \type{status}, \type{op restore},
+\type{merge}, \type{rebase}, \type{status}, \type{op restore}, \type{tag}, \type{branch},
+\type{worktree add}, \type{worktree remove},
 \type{diff} mit dem Working-Copy-Commit),
 nimmt die Sperre \type{.stemma/refs.lock}, bevor er das erste Objekt schreibt,
 und hält sie bis zu seiner letzten Zeigerbewegung, also mindestens so lange, wie sein Snapshot
@@ -503,7 +576,8 @@ der nächste versucht es wieder.
 
 {\bf Offener Purge.} Solange das Journal \type{.stemma/purge-pending} eines Purge besteht,
 lehnen \type{track}, \type{commit}, \type{switch}, \type{merge}, \type{rebase}, \type{status},
-\type{op restore} und \type{diff} mit
+\type{op restore}, \type{tag}, \type{tag --delete}, \type{branch}, \type{worktree add},
+\type{worktree remove} und \type{diff} mit
 dem Working-Copy-Commit ab, wenn sie die Sperre nehmen,
 also bevor sie ein Objekt schreiben (Exit-Code 1). Die Meldung
 nennt das Journal, \type{stemma purge --resume} und \type{--abort}.
@@ -561,7 +635,7 @@ Ein ungültiger Name ist ein Aufruffehler (Exit-Code 2) und legt nichts an.
 \stopitemize
 
 {\bf Verhalten.} \type{init} legt den Ordner \type{.stemma} an (Aufbau
-im Abschnitt «Aufbau eines Repositories» von Kapitel 4) und gibt eine Zeile aus:
+im Abschnitt «Aufbau eines Repositories» von \in{Kapitel}[chap:phase1]) und gibt eine Zeile aus:
 
 \starttyping
 Initialized empty Stemma repository in /pfad/zum/projekt/.stemma
@@ -869,15 +943,18 @@ stemma commit -C projekt -m "Fix the build"
 Wechselt den Branch, auf den HEAD zeigt, oder löst HEAD vom Branch (ADR-010).
 
 \starttyping
-stemma switch NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--discard] [--dry-run]
-stemma switch -c NAME [START] [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--discard] [--dry-run]
-stemma switch --detach COMMIT-ODER-BRANCH [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+stemma switch NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over] [--discard]
+    [--dry-run]
+stemma switch -c NAME [START] [-C VERZEICHNIS] --actor AKTEUR [--take-over]
+    [--discard] [--dry-run]
+stemma switch --detach NAME [-C VERZEICHNIS] --actor AKTEUR [--take-over]
     [--discard] [--dry-run]
 \stoptyping
 
 \startitemize
 \item {\bf NAME:} Ohne Option der Branch, zu dem HEAD wechselt; er muss bestehen.
 Mit \type{-c} der Name des neuen Branchs, der noch nicht bestehen darf.
+Mit \type{--detach} ein Branch oder ein Commit (\type{b3:} und 64 Hexadezimalziffern).
 Eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) ist hier kein Name und ein Aufruffehler
 (Exit-Code 2).
 \item {\bf START:} Nur mit \type{-c}. Ein Branch oder ein Commit (\type{b3:} und 64
@@ -885,8 +962,8 @@ Hexadezimalziffern), auf dem der neue Branch beginnt. Ohne START beginnt er auf 
 zu dem HEAD führt: auf der Spitze des Branchs von HEAD oder auf dem abgekoppelten Commit.
 \item {\bf \type{-c}, \type{--create}:} Legt den Branch an und wechselt zu ihm.
 Besteht der Name schon, ist es ein Fehler (Exit-Code 1).
-\item {\bf \type{--detach} COMMIT-ODER-BRANCH:} Löst HEAD vom Branch, sodass er den Commit nennt,
-auf den der Branch zeigt, oder den angegebenen Commit. Mit \type{-c} zusammen ist es ein
+\item {\bf \type{--detach}:} Löst HEAD vom Branch, sodass er den Commit nennt,
+auf den der Branch NAME zeigt, oder den Commit NAME. Mit \type{-c} zusammen ist es ein
 Aufruffehler (Exit-Code 2).
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
@@ -941,6 +1018,8 @@ Die erste Zeile heisst \type{Switched to branch NAME} bei einem bestehenden Bran
 \type{Saved the working copy first as entry N}.
 Zeigt HEAD schon auf den Branch, schreibt der Befehl \type{Already on NAME}, endet mit
 Exit-Code 0 und schreibt weder einen Snapshot noch einen Eintrag.
+Wiederholt man \type{switch -c NAME} nach einem Erfolg, endet der Befehl mit Exit-Code 1, denn der
+Name besteht dann.
 
 Hatte der Working-Copy-Commit Änderungen, steht nach der ersten Zeile eine weitere:
 \type{Carried the changes of the working copy to the new base}, gefolgt von einer Zeile
@@ -971,11 +1050,6 @@ der Befehl die Änderungen mitnähme.
 Schlägt der Merge der Änderungen fehl, nennt die Meldung die Ursache; der Befehl hat dann nur
 Objekte geschrieben, und der Snapshot, falls er einen Eintrag schrieb, steht im Log.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
-Ein Zustandsverzeichnis ohne \type{HEAD} ist der Rest eines Befehls, der abbrach; es zählt nicht
-als Worktree, \type{worktree list} zeigt es nicht, und der Befehl endet mit Exit-Code 1 und sagt
-das. \type{worktree add} in einem Verzeichnis mit demselben letzten Pfadteil übernimmt den Namen
-und räumt den Rest. Ein Worktree, dessen Zustandsverzeichnis sich nicht lesen lässt, hindert das
-Entfernen eines anderen nicht; der Befehl nennt für ihn selbst, was von Hand zu löschen ist.
 
 Scheitert das Schreiben der Dateien oder die erste Zeigerbewegung, nachdem der Eintrag im Log
 steht, endet der Befehl mit Exit-Code 1 (bei einer gehaltenen Sperre mit 6).
@@ -1636,7 +1710,7 @@ das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktu
 \item {\bf \type{-n}, \type{--limit} ANZAHL:} Wie viele Commits der Befehl zeigt.
 Ohne die Option zeigt er alle. Null ist ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{--first-parent}:} Folgt bei jedem Commit nur dem ersten Elternteil.
-Ein Merge-Commit verbirgt dann die Geschichte, die er hereinbrachte.
+Ein Merge-Commit verbirgt dann den Verlauf, den er hereinbrachte.
 \item {\bf \type{--json}:} Schreibt je Commit ein JSON-Objekt pro Zeile statt Text.
 \stopitemize
 
@@ -1652,7 +1726,7 @@ Das Datum eines Commits stammt vom Autor und beweist nichts (ADR-005;
 erst Signaturen machen es verlässlich, ADR-003);
 es ordnet nur Commits, die sich nicht gegenseitig bedingen, und ein falsches Datum
 stellt nie ein Kind hinter sein Elternteil.
-Die Reihenfolge hängt nur von der Geschichte ab, nicht von der Reihenfolge der Eltern.
+Die Reihenfolge hängt nur vom Verlauf ab, nicht von der Reihenfolge der Eltern.
 Der Befehl führt keinen Cache (ADR-017). Ohne \type{--first-parent} liest er jeden erreichbaren
 Commit einmal, auch mit \type{-n}, denn die Reihenfolge braucht die ganze Menge;
 \type{-n} kürzt nur die Liste. Mit \type{--first-parent} liest er nur die Kette,
@@ -1664,6 +1738,7 @@ Hat der Commit eine Nachricht, folgen nach einer Leerzeile ihre Zeilen,
 jede um vier Leerzeichen eingerückt. Eine Leerzeile beendet den Block;
 ein Commit ohne Nachricht, etwa der Working-Copy-Commit nach \type{init},
 hat also den Kopf und eine Leerzeile.
+Die Textform ist für Menschen bestimmt und nicht stabil; ein Skript liest \type{--json}.
 Die Marke ist \type{@} für den Working-Copy-Commit und \type{o} für jeden anderen.
 Hält ein Commit einen offenen Konflikt (ADR-010), endet seine erste Zeile mit
 \type{conflict (N sides)}, wobei \type{N} die Zahl der Seiten nach dem Aufheben der Terme ist:
@@ -1997,7 +2072,9 @@ Bei einem bestehenden Branch heisst es \type{on the branch feature}.
 nicht frei ist (die Meldung nennt ihn und den Worktree, mit dem er kollidiert), einem Branch, den
 es nicht gibt (\type{-b} legt ihn an), den es schon gibt (mit \type{-b}) oder den ein Worktree
 ausgecheckt hat (die Meldung nennt ihn), einem Branch von HEAD ohne Commit bei \type{-b},
-einer Datei, die im Weg steht, und bei einem offenen Purge. Das Verzeichnis, das der Aufruf selbst
+einer Datei, die im Weg steht, einem Branch, dessen Commit einen offenen Konflikt festhält
+(die Meldung lautet \type{records an open conflict, which this command cannot read as one
+tree}), und bei einem offenen Purge. Das Verzeichnis, das der Aufruf selbst
 angelegt hat, entfernt er dann wieder; ein bestehendes leeres bleibt. Eine gehaltene Sperre
 beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Der
@@ -2160,6 +2237,14 @@ einen Schaden meldet, sonst der Code des ersten Fehlers (1 bei einem Fehler der 
 Ein gültiger Name, den es nicht gibt, bleibt ein Fehler mit Exit-Code 1.
 Eine gehaltene Sperre beendet den Befehl mit Exit-Code 6 und ein Schaden mit Exit-Code 5.
 
+Ein Zustandsverzeichnis ohne \type{HEAD} ist der Rest eines Befehls, der abbrach; es zählt nicht
+als Worktree, \type{worktree list} zeigt es nicht, und der Befehl endet mit Exit-Code 1 und sagt
+das. \type{worktree add} in einem Verzeichnis mit demselben letzten Pfadteil übernimmt den Namen
+und räumt den Rest. Ein Worktree, dessen Zustandsverzeichnis sich nicht lesen lässt, hindert das
+Entfernen eines anderen nicht; der Befehl nennt für ihn selbst, was von Hand zu löschen ist.
+Gehört der Worktree einem anderen Akteur, übernimmt man ihn zuerst mit \type{status --take-over}
+im Worktree, so wie vor einem \type{purge --apply}; \type{worktree remove} hat die Option nicht.
+
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die
 Meldung nennt den Eintrag und sagt, was von Hand zu entfernen ist. Konnte er das Verzeichnis
 nicht entfernen, oder bewegte sich noch kein Zeiger, nimmt derselbe Aufruf danach nur das
@@ -2318,7 +2403,7 @@ denn \type{init} schreibt immer den Eintrag 1; diese Meldung kommt nur,
 wenn auch die Datei \type{oplog-tip} fehlt, sonst meldet der Befehl den Verlust mit
 der Nummer des fehlenden Eintrags. Mit Exit-Code 1 endet auch ein Verzeichnis,
 das kein Repository ist, und eine Datei \type{format}, die fehlt oder eine andere Version
-als 2 bis 4 nennt; ist sie nicht kanonisch, ist es ein Schaden (Exit-Code 5).
+als 2 bis 7 nennt; ist sie nicht kanonisch, ist es ein Schaden (Exit-Code 5).
 Lassen sich HEAD oder die Branches der gezeigten Einträge wegen eines Schadens nicht lesen
 (eine Referenz ist nicht kanonisch), endet der Befehl mit Exit-Code 5 und gibt nichts aus.
 Scheitert das Lesen aus einem anderen Grund, etwa weil die Datei nicht zugänglich ist,
@@ -2811,7 +2896,7 @@ sein Journal aufnimmt.
 Werden zwei Eltern eines Merge-Commits beim Umschreiben zu einem, ist das kein Fehler:
 Der Merge nennt diesen Elternteil dann nur einmal, an der Stelle seines ersten Vorkommens.
 Mit \type{--apply} endet er mit Exit-Code 1 auch, wenn der Snapshot scheitert oder der Purge
-unter der Sperre nicht beginnen kann; dann besteht kein Journal, das Format kann aber schon 4
+unter der Sperre nicht beginnen kann; dann besteht kein Journal, das Format kann aber schon 7
 sein. Eine gehaltene Sperre endet dabei mit Exit-Code 6, ein Schaden mit Exit-Code 5.
 Hat der Snapshot das Verzeichnis gespeichert,
 nennt die Meldung am Ende seinen Eintrag. Hat der Snapshot den Zeiger bewegt, aber nicht
