@@ -145,8 +145,9 @@ them.
   line after the first `parent` line, a removed tree (a base) that equals an added tree (a side),
   which would cancel, and everything that `Commit::parse` rejects. The same tree may stand more than
   once, as a side or as a base, since the sides of a conflict may agree; only a base that equals a
-  side is rejected. No command creates a conflict yet, so no stored object is affected by this rule
-  and the version of the format stays. The kind name is hashed with the body, so the bytes of a
+  side is rejected. The rule only narrows what a writer may produce (`merge` is the first command
+  that writes a `commit2`, ADR-010), so no object that was stored before it is affected and the
+  version of the format stays. The kind name is hashed with the body, so the bytes of a
   `commit2` are another object under the kind `commit`. `Commit::parse` still rejects more than one
   `tree` line. The type is `Commit2`, separate from `Commit`. What a conflict means, and how it is
   resolved, stays with phase 3 (STEMMA-19). `Commit2::id` returns a `CommitId`, so that a conflict
@@ -155,9 +156,9 @@ them.
   `get_any_commit`, which returns `AnyCommit`), so that a `commit2` is a parent that passes
   `verify`, a step of the history, and the target of a branch or of the working copy. The reader
   `get_commit` stays strict and returns a `Commit` only, since a caller that needs one tree has none
-  in a `commit2`: `switch` reports such a commit as a conflict (`Conflicted`) and not as a kind
-  mismatch (STEMMA-19); `snapshot`, `status`, `diff`, `restore`, and `commit` read it through the
-  tree that shows the conflict (ADR-010).
+  in a `commit2`, and reports it as a conflict (`Conflicted`) and not as a kind mismatch.
+  `switch`, `snapshot`, `status`, `diff`, `restore`, and `commit` read it through the tree that
+  shows the conflict (ADR-010), and `switch`, `merge`, and `rebase` carry it on as data.
   The purge (ADR-014) follows the list of trees of a `commit2` and writes the new version of a
   rewritten one in the form that its sum has. The kind is part of the ID, so the same bytes under
   the kind `commit` and under the kind `commit2` are two objects (see above). The alternative, an
@@ -179,11 +180,12 @@ them.
   and the merge decides whether to apply it (see "Merge of trees"). The text with markers that
   shows a conflicted file is one function of the sum (`marker_text`), a pure function of the list
   of the contents of the terms, in order. The working copy, `status`, and `diff` show it, and the snapshot compares the bytes of a
-  file with it and does not parse markers (ADR-010). No command creates a `commit2` yet.
+  file with it and does not parse markers (ADR-010). `merge` and `rebase` create a `commit2`
+  when a path conflicts (ADR-010).
 - **Merge of trees** *(confirmed)*. The module `merge` of the core merges two commits into a sum of
   trees (STEMMA-170), at level 2 of ADR-004. It writes blobs and trees and no commit, and reads
-  only commits without a conflict until a `CommitId` resolves to either kind (STEMMA-179). The rules
-  are these.
+  commits through `get_any_commit`, so an operand may be a `commit` or a `commit2`: the sum of a
+  `commit2` enters the sum of the merge as its list of trees (STEMMA-179). The rules are these.
   - *The sum.* One merge base gives `ours + (theirs - base)`. Several bases are neither merged into
     a virtual commit nor merged recursively. They are one flat sum, as in Jujutsu: the first base,
     plus the change to each further base from its best common ancestors with any one of the
