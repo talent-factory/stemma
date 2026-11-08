@@ -51,8 +51,8 @@
   <line x1="360" y1="244" x2="360" y2="288"/>
   <line x1="462" y1="318" x2="498" y2="318"/>
   <line x1="360" y1="346" x2="360" y2="398"/>
-  <line x1="462" y1="432" x2="498" y2="432"/>
 </g>
+<line x1="462" y1="432" x2="498" y2="432" stroke="#64748B" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
 <g font-size="12" fill="#0F172A" text-anchor="middle">
   <text x="240" y="40">ja</text>
   <text x="375" y="102">nein</text>

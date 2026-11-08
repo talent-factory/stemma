@@ -14,7 +14,7 @@
 <g stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF">
   <rect x="10" y="32" width="130" height="156" rx="4"/>
   <rect x="160" y="32" width="130" height="156" rx="4"/>
-  <rect x="310" y="32" width="130" height="156" rx="4" stroke-dasharray="5 3"/>
+  <rect x="310" y="32" width="130" height="156" rx="4" stroke="#64748B" stroke-dasharray="5 3"/>
   <rect x="460" y="32" width="130" height="156" rx="4"/>
 </g>
 <g stroke="#6B46C1" stroke-width="1">

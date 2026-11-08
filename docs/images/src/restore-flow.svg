@@ -74,12 +74,14 @@
   <text x="302" y="246">Ungesicherte Änderungen hält ein</text>
   <text x="302" y="261">Eintrag <tspan font-family="Courier, monospace">snapshot</tspan> fest; sonst ist</text>
   <text x="302" y="276">nichts geschehen.</text>
-  <text x="302" y="322">Das Log nennt ein Restore, das nicht</text>
-  <text x="302" y="337">stattfand. Dateien und Zeiger sind</text>
-  <text x="302" y="352">unverändert.</text>
-  <text x="302" y="398">Auch zum Teil. Kein Zeiger hat sich bewegt;</text>
-  <text x="302" y="413">derselbe Aufruf hält die Dateien im</text>
-  <text x="302" y="428">Snapshot fest und beendet das Restore.</text>
+  <text x="302" y="322">Das Log nennt den Ausgang unbekannt,</text>
+  <text x="302" y="337">bis der nächste Befehl die Sperre</text>
+  <text x="302" y="352">übernimmt; dann nicht stattgefunden.</text>
+  <text x="302" y="367">Dateien und Zeiger sind unverändert.</text>
+  <text x="302" y="398">Auch zum Teil. Kein Zeiger hat sich bewegt,</text>
+  <text x="302" y="413">das Verzeichnis ist ein Gemisch. Derselbe</text>
+  <text x="302" y="428">Aufruf, vor jedem anderen Befehl, beendet</text>
+  <text x="302" y="443">das Restore.</text>
   <text x="302" y="474">Derselbe Aufruf lässt, was stimmt,</text>
   <text x="302" y="489">und bewegt den Rest.</text>
 </g>
