@@ -2050,7 +2050,16 @@ und der Agent erfährt nur, dass der Aufruf kein Ergebnis hatte.
 Er muss dann aus dem Repository allein ablesen, was geschehen ist,
 und einen Schritt wählen, der in jedem Fall sicher ist.
 
-Nach einem Abbruch folgen diese Schritte in dieser Reihenfolge:
+Nach einem Abbruch folgen diese Schritte in dieser Reihenfolge.
+Für ein abgebrochenes \type{op restore} gilt eine Ausnahme:
+Es wiederholt man als Erstes, den Aufruf unverändert, noch vor Schritt~1.
+Endete das Restore nach den Dateien und vor den Zeigern,
+liegt das Ziel im Verzeichnis, und der Working-Copy-Commit ist noch der alte.
+Der Snapshot von \type{status} speicherte dann die Änderungen des Ziels,
+aber nicht die Datei, die nur das Ziel hat: einen Baum, der keiner der beiden Zustände ist
+(ADR-013).
+Die Wiederholung lässt, was schon stimmt, und setzt den Rest;
+danach folgen die Schritte wie unten.
 
 \startitemize[n]
 \item \type{stemma status}.
