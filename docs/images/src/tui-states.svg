@@ -10,8 +10,8 @@
   <!-- Two neighbouring files; each holds its hunks -->
   <rect x="30" y="50" width="304" height="140" rx="10" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
   <rect x="366" y="50" width="304" height="140" rx="10" fill="#FFFFFF" stroke="#0F172A" stroke-width="2"/>
-  <text x="44" y="74" font-size="13" font-weight="bold" fill="#0F172A">Datei i</text>
-  <text x="380" y="74" font-size="13" font-weight="bold" fill="#0F172A">Datei i + 1</text>
+  <text x="44" y="74" font-size="13" font-weight="bold" fill="#0F172A">Datei f</text>
+  <text x="380" y="74" font-size="13" font-weight="bold" fill="#0F172A">Datei f + 1</text>
 
   <!-- Hunks as states -->
   <g fill="#FFFFFF" stroke="#64748B" stroke-width="1.5">
