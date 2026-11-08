@@ -7,8 +7,7 @@ nach Phase~3; die übrigen werden mit den Phasen präzisiert.
 \section{Datenmodell}
 
 Git speichert Inhalte als Objekte, die über ihren Hash adressiert werden: Blobs für Dateiinhalte,
-Trees für Verzeichnisse und Commits für Stände mit Verweis auf ihre Vorgänger
-(\in{Abbildung}[fig:objects]).
+Trees für Verzeichnisse und Commits für Stände mit Verweis auf ihre Vorgänger.
 Identische Inhalte liegen so nur einmal vor, und eine nachträgliche Änderung bricht jeden Hash
 weiter oben im gerichteten azyklischen Graphen der Commits.
 
@@ -16,7 +15,8 @@ weiter oben im gerichteten azyklischen Graphen der Commits.
 \externalfigure[images/objects.pdf][width=\textwidth]
 \stopplacefigure
 
-Stemma übernimmt dieses Modell und ändert daran Folgendes.
+Stemma übernimmt dieses Modell und ändert daran Folgendes;
+\in{Abbildung}[fig:objects] zeigt davon den ID-Präfix, die Change-ID und den Akteur.
 Die ID eines Objekts trägt den Algorithmus
 als Präfix (\type{b3:} für BLAKE3), damit später ein anderer Hash möglich bleibt.
 Jeder Commit trägt eine Change-ID (\type{ch:} und 32 Hexziffern),

@@ -2050,7 +2050,19 @@ und der Agent erfährt nur, dass der Aufruf kein Ergebnis hatte.
 Er muss dann aus dem Repository allein ablesen, was geschehen ist,
 und einen Schritt wählen, der in jedem Fall sicher ist.
 
-Nach einem Abbruch folgen diese Schritte in dieser Reihenfolge:
+Nach einem Abbruch folgen diese Schritte in dieser Reihenfolge.
+Für ein abgebrochenes \type{op restore} gilt eine Ausnahme:
+Man wiederholt es als Erstes, mit demselben Aufruf, noch vor Schritt~1.
+Hatte das Restore Dateien zu schreiben begonnen
+und den Working-Copy-Commit noch nicht zurückgesetzt,
+liegt der Baum vor dem Eintrag ganz oder teilweise im Verzeichnis,
+und der Working-Copy-Commit ist noch der alte.
+Der Snapshot von \type{status} würde dann die Änderungen und Löschungen dieses Baums speichern,
+aber nicht die Datei, die nur er hat.
+Das Ergebnis wäre ein Baum, der keiner der beiden Zustände ist (ADR-013),
+und ein folgender \type{commit} hielte ihn fest.
+Die Wiederholung lässt Dateien und Zeiger, die schon stimmen, stehen und setzt den Rest.
+Danach folgen alle Schritte der Liste, auch Schritt~3.
 
 \startitemize[n]
 \item \type{stemma status}.
@@ -2060,13 +2072,14 @@ Er hält eine Änderung im Verzeichnis fest
 und listet unter \type{!} die Reste eines unterbrochenen Restore.
 Jeder andere Befehl, der schreibt, würde die Sperre ebenso übernehmen,
 ausser \type{op restore}, das den Eintrag beurteilt, bevor es die Sperre nimmt.
-\type{status} kommt zuerst, weil es ausser einem Snapshot nichts schreibt.
+Ausser nach einem abgebrochenen Restore kommt \type{status} zuerst,
+weil es ausser einem Snapshot nichts schreibt.
 \item \type{stemma op log}.
 Die neuesten Einträge zeigen, was der unterbrochene Befehl hinterliess:
 kein Eintrag, wenn er vor seinem Eintrag endete,
 ein Eintrag mit \type{!}, wenn seine Zeigerbewegung nicht stattfand,
 und ein Eintrag ohne Markierung, wenn sie stattfand.
-Erst nach dem ersten Schritt ist die Sperre frei,
+Erst nach dem ersten Schritt oder der Wiederholung des Restore ist die Sperre frei,
 und nur dann kann \type{op log} entscheiden, dass eine Zeigerbewegung nicht stattfand.
 Ein \type{?} danach hat die Ursachen aus \in{Abschnitt}[sec:outcome]:
 einen Eintrag vor dem jüngsten Stub, einen Purge, dessen Stubs noch ausstehen,
@@ -2078,7 +2091,8 @@ oder beendet einen, der zwischen seinen beiden Zeigerbewegungen abbrach;
 dann verwendet er seine Nachricht nicht, welche es auch ist, und sagt das.
 Ein \type{track} lässt sich ohne Weiteres wiederholen.
 Dasselbe \type{op restore N} lässt jeden Zeiger, der schon zurück ist, stehen
-und setzt die anderen; einen Rest \type{.stemma-checkout-…} entfernt man von Hand.
+und setzt die anderen (ist es schon vor Schritt~1 geschehen, entfällt das);
+einen Rest \type{.stemma-checkout-…} entfernt man von Hand.
 Nach einem \type{purge --apply} lehnt jeder andere Befehl ab, solange das Journal besteht.
 \type{purge --resume} beendet den Purge,
 und \type{purge --abort} nimmt ihn zurück, solange sein Eintrag fehlt.
