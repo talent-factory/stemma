@@ -159,8 +159,9 @@ ARIES \cite[mohan1992aries] \stopxcell
 \stopxrow
 \startxrow
 \startxcell Menge der Pfade in gefalteter Form (Case Folding, Zerlegung), um Kollisionen
-auf Dateisystemen ohne Unterscheidung der Gross- und Kleinschreibung zu erkennen \stopxcell
-\startxcell \type{folded} (\type{checkout.rs}) \stopxcell
+auf Dateisystemen ohne Unterscheidung der Gross- und Kleinschreibung zu erkennen;
+\type{removal_key} ist der engere Schlüssel für die Dateien, die der Checkout entfernt \stopxcell
+\startxcell \type{fold}, \type{removal_key} (\type{checkout.rs}) \stopxcell
 \startxcell Abschnitt 3.5, Anwendungen von Symboltabellen (Mengen) \stopxcell
 \stopxrow
 \startxrow
@@ -242,6 +243,35 @@ gepaart sind, und Zwischenstücken als eigenen Summen \stopxcell
 \startxcell \type{merge_commits}, \type{merge_lines} (\type{merge.rs}) \stopxcell
 \startxcell Nicht im Buch; Drei-Wege-Merge nach Khanna, Kunal und Pierce
 \cite[khanna2007diff3] \stopxcell
+\stopxrow
+\startxrow
+\startxcell Rebase eines Bereichs: Die Kette der Elternkanten von der Spitze bis zur Merge-Basis
+wird vom ältesten Commit an aufgespielt, jeder als Summe $E' + (C - E)$ auf dem Commit,
+den der vorige Schritt eben berechnet hat; Kosten $O(k\,K)$ für $k$ Commits mit den Kosten $K$
+eines Tree-Merges, dazu $O(V+E)$ für die Merge-Basis im Plan \stopxcell
+\startxcell \type{replay_range}, \type{plan_rebase} (\type{rebase.rs}) \stopxcell
+\startxcell Nicht im Buch; die Summe folgt Jujutsu \cite[jujutsu];
+die Kette der Eltern ist ein Pfad im Commit-Graphen (Abschnitt 4.2) \stopxcell
+\stopxrow
+\startxrow
+\startxcell Text der Ansicht eines Konflikts: eine Funktion der vereinfachten Summe allein;
+die Markierungen sind sieben Zeichen lang, sonst eines mehr als der längste Lauf eines
+Markierungszeichens am Anfang einer Zeile des Inhalts,
+falls ein solcher Lauf sieben Zeichen erreicht,
+sodass keine Zeile des Inhalts eine Markierung ist \stopxcell
+\startxcell \type{marker_text}, \type{marker_run} (\type{conflict.rs}) \stopxcell
+\startxcell Nicht im Buch; das Format folgt Jujutsu \cite[jujutsu];
+ein Durchlauf über die Bytes aller Terme, dazu die Vereinfachung der Summe \stopxcell
+\stopxrow
+\startxrow
+\startxcell Pfadprüfung von \type{worktree add}: Der Pfad wird über den längsten vorhandenen
+Vorgänger aufgelöst (Links, \type{..}); dann folgt je Worktree ein Präfixvergleich nach
+Komponenten, ob der Pfad gleich ist, darin liegt oder den Worktree enthält,
+einmal vor und einmal unter der Sperre; $O(w \cdot d)$ Vergleiche für $w$ Worktrees
+und die Tiefe $d$ der Pfade, dazu Dateizugriffe je Worktree \stopxcell
+\startxcell \type{refuse_overlap}, \type{resolve} (\type{worktree.rs}) \stopxcell
+\startxcell Nicht im Buch; Präfixvergleich, ein Fall des Vergleichs von Zeichenketten
+(Abschnitt 5.1), hier je Komponente statt je Zeichen \stopxcell
 \stopxrow
 \startxrow
 \startxcell Verschobene Zeilen: Blöcke gelöschter und eingefügter Zeilen, die in den Bytes
@@ -450,6 +480,12 @@ der Spitze mit dem Ziel ist, solange die Regel der gleichen Änderung nie greift
 Warum folgt daraus nicht, dass beide Wege denselben Baum schreiben, wenn ein Schritt eine Datei
 Zeile für Zeile auflöst? Geben Sie ein Beispiel an, in dem die Regel greift und die Bäume
 sich unterscheiden, und eines, in dem beide Wege verschiedene Konflikte tragen.
+\item (DUA) Die Ansicht eines Konflikts wählt die Markierung länger als jeden Lauf eines
+Markierungszeichens (\type{<}, \type{+}, \type{-}, \type{>}) am Anfang einer Zeile des Inhalts
+(\in{Abschnitt}[sec:conflict-commands]).
+Zeigen Sie, dass dann keine Zeile des Inhalts eine Markierung ist, und geben Sie die Kosten in der
+Länge der Terme an. Warum genügt es nicht, die Länge sieben zu nehmen und Zeilen des Inhalts
+zu verändern?
 \item (AISE) Zwei Agenten arbeiten parallel am selben Repository.
 Der Kern erlaubt einen Branch nur in einem Worktree und kennt keine Option zum Erzwingen
 (\in{Abschnitt}[sec:worktree]).
