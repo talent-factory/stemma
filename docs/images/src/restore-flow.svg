@@ -32,7 +32,7 @@
   <text x="40" y="115">2  Sperre nehmen</text>
   <text x="40" y="191" fill="#B45309">3  Snapshot</text>
   <text x="40" y="267" fill="#6B46C1">4  Eintrag schreiben</text>
-  <text x="40" y="343" fill="#2B6CB0">5  Verzeichnis schreiben</text>
+  <text x="40" y="343" fill="#2B6CB0">5  Arbeitsverzeichnis schreiben</text>
   <text x="40" y="419" fill="#2F7D32">6  Branches bewegen</text>
   <text x="40" y="495" fill="#2F7D32">7  Working-Copy-Commit, <tspan font-family="Courier, monospace">HEAD</tspan></text>
   <text x="40" y="571">8  Sperre freigeben</text>
@@ -40,7 +40,7 @@
 <g font-size="11.5" fill="#64748B">
   <text x="56" y="57">Eintrag beurteilen, Commits und Dateien</text>
   <text x="56" y="133"><tspan font-family="Courier, monospace">refs.lock</tspan> anlegen, <tspan font-family="Courier, monospace">tmp/</tspan> aufräumen</text>
-  <text x="56" y="209">Verzeichnis festhalten, neu planen</text>
+  <text x="56" y="209">Arbeitsverzeichnis festhalten, neu planen</text>
   <text x="56" y="285">Operation <tspan font-family="Courier, monospace">restore</tspan></text>
   <text x="56" y="361">Dateien des alten Baums</text>
   <text x="56" y="437">auf die Werte vor dem Eintrag</text>
@@ -74,12 +74,14 @@
   <text x="302" y="246">Ungesicherte Änderungen hält ein</text>
   <text x="302" y="261">Eintrag <tspan font-family="Courier, monospace">snapshot</tspan> fest; sonst ist</text>
   <text x="302" y="276">nichts geschehen.</text>
-  <text x="302" y="322">Das Log nennt ein Restore, das nicht</text>
-  <text x="302" y="337">stattfand. Dateien und Zeiger sind</text>
-  <text x="302" y="352">unverändert.</text>
-  <text x="302" y="398">Auch zum Teil. Kein Zeiger hat sich bewegt;</text>
-  <text x="302" y="413">derselbe Aufruf hält die Dateien im</text>
-  <text x="302" y="428">Snapshot fest und beendet das Restore.</text>
+  <text x="302" y="319">Das Log nennt den Ausgang unbekannt,</text>
+  <text x="302" y="333">bis der nächste Befehl die Sperre</text>
+  <text x="302" y="347">übernimmt; dann nicht stattgefunden.</text>
+  <text x="302" y="361">Dateien und Zeiger sind unverändert.</text>
+  <text x="302" y="395">Auch zum Teil. Kein Zeiger hat sich bewegt,</text>
+  <text x="302" y="409">das Arbeitsverzeichnis ist dann ein Gemisch.</text>
+  <text x="302" y="423">Derselbe Aufruf, vor jedem anderen Befehl,</text>
+  <text x="302" y="437">beendet das Restore.</text>
   <text x="302" y="474">Derselbe Aufruf lässt, was stimmt,</text>
   <text x="302" y="489">und bewegt den Rest.</text>
 </g>

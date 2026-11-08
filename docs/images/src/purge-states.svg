@@ -42,7 +42,7 @@
 </g>
 <g font-size="11.5" fill="#64748B">
   <text x="56" y="53">bevor etwas geschrieben ist</text>
-  <text x="56" y="117">das Verzeichnis festhalten</text>
+  <text x="56" y="117">das Arbeitsverzeichnis festhalten</text>
   <text x="56" y="181"><tspan font-family="Courier, monospace">refs.lock</tspan>, bis zum Ende gehalten</text>
   <text x="56" y="245"><tspan font-family="Courier, monospace">.stemma/purge-pending</tspan></text>
   <text x="56" y="309">ohne den Blob</text>
@@ -63,8 +63,8 @@
   <line x1="145" y1="508" x2="145" y2="530"/>
 </g>
 <!-- Point of no return after the purge entry -->
-<line x1="20" y1="392" x2="292" y2="392" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="302" y="388" font-size="12.5" font-weight="bold" fill="#B91C1C">Punkt ohne Rückkehr</text>
+<line x1="20" y1="392" x2="292" y2="392" stroke="#0F172A" stroke-width="2"/>
+<text x="302" y="388" font-size="12.5" font-weight="bold" fill="#0F172A">Punkt ohne Rückkehr</text>
 <text x="302" y="404" font-size="12" fill="#0F172A">Ab hier nur noch <tspan font-family="Courier, monospace">--resume</tspan>.</text>
 <!-- Crash points before the journal -->
 <line x1="20" y1="72" x2="292" y2="72" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
