@@ -8,7 +8,7 @@ Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate
 \section{Umfang}
 
 \startitemize
-\item Lease pro Branch mit Heartbeat und Ablaufzeit.
+\item Lease pro Branch, die jede schreibende Operation erneuert, mit Ablaufzeit.
 \item Owner-Override nur mit Begründung und Audit-Eintrag, ohne Umgehung des Merge-Gates.
 \item Pull Request als Objekt mit Reviewern, Prüfungen und Merge-Regeln.
 \item Ein Merge-Gate ohne globale Sperre (ADR-019, Vorschlag).
@@ -20,30 +20,31 @@ Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate
 
 \section{Schreibhoheit und Pull Request}
 
-Dieser Abschnitt beschreibt den Entwurf von ADR-004 und ist ein Vorschlag: Das ADR ist noch nicht
-entschieden, und nichts davon ist umgesetzt.
+Dieser Abschnitt beschreibt ADR-004, das für Phase 4 angenommen ist.
+Umgesetzt ist davon noch nichts.
 Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
 Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
 Request.
 
 {\bf Die Lease.}
-Der Server erzwingt die Schreibhoheit mit einer Lease, die ein Heartbeat erneuert und die nach einer
-Ablaufzeit endet (\in{Abbildung}[fig:branch-lease]).
+Der Kern erzwingt die Schreibhoheit mit einer Lease, die jede schreibende Operation erneuert und
+die nach einer Ablaufzeit endet (\in{Abbildung}[fig:branch-lease]).
 
 \startitemize[n]
 \item Ein Akteur erwirbt die Lease eines Branches und wird sein Schreibinhaber.
-\item Solange er arbeitet, verlängert jeder Heartbeat die Lease.
-\item Stürzt er ab, bleiben die Heartbeats aus.
+\item Solange er schreibt, verlängert jede Operation die Lease.
+\item Stürzt er ab, bleibt die Verlängerung aus.
 \item Die Lease läuft ab, und der Branch ist frei.
 \item Ein anderer Akteur erwirbt sie.
 \stopitemize
 
 Schreibt ein zweiter Akteur, solange die Lease gilt, lehnt der Server das ab.
 Wer nicht auf den Ablauf warten will, braucht einen Owner-Override.
-Ihn darf nur die Rolle Owner auslösen, mit einer Begründung und einem Audit-Eintrag, und er umgeht
-das Merge-Gate nie.
-Die Dauer der Lease und das Verhalten bei abgestürzten Agenten sind offen
-(\in{Abschnitt}[sec:phase4-open]).
+Ihn darf nur ein Mensch mit der Rolle Owner auslösen, signiert und mit einer Begründung.
+Er hinterlässt einen Eintrag im Operationslog, den der Purge nie entfernt,
+und er umgeht das Merge-Gate nie.
+Die Lease dauert standardmässig 60 Minuten; die Policy kann diese Dauer begrenzen.
+Nach dem Ablauf darf jeder mit Schreibrecht sie übernehmen, auch nach dem Absturz eines Agenten.
 
 \startplacefigure[title={Zeitachse einer Branch-Lease},
     reference=fig:branch-lease,location=here]
@@ -182,10 +183,7 @@ die Gründe stehen in ADR-019.
 \section[sec:phase4-open]{Offene Fragen}
 
 \startitemize
-\item Dauer der Lease und Verhalten bei abgestürzten Agenten.
-\item Agenten-Identitäten: eigene Rolle oder Rolle mit menschlichem Sponsor.
 \item Schnellweg für triviale Änderungen: Wer darf ihn nutzen?
-\item Konkrete Pfadlisten je Risikostufe.
 \item Merge-Gate: Form und Ablage der Prüfergebnisse, eine Obergrenze für das Fenster ungeprüfter
 Commits und ein billigerer Test als der saubere Merge (offene Punkte in ADR-019).
 \stopitemize

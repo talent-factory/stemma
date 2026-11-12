@@ -55,14 +55,14 @@ und ein Rebase über Merge-Commits, den der Befehl heute ablehnt.
 
 \section{Zusammenarbeit}
 
-Phase 4 legt die Dauer einer Lease und das Verhalten bei abgestürzten Agenten fest,
-ob Agenten eine eigene Rolle oder eine Rolle mit menschlichem Sponsor haben,
-wer den Schnellweg für triviale Änderungen nutzen darf und welche Pfade zu welcher
-Risikostufe gehören (\in{Kapitel}[chap:phase4], ADR-004).
+ADR-004 und ADR-003 sind für Phase 4 angenommen
+(\in{Kapitel}[chap:phase4]).
+Sie legen die Dauer der Lease, die Identität der Agenten und die Pfade je Risikostufe fest.
 Das Merge-Gate ohne globale Sperre ist als Vorschlag in ADR-019 beschrieben; offen sind dort
 Form und Ablage der Prüfergebnisse, eine Obergrenze für das Fenster ungeprüfter Commits
 und ein billigerer Test als der saubere Merge (\in{Kapitel}[chap:phase4]).
-Strengere Mindeststufen für Firmenkunden werden erst mit konkreten Kunden relevant.
+Strengere Mindeststufen für Firmenkunden werden erst mit konkreten Kunden relevant;
+sie gehören zum privaten Projekt stemma-hub.
 
 \section{Netzwerk und Agenten-Schnittstellen}
 
@@ -70,9 +70,8 @@ Für den Hub sind das Übertragungsformat, Einzelobjekte oder Pakete mit Deltas,
 und die Authentifizierung von Menschen und Agenten offen.
 Ob der Hub Merges für Agenten ohne Klon ausführt, entscheidet ADR-015 für den ersten Hub
 dagegen; ob Peer-to-Peer-Sync später kommt oder bewusst ausgeschlossen bleibt,
-ist offen (ADR-003, \in{Kapitel}[chap:phase5]).
-Ob die Policies wie vorgeschlagen auf dem Hub liegen und die Signaturen im Repository,
-steht in ADR-003 noch als Vorschlag.
+ist offen und gehört zu stemma-hub (ADR-003, \in{Kapitel}[chap:phase5]).
+Policies und Signaturen liegen nach ADR-003 im Repository, nicht auf dem Hub.
 Für die Agenten-Schnittstellen sind die Körnung der Werkzeuge, die Authentifizierung und der
 Ablauf von Zugriffstoken, das Verhalten bei Konflikten paralleler Agenten und Commits auf dem
 Server offen (\in{Kapitel}[chap:phase6]).
