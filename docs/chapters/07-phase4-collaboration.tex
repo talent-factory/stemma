@@ -2,15 +2,19 @@
 
 \section{Ziel}
 
-Schreibhoheit, Pull Requests und Freigaben werden im System erzwungen, nicht nur empfohlen.
+Schreibhoheit, Pull Requests und Freigaben sollen im System erzwungen werden, nicht nur
+empfohlen.
 Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate auf ADR-019.
+Die Prüfung selbst läuft lokal im Kern; ihre Durchsetzung auf einem Server gehört zu stemma-hub.
 
 \section{Umfang}
 
 \startitemize
 \item Lease pro Branch, die jede schreibende Operation erneuert, mit Ablaufzeit.
-\item Owner-Override nur mit Begründung und Audit-Eintrag, ohne Umgehung des Merge-Gates.
-\item Pull Request als Objekt mit Reviewern, Prüfungen und Merge-Regeln.
+\item Owner-Override nur durch einen Menschen mit der Rolle Owner, signiert, mit Begründung und
+Eintrag im Operationslog, ohne Umgehung des Merge-Gates.
+\item Pull Request als Folge von Einträgen im Operationslog, mit Reviewern, Prüfungen und
+Merge-Regeln.
 \item Ein Merge-Gate ohne globale Sperre (ADR-019, Vorschlag).
 \item Freigaben mit Akteur, Modellversion, geprüftem Commit und Ergebnis, signiert.
 \item Verbot der Selbstfreigabe.
@@ -38,13 +42,14 @@ die nach einer Ablaufzeit endet (\in{Abbildung}[fig:branch-lease]).
 \item Ein anderer Akteur erwirbt sie.
 \stopitemize
 
-Schreibt ein zweiter Akteur, solange die Lease gilt, lehnt der Server das ab.
+Schreibt ein zweiter Akteur, solange die Lease gilt, lehnt der Kern das ab.
 Wer nicht auf den Ablauf warten will, braucht einen Owner-Override.
 Ihn darf nur ein Mensch mit der Rolle Owner auslösen, signiert und mit einer Begründung.
 Er hinterlässt einen Eintrag im Operationslog, den der Purge nie entfernt,
 und er umgeht das Merge-Gate nie.
 Die Lease dauert standardmässig 60 Minuten; die Policy kann diese Dauer begrenzen.
 Nach dem Ablauf darf jeder mit Schreibrecht sie übernehmen, auch nach dem Absturz eines Agenten.
+Im offenen Modus und auf geschützten Branches gibt es keine Lease.
 
 \startplacefigure[title={Zeitachse einer Branch-Lease},
     reference=fig:branch-lease,location=here]

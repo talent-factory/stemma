@@ -14,7 +14,7 @@ Ein Purge braucht die ID des Blobs; ein Befehl, der sie zu einem Pfad nennt,
 fehlt noch, ebenso eine dauerhafte Liste der entfernten Blobs, die \type{track} und
 \type{status} prüfen (ADR-014).
 Einen Blob, dessen Datei beschädigt ist, kann der Purge nicht entfernen.
-Einen Anker, den der Akteur nicht ändern kann, liefern erst Signaturen oder der Hub,
+Einen Anker, den der Akteur nicht ändern kann, liefert erst der Hub (stemma-hub, ADR-003),
 und einen Befehl, der eine gebrochene Hash-Kette repariert, gibt es nicht (ADR-011).
 
 Die Arbeitskopie gehört einem Akteur; das Programm erzwingt diese Regel seit Format 5 (ADR-010).
@@ -55,14 +55,16 @@ und ein Rebase über Merge-Commits, den der Befehl heute ablehnt.
 
 \section{Zusammenarbeit}
 
-ADR-004 und ADR-003 sind für Phase 4 angenommen
+ADR-004 und ADR-003 sind für Phase~4 angenommen
 (\in{Kapitel}[chap:phase4]).
-Sie legen die Dauer der Lease, die Identität der Agenten und die Pfade je Risikostufe fest.
+Sie legen die Dauer der Lease, die Identität der Agenten und die Pfade je Risikostufe fest;
+umgesetzt ist das noch nicht.
+Offen bleibt, wer den Schnellweg für triviale Änderungen nutzen darf.
 Das Merge-Gate ohne globale Sperre ist als Vorschlag in ADR-019 beschrieben; offen sind dort
 Form und Ablage der Prüfergebnisse, eine Obergrenze für das Fenster ungeprüfter Commits
 und ein billigerer Test als der saubere Merge (\in{Kapitel}[chap:phase4]).
 Strengere Mindeststufen für Firmenkunden werden erst mit konkreten Kunden relevant;
-sie gehören zum privaten Projekt stemma-hub.
+sie gehören zum getrennten Projekt stemma-hub.
 
 \section{Netzwerk und Agenten-Schnittstellen}
 

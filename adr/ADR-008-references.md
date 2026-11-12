@@ -321,4 +321,4 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       hand (see ADR-007 for the same question about objects).
 - [x] The log of changes of a reference (a reflog) is part of the operation log (ADR-005), which
       ADR-011 designs: one entry for each change of a pointer, with the old and the new value.
-- [ ] Remote references and the record of a ref update on a hub (ADR-003).
+- [ ] Remote references and the record of a ref update on a hub (ADR-003, handed to stemma-hub).

@@ -102,12 +102,12 @@ them.
   claims, as `time <seconds>` after the `author` header. The value is a decimal integer of
   seconds since the Unix epoch in UTC, without a plus sign, without leading zeros, and without a
   time zone. Negative values (before 1970) are allowed; `-0` is not canonical. The interface
-  decides how to display it. The timestamp is self-reported and proves nothing; only signatures
-  make it trustworthy (ADR-003, ADR-004). There is no separate committer. The operation log stays
+  decides how to display it. The timestamp is self-reported and proves nothing; ADR-003 signs no
+  commits, so it stays unproven. There is no separate committer. The operation log stays
   local and is not exchanged with the history (see the next decision), so the commit carries its
   own date. A rewrite, such as a rebase, a cherry-pick, or an amend, creates a new commit that
   keeps the author and the time of the original change. Who rewrote it, and when, is recorded in
-  the local operation log and, for other readers, in the record of ref updates of a hub (ADR-003).
+  the local operation log and, for other readers, in the record of ref updates of a hub (ADR-003, handed to stemma-hub).
 - **Change ID** *(confirmed)*. A commit carries one change ID as the header `change <id>`, between
   the parents and the author. It names the change that the commit is a state of and stays the same
   through every rewrite (ADR-010), so a review or a rebase can follow it. It is random, not derived

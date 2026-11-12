@@ -11,7 +11,8 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    open mode and none on protected branches. After the expiry anyone with write rights may take
    it (STEMMA-225).
 2. Owner override is available only to a human with the owner role. It is signed, carries a
-   reason, and leaves an entry in the operation log that the purge never removes. The override
+   reason, and leaves an entry in the operation log that the purge and the retention must keep (the exception
+   in ADR-011 and ADR-014 is written with the implementation). The override
    changes who writes, never what the merge gate asks.
 3. Protected branches such as `main` change only through pull requests. A pull request is a
    sequence of entries in the operation log (STEMMA-226).
@@ -24,7 +25,8 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
 8. The policy file and the register files are level 3 and cannot be lowered, not even by the
    policy itself. Policies per namespace, with the same floor, are built in stemma-hub.
-9. Owner override in courses only with an undeletable audit entry that is visible to students.
+9. Owner override in courses only with an audit entry that the purge and the retention keep and
+   that is visible to students.
    The entry is met locally (rule 2); its visibility per course is built in stemma-hub.
 10. Relaxing or deleting existing assertions automatically escalates to level 2. The rule is a
     pure function over the old and the new blob (STEMMA-232); the gate of stemma-hub enforces it.
@@ -36,7 +38,7 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
 | 0 | Docs, examples, formatting, tests only | One independent agent, merge by agent |
 | 1 | New CLI commands, output formats, logic without persistence | Two independent agents, merge by agent |
 | 2 | Object format, hash, ref updates, lease, merge, network, migrations, new dependencies | Two agents plus a human maintainer |
-| 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files | Human owner only, plus an ADR |
+| 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files, actor register files | Human owner only, plus an ADR |
 
 ## Paths per Risk Level
 

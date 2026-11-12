@@ -98,8 +98,8 @@ other).
   history, so a change needs two agents and a human maintainer. It is not level 3: it is no
   permission, no key, and no signature, and ADR-004 names "the policy file" (rule 5) for the
   rules of reviews and permissions, which this file is not. The list of paths per level
-  (ADR-004, open point) gets `.stemmaignore` at level 2. ADR-004 is a proposal itself, and
-  nothing enforces a level yet, so this decision takes effect with the review of ADR-004.
+  (ADR-004, decided in STEMMA-160) has `.stemmaignore` at level 2. Nothing enforces a level
+  yet; the policy file of phase 4 will.
 - **`.stemma` stays excluded by name** *(confirmed)*. A tree cannot hold a name that resolves to
   `.stemma` (ADR-005), and the file cannot lift that. The aliases of ADR-005 are the business of
   the name filter that exists, not of the patterns.

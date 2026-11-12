@@ -138,10 +138,9 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | nach bestem Bemühen | auf Verdacht | Best effort: a failure does not fail the command |
 | Mindeststufe | Boden | Policy floor: a risk level that a namespace cannot lower (ADR-004) |
 | Akteur, Sponsor | Benutzer (for an actor) | ADR-002 |
-| die Lease | das Lease | The time-limited right of one actor to write to a branch; the server enforces it (ADR-004) |
+| die Lease | das Lease | The time-limited right of one actor to write to a branch; the core enforces it and every writing operation renews it (ADR-004) |
 | Schreibinhaber | Besitzer, Owner (of a branch) | The one actor that holds the lease of a branch (ADR-004) |
-| Owner-Override | | Taking a branch over before its lease expires; only the owner role, with a reason and an audit entry (ADR-004) |
-| Heartbeat | | The signal that renews a lease (ADR-004) |
+| Owner-Override | | Taking a branch over before its lease expires; only a human with the owner role, signed, with a reason and an entry in the operation log (ADR-004) |
 | Exit-Code | Rückgabewert | |
 | Change-ID | Änderungs-ID | The random ID a commit keeps when it is rewritten (ADR-010) |
 | Inhaltsadressierung | | Content addressing: an object stored under its hash (ADR-001, ADR-007) |

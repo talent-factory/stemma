@@ -340,9 +340,9 @@ art, not a template (ADR-015).
   (ADR-009), so the branch of a worktree moves only by the commands of its owner. The check of the
   owner of a snapshot is unchanged: an actor that is not the owner of the worktree where the
   command runs is refused there, with `--take-over` for a human.
-- **The lease of ADR-004 and the rule are independent.** ADR-004 proposes a lease on a branch,
-  which a server would enforce: it governs who may move the branch. It does not govern who
-  writes into a local directory, and a server cannot see that. The rule above is what covers
+- **The lease of ADR-004 and the rule are independent.** ADR-004 decides a lease on a branch,
+  which the core enforces: it governs who may move the branch. It does not govern who
+  writes into a local directory, and the lease cannot see that. The rule above is what covers
   the directory, and the working-copy commit has no lease of its own. Once the lease exists, an
   actor that holds the lease of a branch is the natural owner of the working copy that follows
   it; that link is part of the enforcement in the open items.

@@ -14,7 +14,7 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   `--apply` and `op restore --dry-run` have an actor and call the hook. The commands that only
   read (`log`, `op log`, `op verify`, the list forms of `branch` and `tag`, and
   `worktree list`) have no actor and call no hook; who may read a repository
-  is the question of ADR-003, for the hub of Phase 5. Objects stored directly through
+  is not decided yet; it goes with the hub to stemma-hub (ADR-003). Objects stored directly through
   `Repository::objects()` are not authorized; no command does that (ADR-007, ADR-009).
 - **A write cannot start without the answer of the authorizer** *(confirmed)*. The answer is a
   value, `Allowed`, which only a `Decision::Allow` can make: its field is private to the module
@@ -56,7 +56,8 @@ Implementation: `crates/stemma-core/src/actor.rs` (actors), `crates/stemma-core/
 
 ## Open
 
-- [ ] Agent identities: a dedicated role, or a role with a human sponsor (see ADR-004). Phase 4.
+- [x] Agent identities: decided in ADR-004 (STEMMA-222): an own register entry, key, and role,
+      bounded by the role of the sponsor.
 - [ ] A configuration file as a third source of the actor of the command line, after the flag and
       the variable. Later; Phase 1 has no configuration file (ADR-009).
 

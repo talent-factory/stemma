@@ -285,12 +285,37 @@ _Avoid_: Bot
 The component that decides whether an actor may run an operation on a target; the core asks it
 before every operation that changes a repository or plans a change. (Autorisierer)
 
+**Actor register**:
+The file in a repository that binds each actor identity, human or agent, to its public keys. It
+is the trust anchor for proofs. (Akteursregister)
+_Avoid_: Keyring, user list
+
+**Proof**:
+A signature of a record by the key that the actor register binds to the acting identity. Only the
+operations whose rule depends on who acts need one. (Beweis)
+_Avoid_: Login, session, token
+
+**Open mode**:
+The state of a repository without an actor register: the actor is a claim that the log records and
+nobody checks. A repository leaves it once and cannot go back. (Offener Modus)
+
+**Retired key**:
+A key that the actor register no longer allows for new records; the records it signed before stay
+valid. (Ausgemusterter Schlüssel)
+_Avoid_: Expired key
+
+**Revoked key**:
+A key that the actor register withdraws because it may be compromised; only the records that stand
+in the operation log before the revocation count, and its approvals become void. (Widerrufener
+Schlüssel)
+
 **Sponsor**:
 The human who is accountable for an agent's actions. (Sponsor)
 _Avoid_: Owner, principal
 
 **Lease**:
-The time-limited right of one actor to write to a branch. (Lease)
+The time-limited right of one actor to write to a branch. The core enforces it, every writing
+operation renews it, and it lasts 60 minutes by default. (Lease)
 _Avoid_: Lock (for a branch)
 
 **Write owner**:
@@ -298,23 +323,31 @@ The one actor that holds the lease of a branch and may write to it. (Schreibinha
 _Avoid_: Owner of a branch
 
 **Owner override**:
-Taking a branch over before its lease expires. Only the owner role may do it, with a reason and an
-audit entry, and it never bypasses the merge gate. (Owner-Override)
+Taking a branch over before its lease expires. Only a human with the owner role may do it, signed
+and with a reason; it leaves an entry in the operation log that the purge and the retention must
+keep, and it never bypasses the merge gate. (Owner-Override)
+
+**Pull request**:
+The request of a write owner to merge a branch into `main`. It has no object of its own: it is the
+sequence of its entries in the operation log, and its state (open, merged, closed) is what those
+entries add up to. (Pull-Request)
+_Avoid_: Merge request
 
 **Risk level**:
 A level from 0 to 3 that decides how many independent reviews a change needs. (Risikostufe)
 _Avoid_: Severity, tier
 
 **Policy**:
-The rules of a namespace, including its risk levels per path. (Policy)
+The rules of a repository, including its risk levels per path; policies per namespace belong to
+stemma-hub. (Policy)
 
 **Policy floor**:
-A minimum risk level in the policy of a namespace that cannot be lowered. (Mindeststufe)
+A minimum risk level in the policy that cannot be lowered. (Mindeststufe)
 _Avoid_: Boden
 
 **Namespace**:
 A group of repositories with their own policy, such as an organisation, a course, or a project.
-(Namespace)
+It is built in stemma-hub, not in this repository. (Namespace)
 
 ## Behaviour
 

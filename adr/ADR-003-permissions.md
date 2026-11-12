@@ -20,7 +20,7 @@ places them in the repository and lets the core enforce them locally:
   (STEMMA-224). Commits are not signed; a proof signs the log entry or the approval. A signature
   counts only against the register of the base commit.
 - The policy file has no signature of its own: level 3 protects it, because only a human owner
-  may change it. The sentence "Policy files are signed" of the proposal is changed to this.
+  may change it.
 - There is one policy per repository. Policies per namespace are not built locally (STEMMA-230).
 - A repository without an actor register is in open mode: the actor is a claim that the operation
   log records and nobody checks. The step to an enforcing repository has no way back.

@@ -46,7 +46,7 @@ und kennt keinen Standardwert,
 damit ein Agent nie stillschweigend als Mensch auftritt.
 Geprüft wird nur, ob die Zeile den Regeln für Akteure entspricht.
 Sie belegt nicht, wer einen Befehl wirklich ausführt;
-das sollen später Signaturen leisten (ADR-003, ADR-004).
+das sollen später Signaturen der Einträge leisten (ADR-003).
 
 \section{Autorisierung}
 
@@ -85,14 +85,16 @@ Objekte, die jemand direkt im Objektspeicher ablegt, fragt der Kern ebenfalls ni
 
 \section{Ort der Berechtigungen}
 
-Rollen und Policies liegen im Repository, nicht auf einem Server: Das Akteursregister bindet
+Ab Phase~4 sollen Rollen und Policies im Repository liegen, nicht auf einem Server
+(noch nicht umgesetzt, \in{Kapitel}[chap:phase4]): Das Akteursregister bindet
 jeden Akteur an seinen Schlüssel, und die Policy-Datei legt die Risikostufen fest.
 Der Kern setzt beide über den Autorisierer durch (ADR-003).
 Signaturen der Freigaben liegen ebenfalls im Repository und lassen sich ohne Server prüfen.
 Das Register und die Policy-Datei sind selbst Stufe~3 aus ADR-004.
 ADR-003 ist für Phase~4 angenommen.
-Was einen Hub betrifft, übernimmt das private Projekt stemma-hub, etwa das signierte Protokoll
+Was einen Hub betrifft, übernimmt das getrennte Projekt stemma-hub, etwa das signierte Protokoll
 der Ref-Updates und die Durchsetzung auf einem Server.
+Phase~5 beschreibt diesen Hub nur als Ausblick; gebaut wird er in diesem Repository nicht.
 
 \section{Phasenübersicht}
 
