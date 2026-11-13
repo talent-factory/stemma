@@ -20,4 +20,4 @@
 | [ADR-016](ADR-016-tui-library.md) | The library of the terminal interface of `diff --tui` | Accepted |
 | [ADR-017](ADR-017-derived-data.md) | Derived data | Accepted |
 | [ADR-018](ADR-018-machine-readable-output.md) | The machine-readable contract of the command output | Accepted, implemented |
-| [ADR-019](ADR-019-merge-gate-without-global-lock.md) | The merge gate without a global lock | Proposal, open for decision |
+| [ADR-019](ADR-019-merge-gate-without-global-lock.md) | The merge gate without a global lock | Accepted |

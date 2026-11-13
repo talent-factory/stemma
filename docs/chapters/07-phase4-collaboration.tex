@@ -182,7 +182,7 @@ Ein Agent kann die Grenzen, unter denen seine eigene Änderung landet, nicht loc
 \item {\bf Reservierung.}
 Nach \type{N} ungültig gewordenen Läufen in Folge (Standard 3) erhält eine Änderung der Stufe 2
 oder 3 eine Reservierung.
-Merges der Stufen 0 und 1 melden dann \type{Paused} und warten,
+Merges der Stufen 0 und 1 warten dann,
 bis die Änderung gelandet, gescheitert oder geschlossen ist.
 Die Reservierung endet nach der doppelten Dauer des letzten Prüflaufs,
 damit eine hängende Änderung \type{main} nicht blockiert.
@@ -212,7 +212,8 @@ Jeder Commit von \type{main} ist der saubere Merge einer Änderung, deren Prüfu
 der Zeigerbewegung nach der Regel oben bestanden hatten.
 Die letzte geprüfte Spitze ist grün, oder eine Behebung läuft.
 Zwischen dieser Spitze und der aktuellen liegen nur die Commits, die während eines Laufs landeten;
-ihre Zahl ist durch \type{max_unverified} begrenzt, aber nicht null.
+ihre Zahl ist begrenzt, aber nicht null: höchstens \type{max_unverified} plus das, was während
+eines Laufs landet.
 Grün sagt \quotation{dieser Commit hat bestanden}, nicht \quotation{der Stand von \type{main}
 besteht jetzt}.
 \stopinfobox
@@ -223,7 +224,7 @@ nicht von der Dauer der Prüfungen.
 Dafür treten rote Spitzen auf, im Verhältnis zur Rate der semantischen Konflikte, und ein Teil der
 Änderungen muss repariert werden, statt dass alle warten.
 Änderungen der Stufen 2 und 3 holen bei vielen Schreibern die Spitze womöglich nie ein;
-dafür gibt es die Reservierung (nächster Absatz).
+dafür gibt es die Reservierung (siehe \quotation{Zwei Grenzen}).
 Verworfen sind eine Queue mit globaler Sperre, eine Queue mit spekulativen Batches, die Prüfung
 jeder Änderung bei jeder Bewegung von \type{main} und der Verzicht auf die Prüfung nach dem Merge;
 die Gründe stehen in ADR-019.

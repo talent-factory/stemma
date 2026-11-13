@@ -35,8 +35,8 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
 "Independent" in the table below means different actor IDs, together with the ban on
 self-approval (rule 4). Two agents of one sponsor count as two reviews. The fields `model` and
 `session` of an approval are descriptive only (STEMMA-222), so a stronger independence cannot be
-verified; the human at levels 2 and 3 stays the anchor. The gate applies the same rule to the
-writer of a `check` (ADR-019).
+verified; the human at levels 2 and 3 stays the anchor. For the writer of a `check`, ADR-019 sets
+a stricter rule that also excludes the sponsor of the opener and of the authors.
 
 ## Risk Levels
 

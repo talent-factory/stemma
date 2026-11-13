@@ -123,7 +123,8 @@ unverified window. (geprüfte Spitze)
 
 **Unverified window**:
 The commits of `main` after the verified tip. Its size is bounded by `max_unverified` of the policy
-(10 by default); at that size all merges wait until a run on the tip has started. (Fenster
+(10 by default) plus what lands during one run; at that size all merges wait until a run on the tip
+has started. (Fenster
 ungeprüfter Commits)
 
 **Reservation**:

@@ -20,7 +20,7 @@ Four facts of Stemma bound the answer:
   with `Stale` if another change moved the pointer first, and with `Locked` if it finds the lock
   of another change, without waiting (ADR-008). The lock `refs.lock` is held for the check, the
   comparison, and the write of one change, from its first object to its last move, including the
-  flushed entry of the operation log (ADR-008, ADR-011). It is never held for a test, a build, or
+  flushed entry of the operation log (ADR-008, ADR-011); the gate is the one exception (below). It is never held for a test, a build, or
   a review. This is the one serialisation point that exists.
 - **A conflict is data.** A merge that does not decide a place returns a sum of trees, and a
   commit can hold it (ADR-005, ADR-010). The conflict model is decided in phase 3: a conflict does
@@ -97,8 +97,7 @@ values are in the policy file (ADR-004), so changing them is level 3: a human ow
 agent cannot loosen the bounds under which its own change is merged.
 
 - **Reservation.** After `N` invalidated runs in a row of a change of level 2 or 3, the change gets
-  a *reservation*; `N` is 3 by default. While it holds, merges of level 0 and 1 report `Paused` and
-  wait until the change is merged, has failed, or is closed. The reservation ends after twice the
+  a *reservation*; `N` is 3 by default. While it holds, merges of level 0 and 1 wait until the change is merged, has failed, or is closed. The reservation ends after twice the
   duration of the last check run of the change, so a stuck change cannot block `main`. At most one
   reservation exists at a time, and the oldest change wins.
 - **Unverified window.** The policy has `max_unverified`, 10 by default. When that many commits lie
@@ -146,7 +145,7 @@ ADR-006 says that `main` is always green. With required checks this holds in a b
   table above, at the moment of the swap.
 - The latest *verified* tip is green, or a repair is in progress and level 2 and 3 are paused.
 - The number of unverified commits after the latest verified tip is bounded by `max_unverified`
-  and by what lands during one run. It is not zero, and nobody claims it is.
+  plus what lands during one run. It is not zero, and nobody claims it is.
 
 A green status says "this commit passed". It does not say "the state of `main` right now passes",
 and the gate does not pretend that it does.
