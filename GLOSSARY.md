@@ -109,13 +109,27 @@ One tree in a sum of trees, added or removed. (Term)
 **Merge gate**:
 The rule that decides whether a change lands on `main`. It reads the tip of `main`, merges the
 change onto it, applies the rule of the risk level to the check results it holds, and moves
-`main` by compare and swap; a conflict never lands (ADR-019, proposal). (Merge-Gate)
+`main` by compare and swap; a conflict never lands (ADR-019). (Merge-Gate)
 _Avoid_: Merge queue (a queue holds a lock while it tests)
 
 **Check result**:
 A statement that the tree of one commit passed or failed a set of tests, together with the tip of
 `main` that the commit was merged onto for the test. (Prüfergebnis)
 _Avoid_: Build status
+
+**Verified tip**:
+The newest commit of `main` that a run of the checks covered. The commits after it are the
+unverified window. (geprüfte Spitze)
+
+**Unverified window**:
+The commits of `main` after the verified tip. Its size is bounded by `max_unverified` of the policy
+(10 by default); at that size all merges wait until a run on the tip has started. (Fenster
+ungeprüfter Commits)
+
+**Reservation**:
+The claim that a change of level 2 or 3 gets after `N` invalidated runs in a row (3 by default),
+so that merges of level 0 and 1 wait until it is merged, failed, or closed. It ends after twice
+the duration of its last check run; at most one exists. (Reservierung)
 
 **Clean merge**:
 A tree merge that returns one tree, not a sum of several. (sauberer Merge)

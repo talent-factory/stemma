@@ -1,6 +1,7 @@
 # ADR-019: The merge gate without a global lock
 
-**Status:** Proposal, open for decision by the author (STEMMA-19). Nothing here is implemented.
+**Status:** Accepted (decided in STEMMA-229). Nothing here is implemented; the implementation
+slices are on the map of phase 4.
 The pull request as an object, the checks, and the merge gate belong to phase 4. The ADR defines
 what "`main` is always green" means for the gate (ADR-006 decides the GitHub side, which stays
 open) and gives ADR-004 the meaning of its "merge gate".
@@ -43,8 +44,20 @@ land first.
 
 Nothing waits for a check. The only serialisation is the swap of the pointer of `main`, and it
 holds the lock of the references for the time of one change, not of a check (ADR-008).
-How long that is depends on what the change writes; shortening it is an open point. A
+The gate writes the objects of the merge before it takes the lock (next section). A
 design that holds a lock, or a place in a queue, for the duration of a test is rejected.
+
+### The gate writes its objects before the lock
+
+This amends ADR-008 and ADR-011 for the gate only. The gate writes the blobs, the trees, and the
+commit `M` of the merge before it takes the lock of the references. Under the lock remain the check
+of the tip, the entry of the operation log, and the swap of the pointer, so the lock covers the
+entry and the move only.
+
+A purge may remove objects that no reference reaches (ADR-014), so the gate checks under the lock
+that `M` is in the store. ADR-011 already requires this check. If `M` is missing, the gate starts
+again at step 1 of the merge. `track`, `commit`, and `op restore` keep taking the lock before their
+first object (ADR-014, STEMMA-49); the amendment does not reach them.
 
 ### A check result is evidence about a pair of commits
 
@@ -77,6 +90,21 @@ Nothing is held between the steps.
 A repeated attempt is cheap because only the tree merge and the table are repeated, and a check
 is repeated only for levels 2 and 3.
 
+### Bounds for retries and for the unverified window
+
+Two bounds keep the gate from starving a change and from running far ahead of its checks. Both
+values are in the policy file (ADR-004), so changing them is level 3: a human owner and an ADR. An
+agent cannot loosen the bounds under which its own change is merged.
+
+- **Reservation.** After `N` invalidated runs in a row of a change of level 2 or 3, the change gets
+  a *reservation*; `N` is 3 by default. While it holds, merges of level 0 and 1 report `Paused` and
+  wait until the change is merged, has failed, or is closed. The reservation ends after twice the
+  duration of the last check run of the change, so a stuck change cannot block `main`. At most one
+  reservation exists at a time, and the oldest change wins.
+- **Unverified window.** The policy has `max_unverified`, 10 by default. When that many commits lie
+  after the latest verified tip, all merges of levels 0 to 3 wait until a run on the tip has
+  started. The repairing change is exempt.
+
 ### A conflict never enters `main`
 
 If the merge in step 1 has a conflict, the gate refuses the merge and gives the change back to its
@@ -103,6 +131,10 @@ the merge cannot: two changes that merge cleanly and break each other (a semanti
   repairs the red tip is exempt, for example the revert of the commit that the bisection finds,
   since the break may lie in level 2 code. Changes of level 0 and 1 continue, since they cannot
   make the repair harder to find.
+- A repair is recognised by a declaration and not by its content: the `pr-open` of the change
+  names the red commit (`repairs <commit>`). The gate checks that this commit lies between the last
+  green and the first red tip, and that the checks of the repair passed with the current tip as
+  base.
 - To find the cause in a window of unverified commits, the gate bisects the linear history of
   `main` between the last green and the first red tip.
 
@@ -113,11 +145,23 @@ ADR-006 says that `main` is always green. With required checks this holds in a b
 - Every commit of `main` is the clean merge of a change whose checks passed, under the rule of the
   table above, at the moment of the swap.
 - The latest *verified* tip is green, or a repair is in progress and level 2 and 3 are paused.
-- The number of unverified commits after the latest verified tip is bounded by what lands during
-  one run. It is not zero, and nobody claims it is.
+- The number of unverified commits after the latest verified tip is bounded by `max_unverified`
+  and by what lands during one run. It is not zero, and nobody claims it is.
 
 A green status says "this commit passed". It does not say "the state of `main` right now passes",
 and the gate does not pretend that it does.
+
+### Who counts as independent
+
+The gate relies on the ban on self-approval (STEMMA-227) and gives "independent" in ADR-004 one
+meaning: different actor IDs.
+
+- A `check` for level 2 and 3 counts only if its writer is not the opener of the change, not the
+  author of a commit in `base..head`, and not an agent whose sponsor is one of them. For level 0
+  and 1 every registered actor counts.
+- Two agents of one sponsor count as two reviews. The fields `model` and `session` are descriptive
+  only (STEMMA-222), so a stronger independence cannot be verified. The human at level 2 and 3
+  stays the anchor.
 
 ## Consequences
 
@@ -130,7 +174,8 @@ and the gate does not pretend that it does.
   break each other pass the gate and are caught by the run after the merge. The risk levels set
   how much of this the project accepts (level 2 and 3 do not).
 - Changes of level 2 and 3 can fall behind under many writers: each move of `main` repeats their
-  checks. The bound in the open points is needed before the gate is built.
+  checks. The reservation bounds this: after `N` invalidated runs the change is merged before
+  merges of level 0 and 1 continue.
 - A result is stored with its base, so the pull request of phase 4 needs a place for evidence
   that is keyed by a pair of commits. The format is left to that phase.
 - An automatic run on a pull request and required checks on GitHub need their own decision that
@@ -154,16 +199,17 @@ and the gate does not pretend that it does.
 
 ## Open Points
 
-- [ ] The author decides the proposal: the table of rules by risk level, the pause for levels 2
-  and 3 while the tip is red, and the repair by a new change.
+- [x] The author decides the proposal: the table of rules by risk level, the pause for levels 2
+  and 3 while the tip is red, and the repair by a new change. Decided in STEMMA-229 as proposed;
+  the repair is declared by `repairs <commit>`.
 - [ ] The form of the evidence and where phase 4 stores it (a result per pair of commits).
 - [ ] Whether a result may name a *set* of tested base commits when several changes were tested
   together, and what this does to the rule for levels 0 and 1.
-- [ ] A bound for the retries of a change of level 2 or 3, for example a short pause of merges of
-  level 0 and 1 while such a change is ready.
-- [ ] Writing the objects of the merge before the lock, so that the lock covers the entry and the
-  move only (amends ADR-008 and ADR-011).
-- [ ] A bound for the unverified window, such as a maximum number of commits after which merges
-  wait for a run.
+- [x] A bound for the retries of a change of level 2 or 3: the reservation after `N` = 3
+  invalidated runs (STEMMA-229).
+- [x] Writing the objects of the merge before the lock, so that the lock covers the entry and the
+  move only (amends ADR-008 and ADR-011 for the gate; STEMMA-229).
+- [x] A bound for the unverified window: `max_unverified`, 10 by default (STEMMA-229).
 - [ ] How the gate treats a change whose files are disjoint from all that landed since the check,
-  as a cheaper test than a clean merge. Not needed for the first version.
+  as a cheaper test than a clean merge. Out of scope: the first version does not build it, and it
+  would loosen the rule for levels 0 and 1 without a measured need.
