@@ -195,6 +195,59 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Seite (eines Merges) | Zweig | One of the two commits that a merge joins |
 | Git | git (lower case, except in a command) | The version control system |
 
+## Tables
+
+A table that is longer than a page must break across pages. Without it, the rows run over the
+footer. Every table with more than about eight rows, or with rows that wrap to several lines,
+is built so that it can break, and repeats its header row on every page:
+
+```tex
+\startplacetable[title={...},reference=tab:...,location=split]
+\startxtable[frame=off,split=yes,option=stretch]
+\startxtablehead
+<header row>
+\stopxtablehead
+\startxtablenext
+<header row>
+\stopxtablenext
+<body rows>
+\stopxtable
+\stopplacetable
+```
+
+- `location=split` and `split=yes` allow the break; `option=stretch` fits the table to the text
+  width.
+- `\startxtablehead` is the header of every following page. `\startxtablenext` is the header of
+  the page on which the table starts. Both hold the same header row.
+- A column with commands in `\type{...}` is as wide as the longest command, with a little air
+  (`worktree remove` needs about 0.26 of the text width). A command that is wider than its
+  column runs into the next one; look for it in the PDF.
+- The continuation pages carry the caption with a letter, such as Tabelle 11b. That is the
+  intended result.
+- Check the result in the PDF after `just book`: no row may reach into the footer, and every page
+  of the table starts with the header. Short tables that fit on a page stay as they are.
+- Examples: `tab:algorithms` in chapter 10 and `tab:exit3` in chapter 12.
+
+A table with long running text in several columns (several lines per cell, three or more
+columns) goes on landscape pages. `\startlandscape` does not exist in this setup; switch the
+paper size around the table instead, and give the column with the most text a width:
+
+```tex
+\page
+\setuppapersize[A4,landscape][A4,landscape]
+\startplacetable[...,location=split]
+...
+\stopplacetable
+\page
+\setuppapersize[A4][A4]
+```
+
+- Header and footer follow the page width, so they need no change.
+- Set the widths on the cells of the header rows (`\startxcell[width=0.44\textwidth]`), in both
+  `\startxtablehead` and `\startxtablenext`. Equal columns waste the width on the short ones.
+- The switch ends the page before the table, so the text before it may leave white space. Look at
+  the page in the PDF. Example: `tab:algorithms` in chapter 10.
+
 ## Figures
 
 Add a figure when a section describes
@@ -254,6 +307,7 @@ Rules:
 
 - `just doc-lines` and `just book` pass without errors or warnings.
 - New figures appear in the list of figures and are referenced in the text.
+- A long table breaks across pages with a repeated header (section Tables), and the footer is free.
 - New terms are in the terminology table.
 - A new data structure or algorithm follows the teaching pattern and is in the table of chapter 10.
 - A new or changed command states its contract in the command line reference.

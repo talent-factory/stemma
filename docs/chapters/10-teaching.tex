@@ -35,20 +35,22 @@ Der Kurs DUA arbeitet mit dem Buch {\em Algorithms} von Sedgewick und Wayne
 heute einsetzt, wo man sie findet und in welchem Kapitel des Buches sie stehen.
 Sie dient zum Nachlesen und zum Vergleichen mit der eigenen Lösung.
 
+\page
+\setuppapersize[A4,landscape][A4,landscape]
 \startplacetable[title={Algorithmen im Code von Stemma},
   reference=tab:algorithms,location=split]
 \startxtable[frame=off,split=yes,option=stretch]
 \startxtablehead
 \startxrow[topframe=on,bottomframe=on]
-\startxcell {\bf Algorithmus} \stopxcell
-\startxcell {\bf Stelle im Code} \stopxcell
+\startxcell[width=0.44\textwidth] {\bf Algorithmus} \stopxcell
+\startxcell[width=0.28\textwidth] {\bf Stelle im Code} \stopxcell
 \startxcell {\bf Sedgewick und Wayne} \stopxcell
 \stopxrow
 \stopxtablehead
 \startxtablenext
 \startxrow[topframe=on,bottomframe=on]
-\startxcell {\bf Algorithmus} \stopxcell
-\startxcell {\bf Stelle im Code} \stopxcell
+\startxcell[width=0.44\textwidth] {\bf Algorithmus} \stopxcell
+\startxcell[width=0.28\textwidth] {\bf Stelle im Code} \stopxcell
 \startxcell {\bf Sedgewick und Wayne} \stopxcell
 \stopxrow
 \stopxtablenext
@@ -283,6 +285,8 @@ Grenzen für Kandidaten und Vergleiche \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
+\page
+\setuppapersize[A4][A4]
 
 Die \type{BTreeMap} von Rust ist ein B-Baum, eine Verallgemeinerung des 2-3-Baums
 aus dem Buch; die Tabelle nennt deshalb die Abschnitte über 2-3-Bäume.
