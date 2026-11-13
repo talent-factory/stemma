@@ -271,9 +271,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
     `--anchor` it checks that the entry of an anchor kept from earlier still has that hash.
   - **What it does not prove.** The chain shows that the entries agree with one another, not
     who wrote them: whoever can write `.stemma` can compute every later hash and the tip again,
-    and is noticed only by an anchor kept outside the repository. Signatures of the actors
-    (ADR-004) and a hub that confirms the tip (phase 5) are anchors that the actor cannot change;
-    they are open items.
+    and is noticed only by an anchor kept outside the repository. A hub that confirms the tip
+    is an anchor that the actor cannot change; it belongs to stemma-hub (ADR-003). Signatures of
+    the actors do not stop cutting the tail.
 - **A tip file names the last entry** *(confirmed; STEMMA-30)*. `.stemma/oplog-tip`
   holds the number of the last entry in the strict form `stemma-oplog-tip 1\nnumber <n>\n`, or,
   since the hash chain, `stemma-oplog-tip 2` with its hash as well (above). The number is not 0. The
@@ -494,8 +494,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       today).
 - [x] The hash chain (STEMMA-41): entry encoding 3, the hash over an envelope that a stub keeps,
       the tip with the hash, format 4, and `stemma op verify` with `--anchor`.
-- [ ] An anchor that the actor cannot change: signatures of the actors (ADR-004) or a hub that
-      confirms the tip (phase 5). Until then the anchor is a copy that a person keeps.
+- [ ] An anchor that the actor cannot change: a hub that confirms the tip (stemma-hub, ADR-003).
+      Until then the anchor is a copy that a person keeps.
 - [x] Retention (STEMMA-39) needs a checkpoint where the chain starts again, if entries before
       it are ever removed. Not needed: a retention replaces entries by stubs, which keep the
       hash, and removes none.

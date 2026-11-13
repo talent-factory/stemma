@@ -45,7 +45,7 @@ own design supports.
 - `main` has a linear history with one commit per slice.
 - Reviews stay small; the cost is more pull requests and a stricter slicing discipline.
 - Feature flags add temporary code that has to be removed once a feature is complete.
-- Until the server enforces the rules of ADR-004, protection of `main` relies on the GitHub
+- Until the core enforces the rules of ADR-004, protection of `main` relies on the GitHub
   branch protection settings and on discipline.
 - The workflow checks formatting, clippy, and the tests on Linux, macOS, and Windows. "`main` is
   always green" rests on `just ci` locally and on discipline, and the workflow gives an

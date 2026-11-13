@@ -1454,8 +1454,9 @@ ihr Baum des Verlaufs senkt ihn auf $O(\log N)$ \cite[crosby2009tamper].
 Für die Arbeit mit Agenten zählt das besonders:
 Ein Agent, der im Repository arbeitet, kann \type{.stemma} schreiben,
 und erst ein Anker beim Sponsor zeigt, ob das Log nach der Sitzung noch dasselbe ist.
-Signaturen der Akteure (ADR-004) und ein Hub, der den letzten Eintrag bestätigt (Phase 5),
-wären Anker, die der Akteur selbst nicht ändern kann; beide sind offen.
+Ein Hub, der den letzten Eintrag bestätigt, wäre ein Anker, den der Akteur selbst nicht ändern
+kann; er gehört zu stemma-hub (ADR-003).
+Signaturen der Akteure stoppen das Abschneiden des Log-Endes nicht.
 
 \startinfobox
 {\bf Logs aus der Zeit vor der Kette.}
@@ -2268,7 +2269,7 @@ Eine Datei unter demselben Konto reicht nicht, denn der Agent kann auch sie änd
 \item Der Agent arbeitet.
 Jeder Befehl, der schreibt, nennt im Log den Akteur, den der Agent angibt.
 Ob er sich ehrlich als Agent angibt, prüft niemand,
-bis die Akteure signieren (ADR-004).
+bis die Akteure signieren (ADR-003).
 \item Nach der Sitzung liest der Sponsor mit \type{op log} die Einträge des Agenten.
 \item Er prüft mit \type{op verify --anchor} das ganze Log und den aufbewahrten Anker.
 \item Hält der Anker, bewahrt er den neuen Anker auf, den der Befehl ausgibt;
@@ -2368,8 +2369,8 @@ In der Sitzung beginnt die Kette mit Eintrag 1.
 Der Agent kann seine eigenen Einträge ändern,
 etwa seinen Akteur durch \type{human daniel} ersetzen,
 oder das Log nach $n$ abschneiden, und der Anker hält trotzdem.
-Dagegen helfen erst Signaturen der Akteure (ADR-004) oder ein Hub, der den letzten Eintrag
-bestätigt (Phase 5).
+Dagegen hilft erst ein Hub, der den letzten Eintrag bestätigt (stemma-hub, ADR-003);
+Signaturen der Akteure allein genügen nicht.
 \item Nennt der Anker einen Eintrag, den das Log nicht hat,
 oder einen Eintrag aus der Zeit vor der Kette, lehnt der Befehl ebenfalls mit Exit-Code 5 ab.
 Die Meldung nennt als zweite Ursache einen Anker eines anderen Repositories.
@@ -2723,8 +2724,7 @@ eine verfolgte Spezialdatei hält jeden Snapshot an,
 und ein verfolgtes Verzeichnis, das zum Link wird, verliert seine Dateien ohne Warnung.
 Die Dateien eines Snapshots stammen nicht aus einem einzigen Augenblick (ADR-010).
 \item Kein Befehl repariert eine gebrochene Hash-Kette oder ein Log ohne seinen letzten Eintrag,
-und einen Anker, den der Akteur nicht ändern kann, liefern erst Signaturen oder der Hub
-(ADR-011).
+und einen Anker, den der Akteur nicht ändern kann, liefert erst der Hub (ADR-011, ADR-003).
 \item Muster der Ausschlussdatei vergleichen Bytes, auch auf einem Dateisystem,
 das Gross- und Kleinschreibung oder Unicode-Formen gleichsetzt;
 ob die Grenzen von 1024 Byte und 64 KiB passen, zeigen erst echte Dateien (ADR-012).

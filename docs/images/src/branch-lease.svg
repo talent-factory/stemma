@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 386" font-family="Helvetica, Arial, sans-serif">
-<title>Zeitachse einer Branch-Lease: Erwerb, Heartbeat, Ablauf und Übernahme</title>
+<title>Zeitachse einer Branch-Lease: Erwerb, Verlängerung, Ablauf und Übernahme</title>
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
     <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
@@ -9,7 +9,7 @@
 <!-- lane labels -->
 <g font-size="12" font-weight="bold" fill="#0F172A">
   <text x="10" y="44">Akteur A</text>
-  <text x="10" y="144">Server</text>
+  <text x="10" y="144">Kern</text>
   <text x="10" y="244">Akteur B</text>
 </g>
 <g font-size="11" fill="#64748B">
@@ -23,7 +23,7 @@
   <line x1="110" y1="150" x2="590" y2="150"/>
   <line x1="110" y1="250" x2="590" y2="250"/>
 </g>
-<!-- lease bar on server lane -->
+<!-- lease bar on core lane -->
 <rect x="150" y="136" width="230" height="28" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="2"/>
 <text x="265" y="154" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#2F7D32">Lease von A</text>
 <rect x="440" y="136" width="150" height="28" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="2"/>
@@ -34,7 +34,7 @@
 <circle cx="150" cy="50" r="5" fill="#2F7D32"/>
 <line x1="150" y1="55" x2="150" y2="134" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
 <text x="154" y="96" font-size="11" fill="#0F172A">1 Erwerb</text>
-<!-- heartbeats -->
+<!-- renewals -->
 <g fill="#2F7D32">
   <circle cx="200" cy="50" r="3.5"/>
   <circle cx="250" cy="50" r="3.5"/>
@@ -45,7 +45,7 @@
   <line x1="250" y1="55" x2="250" y2="134"/>
   <line x1="300" y1="55" x2="300" y2="134"/>
 </g>
-<text x="250" y="30" text-anchor="middle" font-size="11" fill="#0F172A">2 Heartbeats verlängern die Lease</text>
+<text x="250" y="30" text-anchor="middle" font-size="11" fill="#0F172A">2 Operationen verlängern die Lease</text>
 <!-- crash of A -->
 <line x1="320" y1="40" x2="320" y2="120" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="5 3"/>
 <text x="326" y="76" font-size="11" fill="#B91C1C">3 A stürzt ab,</text>
@@ -66,7 +66,7 @@
 <!-- override -->
 <rect x="110" y="286" width="480" height="62" rx="4" fill="#FFFFFF" stroke="#64748B" stroke-width="1.5"/>
 <text x="122" y="306" font-size="12" font-weight="bold" fill="#0F172A">Owner-Override (Alternative zu 4 und 5)</text>
-<text x="122" y="322" font-size="11" fill="#0F172A">Nur die Rolle Owner, mit Begründung und Audit-Eintrag, ohne auf den Ablauf zu warten.</text>
-<text x="122" y="337" font-size="11" fill="#0F172A">Der Override umgeht das Merge-Gate nie. Die Dauer der Lease ist noch offen.</text>
-<text x="20" y="378" font-size="12" fill="#64748B">Vorschlag: ADR-004 hat den Status Proposal, der Ablauf ist noch nicht umgesetzt.</text>
+<text x="122" y="322" font-size="11" fill="#0F172A">Nur ein Mensch als Owner, signiert und begründet, ohne auf den Ablauf zu warten.</text>
+<text x="122" y="337" font-size="11" fill="#0F172A">Der Override umgeht das Merge-Gate nie. Die Lease dauert standardmässig 60 Minuten.</text>
+<text x="20" y="378" font-size="12" fill="#64748B">ADR-004 ist angenommen, der Ablauf ist noch nicht umgesetzt.</text>
 </svg>

@@ -1,23 +1,35 @@
 # ADR-004: Branch Ownership, Review, and Risk Levels
 
-**Status:** Proposal, open for decision.
+**Status:** Accepted for phase 4 (STEMMA-233). The decisions are made in STEMMA-222 to STEMMA-232.
+What concerns the hub goes to the private project stemma-hub (hand-over in ADR-003).
 
 ## Decision
 
 1. Every branch has exactly one write owner (human or agent).
-   The server enforces this through a lease with heartbeat and expiry.
-2. Owner override is available only to the owner role, with a justification and an audit entry.
-   The override never bypasses the merge gate.
-3. Protected branches such as `main` change only through pull requests.
-4. Agents may review and approve. No self-approval. Approvals are signed.
+   The core enforces this through a lease, a file per branch that every writing operation renews
+   (default 60 minutes, bounded by the policy). The lease is acquired implicitly. There is none in
+   open mode and none on protected branches. After the expiry anyone with write rights may take
+   it (STEMMA-225).
+2. Owner override is available only to a human with the owner role. It is signed, carries a
+   reason, and leaves an entry in the operation log that the purge and the retention must keep (the exception
+   in ADR-011 and ADR-014 is written with the implementation). The override
+   changes who writes, never what the merge gate asks.
+3. Protected branches such as `main` change only through pull requests. A pull request is a
+   sequence of entries in the operation log (STEMMA-226).
+4. Agents may review and approve. No self-approval. Approvals are signed and bound to the head
+   commit they name; any new commit voids them (STEMMA-227).
 5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths.
    The policy file is itself level 3.
 6. Diff display is level 1, diff computation in the merge path is level 2.
 7. New direct runtime dependencies are level 2. Automated patch updates are level 1 with
    `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
-8. Every namespace has its own policy with a floor at level 3 that cannot be lowered.
-9. Owner override in courses only with an undeletable audit entry that is visible to students.
-10. Relaxing or deleting existing assertions automatically escalates to level 2.
+8. The policy file and the register files are level 3 and cannot be lowered, not even by the
+   policy itself. Policies per namespace, with the same floor, are built in stemma-hub.
+9. Owner override in courses only with an audit entry that the purge and the retention keep and
+   that is visible to students.
+   The entry is met locally (rule 2); its visibility per course is built in stemma-hub.
+10. Relaxing or deleting existing assertions automatically escalates to level 2. The rule is a
+    pure function over the old and the new blob (STEMMA-232); the gate of stemma-hub enforces it.
 
 ## Risk Levels
 
@@ -26,13 +38,14 @@
 | 0 | Docs, examples, formatting, tests only | One independent agent, merge by agent |
 | 1 | New CLI commands, output formats, logic without persistence | Two independent agents, merge by agent |
 | 2 | Object format, hash, ref updates, lease, merge, network, migrations, new dependencies | Two agents plus a human maintainer |
-| 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files | Human owner only, plus an ADR |
+| 3 | RBAC, signatures and keys, namespace separation, CI/release, policy files, actor register files | Human owner only, plus an ADR |
 
 ## Paths per Risk Level
 
 The level of a change follows from all paths it touches (rule 5); the highest level wins.
 The list below was decided in STEMMA-160 for the code that exists. It is prose in this ADR.
-The machine-readable policy file, which enforces it, is part of phase 4.
+The machine-readable policy file `.stemma-policy`, which enforces it, is part of phase 4
+(STEMMA-230).
 
 | Level | Paths and operations |
 |---|---|
@@ -59,8 +72,9 @@ The machine-readable policy file, which enforces it, is part of phase 4.
 - [x] Level of runtime operations that remove history (purge, ADR-014): proposed level 3, a human
       owner only. The table classifies changes by the paths they touch, not operations at run time.
       Decided for the purge in ADR-014: only a human may purge.
-- [ ] Corporate customers might demand stricter floors.
-      Relevant only once there are concrete customers.
+- [x] Corporate customers might demand stricter floors. Out of scope for phase 4; handed over to
+      stemma-hub (ADR-003). Relevant only once there are concrete customers.
 - [x] Define concrete path lists per level. Decided in STEMMA-160 (table above). The
       machine-readable policy file that enforces it follows in phase 4.
-- [ ] Agent identities: a dedicated role, or a role with a human sponsor.
+- [x] Agent identities: a dedicated role, or a role with a human sponsor. Decided in STEMMA-222:
+      an agent has its own register entry, key and role, bounded by the role of its human sponsor.
