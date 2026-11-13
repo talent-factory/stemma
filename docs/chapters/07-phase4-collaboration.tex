@@ -197,7 +197,7 @@ gleiche Grenzen für Zeilen und Datei, ein einheitliches Zeilenende, keine wiede
 und eine Zeile, die der Leser nicht kennt, ist ein Fehler mit ihrer Nummer.
 
 {\bf Die Zeilen.}
-Die erste Zeile ist der Kopf \type{stemma-policy 1}.
+Die erste Zeile, die weder leer noch ein Kommentar ist, ist der Kopf \type{stemma-policy 1}.
 Eine andere Version oder ein fehlender Kopf macht die Datei ungültig.
 Leere Zeilen und Kommentare mit \type{\#} sind erlaubt.
 Jede weitere Zeile hat eine der vier Formen von \in{Tabelle}[tab:policy-lines].
@@ -246,6 +246,9 @@ level 0 *.md
 
 {\bf Die Stufe einer Änderung.}
 Sie ist die höchste Stufe aller Pfade, die die Änderung berührt.
+Die Liste der Änderungen nennt jede Datei, die sich unterscheidet, auch alle Dateien eines
+Verzeichnisses, das als Ganzes hinzukommt, wegfällt oder verschoben wird:
+Die Stufe eines Verzeichnisses deckt nicht, was darunter liegt.
 Bei einer Umbenennung zählen der alte und der neue Pfad,
 bei einer Löschung der Pfad, bei einem Wechsel des Typs beide Seiten,
 etwa eine Datei, die zum Verzeichnis wird.
@@ -253,11 +256,20 @@ Ein Pfad, den keine Zeile nennt, hat Stufe 2; ein neues Verzeichnis senkt die St
 aus Versehen.
 Nennen mehrere Zeilen einen Pfad, gilt die höchste Stufe, und die Reihenfolge der Zeilen
 spielt keine Rolle.
+Ein Muster trifft wie in ADR-012 auch ein Verzeichnis und damit alles darunter;
+eine Zeile für Verzeichnisse endet mit \type{/}.
+Die Zeit einer Auswertung ist begrenzt:
+höchstens 1024 \type{level}-Zeilen und Pfade bis 128 Teile ohne Rückwärtsstrich;
+ein längerer Pfad ist ein Fehler und keine tiefere Stufe.
 
 {\bf Der eingebaute Boden.}
 Die Policy-Datei und die Dateien des Akteursregisters haben immer Stufe 3.
-Eine \type{level}-Zeile unter 3, deren Muster eine von ihnen trifft, macht die Policy ungültig,
-und die Auswertung wendet den Boden an, was die Zeilen auch sagen.
+Eine \type{level}-Zeile unter 3, deren Muster sie offensichtlich senkt, macht die Policy ungültig:
+ein Muster, das die Policy-Datei oder das Verzeichnis des Registers trifft,
+oder ein verankertes Muster, das darunter weitergeht.
+Die Auswertung wendet den Boden ohnehin an, was die Zeilen auch sagen,
+und sie vergleicht die Namen ohne Rücksicht auf die Gross- und Kleinschreibung,
+weil ein Dateisystem \type{.Stemma-Policy} als dieselbe Datei öffnen kann.
 Das Register hat noch kein Layout (STEMMA-221, STEMMA-222);
 bis dahin steht sein Verzeichnis \type{.stemma-actors} als Platzhalter im Code.
 
@@ -272,7 +284,8 @@ Die Lease dauert ohne Zeile 60 Minuten; die Grenzen von 5 Minuten und 24 Stunden
 
 Ein Fuzz-Ziel (\type{just fuzz policy}) prüft den Leser:
 Eine angenommene Datei lässt sich in ihre kanonische Form schreiben, die wieder angenommen wird
-und jeden Pfad gleich bewertet; eine abgelehnte hat eine Meldung mit endender Ursachenkette.
+und jeden geprüften Pfad gleich bewertet;
+eine abgelehnte hat eine Meldung mit endender Ursachenkette.
 
 \section[sec:phase4-open]{Offene Fragen}
 

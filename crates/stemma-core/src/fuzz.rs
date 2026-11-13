@@ -85,28 +85,56 @@ pub fn journal(input: &[u8]) {
 
 /// A policy file (`Policy::parse`). Comments and empty lines are not kept, so the check is not that
 /// the encoding is the input but that it is a fixed point: the canonical form of an accepted file
-/// is accepted, gives the same form again, and evaluates every path as the file does. A panic in
-/// the reader or in the evaluation is a finding as well.
+/// is accepted, is an equal policy, gives the same form again, and has the same settings and the
+/// same levels for the probed paths. A panic in the reader or in the evaluation is a finding as
+/// well.
 pub fn policy(input: &[u8]) {
-    use crate::policy::{EntryKind, Policy};
+    use crate::oplog::OperationName;
+    use crate::policy::{EntryKind, Policy, RiskLevel, OPERATION_FLOORS};
     match Policy::parse(input) {
         Ok(policy) => {
             let canonical = policy.encode();
             let again = Policy::parse(canonical.as_bytes()).expect("the canonical form is read");
+            assert_eq!(again, policy, "the canonical form is another policy");
             assert_eq!(again.encode(), canonical, "the canonical form changed");
             assert_eq!(again.lease(), policy.lease(), "the lease changed");
-            // The evaluation never panics and does not depend on the spelling of the file, for
-            // the lines of the file as paths and for the names that a policy treats apart.
+            // The settings do not change, for the floors, the levels, and the names in the file.
+            for level in (0..4).filter_map(RiskLevel::from_number) {
+                assert_eq!(again.agent_approvals(level), policy.agent_approvals(level));
+            }
             let lines = std::str::from_utf8(input).unwrap_or_default();
+            let names = lines
+                .lines()
+                .filter_map(|line| line.strip_prefix("operation "))
+                .filter_map(|rest| rest.split(' ').next())
+                .chain(OPERATION_FLOORS.map(|(name, _)| name))
+                .filter_map(|name| OperationName::try_new(name).ok());
+            for name in names {
+                assert_eq!(again.operation_level(&name), policy.operation_level(&name));
+            }
+            // The evaluation never panics and does not depend on the spelling of the file. The
+            // probes are the patterns of the file as paths (wildcards as letters, no slash at
+            // the ends) and the names that a policy treats apart.
             let probes = lines
                 .lines()
-                .flat_map(|line| line.split(' ').skip(2))
-                .chain([".stemma-policy", ".stemma-actors/a", "a", "a/b"]);
+                .filter_map(|line| line.strip_prefix("level "))
+                .filter_map(|rest| rest.split_once(' '))
+                .map(|(_, pattern)| pattern.replace(['*', '?'], "x"))
+                .map(|pattern| pattern.trim_matches('/').to_owned())
+                .chain([".stemma-policy", ".stemma-actors/a", "a", "a/b"].map(str::to_owned));
+            // The floor holds for every policy.
+            for path in [".stemma-policy", ".stemma-actors", ".stemma-actors/a"] {
+                assert_eq!(
+                    policy.level_of_path(path, EntryKind::File),
+                    Ok(RiskLevel::Three),
+                    "{path} is below level 3"
+                );
+            }
             for path in probes {
                 for kind in [EntryKind::File, EntryKind::Directory] {
                     assert_eq!(
-                        again.level_of_path(path, kind),
-                        policy.level_of_path(path, kind),
+                        again.level_of_path(&path, kind),
+                        policy.level_of_path(&path, kind),
                         "the level of {path:?} changed"
                     );
                 }

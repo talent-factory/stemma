@@ -391,8 +391,53 @@ impl Pattern {
     /// covers everything below). The path is relative, written with `/`, and has no empty part.
     pub(crate) fn matches_path(&self, path: &str, is_directory: bool) -> bool {
         let parts: Vec<&str> = path.split('/').collect();
-        (1..=parts.len())
-            .any(|length| self.matches(&parts[..length], length < parts.len() || is_directory))
+        // The prefix of `length` parts is a directory unless it is the whole path.
+        let directory = |length: usize| length < parts.len() || is_directory;
+        match &self.target {
+            Target::AnyDepth(glob) => (1..=parts.len()).any(|length| {
+                (directory(length) || !self.directory_only) && glob_matches(glob, parts[length - 1])
+            }),
+            Target::FromRoot(pattern) => {
+                // One table for all prefixes: `table[i][j]` says whether the first `i` parts of the
+                // pattern match the first `j` parts of the path. The time is the product of the two
+                // lengths, however many prefixes there are.
+                let columns = parts.len() + 1;
+                let mut table = vec![false; (pattern.len() + 1) * columns];
+                table[0] = true;
+                for (i, part) in pattern.iter().enumerate() {
+                    for j in 0..columns {
+                        table[(i + 1) * columns + j] = match part {
+                            Part::Anywhere => {
+                                table[i * columns + j]
+                                    || (j > 0 && table[(i + 1) * columns + j - 1])
+                            }
+                            Part::Name(glob) => {
+                                j > 0
+                                    && table[i * columns + j - 1]
+                                    && glob_matches(glob, parts[j - 1])
+                            }
+                        };
+                    }
+                }
+                (1..=parts.len()).any(|length| {
+                    table[pattern.len() * columns + length]
+                        && (directory(length) || !self.directory_only)
+                })
+            }
+        }
+    }
+
+    /// Whether the pattern may match a path below the directory: an anchored pattern whose
+    /// leading parts match the directory and that has more parts. A pattern for a name at any
+    /// depth is not asked, as it names no place.
+    pub(crate) fn matches_below(&self, directory: &str) -> bool {
+        match &self.target {
+            Target::AnyDepth(_) => false,
+            Target::FromRoot(parts) => {
+                let names: Vec<&str> = directory.split('/').collect();
+                (1..parts.len()).any(|taken| parts_match(&parts[..taken], &names))
+            }
+        }
     }
 
     /// Whether the pattern matches the path whose parts are given; `directory` says whether the
