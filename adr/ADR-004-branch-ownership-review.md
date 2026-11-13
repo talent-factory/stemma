@@ -7,13 +7,14 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
 
 1. Every branch has exactly one write owner (human or agent).
    The core enforces this through a lease, a file per branch that every writing operation renews
-   (default 60 minutes, bounded by the policy). The lease is acquired implicitly. There is none in
-   open mode and none on protected branches. After the expiry anyone with write rights may take
-   it (STEMMA-225).
+   (default 60 minutes; the policy may change it within bounds of 5 minutes to 24 hours that
+   the code fixes). The first writing operation acquires it implicitly if the register lists more
+   than one actor. There is none in open mode and none on protected branches. After the expiry
+   anyone whose role may write to the branch takes it with its next writing operation
+   (STEMMA-225).
 2. Owner override is available only to a human with the owner role. It is signed, carries a
-   reason, and leaves an entry in the operation log that the purge and the retention must keep (the exception
-   in ADR-011 and ADR-014 is written with the implementation). The override
-   changes who writes, never what the merge gate asks.
+   reason, and leaves an entry in the operation log. The entry names no commit, so the purge never
+   touches it (STEMMA-225). The override changes who writes, never what the merge gate asks.
 3. Protected branches such as `main` change only through pull requests. A pull request is a
    sequence of entries in the operation log (STEMMA-226).
 4. Agents may review and approve. No self-approval. Approvals are signed and bound to the head
@@ -25,9 +26,9 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
 8. The policy file and the register files are level 3 and cannot be lowered, not even by the
    policy itself. Policies per namespace, with the same floor, are built in stemma-hub.
-9. Owner override in courses only with an audit entry that the purge and the retention keep and
-   that is visible to students.
-   The entry is met locally (rule 2); its visibility per course is built in stemma-hub.
+9. Owner override in courses only with an audit entry that cannot be purged, is chained and
+   signed, and is visible to everyone who reads the log. This is met locally (rule 2); the
+   visibility per namespace and course is built in stemma-hub.
 10. Relaxing or deleting existing assertions automatically escalates to level 2. The rule is a
     pure function over the old and the new blob (STEMMA-232); the gate of stemma-hub enforces it.
 
@@ -45,7 +46,11 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
 The level of a change follows from all paths it touches (rule 5); the highest level wins.
 The list below was decided in STEMMA-160 for the code that exists. It is prose in this ADR.
 The machine-readable policy file `.stemma-policy`, which enforces it, is part of phase 4
-(STEMMA-230).
+(STEMMA-230). It is a line-based file with the header `stemma-policy 1` and the pattern language
+of ADR-012, read in the version of the base commit. Lines such as `level 3 .github/workflows/`
+name path lists per level, the level of run-time operations, the bounds of the gate, and the
+lease duration. The number of approvals per level stays in the core, and a policy may only raise
+it.
 
 | Level | Paths and operations |
 |---|---|

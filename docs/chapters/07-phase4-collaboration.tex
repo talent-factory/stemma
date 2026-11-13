@@ -5,7 +5,6 @@
 Schreibhoheit, Pull Requests und Freigaben sollen im System erzwungen werden, nicht nur
 empfohlen.
 Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate auf ADR-019.
-Die Prüfung selbst läuft lokal im Kern; ihre Durchsetzung auf einem Server gehört zu stemma-hub.
 
 \section{Umfang}
 
@@ -45,11 +44,13 @@ die nach einer Ablaufzeit endet (\in{Abbildung}[fig:branch-lease]).
 Schreibt ein zweiter Akteur, solange die Lease gilt, lehnt der Kern das ab.
 Wer nicht auf den Ablauf warten will, braucht einen Owner-Override.
 Ihn darf nur ein Mensch mit der Rolle Owner auslösen, signiert und mit einer Begründung.
-Er hinterlässt einen Eintrag im Operationslog, den der Purge nie entfernt,
-und er umgeht das Merge-Gate nie.
-Die Lease dauert standardmässig 60 Minuten; die Policy kann diese Dauer begrenzen.
+Er hinterlässt einen Eintrag im Operationslog, den der Purge nie anfasst,
+weil er keinen Commit nennt, und er umgeht das Merge-Gate nie.
+Die Lease dauert standardmässig 60 Minuten; die Policy kann sie ändern, innerhalb fester Grenzen
+von 5 Minuten bis 24 Stunden.
 Nach dem Ablauf darf jeder mit Schreibrecht sie übernehmen, auch nach dem Absturz eines Agenten.
-Im offenen Modus und auf geschützten Branches gibt es keine Lease.
+Im offenen Modus und auf geschützten Branches gibt es keine Lease;
+sie entsteht mit der ersten schreibenden Operation, sobald das Register mehr als einen Akteur nennt.
 
 \startplacefigure[title={Zeitachse einer Branch-Lease},
     reference=fig:branch-lease,location=here]

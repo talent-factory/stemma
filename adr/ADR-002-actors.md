@@ -57,7 +57,10 @@ Implementation: `crates/stemma-core/src/actor.rs` (actors), `crates/stemma-core/
 ## Open
 
 - [x] Agent identities: decided in ADR-004 (STEMMA-222): an own register entry, key, and role,
-      bounded by the role of the sponsor.
+      bounded by the role of the sponsor. The sponsor is always a human entry, an agent cannot
+      create an agent, and the owner signs the entry while the sponsor co-signs it.
+- [x] What proves the actor: decided in ADR-003 (STEMMA-221): operations whose rule depends on who
+      acts carry a proof against the actor register; all others keep the claim of `--actor`.
 - [ ] A configuration file as a third source of the actor of the command line, after the flag and
       the variable. Later; Phase 1 has no configuration file (ADR-009).
 
