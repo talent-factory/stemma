@@ -351,175 +351,175 @@ dessen Journal schon besteht, muss zuerst \type{purge --resume} oder \type{purge
 \startxtable[frame=off,split=yes,option=stretch,align={flushleft,high}]
 \startxtablehead
 \startxrow[topframe=on,bottomframe=on]
-\startxcell[width=0.19\textwidth] {\bf Befehl} \stopxcell
-\startxcell[width=0.41\textwidth] {\bf Was geschehen ist} \stopxcell
+\startxcell[width=0.26\textwidth] {\bf Befehl} \stopxcell
+\startxcell[width=0.35\textwidth] {\bf Was geschehen ist} \stopxcell
 \startxcell {\bf Was zu tun ist} \stopxcell
 \stopxrow
 \stopxtablehead
 \startxtablenext
 \startxrow[topframe=on,bottomframe=on]
-\startxcell[width=0.19\textwidth] {\bf Befehl} \stopxcell
-\startxcell[width=0.41\textwidth] {\bf Was geschehen ist} \stopxcell
+\startxcell[width=0.26\textwidth] {\bf Befehl} \stopxcell
+\startxcell[width=0.35\textwidth] {\bf Was geschehen ist} \stopxcell
 \startxcell {\bf Was zu tun ist} \stopxcell
 \stopxrow
 \stopxtablenext
 \startxrow
-\startxcell[width=0.19\textwidth] \type{init} \stopxcell
-\startxcell[width=0.41\textwidth] Das Repository ist angelegt,
+\startxcell[width=0.26\textwidth] \type{init} \stopxcell
+\startxcell[width=0.35\textwidth] Das Repository ist angelegt,
 aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen;
 ein zweites \type{init} bricht ab, weil \type{.stemma} besteht. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{track} \stopxcell
-\startxcell[width=0.41\textwidth] Die Dateien sind verfolgt,
+\startxcell[width=0.26\textwidth] \type{track} \stopxcell
+\startxcell[width=0.35\textwidth] Die Dateien sind verfolgt,
 aber die Ausgabe liess sich nicht schreiben oder der Zeiger ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen; \type{status} zeigt, was verfolgt ist. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{commit} \stopxcell
-\startxcell[width=0.41\textwidth] Der Commit ist gemacht,
+\startxcell[width=0.26\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.35\textwidth] Der Commit ist gemacht,
 aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen; die Meldung nennt die ID des Commits. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{commit} \stopxcell
-\startxcell[width=0.41\textwidth] Nur der Branch hat sich bewegt,
+\startxcell[width=0.26\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.35\textwidth] Nur der Branch hat sich bewegt,
 der Working-Copy-Commit ist noch der alte. \stopxcell
 \startxcell Einen weiteren \type{commit} aufrufen;
 er beendet den ersten und verwendet seine eigene Nachricht nicht. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{commit} \stopxcell
-\startxcell[width=0.41\textwidth] Der Snapshot vor dem Commit hat den Zeiger bewegt,
+\startxcell[width=0.26\textwidth] \type{commit} \stopxcell
+\startxcell[width=0.35\textwidth] Der Snapshot vor dem Commit hat den Zeiger bewegt,
 aber nicht gesichert; der Commit ist nicht gemacht. \stopxcell
 \startxcell Den Aufruf wiederholen. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{status} \stopxcell
-\startxcell[width=0.41\textwidth] Der Snapshot hat den Zeiger bewegt,
+\startxcell[width=0.26\textwidth] \type{status} \stopxcell
+\startxcell[width=0.35\textwidth] Der Snapshot hat den Zeiger bewegt,
 aber nicht gesichert. \stopxcell
 \startxcell Nichts tun; ein weiterer \type{status} ist unbedenklich,
 sichert den Eintrag aber nicht. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{diff} \stopxcell
-\startxcell[width=0.41\textwidth] Der Snapshot hat den Zeiger bewegt,
+\startxcell[width=0.26\textwidth] \type{diff} \stopxcell
+\startxcell[width=0.35\textwidth] Der Snapshot hat den Zeiger bewegt,
 aber nicht gesichert. \stopxcell
 \startxcell Nichts tun; ein weiterer \type{diff} ist unbedenklich,
 sichert den Eintrag aber nicht. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{tag} \stopxcell
-\startxcell[width=0.41\textwidth] Der Tag ist gesetzt oder gelöscht,
+\startxcell[width=0.26\textwidth] \type{tag} \stopxcell
+\startxcell[width=0.35\textwidth] Der Tag ist gesetzt oder gelöscht,
 aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen; \type{stemma tag} zeigt, welche Tags es gibt. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{switch} \stopxcell
-\startxcell[width=0.41\textwidth] Der Wechsel ist gemacht,
+\startxcell[width=0.26\textwidth] \type{switch} \stopxcell
+\startxcell[width=0.35\textwidth] Der Wechsel ist gemacht,
 aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen;
 die Ausgabe oder die Meldung nennt den Eintrag, der den Wechsel zurücksetzt. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{switch} \stopxcell
-\startxcell[width=0.41\textwidth] Der Eintrag steht, die Dateien liegen auf dem Stand des Ziels,
+\startxcell[width=0.26\textwidth] \type{switch} \stopxcell
+\startxcell[width=0.35\textwidth] Der Eintrag steht, die Dateien liegen auf dem Stand des Ziels,
 aber nur ein Teil der Zeiger hat sich bewegt. \stopxcell
 \startxcell Denselben Aufruf wiederholen, bevor ein anderer Befehl läuft;
 er nimmt dann keinen Snapshot. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{rebase} \stopxcell
-\startxcell[width=0.41\textwidth] Das Aufspielen ist gemacht,
+\startxcell[width=0.26\textwidth] \type{rebase} \stopxcell
+\startxcell[width=0.35\textwidth] Das Aufspielen ist gemacht,
 aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen;
 die Ausgabe oder die Meldung nennt den Eintrag, der das Aufspielen zurücksetzt. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{rebase} \stopxcell
-\startxcell[width=0.41\textwidth] Der Eintrag steht, die Dateien liegen auf dem neuen Stand,
+\startxcell[width=0.26\textwidth] \type{rebase} \stopxcell
+\startxcell[width=0.35\textwidth] Der Eintrag steht, die Dateien liegen auf dem neuen Stand,
 aber nur der Branch hat sich bewegt. \stopxcell
 \startxcell Denselben Aufruf wiederholen, bevor ein anderer Befehl läuft;
 er nimmt dann keinen Snapshot. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{merge} \stopxcell
-\startxcell[width=0.41\textwidth] Der Merge ist gemacht,
+\startxcell[width=0.26\textwidth] \type{merge} \stopxcell
+\startxcell[width=0.35\textwidth] Der Merge ist gemacht,
 aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen;
 die Ausgabe oder die Meldung nennt den Eintrag, der den Merge zurücksetzt. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{merge} \stopxcell
-\startxcell[width=0.41\textwidth] Der Eintrag steht, die Dateien liegen auf dem Stand des Merges,
+\startxcell[width=0.26\textwidth] \type{merge} \stopxcell
+\startxcell[width=0.35\textwidth] Der Eintrag steht, die Dateien liegen auf dem Stand des Merges,
 aber der Branch hat sich bewegt und der Working-Copy-Commit nicht. \stopxcell
 \startxcell Denselben Aufruf wiederholen, bevor ein anderer Befehl läuft;
 er nimmt dann keinen Snapshot. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{branch} \stopxcell
-\startxcell[width=0.41\textwidth] Der Branch ist angelegt, umbenannt oder gelöscht,
+\startxcell[width=0.26\textwidth] \type{branch} \stopxcell
+\startxcell[width=0.35\textwidth] Der Branch ist angelegt, umbenannt oder gelöscht,
 aber die Ausgabe liess sich nicht schreiben, ein Verzeichnis ist nicht gesichert,
 oder beim Umbenennen bewegte sich nur ein Teil der Zeiger. \stopxcell
 \startxcell Nicht wiederholen; \type{stemma branch} zeigt, welche Branches es gibt. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree add}} \stopxcell
-\startxcell[width=0.41\textwidth] Ein Schritt scheiterte, nachdem der Eintrag im Log stand;
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{worktree add}} \stopxcell
+\startxcell[width=0.35\textwidth] Ein Schritt scheiterte, nachdem der Eintrag im Log stand;
 der Worktree entstand nicht oder nur zum Teil. \stopxcell
 \startxcell Die Meldung nennt den Eintrag und sagt, was von Hand zu entfernen ist;
 danach den Aufruf wiederholen. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree add}} \stopxcell
-\startxcell[width=0.41\textwidth] Der Worktree ist angelegt,
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{worktree add}} \stopxcell
+\startxcell[width=0.35\textwidth] Der Worktree ist angelegt,
 aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen; \type{worktree list} zeigt die Worktrees. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree remove}} \stopxcell
-\startxcell[width=0.41\textwidth] Ein Schritt scheiterte, nachdem der Eintrag im Log stand;
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{worktree remove}} \stopxcell
+\startxcell[width=0.35\textwidth] Ein Schritt scheiterte, nachdem der Eintrag im Log stand;
 Verzeichnis oder Zustandsverzeichnis sind noch da. \stopxcell
 \startxcell Die Meldung nennt, was von Hand zu entfernen ist; konnte der Befehl das Verzeichnis
 nicht entfernen oder war noch kein Zeiger bewegt,
 nimmt derselbe Aufruf das Zustandsverzeichnis weg. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{worktree remove}} \stopxcell
-\startxcell[width=0.41\textwidth] Der Worktree ist weg,
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{worktree remove}} \stopxcell
+\startxcell[width=0.35\textwidth] Der Worktree ist weg,
 aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen; ein zweiter Aufruf endet mit Exit-Code 1. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
-\startxcell[width=0.41\textwidth] Nur ein Teil der Zeiger hat sich bewegt
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
+\startxcell[width=0.35\textwidth] Nur ein Teil der Zeiger hat sich bewegt
 (\type{Half made}). \stopxcell
 \startxcell Den Aufruf wiederholen; er bewegt nur die übrigen Zeiger. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
-\startxcell[width=0.41\textwidth] Das Restore ist gemacht,
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
+\startxcell[width=0.35\textwidth] Das Restore ist gemacht,
 aber die Ausgabe liess sich nicht schreiben oder ein Verzeichnis ist nicht gesichert. \stopxcell
 \startxcell Nicht wiederholen;
 die Ausgabe oder die Meldung nennt den Eintrag, der das Restore zurücksetzt. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
-\startxcell[width=0.41\textwidth] Ein Verzeichnis des Snapshots davor ist nicht gesichert;
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{op restore}} \stopxcell
+\startxcell[width=0.35\textwidth] Ein Verzeichnis des Snapshots davor ist nicht gesichert;
 das Restore ist gemacht, war nicht nötig oder scheiterte danach. \stopxcell
 \startxcell Die Meldung nennt den Eintrag des Snapshots;
 nur ein gemachtes Restore nennt den Eintrag, der es zurücksetzt. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
-\startxcell[width=0.41\textwidth] Der Snapshot vor dem Purge hat den Zeiger bewegt,
+\startxcell[width=0.26\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.35\textwidth] Der Snapshot vor dem Purge hat den Zeiger bewegt,
 aber nicht gesichert; der Purge ist nicht gemacht. \stopxcell
 \startxcell Den Aufruf wiederholen. \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
-\startxcell[width=0.41\textwidth] Das Journal eines Purge besteht:
+\startxcell[width=0.26\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.35\textwidth] Das Journal eines Purge besteht:
 Er brach nach dem Journal ab, \type{--apply} fand das Journal eines anderen,
 oder \type{--abort} kam nach dem Eintrag \type{purge}. \stopxcell
 \startxcell Den Purge mit \hbox{\type{purge --resume}} beenden;
@@ -527,13 +527,13 @@ solange der Eintrag fehlt, geht auch \hbox{\type{purge --abort}}
 (Ausnahmen siehe \type{purge}). \stopxcell
 \stopxrow
 \startxrow
-\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
-\startxcell[width=0.41\textwidth] Das Journal lässt sich nicht lesen. \stopxcell
+\startxcell[width=0.26\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.35\textwidth] Das Journal lässt sich nicht lesen. \stopxcell
 \startxcell Das Journal von Hand reparieren; bis dahin schreibt kein Befehl. \stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
-\startxcell[width=0.19\textwidth] \type{purge} \stopxcell
-\startxcell[width=0.41\textwidth] Der Purge, das Fortsetzen oder das Zurücknehmen ist gemacht,
+\startxcell[width=0.26\textwidth] \type{purge} \stopxcell
+\startxcell[width=0.35\textwidth] Der Purge, das Fortsetzen oder das Zurücknehmen ist gemacht,
 aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert;
 das Journal ist entfernt. \stopxcell
 \startxcell Nicht wiederholen.

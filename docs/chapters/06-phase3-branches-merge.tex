@@ -1471,8 +1471,10 @@ Es gibt weder \type{--continue} noch \type{--abort}: Der Zustand nach dem Abbruc
 und im Log beschrieben, und derselbe Aufruf führt den Wechsel zu Ende
 (\in{Abbildung}[fig:repeat-state]).
 
-\startplacetable[title={Was die Schritte der Sitzung ändern},reference=tab:phase3-workflow-effects]
-\startxtable[frame=off]
+\startplacetable[title={Was die Schritte der Sitzung ändern},
+  reference=tab:phase3-workflow-effects,location=split]
+\startxtable[frame=off,split=yes,option=stretch]
+\startxtablehead
 \startxrow[topframe=on,bottomframe=on]
 \startxcell {\bf Schritt} \stopxcell
 \startxcell {\bf Arbeitsverzeichnis} \stopxcell
@@ -1480,6 +1482,16 @@ und im Log beschrieben, und derselbe Aufruf führt den Wechsel zu Ende
 \startxcell {\bf Zeiger} \stopxcell
 \startxcell {\bf Operation Log} \stopxcell
 \stopxrow
+\stopxtablehead
+\startxtablenext
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Schritt} \stopxcell
+\startxcell {\bf Arbeitsverzeichnis} \stopxcell
+\startxcell {\bf Working-Copy-Commit} \stopxcell
+\startxcell {\bf Zeiger} \stopxcell
+\startxcell {\bf Operation Log} \stopxcell
+\stopxrow
+\stopxtablenext
 \startxrow
 \startxcell \type{worktree add} \stopxcell
 \startxcell neues Verzeichnis mit den Dateien der Spitze \stopxcell
