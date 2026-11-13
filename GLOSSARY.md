@@ -324,8 +324,8 @@ _Avoid_: Owner of a branch
 
 **Owner override**:
 Taking a branch over before its lease expires. Only a human with the owner role may do it, signed
-and with a reason; it leaves an entry in the operation log that the purge and the retention must
-keep, and it never bypasses the merge gate. (Owner-Override)
+and with a reason; it leaves an entry in the operation log that names no commit, so the purge never
+touches it, and it never bypasses the merge gate. (Owner-Override)
 
 **Pull request**:
 The request of a write owner to merge a branch into `main`. It has no object of its own: it is the

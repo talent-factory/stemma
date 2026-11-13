@@ -1,7 +1,6 @@
 # ADR-019: The merge gate without a global lock
 
 **Status:** Proposal, open for decision by the author (STEMMA-19). Nothing here is implemented.
-The gate runs locally in the core; its enforcement on a server belongs to stemma-hub (ADR-003).
 The pull request as an object, the checks, and the merge gate belong to phase 4. The ADR defines
 what "`main` is always green" means for the gate (ADR-006 decides the GitHub side, which stays
 open) and gives ADR-004 the meaning of its "merge gate".

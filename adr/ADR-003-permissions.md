@@ -59,6 +59,8 @@ where it came from.
 8. Enforcement of the escalation when tests are weakened at the merge gate (rule 10 of ADR-004,
    STEMMA-232). The rule itself is a pure function in this repository.
 9. Stricter floors that corporate customers might demand (open point of ADR-004).
+10. Ordering of a log that someone else holds (revocation of a key, STEMMA-224), and the signature
+    of the policy copy that a server holds (STEMMA-230).
 
 ## Consequences
 
