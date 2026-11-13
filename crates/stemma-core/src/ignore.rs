@@ -52,7 +52,7 @@ pub struct IgnoreRules {
 
 /// One pattern with the line it was written on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Pattern {
+pub(crate) struct Pattern {
     line: NonZeroUsize,
     /// Matches only a directory.
     directory_only: bool,
@@ -108,65 +108,15 @@ impl IgnoreRules {
     ///
     /// Returns an [`IgnoreParseError`] for the first problem.
     pub fn parse(bytes: &[u8]) -> Result<Self, IgnoreParseError> {
-        if bytes.len() > MAX_FILE_BYTES {
-            return Err(IgnoreParseError::File(FileProblem::TooLarge));
-        }
-        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            return Err(IgnoreParseError::File(FileProblem::ByteOrderMark));
-        }
-        let text =
-            std::str::from_utf8(bytes).map_err(|_| IgnoreParseError::File(FileProblem::NotUtf8))?;
-        let mut seen: HashMap<&str, NonZeroUsize> = HashMap::new();
         let mut patterns = Vec::new();
-        let mut rest = text;
-        let mut number = 0usize;
-        // Whether the first line ends with `\r\n`; every other line has to end the same way.
-        let mut crlf = None;
-        while let Some(end) = rest.find('\n') {
-            number += 1;
-            let at = NonZeroUsize::new(number).expect("a counted line is numbered from 1");
-            let raw = &rest[..end];
-            rest = &rest[end + 1..];
-            let problem = |problem| IgnoreParseError::Line { line: at, problem };
-            let (line, ends_in_crlf) = match raw.strip_suffix('\r') {
-                Some(line) => (line, true),
-                None => (raw, false),
-            };
-            if *crlf.get_or_insert(ends_in_crlf) != ends_in_crlf {
-                return Err(problem(LineProblem::MixedLineEnds));
-            }
-            // An empty line only groups the patterns, as in `.gitignore`; it is counted, so that
-            // the lines after it keep their numbers.
-            if line.is_empty() {
-                continue;
-            }
-            if line.len() > MAX_LINE_BYTES {
-                return Err(problem(LineProblem::TooLong));
-            }
-            if line.contains('\r') {
-                return Err(problem(LineProblem::CarriageReturn));
-            }
-            if line.chars().any(char::is_control) {
-                return Err(problem(LineProblem::ControlCharacter));
-            }
-            if line.starts_with(' ') || line.ends_with(' ') {
-                return Err(problem(LineProblem::Space));
-            }
-            if let Some(first) = seen.insert(line, at) {
-                return Err(problem(LineProblem::Repeated { first }));
-            }
-            if line.starts_with('#') {
-                continue;
-            }
-            patterns.push(parse_pattern(line, at).map_err(problem)?);
-        }
-        if !rest.is_empty() {
-            let at = NonZeroUsize::new(number + 1).expect("a line number is at least 1");
-            return Err(IgnoreParseError::Line {
-                line: at,
-                problem: LineProblem::MissingNewline,
-            });
-        }
+        scan_lines(bytes, |at, line| {
+            patterns.push(parse_pattern(line, at, false)?);
+            Ok(())
+        })
+        .map_err(|error| match error {
+            ScanError::File(problem) => IgnoreParseError::File(problem),
+            ScanError::Line { line, problem } => IgnoreParseError::Line { line, problem },
+        })?;
         Ok(Self { patterns })
     }
 
@@ -279,6 +229,86 @@ impl IgnoreRules {
     }
 }
 
+/// Why [`scan_lines`] stops: a problem of the whole file, or the first line that is refused, by
+/// the checks of the lines or by the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScanError<P> {
+    File(FileProblem),
+    Line { line: NonZeroUsize, problem: P },
+}
+
+/// The reader of the lines of a strict text file, shared by the exclusion file and the policy
+/// file (ADR-012, ADR-004): the checks of the whole file (size, byte order mark, UTF-8) and of
+/// each line (the line end, length, control characters, spaces at the ends, repeated lines).
+/// An empty line or a comment (`#`) is skipped, but counted. `each` is called with the number and
+/// the text of every other line, in order, so the error names the first line that is refused.
+pub(crate) fn scan_lines<P: From<LineProblem>>(
+    bytes: &[u8],
+    mut each: impl FnMut(NonZeroUsize, &str) -> Result<(), P>,
+) -> Result<(), ScanError<P>> {
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(ScanError::File(FileProblem::TooLarge));
+    }
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Err(ScanError::File(FileProblem::ByteOrderMark));
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| ScanError::File(FileProblem::NotUtf8))?;
+    let mut seen: HashMap<&str, NonZeroUsize> = HashMap::new();
+    let mut rest = text;
+    let mut number = 0usize;
+    // Whether the first line ends with `\r\n`; every other line has to end the same way.
+    let mut crlf = None;
+    while let Some(end) = rest.find('\n') {
+        number += 1;
+        let at = NonZeroUsize::new(number).expect("a counted line is numbered from 1");
+        let raw = &rest[..end];
+        rest = &rest[end + 1..];
+        let refuse = |problem: LineProblem| ScanError::Line {
+            line: at,
+            problem: P::from(problem),
+        };
+        let (line, ends_in_crlf) = match raw.strip_suffix('\r') {
+            Some(line) => (line, true),
+            None => (raw, false),
+        };
+        if *crlf.get_or_insert(ends_in_crlf) != ends_in_crlf {
+            return Err(refuse(LineProblem::MixedLineEnds));
+        }
+        // An empty line only groups the lines, as in `.gitignore`; it is counted, so that the
+        // lines after it keep their numbers.
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() > MAX_LINE_BYTES {
+            return Err(refuse(LineProblem::TooLong));
+        }
+        if line.contains('\r') {
+            return Err(refuse(LineProblem::CarriageReturn));
+        }
+        if line.chars().any(char::is_control) {
+            return Err(refuse(LineProblem::ControlCharacter));
+        }
+        if line.starts_with(' ') || line.ends_with(' ') {
+            return Err(refuse(LineProblem::Space));
+        }
+        if let Some(first) = seen.insert(line, at) {
+            return Err(refuse(LineProblem::Repeated { first }));
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        each(at, line).map_err(|problem| ScanError::Line { line: at, problem })?;
+    }
+    if !rest.is_empty() {
+        let at = NonZeroUsize::new(number + 1).expect("a line number is at least 1");
+        return Err(ScanError::Line {
+            line: at,
+            problem: P::from(LineProblem::MissingNewline),
+        });
+    }
+    Ok(())
+}
+
 /// The name in `root` that is another spelling of the exclusion file's name (it differs only in
 /// the case of its ASCII letters), if there is one, and whether the exact name is listed as well.
 /// A missing directory has none. The whole directory is listed, so the answer does not depend on
@@ -357,6 +387,14 @@ fn same_file(first: &Metadata, second: &Metadata) -> bool {
 }
 
 impl Pattern {
+    /// Whether the pattern matches the path, or a directory above it (a match on a directory
+    /// covers everything below). The path is relative, written with `/`, and has no empty part.
+    pub(crate) fn matches_path(&self, path: &str, is_directory: bool) -> bool {
+        let parts: Vec<&str> = path.split('/').collect();
+        (1..=parts.len())
+            .any(|length| self.matches(&parts[..length], length < parts.len() || is_directory))
+    }
+
     /// Whether the pattern matches the path whose parts are given; `directory` says whether the
     /// last part is a directory.
     fn matches(&self, path: &[&str], directory: bool) -> bool {
@@ -428,7 +466,13 @@ fn glob_matches(glob: &[Glob], name: &str) -> bool {
     glob[g..].iter().all(|item| *item == Glob::Run)
 }
 
-fn parse_pattern(line: &str, number: NonZeroUsize) -> Result<Pattern, LineProblem> {
+/// Reads one pattern. The exclusion file refuses the name `.stemmaignore`, as it is never
+/// excluded; the policy file names it (`allow_exclusion_file`), as its level is a level of ADR-004.
+pub(crate) fn parse_pattern(
+    line: &str,
+    number: NonZeroUsize,
+    allow_exclusion_file: bool,
+) -> Result<Pattern, LineProblem> {
     if line.starts_with('!') {
         return Err(LineProblem::Negation);
     }
@@ -452,7 +496,7 @@ fn parse_pattern(line: &str, number: NonZeroUsize) -> Result<Pattern, LineProble
             parts.push(Part::Anywhere);
             continue;
         }
-        if text == FILE_NAME {
+        if text == FILE_NAME && !allow_exclusion_file {
             return Err(LineProblem::ExclusionFile);
         }
         // The wildcards stand for letters here: the name is checked as a tree checks a name.

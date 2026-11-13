@@ -53,6 +53,7 @@ pub mod merge_base;
 pub mod moved;
 pub mod object;
 pub mod oplog;
+pub mod policy;
 #[cfg(test)]
 mod properties;
 pub mod refs;
