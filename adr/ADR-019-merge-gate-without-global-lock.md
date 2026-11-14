@@ -20,8 +20,8 @@ Four facts of Stemma bound the answer:
   with `Stale` if another change moved the pointer first, and with `Locked` if it finds the lock
   of another change, without waiting (ADR-008). The lock `refs.lock` is held for the check, the
   comparison, and the write of one change, from its first object to its last move, including the
-  flushed entry of the operation log (ADR-008, ADR-011); the gate is the one exception (below). It is never held for a test, a build, or
-  a review. This is the one serialisation point that exists.
+  flushed entry of the operation log (ADR-008, ADR-011); the gate is the one exception (below).
+  It is never held for a test, a build, or a review. This is the one serialisation point that exists.
 - **A conflict is data.** A merge that does not decide a place returns a sum of trees, and a
   commit can hold it (ADR-005, ADR-010). The conflict model is decided in phase 3: a conflict does
   not stop a merge, a rebase, or a commit, and it is resolved by a later commit that keeps the
@@ -52,11 +52,12 @@ design that holds a lock, or a place in a queue, for the duration of a test is r
 This amends ADR-008 and ADR-011 for the gate only. The gate writes the blobs, the trees, and the
 commit `M` of the merge before it takes the lock of the references. Under the lock remain the check
 of the tip, the entry of the operation log, and the swap of the pointer, so the lock covers the
-entry and the move only.
+check, the entry, and the move only.
 
 A purge may remove objects that no reference reaches (ADR-014), so the gate checks under the lock
-that `M` is in the store. ADR-011 already requires this check. If `M` is missing, the gate starts
-again at step 1 of the merge. `track`, `commit`, and `op restore` keep taking the lock before their
+that `M` is in the store. ADR-011 already makes `Repository` refuse a commit that is not in the
+store; the gate reacts by starting again at step 1 of the merge. `track`, `commit`, `status`, and
+`op restore` keep taking the lock before their
 first object (ADR-014, STEMMA-49); the amendment does not reach them.
 
 ### A check result is evidence about a pair of commits
@@ -97,7 +98,8 @@ values are in the policy file (ADR-004), so changing them is level 3: a human ow
 agent cannot loosen the bounds under which its own change is merged.
 
 - **Reservation.** After `N` invalidated runs in a row of a change of level 2 or 3, the change gets
-  a *reservation*; `N` is 3 by default. While it holds, merges of level 0 and 1 wait until the change is merged, has failed, or is closed. The reservation ends after twice the
+  a *reservation*; `N` is 3 by default. While it holds, merges of level 0 and 1 wait
+  until the change is merged, has failed, or is closed. The reservation ends after twice the
   duration of the last check run of the change, so a stuck change cannot block `main`. At most one
   reservation exists at a time, and the oldest change wins.
 - **Unverified window.** The policy has `max_unverified`, 10 by default. When that many commits lie

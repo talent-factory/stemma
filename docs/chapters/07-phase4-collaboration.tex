@@ -103,8 +103,8 @@ Unter der Sperre bleiben die Prüfung der Spitze, der Eintrag des Operation Logs
 Zeigerbewegung (ADR-008, ADR-011).
 Weil ein Purge unreferenzierte Objekte löschen könnte, prüft das Gate unter der Sperre,
 ob \type{M} im Speicher liegt, und beginnt sonst bei Schritt 1 von vorn.
-\type{track}, \type{commit} und \type{op restore} nehmen die Sperre weiterhin vor ihrem ersten
-Objekt.
+\type{track}, \type{commit}, \type{status} und \type{op restore} nehmen die Sperre weiterhin
+vor ihrem ersten Objekt.
 
 {\bf Was ein Prüfergebnis aussagt.}
 Eine Prüfung ist eine Aussage über einen Commit: Sein Tree hat bestanden oder nicht.
@@ -211,7 +211,7 @@ bei den Stufen 0 und 1 zählt jeder registrierte Akteur.
 Jeder Commit von \type{main} ist der saubere Merge einer Änderung, deren Prüfungen im Augenblick
 der Zeigerbewegung nach der Regel oben bestanden hatten.
 Die letzte geprüfte Spitze ist grün, oder eine Behebung läuft.
-Zwischen dieser Spitze und der aktuellen liegen nur die Commits, die während eines Laufs landeten;
+Zwischen dieser Spitze und der aktuellen liegen ungeprüfte Commits;
 ihre Zahl ist begrenzt, aber nicht null: höchstens \type{max_unverified} plus das, was während
 eines Laufs landet.
 Grün sagt \quotation{dieser Commit hat bestanden}, nicht \quotation{der Stand von \type{main}

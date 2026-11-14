@@ -118,14 +118,13 @@ A statement that the tree of one commit passed or failed a set of tests, togethe
 _Avoid_: Build status
 
 **Verified tip**:
-The newest commit of `main` that a run of the checks covered. The commits after it are the
+The newest commit of `main` that a finished run of the checks covered. The commits after it are the
 unverified window. (geprüfte Spitze)
 
 **Unverified window**:
 The commits of `main` after the verified tip. Its size is bounded by `max_unverified` of the policy
 (10 by default) plus what lands during one run; at that size all merges wait until a run on the tip
-has started. (Fenster
-ungeprüfter Commits)
+has started; the repairing change is exempt. (Fenster ungeprüfter Commits)
 
 **Reservation**:
 The claim that a change of level 2 or 3 gets after `N` invalidated runs in a row (3 by default),
