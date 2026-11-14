@@ -238,6 +238,50 @@ Verworfen sind eine Queue mit globaler Sperre, eine Queue mit spekulativen Batch
 jeder Änderung bei jeder Bewegung von \type{main} und der Verzicht auf die Prüfung nach dem Merge;
 die Gründe stehen in ADR-019.
 
+\section[sec:signatures]{Signaturen}
+
+Dieser Abschnitt beschreibt, wie der Kern Beweise signiert und prüft.
+Das Verfahren steht in ADR-003 fest: SSHSIG mit Ed25519, und die Wahl der Bibliothek in ADR-020.
+Commits sind nicht signiert.
+Ein Beweis signiert einen Eintrag des Operationslogs oder eine Freigabe.
+
+{\bf Was signiert wird.}
+Signiert werden nicht die Nutzdaten allein.
+Davor steht eine Kopfzeile mit dem Typ und der Formatversion der Nutzdaten (Domänentrennung):
+
+\starttyping
+stemma-proof\n<Typ>\n<Version>\n<Nutzdaten>
+\stoptyping
+
+Der Typ ist \type{log-entry} oder \type{approval}, die Version heute 1.
+Das Kennwort, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
+also beginnen die Nutzdaten eindeutig nach dem dritten.
+Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Logeintrag,
+und eine Signatur einer späteren Formatversion nie als Version 1.
+Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
+
+{\bf Signieren und prüfen.}
+Signiert wird über den Trait \type{Signer}.
+Seine Implementierung ruft \type{ssh-keygen -Y sign} auf, also liest Stemma nie einen privaten
+Schlüssel; liegt der Schlüssel im \type{ssh-agent}, genügt die Datei des öffentlichen.
+Ein privater Schlüssel mit Passphrase braucht ein Terminal, sonst schlägt das Signieren fehl.
+Geprüft wird im Prozess mit der Bibliothek \type{ssh-key}, ohne Kindprozess und ohne Datei,
+auf jedem Rechner, der den Kern baut.
+Die Prüfung nimmt den Schlüssel, den der Aufrufer wählt.
+Nennt die Signatur einen anderen, schlägt sie fehl.
+Welcher Schlüssel zu welchem Akteur gehört, entscheidet das Akteursregister des Basis-Commits;
+das ist nicht Teil dieses Abschnitts.
+
+Angenommen werden nur Ed25519-Schlüssel und der Hash SHA-512.
+Eine Signatur mit einem anderen Namensraum, Schlüsseltyp oder Hash lehnt schon das Einlesen ab.
+Eine unbekannte Formatversion lehnt die Prüfung ab, bevor sie die Signatur ansieht,
+und ein falscher Typ, eine falsche Version, ein anderer Schlüssel oder andere Nutzdaten
+lassen die Prüfung fehlschlagen.
+Die Tests der Logik brauchen keinen Schlüssel auf der Platte: ein \type{Signer} im Test leitet
+einen Schlüssel aus einem festen Startwert ab.
+Nur die Tests der Implementierung mit \type{ssh-keygen} legen einen Schlüssel in einem
+temporären Verzeichnis an und werden ohne \type{ssh-keygen} mit einem Hinweis übersprungen.
+
 \section[sec:policy-file]{Die Policy-Datei}
 
 Die Risikostufen von ADR-004 stehen in der Datei \type{.stemma-policy} im Wurzelverzeichnis.

@@ -18,6 +18,20 @@ confidence-threshold = 0.93
 crate = "foldhash"
 allow = ["Zlib"]
 
+# The dalek crates and `subtle`, which `ssh-key` needs for SSHSIG (ADR-020), carry BSD-3-Clause
+# only. The exceptions name the crates instead of allowing the license for the whole tree.
+[[licenses.exceptions]]
+crate = "curve25519-dalek"
+allow = ["BSD-3-Clause"]
+
+[[licenses.exceptions]]
+crate = "ed25519-dalek"
+allow = ["BSD-3-Clause"]
+
+[[licenses.exceptions]]
+crate = "subtle"
+allow = ["BSD-3-Clause"]
+
 [licenses.private]
 # The crates of the workspace are not published (`publish = false`), so their own license is not
 # checked.
