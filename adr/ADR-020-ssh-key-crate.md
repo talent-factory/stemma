@@ -1,9 +1,8 @@
 # ADR-020: The `ssh-key` crate for SSHSIG signatures
 
-**Status:** Proposal, open for decision by the human maintainer (STEMMA-234). The dependency is a
-level 3 change (ADR-004, rule 3: signatures and keys) and is not added to `Cargo.lock` before
-this ADR is accepted. The scheme itself, SSHSIG with Ed25519, is decided in STEMMA-224 and
-recorded in ADR-003.
+**Status:** Accepted by the human maintainer on 2026-11-14 (STEMMA-234), including the
+`BSD-3-Clause` exceptions. The dependency is a level 3 change (ADR-004, rule 3: signatures and
+keys). The scheme itself, SSHSIG with Ed25519, is decided in STEMMA-224 and recorded in ADR-003.
 
 ## Context
 
@@ -67,7 +66,7 @@ Candidates, measured on 2026-11-13 in a scratch crate against `deny.toml` (toolc
 
 ## Open Points
 
-- [ ] Acceptance of this ADR by the human maintainer.
+- [x] Acceptance of this ADR by the human maintainer, on 2026-11-14.
 - [ ] Notice of the third-party licenses in the distribution of a release (the clause of
       `BSD-3-Clause`). `just release-check` does not check it yet.
 - [ ] Owners of `ssh-key`, `ed25519-dalek`, and `curve25519-dalek` on crates.io were not looked
