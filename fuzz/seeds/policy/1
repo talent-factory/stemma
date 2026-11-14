@@ -1,0 +1,8 @@
+stemma-policy 1
+# paths
+level 3 .github/workflows/
+level 3 justfile
+level 2 .stemmaignore
+level 1 crates/stemma-cli/
+level 0 docs/
+level 0 *.md

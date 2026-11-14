@@ -92,7 +92,10 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   command that writes holds it longer, from its first object to its last move, at least as long as
   its snapshot takes, and a purge from its plan to its end (ADR-014, STEMMA-49). The command line
   removes the lock of an interrupted command (Ctrl-C, a termination signal) before the process ends,
-  so only `kill -9`, a crash, or a handler that could not be installed leaves it behind.
+  so only `kill -9`, a crash, or a handler that could not be installed leaves it behind. The merge
+  gate is the one exception to "from its first object" (decided in STEMMA-229, not implemented): it
+  writes the objects of the merge before it takes the lock, and the lock covers the check of the
+  tip, the entry, and the swap (ADR-019, STEMMA-229).
 - **A lock that a process left is taken over** *(confirmed, STEMMA-51)*. While a process holds
   `refs.lock`, it holds a lock of the operating system on the file
   `<metadata directory>/refs.lock.guard`, which stays and has no content (`File::try_lock`). The
