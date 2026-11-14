@@ -1,0 +1,7 @@
+stemma-policy 1
+lease 90
+approvals 0 2
+approvals 3 1
+operation purge 3
+operation tag 3
+level 1 a/**/b?

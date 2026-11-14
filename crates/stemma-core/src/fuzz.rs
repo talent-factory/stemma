@@ -1,5 +1,6 @@
 //! The checks of the fuzz targets in `fuzz/` (STEMMA-20), one for each of the strict readers of
-//! a tree, a commit, an actor line, the index, an entry of the log, and the journal of a purge,
+//! a tree, a commit, an actor line, the index, an entry of the log, the journal of a purge, and the
+//! policy file (whose check is a fixed point, see [`policy`]),
 //! and one for the merge of the lines of a file ([`merge_lines`]), which is no reader.
 //! The readers of HEAD and of a branch file are a single line and have only the property tests.
 //! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, or
@@ -80,6 +81,67 @@ pub fn entry(input: &[u8]) {
 /// checked.
 pub fn journal(input: &[u8]) {
     crate::repository::fuzz_journal(input);
+}
+
+/// A policy file (`Policy::parse`). Comments and empty lines are not kept, so the check is not that
+/// the encoding is the input but that it is a fixed point: the canonical form of an accepted file
+/// is accepted, is an equal policy, gives the same form again, and has the same settings and the
+/// same levels for the probed paths. A panic in the reader or in the evaluation is a finding as
+/// well.
+pub fn policy(input: &[u8]) {
+    use crate::oplog::OperationName;
+    use crate::policy::{EntryKind, Policy, RiskLevel, OPERATION_FLOORS};
+    match Policy::parse(input) {
+        Ok(policy) => {
+            let canonical = policy.encode();
+            let again = Policy::parse(canonical.as_bytes()).expect("the canonical form is read");
+            assert_eq!(again, policy, "the canonical form is another policy");
+            assert_eq!(again.encode(), canonical, "the canonical form changed");
+            assert_eq!(again.lease(), policy.lease(), "the lease changed");
+            // The settings do not change, for the floors, the levels, and the names in the file.
+            for level in (0..4).filter_map(RiskLevel::from_number) {
+                assert_eq!(again.agent_approvals(level), policy.agent_approvals(level));
+            }
+            let lines = std::str::from_utf8(input).expect("an accepted policy file is UTF-8");
+            let names = lines
+                .lines()
+                .filter_map(|line| line.strip_prefix("operation "))
+                .filter_map(|rest| rest.split(' ').next())
+                .chain(OPERATION_FLOORS.map(|(name, _)| name))
+                .filter_map(|name| OperationName::try_new(name).ok());
+            for name in names {
+                assert_eq!(again.operation_level(&name), policy.operation_level(&name));
+            }
+            // The evaluation never panics and does not depend on the spelling of the file. The
+            // probes are the patterns of the file as paths (wildcards as letters, no slash at
+            // the ends) and the names that a policy treats apart.
+            let probes = lines
+                .lines()
+                .filter_map(|line| line.strip_prefix("level "))
+                .filter_map(|rest| rest.split_once(' '))
+                .map(|(_, pattern)| pattern.replace(['*', '?'], "x"))
+                .map(|pattern| pattern.trim_matches('/').to_owned())
+                .chain([".stemma-policy", ".stemma-actors/a", "a", "a/b"].map(str::to_owned));
+            // The floor holds for every policy.
+            for path in [".stemma-policy", ".stemma-actors", ".stemma-actors/a"] {
+                assert_eq!(
+                    policy.level_of_path(path, EntryKind::File),
+                    Ok(RiskLevel::Three),
+                    "{path} is below level 3"
+                );
+            }
+            for path in probes {
+                for kind in [EntryKind::File, EntryKind::Directory] {
+                    assert_eq!(
+                        again.level_of_path(&path, kind),
+                        policy.level_of_path(&path, kind),
+                        "the level of {path:?} changed"
+                    );
+                }
+            }
+        }
+        Err(error) => check_rejection(&error),
+    }
 }
 
 /// The byte that separates the three texts of an input of [`merge_lines`].
@@ -190,7 +252,7 @@ pub(crate) mod tests {
     fn every_seed_is_read_and_the_checks_hold_for_it_and_its_prefixes() {
         type Check = fn(&[u8]);
         type Accepts = fn(&[u8]) -> bool;
-        let targets: [(&str, Check, Accepts); 6] = [
+        let targets: [(&str, Check, Accepts); 7] = [
             ("tree", super::tree, |b| {
                 crate::object::Tree::parse(b).is_ok()
             }),
@@ -208,6 +270,9 @@ pub(crate) mod tests {
             }),
             ("entry", super::entry, |b| {
                 crate::oplog::Entry::parse(b).is_ok()
+            }),
+            ("policy", super::policy, |b| {
+                crate::policy::Policy::parse(b).is_ok()
             }),
         ];
         for (target, check, accepts) in targets {
