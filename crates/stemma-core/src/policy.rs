@@ -13,19 +13,19 @@
 //! # Format
 //!
 //! The first line that is neither empty nor a comment is the header `stemma-policy 1`; a file
-//! without it, or with another version, is an error. Empty lines and comments (`#`) are allowed, as in the exclusion file. Every other line
-//! is one of these, with one space between the fields:
+//! without it, or with another version, is an error. Empty lines and comments (`#`) are allowed,
+//! as in the exclusion file. Every other line is one of these, with one space between the fields:
 //!
 //! | Line | Meaning |
 //! |---|---|
 //! | `level N PATTERN` | The paths that the pattern matches have level `N` (0 to 3). |
 //! | `operation NAME N` | The operation `NAME`, which touches no path, has level `N`. |
-//! | `approvals N COUNT` | A change of level `N` needs `COUNT` agent approvals. |
+//! | `approvals N COUNT` | A change of level `N` needs `COUNT` agent approvals (at most 8). |
 //! | `lease MINUTES` | The lease of a branch lasts `MINUTES` (5 to 1,440). |
 //!
 //! The pattern is the pattern language of ADR-012, with one difference: the name `.stemmaignore`
-//! is allowed, since the policy gives it level 2. `operation`, `approvals`, and `lease` stand at
-//! most once, `approvals` once for each level.
+//! is allowed, since the policy gives it level 2. `lease` stands at most once, `approvals` once
+//! for each level, and `operation` once for each name.
 //!
 //! # Rules
 //!
@@ -33,21 +33,24 @@
 //!   name has the highest of their levels, so no line can lower what another one raises.
 //! - The built-in floor: the policy file and the files of the actor register always have level 3
 //!   ([`REGISTER_DIR`]). The evaluation applies the floor whatever the lines say. The reader also
-//!   refuses a `level` line below 3 whose pattern obviously lowers it, that is, one that matches
-//!   the policy file, the register directory, or a file of that directory that it probes; a line
-//!   for a more specific register file is caught by the evaluation only, until the register has a
-//!   layout.
+//!   refuses a `level` line below 3 whose pattern lowers it by its look, that is, one that matches
+//!   the policy file, the register directory, or an anchored path below that directory (a
+//!   pattern with a leading `**` is refused as well). A name at any depth is checked against the
+//!   directory name only; whatever slips through is raised to 3 by the evaluation.
 //! - A policy may raise the requirements of a level, never lower them. The agent approvals of a
 //!   level and the levels of the operations in [`OPERATION_FLOORS`] are a floor of the core:
-//!   a line below it makes the policy invalid. In particular `purge` has level 3, and only a human
-//!   may purge (ADR-014); no line changes that.
+//!   a line below it makes the policy invalid, and so does an operation below [`DEFAULT_LEVEL`].
+//!   In particular `purge` has level 3, and only a human may purge (ADR-014); no line changes
+//!   that.
 //! - A pattern matches a directory as well as a file, as in ADR-012, and a match on a directory
 //!   covers everything below it: `*.md` gives level 0 also to `x.md/build.rs`. A line for
 //!   directories ends with `/`, and a file name that a wildcard may also fit needs care.
 //! - The time of an evaluation is bounded: at most [`MAX_LEVEL_LINES`] `level` lines, and a path of
-//!   at most [`MAX_PATH_PARTS`] parts without a backslash; a path beyond that is an error.
+//!   at most [`MAX_PATH_PARTS`] parts, and a backslash in a part is an error as well.
 //! - Names are compared byte by byte, as in ADR-012: no Unicode normalization (open item of
-//!   ADR-012). Only the names of the floor ignore the case and the aliases of Windows.
+//!   ADR-012), so a rule for `secrets/` does not cover `Secrets/` on a case-insensitive file
+//!   system. Only the names of the floor ignore the case, the trailing dots and spaces, and a
+//!   `:stream`.
 //! - The lease has bounds that the code fixes ([`MIN_LEASE_MINUTES`], [`MAX_LEASE_MINUTES`]); a
 //!   policy may change the lease only inside them.
 //!
@@ -127,15 +130,18 @@ const AGENT_APPROVAL_FLOORS: [u32; 4] = [1, 2, 2, 0];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RiskLevel {
     /// Docs, examples, formatting, tests only.
-    Zero,
+    Zero = 0,
     /// New CLI commands, output formats, logic without persistence.
-    One,
+    One = 1,
     /// Object format, hash, ref updates, lease, merge, network, migrations, new dependencies.
-    Two,
+    Two = 2,
     /// RBAC, signatures and keys, namespace separation, CI and release, policy files, the actor
     /// register.
-    Three,
+    Three = 3,
 }
+
+// The tables with one cell for each level are indexed by the number of the level.
+const _: () = assert!(RiskLevel::Three as usize + 1 == AGENT_APPROVAL_FLOORS.len());
 
 impl RiskLevel {
     /// The level with this number, or `None` above 3.
@@ -221,12 +227,13 @@ impl<'a> PathChange<'a> {
 /// A policy: the rules of a repository for the level of a change, the approvals, the operations,
 /// and the lease.
 ///
-/// Two policies are equal if they have the same settings and the same `level` lines in the same
-/// order; comments, empty lines, and the line numbers do not count, so [`Policy::encode`]
-/// followed by [`Policy::parse`] gives an equal policy.
+/// Two policies are equal if they have the same lines (the settings and the `level` lines in the
+/// same order); comments, empty lines, and the line numbers do not count, so [`Policy::encode`]
+/// followed by [`Policy::parse`] gives an equal policy. A line that repeats the floor of the core
+/// (`lease 60`, `approvals 1 1`) evaluates like no line, but is another policy.
 /// [`Policy::default`] is the policy of a repository without a policy file, and for nothing else:
-/// a file that cannot be read is an error, never the default policy, and equals the policy
-/// of a file that has only the header: every path has level 2, except the floor.
+/// a file that cannot be read is an error, never the default policy. It equals the policy of a
+/// file that has only the header: every path has level 2, except the floor.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
     paths: Vec<PathRule>,
@@ -261,9 +268,10 @@ impl Policy {
     ///
     /// # Errors
     ///
-    /// Returns a [`PolicyParseError`] for the first problem: an unknown version or line, a line
-    /// that is malformed, a `level` line that lowers the floor, or a line that sets a value below
-    /// the floor of the core or outside its bounds.
+    /// Returns a [`PolicyParseError`] for the first problem, among others: an unknown version or
+    /// line, a second header or setting, a line that is malformed, a `level` line that lowers the
+    /// floor, or a line that sets a value below the floor of the core or outside its bounds. See
+    /// [`PolicyProblem`].
     pub fn parse(bytes: &[u8]) -> Result<Self, PolicyParseError> {
         let mut policy = Self::default();
         // The number of the line of each setting, to refuse a second one.
@@ -340,13 +348,16 @@ impl Policy {
                 };
                 let operation = OperationName::try_new(name).map_err(PolicyProblem::Operation)?;
                 let level = read_level(level)?;
-                if let Some((_, floor)) = OPERATION_FLOORS.iter().find(|(n, _)| *n == name) {
-                    if level < *floor {
-                        return Err(PolicyProblem::OperationBelowFloor {
-                            operation: name.to_owned(),
-                            floor: *floor,
-                        });
-                    }
+                // An operation without a floor of its own is never below the default level.
+                let floor = OPERATION_FLOORS
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map_or(DEFAULT_LEVEL, |(_, floor)| *floor);
+                if level < floor {
+                    return Err(PolicyProblem::OperationBelowFloor {
+                        operation: name.to_owned(),
+                        floor,
+                    });
                 }
                 once(format!("operation {operation}"))?;
                 self.operations.insert(name.to_owned(), level);
@@ -418,7 +429,7 @@ impl Policy {
     /// # Errors
     ///
     /// Returns a [`PathError`] if the path is not a relative path of non-empty names written with
-    /// `/`.
+    /// `/`, is too deep, or has a name that a tree refuses.
     pub fn level_of_path(&self, path: &str, kind: EntryKind) -> Result<RiskLevel, PathError> {
         check_path(path)?;
         let is_directory = kind == EntryKind::Directory;
@@ -475,7 +486,7 @@ impl Policy {
         self.approvals[index].unwrap_or(AGENT_APPROVAL_FLOORS[index])
     }
 
-    /// The lease of a branch: the line of the policy, or 60 minutes.
+    /// The lease of a branch: the line of the policy, or [`DEFAULT_LEASE_MINUTES`].
     pub fn lease(&self) -> Duration {
         Duration::from_secs(u64::from(self.lease_minutes.unwrap_or(DEFAULT_LEASE_MINUTES)) * 60)
     }
@@ -483,15 +494,17 @@ impl Policy {
 
 /// The paths that have level 3 whatever a policy says: the policy file, and the actor register.
 ///
-/// The comparison ignores the case of ASCII letters, and for a Windows file system the trailing
-/// dots and spaces and a stream (`:name`) of the name: such a system opens `.Stemma-Policy` and
-/// `.stemma-policy.` as the policy file, so the spelling must not lower the floor (as for
-/// `.stemma` in the names of a tree, and the exclusion file in ADR-012).
+/// The comparison ignores the case of letters (Unicode case folding), the trailing dots and
+/// spaces, and a stream (`:name`) of the name: a case-insensitive or Windows file system opens
+/// `.Stemma-Policy` and `.stemma-policy.` as the policy file, so the spelling must not lower the
+/// floor (as for `.stemma` in the names of a tree, and the exclusion file in ADR-012). Short
+/// names (`STEMMA~1`) are refused by the names of a tree already.
 fn is_floor_path(path: &str) -> bool {
+    // Unicode case folding, as `is_reserved_name` of the trees does: a file system may fold
+    // letters like the long s (U+017F) to ASCII.
     let is_name = |name: &str, floor: &str| {
         let name = name.split(':').next().unwrap_or(name);
-        name.trim_end_matches(['.', ' '])
-            .eq_ignore_ascii_case(floor)
+        name.trim_end_matches(['.', ' ']).to_uppercase() == floor.to_uppercase()
     };
     let top = path.split('/').next().unwrap_or(path);
     is_name(top, REGISTER_DIR) || (path == top && is_name(path, FILE_NAME))
@@ -642,15 +655,17 @@ pub enum PolicyProblem {
     Usage(&'static str),
     /// A level that is not a number from 0 to 3.
     BadLevel(String),
-    /// A number that is not written with digits only, without a leading zero.
+    /// A number that is not written with digits only, without a leading zero, or has more than
+    /// nine digits.
     BadNumber(String),
     /// The pattern is refused, as the reader of the exclusion file refuses it.
     Pattern(LineProblem),
-    /// The pattern is `**` or the like, which matches every path: write the level of a path that
+    /// The pattern has only `**` parts, so it matches every path: write the level of a path that
     /// no line names with the lines for the paths that differ.
     MatchesEverything,
     /// A `level` line below 3 for a pattern that matches the policy file or the register (the
-    /// directory, or the probe file in it), which have level 3 always. Carries the level and the
+    /// directory, or a path below it that an anchored pattern may match), which have level 3
+    /// always. Carries the level and the
     /// path that it matches.
     LowersFloor {
         /// The level of the line.
@@ -724,7 +739,7 @@ impl fmt::Display for PolicyProblem {
             ),
             Self::BadNumber(text) => write!(
                 f,
-                "`{}` is not a number; write digits only, without a leading zero",
+                "`{}` is not a number; write at most nine digits, without a leading zero",
                 text.escape_debug()
             ),
             Self::MatchesEverything => {
@@ -1035,6 +1050,110 @@ mod tests {
     }
 
     #[test]
+    fn the_floor_folds_unicode_case_like_a_tree_does() {
+        // The long s (U+017F) folds to `s` on a file system that folds case.
+        let p = policy("stemma-policy 1\nlevel 0 *.pub\n");
+        for path in [".\u{17f}temma-policy", ".\u{17f}temma-actors/k.pub"] {
+            assert_eq!(level(&p, path), 3, "{path}");
+        }
+    }
+
+    #[test]
+    fn an_operation_without_a_floor_is_never_below_the_default_level() {
+        let error = message("stemma-policy 1\noperation sync 1\n");
+        assert!(error.contains("sync"), "{error}");
+        assert!(parse("stemma-policy 1\noperation sync 3\n").is_ok());
+        assert!(parse("stemma-policy 1\noperation sync 2\n").is_ok());
+    }
+
+    #[test]
+    fn a_double_star_matches_zero_or_more_parts() {
+        let p = policy("stemma-policy 1\nlevel 3 a/**/b\nlevel 3 **/secret\nlevel 0 docs/**\n");
+        for path in [
+            "a/b",
+            "a/x/b",
+            "a/x/y/b",
+            "secret",
+            "p/secret",
+            "p/q/secret",
+        ] {
+            assert_eq!(level(&p, path), 3, "{path}");
+        }
+        for path in ["x/a/b", "a", "a/c/d"] {
+            assert_eq!(level(&p, path), 2, "{path}");
+        }
+        assert_eq!(level(&p, "docs/x/y"), 0);
+    }
+
+    #[test]
+    fn a_match_on_a_directory_covers_everything_below_it() {
+        let p = policy("stemma-policy 1\nlevel 0 *.md\nlevel 3 build.rs\nlevel 0 docs/\n");
+        assert_eq!(level(&p, "x.md/build.rs"), 3);
+        assert_eq!(level(&p, "x.md/other.rs"), 0);
+        assert_eq!(level(&p, "docs/a"), 0);
+        // A pattern with a trailing `/` matches only a directory.
+        assert_eq!(level(&p, "docs"), 2);
+        assert_eq!(
+            p.level_of_path("docs", EntryKind::Directory),
+            Ok(RiskLevel::Zero)
+        );
+    }
+
+    #[test]
+    fn an_anchored_pattern_matches_from_the_root_and_a_bare_one_at_any_depth() {
+        let p = policy(
+            "stemma-policy 1\nlevel 3 vendor/\nlevel 3 docs/adr/\nlevel 3 /top\nlevel 1 draft-?.md\n",
+        );
+        for path in ["a/vendor/x", "docs/adr/a", "top"] {
+            assert_eq!(level(&p, path), 3, "{path}");
+        }
+        for path in ["x/docs/adr/a", "a/top", "draft-12.md"] {
+            assert_eq!(level(&p, path), 2, "{path}");
+        }
+        assert_eq!(level(&p, "draft-1.md"), 1);
+    }
+
+    #[test]
+    fn the_same_pattern_at_two_levels_gives_the_higher_one_in_either_order() {
+        for text in [
+            "stemma-policy 1\nlevel 0 docs/\nlevel 3 docs/\n",
+            "stemma-policy 1\nlevel 3 docs/\nlevel 0 docs/\n",
+        ] {
+            let p = policy(text);
+            assert_eq!(level(&p, "docs/a"), 3, "{text:?}");
+            assert_eq!(policy(&p.encode()), p);
+        }
+    }
+
+    #[test]
+    fn the_line_of_an_error_is_the_physical_line() {
+        let text = "# c\r\n\r\nstemma-policy 1\r\n# d\r\n\r\nlease 4\r\n";
+        assert_eq!(parse(text).unwrap_err().line(), NonZeroUsize::new(6));
+        let mut many = String::from("stemma-policy 1\n");
+        for n in 0..=MAX_LEVEL_LINES {
+            many.push_str(&format!("level 3 a{n}\n"));
+        }
+        assert_eq!(
+            parse(&many).unwrap_err().line(),
+            NonZeroUsize::new(MAX_LEVEL_LINES + 2)
+        );
+        // A problem of the whole file has no line.
+        for bytes in [
+            &b"# only\n"[..],
+            b"\xef\xbb\xbfstemma-policy 1\n",
+            b"stemma-policy 1\n\xff\n",
+        ] {
+            assert_eq!(Policy::parse(bytes).unwrap_err().line(), None, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_path_is_an_error_even_after_level_3() {
+        let p = Policy::default();
+        assert!(p.level_of(&[file(".stemma-policy"), file("a//b")]).is_err());
+    }
+
+    #[test]
     fn a_path_that_is_too_deep_or_has_a_backslash_is_an_error() {
         let p = policy("stemma-policy 1\nlevel 1 a/**/b\n");
         let deep = |n: usize| vec!["a"; n].join("/");
@@ -1196,7 +1315,7 @@ mod tests {
         );
         assert!(message("stemma-policy 1\noperation restore 1\n").contains("below 2"));
         assert!(message("stemma-policy 1\noperation untag 0\n").contains("below 2"));
-        policy("stemma-policy 1\noperation restore 3\noperation diff 0\n");
+        policy("stemma-policy 1\noperation restore 3\noperation diff 2\n");
         assert_eq!(
             message("stemma-policy 1\napprovals 1 1\n"),
             "line 2: 1 approvals for level 1; a policy may ask for 2 to 8"
@@ -1432,7 +1551,7 @@ mod tests {
         let all = "stemma-policy 1\nlevel 1 a\nlevel 3 b/\n";
         assert_eq!(policy(all).encode(), all);
         let settings = "stemma-policy 1\nlease 7\napprovals 0 3\napprovals 3 1\n\
-                        operation diff 1\noperation tag 3\n";
+                        operation diff 3\noperation tag 3\n";
         assert_eq!(policy(settings).encode(), settings);
         assert_eq!(Policy::default().encode(), "stemma-policy 1\n");
     }

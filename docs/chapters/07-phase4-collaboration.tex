@@ -218,8 +218,8 @@ Jede weitere Zeile hat eine der vier Formen von \in{Tabelle}[tab:policy-lines].
 \stopxrow
 \startxrow
 \startxcell \type{approvals N ANZAHL} \stopxcell
-\startxcell Eine Änderung der Stufe \type{N} braucht \type{ANZAHL} Freigaben von Agenten.
-\stopxcell
+\startxcell Eine Änderung der Stufe \type{N} braucht \type{ANZAHL} Freigaben von Agenten
+(höchstens 8). \stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
 \startxcell \type{lease MINUTEN} \stopxcell
@@ -230,8 +230,8 @@ Jede weitere Zeile hat eine der vier Formen von \in{Tabelle}[tab:policy-lines].
 
 Das Muster hat die Sprache von ADR-012, mit einer Ausnahme:
 Der Name \type{.stemmaignore} ist erlaubt, denn ADR-004 gibt der Datei die Stufe 2.
-\type{operation}, \type{approvals} und \type{lease} stehen höchstens einmal,
-\type{approvals} einmal je Stufe.
+\type{lease} steht höchstens einmal, \type{approvals} einmal je Stufe
+und \type{operation} einmal je Name.
 Ein Beispiel mit Zeilen aus der Tabelle der Pfade von ADR-004:
 
 \starttyping
@@ -259,8 +259,8 @@ spielt keine Rolle.
 Ein Muster trifft wie in ADR-012 auch ein Verzeichnis und damit alles darunter;
 eine Zeile für Verzeichnisse endet mit \type{/}.
 Die Zeit einer Auswertung ist begrenzt:
-höchstens 1024 \type{level}-Zeilen und Pfade bis 128 Teile ohne Rückwärtsstrich;
-ein längerer Pfad ist ein Fehler und keine tiefere Stufe.
+höchstens 1024 \type{level}-Zeilen und Pfade bis 128 Teile;
+ein längerer Pfad ist ein Fehler und keine tiefere Stufe, ebenso ein Rückwärtsstrich im Pfad.
 
 {\bf Der eingebaute Boden.}
 Die Policy-Datei und die Dateien des Akteursregisters haben immer Stufe 3.
@@ -269,15 +269,21 @@ ein Muster, das die Policy-Datei oder das Verzeichnis des Registers trifft,
 oder ein verankertes Muster, das darunter weitergeht.
 Die Auswertung wendet den Boden ohnehin an, was die Zeilen auch sagen,
 und sie vergleicht die Namen ohne Rücksicht auf die Gross- und Kleinschreibung,
+auf Punkte und Leerzeichen am Ende und auf einen \type{:Strom},
 weil ein Dateisystem \type{.Stemma-Policy} als dieselbe Datei öffnen kann.
+Alle anderen Namen vergleicht die Auswertung Byte für Byte:
+Eine Zeile für \type{secrets/} trifft auf einem Dateisystem ohne Unterscheidung der Schreibweise
+nicht auch \type{Secrets/}.
 Das Register hat noch kein Layout (STEMMA-221, STEMMA-222);
 bis dahin steht sein Verzeichnis \type{.stemma-actors} als Platzhalter im Code.
 
 {\bf Anheben, nie senken.}
 Eine Policy darf die Anforderungen einer Stufe nur anheben.
 Die Zahl der Freigaben von Agenten je Stufe (1, 2, 2 und 0) und die Stufe der Operationen
-\type{purge} (3), \type{restore}, \type{tag} und \type{untag} (je 2) sind der Boden des Kerns;
+\type{purge} und \type{take-over} (je 3) sowie \type{checkout}, \type{commit},
+\type{restore}, \type{snapshot}, \type{tag} und \type{untag} (je 2) sind der Boden des Kerns;
 eine Zeile darunter macht die Policy ungültig.
+Eine andere Operation steht nie unter Stufe 2, und die Freigaben je Stufe nie über 8.
 Die Operation \type{purge} bleibt allein dem Menschen vorbehalten (ADR-014), auch wenn die Policy
 nichts über sie sagt.
 Die Lease dauert ohne Zeile 60 Minuten; die Grenzen von 5 Minuten und 24 Stunden liegen im Code.

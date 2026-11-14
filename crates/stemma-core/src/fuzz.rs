@@ -102,7 +102,7 @@ pub fn policy(input: &[u8]) {
             for level in (0..4).filter_map(RiskLevel::from_number) {
                 assert_eq!(again.agent_approvals(level), policy.agent_approvals(level));
             }
-            let lines = std::str::from_utf8(input).unwrap_or_default();
+            let lines = std::str::from_utf8(input).expect("an accepted policy file is UTF-8");
             let names = lines
                 .lines()
                 .filter_map(|line| line.strip_prefix("operation "))
