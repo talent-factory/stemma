@@ -202,8 +202,8 @@ stemma-proof\n<Typ>\n<Version>\n<Nutzdaten>
 \stoptyping
 
 Der Typ ist \type{log-entry} oder \type{approval}, die Version heute 1.
-Die ersten drei Zeilen enthalten selbst keinen Zeilenumbruch, also beginnen die Nutzdaten
-eindeutig nach der dritten.
+Das Kennwort, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
+also beginnen die Nutzdaten eindeutig nach dem dritten.
 Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Logeintrag,
 und eine Signatur einer späteren Formatversion nie als Version 1.
 Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
@@ -212,9 +212,11 @@ Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
 Signiert wird über den Trait \type{Signer}.
 Seine Implementierung ruft \type{ssh-keygen -Y sign} auf, also liest Stemma nie einen privaten
 Schlüssel; liegt der Schlüssel im \type{ssh-agent}, genügt die Datei des öffentlichen.
+Ein privater Schlüssel mit Passphrase braucht ein Terminal, sonst schlägt das Signieren fehl.
 Geprüft wird im Prozess mit der Bibliothek \type{ssh-key}, ohne Kindprozess und ohne Datei,
 auf jedem Rechner, der den Kern baut.
-Die Prüfung nimmt den Schlüssel, den der Aufrufer wählt, und nicht den, den die Signatur nennt.
+Die Prüfung nimmt den Schlüssel, den der Aufrufer wählt.
+Nennt die Signatur einen anderen, schlägt sie fehl.
 Welcher Schlüssel zu welchem Akteur gehört, entscheidet das Akteursregister des Basis-Commits;
 das ist nicht Teil dieses Abschnitts.
 
@@ -223,8 +225,10 @@ Eine Signatur mit einem anderen Namensraum, Schlüsseltyp oder Hash lehnt schon 
 Eine unbekannte Formatversion lehnt die Prüfung ab, bevor sie die Signatur ansieht,
 und ein falscher Typ, eine falsche Version, ein anderer Schlüssel oder andere Nutzdaten
 lassen die Prüfung fehlschlagen.
-Tests brauchen keinen Schlüssel auf der Platte: ein \type{Signer} im Test leitet einen Schlüssel
-aus einem festen Startwert ab.
+Die Tests der Logik brauchen keinen Schlüssel auf der Platte: ein \type{Signer} im Test leitet
+einen Schlüssel aus einem festen Startwert ab.
+Nur die Tests der Implementierung mit \type{ssh-keygen} legen einen Schlüssel in einem
+temporären Verzeichnis an und werden ohne \type{ssh-keygen} mit einem Hinweis übersprungen.
 
 \section[sec:phase4-open]{Offene Fragen}
 

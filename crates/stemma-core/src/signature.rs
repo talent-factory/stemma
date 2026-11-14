@@ -1,7 +1,7 @@
 //! Signatures of proofs: SSHSIG with Ed25519 (ADR-003, ADR-020).
 //!
 //! A proof signs a log entry or an approval. The signed bytes are not the payload alone: a header
-//! with the type and the format version of the payload comes first ([`signed_bytes`]), so a
+//! with the type and the format version of the payload comes first, so a
 //! signature of one type or version never verifies as another (domain separation). The SSHSIG
 //! namespace is [`NAMESPACE`] for all of them.
 //!
@@ -18,6 +18,7 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::str::FromStr;
 
 use ssh_key::{Algorithm, HashAlg, LineEnding, SshSig};
 
@@ -28,7 +29,8 @@ pub const NAMESPACE: &str = "stemma-proof";
 /// The version of the format of the signed bytes, and of the payloads that [`sign`] signs.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// The first line of the signed bytes.
+/// The first line of the signed bytes. It has the value of the namespace on purpose, but it is a
+/// constant of its own: the header is part of the format, the namespace is part of SSHSIG.
 const MAGIC: &str = "stemma-proof";
 
 /// What a proof signs.
@@ -59,17 +61,20 @@ impl PayloadKind {
 /// stemma-proof\n<type>\n<version>\n<payload>
 /// ```
 ///
-/// The first three lines contain no newline themselves, so the payload begins after the third
-/// one and the split is unambiguous.
-pub fn signed_bytes(kind: PayloadKind, version: u32, payload: &[u8]) -> Vec<u8> {
+/// The magic, the name of the type, and the decimal version contain no newline, so the payload
+/// begins after the third newline and the split is unambiguous.
+///
+/// [`sign`] is the way to sign a payload; a [`Signer`] that is given bytes without this header
+/// would break the domain separation.
+pub(crate) fn signed_bytes(kind: PayloadKind, version: u32, payload: &[u8]) -> Vec<u8> {
     let mut bytes = format!("{MAGIC}\n{}\n{version}\n", kind.name()).into_bytes();
     bytes.extend_from_slice(payload);
     bytes
 }
 
-/// An Ed25519 public key in the OpenSSH format, the form of a line of `authorized_keys` and of
-/// a `.pub` file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An Ed25519 public key in the OpenSSH format, the form of a `.pub` file or of a line of
+/// `authorized_keys` without options. The comment of the line is not kept.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PublicKey(ssh_key::PublicKey);
 
 impl PublicKey {
@@ -107,9 +112,28 @@ impl PublicKey {
     }
 }
 
+impl fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_openssh())
+    }
+}
+
+impl FromStr for PublicKey {
+    type Err = KeyError;
+
+    fn from_str(text: &str) -> Result<Self, KeyError> {
+        Self::from_openssh(text)
+    }
+}
+
 /// A signature in the armored SSHSIG form (`-----BEGIN SSH SIGNATURE-----`), as
-/// `ssh-keygen -Y sign` writes it. It is Ed25519 and SHA-512 by construction.
+/// `ssh-keygen -Y sign` writes it. [`Signature::from_armored`], the only public constructor, accepts
+/// Ed25519 keys, SHA-512, and the namespace [`NAMESPACE`] only.
 #[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// A signature is not unique: another byte string can verify for the same key and message, so a
+/// signature must not serve as an identity, for example to find duplicates. Compare the signed
+/// payload and the key instead.
 pub struct Signature(SshSig);
 
 impl Signature {
@@ -119,7 +143,7 @@ impl Signature {
     ///
     /// [`SignatureError::Malformed`] if the text is no SSHSIG signature,
     /// [`SignatureError::Namespace`] if it was made for another namespace than [`NAMESPACE`],
-    /// [`SignatureError::Algorithm`] if the key is no Ed25519 key, and
+    /// [`SignatureError::NotEd25519`] if the key is no Ed25519 key, and
     /// [`SignatureError::HashAlgorithm`] if the hash is not SHA-512.
     pub fn from_armored(text: &str) -> Result<Self, SignatureError> {
         let sig = SshSig::from_pem(text.trim()).map_err(|e| SignatureError::Malformed {
@@ -131,7 +155,7 @@ impl Signature {
             });
         }
         if sig.public_key().algorithm() != Algorithm::Ed25519 {
-            return Err(SignatureError::Algorithm {
+            return Err(SignatureError::NotEd25519 {
                 found: sig.public_key().algorithm().to_string(),
             });
         }
@@ -145,14 +169,15 @@ impl Signature {
 
     /// The signature in the armored form, with a line feed after each line.
     pub fn to_armored(&self) -> String {
+        // The value was read from text or made by a signer, so it can be encoded again.
         self.0
             .to_pem(LineEnding::LF)
             .expect("an SSHSIG signature can be encoded")
     }
 
     /// The public key that made the signature, as the signature names it. It is a claim until the
-    /// actor register binds it to an identity: [`verify`] checks against a key that the caller
-    /// chooses, and ignores this one.
+    /// actor register binds it to an identity: [`verify`] takes the key from its caller, and a
+    /// signature that names another key does not verify.
     pub fn signing_key(&self) -> PublicKey {
         PublicKey(ssh_key::PublicKey::from(self.0.public_key().clone()))
     }
@@ -165,11 +190,11 @@ pub trait Signer {
     /// # Errors
     ///
     /// [`SignError`] if the key is not available, the process fails, or the answer is not a
-    /// signature that [`verify`] accepts.
+    /// signature that [`Signature::from_armored`] accepts.
     fn sign(&self, message: &[u8]) -> Result<Signature, SignError>;
 }
 
-/// Signs a payload with a [`Signer`]: the header of [`signed_bytes`] with [`FORMAT_VERSION`]
+/// Signs a payload with a [`Signer`]: the header of the signed bytes (type and [`FORMAT_VERSION`])
 /// comes first.
 ///
 /// # Errors
@@ -188,12 +213,15 @@ pub fn sign(
 ///
 /// The type and the version are what the caller expects, usually read from the record that holds
 /// the payload. A signature made for another type or version, another payload, another key, or
-/// another namespace does not verify. The key that the signature names is not consulted.
+/// another namespace does not verify. The key that the signature names is no source of trust: it
+/// must be `key`, and a signature that names another key is refused.
 ///
 /// # Errors
 ///
-/// [`VerifyError::UnsupportedVersion`] if `version` is not [`FORMAT_VERSION`], and
-/// [`VerifyError::Invalid`] if the signature does not match.
+/// [`VerifyError::UnsupportedVersion`] if `version` is not [`FORMAT_VERSION`],
+/// [`VerifyError::WrongKey`] if the signature names another key than `key`, and
+/// [`VerifyError::Invalid`] if the signature does not match the type, the version, and the
+/// payload.
 pub fn verify(
     key: &PublicKey,
     kind: PayloadKind,
@@ -203,6 +231,9 @@ pub fn verify(
 ) -> Result<(), VerifyError> {
     if version != FORMAT_VERSION {
         return Err(VerifyError::UnsupportedVersion { version });
+    }
+    if signature.0.public_key() != key.0.key_data() {
+        return Err(VerifyError::WrongKey);
     }
     key.0
         .verify(
@@ -215,8 +246,10 @@ pub fn verify(
 
 /// The implementation of [`Signer`] that calls `ssh-keygen -Y sign`.
 ///
-/// The key file can be the private key or, when `ssh-agent` holds the key, the public key.
-/// `ssh-keygen` asks for a passphrase on its own terminal when it needs one.
+/// The key file can be the private key or, when `ssh-agent` holds the key (found through
+/// `SSH_AUTH_SOCK`), the public key. A private key with a passphrase needs a terminal, where
+/// `ssh-keygen` asks for it, and blocks the caller until it is answered. Without a terminal
+/// the signing fails with [`SignError::Failed`]; a key in `ssh-agent` avoids the question.
 #[derive(Debug, Clone)]
 pub struct SshKeygen {
     program: PathBuf,
@@ -259,29 +292,38 @@ impl Signer for SshKeygen {
                 program: self.program.clone(),
                 source,
             })?;
-        let mut stdin = child.stdin.take().expect("the standard input is piped");
-        // `ssh-keygen` reads the whole message before it writes, so a write here cannot block on a
-        // full output pipe. A failed write shows in the exit status below.
+        let mut stdin = child
+            .stdin
+            .take()
+            .expect("the standard input was set to piped above");
+        // This relies on `ssh-keygen -Y sign` reading all of its standard input before it writes,
+        // so that a write here cannot block on a full output pipe. If it ends early, for example
+        // because the key file is missing, the write fails with a broken pipe; the exit status
+        // and the standard error below say why, and they are reported first.
         let written = stdin.write_all(message);
         drop(stdin);
-        let output = child
-            .wait_with_output()
-            .map_err(|source| SignError::Spawn {
-                program: self.program.clone(),
-                source,
-            })?;
+        let output = child.wait_with_output().map_err(|source| SignError::Io {
+            program: self.program.clone(),
+            operation: "wait for",
+            source,
+        })?;
         if !output.status.success() {
             return Err(SignError::Failed {
                 status: output.status.to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             });
         }
-        written.map_err(|source| SignError::Spawn {
+        written.map_err(|source| SignError::Io {
             program: self.program.clone(),
+            operation: "write the message to",
             source,
         })?;
-        let text = String::from_utf8(output.stdout).map_err(|_| SignError::Unreadable {
-            reason: "the output is no text".to_owned(),
+        let text = String::from_utf8(output.stdout).map_err(|e| SignError::Unreadable {
+            reason: format!(
+                "the output of {} is no text: {}",
+                self.program.display(),
+                e.utf8_error()
+            ),
         })?;
         Signature::from_armored(&text).map_err(|e| SignError::Unreadable {
             reason: e.to_string(),
@@ -333,7 +375,7 @@ pub enum SignatureError {
         found: String,
     },
     /// The key of the signature is not an Ed25519 key.
-    Algorithm {
+    NotEd25519 {
         /// The name of the type.
         found: String,
     },
@@ -354,7 +396,7 @@ impl fmt::Display for SignatureError {
                     "signature of the namespace {found:?}, expected {NAMESPACE:?}"
                 )
             }
-            Self::Algorithm { found } => {
+            Self::NotEd25519 { found } => {
                 write!(
                     f,
                     "only Ed25519 signatures are accepted, this one is {found}"
@@ -376,10 +418,20 @@ impl Error for SignatureError {}
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SignError {
-    /// The program could not be started, or its standard input could not be written.
+    /// The program could not be started.
     Spawn {
         /// The program.
         program: PathBuf,
+        /// The error of the operating system.
+        source: io::Error,
+    },
+    /// The program ran, but writing its standard input or waiting for it failed.
+    Io {
+        /// The program.
+        program: PathBuf,
+        /// What was done, as it completes "cannot ... the program": "write the message to" or
+        /// "wait for".
+        operation: &'static str,
         /// The error of the operating system.
         source: io::Error,
     },
@@ -390,7 +442,7 @@ pub enum SignError {
         /// What the program wrote to its standard error.
         stderr: String,
     },
-    /// The program answered with something that [`verify`] would not accept.
+    /// The program answered with something that [`Signature::from_armored`] does not accept.
     Unreadable {
         /// Why.
         reason: String,
@@ -401,7 +453,7 @@ impl SignError {
     /// The error of the operating system, if there is one.
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Spawn { source, .. } => Some(source),
+            Self::Spawn { source, .. } | Self::Io { source, .. } => Some(source),
             Self::Failed { .. } | Self::Unreadable { .. } => None,
         }
     }
@@ -413,6 +465,11 @@ impl fmt::Display for SignError {
             Self::Spawn { program, source } => {
                 write!(f, "cannot run {}: {source}", program.display())
             }
+            Self::Io {
+                program,
+                operation,
+                source,
+            } => write!(f, "cannot {operation} {}: {source}", program.display()),
             Self::Failed { status, stderr } if stderr.is_empty() => {
                 write!(f, "signing failed: {status}")
             }
@@ -424,7 +481,7 @@ impl fmt::Display for SignError {
     }
 }
 
-// The message of `Spawn` prints its cause, so the source is the cause of the cause, which an
+// The messages of `Spawn` and `Io` print their cause, so the source is the cause of the cause, which an
 // `io::Error` of the operating system does not have.
 impl Error for SignError {}
 
@@ -437,6 +494,8 @@ pub enum VerifyError {
         /// The version.
         version: u32,
     },
+    /// The signature names another key than the one that was asked for.
+    WrongKey,
     /// The signature does not match the key, the type, the version, and the payload.
     Invalid,
 }
@@ -448,6 +507,7 @@ impl fmt::Display for VerifyError {
                 f,
                 "payload format version {version} is not supported (expected {FORMAT_VERSION})"
             ),
+            Self::WrongKey => f.write_str("the signature was made by another key"),
             Self::Invalid => {
                 f.write_str("the signature does not match the key, the type, and the payload")
             }
@@ -462,6 +522,18 @@ mod tests {
     use super::*;
     use ssh_key::private::Ed25519Keypair;
     use ssh_key::PrivateKey;
+
+    /// A signature of an RSA key for the namespace `stemma-proof`, made with SHA-512 by
+    /// `ssh-keygen`, for a key that was generated for this test only.
+    const RSA_SIGNATURE: &str = "-----BEGIN SSH SIGNATURE-----\n\
+U1NIU0lHAAAAAQAAAJcAAAAHc3NoLXJzYQAAAAMBAAEAAACBAJcF3Tk/HnATjScgg+VrGn\n\
+w4UW1BRTELw5I71dzRAzgeYI6fQtaGEG7a8yD8YkqyircrjE2ufufnQiaxWH7Gx3bhHGUL\n\
+sZKqU3mEo0/Xkm/0z7EEI6qNUXtnYuH0tITYEBblOZflbn/ebntZqWNlceoVRxE6QEhg1c\n\
+YmgN3nnflLAAAADHN0ZW1tYS1wcm9vZgAAAAAAAAAGc2hhNTEyAAAAlAAAAAxyc2Etc2hh\n\
+Mi01MTIAAACALpUDjEPyba1iSP6Ik1lliwqvUfWrvzic3MZPddMWyPFpkB9MreKoKdrX3L\n\
+hNl5Y6D/vYCCljXYO2T97eDo07UyYzv4MdMiECaV7t1NN7T2/2q1fFDB8V5YgdXOYSQx2s\n\
+AVIRoZlxo88ExLG0/iVqNKMORmBJ7dsKhnfS9dIz37M=\n\
+-----END SSH SIGNATURE-----";
 
     /// A `Signer` that signs in process with a key from a fixed seed, so tests need no key file
     /// and no `ssh-keygen`. It also records the messages it was asked to sign.
@@ -574,9 +646,8 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_payload_or_key_fails() {
+    fn a_wrong_payload_fails() {
         let signer = FakeSigner::new(1);
-        let other = FakeSigner::new(2);
         let sig = sign(&signer, PayloadKind::Approval, b"p").unwrap();
         assert_eq!(
             verify(
@@ -588,6 +659,56 @@ mod tests {
             ),
             Err(VerifyError::Invalid)
         );
+    }
+
+    #[test]
+    fn a_payload_cannot_pose_as_a_header() {
+        // A payload that continues the header of a log entry so that the bytes read like an
+        // approval with the payload `x`: the bytes of the header differ already.
+        let signer = FakeSigner::new(1);
+        let forged = b"approval\n1\nx";
+        let sig = sign(&signer, PayloadKind::LogEntry, forged).unwrap();
+        assert_eq!(
+            verify(
+                &signer.public_key(),
+                PayloadKind::Approval,
+                FORMAT_VERSION,
+                b"x",
+                &sig
+            ),
+            Err(VerifyError::Invalid)
+        );
+        // The digits of a version cannot move into the payload either.
+        assert_ne!(
+            signed_bytes(PayloadKind::Approval, 1, b"0\nx"),
+            signed_bytes(PayloadKind::Approval, 10, b"x")
+        );
+    }
+
+    #[test]
+    fn empty_binary_and_multiline_payloads_round_trip() {
+        let signer = FakeSigner::new(1);
+        for payload in [&b""[..], b"line 1\nline 2\n", &[0, 255, 10, 13, 0]] {
+            let sig = sign(&signer, PayloadKind::LogEntry, payload).unwrap();
+            let armored = Signature::from_armored(&sig.to_armored()).unwrap();
+            assert_eq!(
+                verify(
+                    &signer.public_key(),
+                    PayloadKind::LogEntry,
+                    FORMAT_VERSION,
+                    payload,
+                    &armored
+                ),
+                Ok(())
+            );
+        }
+    }
+
+    #[test]
+    fn a_signature_that_names_another_key_is_refused_as_wrong_key() {
+        let signer = FakeSigner::new(1);
+        let other = FakeSigner::new(2);
+        let sig = sign(&signer, PayloadKind::Approval, b"p").unwrap();
         assert_eq!(
             verify(
                 &other.public_key(),
@@ -596,16 +717,69 @@ mod tests {
                 b"p",
                 &sig
             ),
-            Err(VerifyError::Invalid)
+            Err(VerifyError::WrongKey)
         );
     }
 
     #[test]
-    fn a_payload_cannot_pose_as_a_header() {
-        // The payload of a log entry that looks like the rest of an approval header.
-        let a = signed_bytes(PayloadKind::LogEntry, 1, b"approval\n1\nx");
-        let b = signed_bytes(PayloadKind::Approval, 1, b"x");
-        assert_ne!(a, b);
+    fn a_tampered_signature_never_verifies() {
+        let signer = FakeSigner::new(1);
+        let sig = sign(&signer, PayloadKind::Approval, b"p").unwrap();
+        let armored = sig.to_armored();
+        let lines: Vec<&str> = armored.lines().collect();
+        // Flip one character in each line of the body, one at a time.
+        for index in 1..lines.len() - 1 {
+            let mut changed: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+            let flipped = if changed[index].starts_with('A') {
+                'B'
+            } else {
+                'A'
+            };
+            changed[index].replace_range(0..1, &flipped.to_string());
+            let text = changed.join("\n");
+            if let Ok(parsed) = Signature::from_armored(&text) {
+                assert_ne!(
+                    verify(
+                        &signer.public_key(),
+                        PayloadKind::Approval,
+                        FORMAT_VERSION,
+                        b"p",
+                        &parsed
+                    ),
+                    Ok(()),
+                    "line {index} changed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_truncated_or_broken_armor_is_malformed() {
+        let signer = FakeSigner::new(1);
+        let armored = sign(&signer, PayloadKind::Approval, b"p")
+            .unwrap()
+            .to_armored();
+        let lines: Vec<&str> = armored.lines().collect();
+        let cut_body = format!("{}\n{}\n{}", lines[0], lines[1], lines[lines.len() - 1]);
+        let no_end = lines[..lines.len() - 1].join("\n");
+        let no_begin = lines[1..].join("\n");
+        for text in [cut_body.as_str(), no_end.as_str(), no_begin.as_str(), ""] {
+            assert!(
+                matches!(
+                    Signature::from_armored(text),
+                    Err(SignatureError::Malformed { .. })
+                ),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn crlf_line_endings_and_surrounding_whitespace_are_accepted() {
+        let signer = FakeSigner::new(1);
+        let sig = sign(&signer, PayloadKind::Approval, b"p").unwrap();
+        let text = format!("\n  {}  \n", sig.to_armored().replace('\n', "\r\n"));
+        assert_eq!(Signature::from_armored(&text).unwrap(), sig);
     }
 
     #[test]
@@ -683,21 +857,33 @@ mod tests {
 
     #[test]
     fn a_key_of_another_type_is_refused() {
-        if !ssh_keygen_available() {
-            return;
-        }
-        let dir = scratch_dir("rsa");
-        let key_file = dir.join("key");
-        let status = Command::new("ssh-keygen")
-            .args(["-q", "-t", "rsa", "-b", "2048", "-N", ""])
-            .arg("-f")
-            .arg(&key_file)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let text = std::fs::read_to_string(dir.join("key.pub")).unwrap();
-        assert!(PublicKey::from_openssh(&text).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+        // Public keys of other types, generated for this test only.
+        let rsa = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQCXBd05Px5wE40nIIPlaxp8OFFtQUUxC8OSO9Xc0QM4HmCOn0LWhhBu2vMg/GJKsoq3K4xNrn7n50ImsVh+xsd24RxlC7GSqlN5hKNP15Jv9M+xBCOqjVF7Z2Lh9LSE2BAW5TmX5W5/3m57WaljZXHqFUcROkBIYNXGJoDd5535Sw==";
+        let ecdsa = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBOAXOcAhbzonDxZR8B4VHRhL3Nv4E20e4drPrBu7hru1IO/lXzYPQVL19ePLMu1Wnmqqy8ohyDl+q8dxuTQBLGk=";
+        let error = PublicKey::from_openssh(rsa).unwrap_err();
+        assert_eq!(
+            error,
+            KeyError::NotEd25519 {
+                algorithm: "ssh-rsa".into()
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "only Ed25519 keys are accepted, this one is ssh-rsa"
+        );
+        // A type that the crate is not built to read is refused as well, as a malformed key.
+        assert!(PublicKey::from_openssh(ecdsa).is_err());
+    }
+
+    #[test]
+    fn a_signature_of_a_key_of_another_type_is_refused_when_read() {
+        // A signature of an RSA key for the namespace `stemma-proof`, made with SHA-512.
+        let armored = RSA_SIGNATURE;
+        let error = Signature::from_armored(armored).unwrap_err();
+        assert!(
+            matches!(error, SignatureError::NotEd25519 { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -724,12 +910,21 @@ mod tests {
     /// `ssh-keygen` is on the path of every machine that uses Stemma with signatures, but a test
     /// must not fail on a machine without it.
     fn ssh_keygen_available() -> bool {
-        Command::new("ssh-keygen")
+        let available = Command::new("ssh-keygen")
             .arg("-?")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .is_ok()
+            .is_ok();
+        if !available {
+            // A skipped test must not look like a passed one.
+            assert!(
+                std::env::var_os("STEMMA_REQUIRE_SSH_KEYGEN").is_none(),
+                "STEMMA_REQUIRE_SSH_KEYGEN is set, but `ssh-keygen` is not on the path"
+            );
+            eprintln!("SKIPPED: `ssh-keygen` is not on the path");
+        }
+        available
     }
 
     fn scratch_dir(name: &str) -> PathBuf {
@@ -790,7 +985,75 @@ mod tests {
         }
         let dir = scratch_dir("missing");
         let err = SshKeygen::new(dir.join("absent")).sign(b"m").unwrap_err();
-        assert!(matches!(err, SignError::Failed { .. }), "{err}");
+        match &err {
+            SignError::Failed { stderr, .. } => assert!(!stderr.is_empty(), "{err}"),
+            other => panic!("{other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A program that stands in for `ssh-keygen`: a shell script with the given body.
+    #[cfg(unix)]
+    fn fake_program(name: &str, body: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch_dir(name);
+        let path = dir.join("fake-ssh-keygen");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    fn sign_with_fake(name: &str, body: &str, message: &[u8]) -> SignError {
+        let (dir, path) = fake_program(name, body);
+        let error = SshKeygen::with_program(&path, "key")
+            .sign(message)
+            .unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        error
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_without_output_gives_no_signature() {
+        let error = sign_with_fake("empty", "cat > /dev/null", b"m");
+        assert!(matches!(error, SignError::Unreadable { .. }), "{error:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_with_output_that_is_no_text_gives_no_signature() {
+        let error = sign_with_fake("binary", "cat > /dev/null; printf '\\377\\376'", b"m");
+        assert!(error.to_string().contains("is no text"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_answers_with_a_signature_of_the_wrong_key_type_gives_none() {
+        let body = format!("cat > /dev/null; cat <<'EOF'\n{RSA_SIGNATURE}\nEOF");
+        let error = sign_with_fake("rsa", &body, b"m");
+        assert!(matches!(error, SignError::Unreadable { .. }), "{error:?}");
+        assert!(error.to_string().contains("Ed25519"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_fails_without_a_message_is_reported_with_its_status() {
+        let error = sign_with_fake("silent-failure", "cat > /dev/null; exit 3", b"m");
+        assert_eq!(error.to_string(), "signing failed: exit status: 3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_does_not_read_its_input_is_an_io_error() {
+        // More than a pipe holds, so that the write has to fail when the program is gone.
+        let message = vec![b'x'; 4 * 1024 * 1024];
+        let error = sign_with_fake("no-read", "exit 0", &message);
+        assert!(matches!(error, SignError::Io { .. }), "{error:?}");
+        assert!(
+            error.to_string().starts_with("cannot write the message to"),
+            "{error}"
+        );
+        assert!(error.io_error().is_some());
     }
 }

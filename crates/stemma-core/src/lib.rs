@@ -1,8 +1,8 @@
 //! Stemma core: actors and the authorization hook (ADR-002), content-addressed objects, the
 //! index, object storage, references (branches, tags, and HEAD, ADR-008), the repository (ADR-009),
-//! the operation log (ADR-011), the exclusion file `.stemmaignore` (ADR-012), and the best common
-//! ancestors of two commits ([`merge_base`]), conflicts as sums of trees ([`conflict`]), and the
-//! merge of trees ([`merge`]), and the SSHSIG signatures of proofs ([`signature`], ADR-020).
+//! the operation log (ADR-011), the exclusion file `.stemmaignore` (ADR-012), the best common
+//! ancestors of two commits ([`merge_base`]), conflicts as sums of trees ([`conflict`]), the merge
+//! of trees ([`merge`]), and the SSHSIG signatures of proofs ([`signature`], ADR-020).
 //!
 //! # Errors
 //!

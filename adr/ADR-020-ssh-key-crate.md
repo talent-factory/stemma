@@ -1,8 +1,9 @@
 # ADR-020: The `ssh-key` crate for SSHSIG signatures
 
 **Status:** Accepted by the human maintainer on 2026-11-14 (STEMMA-234), including the
-`BSD-3-Clause` exceptions. The dependency is a level 3 change (ADR-004, rule 3: signatures and
-keys). The scheme itself, SSHSIG with Ed25519, is decided in STEMMA-224 and recorded in ADR-003.
+`BSD-3-Clause` exceptions. The dependency is a level 3 change (ADR-004: the level 3 row names
+signatures and keys, and rule 7 names cryptography crates). The scheme itself, SSHSIG with
+Ed25519, is decided in STEMMA-224 and recorded in ADR-003.
 
 ## Context
 
@@ -17,8 +18,8 @@ Signing and verifying differ in what they need:
 - **Signing** uses a key that the actor holds, often in an agent or on a token. Stemma never
   reads the private key. The trait `Signer` hides the process: its production implementation
   calls `ssh-keygen -Y sign`, and a test uses a fake `Signer`.
-- **Verifying** happens in `stemma-core`, in the authorizer and in `op verify`, on every
-  machine, in many places per command, and in tests without a key on disk. A child process for
+- **Verifying** will happen in `stemma-core`, in the authorizer and in the check of the log, on
+  every machine, in many places per command, and in tests without a key on disk. A child process for
   each verification is slow, needs `ssh-keygen` of a recent version, needs an `allowed_signers`
   file on disk, and is absent on a plain Windows installation.
 
@@ -77,8 +78,10 @@ Candidates, measured on 2026-11-13 in a scratch crate against `deny.toml` (toolc
 ## Consequences
 
 - Verification works without a process, without a file on disk, and on every platform that
-  builds `stemma-core`. The tests need no key outside the test: they derive an Ed25519 key from a
-  fixed seed in memory.
+  builds `stemma-core`. The tests of the logic need no key on disk: they derive an Ed25519 key
+  from a fixed seed in memory. Only the tests of `SshKeygen` create a key in a temporary
+  directory. They are skipped with a notice when `ssh-keygen` is missing, and
+  `STEMMA_REQUIRE_SSH_KEYGEN=1` turns the skip into a failure.
 - The lockfile grows by about 30 crates, all of them from crates.io and all of them from the
   RustCrypto project and the dalek project. `cargo audit` and `cargo deny` run with the change
   (`just deps`).
