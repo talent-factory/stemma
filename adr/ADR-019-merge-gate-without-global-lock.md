@@ -98,8 +98,10 @@ values are in the policy file (ADR-004), so changing them is level 3: a human ow
 agent cannot loosen the bounds under which its own change is merged.
 
 - **Reservation.** After `N` invalidated runs in a row of a change of level 2 or 3, the change gets
-  a *reservation*; `N` is 3 by default. While it holds, merges of level 0 and 1 wait
-  until the change is merged, has failed, or is closed. The reservation ends after twice the
+  a *reservation*; `N` is 3 by default. A run is *invalidated* when `main` moved while it ran, so
+  that the rule table asks for a new run. While the reservation holds, every other change waits,
+  whatever its level, until the change is merged, has failed, or is closed. Only a repair of a red
+  tip (below) goes ahead of it. The reservation ends after twice the
   duration of the last check run of the change, so a stuck change cannot block `main`. At most one
   reservation exists at a time, and the oldest change wins.
 - **Unverified window.** The policy has `max_unverified`, 10 by default. When that many commits lie
@@ -132,12 +134,20 @@ the merge cannot: two changes that merge cleanly and break each other (a semanti
   repairs the red tip is exempt, for example the revert of the commit that the bisection finds,
   since the break may lie in level 2 code. Changes of level 0 and 1 continue, since they cannot
   make the repair harder to find.
-- A repair is recognised by a declaration and not by its content: the `pr-open` of the change
-  names the red commit (`repairs <commit>`). The gate checks that this commit lies between the last
-  green and the first red tip, and that the checks of the repair passed with the current tip as
-  base.
-- To find the cause in a window of unverified commits, the gate bisects the linear history of
-  `main` between the last green and the first red tip.
+- A repair is declared and then checked by its content. The pull request names the red commit
+  (`repairs <commit>`). The gate accepts the declaration only if that commit lies between the last
+  green and the first red tip, and the diff of the repair reverts that commit or changes the paths
+  that it changed. The gate computes this as a pure function over the two diffs, as for the rule on
+  weakened tests (ADR-004, rule 10); nobody has to confirm it. A change that only declares a repair
+  gets no exemption. The checks of the repair follow the rule table: levels 2 and 3 need a result
+  with the current tip as base, levels 0 and 1 a clean merge onto it.
+- The *last green tip* is the newest commit of `main` that a finished run covered with success. The
+  *first red tip* is the oldest commit after it that a finished run covered with failure. To find
+  the cause in a window of unverified commits, the gate bisects the linear history of `main`
+  between the two.
+- The form of the entries `pr-open` and `check` and the syntax of `repairs` belong to the pull
+  request of phase 4 (STEMMA-226, STEMMA-227). This ADR fixes what the gate does with them, not
+  how they are written.
 
 ### What "`main` is always green" means
 
@@ -176,7 +186,8 @@ meaning: different actor IDs.
   how much of this the project accepts (level 2 and 3 do not).
 - Changes of level 2 and 3 can fall behind under many writers: each move of `main` repeats their
   checks. The reservation bounds this: after `N` invalidated runs the change is merged before
-  merges of level 0 and 1 continue.
+  any other change continues, at the price of a short pause that the timeout of the reservation
+  limits.
 - A result is stored with its base, so the pull request of phase 4 needs a place for evidence
   that is keyed by a pair of commits. The format is left to that phase.
 - An automatic run on a pull request and required checks on GitHub need their own decision that
@@ -204,6 +215,8 @@ meaning: different actor IDs.
   and 3 while the tip is red, and the repair by a new change. Decided in STEMMA-229 as proposed;
   the repair is declared by `repairs <commit>`.
 - [ ] The form of the evidence and where phase 4 stores it (a result per pair of commits).
+- [ ] The form of the entries `pr-open` and `check` and the syntax of `repairs` (STEMMA-226,
+  STEMMA-227); this ADR fixes only what the gate does with them.
 - [ ] Whether a result may name a *set* of tested base commits when several changes were tested
   together, and what this does to the rule for levels 0 and 1.
 - [x] A bound for the retries of a change of level 2 or 3: the reservation after `N` = 3

@@ -128,8 +128,9 @@ has started; the repairing change is exempt. (Fenster ungeprüfter Commits)
 
 **Reservation**:
 The claim that a change of level 2 or 3 gets after `N` invalidated runs in a row (3 by default),
-so that merges of level 0 and 1 wait until it is merged, failed, or closed. It ends after twice
-the duration of its last check run; at most one exists. (Reservierung)
+so that every other change, except the repair of a red tip, waits until it is merged, failed, or
+closed. A run is invalidated when `main` moved while it ran. The reservation ends after twice the
+duration of its last check run; at most one exists. (Reservierung)
 
 **Clean merge**:
 A tree merge that returns one tree, not a sum of several. (sauberer Merge)

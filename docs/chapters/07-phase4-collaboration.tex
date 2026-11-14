@@ -167,10 +167,17 @@ Solange die letzte geprüfte Spitze rot ist, landen keine Änderungen der Stufen
 Stufen 0 und 1 gehen weiter.
 Ausgenommen von der Pause ist die Änderung, die die rote Spitze behebt, etwa der Revert des
 Commits, den die Bisektion findet.
-Sie wird an einer Erklärung erkannt, nicht an ihrem Inhalt: Das \type{pr-open} nennt den roten
-Commit (\type{repairs <commit>}).
-Das Gate prüft, dass dieser Commit zwischen der letzten grünen und der ersten roten Spitze liegt
-und dass die Prüfungen der Behebung mit der aktuellen Spitze als Basis bestanden haben.
+Sie wird erklärt und am Inhalt geprüft: Der Pull Request nennt den roten Commit
+(\type{repairs <commit>}).
+Das Gate nimmt die Erklärung nur an, wenn dieser Commit zwischen der letzten grünen und der ersten
+roten Spitze liegt und der Diff der Behebung ihn zurücknimmt oder seine Pfade ändert.
+Das rechnet das Gate als reine Funktion über die beiden Diffs, niemand muss es bestätigen;
+eine Änderung, die nur eine Behebung erklärt, erhält keine Ausnahme.
+Die Prüfungen der Behebung folgen der Regeltabelle:
+Die Stufen 2 und 3 brauchen ein Ergebnis mit der aktuellen Spitze als Basis,
+die Stufen 0 und 1 einen sauberen Merge darauf.
+Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein beendeter Lauf erfolgreich
+abdeckte; die erste rote ist der älteste danach, den ein beendeter Lauf mit Fehler abdeckte.
 Die Ursache in einem Fenster ungeprüfter Commits findet eine Bisektion über den linearen Verlauf.
 
 {\bf Zwei Grenzen.}
@@ -182,8 +189,10 @@ Ein Agent kann die Grenzen, unter denen seine eigene Änderung landet, nicht loc
 \item {\bf Reservierung.}
 Nach \type{N} ungültig gewordenen Läufen in Folge (Standard 3) erhält eine Änderung der Stufe 2
 oder 3 eine Reservierung.
-Merges der Stufen 0 und 1 warten dann,
-bis die Änderung gelandet, gescheitert oder geschlossen ist.
+Ein Lauf wird ungültig, wenn sich \type{main} während des Laufs bewegt hat.
+Dann warten alle anderen Änderungen, gleich welcher Stufe,
+bis die Änderung gelandet, gescheitert oder geschlossen ist;
+nur die Behebung einer roten Spitze geht voran.
 Die Reservierung endet nach der doppelten Dauer des letzten Prüflaufs,
 damit eine hängende Änderung \type{main} nicht blockiert.
 Es gibt höchstens eine, und die älteste Änderung gewinnt.
