@@ -34,7 +34,10 @@ Candidates, measured on 2026-11-13 in a scratch crate against `deny.toml` (toolc
   advisory (1509 advisories, 33 crates). `cargo deny check` reports no advisory and no source
   problem. It **fails the license check** on three crates, `curve25519-dalek`, `ed25519-dalek`,
   and `subtle`, which carry `BSD-3-Clause` only. The version 0.7.0 is a release candidate
-  (`0.7.0-rc.12`) and is not used.
+  (`0.7.0-rc.12`) and is not used. With these two features, a signature made by
+  `ssh-keygen -Y sign` (OpenSSH 10.5, SHA-512) parses and verifies in process, and a wrong
+  namespace or message fails. The crate also signs and verifies on its own; a key from a fixed
+  seed (`Ed25519Keypair::from_seed`) needs no random number generator.
 - **`ed25519-dalek` and `sha2` directly**, with the SSHSIG framing and the OpenSSH key format
   written in `stemma-core`. The tree is smaller by `ssh-key`, `ssh-encoding`, `ssh-cipher`, and
   `pem-rfc7468`, but the licenses are the same, and the project would own a binary format whose
@@ -75,8 +78,8 @@ Candidates, measured on 2026-11-13 in a scratch crate against `deny.toml` (toolc
 ## Consequences
 
 - Verification works without a process, without a file on disk, and on every platform that
-  builds `stemma-core`. The tests need no key outside the test: they generate an Ed25519 key in
-  memory.
+  builds `stemma-core`. The tests need no key outside the test: they derive an Ed25519 key from a
+  fixed seed in memory.
 - The lockfile grows by about 30 crates, all of them from crates.io and all of them from the
   RustCrypto project and the dalek project. `cargo audit` and `cargo deny` run with the change
   (`just deps`).
