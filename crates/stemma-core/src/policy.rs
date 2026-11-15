@@ -22,7 +22,7 @@
 //! | `operation NAME N` | The operation `NAME`, which touches no path, has level `N`. |
 //! | `approvals N COUNT` | A change of level `N` needs `COUNT` agent approvals (at most 8). |
 //! | `lease MINUTES` | The lease of a branch lasts `MINUTES` (5 to 1,440). |
-//! | `assertion PATH` | The macro `PATH` (`pretty_assertions::assert_eq`) counts as an assertion. |
+//! | `assertion PATH` | The macro `PATH` (`pretty_assertions::assert_eq`) counts as an assertion; a last name that starts with `debug_` counts as a debug assertion. |
 //! | `weakened-level N` | A change that weakens tests has level `N` (2 or 3) at least. |
 //!
 //! The pattern is the pattern language of ADR-012, with one difference: the name `.stemmaignore`
@@ -55,9 +55,11 @@
 //!   system. Only the names of the floor ignore the case, the trailing dots and spaces, and a
 //!   `:stream`.
 //! - The escalation when tests are weakened (ADR-004, rule 10, [`crate::weakened`]) is a floor of
-//!   the core: a change with a signal has at least [`WEAKENED_LEVEL`]. A policy may name a higher
-//!   level with `weakened-level`, and its `assertion` lines add macros to the count of the
-//!   signals. No line switches a signal off, and `weakened-level` below 2 makes the policy invalid.
+//!   the core: [`Policy::weakening`] gives a change with a signal at least [`WEAKENED_LEVEL`], and
+//!   the caller, the gate, takes the maximum of that level and [`Policy::level_of`]; neither
+//!   function applies the other. A policy may name a higher level with `weakened-level`, and its
+//!   `assertion` lines add macros to the count of the signals. No line switches a signal off, and
+//!   `weakened-level` below 2 makes the policy invalid.
 //! - The lease has bounds that the code fixes ([`MIN_LEASE_MINUTES`], [`MAX_LEASE_MINUTES`]); a
 //!   policy may change the lease only inside them.
 //!
@@ -1825,5 +1827,41 @@ mod tests {
 
     fn file_change<'a>(file: &FileChange<'a>) -> PathChange<'a> {
         PathChange::Modified { path: file.path }
+    }
+
+    #[test]
+    fn the_level_of_a_weakening_is_for_the_caller_to_combine() {
+        let docs_only = policy("stemma-policy 1\nlevel 3 deny.toml\nlevel 0 crates/x/\n");
+        let manifest = FileChange {
+            path: "crates/x/Cargo.toml",
+            old: Some(b"[lints.rust]\nunused = \"deny\"\n"),
+            new: Some(b"[lints.rust]\nunused = \"warn\"\n"),
+        };
+        let weakening = docs_only.weakening(&[manifest]);
+        assert_eq!(weakening.level, RiskLevel::Two);
+        assert_eq!(
+            weakening.reasons[0].signal,
+            crate::weakened::Signal::LintLowered
+        );
+        // A path of level 3 stays at 3, whatever the signal says: the caller takes the maximum.
+        let touched = [PathChange::Modified { path: "deny.toml" }];
+        let level = docs_only.level_of(&touched).unwrap().max(weakening.level);
+        assert_eq!(level, RiskLevel::Three);
+        // The target of the policy and the macros work together.
+        let both =
+            policy("stemma-policy 1\nweakened-level 3\nassertion my::check\nlevel 0 crates/x/\n");
+        let file = FileChange {
+            path: "crates/x/src/lib.rs",
+            old: Some(b"fn f() { my::check!(a); }"),
+            new: Some(b"fn f() {}"),
+        };
+        assert_eq!(both.weakening(&[file]).level, RiskLevel::Three);
+        // A file that does not parse is a signal as well.
+        let broken = FileChange {
+            path: "a.rs",
+            old: None,
+            new: Some(b"fn f( {"),
+        };
+        assert_eq!(docs_only.weakening(&[broken]).level, RiskLevel::Two);
     }
 }

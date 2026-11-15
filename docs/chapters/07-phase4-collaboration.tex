@@ -324,7 +324,8 @@ Jede weitere Zeile hat eine der sechs Formen von \in{Tabelle}[tab:policy-lines].
 \startxrow
 \startxcell \type{assertion PFAD} \stopxcell
 \startxcell Das Makro \type{PFAD}, etwa \type{pretty_assertions::assert_eq}, zählt als
-Zusicherung. \stopxcell
+Zusicherung; ein letzter Name, der mit \type{debug_} beginnt, zählt nur im Debug-Build.
+\stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
 \startxcell \type{weakened-level N} \stopxcell
@@ -422,9 +423,10 @@ Release-Build nicht mehr. \stopxcell
 \stopxrow
 \startxrow
 \startxcell 3 \stopxcell
-\startxcell Eine \type{#[test]}-Funktion verschwindet oder ist kein Test mehr.
-Hat eine Funktion der Änderung genau denselben Rumpf, ist es eine Umbenennung oder eine
-Verschiebung und zählt nicht. \stopxcell
+\startxcell Ein Test (\type{#[test]}, auch \type{#[x::test]}) verschwindet oder ist kein Test mehr.
+Hat ein anderer Test der Änderung genau denselben Rumpf und ist nicht schwächer
+(kein neues \type{ignore}, \type{should_panic} oder \type{cfg}), ist es eine Umbenennung oder
+eine Verschiebung und zählt nicht; jeder solche Test entschuldigt einen verschwundenen. \stopxcell
 \stopxrow
 \startxrow
 \startxcell 4 \stopxcell
@@ -433,21 +435,25 @@ oder verliert sein \type{expected}. \stopxcell
 \stopxrow
 \startxrow
 \startxcell 5 \stopxcell
-\startxcell \type{#[cfg(...)]} kommt zu einem Test hinzu. \stopxcell
+\startxcell \type{#[cfg(...)]} oder \type{#[cfg_attr(...)]} kommt zu einem Test hinzu,
+auch an einem Modul, einem \type{impl} oder der Datei darum. \stopxcell
 \stopxrow
 \startxrow
 \startxcell 6 \stopxcell
 \startxcell Eine Lint-Stufe sinkt in \type{[lints]} einer \type{Cargo.toml} oder durch ein Attribut,
-\type{#[allow]} kommt hinzu, oder \type{#[expect]} wird zu \type{#[allow]}. \stopxcell
+\type{#[allow]} kommt hinzu, \type{#[expect]} wird zu \type{#[allow]},
+oder \type{lints.workspace = true} fällt weg. \stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
 \startxcell 7 \stopxcell
-\startxcell Eine \type{.rs}-Datei lässt sich nicht lesen (Rückfall auf Stufe 2). \stopxcell
+\startxcell Eine \type{.rs}-Datei lässt sich nicht lesen, in der neuen oder in der alten
+Fassung, oder eine \type{Cargo.toml} ist kein Text (Rückfall auf Stufe 2). \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
-Die Stufe der Änderung ist das Maximum aus der Stufe der Pfade und dieser Stufe.
+Die Stufe der Änderung ist das Maximum aus der Stufe der Pfade und dieser Stufe;
+das Gate bildet es, denn \type{level_of} und \type{weakening} kennen einander nicht.
 Die Regel hebt nur an und lässt sich nicht abschalten:
 Es gibt keine Zeile, die ein Signal ausschaltet, und \type{weakened-level} unter 2 macht die
 Policy ungültig.
@@ -455,10 +461,13 @@ Die Policy darf die Zielstufe auf 3 heben und mit \type{assertion}-Zeilen eigene
 Zählung aufnehmen.
 Die Signale sind syntaktisch.
 Sie sehen nicht, wenn eine Bedingung gelockert wird (\type{==} wird zu \type{>=}),
-wenn ein Hilfsaufruf eine Zusicherung ersetzt (ein Fehlalarm der Zählung)
-oder wenn eine geänderte Produktionsfunktion einen Test leer laufen lässt.
-Ein \type{#[ignore]} mit Begründung bei einem plattformgebundenen Test trifft weiterhin;
-die Prüfung begründet es im Review.
+wenn eine geänderte Produktionsfunktion einen Test leer laufen lässt
+oder wenn eine Datei ausser \type{.rs} und \type{Cargo.toml} Lints oder Tests lockert.
+Von einer \type{Cargo.toml} liest die Regel nur die Tabellen für Lints in einfachen Formen.
+Falsche Treffer sind bekannt und gehören ins Review:
+Eine Zusicherung, die in einen Hilfsaufruf wandert, zählt als verloren,
+und ein \type{#[ignore]} mit Begründung bei einem plattformgebundenen Test trifft weiterhin;
+die Reviewerin oder der Reviewer begründet es im Review.
 
 Ein Fuzz-Ziel (\type{just fuzz policy}) prüft den Leser:
 Eine angenommene Datei lässt sich in ihre kanonische Form schreiben, die wieder angenommen wird

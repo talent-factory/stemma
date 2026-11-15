@@ -35,9 +35,9 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
     knows seven signals: fewer `assert*!` calls in a function, `assert*!` turned into
     `debug_assert*!`, a `#[test]` function that disappears (the same body under a new name is a
     rename), `#[ignore]` or `#[should_panic]` added or its `expected` dropped, `#[cfg(...)]` added
-    to a test, a lint level lowered or `#[allow]` added, and a `.rs` file that does not parse
-    (fallback to level 2). A loosened condition is not detected. The level of the change is the
-    maximum of the path level and this level. The rule only raises and cannot be switched off: the
+    to a test or around it, a lint level lowered or `#[allow]` added, and a `.rs` file that does not
+    parse in its old or new version (fallback to level 2). A loosened condition is not detected.
+    The level of the change is the maximum of the path level and this level, which the gate takes. The rule only raises and cannot be switched off: the
     policy may name a higher target level and extra assertion macros, and a line that sets the
     target below 2 makes it invalid.
 
