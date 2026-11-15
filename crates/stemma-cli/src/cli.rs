@@ -1133,8 +1133,9 @@ enum CliError {
     Register(String),
     /// The register or a proof is not valid or not accepted: damage (code 5).
     RegisterDamaged(String),
-    /// The repository exists, but the register could not be written into it (code 3): a script
-    /// must not run `init` again.
+    /// The repository or the register file was made or changed, but the register could not be
+    /// written completely or the result could not be written (code 3): a script must not run
+    /// `init` again.
     RegisterNotWritten(String),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
     /// repository was tampered with.
@@ -4234,17 +4235,34 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
         None => Identity::of(&actor),
     };
     let path = repository.path().join(register::FILE);
-    let enforcing = register::is_enforcing(&repository.metadata_dir())
-        .map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
-    if !enforcing {
+    // The same rule as `op verify`: the marker or a register in the base commit makes the
+    // repository enforcing.
+    let mode =
+        Mode::of(&repository).map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
+    if mode == Mode::Open {
         return Err(CliError::Register(
             "the repository is open and has no actor register; `init --owner-key` starts an \
              enforcing repository"
                 .to_owned(),
         ));
     }
-    let bytes = fs::read(&path)
-        .map_err(|error| CliError::Register(format!("cannot read {}: {error}", path.display())))?;
+    // The file and its directory must be what they are: a link would let the write reach a file
+    // outside the repository.
+    for part in [path.parent().unwrap_or(&path), path.as_path()] {
+        let regular = fs::symlink_metadata(part)
+            .map(|meta| !meta.file_type().is_symlink())
+            .unwrap_or(false);
+        if !regular {
+            return Err(CliError::RegisterDamaged(format!(
+                "{} is missing or is a link; the register is a regular file",
+                part.display()
+            )));
+        }
+    }
+    // The repository is enforcing, so a register file that cannot be read is damage.
+    let bytes = fs::read(&path).map_err(|error| {
+        CliError::RegisterDamaged(format!("cannot read {}: {error}", path.display()))
+    })?;
     let mut register =
         Register::parse(&bytes).map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
     if identity != Identity::of(&actor) && !register.is_owner(&actor) {
@@ -4265,9 +4283,22 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
     };
     changed.map_err(|error| CliError::Register(error.to_string()))?;
     let temporary = path.with_extension("tmp");
-    fs::write(&temporary, register.encode())
-        .and_then(|()| fs::rename(&temporary, &path))
-        .map_err(|error| CliError::Register(format!("cannot write {}: {error}", path.display())))?;
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| {
+            file.write_all(register.encode().as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&temporary, &path));
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(CliError::Register(format!(
+            "cannot write {}: {error}",
+            path.display()
+        )));
+    }
     let text = match action {
         "Added" => format!(
             "Added a key of {identity} to {}; commit the file.\n",
@@ -4281,7 +4312,8 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
     out.write_all(text.as_bytes())
         .and_then(|()| out.flush())
         .map_err(|source| {
-            CliError::Register(format!(
+            // The file is changed: like `tag` and `branch`, this is code 3.
+            CliError::RegisterNotWritten(format!(
                 "the register file was changed, but the result could not be written: {source}"
             ))
         })

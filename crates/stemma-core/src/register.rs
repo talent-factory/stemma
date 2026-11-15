@@ -682,7 +682,7 @@ impl Register {
                     return Err(ModeError::Missing);
                 };
                 if raw.kind() != Kind::Tree {
-                    return Ok(None);
+                    return Err(ModeError::NotRegisterFile);
                 }
                 tree = store
                     .get_tree(&crate::object::TreeId::new(id))
@@ -696,7 +696,7 @@ impl Register {
                     return Err(ModeError::Missing);
                 };
                 if raw.kind() != Kind::Blob {
-                    return Ok(None);
+                    return Err(ModeError::NotRegisterFile);
                 }
                 return Self::parse(raw.body()).map(Some).map_err(ModeError::Parse);
             }
@@ -952,6 +952,9 @@ pub enum ModeError {
     Store(ReadError),
     /// A commit or tree that the history names is not in the store.
     Missing,
+    /// The path of the register is taken by something that is not a register file, such as a
+    /// directory or a link. It is no register, and no reason to fall back to the open mode.
+    NotRegisterFile,
     /// HEAD cannot be resolved.
     Head(String),
     /// The file system fails.
@@ -969,6 +972,7 @@ impl fmt::Display for ModeError {
             Self::Parse(error) => error.fmt(f),
             Self::Store(error) => error.fmt(f),
             Self::Missing => f.write_str("an object of the history is missing"),
+            Self::NotRegisterFile => write!(f, "{FILE} in the base commit is not a regular file"),
             Self::Head(reason) => write!(f, "cannot resolve HEAD: {reason}"),
             Self::Io(error) => write!(f, "cannot read the mode: {error}"),
         }
@@ -1003,6 +1007,14 @@ pub fn is_enforcing(metadata_dir: &Path) -> io::Result<bool> {
 /// An error of the file system. An existing register file is an error
 /// ([`io::ErrorKind::AlreadyExists`]) and stays as it is.
 pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Result<()> {
+    // The marker comes first and is flushed: a failure or a crash between the two steps leaves a
+    // repository that is enforcing without a register (an error), never an open one that has a
+    // register file.
+    let metadata = repository.metadata_dir();
+    let mut marker = fs::File::create(metadata.join(MARKER))?;
+    io::Write::write_all(&mut marker, MARKER_CONTENT.as_bytes())?;
+    marker.sync_all()?;
+    fs::File::open(&metadata)?.sync_all()?;
     let path = repository.path().join(FILE);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1013,8 +1025,6 @@ pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Resu
         .open(&path)?;
     io::Write::write_all(&mut file, register.encode().as_bytes())?;
     file.sync_all()?;
-    let marker = repository.metadata_dir().join(MARKER);
-    fs::write(&marker, MARKER_CONTENT)?;
     Ok(())
 }
 
@@ -1225,7 +1235,9 @@ pub fn check_proofs(
             continue;
         }
         match name.parse::<u64>() {
-            Ok(number) if name.len() == 12 => numbers.push(number),
+            Ok(number) if name.len() == 12 && name.bytes().all(|b| b.is_ascii_digit()) => {
+                numbers.push(number);
+            }
             _ => return Err(CheckError::UnexpectedFile(name)),
         }
     }

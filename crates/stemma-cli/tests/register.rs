@@ -270,3 +270,54 @@ fn an_open_repository_has_no_register_to_change() {
         result.stderr
     );
 }
+
+#[test]
+fn the_committed_register_decides_and_not_the_file_of_the_working_copy() {
+    let (dir, _keys) = enforcing();
+    commit_register(dir.path());
+    // An edit that is not committed changes nothing for the check.
+    fs::write(dir.path().join(REGISTER), "garbage").unwrap();
+    let result = ok(dir.path(), &["op", "verify"]);
+    assert!(
+        result.stdout.contains("The actor register is valid"),
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn a_commit_without_the_register_is_damage_and_not_the_open_mode() {
+    let (dir, _keys) = enforcing();
+    // The first commit leaves the register out.
+    fs::write(dir.path().join("a.txt"), "one").unwrap();
+    track_ok(dir.path(), "a.txt");
+    ok(dir.path(), &["commit", "-m", "without", "--actor", ACTOR]);
+    let result = run(dir.path(), &["op", "verify"]);
+    assert_eq!(result.code, 5, "{}", result.stdout);
+    assert!(result.stderr.contains("no way back"), "{}", result.stderr);
+}
+
+#[test]
+fn a_committed_register_that_is_not_valid_is_damage() {
+    let (dir, _keys) = enforcing();
+    fs::write(dir.path().join(REGISTER), "garbage").unwrap();
+    commit_register(dir.path());
+    let result = run(dir.path(), &["op", "verify"]);
+    assert_eq!(result.code, 5, "{}", result.stdout);
+    assert!(result.stderr.contains("register"), "{}", result.stderr);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_register_file_that_is_a_link_is_refused_and_nothing_outside_is_written() {
+    let (dir, keys) = enforcing();
+    let key = key_file(&keys, "new.pub", OTHER_KEY);
+    let outside = keys.path().join("outside");
+    fs::write(&outside, "untouched").unwrap();
+    let path = dir.path().join(REGISTER);
+    fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&outside, &path).unwrap();
+    let result = run(dir.path(), &["register", "add-key", &key, "--actor", ACTOR]);
+    assert_eq!(result.code, 5, "{}", result.stdout);
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
+}
