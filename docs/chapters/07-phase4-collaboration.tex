@@ -269,8 +269,8 @@ Geprüft wird im Prozess mit der Bibliothek \type{ssh-key}, ohne Kindprozess und
 auf jedem Rechner, der den Kern baut.
 Die Prüfung nimmt den Schlüssel, den der Aufrufer wählt.
 Nennt die Signatur einen anderen, schlägt sie fehl.
-Welcher Schlüssel zu welchem Akteur gehört, entscheidet das Akteursregister des Basis-Commits;
-das ist nicht Teil dieses Abschnitts.
+Welcher Schlüssel zu welchem Akteur gehört, entscheidet das Akteursregister des Basis-Commits
+(\in{Abschnitt}[sec:register]); das ist nicht Teil dieses Abschnitts.
 
 Angenommen werden nur Ed25519-Schlüssel und der Hash SHA-512.
 Eine Signatur mit einem anderen Namensraum, Schlüsseltyp oder Hash lehnt schon das Einlesen ab.
@@ -370,8 +370,7 @@ weil ein Dateisystem \type{.Stemma-Policy} als dieselbe Datei öffnen kann.
 Alle anderen Namen vergleicht die Auswertung Byte für Byte:
 Eine Zeile für \type{secrets/} trifft auf einem Dateisystem ohne Unterscheidung der Schreibweise
 nicht auch \type{Secrets/}.
-Das Register hat noch kein Layout (STEMMA-221, STEMMA-222);
-bis dahin steht sein Verzeichnis \type{.stemma-actors} als Platzhalter im Code.
+Das Register liegt in der Datei \type{.stemma-actors/register} (\in{Abschnitt}[sec:register]).
 
 {\bf Anheben, nie senken.}
 Eine Policy darf die Anforderungen einer Stufe nur anheben.
@@ -388,6 +387,91 @@ Ein Fuzz-Ziel (\type{just fuzz policy}) prüft den Leser:
 Eine angenommene Datei lässt sich in ihre kanonische Form schreiben, die wieder angenommen wird
 und jeden geprüften Pfad gleich bewertet;
 eine abgelehnte hat eine Meldung mit endender Ursachenkette.
+
+\section[sec:register]{Das Akteursregister}
+
+Das Akteursregister bindet jede Identität, einen Menschen oder einen Agenten, an Schlüssel
+(ADR-003, ADR-004).
+Es liegt als Datei \type{.stemma-actors/register} im Repository und hat Stufe~3.
+Eine Signatur gilt nur gegen das Register des Basis-Commits, und eine Uhr kommt nirgends vor:
+Der Zeitpunkt eines Schlüssels ist eine Position im Operationslog, die Nummer eines Eintrags.
+Der Leser in \type{stemma-core} (\type{register.rs}) ist so streng wie der der Policy-Datei:
+Er nimmt nur an, was der Schreiber ausgibt, also hat ein Register genau eine Fassung.
+
+{\bf Die Datei.}
+Die erste Zeile ist \type{stemma-register 1}.
+Eine Zeile \type{entry} nennt die Art (\type{human} oder \type{agent}), die Kennung
+und die Rolle (\type{owner} oder \type{member}); die Zeilen \type{key} danach gehören zu ihr.
+
+\starttyping
+stemma-register 1
+entry human daniel owner
+key ssh-ed25519 AAAAC3Nza... active
+key ssh-ed25519 AAAAC3Nzb... retired 12
+entry human mia member
+key ssh-ed25519 AAAAC3Nzc... revoked 40
+\stoptyping
+
+Die Einträge sind nach Art (Menschen zuerst) und Kennung in Byte-Reihenfolge sortiert,
+die Schlüssel eines Eintrags nach ihrem Text.
+Jeder Eintrag hat mindestens einen Schlüssel, und kein Schlüssel steht in zwei Einträgen,
+damit ein Schlüssel genau eine Identität nennt.
+Es gibt mindestens einen Owner mit einem aktiven Schlüssel, und nur ein Mensch kann Owner sein.
+Die Datei ist höchstens 64~KiB gross, hat höchstens 256 Einträge mit je höchstens 8 Schlüsseln,
+und Zeilenende, Leerzeilen und Leerzeichen am Zeilenende gelten wie bei der Policy-Datei.
+Ein Schlüssel steht in der Form von OpenSSH ohne Kommentar; nur Ed25519 ist erlaubt.
+
+{\bf Zustände eines Schlüssels.}
+Hinter \type{retired} und \type{revoked} steht die Nummer des ersten Logeintrags,
+für den der Schlüssel nicht mehr zählt.
+
+\startitemize
+\item {\bf active:} Der Schlüssel signiert neue Beweise.
+\item {\bf retired:} Der Schlüssel wurde ersetzt. Was er vorher signiert hat, bleibt gültig:
+Ein Logeintrag zählt, wenn seine Nummer unter der Grenze liegt, eine Freigabe immer.
+\item {\bf revoked:} Der Schlüssel ist möglicherweise kompromittiert.
+Ein Logeintrag zählt nur, wenn er im Log vor dem Widerruf steht;
+Freigaben des Schlüssels sind ungültig.
+Widerruft jemand einen ausgemusterten Schlüssel, gilt die frühere Grenze.
+\stopitemize
+
+Eine Änderung, die den letzten aktiven Owner-Schlüssel nähme, lehnt der Kern ab:
+Das Repository könnte sein Register sonst nie wieder ändern.
+Eine Rotation fügt darum zuerst den neuen Schlüssel hinzu und mustert danach den alten aus.
+Die Grenze nimmt der Befehl \type{register} aus dem Log:
+die Nummer, die der nächste Eintrag erhält.
+
+{\bf Offener und durchsetzender Modus.}
+Ein Repository ohne Register ist offen: Der Akteur ist eine Behauptung, die das Log aufzeichnet
+und niemand prüft.
+Es beginnt offen oder mit \type{init --owner-key}, das den Akteur zum Owner macht
+und das Register in das Arbeitsverzeichnis schreibt;
+es gehört in den ersten Commit.
+Dann ist das Repository durchsetzend, und der Schritt hat keinen Weg zurück:
+Die Datei \type{.stemma/enforcing} hält ihn fest, und ein durchsetzendes Repository,
+dessen Basis kein Register hat, ist beschädigt und nicht offen (Exit-Code 5 bei \type{op verify}).
+Vor dem ersten Commit liest der Kern die Datei des Arbeitsverzeichnisses,
+danach die Fassung des Commits, auf den HEAD zeigt.
+
+{\bf Der verifizierte Akteur.}
+Der Kern nimmt für ein durchsetzendes Repository einen \type{Verified}-Akteur:
+einen Akteur, dessen Beweis das Register geprüft hat.
+Nur das Register kann einen herstellen, ein Wert dieses Typs ist also der Nachweis.
+Der Autorisierer \type{RegisterAuthorizer} lässt im offenen Modus alles durch
+und verlangt im durchsetzenden Modus einen \type{Verified}-Akteur, der der Akteur des Aufrufs ist.
+
+{\bf Beweise und \type{op verify}.}
+Der Beweis eines Logeintrags ist eine Datei \type{.stemma/proofs/<Nummer>} mit dem Akteur
+und der SSHSIG-Signatur über den Hash des Eintrags.
+\type{op verify} prüft in einem durchsetzenden Repository jeden Beweis gegen das Register:
+Der Eintrag muss in der Hash-Kette stehen, der Akteur des Beweises der des Eintrags sein,
+und der Schlüssel muss zum Akteur gehören und für diese Nummer zählen.
+Noch schreibt keine Operation einen Beweis; die Operationen, deren Regel vom Akteur abhängt,
+kommen mit den weiteren Teilen von Phase~4.
+Die CLI-Befehle \type{register add-key}, \type{register retire} und \type{register revoke}
+ändern die Datei im Arbeitsverzeichnis; die Änderung ist ein gewöhnlicher Commit der Stufe~3.
+Ob ein Akteur den Eintrag ändern darf, entscheidet vorerst die Behauptung des Akteurs:
+Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 
 \section[sec:phase4-open]{Offene Fragen}
 

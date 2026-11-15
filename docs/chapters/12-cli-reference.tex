@@ -626,7 +626,7 @@ Das gilt ebenso für \type{.stemmaignore}.
 Legt ein leeres Repository an.
 
 \starttyping
-stemma init [-C VERZEICHNIS] [--initial-branch NAME] --actor AKTEUR
+stemma init [-C VERZEICHNIS] [--initial-branch NAME] [--owner-key DATEI] --actor AKTEUR
 \stoptyping
 
 \startitemize
@@ -638,6 +638,15 @@ Ein ungültiger Name ist ein Aufruffehler (Exit-Code 2) und legt nichts an.
 Ein Name, der mit \type{heads/} oder \type{tags/} beginnt, ist reserviert
 (ADR-008): Er endet mit Exit-Code 1 und legt nichts an,
 denn ein solcher Branch liesse sich unter seinem einfachen Namen nicht erreichen.
+\item {\bf \type{--owner-key} DATEI:} Die Datei eines öffentlichen Ed25519-Schlüssels
+(eine \type{.pub}-Datei). Der Akteur, der ein Mensch sein muss, wird damit Owner des
+Akteursregisters, und das Repository ist durchsetzend (\in{Abschnitt}[sec:register]).
+\type{init} schreibt das Register nach \type{.stemma-actors/register} im Arbeitsverzeichnis;
+es gehört in den ersten Commit. Der Schritt hat keinen Weg zurück.
+Ein Agent als Akteur, eine unlesbare Datei und ein Schlüssel einer anderen Art als Ed25519
+enden mit Exit-Code 1, bevor etwas entsteht.
+Gelingt \type{init}, aber nicht das Schreiben des Registers, endet der Befehl mit Exit-Code 3
+und nennt das Repository; ein Skript ruft \type{init} dann nicht wieder auf.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
@@ -671,6 +680,7 @@ denn Exit-Code 1 unterscheidet ein bestehendes Repository nicht von einem andere
 
 \starttyping
 stemma init --actor "human daniel"
+stemma init --owner-key ~/.ssh/id_ed25519.pub --actor "human daniel"
 stemma init -C projekt --initial-branch trunk --actor "human daniel"
 STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" stemma init
 \stoptyping
@@ -2535,6 +2545,13 @@ anchor 12:b3:5c0e...7a41
 
 (Im Beispiel ist der Hash gekürzt; der Befehl gibt ihn vollständig aus.)
 
+In einem durchsetzenden Repository (\in{Abschnitt}[sec:register]) prüft der Befehl danach das
+Register und jeden Beweis in \type{.stemma/proofs/} und fügt vor der Zeile \type{anchor} eine
+Zeile ein: \type{The actor register is valid, and 0 proofs of log entries hold against it.}
+Ein offenes Repository hat keine solche Zeile.
+Ein Register, das sich nicht lesen lässt, ein durchsetzendes Repository ohne Register in
+seiner Basis und ein Beweis, den das Register nicht annimmt, enden mit Exit-Code 5.
+
 {\bf Fehler.} Mit Exit-Code 5 endet der Befehl, wenn die Kette bricht: Die Meldung nennt den
 ersten Eintrag, der nicht den Hash seines Vorgängers nennt
 (\type{entry 3 does not name the hash of the entry before it}). Ein geänderter, gelöschter,
@@ -2746,6 +2763,51 @@ stemma op log -n 5
 stemma op restore 9 --actor "human daniel"
 stemma op restore 9 --dry-run --actor "human daniel"
 stemma op restore 13 -C projekt --actor "human daniel"
+\stoptyping
+
+\section{register}
+
+Ändert das Akteursregister eines durchsetzenden Repositories (\in{Abschnitt}[sec:register]):
+Ein Schlüssel kommt hinzu, wird ausgemustert oder widerrufen.
+
+\starttyping
+stemma register add-key [-C VERZEICHNIS] [--identity IDENTITÄT] --actor AKTEUR SCHLÜSSELDATEI
+stemma register retire [-C VERZEICHNIS] [--identity IDENTITÄT] --actor AKTEUR SCHLÜSSELDATEI
+stemma register revoke [-C VERZEICHNIS] [--identity IDENTITÄT] --actor AKTEUR SCHLÜSSELDATEI
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories.
+Standard ist das aktuelle.
+\item {\bf SCHLÜSSELDATEI:} Die Datei eines öffentlichen Ed25519-Schlüssels.
+\item {\bf \type{--identity} IDENTITÄT:} Die Identität, der der Schlüssel gehört, als
+\type{human <Kennung>} oder \type{agent <Kennung>}. Standard ist der Akteur.
+Den Eintrag einer anderen Identität ändert nur ein Owner.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\stopitemize
+
+{\bf Verhalten.} Der Befehl ändert die Datei \type{.stemma-actors/register} im
+Arbeitsverzeichnis und schreibt sie neu; er legt weder einen Commit noch einen Eintrag im Log an.
+Die Änderung ist ein Commit der Stufe~3, den ein Mensch mit der Rolle Owner freigibt.
+\type{add-key} fügt einen aktiven Schlüssel hinzu, für eine Rotation.
+\type{retire} und \type{revoke} tragen die Nummer ein, die der nächste Eintrag des Logs
+erhält; ab ihr zählt der Schlüssel nicht mehr.
+Ein widerrufener Schlüssel ist für seine Freigaben ungültig, ein ausgemusterter nicht.
+Die Ausgabe nennt die Identität, die Nummer und die Datei, die noch einen Commit braucht.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl und ändert nichts, wenn das Repository offen ist
+(\type{init --owner-key} beginnt ein durchsetzendes), wenn der Akteur kein Owner ist und eine
+andere Identität nennt, wenn die Identität oder der Schlüssel im Register fehlt,
+wenn der Schlüssel schon im Register steht, nicht mehr aktiv oder schon widerrufen ist
+und wenn kein Owner mit einem aktiven Schlüssel übrig bliebe.
+Ein Register, das sich nicht lesen lässt, endet mit Exit-Code 5.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma register add-key neu.pub --actor "human daniel"
+stemma register retire alt.pub --actor "human daniel"
+stemma register revoke mia.pub --identity "human mia" --actor "human daniel"
 \stoptyping
 
 \section{purge}

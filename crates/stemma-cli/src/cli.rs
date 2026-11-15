@@ -72,6 +72,7 @@ use std::env;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::num::NonZeroUsize;
 use std::path::{self, Path, PathBuf};
@@ -91,6 +92,7 @@ use stemma_core::moved::{moved_lines, MovedLines};
 use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
+use stemma_core::register::{self, Identity, Mode, Register};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
@@ -99,6 +101,7 @@ use stemma_core::repository::{
     SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking, UpdateError,
     WorktreeBranch, WorktreeError, BRANCH_PREFIX, TAG_PREFIX,
 };
+use stemma_core::signature::PublicKey;
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
 /// How many of the files that `worktree remove --force` deleted with the directory the output
@@ -151,6 +154,11 @@ enum Command {
         #[command(subcommand)]
         command: OpCommand,
     },
+    /// Change the actor register of an enforcing repository: add, retire, or revoke a key
+    Register {
+        #[command(subcommand)]
+        command: RegisterCommand,
+    },
     /// Remove a secret from the history and the log; without --apply, only show what it would do
     Purge(PurgeArgs),
     /// Add a second working copy of the repository on its own branch, list the worktrees, or remove
@@ -159,6 +167,44 @@ enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum RegisterCommand {
+    /// Add a key to an identity, for a rotation: the new key first, then retire the old one
+    AddKey(RegisterKeyArgs),
+    /// Retire a key: it signs nothing new, and what it signed before stays valid
+    Retire(RegisterKeyArgs),
+    /// Revoke a key that may be compromised: only the log entries before it count, and its
+    /// approvals are void
+    Revoke(RegisterKeyArgs),
+}
+
+#[derive(Debug, Args)]
+struct RegisterKeyArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// The file of an Ed25519 public key (a `.pub` file)
+    #[arg(value_name = "KEY_FILE")]
+    key_file: PathBuf,
+
+    /// The identity that holds the key, as `human <id>` or `agent <id>`; the default is the
+    /// actor. Only an owner changes the entry of another identity
+    #[arg(long, value_name = "IDENTITY")]
+    identity: Option<String>,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -791,6 +837,13 @@ struct InitArgs {
     /// environment sets STEMMA_ACTOR
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
+
+    /// Start an enforcing repository: the file of an Ed25519 public key (a `.pub` file) that
+    /// makes the actor, who must be a human, the owner of the actor register. The register is
+    /// written to the working copy and goes into the first commit. There is no way back to the
+    /// open mode
+    #[arg(long, value_name = "FILE")]
+    owner_key: Option<PathBuf>,
 }
 
 /// Why a command fails.
@@ -1075,6 +1128,14 @@ enum CliError {
     },
     /// The log was checked, but the result could not be written.
     VerifyOutput(io::Error),
+    /// The arguments or files of a register command are wrong, or the register refuses the
+    /// change. Nothing is changed.
+    Register(String),
+    /// The register or a proof is not valid or not accepted: damage (code 5).
+    RegisterDamaged(String),
+    /// The repository exists, but the register could not be written into it (code 3): a script
+    /// must not run `init` again.
+    RegisterNotWritten(String),
     /// The operation log has no entry at all. `init` writes entry 1, so entries were lost or the
     /// repository was tampered with.
     EmptyLog,
@@ -1141,6 +1202,7 @@ impl CliError {
             | Self::WorktreeOutput { .. }
             | Self::StatusNotDurable { .. }
             | Self::PurgedOutput { .. }
+            | Self::RegisterNotWritten(_)
             | Self::RestoreOutput {
                 restored: Some(_), ..
             }
@@ -1224,6 +1286,7 @@ impl CliError {
             Self::AnchorMissing { .. }
             | Self::AnchorUnchained { .. }
             | Self::AnchorMismatch { .. }
+            | Self::RegisterDamaged(_)
             | Self::EmptyLog => ExitCode::from(5),
             Self::MissingActor
             | Self::EmptyActor
@@ -1239,6 +1302,7 @@ impl CliError {
             | Self::MergeOutput { .. }
             | Self::PurgeOutput(_)
             | Self::VerifyOutput(_)
+            | Self::Register(_)
             | Self::LogWrite { .. }
             | Self::NoCommitToTag
             | Self::NoSuchTag(_)
@@ -1605,6 +1669,9 @@ impl fmt::Display for CliError {
                 f,
                 "checked the operation log, but could not write the result: {source}"
             ),
+            Self::Register(message)
+            | Self::RegisterDamaged(message)
+            | Self::RegisterNotWritten(message) => f.write_str(message),
             Self::EmptyLog => write!(
                 f,
                 "the operation log is empty: `init` always writes entry 1, so entries were lost \
@@ -1659,6 +1726,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         } => verify_op_log(args, out).map(|()| ExitCode::SUCCESS),
         Command::Tag(args) => tag(args, out).map(|()| ExitCode::SUCCESS),
         Command::Branch(args) => branch(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Register { command } => register_command(command, out).map(|()| ExitCode::SUCCESS),
         Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
         Command::Worktree {
             command: WorktreeCommand::Add(args),
@@ -2996,6 +3064,18 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
             anchor.number
         ));
     }
+    match Mode::of(&repository) {
+        Ok(Mode::Open) => {}
+        Ok(Mode::Enforcing(register)) => {
+            let proofs = register::check_proofs(&repository.metadata_dir(), &register, &entries)
+                .map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
+            text.push_str(&format!(
+                "The actor register is valid, and {proofs} proofs of log entries hold against \
+                 it.\n"
+            ));
+        }
+        Err(error) => return Err(CliError::RegisterDamaged(error.to_string())),
+    }
     if let Some(hash) = last.hash() {
         let anchor = Anchor {
             number: last.number(),
@@ -4065,6 +4145,12 @@ fn conflict_note(sides: Option<usize>, lead: &str) -> String {
 
 fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let actor = actor(args.actor)?;
+    // The key is read before anything is made, so that a wrong file leaves no repository.
+    let owner = args
+        .owner_key
+        .as_deref()
+        .map(|path| owner_register(&actor, path))
+        .transpose()?;
     let options = InitOptions::new(args.initial_branch);
     let created = absolute(&args.repository.join(METADATA_DIR));
     // A repository that is complete but not durable is announced like a success, so that a
@@ -4074,7 +4160,131 @@ fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
         Err(error @ InitError::NotDurable { .. }) => Some(error),
         Err(error) => return Err(CliError::Init(error)),
     };
-    finish_init(created, late, out)
+    if let Some(register) = owner {
+        let written = Repository::open(&args.repository)
+            .map_err(|error| error.to_string())
+            .and_then(|repository| {
+                register::enter_enforcing(&repository, &register).map_err(|e| e.to_string())
+            });
+        if let Err(reason) = written {
+            return Err(CliError::RegisterNotWritten(format!(
+                "the repository was created in {}, but its actor register could not be written \
+                 ({reason}); do not run `init` again",
+                created.display()
+            )));
+        }
+    }
+    let enforcing = args.owner_key.is_some();
+    let note_path = created.clone();
+    finish_init(created, late, out)?;
+    if enforcing {
+        writeln!(
+            out,
+            "Enforcing mode: {} names {actor} as the owner; add it with the first commit. There \
+             is no way back to the open mode.",
+            register::FILE
+        )
+        .map_err(|source| CliError::Output {
+            created: note_path,
+            source,
+            not_durable: None,
+        })?;
+    }
+    Ok(())
+}
+
+/// The register that `init --owner-key` makes: the actor, a human, owns it with the key of the
+/// file.
+fn owner_register(actor: &Actor, path: &Path) -> Result<Register, CliError> {
+    let key = read_public_key(path)?;
+    Register::with_owner(Identity::of(actor), key)
+        .map_err(|error| CliError::Register(format!("--owner-key: {error}")))
+}
+
+fn read_public_key(path: &Path) -> Result<PublicKey, CliError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        CliError::Register(format!(
+            "cannot read the key file {}: {error}",
+            path.display()
+        ))
+    })?;
+    PublicKey::from_openssh(&text)
+        .map_err(|error| CliError::Register(format!("the key file {}: {error}", path.display())))
+}
+
+/// `register add-key`, `retire`, and `revoke`: changes the register file of the working copy. The
+/// file is level 3, so the change goes through a commit that a human owner approves. Whether the
+/// actor may change the entry is decided from the actor claim: the owner changes any entry, anyone
+/// else only their own. A log entry that the key signed counts if its number is below the number
+/// that the next entry of the log will have, so a revocation never voids a record that is already
+/// in the log by mistake, and never lets a later one pass.
+fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(), CliError> {
+    let (action, args) = match command {
+        RegisterCommand::AddKey(args) => ("Added", args),
+        RegisterCommand::Retire(args) => ("Retired", args),
+        RegisterCommand::Revoke(args) => ("Revoked", args),
+    };
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let key = read_public_key(&args.key_file)?;
+    let identity = match &args.identity {
+        Some(text) => text
+            .parse::<Identity>()
+            .map_err(|error| CliError::Register(format!("--identity {text:?}: {error}")))?,
+        None => Identity::of(&actor),
+    };
+    let path = repository.path().join(register::FILE);
+    let enforcing = register::is_enforcing(&repository.metadata_dir())
+        .map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
+    if !enforcing {
+        return Err(CliError::Register(
+            "the repository is open and has no actor register; `init --owner-key` starts an \
+             enforcing repository"
+                .to_owned(),
+        ));
+    }
+    let bytes = fs::read(&path)
+        .map_err(|error| CliError::Register(format!("cannot read {}: {error}", path.display())))?;
+    let mut register =
+        Register::parse(&bytes).map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
+    if identity != Identity::of(&actor) && !register.is_owner(&actor) {
+        return Err(CliError::Register(format!(
+            "{actor} is not an owner, so it changes only its own entry, not the entry of {identity}"
+        )));
+    }
+    let from = repository
+        .oplog()
+        .entries()
+        .map_err(CliError::OpLog)?
+        .last()
+        .map_or(1, |entry| entry.number() + 1);
+    let changed = match action {
+        "Added" => register.add_key(&identity, key),
+        "Retired" => register.retire(&identity, &key, from),
+        _ => register.revoke(&identity, &key, from),
+    };
+    changed.map_err(|error| CliError::Register(error.to_string()))?;
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, register.encode())
+        .and_then(|()| fs::rename(&temporary, &path))
+        .map_err(|error| CliError::Register(format!("cannot write {}: {error}", path.display())))?;
+    let text = match action {
+        "Added" => format!(
+            "Added a key of {identity} to {}; commit the file.\n",
+            register::FILE
+        ),
+        _ => format!(
+            "{action} a key of {identity} from log entry {from} in {}; commit the file.\n",
+            register::FILE
+        ),
+    };
+    out.write_all(text.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|source| {
+            CliError::Register(format!(
+                "the register file was changed, but the result could not be written: {source}"
+            ))
+        })
 }
 
 /// Writes the announcement of `init`. If it cannot be written, the error of the output carries the
