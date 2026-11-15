@@ -15,7 +15,7 @@
 //! | [`Signal::AssertionBecameDebug`] | A function has fewer always-on assertions and more `debug_assert*!`. |
 //! | [`Signal::TestRemoved`] | A test (`#[test]`, `#[x::test]`) is gone, or is no test any more. |
 //! | [`Signal::TestSkipped`] | `#[ignore]` is added, `#[should_panic]` is added, or its `expected` is dropped. |
-//! | [`Signal::TestGated`] | `#[cfg(...)]` or `#[cfg_attr(...)]` is added to a test, or to a module, an `impl`, or the file around it. |
+//! | [`Signal::TestGated`] | `#[cfg(...)]` or `#[cfg_attr(...)]` is added to a test, or to a module (also `mod NAME;`), an `impl`, or the file around it. |
 //! | [`Signal::LintLowered`] | A lint level is lowered in `[lints]` or by an attribute, `#[allow]` is added, or `lints.workspace = true` is gone. |
 //! | [`Signal::Unparsable`] | A `.rs` file does not parse, in its new or in its old version, or a manifest is not text (the fallback). |
 //!
@@ -33,6 +33,10 @@
 //! lost assertion, and a `#[cfg]` that a platform-bound test needs is a gate. A `#[ignore]` with a
 //! reason that is added to a platform-bound test still hits: the rule cannot tell, so the reviewer
 //! justifies it.
+//!
+//! A test inside the body of a function is not a test that runs, and is not excused as a rename. The
+//! removal of `mod NAME;` hits only if the name has `test` in it, since the file of another module
+//! is a file of the change.
 //!
 //! Known limits of the lint signal: attribute counts are summed per file, so an `#[allow]` that
 //! moves from one item to another is no hit, and neither is `#[forbid]` that becomes `#[deny]` and
@@ -178,6 +182,8 @@ struct FnInfo {
 #[derive(Default)]
 struct Inventory {
     fns: Vec<FnInfo>,
+    /// The `mod NAME;` declarations, by path, with their `cfg`s: the tests are in another file.
+    mods: BTreeMap<String, usize>,
     lints: BTreeMap<String, LintCount>,
 }
 
@@ -327,6 +333,17 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if node.content.is_none() {
+            let path = self
+                .stack
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once(node.ident.to_string().as_str()))
+                .collect::<Vec<_>>()
+                .join("::");
+            let cfgs = self.cfg_context + count_cfgs(&node.attrs);
+            self.inventory.mods.insert(path, cfgs);
+        }
         self.nested(node.ident.to_string(), &node.attrs, |this| {
             visit::visit_item_mod(this, node)
         });
@@ -376,21 +393,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
         let path = node.path();
         if path.is_ident("cfg_attr") {
-            // `cfg_attr(PREDICATE, attribute, ...)`: each attribute after the predicate counts as
-            // if it stood alone.
-            let Ok(metas) = node.parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            ) else {
-                self.count_lint("allow", UNREADABLE_LINT.to_owned());
-                return;
-            };
-            for meta in metas.iter().skip(1) {
-                if let syn::Meta::List(list) = meta {
-                    if let Some(level) = list.path.get_ident() {
-                        self.read_lints(&level.to_string(), list);
-                    }
-                }
-            }
+            self.read_cfg_attr(node.parse_args_with(CfgAttr::parse_terminated));
             return;
         }
         let Some(level) = path.get_ident().map(ToString::to_string) else {
@@ -402,7 +405,29 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 }
 
+/// The arguments of a `cfg_attr`: the predicate, then the attributes.
+type CfgAttr = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
+
 impl Collector<'_> {
+    /// Reads the attributes of `cfg_attr(PREDICATE, attribute, ...)` as if each stood alone, also
+    /// those of a `cfg_attr` inside of it. Arguments that cannot be read count as an allowance.
+    fn read_cfg_attr(&mut self, args: syn::Result<CfgAttr>) {
+        let Ok(metas) = args else {
+            self.count_lint("allow", UNREADABLE_LINT.to_owned());
+            return;
+        };
+        for meta in metas.iter().skip(1) {
+            let syn::Meta::List(list) = meta else {
+                continue;
+            };
+            if list.path.is_ident("cfg_attr") {
+                self.read_cfg_attr(list.parse_args_with(CfgAttr::parse_terminated));
+            } else if let Some(level) = list.path.get_ident() {
+                self.read_lints(&level.to_string(), list);
+            }
+        }
+    }
+
     /// Counts the lints of one `allow(...)`, `warn(...)`, `deny(...)`, or `forbid(...)`. A list that
     /// cannot be read counts as one `allow` of [`UNREADABLE_LINT`], so that a new one is a hit.
     fn read_lints(&mut self, level: &str, list: &syn::MetaList) {
@@ -562,6 +587,10 @@ fn rank(level: Option<&str>) -> u8 {
 
 /// The `level` of an inline table `{ level = "warn", priority = -1 }`.
 fn inline_level(value: &str) -> Option<&str> {
+    // More than one `level` (a second one in a string or a key) is not read: it counts as `allow`.
+    if value.matches("level").count() != 1 {
+        return None;
+    }
     let rest = value.split_once("level")?.1.trim_start();
     quoted(rest.strip_prefix('=')?.trim_start())
 }
@@ -763,6 +792,30 @@ fn compare(
                      it: it may not be compiled everywhere"
                 ),
             );
+        }
+    }
+    for (module, before) in &old.mods {
+        match new.mods.get(module) {
+            Some(after) if after > before => hit(
+                Signal::TestGated,
+                format!(
+                    "`mod {module};` has a `#[cfg(...)]` or `#[cfg_attr(...)]` more now: the tests \
+                     in its file may not be compiled everywhere"
+                ),
+            ),
+            None if module
+                .rsplit("::")
+                .next()
+                .is_some_and(|n| n.contains("test")) =>
+            {
+                hit(
+                    Signal::TestRemoved,
+                    format!(
+                        "the declaration `mod {module};` is gone: its tests are no longer compiled"
+                    ),
+                )
+            }
+            _ => {}
         }
     }
     for (lint, after) in &new.lints {
@@ -1558,5 +1611,51 @@ mod tests {
             cargo("[lints.rust]\nunused = \"allow\"\n", "[lints.rust]\n"),
             []
         );
+    }
+
+    #[test]
+    fn nested_cfg_attr_is_read() {
+        assert_eq!(
+            rs(
+                "fn f() {}",
+                "#![cfg_attr(a, cfg_attr(b, allow(dead_code)))]\nfn f() {}"
+            ),
+            [Signal::LintLowered]
+        );
+        assert!(!rs("fn f() {}", "#![cfg_attr(a, cfg_attr(b c))]\nfn f() {}").is_empty());
+    }
+
+    #[test]
+    fn a_cfg_on_a_module_declaration_hits() {
+        assert_eq!(
+            rs("mod tests;", "#[cfg(any())] mod tests;"),
+            [Signal::TestGated]
+        );
+        assert_eq!(
+            rs("mod a { mod tests; }", "mod a { #[cfg(unix)] mod tests; }"),
+            [Signal::TestGated]
+        );
+        assert_eq!(rs("mod tests;", "mod tests;"), []);
+        assert_eq!(rs("#[cfg(unix)] mod tests;", "#[cfg(unix)] mod tests;"), []);
+        // A new declaration with a gate adds a module and weakens nothing.
+        assert_eq!(rs("", "#[cfg(unix)] mod tests;"), []);
+    }
+
+    #[test]
+    fn a_removed_declaration_of_a_test_module_hits() {
+        assert_eq!(rs("mod tests;", ""), [Signal::TestRemoved]);
+        assert_eq!(
+            rs("mod integration_tests;", "mod other;"),
+            [Signal::TestRemoved]
+        );
+        // Another module that goes is no signal of its own: its file is a file of the change.
+        assert_eq!(rs("mod parser;", ""), []);
+    }
+
+    #[test]
+    fn an_inline_table_with_two_levels_counts_as_allow() {
+        let old = "[lints.clippy]\npedantic = \"warn\"\n";
+        let new = "[lints.clippy]\npedantic = { level = \"warn\", note = \"level\" }\n";
+        assert!(!cargo(old, new).is_empty());
     }
 }
