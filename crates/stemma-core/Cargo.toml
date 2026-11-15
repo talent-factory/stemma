@@ -10,6 +10,10 @@ publish.workspace = true
 blake3 = "1"
 caseless = "0.2.2"
 getrandom = { version = "0.4.3", features = ["std"] }
+# The syntax tree of a `.rs` file, for the signals of weakened tests (ADR-004, rule 10). `quote`
+# prints a function body, so that two bodies can be compared without their formatting.
+quote = "1"
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "visit"] }
 # SSHSIG signatures and OpenSSH public keys, Ed25519 only (ADR-020).
 ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "ed25519"] }
 unicode-general-category = "=1.1.0"

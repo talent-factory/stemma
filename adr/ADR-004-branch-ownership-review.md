@@ -30,7 +30,16 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    signed, and is visible to everyone who reads the log. This is met locally (rule 2); the
    visibility per namespace and course is built in stemma-hub.
 10. Relaxing or deleting existing assertions automatically escalates to level 2. The rule is a
-    pure function over the old and the new blob (STEMMA-232); the gate of stemma-hub enforces it.
+    pure function over the old and the new blob (STEMMA-232, STEMMA-248); the gate of stemma-hub
+    enforces it. It reads `.rs` files with `syn` and the `[lints]` tables of `Cargo.toml`, and
+    knows seven signals: fewer `assert*!` calls in a function, `assert*!` turned into
+    `debug_assert*!`, a `#[test]` function that disappears (the same body under a new name is a
+    rename), `#[ignore]` or `#[should_panic]` added or its `expected` dropped, `#[cfg(...)]` added
+    to a test, a lint level lowered or `#[allow]` added, and a `.rs` file that does not parse
+    (fallback to level 2). A loosened condition is not detected. The level of the change is the
+    maximum of the path level and this level. The rule only raises and cannot be switched off: the
+    policy may name a higher target level and extra assertion macros, and a line that sets the
+    target below 2 makes it invalid.
 
 "Independent" in the table below means different actor IDs, together with the ban on self-approval
 (rule 4). Two agents of one sponsor count as two reviews. The fields `model` and `session` of an
