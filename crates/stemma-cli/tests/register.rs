@@ -321,3 +321,208 @@ fn a_register_file_that_is_a_link_is_refused_and_nothing_outside_is_written() {
     assert_eq!(result.code, 5, "{}", result.stdout);
     assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
 }
+
+/// Makes an Ed25519 key pair in `dir` with `ssh-keygen` and returns the path of the private key.
+/// `None` if `ssh-keygen` is not on the path (the test is skipped, unless
+/// STEMMA_REQUIRE_SSH_KEYGEN is set).
+fn generate_key(dir: &Path, name: &str) -> Option<String> {
+    let file = dir.join(name);
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&file)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !made {
+        assert!(
+            std::env::var_os("STEMMA_REQUIRE_SSH_KEYGEN").is_none(),
+            "STEMMA_REQUIRE_SSH_KEYGEN is set, but `ssh-keygen` does not work"
+        );
+        eprintln!("SKIPPED: `ssh-keygen` is not on the path");
+        return None;
+    }
+    Some(file.to_str().unwrap().to_owned())
+}
+
+const AGENT: &str = "agent bot model=m session=s sponsor=daniel";
+
+#[test]
+fn an_owner_adds_an_agent_that_its_sponsor_co_signed() {
+    let keys = Dir::new();
+    let (Some(sponsor_key), Some(agent_key)) = (
+        generate_key(keys.path(), "daniel"),
+        generate_key(keys.path(), "bot"),
+    ) else {
+        return;
+    };
+    let dir = Dir::new();
+    ok(
+        dir.path(),
+        &[
+            "init",
+            "--actor",
+            ACTOR,
+            "--owner-key",
+            &format!("{sponsor_key}.pub"),
+        ],
+    );
+    commit_register(dir.path());
+    let agent_pub = format!("{agent_key}.pub");
+    let signature_file = keys.path().join("bot.sig");
+    let signed = ok(
+        dir.path(),
+        &[
+            "register",
+            "cosign",
+            &sponsor_key,
+            "--agent",
+            "bot",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    fs::write(&signature_file, &signed.stdout).unwrap();
+    let signature = signature_file.to_str().unwrap();
+
+    // Neither an agent nor a non-owner adds an agent.
+    for actor in [AGENT, "human mia"] {
+        let result = run(
+            dir.path(),
+            &[
+                "register",
+                "add-agent",
+                &agent_pub,
+                "--agent",
+                "bot",
+                "--sponsor",
+                "daniel",
+                "--cosign",
+                signature,
+                "--actor",
+                actor,
+            ],
+        );
+        assert_eq!(result.code, 1, "{}", result.stdout);
+        assert!(
+            result.stderr.contains("is not an owner"),
+            "{}",
+            result.stderr
+        );
+    }
+    // The co-signature is bound to the agent: another identifier does not pass.
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-agent",
+            &agent_pub,
+            "--agent",
+            "other",
+            "--sponsor",
+            "daniel",
+            "--cosign",
+            signature,
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(result.stderr.contains("co-signature"), "{}", result.stderr);
+    // An agent is never an owner.
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-agent",
+            &agent_pub,
+            "--agent",
+            "bot",
+            "--sponsor",
+            "daniel",
+            "--role",
+            "owner",
+            "--cosign",
+            signature,
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("cannot be an owner"),
+        "{}",
+        result.stderr
+    );
+    assert!(!fs::read_to_string(dir.path().join(REGISTER))
+        .unwrap()
+        .contains("agent"));
+
+    let added = ok(
+        dir.path(),
+        &[
+            "register",
+            "add-agent",
+            &agent_pub,
+            "--agent",
+            "bot",
+            "--sponsor",
+            "daniel",
+            "--cosign",
+            signature,
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert!(
+        added.stdout.contains("with sponsor human daniel"),
+        "{}",
+        added.stdout
+    );
+    let text = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    assert!(
+        text.contains("entry agent bot member sponsor daniel\ncosign "),
+        "{text}"
+    );
+    // The commit that carries the entry is valid, and the second add is refused.
+    commit_register(dir.path());
+    ok(dir.path(), &["op", "verify"]);
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-agent",
+            &agent_pub,
+            "--agent",
+            "bot",
+            "--sponsor",
+            "daniel",
+            "--cosign",
+            signature,
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 1);
+    assert!(result.stderr.contains("already"), "{}", result.stderr);
+}
+
+#[test]
+fn an_agent_cannot_co_sign() {
+    let keys = Dir::new();
+    let Some(key) = generate_key(keys.path(), "bot") else {
+        return;
+    };
+    let (dir, _keys) = enforcing();
+    let result = run(
+        dir.path(),
+        &[
+            "register", "cosign", &key, "--agent", "other", "--actor", AGENT,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("agent cannot co-sign"),
+        "{}",
+        result.stderr
+    );
+}

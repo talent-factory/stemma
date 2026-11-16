@@ -42,6 +42,9 @@ pub enum PayloadKind {
     LogEntry,
     /// An approval of a commit, bound to the head that was reviewed (ADR-004).
     Approval,
+    /// The co-signature of the sponsor of an agent over the register entry of the agent
+    /// (ADR-004).
+    Sponsorship,
 }
 
 impl PayloadKind {
@@ -51,6 +54,7 @@ impl PayloadKind {
         match self {
             Self::LogEntry => "log-entry",
             Self::Approval => "approval",
+            Self::Sponsorship => "sponsorship",
         }
     }
 }
