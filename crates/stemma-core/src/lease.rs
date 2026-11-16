@@ -16,7 +16,7 @@
 //! ```text
 //! stemma-lease 1
 //! branch feature/login
-//! holder agent claude-1 daniel
+//! holder agent claude model=opus-5-5 session=s1 sponsor=daniel
 //! acquired 1763280000
 //! expires 1763283600
 //! ```
@@ -204,8 +204,21 @@ pub fn file_name(branch: &BranchName) -> String {
             name.push_str(&format!("%{byte:02X}"));
         }
     }
+    if name.len() > MAX_FILE_NAME {
+        // A long name, mostly of `/` and `.` that grow to three bytes each, would exceed the 255
+        // bytes of a path component. The start of the name and a hash of the whole name stay; the
+        // branch in the file tells the branches apart if the hashes ever met (`read_lease` checks).
+        let hash = blake3::hash(branch.as_str().as_bytes()).to_hex();
+        name.truncate(MAX_FILE_NAME - 17);
+        // The cut is at a byte that is ASCII, but may split an escape; it is only a prefix.
+        name.push('~');
+        name.push_str(&hash[..16]);
+    }
     name
 }
+
+/// The longest file name of a lease, in bytes: well below the 255 of a path component.
+const MAX_FILE_NAME: usize = 200;
 
 /// Why a lease file is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +370,18 @@ mod tests {
         assert_eq!(file_name(&branch("feature/x")), "feature%2Fx");
         assert_ne!(file_name(&branch("a/b")), file_name(&branch("a-b")));
         assert!(!file_name(&branch("a.b")).contains('.'));
+    }
+
+    #[test]
+    fn a_long_branch_name_gets_a_short_file_name_of_its_own() {
+        let long = |last: char| {
+            let name = format!("{}{last}", "a.".repeat(99));
+            branch(&name)
+        };
+        let (one, two) = (long('x'), long('y'));
+        assert!(file_name(&one).len() <= MAX_FILE_NAME);
+        assert_ne!(file_name(&one), file_name(&two));
+        assert_eq!(file_name(&one), file_name(&one));
     }
 
     #[test]

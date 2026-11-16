@@ -65,8 +65,10 @@ impl Repository {
     /// Returns [`LeaseError::Denied`] if the authorizer refuses, [`LeaseError::Held`] if another
     /// actor holds a valid lease (nothing is written), [`LeaseError::Refs`] for the lock (among
     /// them [`RefError::Locked`]: try again), and [`LeaseError::Log`] and [`LeaseError::Io`] for a
-    /// failure of the entry or of the file. After [`LeaseError::Io`] from the file the entry may be
-    /// in the log; the old file stands, and the next claim decides again.
+    /// failure of the entry or of the file. After [`LeaseError::Io`] from the file the entry is in
+    /// the log, and the file is the old one or, if only the flush of the directory failed, the new
+    /// one. After [`OpLogError::NotFlushed`] the entry may be in the log and no file is written.
+    /// In every case the next claim reads the file and decides again.
     pub fn claim_lease(
         &self,
         branch: &BranchName,
@@ -120,7 +122,9 @@ impl Repository {
     ///
     /// Returns [`LeaseError::NoLease`] if the branch has no lease, [`LeaseError::NotHolder`] if
     /// `actor` is not its holder (an expired lease too: it is taken over, not released), and the
-    /// errors of [`claim_lease`](Self::claim_lease).
+    /// errors of [`claim_lease`](Self::claim_lease). After [`LeaseError::Io`] the entry
+    /// `lease-release` is in the log, and the file may still stand (or come back after a crash)
+    /// until its expiry; a second release writes a second entry.
     pub fn release_lease(
         &self,
         branch: &BranchName,
@@ -145,9 +149,9 @@ impl Repository {
         )?;
         let path = self.leases_dir().join(lease::file_name(branch));
         fault::remove_file(&path).map_err(LeaseError::io("remove the lease file", &path))?;
-        // Not an error of the release: the entry and the removal stand, and a name that is not
-        // flushed comes back as an expired lease, which anyone takes over.
-        let _ = sync_directory(&self.leases_dir());
+        // An unflushed removal can come back after a crash as the old file, which is valid until
+        // its expiry, so the release is not reported as done until the directory is flushed.
+        sync_directory(&self.leases_dir())?;
         Ok(entry)
     }
 
@@ -362,7 +366,12 @@ impl fmt::Display for LeaseError {
             Self::Log(error) => error.fmt(f),
             Self::Entry(error) => error.fmt(f),
             Self::Corrupt { path, source } => {
-                write!(f, "the lease file {} is damaged: {source}", path.display())
+                write!(
+                f,
+                "the lease file {} is damaged: {source}; remove it by hand once you know who held \
+                 the lease",
+                path.display()
+            )
             }
             Self::NoLease { branch } => write!(f, "the branch `{branch}` has no valid lease"),
             Self::NotHolder { branch, holder } => write!(
@@ -821,6 +830,96 @@ mod tests {
             repository.override_lease(&feature(), &daniel(), &register, MINUTES, "why", &AllowAll),
             Err(LeaseError::NoLease { .. })
         ));
+    }
+
+    #[test]
+    fn a_crash_between_the_release_entry_and_the_removal_keeps_the_old_lease_in_force() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        repository
+            .claim_lease(&feature(), &mia(), MINUTES, &AllowAll)
+            .unwrap();
+        let leases = repository.metadata_dir().join(lease::DIR);
+        {
+            let _guard = fault::deny_writes_in(&leases);
+            let error = repository
+                .release_lease(&feature(), &mia(), &AllowAll)
+                .unwrap_err();
+            assert!(matches!(error, LeaseError::Io { .. }), "{error:?}");
+        }
+        assert_eq!(
+            lease_entries(&repository).last().unwrap().kind(),
+            LeaseKind::Release
+        );
+        // The file decides: the lease still holds against another actor.
+        assert!(matches!(
+            repository.claim_lease(&feature(), &agent(), MINUTES, &AllowAll),
+            Err(LeaseError::Held(_))
+        ));
+        // The holder releases again, which writes a second entry and removes the file.
+        repository
+            .release_lease(&feature(), &mia(), &AllowAll)
+            .unwrap();
+        assert_eq!(repository.lease(&feature()).unwrap(), None);
+        repository.oplog().verify().expect("the chain holds");
+    }
+
+    #[test]
+    fn a_crash_between_the_override_entry_and_the_file_leaves_the_old_holder() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        repository
+            .claim_lease(&feature(), &agent(), MINUTES, &AllowAll)
+            .unwrap();
+        let leases = repository.metadata_dir().join(lease::DIR);
+        {
+            let _guard = fault::deny_writes_in(&leases);
+            let error = repository
+                .override_lease(
+                    &feature(),
+                    &daniel(),
+                    &register(),
+                    MINUTES,
+                    "why",
+                    &AllowAll,
+                )
+                .unwrap_err();
+            assert!(matches!(error, LeaseError::Io { .. }), "{error:?}");
+        }
+        assert_eq!(
+            lease_entries(&repository).last().unwrap().kind(),
+            LeaseKind::Override
+        );
+        assert_eq!(
+            repository.lease(&feature()).unwrap().unwrap().holder(),
+            &agent()
+        );
+        // The owner repeats the override, and now it takes effect.
+        repository
+            .override_lease(
+                &feature(),
+                &daniel(),
+                &register(),
+                MINUTES,
+                "why",
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(
+            repository.lease(&feature()).unwrap().unwrap().holder(),
+            &daniel()
+        );
+    }
+
+    #[test]
+    fn a_branch_with_a_long_name_can_hold_a_lease() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let long = BranchName::try_new(format!("{}x", "a.".repeat(99))).unwrap();
+        let claimed = repository
+            .claim_lease(&long, &mia(), MINUTES, &AllowAll)
+            .unwrap();
+        assert_eq!(repository.lease(&long).unwrap(), Some(claimed.lease));
     }
 
     #[test]
