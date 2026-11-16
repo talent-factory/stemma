@@ -490,6 +490,13 @@ impl Register {
     /// revoked, and the sponsor has an active key. Always true for a human. An agent whose
     /// sponsorship does not hold can have no active key, so a revocation of the sponsor stays in
     /// force until an owner and the sponsor make the entry anew.
+    fn sponsorships_hold(&self) -> bool {
+        self.entries.iter().all(|entry| {
+            !entry.keys.iter().any(|held| held.state == KeyState::Active)
+                || self.sponsor_stands(entry)
+        })
+    }
+
     fn sponsor_stands(&self, entry: &RegisterEntry) -> bool {
         let (Some(sponsor), Some(cosign)) = (&entry.sponsor, &entry.cosign) else {
             return true;
@@ -506,6 +513,32 @@ impl Register {
                 .keys
                 .iter()
                 .all(|held| held.key != cosigner || !matches!(held.state, KeyState::Revoked { .. }))
+    }
+
+    /// Whether an agent whose sponsorship does not hold has no way to act: no active key, and no
+    /// key that outlasts the revocation of the co-signing key (every key is revoked from that
+    /// entry on at the latest).
+    fn agent_is_shut_down(&self, entry: &RegisterEntry, has_active: bool) -> bool {
+        if has_active {
+            return false;
+        }
+        let bound = entry.cosign.as_ref().and_then(|cosign| {
+            let cosigner = cosign.signing_key();
+            self.entry(entry.sponsor.as_ref()?)?
+                .keys
+                .iter()
+                .find_map(|held| match held.state {
+                    KeyState::Revoked { from } if held.key == cosigner => Some(from),
+                    _ => None,
+                })
+        });
+        match bound {
+            Some(bound) => entry
+                .keys
+                .iter()
+                .all(|held| matches!(held.state, KeyState::Revoked { from } if from <= bound)),
+            None => true,
+        }
     }
 
     /// Adds an active key to an identity, for a rotation: the new key first, then
@@ -548,17 +581,26 @@ impl Register {
     /// [`RegisterError::UnknownIdentity`], [`RegisterError::UnknownKey`],
     /// [`RegisterError::NotActive`] if the key is retired or revoked already,
     /// [`RegisterError::NoOwnerKey`] if the register would have no active owner key left (the
-    /// repository could then never change its register again), and [`RegisterError::ZeroPosition`].
+    /// repository could then never change its register again), [`RegisterError::ZeroPosition`],
+    /// and [`RegisterError::SponsorRevoked`] if a human sponsor would be left without an active key
+    /// while an agent still has one: add the new key first, or revoke, which shuts the agents
+    /// down.
     pub fn retire(
         &mut self,
         identity: &Identity,
         key: &PublicKey,
         from: u64,
     ) -> Result<(), RegisterError> {
-        self.change(identity, key, from, |state| match state {
+        let mut changed = self.clone();
+        changed.change(identity, key, from, |state| match state {
             KeyState::Active => Ok(KeyState::Retired { from }),
             _ => Err(RegisterError::NotActive),
-        })
+        })?;
+        if !changed.sponsorships_hold() {
+            return Err(RegisterError::SponsorRevoked);
+        }
+        *self = changed;
+        Ok(())
     }
 
     /// Revokes a key that is active or retired. A revoked key counts for the log entries below
@@ -607,6 +649,9 @@ impl Register {
             if touched {
                 revoked.push(entry.identity.clone());
             }
+        }
+        if !changed.sponsorships_hold() {
+            return Err(RegisterError::SponsorRevoked);
         }
         *self = changed;
         Ok(revoked)
@@ -808,7 +853,7 @@ impl Register {
                         },
                     )
                 })?;
-            if has_active && !register.sponsor_stands(entry) {
+            if !register.sponsor_stands(entry) && !register.agent_is_shut_down(entry, has_active) {
                 return Err(fail(0, RegisterProblem::SponsorRevoked));
             }
         }
@@ -2620,10 +2665,39 @@ mod tests {
     #[test]
     fn a_sponsor_without_an_active_key_leaves_the_agent_without_one() {
         let mut register = with_bot();
-        register.retire(&mia(), &Seeded::new(2).public(), 9).ok();
+        // The only key of Mia cannot go while the agent has an active key: the register could not
+        // be read again.
+        assert_eq!(
+            register.retire(&mia(), &Seeded::new(2).public(), 9),
+            Err(RegisterError::SponsorRevoked)
+        );
+        assert!(Register::parse(register.encode().as_bytes()).is_ok());
+        // After a revocation the agent has no active key, and the register reads back.
+        register
+            .revoke(&mia(), &Seeded::new(2).public(), 9)
+            .unwrap();
+        assert!(Register::parse(register.encode().as_bytes()).is_ok());
         assert_eq!(
             register.add_key(&bot(), Seeded::new(8).public()),
             Err(RegisterError::SponsorRevoked)
         );
+    }
+
+    #[test]
+    fn a_key_of_a_shut_down_agent_cannot_outlast_the_revocation() {
+        let mut register = with_bot();
+        register.add_key(&mia(), Seeded::new(5).public()).unwrap();
+        register
+            .revoke(&mia(), &Seeded::new(2).public(), 9)
+            .unwrap();
+        assert!(Register::parse(register.encode().as_bytes()).is_ok());
+        let key3 = Seeded::new(3).public();
+        for later in ["revoked 50", "retired 50"] {
+            let forged = register.encode().replace(
+                &format!("key {key3} revoked 9"),
+                &format!("key {key3} {later}"),
+            );
+            assert_eq!(problem(&forged), RegisterProblem::SponsorRevoked, "{later}");
+        }
     }
 }
