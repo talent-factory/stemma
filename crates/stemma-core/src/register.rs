@@ -489,7 +489,7 @@ impl Register {
     /// Whether the sponsorship of an agent still holds: the key that co-signed the entry is not
     /// revoked, and the sponsor has an active key. Always true for a human. An agent whose
     /// sponsorship does not hold can have no active key, so a revocation of the sponsor stays in
-    /// force until an owner and the sponsor make the entry anew.
+    /// force until the agent gets a new identifier and a new co-signature.
     fn sponsorships_hold(&self) -> bool {
         self.entries.iter().all(|entry| {
             !entry.keys.iter().any(|held| held.state == KeyState::Active)
@@ -629,6 +629,15 @@ impl Register {
             }),
             KeyState::Revoked { .. } => Err(RegisterError::AlreadyRevoked),
         })?;
+        // The bound of the revoked key itself: a key that was retired earlier keeps its earlier
+        // bound, and the agents follow it, or the reader would refuse the file.
+        let bound = changed
+            .entry(identity)
+            .and_then(|entry| entry.keys.iter().find(|held| &held.key == key))
+            .map_or(from, |held| match held.state {
+                KeyState::Revoked { from } => from,
+                _ => from,
+            });
         let mut revoked = Vec::new();
         for entry in &mut changed.entries {
             if entry.sponsor.as_ref() != Some(identity) {
@@ -637,10 +646,13 @@ impl Register {
             let mut touched = false;
             for held in &mut entry.keys {
                 let next = match held.state {
-                    KeyState::Active => KeyState::Revoked { from },
-                    KeyState::Retired { from: bound } => KeyState::Revoked {
-                        from: bound.min(from),
+                    KeyState::Active => KeyState::Revoked { from: bound },
+                    KeyState::Retired { from: earlier } => KeyState::Revoked {
+                        from: earlier.min(bound),
                     },
+                    KeyState::Revoked { from: earlier } if earlier > bound => {
+                        KeyState::Revoked { from: bound }
+                    }
                     KeyState::Revoked { .. } => continue,
                 };
                 held.state = next;
@@ -1264,7 +1276,8 @@ impl fmt::Display for RegisterError {
             }
             Self::SponsorRevoked => f.write_str(
                 "the sponsorship of the agent does not hold: its co-signing key is revoked or the \
-                 sponsor has no active key",
+                 sponsor has no active key; an agent whose sponsorship was revoked stays shut \
+                 down, so add a new agent with a new identifier and a new co-signature",
             ),
             Self::BadCosign => f.write_str(
                 "the co-signature is not a signature of an active key of the sponsor over the \
@@ -2699,5 +2712,43 @@ mod tests {
             );
             assert_eq!(problem(&forged), RegisterProblem::SponsorRevoked, "{later}");
         }
+    }
+
+    #[test]
+    fn revoking_a_retired_cosigning_key_keeps_the_register_readable() {
+        let mut register = with_bot();
+        register.add_key(&mia(), Seeded::new(5).public()).unwrap();
+        register
+            .retire(&mia(), &Seeded::new(2).public(), 5)
+            .unwrap();
+        register
+            .revoke(&mia(), &Seeded::new(2).public(), 10)
+            .unwrap();
+        assert_eq!(
+            Register::parse(register.encode().as_bytes()).unwrap(),
+            register
+        );
+        let agent = register.entry(&bot()).unwrap().keys()[0].state;
+        assert_eq!(agent, KeyState::Revoked { from: 5 });
+    }
+
+    #[test]
+    fn a_later_revocation_of_the_cosigning_key_lowers_the_bound_of_the_agent() {
+        let mut register = with_bot();
+        register.add_key(&mia(), Seeded::new(5).public()).unwrap();
+        // First a key that did not co-sign, then the co-signing key at an earlier entry.
+        register
+            .revoke(&mia(), &Seeded::new(5).public(), 30)
+            .unwrap();
+        assert!(Register::parse(register.encode().as_bytes()).is_ok());
+        register
+            .revoke(&mia(), &Seeded::new(2).public(), 10)
+            .unwrap();
+        assert_eq!(
+            Register::parse(register.encode().as_bytes()).unwrap(),
+            register
+        );
+        let agent = register.entry(&bot()).unwrap().keys()[0].state;
+        assert_eq!(agent, KeyState::Revoked { from: 10 });
     }
 }

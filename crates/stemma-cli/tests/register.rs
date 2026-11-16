@@ -618,12 +618,13 @@ fn revoking_a_sponsor_key_revokes_the_agents_and_names_them() {
         "{text}"
     );
     // The agent gets no new key under the revoked sponsorship, even from the owner.
+    let fresh = generate_key(keys.path(), "fresh").unwrap();
     let result = run(
         dir.path(),
         &[
             "register",
             "add-key",
-            &format!("{agent_key}.pub"),
+            &format!("{fresh}.pub"),
             "--identity",
             "agent bot",
             "--actor",
@@ -631,4 +632,67 @@ fn revoking_a_sponsor_key_revokes_the_agents_and_names_them() {
         ],
     );
     assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result
+            .stderr
+            .contains("sponsorship of the agent does not hold"),
+        "{}",
+        result.stderr
+    );
+}
+
+#[test]
+fn a_co_signature_of_a_key_that_is_not_the_sponsors_is_refused() {
+    let keys = Dir::new();
+    let (Some(owner_key), Some(other_key), Some(agent_key)) = (
+        generate_key(keys.path(), "daniel"),
+        generate_key(keys.path(), "forger"),
+        generate_key(keys.path(), "bot"),
+    ) else {
+        return;
+    };
+    let dir = Dir::new();
+    ok(
+        dir.path(),
+        &[
+            "init",
+            "--actor",
+            ACTOR,
+            "--owner-key",
+            &format!("{owner_key}.pub"),
+        ],
+    );
+    commit_register(dir.path());
+    // The forger signs as the sponsor with a key that the register does not hold for daniel.
+    let signed = ok(
+        dir.path(),
+        &[
+            "register", "cosign", &other_key, "--agent", "bot", "--actor", ACTOR,
+        ],
+    );
+    let signature_file = keys.path().join("bot.sig");
+    fs::write(&signature_file, &signed.stdout).unwrap();
+    let before = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-agent",
+            &format!("{agent_key}.pub"),
+            "--agent",
+            "bot",
+            "--sponsor",
+            "daniel",
+            "--cosign",
+            signature_file.to_str().unwrap(),
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(result.stderr.contains("co-signature"), "{}", result.stderr);
+    assert_eq!(
+        fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+        before
+    );
 }

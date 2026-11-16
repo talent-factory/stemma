@@ -4386,6 +4386,12 @@ fn load_register(repository: Repository) -> Result<(Repository, PathBuf, Registe
 
 /// Replaces the register file with the register, through a temporary file of the same directory.
 fn write_register(path: &Path, register: &Register) -> Result<(), CliError> {
+    // A register that the reader would refuse is never written: the repository could not be used.
+    if let Err(error) = Register::parse(register.encode().as_bytes()) {
+        return Err(CliError::Register(format!(
+            "the change would make a register that cannot be read: {error}"
+        )));
+    }
     let temporary = path.with_extension("tmp");
     let written = fs::OpenOptions::new()
         .write(true)
