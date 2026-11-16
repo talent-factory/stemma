@@ -296,7 +296,7 @@ und eine Zeile, die der Leser nicht kennt, ist ein Fehler mit ihrer Nummer.
 Die erste Zeile, die weder leer noch ein Kommentar ist, ist der Kopf \type{stemma-policy 1}.
 Eine andere Version oder ein fehlender Kopf macht die Datei ungültig.
 Leere Zeilen und Kommentare mit \type{\#} sind erlaubt.
-Jede weitere Zeile hat eine der vier Formen von \in{Tabelle}[tab:policy-lines].
+Jede weitere Zeile hat eine der sechs Formen von \in{Tabelle}[tab:policy-lines].
 
 \startplacetable[title={Die Zeilen einer Policy-Datei},reference=tab:policy-lines]
 \startxtable[frame=off,option=stretch]
@@ -317,17 +317,28 @@ Jede weitere Zeile hat eine der vier Formen von \in{Tabelle}[tab:policy-lines].
 \startxcell Eine Änderung der Stufe \type{N} braucht \type{ANZAHL} Freigaben von Agenten
 (höchstens 8). \stopxcell
 \stopxrow
-\startxrow[bottomframe=on]
+\startxrow
 \startxcell \type{lease MINUTEN} \stopxcell
 \startxcell Die Lease eines Branches dauert \type{MINUTEN} (5 bis 1440). \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{assertion PFAD} \stopxcell
+\startxcell Das Makro \type{PFAD}, etwa \type{pretty_assertions::assert_eq}, zählt als
+Zusicherung; ein letzter Name, der mit \type{debug_} beginnt, zählt nur im Debug-Build.
+\stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{weakened-level N} \stopxcell
+\startxcell Eine Änderung, die Tests abschwächt, hat mindestens Stufe \type{N} (2 oder 3).
+\stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
 Das Muster hat die Sprache von ADR-012, mit einer Ausnahme:
 Der Name \type{.stemmaignore} ist erlaubt, denn ADR-004 gibt der Datei die Stufe 2.
-\type{lease} steht höchstens einmal, \type{approvals} einmal je Stufe
-und \type{operation} einmal je Name.
+\type{lease} und \type{weakened-level} stehen höchstens einmal, \type{approvals} einmal je Stufe,
+\type{operation} einmal je Name und \type{assertion} einmal je Pfad (höchstens 64 Zeilen).
 Ein Beispiel mit Zeilen aus der Tabelle der Pfade von ADR-004:
 
 \starttyping
@@ -382,6 +393,81 @@ Eine andere Operation steht nie unter Stufe 2, und die Freigaben je Stufe nie ü
 Die Operation \type{purge} bleibt allein dem Menschen vorbehalten (ADR-014), auch wenn die Policy
 nichts über sie sagt.
 Die Lease dauert ohne Zeile 60 Minuten; die Grenzen von 5 Minuten und 24 Stunden liegen im Code.
+
+{\bf Abgeschwächte Tests.}
+Regel 10 von ADR-004 hebt eine Änderung auf Stufe 2 an, wenn sie bestehende Zusicherungen
+lockert oder löscht.
+Das ist nötig, weil Dateien unter \type{tests/} Stufe 0 haben:
+Ohne die Regel könnte eine Änderung der Stufe 0 das Sicherheitsnetz entfernen.
+Die Regel ist eine reine Funktion über den alten und den neuen Blob jeder Datei der Änderung
+(\type{weakened.rs}, neben \type{diff.rs}).
+Sie liest eine \type{.rs}-Datei mit \type{syn} und vergleicht die Funktionen
+nach ihrem Pfad aus Modulen, Typ und Name.
+Sieben Signale lösen sie aus (\in{Tabelle}[tab:weakened-signals]).
+
+\startplacetable[title={Die Signale für abgeschwächte Tests},reference=tab:weakened-signals]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Signal} \stopxcell
+\startxcell {\bf Treffer} \stopxcell
+\stopxrow
+\startxrow
+\startxcell 1 \stopxcell
+\startxcell Eine Funktion hat weniger \type{assert*!}-Aufrufe als zuvor. \stopxcell
+\stopxrow
+\startxrow
+\startxcell 2 \stopxcell
+\startxcell \type{assert*!} wird zu \type{debug_assert*!}: Die Zusicherung prüft im
+Release-Build nicht mehr. \stopxcell
+\stopxrow
+\startxrow
+\startxcell 3 \stopxcell
+\startxcell Ein Test (\type{#[test]}, auch \type{#[x::test]}) verschwindet oder ist kein Test mehr.
+Hat ein anderer Test der Änderung genau denselben Rumpf und ist nicht schwächer
+(kein neues \type{ignore}, \type{should_panic} oder \type{cfg}), ist es eine Umbenennung oder
+eine Verschiebung und zählt nicht; jeder solche Test entschuldigt einen verschwundenen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell 4 \stopxcell
+\startxcell \type{#[ignore]} kommt hinzu, oder \type{#[should_panic]} kommt hinzu
+oder verliert sein \type{expected}. \stopxcell
+\stopxrow
+\startxrow
+\startxcell 5 \stopxcell
+\startxcell \type{#[cfg(...)]} oder \type{#[cfg_attr(...)]} kommt zu einem Test hinzu,
+auch an einem Modul (auch \type{mod NAME;}), einem \type{impl} oder der Datei darum.
+\stopxcell
+\stopxrow
+\startxrow
+\startxcell 6 \stopxcell
+\startxcell Eine Lint-Stufe sinkt in \type{[lints]} einer \type{Cargo.toml} oder durch ein Attribut,
+\type{#[allow]} kommt hinzu, \type{#[expect]} wird zu \type{#[allow]},
+oder \type{lints.workspace = true} fällt weg. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell 7 \stopxcell
+\startxcell Eine \type{.rs}-Datei lässt sich nicht lesen, in der neuen oder in der alten
+Fassung, oder eine \type{Cargo.toml} ist kein Text (Rückfall auf Stufe 2). \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Die Stufe der Änderung ist das Maximum aus der Stufe der Pfade und dieser Stufe;
+das Gate bildet es, denn \type{level_of} und \type{weakening} kennen einander nicht.
+Die Regel hebt nur an und lässt sich nicht abschalten:
+Es gibt keine Zeile, die ein Signal ausschaltet, und \type{weakened-level} unter 2 macht die
+Policy ungültig.
+Die Policy darf die Zielstufe auf 3 heben und mit \type{assertion}-Zeilen eigene Makros in die
+Zählung aufnehmen.
+Die Signale sind syntaktisch.
+Sie sehen nicht, wenn eine Bedingung gelockert wird (\type{==} wird zu \type{>=}),
+wenn eine geänderte Produktionsfunktion einen Test leer laufen lässt
+oder wenn eine Datei ausser \type{.rs} und \type{Cargo.toml} Lints oder Tests lockert.
+Von einer \type{Cargo.toml} liest die Regel nur die Tabellen für Lints in einfachen Formen.
+Falsche Treffer sind bekannt und gehören ins Review:
+Eine Zusicherung, die in einen Hilfsaufruf wandert, zählt als verloren,
+und ein \type{#[ignore]} mit Begründung bei einem plattformgebundenen Test trifft weiterhin;
+die Reviewerin oder der Reviewer begründet es im Review.
 
 Ein Fuzz-Ziel (\type{just fuzz policy}) prüft den Leser:
 Eine angenommene Datei lässt sich in ihre kanonische Form schreiben, die wieder angenommen wird

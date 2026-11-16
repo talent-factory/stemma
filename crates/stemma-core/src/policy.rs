@@ -22,10 +22,13 @@
 //! | `operation NAME N` | The operation `NAME`, which touches no path, has level `N`. |
 //! | `approvals N COUNT` | A change of level `N` needs `COUNT` agent approvals (at most 8). |
 //! | `lease MINUTES` | The lease of a branch lasts `MINUTES` (5 to 1,440). |
+//! | `assertion PATH` | The macro `PATH` (`pretty_assertions::assert_eq`) counts as an assertion; a last name that starts with `debug_` counts as a debug assertion. |
+//! | `weakened-level N` | A change that weakens tests has level `N` (2 or 3) at least. |
 //!
 //! The pattern is the pattern language of ADR-012, with one difference: the name `.stemmaignore`
 //! is allowed, since the policy gives it level 2. `lease` stands at most once, `approvals` once
-//! for each level, and `operation` once for each name.
+//! for each level, and `operation` once for each name. `weakened-level` stands at most once, and
+//! `assertion` once for each path.
 //!
 //! # Rules
 //!
@@ -51,6 +54,12 @@
 //!   ADR-012), so a rule for `secrets/` does not cover `Secrets/` on a case-insensitive file
 //!   system. Only the names of the floor ignore the case, the trailing dots and spaces, and a
 //!   `:stream`.
+//! - The escalation when tests are weakened (ADR-004, rule 10, [`crate::weakened`]) is a floor of
+//!   the core: [`Policy::weakening`] gives a change with a signal at least [`WEAKENED_LEVEL`], and
+//!   the caller, the gate, takes the maximum of that level and [`Policy::level_of`]; neither
+//!   function applies the other. A policy may name a higher level with `weakened-level`, and its
+//!   `assertion` lines add macros to the count of the signals. No line switches a signal off, and
+//!   `weakened-level` below 2 makes the policy invalid.
 //! - The lease has bounds that the code fixes ([`MIN_LEASE_MINUTES`], [`MAX_LEASE_MINUTES`]); a
 //!   policy may change the lease only inside them.
 //!
@@ -66,6 +75,7 @@ use std::time::Duration;
 use crate::ignore::{parse_pattern, scan_lines, FileProblem, LineProblem, Pattern, ScanError};
 use crate::object::{name_problem, NameProblem};
 use crate::oplog::{OperationName, OperationNameError};
+use crate::weakened::{self, FileChange, Reason};
 
 /// The name of the policy file, in the root of the repository.
 pub const FILE_NAME: &str = ".stemma-policy";
@@ -82,6 +92,15 @@ const VERSION: &str = "1";
 
 /// The level of a path that no line names.
 pub const DEFAULT_LEVEL: RiskLevel = RiskLevel::Two;
+
+/// The level that a change with a signal of weakened tests has at least (ADR-004, rule 10).
+pub const WEAKENED_LEVEL: RiskLevel = RiskLevel::Two;
+
+/// The most `assertion` lines that a policy may have, and the most parts of the path of a macro.
+pub const MAX_ASSERTION_LINES: usize = 64;
+
+/// See [`MAX_ASSERTION_LINES`].
+pub const MAX_ASSERTION_PARTS: usize = 8;
 
 /// The shortest lease that a policy may set, in minutes (ADR-004).
 pub const MIN_LEASE_MINUTES: u32 = 5;
@@ -240,6 +259,9 @@ pub struct Policy {
     operations: BTreeMap<String, RiskLevel>,
     approvals: [Option<u32>; 4],
     lease_minutes: Option<u32>,
+    /// The paths of the extra assertion macros, in order.
+    assertions: Vec<String>,
+    weakened_level: Option<RiskLevel>,
 }
 
 /// A `level` line. Equal if the level and the pattern text are, whatever the line it stood on.
@@ -392,6 +414,30 @@ impl Policy {
                 once("lease".to_owned())?;
                 self.lease_minutes = Some(minutes);
             }
+            "assertion" => {
+                let [_, path] = fields[..] else {
+                    return Err(PolicyProblem::Usage("assertion PATH"));
+                };
+                if !is_macro_path(path) {
+                    return Err(PolicyProblem::BadMacroPath(path.to_owned()));
+                }
+                once(format!("assertion {path}"))?;
+                if self.assertions.len() >= MAX_ASSERTION_LINES {
+                    return Err(PolicyProblem::TooManyAssertionLines);
+                }
+                self.assertions.push(path.to_owned());
+            }
+            "weakened-level" => {
+                let [_, level] = fields[..] else {
+                    return Err(PolicyProblem::Usage("weakened-level N"));
+                };
+                let level = read_level(level)?;
+                if level < WEAKENED_LEVEL {
+                    return Err(PolicyProblem::WeakenedLevelBelowFloor { level });
+                }
+                once("weakened-level".to_owned())?;
+                self.weakened_level = Some(level);
+            }
             HEADER => return Err(PolicyProblem::SecondHeader),
             other => return Err(PolicyProblem::UnknownLine(other.to_owned())),
         }
@@ -414,6 +460,12 @@ impl Policy {
         }
         for (name, level) in &self.operations {
             text.push_str(&format!("operation {name} {level}\n"));
+        }
+        if let Some(level) = self.weakened_level {
+            text.push_str(&format!("weakened-level {level}\n"));
+        }
+        for path in &self.assertions {
+            text.push_str(&format!("assertion {path}\n"));
         }
         for rule in &self.paths {
             text.push_str(&format!("level {} {}\n", rule.level, rule.text));
@@ -486,10 +538,59 @@ impl Policy {
         self.approvals[index].unwrap_or(AGENT_APPROVAL_FLOORS[index])
     }
 
+    /// The level that a change with a signal of weakened tests has at least: the line
+    /// `weakened-level`, or [`WEAKENED_LEVEL`].
+    pub fn weakened_level(&self) -> RiskLevel {
+        self.weakened_level.unwrap_or(WEAKENED_LEVEL)
+    }
+
+    /// The macros that count as assertions besides those of the standard library, as the
+    /// `assertion` lines write them.
+    pub fn assertion_macros(&self) -> &[String] {
+        &self.assertions
+    }
+
+    /// Looks for the signals of weakened tests in the files of a change (ADR-004, rule 10,
+    /// [`crate::weakened`]). The level of the change is the maximum of [`Policy::level_of`] and
+    /// [`Weakening::level`]: the rule only raises, and no line of the policy switches it off.
+    pub fn weakening(&self, files: &[FileChange<'_>]) -> Weakening {
+        let reasons = weakened::analyze(files, &self.assertions);
+        let level = if reasons.is_empty() {
+            RiskLevel::Zero
+        } else {
+            self.weakened_level()
+        };
+        Weakening { level, reasons }
+    }
+
     /// The lease of a branch: the line of the policy, or [`DEFAULT_LEASE_MINUTES`].
     pub fn lease(&self) -> Duration {
         Duration::from_secs(u64::from(self.lease_minutes.unwrap_or(DEFAULT_LEASE_MINUTES)) * 60)
     }
+}
+
+/// The result of the signals of weakened tests for one change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Weakening {
+    /// Level 0 without a signal, else the level that the policy names, at least
+    /// [`WEAKENED_LEVEL`].
+    pub level: RiskLevel,
+    /// One reason for each signal that hit.
+    pub reasons: Vec<Reason>,
+}
+
+/// A path of a macro as it is written in a call: names joined by `::`, at most
+/// [`MAX_ASSERTION_PARTS`] of them.
+fn is_macro_path(path: &str) -> bool {
+    let parts: Vec<&str> = path.split("::").collect();
+    parts.len() <= MAX_ASSERTION_PARTS
+        && parts.iter().all(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// The paths that have level 3 whatever a policy says: the policy file, and the actor register.
@@ -649,7 +750,8 @@ pub enum PolicyProblem {
     UnknownVersion(String),
     /// A second header line.
     SecondHeader,
-    /// The first word is not one of `level`, `operation`, `approvals`, and `lease`.
+    /// The first word is not one of `level`, `operation`, `approvals`, `lease`, `assertion`, and
+    /// `weakened-level`.
     UnknownLine(String),
     /// The line does not have the fields of its form. Carries the form.
     Usage(&'static str),
@@ -700,6 +802,15 @@ pub enum PolicyProblem {
     },
     /// More than [`MAX_LEVEL_LINES`] `level` lines.
     TooManyLevelLines,
+    /// The path of an `assertion` line is not names joined by `::`.
+    BadMacroPath(String),
+    /// More than [`MAX_ASSERTION_LINES`] `assertion` lines.
+    TooManyAssertionLines,
+    /// A `weakened-level` below [`WEAKENED_LEVEL`]: the escalation cannot be lowered.
+    WeakenedLevelBelowFloor {
+        /// The level as written.
+        level: RiskLevel,
+    },
     /// A setting that stands a second time.
     Twice {
         /// The setting.
@@ -728,7 +839,8 @@ impl fmt::Display for PolicyProblem {
             Self::SecondHeader => f.write_str("the header stands once, in the first line"),
             Self::UnknownLine(word) => write!(
                 f,
-                "unknown line `{}`; expected `level`, `operation`, `approvals`, or `lease`",
+                "unknown line `{}`; expected `level`, `operation`, `approvals`, `lease`, `assertion`, or \
+                 `weakened-level`",
                 word.escape_debug()
             ),
             Self::Usage(form) => write!(f, "expected `{form}`"),
@@ -771,6 +883,20 @@ impl fmt::Display for PolicyProblem {
             Self::TooManyLevelLines => {
                 write!(f, "more than {MAX_LEVEL_LINES} `level` lines")
             }
+            Self::BadMacroPath(path) => write!(
+                f,
+                "`{}` is not the path of a macro; write names joined by `::`, at most \
+                 {MAX_ASSERTION_PARTS}",
+                path.escape_debug()
+            ),
+            Self::TooManyAssertionLines => {
+                write!(f, "more than {MAX_ASSERTION_LINES} `assertion` lines")
+            }
+            Self::WeakenedLevelBelowFloor { level } => write!(
+                f,
+                "`weakened-level {level}`: a change that weakens tests has level {WEAKENED_LEVEL} \
+                 at least, and a policy cannot lower that"
+            ),
             Self::Twice { key, first } => write!(f, "`{key}` is set again; first in line {first}"),
         }
     }
@@ -1355,7 +1481,8 @@ mod tests {
         );
         assert_eq!(
             message("stemma-policy 1\nowner alice\n"),
-            "line 2: unknown line `owner`; expected `level`, `operation`, `approvals`, or `lease`"
+            "line 2: unknown line `owner`; expected `level`, `operation`, `approvals`, `lease`, `assertion`, or \
+             `weakened-level`"
         );
         assert!(message("stemma-policy 1\nLevel 1 a\n").contains("unknown line `Level`"));
         assert_eq!(
@@ -1564,5 +1691,177 @@ mod tests {
                 crate::fuzz::policy(&seed[..end]);
             }
         }
+    }
+
+    #[test]
+    fn assertion_and_weakened_level_lines_are_read_and_encoded() {
+        let text = "stemma-policy 1\nweakened-level 3\nassertion pretty_assertions::assert_eq\n\
+                    assertion my_assert\nlevel 1 docs/\n";
+        let p = policy(text);
+        assert_eq!(p.weakened_level(), RiskLevel::Three);
+        assert_eq!(
+            p.assertion_macros(),
+            ["pretty_assertions::assert_eq", "my_assert"]
+        );
+        assert_eq!(p.encode(), text);
+        // The default is the floor, and no line is the policy without one.
+        assert_eq!(Policy::default().weakened_level(), WEAKENED_LEVEL);
+        assert!(Policy::default().assertion_macros().is_empty());
+        assert_eq!(
+            policy("stemma-policy 1\nweakened-level 2\n").weakened_level(),
+            RiskLevel::Two
+        );
+    }
+
+    #[test]
+    fn the_weakened_level_cannot_be_lowered_or_switched_off() {
+        for level in ["0", "1"] {
+            assert_eq!(
+                message(&format!("stemma-policy 1\nweakened-level {level}\n")),
+                format!(
+                    "line 2: `weakened-level {level}`: a change that weakens tests has level 2 \
+                     at least, and a policy cannot lower that"
+                )
+            );
+        }
+        assert!(message("stemma-policy 1\nweakened-level off\n").contains("is not a level"));
+        assert!(message("stemma-policy 1\nweakened-level 4\n").contains("is not a level"));
+        assert!(
+            message("stemma-policy 1\nweakened-level\n").contains("expected `weakened-level N`")
+        );
+        assert!(
+            message("stemma-policy 1\nweakened-level 2\nweakened-level 3\n")
+                .contains("`weakened-level` is set again; first in line 2")
+        );
+        // There is no line that switches a signal off.
+        for line in [
+            "signal fewer-assertions off",
+            "weakened off",
+            "weakened-level 2 off",
+            "tests-weakened 0",
+        ] {
+            assert!(
+                message(&format!("stemma-policy 1\n{line}\n")).starts_with("line 2:"),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn assertion_lines_are_checked() {
+        for bad in [
+            "",
+            "a::",
+            "::a",
+            "a:b",
+            "a-b",
+            "1a",
+            "a b",
+            "a!",
+            "a::b::c::d::e::f::g::h::i",
+        ] {
+            let text = format!("stemma-policy 1\nassertion {bad}\n");
+            assert!(parse(&text).is_err(), "{bad:?}");
+        }
+        assert!(message("stemma-policy 1\nassertion a!\n").contains("is not the path of a macro"));
+        assert_eq!(
+            message("stemma-policy 1\nassertion a\nassertion a\n"),
+            "line 3: repeats line 2"
+        );
+        let many: String = (0..=MAX_ASSERTION_LINES)
+            .map(|n| format!("assertion m{n}\n"))
+            .collect();
+        assert!(
+            message(&format!("stemma-policy 1\n{many}")).contains("more than 64 `assertion` lines")
+        );
+        let eight = ["a"; MAX_ASSERTION_PARTS].join("::");
+        assert!(parse(&format!("stemma-policy 1\nassertion {eight}\n")).is_ok());
+    }
+
+    #[test]
+    fn a_change_with_a_signal_has_the_level_of_the_policy_at_least() {
+        use crate::weakened::Signal;
+        let old = b"#[test] fn t() { assert!(a); assert!(b); }".as_slice();
+        let new = b"#[test] fn t() { assert!(a); }".as_slice();
+        let file = FileChange {
+            path: "crates/x/tests/t.rs",
+            old: Some(old),
+            new: Some(new),
+        };
+        let docs = policy("stemma-policy 1\nlevel 0 crates/x/tests/\n");
+        // The path has level 0, the signal raises it to 2.
+        assert_eq!(
+            docs.level_of(&[file_change(&file)]).unwrap(),
+            RiskLevel::Zero
+        );
+        let weakening = docs.weakening(&[file]);
+        assert_eq!(weakening.level, RiskLevel::Two);
+        assert_eq!(weakening.reasons.len(), 1);
+        assert_eq!(weakening.reasons[0].signal, Signal::FewerAssertions);
+        // The policy may name a higher level.
+        let strict = policy("stemma-policy 1\nweakened-level 3\n");
+        assert_eq!(strict.weakening(&[file]).level, RiskLevel::Three);
+        // Without a signal there is no level.
+        let same = FileChange {
+            path: "a.rs",
+            old: Some(old),
+            new: Some(old),
+        };
+        assert_eq!(
+            strict.weakening(&[same]),
+            Weakening {
+                level: RiskLevel::Zero,
+                reasons: vec![]
+            }
+        );
+        // The macros of the policy count in the signals.
+        let counted = policy("stemma-policy 1\nassertion pretty_assertions::assert_eq\n");
+        let before = FileChange {
+            path: "a.rs",
+            old: Some(b"fn f() { pretty_assertions::assert_eq!(1, 1); }"),
+            new: Some(b"fn f() {}"),
+        };
+        assert_eq!(docs.weakening(&[before]).level, RiskLevel::Zero);
+        assert_eq!(counted.weakening(&[before]).level, RiskLevel::Two);
+    }
+
+    fn file_change<'a>(file: &FileChange<'a>) -> PathChange<'a> {
+        PathChange::Modified { path: file.path }
+    }
+
+    #[test]
+    fn the_level_of_a_weakening_is_for_the_caller_to_combine() {
+        let docs_only = policy("stemma-policy 1\nlevel 3 deny.toml\nlevel 0 crates/x/\n");
+        let manifest = FileChange {
+            path: "crates/x/Cargo.toml",
+            old: Some(b"[lints.rust]\nunused = \"deny\"\n"),
+            new: Some(b"[lints.rust]\nunused = \"warn\"\n"),
+        };
+        let weakening = docs_only.weakening(&[manifest]);
+        assert_eq!(weakening.level, RiskLevel::Two);
+        assert_eq!(
+            weakening.reasons[0].signal,
+            crate::weakened::Signal::LintLowered
+        );
+        // A path of level 3 stays at 3, whatever the signal says: the caller takes the maximum.
+        let touched = [PathChange::Modified { path: "deny.toml" }];
+        let level = docs_only.level_of(&touched).unwrap().max(weakening.level);
+        assert_eq!(level, RiskLevel::Three);
+        // The target of the policy and the macros work together.
+        let both =
+            policy("stemma-policy 1\nweakened-level 3\nassertion my::check\nlevel 0 crates/x/\n");
+        let file = FileChange {
+            path: "crates/x/src/lib.rs",
+            old: Some(b"fn f() { my::check!(a); }"),
+            new: Some(b"fn f() {}"),
+        };
+        assert_eq!(both.weakening(&[file]).level, RiskLevel::Three);
+        // A file that does not parse is a signal as well.
+        let broken = FileChange {
+            path: "a.rs",
+            old: None,
+            new: Some(b"fn f( {"),
+        };
+        assert_eq!(docs_only.weakening(&[broken]).level, RiskLevel::Two);
     }
 }

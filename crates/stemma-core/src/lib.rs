@@ -64,6 +64,7 @@ pub mod store;
 #[cfg(test)]
 mod testutil;
 pub mod verify;
+pub mod weakened;
 
 use oplog::OperationName;
 
