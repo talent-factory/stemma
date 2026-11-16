@@ -526,3 +526,109 @@ fn an_agent_cannot_co_sign() {
         result.stderr
     );
 }
+
+#[test]
+fn revoking_a_sponsor_key_revokes_the_agents_and_names_them() {
+    let keys = Dir::new();
+    let (Some(sponsor_key), Some(second_key), Some(agent_key)) = (
+        generate_key(keys.path(), "daniel"),
+        generate_key(keys.path(), "daniel2"),
+        generate_key(keys.path(), "bot"),
+    ) else {
+        return;
+    };
+    let dir = Dir::new();
+    ok(
+        dir.path(),
+        &[
+            "init",
+            "--actor",
+            ACTOR,
+            "--owner-key",
+            &format!("{sponsor_key}.pub"),
+        ],
+    );
+    commit_register(dir.path());
+    let signed = ok(
+        dir.path(),
+        &[
+            "register",
+            "cosign",
+            &sponsor_key,
+            "--agent",
+            "bot",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    let signature_file = keys.path().join("bot.sig");
+    fs::write(&signature_file, &signed.stdout).unwrap();
+    ok(
+        dir.path(),
+        &[
+            "register",
+            "add-agent",
+            &format!("{agent_key}.pub"),
+            "--agent",
+            "bot",
+            "--sponsor",
+            "daniel",
+            "--cosign",
+            signature_file.to_str().unwrap(),
+            "--actor",
+            ACTOR,
+        ],
+    );
+    ok(
+        dir.path(),
+        &[
+            "register",
+            "add-key",
+            &format!("{second_key}.pub"),
+            "--actor",
+            ACTOR,
+        ],
+    );
+    let revoked = ok(
+        dir.path(),
+        &[
+            "register",
+            "revoke",
+            &format!("{sponsor_key}.pub"),
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert!(
+        revoked
+            .stdout
+            .contains("Revoked every key of agent bot, whose sponsor is human daniel"),
+        "{}",
+        revoked.stdout
+    );
+    let text = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    let agent_pub = fs::read_to_string(format!("{agent_key}.pub")).unwrap();
+    let agent_key_text = agent_pub
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        text.contains(&format!("key {agent_key_text} revoked ")),
+        "{text}"
+    );
+    // The agent gets no new key under the revoked sponsorship, even from the owner.
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-key",
+            &format!("{agent_key}.pub"),
+            "--identity",
+            "agent bot",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+}

@@ -541,6 +541,11 @@ im Register sein, sonst gilt sein Beweis nicht.
 alle Schlüssel seiner Agenten ab derselben Nummer; frühere Grenzen bleiben.
 Das Ausmustern eines Schlüssels löst keine Kaskade aus, damit eine Rotation die Agenten behält.
 Die Kaskade ändert das Register oder gar nichts.
+Danach bekommt der Agent keinen neuen Schlüssel, solange der Schlüssel der Mitzeichnung widerrufen
+ist oder der Sponsor keinen aktiven Schlüssel hat; der Leser lehnt auch eine Datei ab,
+die ihm einen gibt.
+Die Mitzeichnung bindet Agent, Rolle und Sponsor, nicht den Schlüssel des Agenten
+und nicht das Repository: Welchen Schlüssel der Agent erhält, entscheidet der Owner.
 \stopitemize
 
 {\bf Zustände eines Schlüssels.}

@@ -41,10 +41,14 @@
 //!
 //! - The sponsor is a human entry, never an agent, so there are no sponsor chains.
 //! - The role of the agent does not exceed the role of the sponsor ([`Role`]).
-//! - The sponsor signs [`sponsorship_payload`] with a key of the sponsor ([`PayloadKind::Sponsorship`]);
-//!   the owner who changes the register signs the entry by approving the commit (level 3).
+//! - The sponsor signs [`sponsorship_payload`] with a key of the sponsor
+//!   ([`PayloadKind::Sponsorship`]); the owner who changes the register signs the entry by approving the commit (level 3).
 //! - The `sponsor` of an actor line must be the sponsor of the entry, or the proof does not count
 //!   ([`ProofError::SponsorMismatch`]). The fields `model` and `session` stay descriptive.
+//! - The co-signature binds agent, role, and sponsor, not a key and not the repository: the owner
+//!   decides which key an agent gets, and a rotation keeps the signature. A register that was
+//!   hand-written under a revoked co-signing key cannot give the agent an active key
+//!   ([`RegisterProblem::SponsorRevoked`]).
 //! - Revoking a key of a sponsor revokes every key of their agents from the same log entry
 //!   ([`Register::revoke`]). Retiring a key does not: a rotation keeps the agents.
 //!
@@ -482,16 +486,45 @@ impl Register {
         })
     }
 
+    /// Whether the sponsorship of an agent still holds: the key that co-signed the entry is not
+    /// revoked, and the sponsor has an active key. Always true for a human. An agent whose
+    /// sponsorship does not hold can have no active key, so a revocation of the sponsor stays in
+    /// force until an owner and the sponsor make the entry anew.
+    fn sponsor_stands(&self, entry: &RegisterEntry) -> bool {
+        let (Some(sponsor), Some(cosign)) = (&entry.sponsor, &entry.cosign) else {
+            return true;
+        };
+        let Some(sponsor) = self.entry(sponsor) else {
+            return false;
+        };
+        let cosigner = cosign.signing_key();
+        sponsor
+            .keys
+            .iter()
+            .any(|held| held.state == KeyState::Active)
+            && sponsor
+                .keys
+                .iter()
+                .all(|held| held.key != cosigner || !matches!(held.state, KeyState::Revoked { .. }))
+    }
+
     /// Adds an active key to an identity, for a rotation: the new key first, then
     /// [`retire`](Self::retire) of the old one.
     ///
     /// # Errors
     ///
     /// [`RegisterError::UnknownIdentity`], [`RegisterError::KeyKnown`] if any entry holds the key
-    /// already, and [`RegisterError::TooManyKeys`].
+    /// already, [`RegisterError::TooManyKeys`], and [`RegisterError::SponsorRevoked`] for an agent
+    /// whose sponsorship no longer holds.
     pub fn add_key(&mut self, identity: &Identity, key: PublicKey) -> Result<(), RegisterError> {
         if self.holds(&key) {
             return Err(RegisterError::KeyKnown);
+        }
+        if self
+            .entry(identity)
+            .is_some_and(|entry| !self.sponsor_stands(entry))
+        {
+            return Err(RegisterError::SponsorRevoked);
         }
         let entry = self.entry_mut(identity)?;
         if entry.keys.len() >= MAX_KEYS {
@@ -758,6 +791,7 @@ impl Register {
             let (Some(sponsor), cosign) = (&entry.sponsor, &entry.cosign) else {
                 continue;
             };
+            let has_active = entry.keys.iter().any(|held| held.state == KeyState::Active);
             let Some(cosign) = cosign else {
                 return Err(fail(0, RegisterProblem::NoCosign));
             };
@@ -774,6 +808,9 @@ impl Register {
                         },
                     )
                 })?;
+            if has_active && !register.sponsor_stands(entry) {
+                return Err(fail(0, RegisterProblem::SponsorRevoked));
+            }
         }
         Ok(register)
     }
@@ -1039,6 +1076,8 @@ pub enum RegisterProblem {
     UnknownSponsor,
     /// An agent whose role is above the role of the sponsor.
     RoleAboveSponsor,
+    /// An agent with an active key whose sponsorship does not hold (see [`Register::revoke`]).
+    SponsorRevoked,
 }
 
 impl fmt::Display for RegisterProblem {
@@ -1074,6 +1113,10 @@ impl fmt::Display for RegisterProblem {
             Self::NoCosign => "an agent needs the co-signature of its sponsor",
             Self::UnknownSponsor => "the sponsor of an agent must be a human entry",
             Self::RoleAboveSponsor => "the role of an agent cannot exceed the role of its sponsor",
+            Self::SponsorRevoked => {
+                "an agent with an active key needs a sponsor with an active key and a co-signing \
+                 key that is not revoked"
+            }
         })
     }
 }
@@ -1142,6 +1185,9 @@ pub enum RegisterError {
     RoleAboveSponsor,
     /// The co-signature is no signature of an active key of the sponsor over the entry.
     BadCosign,
+    /// The sponsorship of the agent does not hold: the key that co-signed is revoked, or the
+    /// sponsor has no active key.
+    SponsorRevoked,
 }
 
 impl fmt::Display for RegisterError {
@@ -1171,6 +1217,10 @@ impl fmt::Display for RegisterError {
             Self::RoleAboveSponsor => {
                 f.write_str("the role of an agent cannot exceed the role of its sponsor")
             }
+            Self::SponsorRevoked => f.write_str(
+                "the sponsorship of the agent does not hold: its co-signing key is revoked or the \
+                 sponsor has no active key",
+            ),
             Self::BadCosign => f.write_str(
                 "the co-signature is not a signature of an active key of the sponsor over the \
                  entry of the agent",
@@ -2420,6 +2470,160 @@ mod tests {
                 claimed: "daniel".to_owned(),
                 registered: "mia".to_owned()
             })
+        );
+    }
+
+    #[test]
+    fn a_retired_or_revoked_sponsor_key_adds_no_new_agent() {
+        let cosign = cosign_of(&Seeded::new(2), &bot(), Role::Member, &mia());
+        for revoke in [false, true] {
+            let mut register = register();
+            register.add_key(&mia(), Seeded::new(5).public()).unwrap();
+            if revoke {
+                register
+                    .revoke(&mia(), &Seeded::new(2).public(), 3)
+                    .unwrap();
+            } else {
+                register
+                    .retire(&mia(), &Seeded::new(2).public(), 3)
+                    .unwrap();
+            }
+            assert_eq!(
+                register.add_agent(
+                    bot(),
+                    Role::Member,
+                    mia(),
+                    Seeded::new(3).public(),
+                    cosign.clone()
+                ),
+                Err(RegisterError::BadCosign)
+            );
+        }
+    }
+
+    #[test]
+    fn an_agent_cannot_take_a_key_that_the_register_holds() {
+        let cosign = cosign_of(&Seeded::new(2), &bot(), Role::Member, &mia());
+        // The key of its own sponsor.
+        assert_eq!(
+            register().add_agent(bot(), Role::Member, mia(), Seeded::new(2).public(), cosign),
+            Err(RegisterError::KeyKnown)
+        );
+    }
+
+    #[test]
+    fn the_cascade_takes_the_earlier_bound_skips_revoked_keys_and_spares_other_agents() {
+        let mut register = with_bot();
+        // A second agent of Mia, and an agent of Daniel.
+        let second = Identity::of(&Actor::agent("second", "m", "s", "mia").unwrap());
+        let cosign = cosign_of(&Seeded::new(2), &second, Role::Member, &mia());
+        register
+            .add_agent(
+                second.clone(),
+                Role::Member,
+                mia(),
+                Seeded::new(4).public(),
+                cosign,
+            )
+            .unwrap();
+        let other = Identity::of(&Actor::agent("other", "m", "s", "daniel").unwrap());
+        let cosign = cosign_of(
+            &Seeded::new(1),
+            &other,
+            Role::Member,
+            &Identity::of(&daniel()),
+        );
+        register
+            .add_agent(
+                other.clone(),
+                Role::Member,
+                Identity::of(&daniel()),
+                Seeded::new(6).public(),
+                cosign,
+            )
+            .unwrap();
+        // `bot` retired later than the revocation, `second` revoked already.
+        register.add_key(&bot(), Seeded::new(7).public()).unwrap();
+        register
+            .retire(&bot(), &Seeded::new(3).public(), 30)
+            .unwrap();
+        register
+            .revoke(&second, &Seeded::new(4).public(), 9)
+            .unwrap();
+        let revoked = register
+            .revoke(&mia(), &Seeded::new(2).public(), 20)
+            .unwrap();
+        assert_eq!(revoked, vec![bot()]);
+        let bot_keys = register.entry(&bot()).unwrap().keys();
+        assert!(bot_keys
+            .iter()
+            .all(|held| held.state == KeyState::Revoked { from: 20 }));
+        assert_eq!(
+            register.entry(&second).unwrap().keys()[0].state,
+            KeyState::Revoked { from: 9 }
+        );
+        assert_eq!(
+            register.entry(&other).unwrap().keys()[0].state,
+            KeyState::Active
+        );
+    }
+
+    #[test]
+    fn the_reader_refuses_an_agent_as_sponsor_and_a_cosign_after_the_keys() {
+        let good = with_bot().encode();
+        let key3 = Seeded::new(3).public();
+        assert_eq!(
+            problem(&good.replace("sponsor mia", "sponsor bot")),
+            RegisterProblem::UnknownSponsor
+        );
+        let cosign_line = good
+            .lines()
+            .find(|l| l.starts_with("cosign "))
+            .unwrap()
+            .to_owned();
+        let moved = good.replace(&format!("{cosign_line}\n"), "").replace(
+            &format!("key {key3} active\n"),
+            &format!("key {key3} active\n{cosign_line}\n"),
+        );
+        assert_eq!(problem(&moved), RegisterProblem::CosignOutsideAgent);
+        // The same bytes with a changed last character of the base64 are no other encoding.
+        let mut tampered = cosign_line.clone();
+        tampered.pop();
+        tampered.push(if cosign_line.ends_with('A') { 'B' } else { 'A' });
+        assert_eq!(
+            problem(&good.replace(&cosign_line, &tampered)),
+            RegisterProblem::BadCosign
+        );
+    }
+
+    #[test]
+    fn a_revoked_sponsorship_cannot_be_undone_by_a_new_agent_key() {
+        // The only key of Mia is revoked: the agent has no active key and gets none.
+        let mut register = with_bot();
+        register.add_key(&mia(), Seeded::new(5).public()).unwrap();
+        register
+            .revoke(&mia(), &Seeded::new(2).public(), 9)
+            .unwrap();
+        // The co-signing key is revoked, so the new key of Mia does not help.
+        assert_eq!(
+            register.add_key(&bot(), Seeded::new(8).public()),
+            Err(RegisterError::SponsorRevoked)
+        );
+        // A hand-written file with an active key under the revoked sponsorship is refused.
+        let forged = register.encode().replace(
+            &format!("key {} revoked 9", Seeded::new(3).public()),
+            &format!("key {} active", Seeded::new(3).public()),
+        );
+        assert_eq!(problem(&forged), RegisterProblem::SponsorRevoked);
+    }
+
+    #[test]
+    fn a_sponsor_without_an_active_key_leaves_the_agent_without_one() {
+        let mut register = with_bot();
+        register.retire(&mia(), &Seeded::new(2).public(), 9).ok();
+        assert_eq!(
+            register.add_key(&bot(), Seeded::new(8).public()),
+            Err(RegisterError::SponsorRevoked)
         );
     }
 }
