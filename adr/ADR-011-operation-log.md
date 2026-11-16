@@ -441,7 +441,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     but that number is taken by the hash chain (above). A lease entry is always in the chain, so
     it has no older encoding, and its lines follow `previous`, as the lines `worktree` and `tags`
     came to version 3 without a new header. What an older reader must not read is kept out by the
-    version of the repository format, which rises to 8 with the first lease entry (ADR-009): a
+    version of the repository format, which rises to 8 with the next entry or purge, the first lease
+    entry among them (ADR-009): a
     program that knows only version 7 refuses the repository instead of calling the entry
     damaged. The older headers refuse a lease body as well (`stemma-oplog 1` and `2` are read
     only for the entries that they were written for).
@@ -453,8 +454,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     acts: the new holder, the holder who releases, or the owner who overrides. A takeover or an
     override that names the actor as the earlier holder is invalid (the earlier holder acquires
     again), and `expires` is after `time`.
-  - **State and entry.** The file `leases/<branch>` (the name with every byte outside letters,
-    digits, `-`, and `_` as `%` and two hex digits) holds `stemma-lease 1`, the branch, the
+  - **State and entry.** The file `leases/<branch>` (the name with every byte outside
+    lowercase letters, digits, `-`, and `_` as `%` and two hex digits; a name longer than 200
+    bytes is cut and ends in `~` and 16 hex digits of its BLAKE3 hash) holds `stemma-lease 1`, the branch, the
     holder, the time of the acquisition, and the expiry. A writer that holds the lock of the
     references decides from the file, writes the entry first, and then replaces the file with
     a rename, as the entry of a change comes before its move. A crash in between leaves the old

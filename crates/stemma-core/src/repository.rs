@@ -115,8 +115,9 @@ const FORMAT_VERSION: u32 = 8;
 /// journal that it cannot read, instead of reporting damage. Version 7 adds the line `tags` to a
 /// `purge` entry and the journal `stemma-purge 3` for a purge that moves tags (STEMMA-185), with
 /// the same rise and for the same reason. Version 8 adds the four lease entries and the directory
-/// `leases/`: a repository moves to it with the first entry of a lease, so that a program that
-/// knows only version 7 refuses a log whose entries it cannot read, instead of reporting damage.
+/// `leases/`: a repository moves to it with its next entry or purge, the first lease entry among
+/// them, so that a program that knows only version 7 refuses a log whose entries it cannot
+/// read, instead of reporting damage.
 const READ_VERSIONS: [u32; 7] = [2, 3, 4, 5, 6, 7, 8];
 
 // A purge and every new entry of the log move a repository to `FORMAT_VERSION` (ADR-011,

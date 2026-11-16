@@ -107,6 +107,7 @@ impl Repository {
                 (Some(entry.clone()), granted(&entry))
             }
         };
+        ensure_readable(&lease)?;
         let entry = match entry {
             Some(lease_entry) => Some(self.append_lease(lock, &lease_entry)?),
             None => None,
@@ -120,8 +121,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`LeaseError::NoLease`] if the branch has no lease, [`LeaseError::NotHolder`] if
-    /// `actor` is not its holder (an expired lease too: it is taken over, not released), and the
+    /// Returns [`LeaseError::NoLease`] if the branch has no valid lease (an expired one is taken
+    /// over, not released), [`LeaseError::NotHolder`] if `actor` is not its holder, and the
     /// errors of [`claim_lease`](Self::claim_lease). After [`LeaseError::Io`] the entry
     /// `lease-release` is in the log, and the file may still stand (or come back after a crash)
     /// until its expiry; a second release writes a second entry.
@@ -132,11 +133,11 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, LeaseError> {
         let lock = self.lock_for_lease(branch, actor, LEASE_RELEASE, authorizer)?;
-        let Some(current) = read_lease(&self.leases_dir(), branch)? else {
-            return Err(LeaseError::NoLease {
+        let current = read_lease(&self.leases_dir(), branch)?
+            .filter(|current| !current.is_expired(now()))
+            .ok_or_else(|| LeaseError::NoLease {
                 branch: branch.clone(),
-            });
-        };
+            })?;
         if current.holder() != actor {
             return Err(LeaseError::NotHolder {
                 branch: branch.clone(),
@@ -192,6 +193,11 @@ impl Repository {
             .ok_or_else(|| LeaseError::NoLease {
                 branch: branch.clone(),
             })?;
+        if current.holder() == owner {
+            return Err(LeaseError::AlreadyHolder {
+                branch: branch.clone(),
+            });
+        }
         let entry = LeaseEntry::owner_override(
             now,
             owner.clone(),
@@ -201,6 +207,7 @@ impl Repository {
             reason,
         )?;
         let lease = granted(&entry);
+        ensure_readable(&lease)?;
         let written = self.append_lease(&lock, &entry)?;
         self.write_lease_file(&lease)?;
         Ok(Claimed {
@@ -254,6 +261,17 @@ impl Repository {
 /// The lease that an entry of an acquisition, a takeover, or an override grants.
 fn granted(entry: &LeaseEntry) -> Lease {
     Lease::of_entry(entry).expect("an entry that grants a lease has an expiry")
+}
+
+/// Refuses a lease whose file the reader would refuse, before any entry is written: a file over
+/// the limit would lock the branch for everyone, because a damaged file is never taken for a free
+/// branch.
+fn ensure_readable(lease: &Lease) -> Result<(), LeaseError> {
+    let len = lease.encode().len();
+    if len as u64 > lease::MAX_BYTES {
+        return Err(LeaseError::TooLarge { len });
+    }
+    Ok(())
 }
 
 /// Reads the file of a lease in `dir`.
@@ -316,6 +334,17 @@ pub enum LeaseError {
         /// What is wrong with it.
         source: LeaseFileError,
     },
+    /// The file of the lease would be longer than [`lease::MAX_BYTES`] (an actor with very long
+    /// fields). Nothing was written.
+    TooLarge {
+        /// The length of the file in bytes.
+        len: usize,
+    },
+    /// The owner holds the valid lease already: an override is for the lease of someone else.
+    AlreadyHolder {
+        /// The branch.
+        branch: BranchName,
+    },
     /// The branch has no lease (or, for an override, no valid one).
     NoLease {
         /// The branch.
@@ -368,11 +397,21 @@ impl fmt::Display for LeaseError {
             Self::Corrupt { path, source } => {
                 write!(
                 f,
-                "the lease file {} is damaged: {source}; remove it by hand once you know who held \
-                 the lease",
+                "the lease file {} is damaged or belongs to another branch: {source}; check it \
+                 and remove it by hand once you know who held the lease",
                 path.display()
             )
             }
+            Self::TooLarge { len } => write!(
+                f,
+                "the lease file would be {len} bytes, more than the limit of {} bytes; the actor \
+                 is too long",
+                lease::MAX_BYTES
+            ),
+            Self::AlreadyHolder { branch } => write!(
+                f,
+                "you hold the lease of `{branch}` already; claim it again to renew it"
+            ),
             Self::NoLease { branch } => write!(f, "the branch `{branch}` has no valid lease"),
             Self::NotHolder { branch, holder } => write!(
                 f,
@@ -401,6 +440,8 @@ impl Error for LeaseError {
             Self::Corrupt { source, .. } => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Denied { .. }
+            | Self::TooLarge { .. }
+            | Self::AlreadyHolder { .. }
             | Self::NoLease { .. }
             | Self::NotHolder { .. }
             | Self::NotOwner { .. } => None,
@@ -667,6 +708,100 @@ mod tests {
             &agent()
         );
         repository.oplog().verify().expect("the chain holds");
+    }
+
+    #[test]
+    fn a_lease_that_the_reader_would_refuse_is_never_written() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let before = repository.oplog().entries().unwrap().len();
+        let long = Actor::agent("a1", "model", "s".repeat(4100), "mia").unwrap();
+        let error = repository
+            .claim_lease(&feature(), &long, MINUTES, &AllowAll)
+            .unwrap_err();
+        assert!(matches!(error, LeaseError::TooLarge { .. }), "{error:?}");
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        assert_eq!(repository.lease(&feature()).unwrap(), None);
+    }
+
+    #[test]
+    fn a_locked_repository_refuses_every_lease_operation_and_writes_nothing() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        repository
+            .claim_lease(&feature(), &agent(), MINUTES, &AllowAll)
+            .unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+        let file = repository
+            .metadata_dir()
+            .join(lease::DIR)
+            .join(lease::file_name(&feature()));
+        let bytes = fs::read(&file).unwrap();
+        fs::write(repository.metadata_dir().join("refs.lock"), "someone").unwrap();
+        let locked = |error: LeaseError| {
+            assert!(
+                matches!(error, LeaseError::Refs(RefError::Locked { .. })),
+                "{error:?}"
+            );
+        };
+        locked(
+            repository
+                .claim_lease(&feature(), &mia(), MINUTES, &AllowAll)
+                .unwrap_err(),
+        );
+        locked(
+            repository
+                .release_lease(&feature(), &agent(), &AllowAll)
+                .unwrap_err(),
+        );
+        locked(
+            repository
+                .override_lease(
+                    &feature(),
+                    &daniel(),
+                    &register(),
+                    MINUTES,
+                    "why",
+                    &AllowAll,
+                )
+                .unwrap_err(),
+        );
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+    }
+
+    #[test]
+    fn an_expired_lease_is_not_released_and_an_owner_does_not_override_their_own() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let file = repository
+            .metadata_dir()
+            .join(lease::DIR)
+            .join(lease::file_name(&feature()));
+        repository
+            .claim_lease(&feature(), &daniel(), MINUTES, &AllowAll)
+            .unwrap();
+        assert!(matches!(
+            repository.override_lease(
+                &feature(),
+                &daniel(),
+                &register(),
+                MINUTES,
+                "why",
+                &AllowAll
+            ),
+            Err(LeaseError::AlreadyHolder { .. })
+        ));
+        let expired = Lease::new(feature(), agent(), 1, 2).unwrap();
+        fs::write(&file, expired.encode()).unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+        for actor in [agent(), mia()] {
+            assert!(matches!(
+                repository.release_lease(&feature(), &actor, &AllowAll),
+                Err(LeaseError::NoLease { .. })
+            ));
+        }
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
     }
 
     #[test]
@@ -945,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_lease_entry_raises_the_format_and_an_older_reader_refuses_it() {
+    fn the_first_lease_entry_raises_the_format_and_a_newer_format_is_refused() {
         let dir = TempDir::new();
         let repository = repository(&dir);
         let format = repository.metadata_dir().join("format");
@@ -953,7 +1088,7 @@ mod tests {
             fs::read_to_string(&format).unwrap(),
             "stemma-repository 8\n"
         );
-        // A repository of the version before the leases moves with the first lease entry.
+        // A repository of version 7 moves to 8 with its next entry, a lease entry among them.
         fs::write(&format, "stemma-repository 7\n").unwrap();
         repository
             .claim_lease(&feature(), &mia(), MINUTES, &AllowAll)

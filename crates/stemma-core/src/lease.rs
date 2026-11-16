@@ -192,13 +192,14 @@ fn parse_time(text: &str) -> Result<i64, LeaseFileError> {
 }
 
 /// The name of the file of a branch's lease in [`DIR`]: the branch name with every byte that is not
-/// an ASCII letter, a digit, `-`, or `_` written as `%` and two hex digits. `%` is no character of
-/// a branch name, so two branches never share a file, and no name starts with a dot or reaches
-/// another directory.
+/// a lowercase ASCII letter, a digit, `-`, or `_` written as `%` and two hex digits. `%` is no
+/// character of a branch name, so two branches never share a file, and no name starts with a dot
+/// or reaches another directory. Capitals are written as escapes too, so that `Feature/x` and
+/// `feature/x` keep two files on a file system that does not tell the case apart.
 pub fn file_name(branch: &BranchName) -> String {
     let mut name = String::new();
     for byte in branch.as_str().bytes() {
-        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+        if byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_' {
             name.push(char::from(byte));
         } else {
             name.push_str(&format!("%{byte:02X}"));
@@ -369,6 +370,11 @@ mod tests {
         assert_eq!(file_name(&branch("main")), "main");
         assert_eq!(file_name(&branch("feature/x")), "feature%2Fx");
         assert_ne!(file_name(&branch("a/b")), file_name(&branch("a-b")));
+        assert_ne!(
+            file_name(&branch("Feature/x")).to_lowercase(),
+            file_name(&branch("feature/x")).to_lowercase(),
+            "no two branches share a file on a case-insensitive file system"
+        );
         assert!(!file_name(&branch("a.b")).contains('.'));
     }
 
@@ -421,5 +427,42 @@ mod tests {
     #[test]
     fn the_expiry_saturates() {
         assert_eq!(expiry(i64::MAX - 1, 60), i64::MAX);
+    }
+
+    #[test]
+    fn a_lease_applies_only_with_two_identities_and_an_unprotected_branch() {
+        use ssh_key::private::Ed25519Keypair;
+        use ssh_key::PrivateKey;
+
+        let key = |seed: u8| {
+            let private = PrivateKey::from(Ed25519Keypair::from_seed(&[seed; 32]));
+            crate::signature::PublicKey::from_openssh(&private.public_key().to_openssh().unwrap())
+                .unwrap()
+        };
+        let one = Register::parse(
+            format!(
+                "stemma-register 1\nentry human daniel owner\nkey {} active\n",
+                key(1)
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let two = Register::parse(
+            format!(
+                "stemma-register 1\nentry human daniel owner\nkey {} active\n\
+                 entry human mia member\nkey {} active\n",
+                key(1),
+                key(2)
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert!(!applies(None, false), "open mode has no lease");
+        assert!(!applies(Some(&one), false), "one identity has no lease");
+        assert!(applies(Some(&two), false));
+        assert!(
+            !applies(Some(&two), true),
+            "a protected branch has no lease"
+        );
     }
 }
