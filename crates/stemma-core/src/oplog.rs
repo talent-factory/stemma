@@ -196,6 +196,25 @@ pub const PURGE: &str = "purge";
 /// none.
 pub const TAKE_OVER: &str = "take-over";
 
+/// The operation of the entry that a holder writes when it acquires the lease of a branch
+/// (ADR-004, ADR-011). The four lease operations belong to the entry of a lease and to no change.
+pub const LEASE_ACQUIRE: &str = "lease-acquire";
+
+/// The operation of the entry that a holder writes when it gives its lease back.
+pub const LEASE_RELEASE: &str = "lease-release";
+
+/// The operation of the entry that an actor writes when it takes a lease that has expired.
+pub const LEASE_TAKEOVER: &str = "lease-takeover";
+
+/// The operation of the entry that an owner writes when it ends the lease of another actor.
+pub const LEASE_OVERRIDE: &str = "lease-override";
+
+/// The reason that the entry of a takeover names: the lease of the earlier holder had expired.
+pub const EXPIRED: &str = "expired";
+
+/// The longest reason of an owner override, in bytes.
+pub const MAX_REASON_LEN: usize = 1024;
+
 /// The start of the first line of every version of the encoding.
 const HEADER_PREFIX: &str = "stemma-oplog ";
 
@@ -382,7 +401,8 @@ pub enum EntryError {
     DuplicateTag(BranchName),
     /// The number is 0 or larger than [`MAX_NUMBER`].
     NumberOutOfRange(u64),
-    /// A change has the operation `purge`, which only the entry of a purge has.
+    /// A change has the operation `purge`, which only the entry of a purge has, or one of the four
+    /// lease operations, which only the entry of a lease has.
     ReservedOperation,
     /// A `purge` entry lists a stub whose number is not below its own: the purge entry comes after
     /// the entries that it replaces (ADR-014).
@@ -413,6 +433,19 @@ pub enum EntryError {
     BadWorktree(String),
     /// The directory of a worktree holds a control character, or the entry names no worktree.
     BadLocation(String),
+    /// A lease entry was written before the hash chain. Carries its number. The four lease
+    /// entries came with the chain, so none has an older encoding.
+    LeaseOutsideChain(u64),
+    /// The entry of a lease cannot become a stub. Carries its number. A purge never lists it, as
+    /// it names no commit.
+    LeaseNotReplaceable(u64),
+    /// A lease ends at or before the time of the entry that grants it.
+    LeaseExpiry,
+    /// A takeover or an override names the actor who acts as the earlier holder.
+    LeaseSameActor,
+    /// The reason of an override is empty, longer than [`MAX_REASON_LEN`] bytes, has a control
+    /// character, or starts or ends with a space.
+    BadReason,
 }
 
 impl fmt::Display for EntryError {
@@ -431,7 +464,9 @@ impl fmt::Display for EntryError {
             }
             Self::ReservedOperation => write!(
                 f,
-                "a change cannot have the operation `{PURGE}`, which only the entry of a purge has"
+                "a change cannot have the operation `{PURGE}`, which only the entry of a purge has, \
+                 or an operation `{LEASE_ACQUIRE}`, `{LEASE_RELEASE}`, `{LEASE_TAKEOVER}`, or \
+                 `{LEASE_OVERRIDE}`, which only the entry of a lease has"
             ),
             Self::StubNotBefore { stub, purge } => write!(
                 f,
@@ -478,6 +513,25 @@ impl fmt::Display for EntryError {
                 f,
                 "`{}` cannot be the directory of a worktree in an entry",
                 path.escape_debug()
+            ),
+            Self::LeaseOutsideChain(number) => write!(
+                f,
+                "the lease entry {number} was written before the hash chain, which no lease entry \
+                 was"
+            ),
+            Self::LeaseNotReplaceable(number) => write!(
+                f,
+                "entry {number} is the entry of a lease and cannot become a stub"
+            ),
+            Self::LeaseExpiry => f.write_str("a lease must end after the time of its entry"),
+            Self::LeaseSameActor => f.write_str(
+                "a takeover or an override names another actor as the earlier holder; the earlier \
+                 holder acquires the lease again",
+            ),
+            Self::BadReason => write!(
+                f,
+                "the reason of an override is one line of 1 to {MAX_REASON_LEN} bytes, without a \
+                 control character and without a space at its ends"
             ),
         }
     }
@@ -556,7 +610,7 @@ impl Change {
         mut branches: Vec<(BranchName, Moved<CommitId>)>,
         mut tags: Vec<(BranchName, Moved<CommitId>)>,
     ) -> Result<Self, EntryError> {
-        if operation.as_str() == PURGE {
+        if operation.as_str() == PURGE || LeaseKind::from_operation(operation.as_str()).is_some() {
             return Err(EntryError::ReservedOperation);
         }
         let no_pointer =
@@ -988,6 +1042,237 @@ impl Purge {
     }
 }
 
+/// What a lease entry records (ADR-004, STEMMA-225).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LeaseKind {
+    /// The first writing operation on a branch without a valid lease took it.
+    Acquire,
+    /// The holder gave the lease back.
+    Release,
+    /// An actor took a lease that had expired.
+    Takeover,
+    /// An owner ended the lease of another actor.
+    Override,
+}
+
+impl LeaseKind {
+    /// The name of the operation of this kind of entry.
+    pub fn operation(self) -> &'static str {
+        match self {
+            Self::Acquire => LEASE_ACQUIRE,
+            Self::Release => LEASE_RELEASE,
+            Self::Takeover => LEASE_TAKEOVER,
+            Self::Override => LEASE_OVERRIDE,
+        }
+    }
+
+    /// The kind that an operation name stands for, or `None` for any other name.
+    pub fn from_operation(name: &str) -> Option<Self> {
+        match name {
+            LEASE_ACQUIRE => Some(Self::Acquire),
+            LEASE_RELEASE => Some(Self::Release),
+            LEASE_TAKEOVER => Some(Self::Takeover),
+            LEASE_OVERRIDE => Some(Self::Override),
+            _ => None,
+        }
+    }
+}
+
+/// The entry of a lease: it names a branch and the actors, and no commit, so that a purge never
+/// touches it (ADR-004, ADR-011). The actor of the entry is the one who acts: the new holder for
+/// an acquisition, a takeover, and an override, and the holder for a release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseEntry {
+    time: i64,
+    actor: Actor,
+    kind: LeaseKind,
+    branch: BranchName,
+    from: Option<Actor>,
+    expires: Option<i64>,
+    reason: Option<String>,
+}
+
+impl LeaseEntry {
+    /// The entry of an acquisition: `actor` holds the lease of `branch` until `expires`, in
+    /// seconds since the Unix epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::LeaseExpiry`] if `expires` is not after `time`.
+    pub fn acquire(
+        time: i64,
+        actor: Actor,
+        branch: BranchName,
+        expires: i64,
+    ) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            LeaseKind::Acquire,
+            branch,
+            None,
+            Some(expires),
+            None,
+        )
+    }
+
+    /// The entry of a release: `actor` gives the lease of `branch` back.
+    pub fn release(time: i64, actor: Actor, branch: BranchName) -> Self {
+        Self {
+            time,
+            actor,
+            kind: LeaseKind::Release,
+            branch,
+            from: None,
+            expires: None,
+            reason: None,
+        }
+    }
+
+    /// The entry of a takeover: `actor` takes the lease of `branch` that `from` held and that has
+    /// expired, and holds it until `expires`. The reason is [`EXPIRED`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::LeaseSameActor`] if `from` is `actor` (the earlier holder acquires
+    /// again), and [`EntryError::LeaseExpiry`] if `expires` is not after `time`.
+    pub fn takeover(
+        time: i64,
+        actor: Actor,
+        branch: BranchName,
+        from: Actor,
+        expires: i64,
+    ) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            LeaseKind::Takeover,
+            branch,
+            Some(from),
+            Some(expires),
+            Some(EXPIRED.to_owned()),
+        )
+    }
+
+    /// The entry of an owner override: `owner` ends the lease of `from` on `branch` and holds it
+    /// until `expires`, for a `reason` of at most [`MAX_REASON_LEN`] bytes on one line.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::LeaseSameActor`] if `from` is `owner`, [`EntryError::LeaseExpiry`] if
+    /// `expires` is not after `time`, and [`EntryError::BadReason`] for a reason that is empty,
+    /// too long, has a control character, or starts or ends with a space.
+    pub fn owner_override(
+        time: i64,
+        owner: Actor,
+        branch: BranchName,
+        from: Actor,
+        expires: i64,
+        reason: impl Into<String>,
+    ) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            owner,
+            LeaseKind::Override,
+            branch,
+            Some(from),
+            Some(expires),
+            Some(reason.into()),
+        )
+    }
+
+    /// The one place of the rules of a lease entry, for the constructors and the reader.
+    fn build(
+        time: i64,
+        actor: Actor,
+        kind: LeaseKind,
+        branch: BranchName,
+        from: Option<Actor>,
+        expires: Option<i64>,
+        reason: Option<String>,
+    ) -> Result<Self, EntryError> {
+        if from.as_ref() == Some(&actor) {
+            return Err(EntryError::LeaseSameActor);
+        }
+        if expires.is_some_and(|expires| expires <= time) {
+            return Err(EntryError::LeaseExpiry);
+        }
+        if let Some(reason) = reason.as_deref() {
+            let plain = !reason.is_empty()
+                && reason.len() <= MAX_REASON_LEN
+                && !reason.chars().any(char::is_control)
+                && reason.trim() == reason;
+            if !plain {
+                return Err(EntryError::BadReason);
+            }
+        }
+        Ok(Self {
+            time,
+            actor,
+            kind,
+            branch,
+            from,
+            expires,
+            reason,
+        })
+    }
+
+    /// The time that the writer claims, in seconds since the Unix epoch (UTC).
+    pub fn time(&self) -> i64 {
+        self.time
+    }
+
+    /// The actor who acts: the new holder, or the holder who releases.
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    /// What the entry records.
+    pub fn kind(&self) -> LeaseKind {
+        self.kind
+    }
+
+    /// The branch whose lease the entry is about.
+    pub fn branch(&self) -> &BranchName {
+        &self.branch
+    }
+
+    /// The earlier holder, for a takeover and an override.
+    pub fn from(&self) -> Option<&Actor> {
+        self.from.as_ref()
+    }
+
+    /// The end of the lease that the entry grants, in seconds since the Unix epoch, for every kind
+    /// but a release.
+    pub fn expires(&self) -> Option<i64> {
+        self.expires
+    }
+
+    /// The reason: [`EXPIRED`] for a takeover, the text of the owner for an override.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+
+    /// The lines of the body, which the hash of the body covers.
+    fn body_text(&self) -> String {
+        let mut out = format!(
+            "operation {}\nbranch {}\n",
+            self.kind.operation(),
+            self.branch
+        );
+        if let Some(from) = &self.from {
+            out.push_str(&format!("from {from}\n"));
+        }
+        if let Some(expires) = self.expires {
+            out.push_str(&format!("expires {expires}\n"));
+        }
+        if let Some(reason) = &self.reason {
+            out.push_str(&format!("reason {reason}\n"));
+        }
+        out
+    }
+}
+
 /// What an entry holds. The enum is exhaustive on purpose: a new kind of entry has to be handled
 /// by every reader, which the compiler then shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -998,6 +1283,8 @@ pub enum Record {
     Stub(Stub),
     /// A purge.
     Purge(Purge),
+    /// A lease of a branch: acquired, released, taken over, or overridden (ADR-004).
+    Lease(LeaseEntry),
 }
 
 /// An entry of the log: a number, its place in the hash chain, and a record, which is a change,
@@ -1060,6 +1347,9 @@ impl Entry {
             }
             (Record::Stub(stub), Chain::Start | Chain::After(_)) if stub.body.is_none() => {
                 return Err(EntryError::StubWithoutBody(number));
+            }
+            (Record::Lease(_), Chain::Unchained) => {
+                return Err(EntryError::LeaseOutsideChain(number));
             }
             _ => {}
         }
@@ -1144,6 +1434,7 @@ impl Entry {
                     purge.commits
                 ))
             }
+            Record::Lease(lease) => Some(lease.body_text()),
             Record::Change(change) => {
                 let mut out = format!("operation {}\n", change.operation);
                 if let Some(tag) = change.worktree.as_deref() {
@@ -1189,7 +1480,15 @@ impl Entry {
     pub fn change(&self) -> Option<&Change> {
         match &self.record {
             Record::Change(change) => Some(change),
-            Record::Stub(_) | Record::Purge(_) => None,
+            Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => None,
+        }
+    }
+
+    /// The lease that the entry records, or `None` for any other entry.
+    pub fn lease(&self) -> Option<&LeaseEntry> {
+        match &self.record {
+            Record::Lease(lease) => Some(lease),
+            Record::Change(_) | Record::Stub(_) | Record::Purge(_) => None,
         }
     }
 
@@ -1200,6 +1499,7 @@ impl Entry {
             Record::Change(change) => change.time,
             Record::Stub(stub) => stub.time,
             Record::Purge(purge) => purge.time,
+            Record::Lease(lease) => lease.time,
         }
     }
 
@@ -1210,6 +1510,7 @@ impl Entry {
             Record::Change(change) => &change.actor,
             Record::Stub(stub) => &stub.actor,
             Record::Purge(purge) => &purge.actor,
+            Record::Lease(lease) => &lease.actor,
         }
     }
 
@@ -1225,10 +1526,14 @@ impl Entry {
     /// # Errors
     ///
     /// Returns [`EntryError::PurgeNotReplaceable`] for the entry of a purge, which a later purge
-    /// keeps as the record of the first.
+    /// keeps as the record of the first, and [`EntryError::LeaseNotReplaceable`] for the entry of
+    /// a lease, which names no commit and so is never listed.
     pub(crate) fn to_stub(&self) -> Result<Self, EntryError> {
         if matches!(self.record, Record::Purge(_)) {
             return Err(EntryError::PurgeNotReplaceable(self.number));
+        }
+        if matches!(self.record, Record::Lease(_)) {
+            return Err(EntryError::LeaseNotReplaceable(self.number));
         }
         let stub = Stub {
             time: self.time(),
@@ -1348,6 +1653,13 @@ impl Entry {
             .get(body)
             .is_some_and(|line| *line == "stub" || line.starts_with("stub "));
         let is_purge = lines.get(body).copied() == Some(&format!("operation {PURGE}"));
+        let lease_kind = lines
+            .get(body)
+            .and_then(|line| line.strip_prefix("operation "))
+            .and_then(LeaseKind::from_operation);
+        if let (3, Some(kind)) = (version, lease_kind) {
+            return parse_lease(&lines, body, number, chain, time, actor, kind);
+        }
         if version == 2 || (version == 3 && (is_stub || is_purge)) {
             return parse_stub_or_purge(&lines, body, number, chain, time, actor);
         }
@@ -1492,6 +1804,74 @@ impl Entry {
             .and_then(|change| Entry::linked(number, chain, Record::Change(change)))
             .map_err(EntryParseError::Entry)
     }
+}
+
+/// Reads the body of a lease entry, which starts at the line `operation lease-…` with the index
+/// `body`: `branch <name>`, `from <actor>` (a takeover and an override), `expires <seconds>` (all
+/// but a release), and `reason <text>` (a takeover and an override), in this order.
+fn parse_lease(
+    lines: &[&str],
+    body: usize,
+    number: u64,
+    chain: Chain,
+    time: i64,
+    actor: Actor,
+    kind: LeaseKind,
+) -> Result<Entry, EntryParseError> {
+    let malformed = |line, reason| EntryParseError::Malformed { line, reason };
+    let line_at = |index: usize, key: &str, reason| -> Result<&str, EntryParseError> {
+        lines
+            .get(index)
+            .and_then(|line| line.strip_prefix(key))
+            .ok_or_else(|| malformed(index + 1, reason))
+    };
+    let mut next = body + 1;
+    let branch = line_at(next, "branch ", EntryMalformed::ExpectedBranch)?;
+    let branch =
+        BranchName::try_new(branch).map_err(|source| EntryParseError::InvalidBranchName {
+            line: next + 1,
+            source,
+        })?;
+    next += 1;
+    let with_from = matches!(kind, LeaseKind::Takeover | LeaseKind::Override);
+    let from = if with_from {
+        let text = line_at(next, "from ", EntryMalformed::ExpectedFrom)?;
+        let from = Actor::from_str(text).map_err(|source| EntryParseError::InvalidActor {
+            line: next + 1,
+            source,
+        })?;
+        next += 1;
+        Some(from)
+    } else {
+        None
+    };
+    let expires = if kind == LeaseKind::Release {
+        None
+    } else {
+        let text = line_at(next, "expires ", EntryMalformed::ExpectedExpires)?;
+        let expires = parse_seconds(text).map_err(|reason| EntryParseError::InvalidTime {
+            line: next + 1,
+            reason,
+        })?;
+        next += 1;
+        Some(expires)
+    };
+    let reason = if with_from {
+        let text = line_at(next, "reason ", EntryMalformed::ExpectedReason)?;
+        if kind == LeaseKind::Takeover && text != EXPIRED {
+            return Err(malformed(next + 1, EntryMalformed::ExpectedReason));
+        }
+        next += 1;
+        Some(text.to_owned())
+    } else {
+        None
+    };
+    if next < lines.len() {
+        return Err(malformed(next + 1, EntryMalformed::TrailingLine));
+    }
+    LeaseEntry::build(time, actor, kind, branch, from, expires, reason)
+        .and_then(|lease| Entry::linked(number, chain, Record::Lease(lease)))
+        .map_err(EntryParseError::Entry)
 }
 
 /// Reads the body of a stub or a `purge` entry, which starts at the line with the index `body`:
@@ -1748,6 +2128,16 @@ pub enum EntryMalformed {
     BadWorktree,
     /// The line `location` is empty or holds a control character.
     BadLocation,
+    /// The line after `operation lease-…` of a lease entry is not `branch <name>`.
+    ExpectedBranch,
+    /// A takeover or an override has no line `from <actor>`, or another entry has one.
+    ExpectedFrom,
+    /// An acquisition, a takeover, or an override has no line `expires <seconds>`, or a release
+    /// has one.
+    ExpectedExpires,
+    /// A takeover or an override has no line `reason <text>`, a takeover has another reason than
+    /// `expired`, or another entry has the line.
+    ExpectedReason,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -1784,6 +2174,18 @@ impl fmt::Display for EntryMalformed {
             }
             Self::BadLocation => {
                 "the directory of the worktree is empty or has a control character"
+            }
+            Self::ExpectedBranch => "expected the line `branch <name>`",
+            Self::ExpectedFrom => {
+                "expected the line `from <actor>` for a takeover and an override, and none for \
+                 another lease entry"
+            }
+            Self::ExpectedExpires => {
+                "expected the line `expires <seconds>` for every lease entry but a release"
+            }
+            Self::ExpectedReason => {
+                "expected the line `reason expired` for a takeover, `reason <text>` for an \
+                 override, and none for another lease entry"
             }
         })
     }
@@ -2832,6 +3234,17 @@ impl FsOpLog {
         self.append_record(&Record::Change(change.clone()))
     }
 
+    /// Writes the entry of a lease, as [`append`](Self::append) writes the entry of a change. The
+    /// lease entry names no pointer, so the caller writes it before it replaces the lease file
+    /// and holds the lock of the references (ADR-004, ADR-011).
+    ///
+    /// # Errors
+    ///
+    /// See [`append`](Self::append).
+    pub(crate) fn append_lease(&self, lease: &LeaseEntry) -> Result<Entry, OpLogError> {
+        self.append_record(&Record::Lease(lease.clone()))
+    }
+
     /// Writes the entries of a purge, as [`append`](Self::append) writes an entry, and returns
     /// them. A list of stubs that does not fit into one entry is split over several, and the first
     /// has the count of commits (ADR-014). The entries go after the ones that they list. Before
@@ -3463,7 +3876,7 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     for (index, entry) in entries.iter().enumerate().rev() {
         let change = match entry.record() {
             Record::Change(change) if !behind_stub => change,
-            Record::Change(_) | Record::Purge(_) => continue,
+            Record::Change(_) | Record::Purge(_) | Record::Lease(_) => continue,
             Record::Stub(_) => {
                 behind_stub = true;
                 continue;
@@ -7239,5 +7652,218 @@ mod tests {
             outcomes(&entries, Some(&main.clone().in_worktree("w"))),
             [Outcome::Took]
         );
+    }
+
+    fn mia() -> Actor {
+        Actor::human("mia").expect("valid actor")
+    }
+
+    fn lease_entry(number: u64, lease: LeaseEntry) -> Entry {
+        Entry::linked(number, Chain::Start, Record::Lease(lease)).expect("valid entry")
+    }
+
+    fn lease_entries() -> Vec<LeaseEntry> {
+        vec![
+            LeaseEntry::acquire(TIME, human(), branch("feature/x"), TIME + 3600).unwrap(),
+            LeaseEntry::release(TIME, human(), branch("feature/x")),
+            LeaseEntry::takeover(TIME, mia(), branch("feature/x"), human(), TIME + 3600).unwrap(),
+            LeaseEntry::owner_override(
+                TIME,
+                human(),
+                branch("feature/x"),
+                mia(),
+                TIME + 60,
+                "the agent is stuck",
+            )
+            .unwrap(),
+        ]
+    }
+
+    #[test]
+    fn a_lease_entry_is_written_as_it_is_read() {
+        for lease in lease_entries() {
+            let entry = lease_entry(1, lease);
+            let bytes = entry.encode();
+            assert!(bytes.starts_with(b"stemma-oplog 3\n"));
+            let again = Entry::parse(&bytes).expect("reads back");
+            assert_eq!(again, entry);
+            assert_eq!(again.encode(), bytes);
+            assert!(again.hash().is_some(), "a lease entry is in the chain");
+            assert!(again.commits().is_empty());
+            assert!(again.change().is_none());
+        }
+    }
+
+    #[test]
+    fn the_four_encodings_are_fixed() {
+        let text = |lease| String::from_utf8(lease_entry(7, lease).encode()).unwrap();
+        let entries = lease_entries();
+        assert_eq!(
+            text(entries[0].clone()),
+            format!(
+                "stemma-oplog 3\nnumber 7\ntime {TIME}\nactor human daniel\nprevious -\n\
+                 operation lease-acquire\nbranch feature/x\nexpires {}\n",
+                TIME + 3600
+            )
+        );
+        assert!(text(entries[1].clone()).ends_with("operation lease-release\nbranch feature/x\n"));
+        assert!(text(entries[2].clone()).ends_with(&format!(
+            "operation lease-takeover\nbranch feature/x\nfrom human daniel\nexpires {}\n\
+             reason expired\n",
+            TIME + 3600
+        )));
+        assert!(text(entries[3].clone()).ends_with(&format!(
+            "operation lease-override\nbranch feature/x\nfrom human mia\nexpires {}\n\
+             reason the agent is stuck\n",
+            TIME + 60
+        )));
+    }
+
+    #[test]
+    fn the_reader_refuses_what_the_writer_does_not_write() {
+        let good = |lease| String::from_utf8(lease_entry(7, lease).encode()).unwrap();
+        let entries = lease_entries();
+        let acquire = good(entries[0].clone());
+        let takeover = good(entries[2].clone());
+        let override_ = good(entries[3].clone());
+        let release = good(entries[1].clone());
+        let cases = [
+            // A lease entry names the chain: no older encoding has it.
+            acquire.replace("stemma-oplog 3", "stemma-oplog 1"),
+            acquire.replace("stemma-oplog 3", "stemma-oplog 2"),
+            // Lines that are missing, repeated, or in the wrong place.
+            acquire.replace("branch feature/x\n", ""),
+            acquire.replace("expires", "expires 1\nexpires"),
+            acquire + "reason x\n",
+            release.clone() + "expires 5\n",
+            takeover.replace("from human daniel\n", ""),
+            takeover.replace("reason expired", "reason something else"),
+            takeover.replace("reason expired\n", ""),
+            override_.replace("reason the agent is stuck\n", ""),
+            override_.replace("reason the agent is stuck", "reason "),
+            override_.replace("reason the agent is stuck", "reason  padded"),
+            // The earlier holder is the actor who acts.
+            takeover.replace("from human daniel", "from human mia"),
+            // Expires before the entry.
+            release.replace("branch feature/x\n", "branch feature/x\nexpires 1\n"),
+        ];
+        for bad in cases {
+            assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        assert!(Entry::parse(
+            good(entries[3].clone())
+                .replace("expires", "expires -")
+                .as_bytes()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_change_cannot_take_a_lease_operation() {
+        for kind in [LEASE_ACQUIRE, LEASE_RELEASE, LEASE_TAKEOVER, LEASE_OVERRIDE] {
+            let result = Change::try_new(
+                TIME,
+                human(),
+                operation(kind),
+                None,
+                None,
+                vec![moves("main", None, Some(A))],
+            );
+            assert_eq!(result, Err(EntryError::ReservedOperation), "{kind}");
+        }
+    }
+
+    #[test]
+    fn the_rules_of_a_lease_entry_are_checked_once() {
+        let b = || branch("main");
+        assert_eq!(
+            LeaseEntry::acquire(TIME, human(), b(), TIME),
+            Err(EntryError::LeaseExpiry)
+        );
+        assert_eq!(
+            LeaseEntry::takeover(TIME, human(), b(), human(), TIME + 1),
+            Err(EntryError::LeaseSameActor)
+        );
+        for reason in ["", " x", "x ", "a\nb", &"x".repeat(MAX_REASON_LEN + 1)] {
+            assert_eq!(
+                LeaseEntry::owner_override(TIME, human(), b(), mia(), TIME + 1, reason),
+                Err(EntryError::BadReason),
+                "{reason:?}"
+            );
+        }
+        let longest = "x".repeat(MAX_REASON_LEN);
+        assert!(LeaseEntry::owner_override(TIME, human(), b(), mia(), TIME + 1, longest).is_ok());
+        // A lease entry outside the chain cannot be built.
+        assert_eq!(
+            Entry::of(3, Record::Lease(LeaseEntry::release(TIME, human(), b()))),
+            Err(EntryError::LeaseOutsideChain(3))
+        );
+    }
+
+    #[test]
+    fn a_lease_entry_is_covered_by_the_chain_and_never_becomes_a_stub() {
+        let first = lease_entry(1, lease_entries().remove(0));
+        let second = Entry::linked(
+            2,
+            Chain::After(first.hash().unwrap()),
+            Record::Lease(lease_entries().remove(1)),
+        )
+        .unwrap();
+        check_chain(&[first.clone(), second.clone()]).expect("the chain holds");
+        // Another branch in the entry is another hash, so a swap breaks the chain.
+        let changed = Entry::linked(
+            1,
+            Chain::Start,
+            Record::Lease(
+                LeaseEntry::acquire(TIME, human(), branch("feature/y"), TIME + 3600).unwrap(),
+            ),
+        )
+        .unwrap();
+        assert!(check_chain(&[changed, second]).is_err());
+        assert_eq!(first.to_stub(), Err(EntryError::LeaseNotReplaceable(1)));
+    }
+
+    #[test]
+    fn a_lease_entry_moves_no_pointer_and_blocks_no_outcome() {
+        let before = entry(1, None, vec![moves("main", None, Some(A))]);
+        let lease = lease_entry(2, lease_entries().remove(0));
+        let after = entry(3, None, vec![moves("main", Some(A), Some(B))]);
+        let entries = [before, lease, after];
+        assert_eq!(
+            outcomes(&entries, now(&[("main", B)]).as_ref()),
+            [Outcome::Took, Outcome::Unknown, Outcome::Took]
+        );
+    }
+
+    #[test]
+    fn the_log_appends_and_reads_a_lease_entry() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let first = log
+            .append(
+                &Change::try_new(
+                    TIME,
+                    human(),
+                    operation("snapshot"),
+                    None,
+                    None,
+                    vec![moves("main", None, Some(A))],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let lease = LeaseEntry::acquire(TIME, human(), branch("main"), TIME + 60).unwrap();
+        let written = log.append_lease(&lease).unwrap();
+        assert_eq!(written.number(), 2);
+        assert_eq!(written.chain(), Chain::After(first.hash().unwrap()));
+        let read = log.read(2).unwrap();
+        assert_eq!(read.lease(), Some(&lease));
+        log.verify().expect("the whole log is in the chain");
+        // The purge lists commits and never a lease entry.
+        let purge = Purge::try_new(TIME, human(), 0, &[2]).unwrap();
+        assert!(matches!(
+            log.append_purge(purge),
+            Err(OpLogError::NotAChange { number: 2 })
+        ));
     }
 }

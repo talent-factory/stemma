@@ -176,6 +176,7 @@ impl Repository {
     /// Before the snapshot: [`RestoreError::Update`] for a refusal of the question `restore`,
     /// [`RestoreError::Log`] and [`RestoreError::NoSuchEntry`] for the entry,
     /// [`RestoreError::Purged`] for a stub, [`RestoreError::IsPurge`] for the entry of a purge,
+    /// [`RestoreError::IsLease`] for the entry of a lease,
     /// [`RestoreError::PurgePending`] for an entry that an unfinished purge lists,
     /// [`RestoreError::OutcomeUnknown`], [`RestoreError::NoOldValue`] for HEAD or the working-copy
     /// commit that the entry created (they cannot be absent), [`RestoreError::Refs`] for a commit
@@ -333,6 +334,7 @@ impl Repository {
             Record::Change(change) => change,
             Record::Stub(_) => return Err(RestoreError::Purged { number }),
             Record::Purge(_) => return Err(RestoreError::IsPurge { number }),
+            Record::Lease(_) => return Err(RestoreError::IsLease { number }),
         };
         // A restore puts back head, working copy, and branches (ADR-013). An entry that only made
         // or deleted tags has nothing of that, and its tags stay as they are, so the restore says
@@ -517,7 +519,7 @@ impl Repository {
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `TagsOnly`,
+/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `IsLease`, `TagsOnly`,
 /// `WorktreeEntry`, `GoneWorktree`, `OtherWorktree`, `PurgePending`, `OutcomeUnknown`,
 /// `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore; those with an
 /// `entry` wrote it.
@@ -543,6 +545,12 @@ pub enum RestoreError {
     /// The entry is that of a purge, which cannot be restored: it removed history for good
     /// (ADR-014).
     IsPurge {
+        /// The number.
+        number: u64,
+    },
+    /// The entry is that of a lease, which moved no pointer: there is nothing to restore
+    /// (ADR-004, ADR-011).
+    IsLease {
         /// The number.
         number: u64,
     },
@@ -679,6 +687,7 @@ impl RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::IsLease { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
@@ -755,6 +764,10 @@ impl fmt::Display for RestoreError {
             Self::IsPurge { number } => write!(
                 f,
                 "entry {number} is a purge, which removed history for good and cannot be restored"
+            ),
+            Self::IsLease { number } => write!(
+                f,
+                "entry {number} is a lease, which moved no pointer, so there is nothing to restore"
             ),
             Self::TagsOnly { number } => write!(
                 f,
@@ -888,6 +901,7 @@ impl Error for RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::IsLease { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }

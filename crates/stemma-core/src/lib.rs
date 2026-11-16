@@ -48,6 +48,7 @@ pub mod fuzz;
 pub mod history;
 pub mod ignore;
 pub mod index;
+pub mod lease;
 pub mod merge;
 pub mod merge_base;
 pub mod moved;

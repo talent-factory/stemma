@@ -30,7 +30,8 @@ use crate::object::{
     TreeParseError,
 };
 use crate::oplog::{
-    Change, Entry, EntryParseError, Moved, OperationName, Purge, Record, MAX_NUMBER,
+    Chain, Change, Entry, EntryParseError, LeaseEntry, Moved, OperationName, Purge, Record,
+    MAX_NUMBER, MAX_REASON_LEN,
 };
 use crate::refs::{BranchName, Head, RefParseError};
 use crate::store::{ObjectStore, StoreError};
@@ -395,13 +396,41 @@ fn random_moved<T: PartialEq>(
 /// An entry of either encoding: the entry of a change (encoding 1), or a stub or the entry of a
 /// purge (encoding 2).
 fn random_entry(rng: &mut Rng) -> Entry {
-    match rng.below(4) {
+    match rng.below(5) {
         0 => random_change_entry(rng)
             .to_stub()
             .expect("the entry of a change can become a stub"),
         1 => random_purge_entry(rng),
+        2 => random_lease_entry(rng),
         _ => random_change_entry(rng),
     }
+}
+
+/// The entry of a lease: one of the four kinds, in the chain, with a reason near the longest one.
+fn random_lease_entry(rng: &mut Rng) -> Entry {
+    let number = random_number(rng);
+    let time = *rng.pick(&[0, 1, 1_700_000_000]);
+    let expires = time + *rng.pick(&[1, 60, 3600]);
+    let branch = random_branch(rng);
+    let actor = random_actor(rng);
+    let mut other = random_actor(rng);
+    while other == actor {
+        other = random_actor(rng);
+    }
+    let long = "x".repeat(MAX_REASON_LEN);
+    let reason = rng
+        .pick(&["stuck", "a b c", "\u{e9}", long.as_str()])
+        .to_string();
+    let lease = match rng.below(4) {
+        0 => LeaseEntry::acquire(time, actor, branch, expires),
+        1 => Ok(LeaseEntry::release(time, actor, branch)),
+        2 => LeaseEntry::takeover(time, actor, branch, other, expires),
+        _ => LeaseEntry::owner_override(time, actor, branch, other, expires, reason),
+    }
+    .expect("a random lease entry is valid");
+    // A lease entry is always in the chain; the start of it is the one that needs no hash.
+    Entry::linked(number, Chain::Start, Record::Lease(lease))
+        .expect("a random lease entry is valid")
 }
 
 fn random_number(rng: &mut Rng) -> u64 {
@@ -1139,8 +1168,8 @@ fn every_entry_the_code_can_build_is_read_back() {
         assert_eq!(again, entry, "{context}");
         assert_eq!(again.encode(), bytes, "{context}");
     }
-    // Both encodings: the entry of a change, a stub, and the entry of a purge.
-    assert_eq!(kinds.len(), 3, "the run did not build every kind of entry");
+    // The entry of a change, a stub, the entry of a purge, and the entry of a lease.
+    assert_eq!(kinds.len(), 4, "the run did not build every kind of entry");
 }
 
 #[test]

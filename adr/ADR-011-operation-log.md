@@ -219,8 +219,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
 - **The repository format version rises to 2 with the log** *(confirmed)*. `oplog/` is part of
   the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
-  migration is to run `init` again. Version 3 came with the purge (ADR-014), and version 4 with
-  the hash chain (below).
+  migration is to run `init` again. Version 3 came with the purge (ADR-014), version 4 with
+  the hash chain (below), and version 8 with the lease entries (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change, a stub, and a `purge` entry;
@@ -431,6 +431,38 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   operation snapshot
   working-copy b3:1d71…eed9 b3:4feb…b32c
   ```
+
+- **The four lease entries** *(confirmed; STEMMA-225, STEMMA-237)*. The lease of a branch is
+  state in a file (ADR-004); the log records its changes in four entries that name a branch and
+  actors and no commit: `lease-acquire`, `lease-release`, `lease-takeover`, and `lease-override`.
+  They are the third kind of entry without a pointer, after `take-over` and `purge`, so the
+  rule "at least one pointer line" has three exceptions now, and no purge can list them.
+  - **The encoding stays `stemma-oplog 3`.** STEMMA-225 named a new encoding `stemma-oplog 3`,
+    but that number is taken by the hash chain (above). A lease entry is always in the chain, so
+    it has no older encoding, and its lines follow `previous`, as the lines `worktree` and `tags`
+    came to version 3 without a new header. What an older reader must not read is kept out by the
+    version of the repository format, which rises to 8 with the next entry or purge, the first lease
+    entry among them (ADR-009): a
+    program that knows only version 7 refuses the repository instead of calling the entry
+    damaged. The older headers refuse a lease body as well (`stemma-oplog 1` and `2` are read
+    only for the entries that they were written for).
+  - **The lines.** After `operation lease-<kind>` come `branch <name>`, then `from <actor>` (a
+    takeover and an override: the earlier holder), `expires <seconds>` (all but a release), and
+    `reason <text>` (a takeover: `expired`; an override: one line of 1 to 1,024 bytes without a
+    control character and without a space at its ends). Any other order, a missing line, or an
+    extra line is an error, so one entry has one encoding. The actor of the entry is the one who
+    acts: the new holder, the holder who releases, or the owner who overrides. A takeover or an
+    override that names the actor as the earlier holder is invalid (the earlier holder acquires
+    again), and `expires` is after `time`.
+  - **State and entry.** The file `leases/<branch>` (the name with every byte outside
+    lowercase letters, digits, `-`, and `_` as `%` and two hex digits; a name longer than 200
+    bytes is cut and ends in `~` and 16 hex digits of its BLAKE3 hash) holds `stemma-lease 1`, the branch, the
+    holder, the time of the acquisition, and the expiry. A writer that holds the lock of the
+    references decides from the file, writes the entry first, and then replaces the file with
+    a rename, as the entry of a change comes before its move. A crash in between leaves the old
+    file, whole, and an entry for a lease that did not take effect; the next claim reads the file
+    again and decides again. A renewal replaces the file and writes no entry. `op restore`
+    refuses a lease entry, as it moved no pointer, and `outcomes` passes over it like a purge.
 
 ## Consequences
 

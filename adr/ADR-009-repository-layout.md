@@ -25,6 +25,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - **Layout** *(confirmed)*. A repository is a directory that contains `.stemma/`. Inside:
   `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007),
   `oplog/` and `oplog-tip` (ADR-011),
+  `leases/` (one file per branch with a lease, made by the first lease; ADR-004, ADR-011),
   `refs/heads/`, `refs/tags/` (made by the first tag, ADR-008), `refs.lock` (while a command
   writes), and `refs.lock.guard` (the guard of the
   lock, which stays; ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
@@ -108,11 +109,12 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 7, the version of the tags that a purge moves (the line `tags`
-  of a `purge` entry and the journal `stemma-purge 3`, ADR-011, ADR-014), and `open` reads
-  versions 2 to 7: a repository made before the purge existed (2), before the chain (3), before
-  the owner (4), before the worktree of an entry (5), or before the tags of a purge (6) rises to
-  7 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  supports: `init` writes version 8, the version of the lease entries (`lease-acquire`,
+  `lease-release`, `lease-takeover`, and `lease-override`, and the directory `leases/`; ADR-004,
+  ADR-011), and `open` reads versions 2 to 8: a repository made before the purge existed (2),
+  before the chain (3), before the owner (4), before the worktree of an entry (5), before the
+  tags of a purge (6), or before the leases (7) rises to 8 with its next entry or purge
+  (ADR-014, ADR-011, ADR-010).
   Version 4 is the version of the hash chain of the log (ADR-011). From version 5
   on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that
   raises the version records none, and the next entry of a change does (ADR-010). A version

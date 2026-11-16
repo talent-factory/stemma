@@ -3,7 +3,7 @@
 
 use std::fmt::{self, Display, Write};
 
-use stemma_core::oplog::{Change, Entry, Moved, Outcome, Purge, Record};
+use stemma_core::oplog::{Change, Entry, LeaseEntry, Moved, Outcome, Purge, Record};
 use stemma_core::refs::Head;
 
 /// The `schema` of every JSON object the program writes (ADR-018). One number covers all of them:
@@ -89,6 +89,21 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
     let change = match entry.record() {
         Record::Change(change) => change,
         Record::Stub(_) => return head(&"(purged)"),
+        Record::Lease(lease) => {
+            let mut out = head(&lease.kind().operation());
+            let _ = write!(out, "    branch {}", lease.branch());
+            if let Some(from) = lease.from() {
+                let _ = write!(out, "  from {from}");
+            }
+            if let Some(expires) = lease.expires() {
+                let _ = write!(out, "  expires {}", utc(expires));
+            }
+            if let Some(reason) = lease.reason() {
+                let _ = write!(out, "  reason {}", reason.escape_debug());
+            }
+            out.push('\n');
+            return out;
+        }
         Record::Purge(purge) => {
             // The tags are named only when the purge moved some, so that an entry from before
             // them reads as before.
@@ -197,7 +212,10 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// operation did not change them, and `branches` is a list, empty if no branch changed. A pointer
 /// that did not exist or does not exist any more has `null` as its old or new value.
 ///
-/// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, or `purge`.
+/// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, `purge`, or
+/// `lease`. A lease has `time`, `actor`, `operation` (`lease-acquire`, `lease-release`,
+/// `lease-takeover`, or `lease-override`), `branch`, `from`, `expires`, and `reason`; the last
+/// three are `null` where the operation has none.
 /// A stub has only `time` and `actor` besides; a purge has `time`, `actor`, `operation`,
 /// `commits`, `tags`, and `stubs`, a list of ranges `[start, end]` (ADR-014). The fields above
 /// are those of a change, which has `purge_pending` before `took_effect` as well: `true` if a
@@ -212,7 +230,26 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             quote(&entry.actor().to_string())
         ),
         Record::Purge(purge) => purge_json(entry, purge),
+        Record::Lease(lease) => lease_json(entry, lease),
     }
+}
+
+fn lease_json(entry: &Entry, lease: &LeaseEntry) -> String {
+    let text = |value: Option<String>| value.map_or_else(|| "null".to_owned(), |v| quote(&v));
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"lease\",\"time\":{},\"actor\":{},\"operation\":{},\
+         \"branch\":{},\"from\":{},\"expires\":{},\"reason\":{}}}",
+        entry.number(),
+        entry.time(),
+        quote(&entry.actor().to_string()),
+        quote(lease.kind().operation()),
+        quote(&lease.branch().to_string()),
+        text(lease.from().map(ToString::to_string)),
+        lease
+            .expires()
+            .map_or_else(|| "null".to_owned(), |expires| expires.to_string()),
+        text(lease.reason().map(str::to_owned))
+    )
 }
 
 fn purge_json(entry: &Entry, purge: &Purge) -> String {
@@ -308,5 +345,39 @@ mod tests {
     fn a_string_is_quoted_for_json() {
         assert_eq!(quote("a\"b\\c\nd"), "\"a\\\"b\\\\c\\u000ad\"");
         assert_eq!(quote("ä"), "\"ä\"");
+    }
+
+    fn lease_entry() -> Entry {
+        let text = "stemma-oplog 3\nnumber 5\ntime 1700000000\nactor human mia\nprevious -\n\
+                    operation lease-takeover\nbranch feature/x\nfrom human daniel\n\
+                    expires 1700003600\nreason expired\n";
+        Entry::parse(text.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn a_lease_entry_shows_its_branch_actors_and_reason() {
+        assert_eq!(
+            text(&lease_entry(), Outcome::Unknown, false),
+            "5  2023-11-14T22:13:20Z  human mia  lease-takeover\n    branch feature/x  \
+             from human daniel  expires 2023-11-14T23:13:20Z  reason expired\n"
+        );
+    }
+
+    #[test]
+    fn a_lease_entry_has_its_own_kind_in_json() {
+        assert_eq!(
+            json(&lease_entry(), Outcome::Unknown, false),
+            "{\"schema\":1,\"number\":5,\"kind\":\"lease\",\"time\":1700000000,\
+             \"actor\":\"human mia\",\"operation\":\"lease-takeover\",\"branch\":\"feature/x\",\
+             \"from\":\"human daniel\",\"expires\":1700003600,\"reason\":\"expired\"}"
+        );
+        let text = "stemma-oplog 3\nnumber 6\ntime 1700000000\nactor human mia\nprevious -\n\
+                    operation lease-release\nbranch main\n";
+        let release = Entry::parse(text.as_bytes()).unwrap();
+        let line = json(&release, Outcome::Unknown, false);
+        assert!(
+            line.ends_with("\"branch\":\"main\",\"from\":null,\"expires\":null,\"reason\":null}"),
+            "{line}"
+        );
     }
 }
