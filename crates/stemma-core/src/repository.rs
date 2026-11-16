@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 7" and a newline; 2 to 6 before the tags of a purge
+//! ├── format          "stemma-repository 8" and a newline; 2 to 7 before the leases
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
@@ -13,6 +13,7 @@
 //! ├── refs/tags/      tags, made by the first tag (ADR-008)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
 //! ├── oplog-tip       the number and the hash of the last entry of the log (ADR-011)
+//! ├── leases/         one file per branch with a lease, made by the first one (ADR-004)
 //! ├── purge-pending   the journal of a purge, only while it runs or after it stopped (ADR-014)
 //! ├── worktrees/      one state directory for each linked worktree (ADR-009)
 //! │   └── <name>/     its own `HEAD` and `working-copy`, and `location`, the path of the worktree
@@ -35,6 +36,7 @@ mod checkout;
 mod commit;
 mod conflicted;
 mod difference;
+mod lease;
 mod merge_branch;
 mod purge;
 #[cfg(any(fuzzing, test))]
@@ -53,6 +55,7 @@ pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, Plan
 pub use commit::{CommitError, Committed};
 pub use conflicted::ConflictedFile;
 pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side, TextDiff};
+pub use lease::{Claimed, LeaseError};
 pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
@@ -74,7 +77,9 @@ pub use worktree::{AddedWorktree, RemovedWorktree, WorktreeBranch, WorktreeError
 use crate::change::{ChangeId, GenerateError};
 use crate::fault;
 use crate::object::{Commit, CommitId, ObjectId, Tree, METADATA_DIR};
-use crate::oplog::{Change, Entry, FsOpLog, Moved, OpLogError, OperationName, Purge, TAKE_OVER};
+use crate::oplog::{
+    Change, Entry, FsOpLog, LeaseEntry, Moved, OpLogError, OperationName, Purge, TAKE_OVER,
+};
 use crate::refs::{
     encode_working_copy, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError, RefStore,
     WriteLock, WORKTREES_DIR,
@@ -90,9 +95,10 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` writes, and that a purge and every new entry
-/// of the log move a repository to: version 7, the tags that a purge moves: the line `tags` of a
-/// `purge` entry and the journal `stemma-purge 3` (ADR-009, ADR-011, ADR-014).
-const FORMAT_VERSION: u32 = 7;
+/// of the log move a repository to: version 8, the lease of a branch: the entries `lease-acquire`,
+/// `lease-release`, `lease-takeover`, and `lease-override` and the directory `leases/` (ADR-004,
+/// ADR-009, ADR-011).
+const FORMAT_VERSION: u32 = 8;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -108,8 +114,10 @@ const FORMAT_VERSION: u32 = 7;
 /// with its next entry or purge, so that a program that knows only version 5 refuses a log or a
 /// journal that it cannot read, instead of reporting damage. Version 7 adds the line `tags` to a
 /// `purge` entry and the journal `stemma-purge 3` for a purge that moves tags (STEMMA-185), with
-/// the same rise and for the same reason.
-const READ_VERSIONS: [u32; 6] = [2, 3, 4, 5, 6, 7];
+/// the same rise and for the same reason. Version 8 adds the four lease entries and the directory
+/// `leases/`: a repository moves to it with the first entry of a lease, so that a program that
+/// knows only version 7 refuses a log whose entries it cannot read, instead of reporting damage.
+const READ_VERSIONS: [u32; 7] = [2, 3, 4, 5, 6, 7, 8];
 
 // A purge and every new entry of the log move a repository to `FORMAT_VERSION` (ADR-011,
 // ADR-014). It is the highest that this code reads, so neither lowers a version.
@@ -692,6 +700,24 @@ impl Repository {
         // Not an error of the change: the entry and its move stand without the owner.
         let _ = self.refs.adopt_owner(lock, change.actor());
         Ok(entry)
+    }
+
+    /// Writes the entry of a lease, as [`FsOpLog::append_lease`] does, after it moved the
+    /// repository to the current format; the caller holds the lock of the references. A program
+    /// that knows only an older format refuses the repository instead of reading an entry that it
+    /// cannot place (ADR-009).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpLogError::Io`] if the format file cannot be raised and flushed, and what
+    /// [`FsOpLog::append_lease`] returns.
+    pub(crate) fn append_lease(
+        &self,
+        _lock: &WriteLock,
+        lease: &LeaseEntry,
+    ) -> Result<Entry, OpLogError> {
+        raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
+        self.oplog.append_lease(lease)
     }
 
     /// Writes the entries of a purge, as [`FsOpLog::append_purge`] does. The purge holds the lock
@@ -2797,7 +2823,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 7\n"
+            b"stemma-repository 8\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4130,7 +4156,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "8",
+            "9",
             "99",
             "4294967295",
             "4294967296",
@@ -4180,7 +4206,7 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 7\n"
+            "stemma-repository 8\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
     }
@@ -4206,7 +4232,7 @@ mod tests {
         // A program that knows only version 5 refuses what the entry may now carry.
         assert_eq!(
             fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
-            "stemma-repository 7\n"
+            "stemma-repository 8\n"
         );
     }
 
@@ -4237,7 +4263,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 7\n"
+            "stemma-repository 8\n"
         );
     }
 
@@ -4270,7 +4296,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 7\n"
+            "stemma-repository 8\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -4514,7 +4540,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 7\n"
+            "stemma-repository 8\n"
         );
     }
 
@@ -4591,7 +4617,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 7\n");
+        assert_eq!(read(), "stemma-repository 8\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -4603,6 +4629,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 6\n");
         raise_format(&meta, 7).unwrap();
         assert_eq!(read(), "stemma-repository 7\n");
+        raise_format(&meta, 8).unwrap();
+        assert_eq!(read(), "stemma-repository 8\n");
     }
 
     #[test]
@@ -4647,7 +4675,7 @@ mod tests {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 7\n");
+        assert_eq!(format, "stemma-repository 8\n");
         for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
@@ -4819,14 +4847,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 7",
+                "stemma-repository 8",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
-                    found: "8".to_string(),
+                    found: "9".to_string(),
                 },
-                "version 8, but this code supports versions 2 to 7",
+                "version 9, but this code supports versions 2 to 8",
             ),
         ];
         for (error, text) in cases {

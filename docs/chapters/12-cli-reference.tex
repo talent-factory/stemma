@@ -2415,8 +2415,26 @@ Purge.
 3  2023-11-14T22:13:20Z  human daniel  (purged)
 \stoptyping
 
+{\bf Lease.} Die vier Einträge der Lease (ADR-004, ADR-011) zeigen die Operation
+\type{lease-acquire}, \type{lease-release}, \type{lease-takeover} oder \type{lease-override}
+und in einer zweiten Zeile den Branch, den bisherigen Inhaber (\type{from}), das Ablaufdatum
+(\type{expires}) und die Begründung (\type{reason}), soweit der Eintrag sie hat.
+Sie nennen keinen Zeiger und keine ID, also folgt keine Zeile über eine Zeigerbewegung;
+ihr Ausgang ist weder \type{!} noch \type{?}, und ein Purge nennt sie nie.
+\type{op restore} lehnt sie ab.
+
+\starttyping
+5  2023-11-14T22:13:20Z  agent a1 model-x s1 mia  lease-takeover
+    branch feature/x  from human daniel  expires 2023-11-14T23:13:20Z  reason expired
+\stoptyping
+
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
-\type{change}, \type{stub} oder \type{purge}. Ein Stub hat dazu nur \type{time} und \type{actor};
+\type{change}, \type{stub}, \type{purge} oder \type{lease}.
+Ein Eintrag der Lease hat dazu \type{time}, \type{actor}, \type{operation}, \type{branch},
+\type{from}, \type{expires} (Sekunden seit dem 1.1.1970) und \type{reason}; die letzten drei sind
+\type{null}, wo die Operation sie nicht kennt (das Feld \type{kind} kam mit einem Wert dazu,
+ohne neues \type{schema}).
+Ein Stub hat dazu nur \type{time} und \type{actor};
 ein Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits}, \type{tags} (die Zahl
 der Tags, die er bewegt hat; das Feld kam ohne neues \type{schema} dazu) und \type{stubs}, eine
 Liste von Bereichen \type{[start, end]}. Für eine Änderung sind die weiteren Felder \type{time}

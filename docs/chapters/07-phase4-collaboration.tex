@@ -24,7 +24,7 @@ Merge-Regeln.
 \section{Schreibhoheit und Pull Request}
 
 Dieser Abschnitt beschreibt ADR-004, das für Phase 4 angenommen ist.
-Umgesetzt ist davon noch nichts.
+Die Lease ist im Kern umgesetzt (siehe unten); die Befehle dazu und der Pull Request folgen.
 Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
 Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
 Request.
@@ -46,6 +46,69 @@ Wer nicht auf den Ablauf warten will, braucht einen Owner-Override.
 Ihn darf nur ein Mensch mit der Rolle Owner auslösen, signiert und mit einer Begründung.
 Er hinterlässt einen Eintrag im Operationslog, den der Purge nie anfasst,
 weil er keinen Commit nennt, und er umgeht das Merge-Gate nie.
+Die Lease ist Zustand, kein Ereignis: eine Datei je Branch im gemeinsamen Verzeichnis
+\type{.stemma/leases/}, die alle Worktrees sehen.
+Sie nennt den Inhaber, den Zeitpunkt des Erwerbs und das Ablaufdatum
+und wird als Ganzes durch ein Umbenennen ersetzt.
+Die Verlängerung ist träge: Es gibt keinen Hintergrundprozess, sondern jede schreibende Operation
+des Inhabers schiebt das Ablaufdatum hinaus.
+Eine Verlängerung schreibt keinen eigenen Eintrag.
+Erworben wird die Lease still, mit der ersten schreibenden Operation auf einem Branch ohne gültige
+Lease.
+Hält ein anderer Akteur eine gültige Lease, scheitert die Operation und nennt Inhaber und Ablauf.
+Die Prüfung der Lease und das Bewegen des Zeigers sind ein Schritt unter \type{refs.lock};
+zwei Akteure schreiben also nie gleichzeitig.
+
+Die folgende Tabelle (\in{Tabelle}[tab:lease-rule]) zeigt, was ein Akteur tut.
+Vier Einträge halten die Änderungen der Lease im Operationslog fest:
+\type{lease-acquire}, \type{lease-release}, \type{lease-takeover} und \type{lease-override}.
+Sie nennen einen Branch und Akteure, aber keinen Commit.
+Deshalb kann der Purge sie nie anfassen, und \type{op restore} lehnt sie ab.
+Ihre Zeilen stehen nach \type{previous}, sie sind also immer Teil der Hash-Kette.
+Die Repository-Version steigt mit dem ersten Eintrag auf 8, damit ein älteres Programm das Log
+klar ablehnt, statt es als beschädigt zu melden.
+
+\startplacetable[title={Was ein Akteur tut, der einen Branch schreiben will},
+reference=tab:lease-rule]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Die Lease-Datei} \stopxcell
+\startxcell {\bf Der Akteur} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Keine Datei \stopxcell
+\startxcell Der Akteur erwirbt die Lease (\type{lease-acquire}). \stopxcell
+\stopxrow
+\startxrow
+\startxcell Gültig, er ist Inhaber \stopxcell
+\startxcell Er verlängert sie, ohne Eintrag. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Gültig, ein anderer ist Inhaber \stopxcell
+\startxcell Er wird abgewiesen und erfährt Inhaber und Ablauf. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Abgelaufen, er war Inhaber \stopxcell
+\startxcell Er erwirbt sie erneut (\type{lease-acquire}). \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Abgelaufen, ein anderer war Inhaber \stopxcell
+\startxcell Er übernimmt sie (\type{lease-takeover}, Grund
+\type{expired}). \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Stürzt ein Akteur zwischen dem Eintrag und dem Ersetzen der Datei ab, bleibt die alte Datei ganz
+zurück, und das Log nennt eine Lease, die nicht galt.
+Wie bei einer Zeigerbewegung kommt der Eintrag vor der Wirkung (ADR-011);
+die nächste schreibende Operation liest die Datei neu und entscheidet von vorn.
+Der Owner-Override schreibt \type{lease-override} mit dem bisherigen Inhaber und der Begründung
+von höchstens 1 KiB.
+Er verlangt einen Menschen mit der Rolle Owner im Register und eine gültige Lease:
+Eine abgelaufene wird übernommen, dafür braucht es keinen Override.
+Der Inhalt des Branches und die Arbeit des bisherigen Inhabers bleiben, wie sie sind.
+
 Die Lease dauert standardmässig 60 Minuten; die Policy kann sie ändern, innerhalb fester Grenzen
 von 5 Minuten bis 24 Stunden.
 Nach dem Ablauf darf jeder mit Schreibrecht sie übernehmen, auch nach dem Absturz eines Agenten.

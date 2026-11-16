@@ -377,6 +377,7 @@ impl Classify for RestoreError {
             Self::NoSuchEntry { .. }
             | Self::Purged { .. }
             | Self::IsPurge { .. }
+            | Self::IsLease { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
