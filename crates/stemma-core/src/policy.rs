@@ -70,8 +70,8 @@ use crate::oplog::{OperationName, OperationNameError};
 /// The name of the policy file, in the root of the repository.
 pub const FILE_NAME: &str = ".stemma-policy";
 
-/// The directory of the actor register. Its files have level 3 (ADR-003, ADR-004). Provisional
-/// until the register has a layout (STEMMA-221).
+/// The directory of the actor register. Its files have level 3 (ADR-003, ADR-004). The register
+/// itself is the file `register` in it ([`crate::register::FILE`]).
 pub const REGISTER_DIR: &str = ".stemma-actors";
 
 /// The header of the first line.

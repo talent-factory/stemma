@@ -57,6 +57,7 @@ pub mod policy;
 #[cfg(test)]
 mod properties;
 pub mod refs;
+pub mod register;
 pub mod repository;
 pub mod signature;
 pub mod store;
