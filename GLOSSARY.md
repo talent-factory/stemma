@@ -325,8 +325,13 @@ in the operation log before the revocation count, and its approvals become void.
 Schlüssel)
 
 **Sponsor**:
-The human who is accountable for an agent's actions. (Sponsor)
+The human who is accountable for an agent's actions. The sponsor co-signs the register entry of the
+agent, and revoking a key of the sponsor revokes the keys of their agents. (Sponsor)
 _Avoid_: Owner, principal
+
+**Co-signature**:
+The signature of a sponsor over the register entry of an agent: the agent, its role, and the
+sponsor. The owner who changes the register signs the entry by approving the commit. (Mitzeichnung)
 
 **Lease**:
 The time-limited right of one actor to write to a branch. The core enforces it, every writing

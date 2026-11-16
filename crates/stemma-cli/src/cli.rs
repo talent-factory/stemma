@@ -92,7 +92,7 @@ use stemma_core::moved::{moved_lines, MovedLines};
 use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
-use stemma_core::register::{self, Identity, Mode, Register};
+use stemma_core::register::{self, Identity, IdentityKind, Mode, Register, Role};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
@@ -101,7 +101,7 @@ use stemma_core::repository::{
     SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking, UpdateError,
     WorktreeBranch, WorktreeError, BRANCH_PREFIX, TAG_PREFIX,
 };
-use stemma_core::signature::PublicKey;
+use stemma_core::signature::{self, PayloadKind, PublicKey, Signature, SshKeygen};
 use stemma_core::{Actor, ActorParseError, AllowAll};
 
 /// How many of the files that `worktree remove --force` deleted with the directory the output
@@ -178,6 +178,70 @@ enum RegisterCommand {
     /// Revoke a key that may be compromised: only the log entries before it count, and its
     /// approvals are void
     Revoke(RegisterKeyArgs),
+    /// Add an agent with its own entry: its key, its role, and its human sponsor with their
+    /// co-signature (made by `register cosign`)
+    AddAgent(RegisterAddAgentArgs),
+    /// Sign, as the sponsor, the entry of an agent; the signature goes to the standard output
+    Cosign(RegisterCosignArgs),
+}
+
+#[derive(Debug, Args)]
+struct RegisterAddAgentArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// The file of the Ed25519 public key of the agent (a `.pub` file)
+    #[arg(value_name = "KEY_FILE")]
+    key_file: PathBuf,
+
+    /// The identifier of the agent: one entry for each lasting agent identity
+    #[arg(long, value_name = "ID")]
+    agent: String,
+
+    /// The identifier of the human sponsor, who has an entry in the register
+    #[arg(long, value_name = "ID")]
+    sponsor: String,
+
+    /// The role of the agent; it cannot exceed the role of the sponsor, and an agent is never an
+    /// owner
+    #[arg(long, value_name = "ROLE", default_value = "member")]
+    role: String,
+
+    /// The file with the co-signature that `register cosign` made
+    #[arg(long, value_name = "SIGNATURE_FILE")]
+    cosign: PathBuf,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. Only an owner adds an agent
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+}
+
+#[derive(Debug, Args)]
+struct RegisterCosignArgs {
+    /// The key file of the sponsor for `ssh-keygen -Y sign`: the private key, or the public key
+    /// if `ssh-agent` holds it
+    #[arg(value_name = "KEY_FILE")]
+    key_file: PathBuf,
+
+    /// The identifier of the agent
+    #[arg(long, value_name = "ID")]
+    agent: String,
+
+    /// The role of the agent in its entry
+    #[arg(long, value_name = "ROLE", default_value = "member")]
+    role: String,
+
+    /// The sponsor, a human: `human <id>`; the default is the actor
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -4224,6 +4288,8 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
         RegisterCommand::AddKey(args) => ("Added", args),
         RegisterCommand::Retire(args) => ("Retired", args),
         RegisterCommand::Revoke(args) => ("Revoked", args),
+        RegisterCommand::AddAgent(args) => return register_add_agent(args, out),
+        RegisterCommand::Cosign(args) => return register_cosign(args, out),
     };
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
@@ -4234,6 +4300,56 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
             .map_err(|error| CliError::Register(format!("--identity {text:?}: {error}")))?,
         None => Identity::of(&actor),
     };
+    let (repository, path, mut register) = load_register(repository)?;
+    if identity != Identity::of(&actor) && !register.is_owner(&actor) {
+        return Err(CliError::Register(format!(
+            "{actor} is not an owner, so it changes only its own entry, not the entry of {identity}"
+        )));
+    }
+    let from = repository
+        .oplog()
+        .entries()
+        .map_err(CliError::OpLog)?
+        .last()
+        .map_or(1, |entry| entry.number() + 1);
+    let mut cascaded = Vec::new();
+    let changed = match action {
+        "Added" => register.add_key(&identity, key),
+        "Retired" => register.retire(&identity, &key, from),
+        _ => register.revoke(&identity, &key, from).map(|agents| {
+            cascaded = agents;
+        }),
+    };
+    changed.map_err(|error| CliError::Register(error.to_string()))?;
+    write_register(&path, &register)?;
+    let mut text = match action {
+        "Added" => format!(
+            "Added a key of {identity} to {}; commit the file.\n",
+            register::FILE
+        ),
+        _ => format!(
+            "{action} a key of {identity} from log entry {from} in {}; commit the file.\n",
+            register::FILE
+        ),
+    };
+    for agent in &cascaded {
+        text.push_str(&format!(
+            "Revoked every key of {agent}, whose sponsor is {identity}, from log entry {from}.\n"
+        ));
+    }
+    out.write_all(text.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|source| {
+            // The file is changed: like `tag` and `branch`, this is code 3.
+            CliError::RegisterNotWritten(format!(
+                "the register file was changed, but the result could not be written: {source}"
+            ))
+        })
+}
+
+/// Opens the register file of an enforcing repository for a change: the repository, the path of
+/// the file, and the register that it holds.
+fn load_register(repository: Repository) -> Result<(Repository, PathBuf, Register), CliError> {
     let path = repository.path().join(register::FILE);
     // The same rule as `op verify`: the marker or a register in the base commit makes the
     // repository enforcing.
@@ -4263,25 +4379,19 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
     let bytes = fs::read(&path).map_err(|error| {
         CliError::RegisterDamaged(format!("cannot read {}: {error}", path.display()))
     })?;
-    let mut register =
+    let register =
         Register::parse(&bytes).map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
-    if identity != Identity::of(&actor) && !register.is_owner(&actor) {
+    Ok((repository, path, register))
+}
+
+/// Replaces the register file with the register, through a temporary file of the same directory.
+fn write_register(path: &Path, register: &Register) -> Result<(), CliError> {
+    // A register that the reader would refuse is never written: the repository could not be used.
+    if let Err(error) = Register::parse(register.encode().as_bytes()) {
         return Err(CliError::Register(format!(
-            "{actor} is not an owner, so it changes only its own entry, not the entry of {identity}"
+            "the change would make a register that cannot be read: {error}"
         )));
     }
-    let from = repository
-        .oplog()
-        .entries()
-        .map_err(CliError::OpLog)?
-        .last()
-        .map_or(1, |entry| entry.number() + 1);
-    let changed = match action {
-        "Added" => register.add_key(&identity, key),
-        "Retired" => register.retire(&identity, &key, from),
-        _ => register.revoke(&identity, &key, from),
-    };
-    changed.map_err(|error| CliError::Register(error.to_string()))?;
     let temporary = path.with_extension("tmp");
     let written = fs::OpenOptions::new()
         .write(true)
@@ -4291,7 +4401,7 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
             file.write_all(register.encode().as_bytes())?;
             file.sync_all()
         })
-        .and_then(|()| fs::rename(&temporary, &path));
+        .and_then(|()| fs::rename(&temporary, path));
     if let Err(error) = written {
         let _ = fs::remove_file(&temporary);
         return Err(CliError::Register(format!(
@@ -4299,20 +4409,94 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
             path.display()
         )));
     }
-    let text = match action {
-        "Added" => format!(
-            "Added a key of {identity} to {}; commit the file.\n",
-            register::FILE
-        ),
-        _ => format!(
-            "{action} a key of {identity} from log entry {from} in {}; commit the file.\n",
-            register::FILE
-        ),
-    };
-    out.write_all(text.as_bytes())
+    Ok(())
+}
+
+fn parse_agent(id: &str, flag: &str) -> Result<Identity, CliError> {
+    format!("agent {id}")
+        .parse::<Identity>()
+        .map_err(|error| CliError::Register(format!("{flag} {id:?}: {error}")))
+}
+
+fn parse_sponsor(id: &str, flag: &str) -> Result<Identity, CliError> {
+    format!("human {id}")
+        .parse::<Identity>()
+        .map_err(|error| CliError::Register(format!("{flag} {id:?}: {error}")))
+}
+
+fn parse_agent_role(text: &str) -> Result<Role, CliError> {
+    match text {
+        "member" => Ok(Role::Member),
+        "owner" => Err(CliError::Register("an agent cannot be an owner".to_owned())),
+        _ => Err(CliError::Register(format!(
+            "--role {text:?}: expected `member`"
+        ))),
+    }
+}
+
+/// `register cosign`: the sponsor signs the entry of an agent. Nothing is written; the signature
+/// goes to the standard output, and the owner who adds the agent reads it from a file.
+fn register_cosign(args: RegisterCosignArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let sponsor = Identity::of(&actor);
+    if sponsor.kind() != IdentityKind::Human {
+        return Err(CliError::Register(
+            "the sponsor of an agent is a human; an agent cannot co-sign".to_owned(),
+        ));
+    }
+    let agent = parse_agent(&args.agent, "--agent")?;
+    let role = parse_agent_role(&args.role)?;
+    let signature = signature::sign(
+        &SshKeygen::new(&args.key_file),
+        PayloadKind::Sponsorship,
+        &register::sponsorship_payload(&agent, role, &sponsor),
+    )
+    .map_err(|error| CliError::Register(format!("cannot sign: {error}")))?;
+    out.write_all(signature.to_armored().as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|source| CliError::Register(format!("cannot write the signature: {source}")))
+}
+
+/// `register add-agent`: adds the entry of an agent to the register file of the working copy. Only
+/// an owner does it, and the file is level 3 like every change of the register: the entry counts
+/// once a human owner has approved the commit. The co-signature of the sponsor is checked here
+/// and again whenever the register is read.
+fn register_add_agent(args: RegisterAddAgentArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let key = read_public_key(&args.key_file)?;
+    let agent = parse_agent(&args.agent, "--agent")?;
+    let sponsor = parse_sponsor(&args.sponsor, "--sponsor")?;
+    let role = parse_agent_role(&args.role)?;
+    let text = fs::read_to_string(&args.cosign).map_err(|error| {
+        CliError::Register(format!(
+            "cannot read the signature file {}: {error}",
+            args.cosign.display()
+        ))
+    })?;
+    let cosign = Signature::from_armored(&text).map_err(|error| {
+        CliError::Register(format!(
+            "the signature file {}: {error}",
+            args.cosign.display()
+        ))
+    })?;
+    let (_repository, path, mut register) = load_register(repository)?;
+    if !register.is_owner(&actor) {
+        return Err(CliError::Register(format!(
+            "{actor} is not an owner, so it does not add an agent"
+        )));
+    }
+    register
+        .add_agent(agent.clone(), role, sponsor.clone(), key, cosign)
+        .map_err(|error| CliError::Register(error.to_string()))?;
+    write_register(&path, &register)?;
+    let line = format!(
+        "Added {agent} with sponsor {sponsor} to {}; commit the file.\n",
+        register::FILE
+    );
+    out.write_all(line.as_bytes())
         .and_then(|()| out.flush())
         .map_err(|source| {
-            // The file is changed: like `tag` and `branch`, this is code 3.
             CliError::RegisterNotWritten(format!(
                 "the register file was changed, but the result could not be written: {source}"
             ))

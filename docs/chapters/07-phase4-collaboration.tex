@@ -498,6 +498,8 @@ entry human mia member
 key ssh-ed25519 AAAAC3Nzc... revoked 40
 \stoptyping
 
+Der Eintrag eines Agenten hat zusätzlich einen Sponsor und die Mitzeichnung des Sponsors,
+die Zeile \type{cosign} (siehe unten).
 Die Einträge sind nach Art (Menschen zuerst) und Kennung in Byte-Reihenfolge sortiert,
 die Schlüssel eines Eintrags nach ihrem Text.
 Jeder Eintrag hat mindestens einen Schlüssel, und kein Schlüssel steht in zwei Einträgen,
@@ -506,6 +508,45 @@ Es gibt mindestens einen Owner mit einem aktiven Schlüssel, und nur ein Mensch 
 Die Datei ist höchstens 64~KiB gross, hat höchstens 256 Einträge mit je höchstens 8 Schlüsseln,
 und Zeilenende, Leerzeilen und Leerzeichen am Zeilenende gelten wie bei der Policy-Datei.
 Ein Schlüssel steht in der Form von OpenSSH ohne Kommentar; nur Ed25519 ist erlaubt.
+
+{\bf Agenten.}
+Ein Agent hat einen eigenen Eintrag mit eigenem Schlüssel und eigener Rolle (STEMMA-222).
+Die Rolle ist durch die Rolle seines menschlichen Sponsors begrenzt.
+Pro dauerhafter Agentenidentität gibt es genau einen Eintrag;
+\type{model} und \type{session} der Akteurzeile beschreiben nur und gehören nicht zur Identität.
+
+\starttyping
+entry agent bot member sponsor daniel
+cosign U1NIU0lHAAAAAQAAADMAAAA...
+key ssh-ed25519 AAAAC3Nzd... active
+\stoptyping
+
+\startitemize
+\item {\bf Sponsor:} Der Sponsor ist ein Mensch mit eigenem Eintrag, nie ein Agent;
+Sponsor-Ketten gibt es nicht.
+\item {\bf Rolle:} Die Rolle eines Agenten übersteigt die Rolle des Sponsors nicht.
+Ein Agent ist nie Owner, auch wenn der Sponsor es ist.
+\item {\bf Zwei Signaturen:} Ein Owner legt den Eintrag an; die Datei hat Stufe~3,
+also zeichnet er ihn, indem er den Commit freigibt.
+Der Sponsor zeichnet ihn mit, indem er Agent, Rolle und sich selbst
+mit einem Schlüssel aus seinem Eintrag signiert (die Nutzlast \type{sponsorship},
+mit eigener Typkennung, damit die Signatur keiner anderen Art gilt).
+Die Signatur steht als eine Zeile Base64 in der Zeile \type{cosign}.
+Der Leser prüft sie bei jedem Lesen; ein neuer Eintrag verlangt einen aktiven Schlüssel
+des Sponsors, ein gelesenes Register lässt auch einen inzwischen ausgemusterten
+oder widerrufenen zu.
+\item {\bf Akteurzeile:} Das Feld \type{sponsor} der Akteurzeile eines Agenten muss der Sponsor
+im Register sein, sonst gilt sein Beweis nicht.
+\item {\bf Kaskade:} Widerruft jemand einen Schlüssel eines Sponsors, widerruft der Kern
+alle Schlüssel seiner Agenten ab derselben Nummer; frühere Grenzen bleiben.
+Das Ausmustern eines Schlüssels löst keine Kaskade aus, damit eine Rotation die Agenten behält.
+Die Kaskade ändert das Register oder gar nichts.
+Danach bekommt der Agent keinen neuen Schlüssel, solange der Schlüssel der Mitzeichnung widerrufen
+ist oder der Sponsor keinen aktiven Schlüssel hat; der Leser lehnt auch eine Datei ab,
+die ihm einen gibt.
+Die Mitzeichnung bindet Agent, Rolle und Sponsor, nicht den Schlüssel des Agenten
+und nicht das Repository: Welchen Schlüssel der Agent erhält, entscheidet der Owner.
+\stopitemize
 
 {\bf Zustände eines Schlüssels.}
 Hinter \type{retired} und \type{revoked} steht die Nummer des ersten Logeintrags,
@@ -554,8 +595,11 @@ Der Eintrag muss in der Hash-Kette stehen, der Akteur des Beweises der des Eintr
 und der Schlüssel muss zum Akteur gehören und für diese Nummer zählen.
 Noch schreibt keine Operation einen Beweis; die Operationen, deren Regel vom Akteur abhängt,
 kommen mit den weiteren Teilen von Phase~4.
-Die CLI-Befehle \type{register add-key}, \type{register retire} und \type{register revoke}
-ändern die Datei im Arbeitsverzeichnis; die Änderung ist ein gewöhnlicher Commit der Stufe~3.
+Die CLI-Befehle \type{register add-key}, \type{register retire}, \type{register revoke}
+und \type{register add-agent} ändern die Datei im Arbeitsverzeichnis;
+die Änderung ist ein gewöhnlicher Commit der Stufe~3.
+Den Eintrag eines Agenten bereitet \type{register cosign} vor: Der Sponsor signiert, und ein Owner
+legt den Eintrag mit der Signatur an.
 Ob ein Akteur den Eintrag ändern darf, entscheidet vorerst die Behauptung des Akteurs:
 Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 
