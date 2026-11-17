@@ -12,6 +12,9 @@ set positional-arguments
 
 docs_dir := "docs"
 
+# The tests that sign with `ssh-keygen` fail, instead of skipping themselves, when it is missing.
+export STEMMA_REQUIRE_SSH_KEYGEN := "1"
+
 # The version of the workspace, from `Cargo.toml` (the only place where it is written).
 version := `sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' Cargo.toml`
 
