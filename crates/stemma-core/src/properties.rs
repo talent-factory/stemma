@@ -30,10 +30,11 @@ use crate::object::{
     TreeParseError,
 };
 use crate::oplog::{
-    Chain, Change, Entry, EntryParseError, LeaseEntry, Moved, OperationName, Purge, Record,
-    MAX_NUMBER, MAX_REASON_LEN,
+    Chain, Change, Entry, EntryParseError, LeaseEntry, Moved, OperationName, PullEntry, Purge,
+    Record, MAX_NUMBER, MAX_REASON_LEN, MAX_REVIEWERS,
 };
 use crate::refs::{BranchName, Head, RefParseError};
+use crate::register::Identity;
 use crate::store::{ObjectStore, StoreError};
 use crate::testutil::{FaultyStore, TempDir, DISK_MESSAGE};
 use crate::{Actor, ActorParseError};
@@ -370,6 +371,10 @@ fn random_commit_value(rng: &mut Rng) -> Option<CommitId> {
     }
 }
 
+fn random_commit_id(rng: &mut Rng) -> CommitId {
+    CommitId::new(ObjectId::from(random_blob(rng)))
+}
+
 fn random_head_value(rng: &mut Rng) -> Option<Head> {
     match rng.below(3) {
         0 => None,
@@ -396,14 +401,50 @@ fn random_moved<T: PartialEq>(
 /// An entry of either encoding: the entry of a change (encoding 1), or a stub or the entry of a
 /// purge (encoding 2).
 fn random_entry(rng: &mut Rng) -> Entry {
-    match rng.below(5) {
+    match rng.below(6) {
         0 => random_change_entry(rng)
             .to_stub()
             .expect("the entry of a change can become a stub"),
         1 => random_purge_entry(rng),
         2 => random_lease_entry(rng),
+        3 => random_pull_entry(rng),
         _ => random_change_entry(rng),
     }
+}
+
+/// The entry of a pull request: one of the three kinds, in the chain, with up to the most
+/// reviewers that fit, and a repair now and then.
+fn random_pull_entry(rng: &mut Rng) -> Entry {
+    let number = random_number(rng);
+    let time = *rng.pick(&[0, 1, 1_700_000_000]);
+    let actor = random_actor(rng);
+    let pull = *rng.pick(&[1, 2, 41, MAX_NUMBER]);
+    let entry = match rng.below(3) {
+        0 => {
+            let mut reviewers: Vec<Actor> = Vec::new();
+            for _ in 0..rng.below(MAX_REVIEWERS + 1) {
+                let reviewer = random_actor(rng);
+                let same = |other: &Actor| Identity::of(other) == Identity::of(&reviewer);
+                if !same(&actor) && !reviewers.iter().any(same) {
+                    reviewers.push(reviewer);
+                }
+            }
+            let repairs = rng.one_in(2).then(|| random_commit_id(rng));
+            PullEntry::open(
+                time,
+                actor,
+                random_branch(rng),
+                random_commit_id(rng),
+                reviewers,
+                repairs,
+            )
+        }
+        1 => PullEntry::close(time, actor, pull),
+        _ => PullEntry::merge(time, actor, pull, random_commit_id(rng)),
+    }
+    .expect("a random pull request entry is valid");
+    Entry::linked(number, Chain::Start, Record::Pull(entry))
+        .expect("a random pull request entry is valid")
 }
 
 /// The entry of a lease: one of the four kinds, in the chain, with a reason near the longest one.
@@ -1169,7 +1210,7 @@ fn every_entry_the_code_can_build_is_read_back() {
         assert_eq!(again.encode(), bytes, "{context}");
     }
     // The entry of a change, a stub, the entry of a purge, and the entry of a lease.
-    assert_eq!(kinds.len(), 4, "the run did not build every kind of entry");
+    assert_eq!(kinds.len(), 5, "the run did not build every kind of entry");
 }
 
 #[test]

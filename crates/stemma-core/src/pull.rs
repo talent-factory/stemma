@@ -123,7 +123,7 @@ pub fn pull_requests(entries: &[Entry]) -> Vec<PullRequest> {
         match pull.kind() {
             PullKind::Open => {
                 let (Some(branch), Some(head)) = (pull.branch(), pull.commit()) else {
-                    continue;
+                    unreachable!("an opening has a branch and a commit: PullEntry::build");
                 };
                 pulls.push(PullRequest {
                     number: entry.number(),
@@ -146,14 +146,14 @@ pub fn pull_requests(entries: &[Entry]) -> Vec<PullRequest> {
                 if !target.is_open() {
                     continue;
                 }
-                target.state = match (pull.kind(), pull.commit()) {
-                    (PullKind::Merge, Some(commit)) => PullState::Merged {
+                target.state = match pull.commit() {
+                    Some(commit) => PullState::Merged {
                         entry: entry.number(),
                         by: entry.actor().clone(),
                         time: entry.time(),
                         commit: *commit,
                     },
-                    _ => PullState::Closed {
+                    None => PullState::Closed {
                         entry: entry.number(),
                         by: entry.actor().clone(),
                         time: entry.time(),

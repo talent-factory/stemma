@@ -561,6 +561,7 @@ impl Classify for PurgeError {
             | Self::Rewrite { .. }
             | Self::TooManyEntries { .. }
             | Self::OpenPullRequest { .. }
+            | Self::EndedPullRequest { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }

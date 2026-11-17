@@ -11,14 +11,15 @@ use std::fmt;
 
 use super::{now, Repository};
 use crate::lease;
-use crate::object::CommitId;
+use crate::object::{CommitId, Kind};
 use crate::oplog::{
     Entry, EntryError, OpLogError, OperationName, PullEntry, PR_CLOSE, PR_MERGE, PR_OPEN,
 };
 use crate::pull::{self, PullRequest, TARGET};
 use crate::refs::{BranchName, RefError};
 use crate::register::{Identity, Register};
-use crate::store::ObjectStore;
+use crate::repository::LeaseError;
+use crate::store::StoreError;
 use crate::{Actor, Authorizer};
 
 impl Repository {
@@ -77,10 +78,7 @@ impl Repository {
         let now = now();
         if lease::applies(register, false) {
             let holds = self
-                .lease(branch)
-                .map_err(|_| PullError::NotWriteOwner {
-                    branch: branch.clone(),
-                })?
+                .lease(branch)?
                 .is_some_and(|lease| !lease.is_expired(now) && lease.holder() == actor);
             if !holds {
                 return Err(PullError::NotWriteOwner {
@@ -105,13 +103,7 @@ impl Repository {
             }
         }
         if let Some(commit) = repairs {
-            let present = self
-                .objects()
-                .contains(&commit.object_id())
-                .map_err(|_| PullError::NoSuchCommit { commit })?;
-            if !present {
-                return Err(PullError::NoSuchCommit { commit });
-            }
+            self.ensure_commit(commit)?;
         }
         let entry = PullEntry::open(now, actor.clone(), branch.clone(), head, reviewers, repairs)?;
         Ok(self.append_pull(&lock, &entry)?)
@@ -163,15 +155,18 @@ impl Repository {
         let lock = self.lock_for_pull(PR_MERGE, &format!("pull {number}"), actor, authorizer)?;
         let pulls = self.pull_requests()?;
         open_pull_of(&pulls, number)?;
-        let present = self
-            .objects()
-            .contains(&commit.object_id())
-            .map_err(|_| PullError::NoSuchCommit { commit })?;
-        if !present {
-            return Err(PullError::NoSuchCommit { commit });
-        }
+        self.ensure_commit(commit)?;
         let entry = PullEntry::merge(now(), actor.clone(), number, commit)?;
         Ok(self.append_pull(&lock, &entry)?)
+    }
+
+    /// Refuses an ID that the store does not hold as a commit: a purge reads every commit that an
+    /// entry names, so an ID of a blob or a tree would stop every later purge.
+    fn ensure_commit(&self, commit: CommitId) -> Result<(), PullError> {
+        match self.objects().kind_of(&commit.object_id())? {
+            Some(Kind::Commit | Kind::Commit2) => Ok(()),
+            Some(Kind::Blob | Kind::Tree) | None => Err(PullError::NoSuchCommit { commit }),
+        }
     }
 
     /// Asks the authorizer for `operation` and takes the lock of the references.
@@ -265,6 +260,10 @@ pub enum PullError {
     Refs(RefError),
     /// The log could not be read or written. See [`OpLogError`].
     Log(OpLogError),
+    /// The lease file of the branch could not be read or is damaged. Nothing was written.
+    Lease(LeaseError),
+    /// The object store could not be read. Nothing was written.
+    Store(StoreError),
     /// The entry breaks a rule of the entry, such as the reviewers. Nothing was written.
     Entry(EntryError),
 }
@@ -304,6 +303,8 @@ impl fmt::Display for PullError {
             ),
             Self::Refs(error) => error.fmt(f),
             Self::Log(error) => error.fmt(f),
+            Self::Lease(error) => error.fmt(f),
+            Self::Store(error) => error.fmt(f),
             Self::Entry(error) => error.fmt(f),
         }
     }
@@ -314,6 +315,8 @@ impl Error for PullError {
         match self {
             Self::Refs(error) => Some(error),
             Self::Log(error) => Some(error),
+            Self::Lease(error) => Some(error),
+            Self::Store(error) => Some(error),
             Self::Entry(error) => Some(error),
             _ => None,
         }
@@ -329,6 +332,18 @@ impl From<RefError> for PullError {
 impl From<OpLogError> for PullError {
     fn from(error: OpLogError) -> Self {
         Self::Log(error)
+    }
+}
+
+impl From<LeaseError> for PullError {
+    fn from(error: LeaseError) -> Self {
+        Self::Lease(error)
+    }
+}
+
+impl From<StoreError> for PullError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
     }
 }
 
@@ -349,6 +364,7 @@ mod tests {
     use crate::pull::PullState;
     use crate::repository::InitOptions;
     use crate::signature::PublicKey;
+    use crate::store::ObjectStore;
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
 
@@ -648,6 +664,77 @@ mod tests {
             assert!(matches!(error, PullError::NotOpen { .. }), "{error:?}");
         }
         repository.oplog().verify().expect("the chain holds");
+    }
+
+    #[test]
+    fn an_expired_lease_is_no_write_owner_and_a_damaged_one_is_reported() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let register = register();
+        let leases = dir.path().join(".stemma/leases");
+        std::fs::create_dir_all(&leases).unwrap();
+        let path = leases.join(lease::file_name(&feature()));
+        let expired = lease::Lease::new(feature(), mia(), 100, 200).unwrap();
+        std::fs::write(&path, expired.encode()).unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+        let open =
+            || repository.open_pull(&feature(), &mia(), vec![], None, Some(&register), &AllowAll);
+        assert!(matches!(open(), Err(PullError::NotWriteOwner { .. })));
+        std::fs::write(&path, b"not a lease").unwrap();
+        let error = open().unwrap_err();
+        assert!(matches!(error, PullError::Lease(_)), "{error:?}");
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+    }
+
+    #[test]
+    fn an_id_that_is_no_commit_is_refused_for_repairs_and_for_a_merge() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let blob = repository
+            .objects()
+            .put_blob(&Blob::new("some text"))
+            .unwrap();
+        let id = CommitId::new(blob.object_id());
+        let error = repository
+            .open_pull(&feature(), &daniel(), vec![], Some(id), None, &AllowAll)
+            .unwrap_err();
+        assert!(matches!(error, PullError::NoSuchCommit { .. }), "{error:?}");
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let error = repository
+            .record_pull_merge(number, &daniel(), id, &AllowAll)
+            .unwrap_err();
+        assert!(matches!(error, PullError::NoSuchCommit { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn closing_and_merging_ask_the_authorizer_and_open_mode_lets_only_the_opener_close() {
+        let dir = TempDir::new();
+        let (repository, start) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let before = repository.oplog().entries().unwrap().len();
+        assert!(matches!(
+            repository.close_pull(number, &daniel(), None, &DenyAll),
+            Err(PullError::Denied { .. })
+        ));
+        assert!(matches!(
+            repository.record_pull_merge(number, &daniel(), start, &DenyAll),
+            Err(PullError::Denied { .. })
+        ));
+        assert!(matches!(
+            repository.close_pull(number, &mia(), None, &AllowAll),
+            Err(PullError::NotAllowedToClose { .. })
+        ));
+        assert!(matches!(
+            repository.record_pull_merge(number + 9, &daniel(), start, &AllowAll),
+            Err(PullError::NoSuchPull { .. })
+        ));
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
     }
 
     #[test]

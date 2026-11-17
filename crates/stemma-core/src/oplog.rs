@@ -164,6 +164,7 @@ use std::str::FromStr;
 use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
+use crate::register::Identity;
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError};
 
@@ -466,6 +467,8 @@ pub enum EntryError {
     /// The reviewers of an opening are not in strictly ascending order, name the opener, or are
     /// more than [`MAX_REVIEWERS`].
     BadReviewers,
+    /// A pull request entry has fields that its kind does not have, or lacks one that it has.
+    BadPullShape,
 }
 
 impl fmt::Display for EntryError {
@@ -556,9 +559,12 @@ impl fmt::Display for EntryError {
             ),
             Self::BadReviewers => write!(
                 f,
-                "the reviewers of a pull request are at most {MAX_REVIEWERS}, in ascending order \
-                 without a repeat, and do not name the opener"
+                "the reviewers of a pull request are at most {MAX_REVIEWERS}, in ascending order, \
+                 each identity once, and none is the opener"
             ),
+            Self::BadPullShape => {
+                f.write_str("a pull request entry has the fields of its kind and no others")
+            }
             Self::BadReason => write!(
                 f,
                 "the reason of an override is one line of 1 to {MAX_REASON_LEN} bytes, without a \
@@ -1442,10 +1448,28 @@ impl PullEntry {
                 return Err(EntryError::NumberOutOfRange(number));
             }
         }
+        // Which fields a kind has: the one place that couples the kind to its options.
+        let shaped = match kind {
+            PullKind::Open => branch.is_some() && pull.is_none() && commit.is_some(),
+            PullKind::Close => branch.is_none() && pull.is_some() && commit.is_none(),
+            PullKind::Merge => branch.is_none() && pull.is_some() && commit.is_some(),
+        };
+        if !shaped || (kind != PullKind::Open && (!reviewers.is_empty() || repairs.is_some())) {
+            return Err(EntryError::BadPullShape);
+        }
+        // The register knows an identity, not an actor: an agent with another model or session
+        // is the same reviewer, and the opener is none of them.
         let ascending = reviewers
             .windows(2)
             .all(|pair| pair[0].to_string() < pair[1].to_string());
-        if reviewers.len() > MAX_REVIEWERS || !ascending || reviewers.contains(&actor) {
+        let identities: std::collections::HashSet<Identity> =
+            reviewers.iter().map(Identity::of).collect();
+        let is_opener = identities.contains(&Identity::of(&actor));
+        if reviewers.len() > MAX_REVIEWERS
+            || !ascending
+            || identities.len() != reviewers.len()
+            || is_opener
+        {
             return Err(EntryError::BadReviewers);
         }
         Ok(Self {
@@ -8402,6 +8426,25 @@ mod tests {
             Entry::of(3, Record::Pull(pull_entries().remove(1))),
             Err(EntryError::PullOutsideChain(3))
         );
+    }
+
+    #[test]
+    fn a_reviewer_is_an_identity_so_the_same_agent_in_another_session_is_the_opener() {
+        let agent = |session: &str| Actor::agent("claude", "opus-5-5", session, "daniel").unwrap();
+        let open = |actor: Actor, reviewers: Vec<Actor>| {
+            PullEntry::open(TIME, actor, branch("f"), commit(A), reviewers, None)
+        };
+        assert_eq!(
+            open(agent("s1"), vec![agent("s2")]),
+            Err(EntryError::BadReviewers),
+            "the opener under another session"
+        );
+        assert_eq!(
+            open(human(), vec![agent("s1"), agent("s2")]),
+            Err(EntryError::BadReviewers),
+            "one agent twice"
+        );
+        assert!(open(human(), vec![agent("s1")]).is_ok());
     }
 
     #[test]
