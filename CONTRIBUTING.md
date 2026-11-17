@@ -31,7 +31,8 @@ Apart from the CLA, every contribution is licensed under the terms of the projec
 All routine tasks run through `just` (list them with `just`).
 
 - `just ci` runs the format check, clippy, the build of the documentation, the line length
-  of the documentation sources, and the tests. It must pass before every commit.
+  of the documentation sources, and the tests. It must pass before every commit. It needs
+  OpenSSH `ssh-keygen` on the `PATH`: the signing tests fail without it instead of skipping.
 - `just deps` checks the dependency tree with `cargo audit` and `cargo deny check`.
   Run it when you add or update a dependency.
 - `just book` builds the book (`docs/main.tex`, ConTeXt MkIV).

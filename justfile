@@ -1,7 +1,7 @@
 # Stemma — task runner (version control system in Rust)
 #
 # Prereqs:
-#   just ≥ 1.18 (brew install just)   ·   Rust toolchain (rustup)   ·   ConTeXt (for the book)
+#   just ≥ 1.18 (brew install just)   ·   Rust toolchain (rustup)   ·   OpenSSH ssh-keygen (signing tests)   ·   ConTeXt (for the book)
 #
 # List all recipes by group:   `just`
 # Single group:                `just --list | grep -A99 '\[Quality\]'`
