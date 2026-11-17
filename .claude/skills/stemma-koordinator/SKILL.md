@@ -72,11 +72,15 @@ Agent guides in `docs/agents/`: `issue-tracker.md`, `triage-labels.md`, `domain.
 | Review of a phase for the book | `general-purpose` | `docs/agents/book-review.md`; a phase counts as done only after it |
 | Sub-issues of a Plane parent | Skill `rex:plane-wave` | `/plane-wave plan STEMMA-<n>` |
 
+If a task fits no row, choose `general-purpose` and describe the task exactly in the briefing.
+If a kind of task recurs without a skill, suggest to Daniel to add one under `.claude/skills/`.
+
 ## Briefing for every agent
 
 - **Goal:** one sentence that says when the task is done.
 - **Place:** the exact paths the agent may write to, and the worktree (`.worktrees/<name>`)
-  it works in. Everything else is read-only.
+  it works in. Everything else is read-only. In a worktree, edit through the worktree path:
+  absolute paths of the main checkout silently change `main`.
 - **Required reading:** `CLAUDE.md`, the guides of `docs/agents/` that apply, the ADRs and the
   chapters concerned, and the affected files, before anything is changed.
 - **Limits:** no commit, no push, no merge, no `gh workflow run`, no `stemma` call in the
@@ -99,7 +103,9 @@ Agent guides in `docs/agents/`: `issue-tracker.md`, `triage-labels.md`, `domain.
 4. **Start the agent.** Independent agents go out in one message so that they run in parallel.
 5. **Check the result:** read the diff and run `just ci` yourself. For a non-trivial change, start
    an independent review agent. `just norma` is informational; run it when the code of a slice
-   is finished and report violations.
+   is finished and report violations. Green tests are no proof of a working command: for a
+   changed CLI behaviour, also run the built binary once in a scratch directory (never with
+   `stemma` in a Git worktree of this repository).
 6. **Report** per task: what changed, what is open, what Daniel has to decide.
 7. **After the merge** (only when Daniel orders it): skill `git-workflow:post-merge-cleanup` for
    the worktree and the branches, then close the ticket.
