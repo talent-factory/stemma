@@ -378,6 +378,7 @@ impl Classify for RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::IsLease { .. }
+            | Self::IsPull { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
@@ -559,6 +560,7 @@ impl Classify for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::Rewrite { .. }
             | Self::TooManyEntries { .. }
+            | Self::OpenPullRequest { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }

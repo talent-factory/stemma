@@ -2428,8 +2428,26 @@ ihr Ausgang ist weder \type{!} noch \type{?}, und ein Purge nennt sie nie.
     branch feature/x  from human daniel  expires 2023-11-14T23:13:20Z  reason expired
 \stoptyping
 
+{\bf Pull Request.} Die drei Einträge des Pull Requests (ADR-004, ADR-011) zeigen die Operation
+\type{pr-open}, \type{pr-close} oder \type{pr-merge}.
+Ein Eintrag \type{pr-open} nennt in der zweiten Zeile Branch, Commit, Reviewer und, wenn der
+Eröffner sie erklärt hat, \type{repairs}; \type{pr-close} und \type{pr-merge} nennen die Nummer
+des Pull Requests (\type{pull}), \type{pr-merge} dazu den gemergten Kopf.
+Wie die Einträge der Lease nennen sie keinen Zeiger; ihr Ausgang ist weder \type{!} noch
+\type{?}, und \type{op restore} lehnt sie ab.
+Ein Purge ersetzt \type{pr-open} und \type{pr-merge} eines beendeten Pull Requests durch einen
+Stub; für einen offenen lehnt er ab.
+
+\starttyping
+7  2023-11-14T22:13:20Z  human mia  pr-open
+    branch feature/x  commit b3:1d71...  reviewer human daniel
+\stoptyping
+
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
-\type{change}, \type{stub}, \type{purge} oder \type{lease}.
+\type{change}, \type{stub}, \type{purge}, \type{lease} oder \type{pull}.
+Ein Eintrag des Pull Requests hat dazu \type{time}, \type{actor}, \type{operation},
+\type{branch}, \type{pull}, \type{commit}, \type{reviewers} (eine Liste) und \type{repairs};
+Felder, die die Operation nicht kennt, sind \type{null}.
 Ein Eintrag der Lease hat dazu \type{time}, \type{actor}, \type{operation}, \type{branch},
 \type{from}, \type{expires} (Sekunden seit dem 1.1.1970) und \type{reason}; die letzten drei sind
 \type{null}, wo die Operation sie nicht kennt (das Feld \type{kind} kam mit einem Wert dazu,

@@ -188,6 +188,14 @@ Facts that bound the design:
   also on the hub, and a purge here does not reach it. The rule for users is that a pushed secret
   counts as compromised and has to be replaced, whatever a purge does. The hub needs a removal of
   its own, which belongs to phase 5.
+- **An open pull request stops a purge** *(confirmed; STEMMA-238)*. The entries `pr-open` and
+  `pr-merge` name commits, so the plan lists them like any entry that names a rewritten commit,
+  and `pr-close` names none. A pull request is the sequence of its entries (ADR-004, ADR-011), so
+  a stub in the place of the opening of a pull request that is still open would remove it from
+  the log. The plan refuses (`PurgeError::OpenPullRequest`, which names the number) and writes
+  nothing; the person closes the pull request or merges it, and runs the purge again. A closed or
+  merged pull request loses its opening to a stub, as any change does, and its entry of closing
+  then tells of nothing.
 
 ### The steps
 

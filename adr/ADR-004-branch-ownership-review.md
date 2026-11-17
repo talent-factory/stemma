@@ -16,7 +16,7 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    reason, and leaves an entry in the operation log. The entry names no commit, so the purge never
    touches it (STEMMA-225). The override changes who writes, never what the merge gate asks.
 3. Protected branches such as `main` change only through pull requests. A pull request is a
-   sequence of entries in the operation log (STEMMA-226).
+   sequence of entries in the operation log (STEMMA-226, STEMMA-238).
 4. Agents may review and approve. No self-approval. Approvals are signed and bound to the head
    commit they name; any new commit voids them (STEMMA-227).
 5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths.

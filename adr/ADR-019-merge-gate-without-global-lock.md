@@ -145,9 +145,9 @@ the merge cannot: two changes that merge cleanly and break each other (a semanti
   *first red tip* is the oldest commit after it that a finished run covered with failure. To find
   the cause in a window of unverified commits, the gate bisects the linear history of `main`
   between the two.
-- The form of the entries `pr-open` and `check` and the syntax of `repairs` belong to the pull
-  request of phase 4 (STEMMA-226, STEMMA-227). This ADR fixes what the gate does with them, not
-  how they are written.
+- The form of the entry `pr-open` and the syntax of `repairs` are fixed (ADR-011, STEMMA-238);
+  the form of `check` belongs to the approvals of phase 4 (STEMMA-227). This ADR fixes what the
+  gate does with them, not how they are written.
 
 ### What "`main` is always green" means
 
@@ -215,8 +215,9 @@ meaning: different actor IDs.
   and 3 while the tip is red, and the repair by a new change. Decided in STEMMA-229 as proposed;
   the repair is declared by `repairs <commit>`.
 - [ ] The form of the evidence and where phase 4 stores it (a result per pair of commits).
-- [ ] The form of the entries `pr-open` and `check` and the syntax of `repairs` (STEMMA-226,
-  STEMMA-227); this ADR fixes only what the gate does with them.
+- [x] The form of the entry `pr-open` and the syntax of `repairs`: the lines `repairs <commit>`
+  after the reviewers (ADR-011, STEMMA-238).
+- [ ] The form of the entry `check` (STEMMA-227); this ADR fixes only what the gate does with it.
 - [ ] Whether a result may name a *set* of tested base commits when several changes were tested
   together, and what this does to the rule for levels 0 and 1.
 - [x] A bound for the retries of a change of level 2 or 3: the reservation after `N` = 3

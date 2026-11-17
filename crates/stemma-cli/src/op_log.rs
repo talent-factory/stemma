@@ -3,7 +3,7 @@
 
 use std::fmt::{self, Display, Write};
 
-use stemma_core::oplog::{Change, Entry, LeaseEntry, Moved, Outcome, Purge, Record};
+use stemma_core::oplog::{Change, Entry, LeaseEntry, Moved, Outcome, PullEntry, Purge, Record};
 use stemma_core::refs::Head;
 
 /// The `schema` of every JSON object the program writes (ADR-018). One number covers all of them:
@@ -100,6 +100,26 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             }
             if let Some(reason) = lease.reason() {
                 let _ = write!(out, "  reason {}", reason.escape_debug());
+            }
+            out.push('\n');
+            return out;
+        }
+        Record::Pull(pull) => {
+            let mut out = head(&pull.kind().operation());
+            if let Some(branch) = pull.branch() {
+                let _ = write!(out, "    branch {branch}");
+            }
+            if let Some(number) = pull.pull() {
+                let _ = write!(out, "    pull {number}");
+            }
+            if let Some(commit) = pull.commit() {
+                let _ = write!(out, "  commit {commit}");
+            }
+            for reviewer in pull.reviewers() {
+                let _ = write!(out, "  reviewer {reviewer}");
+            }
+            if let Some(repairs) = pull.repairs() {
+                let _ = write!(out, "  repairs {repairs}");
             }
             out.push('\n');
             return out;
@@ -213,7 +233,10 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// that did not exist or does not exist any more has `null` as its old or new value.
 ///
 /// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, `purge`, or
-/// `lease`. A lease has `time`, `actor`, `operation` (`lease-acquire`, `lease-release`,
+/// `lease`, or `pull`. A pull request entry has `time`, `actor`, `operation` (`pr-open`,
+/// `pr-close`, or `pr-merge`), `branch`, `pull`, `commit`, `reviewers`, a list, and `repairs`; the
+/// fields that the operation has not are `null`. A lease has `time`, `actor`, `operation`
+/// (`lease-acquire`, `lease-release`,
 /// `lease-takeover`, or `lease-override`), `branch`, `from`, `expires`, and `reason`; the last
 /// three are `null` where the operation has none.
 /// A stub has only `time` and `actor` besides; a purge has `time`, `actor`, `operation`,
@@ -231,7 +254,31 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
         ),
         Record::Purge(purge) => purge_json(entry, purge),
         Record::Lease(lease) => lease_json(entry, lease),
+        Record::Pull(pull) => pull_json(entry, pull),
     }
+}
+
+fn pull_json(entry: &Entry, pull: &PullEntry) -> String {
+    let text = |value: Option<String>| value.map_or_else(|| "null".to_owned(), |v| quote(&v));
+    let reviewers: Vec<String> = pull
+        .reviewers()
+        .iter()
+        .map(|reviewer| quote(&reviewer.to_string()))
+        .collect();
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"pull\",\"time\":{},\"actor\":{},\"operation\":{},\
+         \"branch\":{},\"pull\":{},\"commit\":{},\"reviewers\":[{}],\"repairs\":{}}}",
+        entry.number(),
+        entry.time(),
+        quote(&entry.actor().to_string()),
+        quote(pull.kind().operation()),
+        text(pull.branch().map(ToString::to_string)),
+        pull.pull()
+            .map_or_else(|| "null".to_owned(), |number| number.to_string()),
+        text(pull.commit().map(ToString::to_string)),
+        reviewers.join(","),
+        text(pull.repairs().map(ToString::to_string))
+    )
 }
 
 fn lease_json(entry: &Entry, lease: &LeaseEntry) -> String {
@@ -377,6 +424,46 @@ mod tests {
         let line = json(&release, Outcome::Unknown, false);
         assert!(
             line.ends_with("\"branch\":\"main\",\"from\":null,\"expires\":null,\"reason\":null}"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_pull_entry_shows_its_branch_commit_and_reviewers() {
+        let commit = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
+        let text = format!(
+            "stemma-oplog 3\nnumber 7\ntime 1700000000\nactor human mia\nprevious -\n\
+             operation pr-open\nbranch feature/x\ncommit {commit}\nreviewer human daniel\n"
+        );
+        let open = Entry::parse(text.as_bytes()).unwrap();
+        assert_eq!(
+            super::text(&open, Outcome::Unknown, false),
+            format!(
+                "7  2023-11-14T22:13:20Z  human mia  pr-open\n    branch feature/x  commit \
+                 {commit}  reviewer human daniel\n"
+            )
+        );
+        assert_eq!(
+            json(&open, Outcome::Unknown, false),
+            format!(
+                "{{\"schema\":1,\"number\":7,\"kind\":\"pull\",\"time\":1700000000,\
+                 \"actor\":\"human mia\",\"operation\":\"pr-open\",\"branch\":\"feature/x\",\
+                 \"pull\":null,\"commit\":\"{commit}\",\"reviewers\":[\"human daniel\"],\
+                 \"repairs\":null}}"
+            )
+        );
+        let text = "stemma-oplog 3\nnumber 8\ntime 1700000000\nactor human mia\nprevious -\n\
+                    operation pr-close\npull 7\n";
+        let close = Entry::parse(text.as_bytes()).unwrap();
+        assert_eq!(
+            super::text(&close, Outcome::Unknown, false),
+            "8  2023-11-14T22:13:20Z  human mia  pr-close\n    pull 7\n"
+        );
+        let line = json(&close, Outcome::Unknown, false);
+        assert!(
+            line.ends_with(
+                "\"branch\":null,\"pull\":7,\"commit\":null,\"reviewers\":[],\"repairs\":null}"
+            ),
             "{line}"
         );
     }

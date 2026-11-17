@@ -1086,22 +1086,23 @@ mod tests {
         let format = repository.metadata_dir().join("format");
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 8\n"
+            "stemma-repository 9\n"
         );
-        // A repository of version 7 moves to 8 with its next entry, a lease entry among them.
+        // A repository of version 7 moves to the current version with its next entry, a lease
+        // entry among them.
         fs::write(&format, "stemma-repository 7\n").unwrap();
         repository
             .claim_lease(&feature(), &mia(), MINUTES, &AllowAll)
             .unwrap();
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 8\n"
+            "stemma-repository 9\n"
         );
-        // A program that reads up to version 7 refuses version 8: the number is not one of its own.
-        fs::write(&format, "stemma-repository 9\n").unwrap();
+        // A program that reads up to version 9 refuses version 10: the number is not one of its own.
+        fs::write(&format, "stemma-repository 10\n").unwrap();
         let error = Repository::open(dir.path()).map(|_| ()).unwrap_err();
         assert!(
-            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "9"),
+            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "10"),
             "{error:?}"
         );
     }

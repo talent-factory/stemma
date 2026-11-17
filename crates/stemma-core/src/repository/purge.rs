@@ -29,6 +29,7 @@ use super::{Repository, UpdateError};
 use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::object::{BlobId, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
+use crate::pull::{self, PullRequest};
 use crate::refs::{BranchName, Head, RefError};
 use crate::store::{Batch, FsObjectStore, ObjectStore, StoreError};
 use crate::{Actor, ActorRef, Allowed, Authorizer};
@@ -176,7 +177,8 @@ impl Repository {
     /// commit or a tree that is missing or cannot be read, [`PurgeError::Store`] if the store
     /// cannot be listed or an object in it is damaged, [`PurgeError::Leftover`] for one of these
     /// failures in an object that only the scan found, [`PurgeError::TooManyEntries`] if the
-    /// plan would replace more entries of the log than a journal lists, and
+    /// plan would replace more entries of the log than a journal lists,
+    /// [`PurgeError::OpenPullRequest`] if it would replace the opening of an open pull request, and
     /// [`PurgeError::Unsound`] if the check fails, and [`PurgeError::TaggedCommit`] if a tag
     /// points to a commit that the purge would rewrite, because a tag never moves (ADR-008).
     pub fn plan_purge(
@@ -363,6 +365,17 @@ impl Repository {
         trees.extend(views.trees);
         trees.sort();
         trees.dedup();
+        // The entry `pr-open` of an open pull request stays: its state is the log (ADR-004).
+        let open: HashSet<u64> = pull::pull_requests(&log)
+            .iter()
+            .filter(|pull| pull.is_open())
+            .map(PullRequest::number)
+            .collect();
+        if let Some(entry) = replaced.iter().find(|entry| open.contains(&entry.number())) {
+            return Err(PurgeError::OpenPullRequest {
+                number: entry.number(),
+            });
+        }
         // A log with 2^24 entries is too large for a test, so no test notices if this goes.
         // Without it, a purge writes a journal that `--resume` and `--abort` cannot read.
         check_entries(replaced.len())?;
@@ -965,6 +978,13 @@ pub enum PurgeError {
         /// The number of entries that the plan would replace.
         count: usize,
     },
+    /// The plan would replace the entry `pr-open` of a pull request that is still open: the
+    /// purge would make a stub of it, and the pull request would vanish from the log. Close it or
+    /// merge it first (ADR-004, STEMMA-238).
+    OpenPullRequest {
+        /// The number of the pull request.
+        number: u64,
+    },
     /// Tags point to commits that the purge would rewrite. A tag never moves (ADR-008), so the
     /// purge would leave the commits with the secret reachable.
     TaggedCommit {
@@ -1029,6 +1049,11 @@ impl PurgeError {
                  {} that its journal can list",
                 journal::MAX_STUBS
             ),
+            Self::OpenPullRequest { number } => write!(
+                f,
+                "the pull request {number} is still open and names a commit that the purge would \
+                 rewrite; close it or merge it first"
+            ),
             Self::Rewrite { commit, source } => write!(
                 f,
                 "the rewrite of the commit {commit} gives a sum of trees that no commit can hold: \
@@ -1088,6 +1113,7 @@ impl Error for PurgeError {
             Self::Agent
             | Self::NoSuchBlob { .. }
             | Self::TooManyEntries { .. }
+            | Self::OpenPullRequest { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => None,
         }
@@ -1408,6 +1434,79 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    /// Writes the entry of a pull request for `branch`, which names `commit`, and returns its
+    /// number.
+    fn open_pull(repository: &Repository, commit: CommitId) -> u64 {
+        use crate::oplog::PullEntry;
+        let entry = PullEntry::open(
+            1,
+            actor(),
+            BranchName::try_new("feature").unwrap(),
+            commit,
+            vec![],
+            None,
+        )
+        .unwrap();
+        repository.oplog().append_pull(&entry).unwrap().number()
+    }
+
+    #[test]
+    fn a_purge_refuses_to_replace_the_opening_of_an_open_pull_request() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        let number = open_pull(&repository, second);
+        let (objects, entries) = counts(&repository);
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, PurgeError::OpenPullRequest { number: n } if n == number),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("close it or merge it"),
+            "{error}"
+        );
+        assert_eq!(
+            counts(&repository),
+            (objects, entries),
+            "nothing was written"
+        );
+    }
+
+    #[test]
+    fn a_purge_replaces_the_opening_of_a_pull_request_that_has_ended() {
+        use crate::oplog::PullEntry;
+        for merged in [false, true] {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            let [_, second, _] = history(&dir, &repository);
+            let number = open_pull(&repository, second);
+            let end = if merged {
+                PullEntry::merge(2, actor(), number, second).unwrap()
+            } else {
+                PullEntry::close(2, actor(), number).unwrap()
+            };
+            repository.oplog().append_pull(&end).unwrap();
+            let plan = repository
+                .plan_purge(secret(), &actor(), &AllowAll)
+                .unwrap_or_else(|error| panic!("merged {merged}: {error}"));
+            assert!(plan.entries().contains(&number), "merged {merged}");
+        }
+    }
+
+    #[test]
+    fn a_purge_that_does_not_touch_the_commit_of_an_open_pull_request_goes_on() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, _, _] = history(&dir, &repository);
+        open_pull(&repository, first);
+        repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .expect("the first commit is before the secret");
     }
 
     #[test]
