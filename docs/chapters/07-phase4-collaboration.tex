@@ -442,9 +442,9 @@ Die Policy-Datei ist die Liste, die einem Pfad seine Stufe gibt.
 \stopxtable
 \stopplacetable
 
-Bis Stufe 2 steigt die Zahl der Agenten, die freigeben müssen.
-Ab Stufe 2 genügen Agenten allein nicht mehr, und nach dem Boden des Kerns zählen sie
-bei Stufe 3 gar nicht.
+Von Stufe 0 auf Stufe 1 steigt die Zahl der Agenten, die freigeben müssen, von einem auf zwei.
+Ab Stufe 2 genügen Agenten allein nicht mehr, und für Stufe 3 verlangt der Kern
+keinen Agenten mehr.
 Der Grund liegt in der Lage des Agenten:
 Er kann Fehler machen und kann in die Irre geführt werden.
 Wo ein Fehler die Regeln selbst trifft, soll ein Mensch ihn verantworten.
@@ -483,7 +483,7 @@ Die Unterscheidung hat Folgen für die Sicherheit.
 auch eine in einem Beispiel;
 \type{level 0 docs/} senkt jedes Verzeichnis \type{docs/}, auch eines, das ausführbaren Code
 enthält.
-Die Policy dieses Repositorys verankert deshalb ihre Muster:
+Der Entwurf der Policy dieses Repositorys verankert deshalb seine Muster:
 \type{/justfile} und \type{/deny.toml} heben nur die Dateien der Wurzel an,
 \type{/docs/} senkt nur das Verzeichnis der Wurzel.
 
@@ -545,6 +545,7 @@ level 3 .github/workflows/
 level 3 /justfile
 level 2 /.stemmaignore
 level 2 /Cargo.toml
+level 2 crates/stemma-cli/Cargo.toml
 level 1 crates/stemma-cli/
 level 0 /docs/
 level 0 /crates/*/tests/
