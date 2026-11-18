@@ -714,19 +714,25 @@ Owner des Registers.
 \stopitemize
 
 {\bf Verhalten.} \type{enforce} schreibt das Register mit dem Akteur als Owner nach
-\type{.stemma-actors/register} im Arbeitsverzeichnis und setzt die Datei \type{.stemma/enforcing}.
+\type{.stemma-actors/register} im Arbeitsverzeichnis
+und setzt die Datei \type{.stemma/enforcing}.
 Die Registerdatei muss verfolgt und committet werden; der Befehl tut beides nicht.
 Bis zu diesem Commit hat die Basis des Repositories kein Register,
-und \type{register} und \type{op verify} enden mit Exit-Code 5.
-Der Schritt hat keinen Weg zurück. Die Ausgabe ist eine Zeile:
+und \type{register}, \type{op verify} und ein zweites \type{enforce} enden mit Exit-Code 5.
+Der Schritt hat keinen Weg zurück. Die Ausgabe ist eine Zeile,
+die hier der Breite wegen umbrochen ist:
 
 \starttyping
-Enforcing mode: .stemma-actors/register names human daniel as the owner; track and commit it, because until then `register` and `op verify` end with code 5. There is no way back to the open mode.
+Enforcing mode: .stemma-actors/register names human daniel as the owner;
+track and commit it, because until then `register` and `op verify` end with
+code 5. There is no way back to the open mode.
 \stoptyping
 
 Der Befehl bricht mit Exit-Code 1 ab und ändert nichts, wenn
-das Repository schon durchsetzend ist (das Register ändert dann \type{register}),
+das Repository schon durchsetzend und das Register committet ist
+(das Register ändert dann \type{register}),
 im Arbeitsverzeichnis schon eine Datei \type{.stemma-actors/register} liegt,
+\type{.stemma-actors} ein Verweis oder kein Verzeichnis ist,
 der Akteur ein Agent ist, oder die Schlüsseldatei sich nicht lesen lässt
 oder keinen Ed25519-Schlüssel enthält.
 Ein beschädigtes Register oder Marker endet mit Exit-Code 5.
