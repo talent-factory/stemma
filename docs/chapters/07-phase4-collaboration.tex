@@ -686,6 +686,8 @@ und niemand prüft.
 Es beginnt offen oder mit \type{init --owner-key}, das den Akteur zum Owner macht
 und das Register in das Arbeitsverzeichnis schreibt;
 es gehört in den ersten Commit.
+Ein offenes Repository mit Geschichte führt \type{enforce --owner-key} in denselben Zustand:
+Der Befehl schreibt das Register und setzt die Marke, und der nächste Commit nimmt die Datei auf.
 Dann ist das Repository durchsetzend, und der Schritt hat keinen Weg zurück:
 Die Datei \type{.stemma/enforcing} hält ihn fest, und ein durchsetzendes Repository,
 dessen Basis kein Register hat, ist beschädigt und nicht offen (Exit-Code 5 bei \type{op verify}).
