@@ -1075,6 +1075,28 @@ mod tests {
         [first, second, third]
     }
 
+    #[test]
+    fn a_purge_makes_a_stub_of_the_opening_of_an_ended_pull_request() {
+        use crate::oplog::PullEntry;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        let branch = BranchName::try_new("feature").unwrap();
+        let open = PullEntry::open(1, actor(), branch, second, vec![], None).unwrap();
+        let number = repository.oplog().append_pull(&open).unwrap().number();
+        let close = PullEntry::close(2, actor(), number).unwrap();
+        repository.oplog().append_pull(&close).unwrap();
+        let purged = apply(&repository);
+        assert!(purged.plan().entries().contains(&number));
+        assert_purged(&dir, &repository, &purged);
+        // The closing names no commit and stays; without its opening it tells of nothing.
+        assert!(repository.pull_requests().unwrap().is_empty());
+        repository
+            .oplog()
+            .verify()
+            .expect("the chain holds over the stub");
+    }
+
     fn ids(repository: &Repository) -> BTreeSet<ObjectId> {
         repository.objects().ids().unwrap().into_iter().collect()
     }
@@ -1167,7 +1189,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 8\n");
+        assert_eq!(format(dir), "stemma-repository 9\n");
     }
 
     #[test]
@@ -1666,7 +1688,7 @@ mod tests {
             repository.verify_refs().unwrap().is_empty(),
             "verify is clean"
         );
-        assert_eq!(format(&dir), "stemma-repository 8\n");
+        assert_eq!(format(&dir), "stemma-repository 9\n");
     }
 
     #[test]
@@ -2112,7 +2134,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 8\n");
+        assert_eq!(format(&dir), "stemma-repository 9\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -2234,7 +2256,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 8\n",
+            "stemma-repository 9\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -2857,7 +2879,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 8\n");
+        assert_eq!(format(&dir), "stemma-repository 9\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);

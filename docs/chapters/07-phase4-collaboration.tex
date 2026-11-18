@@ -24,8 +24,8 @@ Merge-Regeln.
 \section{Schreibhoheit und Pull Request}
 
 Dieser Abschnitt beschreibt ADR-004, das für Phase 4 angenommen ist.
-Die Lease ist im Kern umgesetzt (siehe unten);
-die Befehle dazu, die Anbindung an die schreibenden Operationen und der Pull Request folgen.
+Die Lease und die Einträge des Pull Requests sind im Kern umgesetzt (siehe unten);
+die Befehle dazu, die Anbindung an die schreibenden Operationen und das Merge-Gate folgen.
 Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
 Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
 Request.
@@ -130,6 +130,51 @@ und bewegt \type{main}.
 Ein Konflikt schickt die Änderung an ihren Autor zurück.
 Hat sich \type{main} inzwischen bewegt, wiederholt das Gate den Merge und die Regel
 auf der neuen Spitze.
+
+Ein Pull Request hat kein Objekt und keine Referenz.
+Er ist die Folge der Einträge \type{pr-open}, \type{pr-close} und \type{pr-merge} im
+Operationslog, und seine Nummer ist die Nummer des Eintrags \type{pr-open}.
+Der Zustand wird nicht gespeichert, sondern aus dem Log berechnet:
+
+\startitemize
+\item {\bf open}: eröffnet und weder geschlossen noch gemergt.
+\item {\bf closed}: ohne Merge beendet.
+\item {\bf merged}: gemergt.
+\stopitemize
+
+\type{closed} und \type{merged} sind endgültig; die nächste Änderung eines Branches ist ein neuer
+Pull Request mit neuer Nummer.
+Ob ein offener Pull Request freigegeben ist, steht nicht im Log, sondern folgt aus den Freigaben
+auf dem aktuellen Kopf (ADR-004, Regel 4); die Freigaben sind noch nicht umgesetzt.
+
+Die Einträge folgen denen der Lease: Sie nennen keinen Zeiger, stehen immer in der Hash-Kette,
+und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9 (ADR-009,
+ADR-011).
+Der Eintrag \type{pr-open} nennt den Branch, den Commit an seiner Spitze, die Reviewer und
+optional \type{repairs <commit>}, den roten Commit, den der Pull Request zu beheben erklärt
+(ADR-019).
+\type{pr-close} nennt nur die Nummer; \type{pr-merge} nennt die Nummer und den Kopf, der
+gemergt wurde.
+Der Kern prüft unter \type{refs.lock}:
+
+\startitemize
+\item Nur der Schreibinhaber eröffnet: Wo der Branch eine Lease hat, hält der Akteur eine
+gültige.
+\item Ein Branch hat höchstens einen offenen Pull Request, und \type{main} ist nie der Branch.
+\item Der Eröffner benennt die Reviewer aus dem Register, nie sich selbst und keinen doppelt.
+Im offenen Modus gibt es kein Register und keine Reviewer.
+\item Schliessen darf der Eröffner oder ein Owner.
+\item \type{pr-merge} hält den Merge fest, den das Merge-Gate ausgeführt hat; der Eintrag
+bewegt keinen Zeiger und prüft keine Freigabe.
+\stopitemize
+
+Ein Purge ersetzt \type{pr-open} und \type{pr-merge} wie jeden Eintrag, der einen umgeschriebenen
+Commit nennt, durch einen Stub.
+Verlöre dabei ein offener Pull Request sein \type{pr-open}, verschwände er aus dem Log;
+deshalb lehnt der Purge das ab und nennt die Nummer.
+Wer den Pull Request schliesst oder mergt, kann den Purge danach wiederholen.
+Ersetzte der Purge nur \type{pr-merge} und liesse \type{pr-open} stehen, wäre der Pull Request
+wieder offen; deshalb ersetzt er in diesem Fall auch das \type{pr-open}.
 
 \startplacefigure[title={Ablauf eines Pull Requests bis zur Zeigerbewegung von main},
     reference=fig:pull-request-flow,location=here]

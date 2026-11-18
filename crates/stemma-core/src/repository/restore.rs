@@ -335,6 +335,7 @@ impl Repository {
             Record::Stub(_) => return Err(RestoreError::Purged { number }),
             Record::Purge(_) => return Err(RestoreError::IsPurge { number }),
             Record::Lease(_) => return Err(RestoreError::IsLease { number }),
+            Record::Pull(_) => return Err(RestoreError::IsPull { number }),
         };
         // A restore puts back head, working copy, and branches (ADR-013). An entry that only made
         // or deleted tags has nothing of that, and its tags stay as they are, so the restore says
@@ -554,6 +555,12 @@ pub enum RestoreError {
         /// The number.
         number: u64,
     },
+    /// The entry is that of a pull request, which moved no pointer: there is nothing to restore
+    /// (ADR-004, ADR-011).
+    IsPull {
+        /// The number.
+        number: u64,
+    },
     /// The entry only made or deleted tags. A restore puts back HEAD, the working-copy commit, and
     /// the branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so
     /// the restore is refused and no file is written.
@@ -688,6 +695,7 @@ impl RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::IsLease { .. }
+            | Self::IsPull { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
@@ -768,6 +776,11 @@ impl fmt::Display for RestoreError {
             Self::IsLease { number } => write!(
                 f,
                 "entry {number} is a lease, which moved no pointer, so there is nothing to restore"
+            ),
+            Self::IsPull { number } => write!(
+                f,
+                "entry {number} is a pull request, which moved no pointer, so there is nothing \
+                 to restore"
             ),
             Self::TagsOnly { number } => write!(
                 f,
@@ -902,6 +915,7 @@ impl Error for RestoreError {
             | Self::Purged { .. }
             | Self::IsPurge { .. }
             | Self::IsLease { .. }
+            | Self::IsPull { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }

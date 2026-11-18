@@ -164,6 +164,7 @@ use std::str::FromStr;
 use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
+use crate::register::Identity;
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError};
 
@@ -208,6 +209,20 @@ pub const LEASE_TAKEOVER: &str = "lease-takeover";
 
 /// The operation of the entry that an owner writes when it ends the lease of another actor.
 pub const LEASE_OVERRIDE: &str = "lease-override";
+
+/// The operation of the entry that the write owner of a branch writes when it opens a pull
+/// request (ADR-004, ADR-011). The three pull request operations belong to the entry of a pull
+/// request and to no change.
+pub const PR_OPEN: &str = "pr-open";
+
+/// The operation of the entry that ends a pull request without a merge.
+pub const PR_CLOSE: &str = "pr-close";
+
+/// The operation of the entry that records the merge of a pull request.
+pub const PR_MERGE: &str = "pr-merge";
+
+/// The most reviewers that the entry of an opening names.
+pub const MAX_REVIEWERS: usize = 32;
 
 /// The reason that the entry of a takeover names: the lease of the earlier holder had expired.
 pub const EXPIRED: &str = "expired";
@@ -446,6 +461,14 @@ pub enum EntryError {
     /// The reason of an override is empty, longer than [`MAX_REASON_LEN`] bytes, has a control
     /// character, or starts or ends with a space.
     BadReason,
+    /// A pull request entry was written before the hash chain. Carries its number. The three
+    /// pull request entries came with the chain, so none has an older encoding.
+    PullOutsideChain(u64),
+    /// The reviewers of an opening are not in strictly ascending order, name the opener, or are
+    /// more than [`MAX_REVIEWERS`].
+    BadReviewers,
+    /// A pull request entry has fields that its kind does not have, or lacks one that it has.
+    BadPullShape,
 }
 
 impl fmt::Display for EntryError {
@@ -466,7 +489,8 @@ impl fmt::Display for EntryError {
                 f,
                 "a change cannot have the operation `{PURGE}`, which only the entry of a purge has, \
                  or an operation `{LEASE_ACQUIRE}`, `{LEASE_RELEASE}`, `{LEASE_TAKEOVER}`, or \
-                 `{LEASE_OVERRIDE}`, which only the entry of a lease has"
+                 `{LEASE_OVERRIDE}`, which only the entry of a lease has, or `{PR_OPEN}`, `{PR_CLOSE}`, \
+                 or `{PR_MERGE}`, which only the entry of a pull request has"
             ),
             Self::StubNotBefore { stub, purge } => write!(
                 f,
@@ -528,6 +552,19 @@ impl fmt::Display for EntryError {
                 "a takeover or an override names another actor as the earlier holder; the earlier \
                  holder acquires the lease again",
             ),
+            Self::PullOutsideChain(number) => write!(
+                f,
+                "the pull request entry {number} was written before the hash chain, which no \
+                 pull request entry was"
+            ),
+            Self::BadReviewers => write!(
+                f,
+                "the reviewers of a pull request are at most {MAX_REVIEWERS}, in ascending order, \
+                 each identity once, and none is the opener"
+            ),
+            Self::BadPullShape => {
+                f.write_str("a pull request entry has the fields of its kind and no others")
+            }
             Self::BadReason => write!(
                 f,
                 "the reason of an override is one line of 1 to {MAX_REASON_LEN} bytes, without a \
@@ -610,7 +647,10 @@ impl Change {
         mut branches: Vec<(BranchName, Moved<CommitId>)>,
         mut tags: Vec<(BranchName, Moved<CommitId>)>,
     ) -> Result<Self, EntryError> {
-        if operation.as_str() == PURGE || LeaseKind::from_operation(operation.as_str()).is_some() {
+        if operation.as_str() == PURGE
+            || LeaseKind::from_operation(operation.as_str()).is_some()
+            || PullKind::from_operation(operation.as_str()).is_some()
+        {
             return Err(EntryError::ReservedOperation);
         }
         let no_pointer =
@@ -1273,6 +1313,249 @@ impl LeaseEntry {
     }
 }
 
+/// What a pull request entry records (ADR-004, STEMMA-238).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PullKind {
+    /// The write owner of a branch opened a pull request.
+    Open,
+    /// The pull request ended without a merge.
+    Close,
+    /// The pull request was merged.
+    Merge,
+}
+
+impl PullKind {
+    /// The name of the operation of this kind of entry.
+    pub fn operation(self) -> &'static str {
+        match self {
+            Self::Open => PR_OPEN,
+            Self::Close => PR_CLOSE,
+            Self::Merge => PR_MERGE,
+        }
+    }
+
+    /// The kind that an operation name stands for, or `None` for any other name.
+    pub fn from_operation(name: &str) -> Option<Self> {
+        match name {
+            PR_OPEN => Some(Self::Open),
+            PR_CLOSE => Some(Self::Close),
+            PR_MERGE => Some(Self::Merge),
+            _ => None,
+        }
+    }
+}
+
+/// The entry of a pull request. A pull request has no object of its own: it is the sequence of
+/// these entries, named by the number of its `pr-open` entry (ADR-004, ADR-011).
+///
+/// An opening names the branch, the commit at its tip, the reviewers, and, if the opener declares
+/// a repair, the red commit (`repairs <commit>`, ADR-019). A closing names the pull request and no
+/// commit. A merge names the pull request and the commit that it merged. The entries that name a
+/// commit can become stubs in a purge; the purge refuses to replace the opening of a pull request
+/// that is still open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullEntry {
+    time: i64,
+    actor: Actor,
+    kind: PullKind,
+    branch: Option<BranchName>,
+    pull: Option<u64>,
+    commit: Option<CommitId>,
+    reviewers: Vec<Actor>,
+    repairs: Option<CommitId>,
+}
+
+impl PullEntry {
+    /// The entry of an opening by `actor`: `branch` has `commit` at its tip, and the actors in
+    /// `reviewers` review it. The reviewers are sorted; a repeat, the opener among them, or more
+    /// than [`MAX_REVIEWERS`] is refused. `repairs` is the red commit that the pull request
+    /// declares to repair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::BadReviewers`] for the reviewers above.
+    pub fn open(
+        time: i64,
+        actor: Actor,
+        branch: BranchName,
+        commit: CommitId,
+        mut reviewers: Vec<Actor>,
+        repairs: Option<CommitId>,
+    ) -> Result<Self, EntryError> {
+        reviewers.sort_by_cached_key(ToString::to_string);
+        Self::build(
+            time,
+            actor,
+            PullKind::Open,
+            Some(branch),
+            None,
+            Some(commit),
+            reviewers,
+            repairs,
+        )
+    }
+
+    /// The entry of a closing: `actor` ends the pull request `pull` without a merge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::NumberOutOfRange`] if `pull` is 0 or larger than [`MAX_NUMBER`].
+    pub fn close(time: i64, actor: Actor, pull: u64) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            PullKind::Close,
+            None,
+            Some(pull),
+            None,
+            Vec::new(),
+            None,
+        )
+    }
+
+    /// The entry of a merge: the pull request `pull` was merged with the head `commit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::NumberOutOfRange`] if `pull` is 0 or larger than [`MAX_NUMBER`].
+    pub fn merge(time: i64, actor: Actor, pull: u64, commit: CommitId) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            PullKind::Merge,
+            None,
+            Some(pull),
+            Some(commit),
+            Vec::new(),
+            None,
+        )
+    }
+
+    /// The one place of the rules of a pull request entry, for the constructors and the reader.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        time: i64,
+        actor: Actor,
+        kind: PullKind,
+        branch: Option<BranchName>,
+        pull: Option<u64>,
+        commit: Option<CommitId>,
+        reviewers: Vec<Actor>,
+        repairs: Option<CommitId>,
+    ) -> Result<Self, EntryError> {
+        if let Some(number) = pull {
+            if number == 0 || number > MAX_NUMBER {
+                return Err(EntryError::NumberOutOfRange(number));
+            }
+        }
+        // Which fields a kind has: the one place that couples the kind to its options.
+        let shaped = match kind {
+            PullKind::Open => branch.is_some() && pull.is_none() && commit.is_some(),
+            PullKind::Close => branch.is_none() && pull.is_some() && commit.is_none(),
+            PullKind::Merge => branch.is_none() && pull.is_some() && commit.is_some(),
+        };
+        if !shaped || (kind != PullKind::Open && (!reviewers.is_empty() || repairs.is_some())) {
+            return Err(EntryError::BadPullShape);
+        }
+        // The register knows an identity, not an actor: an agent with another model or session
+        // is the same reviewer, and the opener is none of them.
+        let ascending = reviewers
+            .windows(2)
+            .all(|pair| pair[0].to_string() < pair[1].to_string());
+        let identities: std::collections::HashSet<Identity> =
+            reviewers.iter().map(Identity::of).collect();
+        let is_opener = identities.contains(&Identity::of(&actor));
+        if reviewers.len() > MAX_REVIEWERS
+            || !ascending
+            || identities.len() != reviewers.len()
+            || is_opener
+        {
+            return Err(EntryError::BadReviewers);
+        }
+        Ok(Self {
+            time,
+            actor,
+            kind,
+            branch,
+            pull,
+            commit,
+            reviewers,
+            repairs,
+        })
+    }
+
+    /// The time that the writer claims, in seconds since the Unix epoch (UTC).
+    pub fn time(&self) -> i64 {
+        self.time
+    }
+
+    /// The actor who acts: the opener, or whoever closes or merges.
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    /// What the entry records.
+    pub fn kind(&self) -> PullKind {
+        self.kind
+    }
+
+    /// The branch of an opening, or `None` for a closing and a merge.
+    pub fn branch(&self) -> Option<&BranchName> {
+        self.branch.as_ref()
+    }
+
+    /// The number of the pull request that a closing or a merge is about, or `None` for an
+    /// opening, which the number of its own entry names.
+    pub fn pull(&self) -> Option<u64> {
+        self.pull
+    }
+
+    /// The commit at the tip of the branch (an opening) or the head that was merged (a merge).
+    pub fn commit(&self) -> Option<&CommitId> {
+        self.commit.as_ref()
+    }
+
+    /// The reviewers of an opening, in ascending order.
+    pub fn reviewers(&self) -> &[Actor] {
+        &self.reviewers
+    }
+
+    /// The red commit that an opening declares to repair.
+    pub fn repairs(&self) -> Option<&CommitId> {
+        self.repairs.as_ref()
+    }
+
+    /// Every commit that the entry names, which a purge may rewrite.
+    pub fn commits(&self) -> Vec<CommitId> {
+        self.commit
+            .iter()
+            .chain(self.repairs.iter())
+            .copied()
+            .collect()
+    }
+
+    /// The lines of the body, which the hash of the body covers.
+    fn body_text(&self) -> String {
+        let mut out = format!("operation {}\n", self.kind.operation());
+        if let Some(branch) = &self.branch {
+            out.push_str(&format!("branch {branch}\n"));
+        }
+        if let Some(pull) = self.pull {
+            out.push_str(&format!("pull {pull}\n"));
+        }
+        if let Some(commit) = &self.commit {
+            out.push_str(&format!("commit {commit}\n"));
+        }
+        for reviewer in &self.reviewers {
+            out.push_str(&format!("reviewer {reviewer}\n"));
+        }
+        if let Some(repairs) = &self.repairs {
+            out.push_str(&format!("repairs {repairs}\n"));
+        }
+        out
+    }
+}
+
 /// What an entry holds. The enum is exhaustive on purpose: a new kind of entry has to be handled
 /// by every reader, which the compiler then shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1285,6 +1568,8 @@ pub enum Record {
     Purge(Purge),
     /// A lease of a branch: acquired, released, taken over, or overridden (ADR-004).
     Lease(LeaseEntry),
+    /// A pull request: opened, closed, or merged (ADR-004).
+    Pull(PullEntry),
 }
 
 /// An entry of the log: a number, its place in the hash chain, and a record, which is a change,
@@ -1347,6 +1632,9 @@ impl Entry {
             }
             (Record::Stub(stub), Chain::Start | Chain::After(_)) if stub.body.is_none() => {
                 return Err(EntryError::StubWithoutBody(number));
+            }
+            (Record::Pull(_), Chain::Unchained) => {
+                return Err(EntryError::PullOutsideChain(number));
             }
             (Record::Lease(_), Chain::Unchained) => {
                 return Err(EntryError::LeaseOutsideChain(number));
@@ -1435,6 +1723,7 @@ impl Entry {
                 ))
             }
             Record::Lease(lease) => Some(lease.body_text()),
+            Record::Pull(pull) => Some(pull.body_text()),
             Record::Change(change) => {
                 let mut out = format!("operation {}\n", change.operation);
                 if let Some(tag) = change.worktree.as_deref() {
@@ -1480,7 +1769,7 @@ impl Entry {
     pub fn change(&self) -> Option<&Change> {
         match &self.record {
             Record::Change(change) => Some(change),
-            Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => None,
+            Record::Stub(_) | Record::Purge(_) | Record::Lease(_) | Record::Pull(_) => None,
         }
     }
 
@@ -1488,7 +1777,15 @@ impl Entry {
     pub fn lease(&self) -> Option<&LeaseEntry> {
         match &self.record {
             Record::Lease(lease) => Some(lease),
-            Record::Change(_) | Record::Stub(_) | Record::Purge(_) => None,
+            Record::Change(_) | Record::Stub(_) | Record::Purge(_) | Record::Pull(_) => None,
+        }
+    }
+
+    /// The pull request entry that the entry records, or `None` for any other entry.
+    pub fn pull(&self) -> Option<&PullEntry> {
+        match &self.record {
+            Record::Pull(pull) => Some(pull),
+            Record::Change(_) | Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => None,
         }
     }
 
@@ -1500,6 +1797,7 @@ impl Entry {
             Record::Stub(stub) => stub.time,
             Record::Purge(purge) => purge.time,
             Record::Lease(lease) => lease.time,
+            Record::Pull(pull) => pull.time,
         }
     }
 
@@ -1511,12 +1809,17 @@ impl Entry {
             Record::Stub(stub) => &stub.actor,
             Record::Purge(purge) => &purge.actor,
             Record::Lease(lease) => &lease.actor,
+            Record::Pull(pull) => &pull.actor,
         }
     }
 
     /// Every commit that the entry names (see [`Change::commits`]); none for a stub and a purge.
     pub fn commits(&self) -> Vec<CommitId> {
-        self.change().map(Change::commits).unwrap_or_default()
+        match &self.record {
+            Record::Change(change) => change.commits(),
+            Record::Pull(pull) => pull.commits(),
+            Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => Vec::new(),
+        }
     }
 
     /// The stub that replaces this entry: the same number, time, actor, and place in the chain.
@@ -1657,6 +1960,13 @@ impl Entry {
             .get(body)
             .and_then(|line| line.strip_prefix("operation "))
             .and_then(LeaseKind::from_operation);
+        let pull_kind = lines
+            .get(body)
+            .and_then(|line| line.strip_prefix("operation "))
+            .and_then(PullKind::from_operation);
+        if let (3, Some(kind)) = (version, pull_kind) {
+            return parse_pull(&lines, body, number, chain, time, actor, kind);
+        }
         if let (3, Some(kind)) = (version, lease_kind) {
             return parse_lease(&lines, body, number, chain, time, actor, kind);
         }
@@ -1871,6 +2181,93 @@ fn parse_lease(
     }
     LeaseEntry::build(time, actor, kind, branch, from, expires, reason)
         .and_then(|lease| Entry::linked(number, chain, Record::Lease(lease)))
+        .map_err(EntryParseError::Entry)
+}
+
+/// Reads the body of a pull request entry, which starts with the line `operation pr-…` at the
+/// index `body`: `branch <name>` (an opening) or `pull <number>` (a closing and a merge), then
+/// `commit <id>` (an opening and a merge), and for an opening `reviewer <actor>` in ascending
+/// order and `repairs <id>`.
+fn parse_pull(
+    lines: &[&str],
+    body: usize,
+    number: u64,
+    chain: Chain,
+    time: i64,
+    actor: Actor,
+    kind: PullKind,
+) -> Result<Entry, EntryParseError> {
+    let malformed = |line, reason| EntryParseError::Malformed { line, reason };
+    let line_at = |index: usize, key: &str, reason| -> Result<&str, EntryParseError> {
+        lines
+            .get(index)
+            .and_then(|line| line.strip_prefix(key))
+            .ok_or_else(|| malformed(index + 1, reason))
+    };
+    let commit_at = |index: usize, key: &str| -> Result<CommitId, EntryParseError> {
+        let text = line_at(index, key, EntryMalformed::ExpectedCommit)?;
+        ObjectId::from_str(text)
+            .map(CommitId::new)
+            .map_err(|source| EntryParseError::InvalidObjectId {
+                line: index + 1,
+                source,
+            })
+    };
+    let mut next = body + 1;
+    let mut branch = None;
+    let mut pull = None;
+    if kind == PullKind::Open {
+        let text = line_at(next, "branch ", EntryMalformed::ExpectedBranch)?;
+        branch = Some(BranchName::try_new(text).map_err(|source| {
+            EntryParseError::InvalidBranchName {
+                line: next + 1,
+                source,
+            }
+        })?);
+    } else {
+        let text = line_at(next, "pull ", EntryMalformed::ExpectedPull)?;
+        pull = Some(
+            parse_number(text).map_err(|reason| EntryParseError::InvalidNumber {
+                line: next + 1,
+                reason,
+            })?,
+        );
+    }
+    next += 1;
+    let commit = if kind == PullKind::Close {
+        None
+    } else {
+        next += 1;
+        Some(commit_at(next - 1, "commit ")?)
+    };
+    let mut reviewers = Vec::new();
+    let mut repairs = None;
+    if kind == PullKind::Open {
+        while let Some(text) = lines
+            .get(next)
+            .and_then(|line| line.strip_prefix("reviewer "))
+        {
+            reviewers.push(Actor::from_str(text).map_err(|source| {
+                EntryParseError::InvalidActor {
+                    line: next + 1,
+                    source,
+                }
+            })?);
+            next += 1;
+        }
+        if lines
+            .get(next)
+            .is_some_and(|line| line.starts_with("repairs "))
+        {
+            repairs = Some(commit_at(next, "repairs ")?);
+            next += 1;
+        }
+    }
+    if next < lines.len() {
+        return Err(malformed(next + 1, EntryMalformed::TrailingLine));
+    }
+    PullEntry::build(time, actor, kind, branch, pull, commit, reviewers, repairs)
+        .and_then(|entry| Entry::linked(number, chain, Record::Pull(entry)))
         .map_err(EntryParseError::Entry)
 }
 
@@ -2138,6 +2535,11 @@ pub enum EntryMalformed {
     /// A takeover or an override has no line `reason <text>`, a takeover has another reason than
     /// `expired`, or another entry has the line.
     ExpectedReason,
+    /// An opening, a merge, or a pull request entry has no line `commit <id>` or `repairs <id>`
+    /// where it belongs.
+    ExpectedCommit,
+    /// A closing or a merge has no line `pull <number>`.
+    ExpectedPull,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -2187,6 +2589,8 @@ impl fmt::Display for EntryMalformed {
                 "expected the line `reason expired` for a takeover, `reason <text>` for an \
                  override, and none for another lease entry"
             }
+            Self::ExpectedCommit => "expected the line `commit <id>` or `repairs <id>`",
+            Self::ExpectedPull => "expected the line `pull <number>`",
         })
     }
 }
@@ -3245,6 +3649,17 @@ impl FsOpLog {
         self.append_record(&Record::Lease(lease.clone()))
     }
 
+    /// Writes the entry of a pull request, as [`append`](Self::append) writes the entry of a
+    /// change. The entry names no pointer, so the caller holds the lock of the references while it
+    /// checks the state of the pull request and writes the entry (ADR-004, ADR-011).
+    ///
+    /// # Errors
+    ///
+    /// See [`append`](Self::append).
+    pub(crate) fn append_pull(&self, pull: &PullEntry) -> Result<Entry, OpLogError> {
+        self.append_record(&Record::Pull(pull.clone()))
+    }
+
     /// Writes the entries of a purge, as [`append`](Self::append) writes an entry, and returns
     /// them. A list of stubs that does not fit into one entry is split over several, and the first
     /// has the count of commits (ADR-014). The entries go after the ones that they list. Before
@@ -3265,7 +3680,8 @@ impl FsOpLog {
     pub(crate) fn append_purge(&self, purge: Purge) -> Result<Vec<Entry>, OpLogError> {
         for (start, end) in purge.stubs() {
             for number in *start..=*end {
-                if self.read(number)?.change().is_none() {
+                let entry = self.read(number)?;
+                if entry.change().is_none() && entry.pull().is_none() {
                     return Err(OpLogError::NotAChange { number });
                 }
             }
@@ -3876,7 +4292,7 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     for (index, entry) in entries.iter().enumerate().rev() {
         let change = match entry.record() {
             Record::Change(change) if !behind_stub => change,
-            Record::Change(_) | Record::Purge(_) | Record::Lease(_) => continue,
+            Record::Change(_) | Record::Purge(_) | Record::Lease(_) | Record::Pull(_) => continue,
             Record::Stub(_) => {
                 behind_stub = true;
                 continue;
@@ -7865,5 +8281,204 @@ mod tests {
             log.append_purge(purge),
             Err(OpLogError::NotAChange { number: 2 })
         ));
+    }
+
+    fn pull_entry(number: u64, pull: PullEntry) -> Entry {
+        Entry::linked(number, Chain::Start, Record::Pull(pull)).expect("valid entry")
+    }
+
+    fn pull_entries() -> Vec<PullEntry> {
+        vec![
+            PullEntry::open(
+                TIME,
+                human(),
+                branch("feature/x"),
+                commit(A),
+                vec![
+                    mia(),
+                    Actor::agent("claude", "opus-5-5", "s1", "daniel").unwrap(),
+                ],
+                Some(commit(B)),
+            )
+            .unwrap(),
+            PullEntry::close(TIME, human(), 3).unwrap(),
+            PullEntry::merge(TIME, mia(), 3, commit(B)).unwrap(),
+        ]
+    }
+
+    #[test]
+    fn a_pull_entry_is_written_as_it_is_read() {
+        for pull in pull_entries() {
+            let entry = pull_entry(4, pull);
+            let bytes = entry.encode();
+            assert!(bytes.starts_with(b"stemma-oplog 3\n"));
+            let again = Entry::parse(&bytes).expect("reads back");
+            assert_eq!(again, entry);
+            assert_eq!(again.encode(), bytes);
+            assert!(again.hash().is_some(), "a pull entry is in the chain");
+            assert!(again.change().is_none());
+            assert_eq!(again.pull(), entry.pull());
+        }
+    }
+
+    #[test]
+    fn the_three_encodings_are_fixed() {
+        let text = |pull| String::from_utf8(pull_entry(7, pull).encode()).unwrap();
+        let entries = pull_entries();
+        let open = text(entries[0].clone());
+        assert!(
+            open.starts_with("stemma-oplog 3\nnumber 7\n")
+                && open.contains("\noperation pr-open\n"),
+            "{open}"
+        );
+        let body = open.split("operation pr-open\n").nth(1).unwrap();
+        assert_eq!(
+            body,
+            format!(
+                "branch feature/x\ncommit {}\nreviewer agent claude model=opus-5-5 session=s1 \
+                 sponsor=daniel\nreviewer human mia\nrepairs {}\n",
+                commit(A),
+                commit(B)
+            )
+        );
+        assert!(text(entries[1].clone()).ends_with("operation pr-close\npull 3\n"));
+        assert!(text(entries[2].clone()).ends_with(&format!(
+            "operation pr-merge\npull 3\ncommit {}\n",
+            commit(B)
+        )));
+    }
+
+    #[test]
+    fn the_reader_refuses_what_the_pull_writer_does_not_write() {
+        let good = |pull| String::from_utf8(pull_entry(7, pull).encode()).unwrap();
+        let entries = pull_entries();
+        let open = good(entries[0].clone());
+        let close = good(entries[1].clone());
+        let merge = good(entries[2].clone());
+        let cases = [
+            // A pull request entry names the chain: no older encoding has it.
+            open.replace("stemma-oplog 3", "stemma-oplog 1"),
+            open.replace("stemma-oplog 3", "stemma-oplog 2"),
+            // Lines missing, repeated, out of order, or added.
+            open.replace("branch feature/x\n", ""),
+            open.replace(&format!("commit {}\n", commit(A)), ""),
+            open.replace("reviewer human mia\n", "reviewer human mia\nreviewer human mia\n"),
+            open.clone() + "reviewer human zoe\n",
+            open.clone() + "repairs x\n",
+            close.clone() + "commit x\n",
+            close.replace("pull 3\n", ""),
+            close.replace("pull 3", "pull 0"),
+            close.replace("pull 3", "pull 03"),
+            merge.replace(&format!("commit {}\n", commit(B)), ""),
+            merge.replace("pull 3\n", "pull 3\nbranch main\n"),
+            // The reviewers are not in ascending order, or name the opener.
+            open.replace(
+                "reviewer agent claude model=opus-5-5 session=s1 sponsor=daniel\nreviewer human mia\n",
+                "reviewer human mia\nreviewer agent claude model=opus-5-5 session=s1 sponsor=daniel\n",
+            ),
+            open.replace("reviewer human mia", "reviewer human daniel"),
+        ];
+        for bad in cases {
+            assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_change_cannot_take_a_pull_operation() {
+        for kind in [PR_OPEN, PR_CLOSE, PR_MERGE] {
+            let result = Change::try_new(
+                TIME,
+                human(),
+                operation(kind),
+                None,
+                None,
+                vec![moves("main", None, Some(A))],
+            );
+            assert_eq!(result, Err(EntryError::ReservedOperation), "{kind}");
+        }
+    }
+
+    #[test]
+    fn the_rules_of_a_pull_entry_are_checked_once() {
+        let open =
+            |reviewers| PullEntry::open(TIME, human(), branch("f"), commit(A), reviewers, None);
+        assert_eq!(
+            open(vec![human()]),
+            Err(EntryError::BadReviewers),
+            "the opener"
+        );
+        assert_eq!(open(vec![mia(), mia()]), Err(EntryError::BadReviewers));
+        let many: Vec<Actor> = (0..=MAX_REVIEWERS)
+            .map(|index| Actor::human(format!("r{index}")).unwrap())
+            .collect();
+        assert_eq!(open(many.clone()), Err(EntryError::BadReviewers));
+        assert!(open(many[..MAX_REVIEWERS].to_vec()).is_ok());
+        // The constructor sorts, so any order of the caller gives the one encoding.
+        let sorted = open(vec![mia(), Actor::human("ana").unwrap()]).unwrap();
+        assert_eq!(sorted.reviewers()[0], Actor::human("ana").unwrap());
+        for number in [0, MAX_NUMBER + 1] {
+            assert_eq!(
+                PullEntry::close(TIME, human(), number),
+                Err(EntryError::NumberOutOfRange(number))
+            );
+        }
+        assert_eq!(
+            Entry::of(3, Record::Pull(pull_entries().remove(1))),
+            Err(EntryError::PullOutsideChain(3))
+        );
+    }
+
+    #[test]
+    fn a_reviewer_is_an_identity_so_the_same_agent_in_another_session_is_the_opener() {
+        let agent = |session: &str| Actor::agent("claude", "opus-5-5", session, "daniel").unwrap();
+        let open = |actor: Actor, reviewers: Vec<Actor>| {
+            PullEntry::open(TIME, actor, branch("f"), commit(A), reviewers, None)
+        };
+        assert_eq!(
+            open(agent("s1"), vec![agent("s2")]),
+            Err(EntryError::BadReviewers),
+            "the opener under another session"
+        );
+        assert_eq!(
+            open(human(), vec![agent("s1"), agent("s2")]),
+            Err(EntryError::BadReviewers),
+            "one agent twice"
+        );
+        assert!(open(human(), vec![agent("s1")]).is_ok());
+    }
+
+    #[test]
+    fn a_pull_entry_names_its_commits_and_becomes_a_stub() {
+        let entries = pull_entries();
+        let open = pull_entry(1, entries[0].clone());
+        assert_eq!(open.commits(), vec![commit(A), commit(B)]);
+        assert!(pull_entry(2, entries[1].clone()).commits().is_empty());
+        assert_eq!(pull_entry(3, entries[2].clone()).commits(), vec![commit(B)]);
+        let stub = open.to_stub().expect("an opening can become a stub");
+        assert!(stub.pull().is_none() && stub.commits().is_empty());
+        assert_eq!(stub.hash(), open.hash());
+        let next = Entry::linked(
+            2,
+            Chain::After(open.hash().unwrap()),
+            Record::Pull(entries[1].clone()),
+        )
+        .unwrap();
+        check_chain(&[open, next.clone()]).expect("the chain holds");
+        check_chain(&[stub, next]).expect("the chain holds over the stub");
+    }
+
+    #[test]
+    fn the_log_appends_reads_and_lets_a_purge_list_a_pull_entry() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let open = log.append_pull(&pull_entries().remove(0)).unwrap();
+        assert_eq!(open.number(), 1);
+        assert_eq!(log.read(1).unwrap().pull(), open.pull());
+        log.verify().expect("the whole log is in the chain");
+        let purge = Purge::try_new(TIME, human(), 2, &[1]).unwrap();
+        let written = log.append_purge(purge).unwrap();
+        assert_eq!(written.len(), 1);
+        assert!(matches!(written[0].record(), Record::Purge(_)));
+        log.verify().expect("the whole log is in the chain");
     }
 }

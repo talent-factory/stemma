@@ -57,6 +57,7 @@ pub mod oplog;
 pub mod policy;
 #[cfg(test)]
 mod properties;
+pub mod pull;
 pub mod refs;
 pub mod register;
 pub mod repository;

@@ -220,7 +220,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again. Version 3 came with the purge (ADR-014), version 4 with
-  the hash chain (below), and version 8 with the lease entries (below).
+  the hash chain (below), version 8 with the lease entries, and version 9 with the pull request
+  entries (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change, a stub, and a `purge` entry;
@@ -463,6 +464,44 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     file, whole, and an entry for a lease that did not take effect; the next claim reads the file
     again and decides again. A renewal replaces the file and writes no entry. `op restore`
     refuses a lease entry, as it moved no pointer, and `outcomes` passes over it like a purge.
+
+- **The three pull request entries** *(confirmed; STEMMA-226, STEMMA-238)*. A pull request has
+  no object and no reference (ADR-004 rule 3). It is the sequence of the entries `pr-open`,
+  `pr-close`, and `pr-merge`, named by the number of its `pr-open` entry, and they move no
+  pointer, like the lease entries. The state is derived and not stored: `open`, `closed`, or
+  `merged`, folded from the log by `pull::pull_requests`. "Approved" is no state of the log; it
+  follows from the approvals on the current head (STEMMA-227). The prototype of STEMMA-226
+  compared an object chain, one mutable reference, and entries of the log. Entries won, since the
+  log is already the history, the hash chain, and the signature; the other two would have needed
+  a new object kind or a new reference namespace, and a store that a purge rewrites.
+  - **The encoding stays `stemma-oplog 3`, the format rises to 9.** As for the lease entries, an
+    entry is always in the chain and has no older encoding. A program that knows only version 8
+    refuses the repository instead of calling the entry damaged (ADR-009).
+  - **The lines.** An opening has `operation pr-open`, `branch <name>`, `commit <id>` (the tip of
+    the branch), then `reviewer <actor>` once for each reviewer in ascending order of their text
+    (at most 32, none the opener, none twice), and optionally `repairs <id>`, the red commit that
+    the pull request declares to repair (ADR-019). A closing has `operation pr-close` and
+    `pull <number>`. A merge has `operation pr-merge`, `pull <number>`, and `commit <id>`, the
+    head that was merged. Any other order, a missing line, or an extra line is an error. The
+    target is always `main`, so no line names it.
+  - **The rules of the writer.** They are checked under the lock of the references
+    (`Repository::open_pull`, `close_pull`, `record_pull_merge`). Only the write owner opens: where
+    the branch has a lease, the actor holds a valid one. A branch has at most one open pull
+    request, `main` is never the branch, and the opener names the reviewers from the register
+    (none in open mode). A pull request is closed by its opener or an owner, and an ended pull
+    request is final: the next change of the branch is a new pull request with a new number. The
+    entry of a merge records the merge; the gate that moves `main` writes it (ADR-019), and it
+    checks no approval itself.
+  - **The reader is tolerant, the writer is not.** After a purge the log can hold a closing whose
+    opening is a stub. The fold skips an entry about a pull request that it does not know and an
+    entry after the end of one.
+  - **Purge.** An opening and a merge name commits, so a purge may replace them with stubs, as
+    any entry that names a rewritten commit. A closing names none. The purge refuses to replace
+    the opening of a pull request that is still open (`PurgeError::OpenPullRequest`), because the
+    pull request would vanish from the log. It replaces the opening of a closed or merged one, and
+    it replaces the opening of a pull request together with its `pr-merge`, so that the pull
+    request is not open again. `op restore` refuses a pull request entry, and
+    `outcomes` passes over it.
 
 ## Consequences
 
