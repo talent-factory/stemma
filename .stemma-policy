@@ -19,6 +19,13 @@ level 3 /deny.toml
 # level 3 crates/stemma-core/src/signature.rs
 # level 3 crates/stemma-core/src/register.rs
 # level 3 crates/stemma-core/src/policy.rs
+# Further proposals of the second review: CI and agent configuration outside the listed paths, and
+# the ADRs that define the floors (a level 0 line for adr/ below lets one agent edit them).
+# level 3 /.github/
+# level 3 /.claude/
+# level 2 /adr/ADR-003-permissions.md
+# level 2 /adr/ADR-004-branch-ownership-review.md
+# level 2 /adr/ADR-014-purge.md
 
 # Level 2: object and store, refs, operation log, repository, index, diff computation in the
 # merge path, verify, and the exclusion file (it can let a secret into history). Every path that
@@ -32,7 +39,15 @@ level 2 crates/stemma-core/src/repository/
 level 2 crates/stemma-core/src/index.rs
 level 2 crates/stemma-core/src/diff.rs
 level 2 crates/stemma-core/src/verify.rs
-level 2 .stemmaignore
+level 2 /.stemmaignore
+# A dependency is level 2 whatever the crate: the lines for the crates below would otherwise lower
+# their Cargo.toml to level 1 or 0.
+level 2 /Cargo.toml
+level 2 /Cargo.lock
+level 2 crates/stemma-cli/Cargo.toml
+level 2 crates/stemma-tui/Cargo.toml
+level 2 /fuzz/Cargo.toml
+level 2 /fuzz/Cargo.lock
 
 # Level 1: CLI, TUI, the code of the exclusion rules, and the display of diffs.
 level 1 crates/stemma-cli/
@@ -42,12 +57,13 @@ level 1 crates/stemma-core/src/ignore.rs
 # Level 0: docs, tests, examples. A line cannot lower what another line raises, so the tests of
 # the CLI crate stay at level 1 through the line above. The names of the files at levels 3 and 2
 # are anchored, so a file of the same name in a test or fuzz directory is not raised.
-level 0 docs/
-level 0 adr/
+level 0 /docs/
+level 0 /adr/
 level 0 /README.md
-level 0 tests/
-level 0 fuzz/
-level 0 examples/
+level 0 /tests/
+level 0 /crates/*/tests/
+level 0 /fuzz/
+level 0 /examples/
 
 # Run-time operations that touch no path. Only a human may purge (ADR-014).
 operation purge 3
