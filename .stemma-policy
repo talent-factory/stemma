@@ -1,0 +1,86 @@
+# Policy of this repository: DRAFT, not signed, not in force.
+#
+# Source: the table "Paths per Risk Level" of ADR-004 (STEMMA-160), the levels of the run-time
+# operations, and the default bounds of crates/stemma-core/src/policy.rs. The owner reviews this
+# file, changes it where needed, and signs it with the owner key (level 3, STEMMA-247). Whether
+# this repository switches to enforcing mode is a separate decision of the owner.
+stemma-policy 1
+
+# Level 3: RBAC, keys, CI and release, policy files. The policy file and the files of the actor
+# register have level 3 by the floor of the core and need no line here.
+level 3 crates/stemma-core/src/actor.rs
+level 3 crates/stemma-core/src/allowed.rs
+level 3 .github/workflows/
+level 3 /justfile
+level 3 /deny.toml
+# Proposals of the review, not in the table of ADR-004; the owner decides. The table of ADR-004
+# predates these modules: signatures and keys, the register, and the code of the floors are
+# level 3 in the ADR text.
+# level 3 crates/stemma-core/src/signature.rs
+# level 3 crates/stemma-core/src/register.rs
+# level 3 crates/stemma-core/src/policy.rs
+# Further proposals of the second review: CI and agent configuration outside the listed paths, and
+# the ADRs that define the floors (a level 0 line for adr/ below lets one agent edit them).
+# level 3 /.github/
+# level 3 /.claude/
+# level 2 /adr/ADR-003-permissions.md
+# level 2 /adr/ADR-004-branch-ownership-review.md
+# level 2 /adr/ADR-014-purge.md
+
+# Level 2: object and store, refs, operation log, repository, index, diff computation in the
+# merge path, verify, and the exclusion file (it can let a secret into history). Every path that
+# no line names has level 2 as well; the lines document the table of ADR-004.
+level 2 crates/stemma-core/src/object.rs
+level 2 crates/stemma-core/src/store.rs
+level 2 crates/stemma-core/src/refs.rs
+level 2 crates/stemma-core/src/oplog.rs
+level 2 crates/stemma-core/src/repository.rs
+level 2 crates/stemma-core/src/repository/
+level 2 crates/stemma-core/src/index.rs
+level 2 crates/stemma-core/src/diff.rs
+level 2 crates/stemma-core/src/verify.rs
+level 2 /.stemmaignore
+# A dependency is level 2 whatever the crate: the lines for the crates below would otherwise lower
+# their Cargo.toml to level 1 or 0.
+level 2 /Cargo.toml
+level 2 /Cargo.lock
+level 2 crates/stemma-cli/Cargo.toml
+level 2 crates/stemma-tui/Cargo.toml
+level 2 /fuzz/Cargo.toml
+level 2 /fuzz/Cargo.lock
+
+# Level 1: CLI, TUI, the code of the exclusion rules, and the display of diffs.
+level 1 crates/stemma-cli/
+level 1 crates/stemma-tui/
+level 1 crates/stemma-core/src/ignore.rs
+
+# Level 0: docs, tests, examples. A line cannot lower what another line raises, so the tests of
+# the CLI crate stay at level 1 through the line above. The names of the files at levels 3 and 2
+# are anchored, so a file of the same name in a test or fuzz directory is not raised.
+level 0 /docs/
+level 0 /adr/
+level 0 /README.md
+level 0 /tests/
+level 0 /crates/*/tests/
+level 0 /fuzz/
+level 0 /examples/
+
+# Run-time operations that touch no path. Only a human may purge (ADR-014).
+operation purge 3
+operation take-over 3
+operation checkout 2
+operation commit 2
+operation restore 2
+operation snapshot 2
+operation tag 2
+operation untag 2
+
+# Agent approvals per level: the floors of the core, written down.
+approvals 0 1
+approvals 1 2
+approvals 2 2
+approvals 3 0
+
+# Default bounds.
+lease 60
+weakened-level 2
