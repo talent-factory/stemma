@@ -13,7 +13,7 @@
 //! `closed` and `merged` are final. Whether an open pull request is *approved* is no state of the
 //! log: it follows from the approvals on the current head (ADR-004 rule 4). An approval is an entry
 //! `pr-approve` ([`approvals`] lists them), but it changes no state of the fold; the recount that
-//! says which approvals count is [`Repository::counted_approvals`](crate::repository::Repository).
+//! says which approvals count is [`Repository::recount_approvals`](crate::repository::Repository::recount_approvals).
 //!
 //! The fold is tolerant, as the log may hold stubs after a purge: an entry about a pull request
 //! whose opening is a stub is skipped, and so is an entry that follows a closing or a merge. The
@@ -445,5 +445,69 @@ mod tests {
         let stub = open(1, "a").to_stub().unwrap();
         let log = [stub, entry(2, PullEntry::close(20, mia(), 1).unwrap())];
         assert!(pull_requests(&log).is_empty());
+    }
+
+    fn approve(entry: u64, reviewer: Actor, pull: u64, head: &str) -> Approval {
+        Approval {
+            entry,
+            time: 1,
+            reviewer,
+            pull,
+            head: commit(head),
+        }
+    }
+
+    #[test]
+    fn the_recount_filters_by_pull_head_author_proof_and_identity_in_this_order() {
+        let pulls = pull_requests(&[open(4, "a")]);
+        let pull = &pulls[0];
+        let zoe = Actor::human("zoe").unwrap();
+        let bad_proof = |approval: &Approval| {
+            if approval.reviewer() == &zoe {
+                Err("no proof".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        let approvals = [
+            // Another pull request: not listed at all.
+            approve(5, ana(), 9, A),
+            // Before the opening: no writer produces it.
+            approve(3, ana(), 4, A),
+            // Another head, then the opener as reviewer, then a missing proof.
+            approve(6, ana(), 4, B),
+            approve(7, mia(), 4, A),
+            approve(8, zoe.clone(), 4, A),
+            // The first of Ana's that is valid counts, the second is a repeat.
+            approve(9, ana(), 4, A),
+            approve(10, ana(), 4, A),
+        ];
+        let recount = recount(pull, &commit(A), &[], &approvals, &bad_proof);
+        let counted: Vec<u64> = recount.counted().iter().map(Approval::entry).collect();
+        assert_eq!(counted, [9]);
+        let void: Vec<(u64, NotCounted)> = recount
+            .void()
+            .iter()
+            .map(|(approval, why)| (approval.entry(), why.clone()))
+            .collect();
+        assert_eq!(
+            void,
+            [
+                (3, NotCounted::BeforeOpening),
+                (6, NotCounted::OtherHead),
+                (7, NotCounted::SelfApproval(SelfApproval::Opener)),
+                (8, NotCounted::Proof("no proof".to_owned())),
+                (10, NotCounted::Repeat),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_void_approval_does_not_block_a_later_valid_one_of_the_same_identity() {
+        let pulls = pull_requests(&[open(4, "a")]);
+        let approvals = [approve(5, ana(), 4, B), approve(6, ana(), 4, A)];
+        let recount = recount(&pulls[0], &commit(A), &[], &approvals, &|_| Ok(()));
+        assert_eq!(recount.count(), 1);
+        assert_eq!(recount.counted()[0].entry(), 6);
     }
 }

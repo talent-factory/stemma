@@ -523,11 +523,13 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     (the signature is made before the lock, since a key may ask for a passphrase, so the head is
     read again under it); the reviewer is neither the opener nor the author of a commit that the
     pull request brings, by identity (`allowed::self_approval`); and with a register, the
-    signature is accepted before the entry is written. The entry comes before the proof. A crash
+    signature is accepted before the entry is written and its key is active. A retired key keeps
+    the approvals it made, but signs no new one. The entry comes before the proof. A crash
     in between leaves an approval without a proof, which does not count.
   - **The recount does not trust the writer** (`Repository::recount_approvals`,
-    `pull::recount`). An approval counts if it names the head of the branch now (the merged
-    head for a merged pull request), its reviewer passes the ban on self-approval again, its
+    `pull::recount`). Only an open pull request is recounted: the authors are the commits that
+    `main` lacks, and after a merge `main` has them all. An approval counts if it names the head
+    of the branch now, its reviewer passes the ban on self-approval again, its
     proof holds against the register, and no earlier approval of the same identity counts. So an
     entry that was written by hand counts only if it passes the same questions. The recount
     names the reason for each approval that does not count. How many approvals a level needs is

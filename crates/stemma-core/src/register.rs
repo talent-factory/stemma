@@ -988,6 +988,16 @@ impl Register {
         })
     }
 
+    /// Whether `key` is an active key of `identity`: a retired or revoked key signs nothing new.
+    pub fn is_active_key(&self, identity: &Identity, key: &PublicKey) -> bool {
+        self.entry(identity).is_some_and(|entry| {
+            entry
+                .keys
+                .iter()
+                .any(|held| &held.key == key && held.state == KeyState::Active)
+        })
+    }
+
     /// Reads the register of a commit, the base commit of a check. `None` if the commit has no
     /// register file.
     ///
@@ -1728,9 +1738,12 @@ pub fn check_proofs(
                 )
                 .map(|_| ())
                 // A purge may have replaced an approval with a stub, which keeps the hash but no
-                // longer says what the proof signed. The approval is gone, so the proof is too.
+                // longer says what the proof signed. Only a signature that does not verify is
+                // let through; a key that is not the actor's still fails.
                 .or_else(|error| {
-                    if matches!(entry.record(), Record::Stub(_)) {
+                    if matches!(entry.record(), Record::Stub(_))
+                        && matches!(error, ProofError::Signature(_))
+                    {
                         Ok(())
                     } else {
                         Err(error)
@@ -2265,6 +2278,62 @@ mod tests {
         assert!(matches!(
             check_proofs(&metadata, &register(), &entries),
             Err(CheckError::UnexpectedFile(_))
+        ));
+    }
+
+    #[test]
+    fn a_proof_of_an_approval_is_checked_by_its_payload() {
+        use crate::oplog::{Chain, PullEntry, Record};
+        let (_dir, repository) = enforcing_repository();
+        let metadata = repository.metadata_dir();
+        let head = repository.refs().working_copy().unwrap();
+        let approve = |number: u64, previous: Chain| {
+            let entry = PullEntry::approve(1, daniel(), 1, head).unwrap();
+            Entry::linked(number, previous, Record::Pull(entry)).unwrap()
+        };
+        let entry = approve(2, Chain::Start);
+        let entries = [entry.clone()];
+        let sign = |kind, payload: &[u8]| signature::sign(&Seeded::new(1), kind, payload).unwrap();
+        let proof_of = |signature| ProofFile {
+            actor: daniel(),
+            signature,
+        };
+        // The payload of the pull request and the head holds.
+        let payload = pull::approval_payload(1, &head);
+        write_proof(
+            &metadata,
+            2,
+            &proof_of(sign(PayloadKind::Approval, &payload)),
+        )
+        .unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &entries).unwrap(), 1);
+        // A signature of the hash of the entry is the proof of another kind of entry.
+        fs::remove_file(proof_path(&metadata, 2)).unwrap();
+        let hash = entry.hash().unwrap().to_string();
+        let wrong = sign(PayloadKind::LogEntry, hash.as_bytes());
+        write_proof(&metadata, 2, &proof_of(wrong)).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &entries),
+            Err(CheckError::Proof { number: 2, .. })
+        ));
+        // The stub of an approval keeps no payload to check, so a signature that does not verify
+        // is let through; a key that is not the actor's is not.
+        fs::remove_file(proof_path(&metadata, 2)).unwrap();
+        let stub = entry.to_stub().unwrap();
+        let stubs = [stub];
+        write_proof(
+            &metadata,
+            2,
+            &proof_of(sign(PayloadKind::Approval, &payload)),
+        )
+        .unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &stubs).unwrap(), 1);
+        fs::remove_file(proof_path(&metadata, 2)).unwrap();
+        let foreign = signature::sign(&Seeded::new(9), PayloadKind::Approval, &payload).unwrap();
+        write_proof(&metadata, 2, &proof_of(foreign)).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &stubs),
+            Err(CheckError::Proof { number: 2, .. })
         ));
     }
 

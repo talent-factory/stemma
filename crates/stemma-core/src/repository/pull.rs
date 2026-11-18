@@ -21,7 +21,7 @@ use crate::oplog::{
     Entry, EntryError, OpLogError, OperationName, PullEntry, PR_APPROVE, PR_CLOSE, PR_MERGE,
     PR_OPEN,
 };
-use crate::pull::{self, Approval, PullRequest, PullState, Recount, TARGET};
+use crate::pull::{self, Approval, PullRequest, Recount, TARGET};
 use crate::refs::{BranchName, RefError};
 use crate::register::{self, Identity, ProofError, ProofFile, Register};
 use crate::repository::LeaseError;
@@ -194,7 +194,8 @@ impl Repository {
     /// [`PullError::NoSuchBranch`], [`PullError::SelfApproval`] for the ban, [`PullError::HeadMoved`]
     /// if the branch moved while the signature was made, [`PullError::SignatureRequired`] for a
     /// register and no signer, [`PullError::Sign`] and [`PullError::Proof`] for a signature that
-    /// cannot be made or that the register does not accept, [`PullError::ProofNotWritten`] if the
+    /// cannot be made or that the register does not accept, [`PullError::KeyNotActive`] for a
+    /// retired key, [`PullError::ProofNotWritten`] if the
     /// entry is in the log and its proof is not, and the errors of the log and the lock (see
     /// [`open_pull`](Self::open_pull)). Nothing is written for any error but the last two.
     pub fn approve_pull(
@@ -232,9 +233,13 @@ impl Repository {
             return Err(PullError::SelfApproval { number, reason });
         }
         if let (Some(register), Some((_, payload, signature))) = (register, &signed) {
-            register
+            let verified = register
                 .verify_approval(actor, payload, signature)
                 .map_err(|error| PullError::Proof(Box::new(error)))?;
+            // A retired key keeps the approvals it made, but it signs nothing new.
+            if !register.is_active_key(&Identity::of(actor), verified.key()) {
+                return Err(PullError::KeyNotActive);
+            }
         }
         let entry = PullEntry::approve(now(), actor.clone(), number, head)?;
         let written = self.append_pull(&lock, &entry)?;
@@ -255,15 +260,16 @@ impl Repository {
 
     /// Which approvals of the pull request `number` count for its current head, as
     /// [`pull::recount`] decides, with the log, the history, and the proof files as its input. The
-    /// head is the tip of the branch, or the merged head of a pull request that was merged. The
-    /// `register` is the one of the base commit; without one there are no proofs to check.
+    /// head is the tip of the branch, so the pull request must be open. The `register` is the one
+    /// of the base commit; without one there are no proofs to check.
     ///
     /// The recount trusts no writer: it asks the ban on self-approval again for every entry, and
     /// it checks every proof against the register.
     ///
     /// # Errors
     ///
-    /// Returns [`PullError::NoSuchPull`], [`PullError::NoSuchBranch`], and the errors of reading
+    /// Returns [`PullError::NoSuchPull`], [`PullError::NotOpen`], [`PullError::NoSuchBranch`], and
+    /// the errors of reading
     /// the log, the references, and the history. A damaged proof file is no error: the approval
     /// does not count, and the reason says why.
     pub fn recount_approvals(
@@ -277,10 +283,12 @@ impl Repository {
             .iter()
             .find(|pull| pull.number() == number)
             .ok_or(PullError::NoSuchPull { number })?;
-        let head = match pull.state() {
-            PullState::Merged { commit, .. } => *commit,
-            PullState::Open | PullState::Closed { .. } => self.branch_head(pull.branch())?,
-        };
+        // Only an open pull request is counted: the authors are the commits that `main` lacks,
+        // and after a merge `main` has all of them, so no author would be found.
+        if !pull.is_open() {
+            return Err(PullError::NotOpen { number });
+        }
+        let head = self.branch_head(pull.branch())?;
         let authors = self.pull_authors(&head)?;
         let metadata = self.metadata_dir();
         let payload = pull::approval_payload(number, &head);
@@ -457,6 +465,8 @@ pub enum PullError {
     /// The repository has a register, so an approval needs a signature, and the caller gave no
     /// signer.
     SignatureRequired,
+    /// The key of the signature is retired: it keeps its earlier approvals but signs no new one.
+    KeyNotActive,
     /// The approval could not be signed.
     Sign(SignError),
     /// The register does not accept the signature of the approval.
@@ -527,6 +537,9 @@ impl fmt::Display for PullError {
             ),
             Self::SignatureRequired => {
                 f.write_str("the repository has an actor register, so an approval must be signed")
+            }
+            Self::KeyNotActive => {
+                f.write_str("the key is retired and signs no new approval; sign with an active key")
             }
             Self::Sign(error) => write!(f, "cannot sign the approval: {error}"),
             Self::Proof(error) => write!(f, "the register does not accept the approval: {error}"),
@@ -1194,6 +1207,27 @@ mod tests {
     }
 
     #[test]
+    fn only_an_open_pull_request_is_recounted() {
+        let dir = TempDir::new();
+        let (repository, start) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        repository
+            .record_pull_merge(number, &daniel(), start, &AllowAll)
+            .unwrap();
+        assert!(matches!(
+            repository.recount_approvals(number, None),
+            Err(PullError::NotOpen { .. })
+        ));
+        assert!(matches!(
+            repository.recount_approvals(number + 9, None),
+            Err(PullError::NoSuchPull { .. })
+        ));
+    }
+
+    #[test]
     fn only_an_open_pull_request_is_approved() {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
@@ -1311,8 +1345,8 @@ mod tests {
         assert!(
             matches!(&recount.void()[0].1, pull::NotCounted::Proof(why) if why.contains("no proof"))
         );
-        // The proof of the approval of a head that is not the current one does not carry over: Ana
-        // signs another head, and the file is put under the entry of Mia's approval.
+        // The proof of an approval of another head does not carry over: Mia signs another head,
+        // and the file is put under the entry of her approval.
         std::fs::write(&path, &proof).unwrap();
         assert_eq!(
             repository
