@@ -185,7 +185,7 @@ mod open_tests {
 }
 
 pub use actor::{Actor, ActorError, ActorField, ActorMalformed, ActorParseError, ActorRef};
-pub use allowed::Allowed;
+pub use allowed::{self_approval, Allowed, SelfApproval};
 
 /// Result of an authorization check. Dropping a decision unread is a bug, so `#[must_use]`
 /// makes it a warning.

@@ -11,17 +11,20 @@
 //! ```
 //!
 //! `closed` and `merged` are final. Whether an open pull request is *approved* is no state of the
-//! log: it follows from the approvals on the current head (ADR-004 rule 4, STEMMA-227), which are
-//! no entries of this kind.
+//! log: it follows from the approvals on the current head (ADR-004 rule 4). An approval is an entry
+//! `pr-approve` ([`approvals`] lists them), but it changes no state of the fold; the recount that
+//! says which approvals count is [`Repository::counted_approvals`](crate::repository::Repository).
 //!
 //! The fold is tolerant, as the log may hold stubs after a purge: an entry about a pull request
 //! whose opening is a stub is skipped, and so is an entry that follows a closing or a merge. The
 //! rules that keep such entries from being written are those of
 //! [`Repository`](crate::repository::Repository).
 
+use crate::allowed::{self_approval, SelfApproval};
 use crate::object::CommitId;
 use crate::oplog::{Entry, PullKind};
 use crate::refs::BranchName;
+use crate::register::Identity;
 use crate::Actor;
 
 /// The branch that every pull request targets: the protected trunk (ADR-004 rule 3, ADR-006).
@@ -136,6 +139,8 @@ pub fn pull_requests(entries: &[Entry]) -> Vec<PullRequest> {
                     state: PullState::Open,
                 });
             }
+            // An approval changes no state: the recount reads it (`approvals`).
+            PullKind::Approve => {}
             PullKind::Close | PullKind::Merge => {
                 let Some(target) = pull
                     .pull()
@@ -166,6 +171,157 @@ pub fn pull_requests(entries: &[Entry]) -> Vec<PullRequest> {
         }
     }
     pulls
+}
+
+/// An approval as the log holds it: the entry `pr-approve`, before the recount decides whether it
+/// counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approval {
+    entry: u64,
+    time: i64,
+    reviewer: Actor,
+    pull: u64,
+    head: CommitId,
+}
+
+impl Approval {
+    /// The number of the entry. The proof of the approval is the file with this number.
+    pub fn entry(&self) -> u64 {
+        self.entry
+    }
+
+    /// When the writer claims to have approved, in seconds since the Unix epoch.
+    pub fn time(&self) -> i64 {
+        self.time
+    }
+
+    /// Who approved.
+    pub fn reviewer(&self) -> &Actor {
+        &self.reviewer
+    }
+
+    /// The number of the pull request.
+    pub fn pull(&self) -> u64 {
+        self.pull
+    }
+
+    /// The head that the reviewer names: the only commit for which the approval can count.
+    pub fn head(&self) -> &CommitId {
+        &self.head
+    }
+}
+
+/// The approvals in `entries`, in the order of their entries. An entry that is a stub is no
+/// approval any more, and an approval of a pull request that the log does not know is listed all
+/// the same: the recount of a pull request picks its own by number.
+pub fn approvals(entries: &[Entry]) -> Vec<Approval> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let pull = entry
+                .pull()
+                .filter(|pull| pull.kind() == PullKind::Approve)?;
+            Some(Approval {
+                entry: entry.number(),
+                time: entry.time(),
+                reviewer: entry.actor().clone(),
+                pull: pull.pull()?,
+                head: *pull.commit()?,
+            })
+        })
+        .collect()
+}
+
+/// The bytes that the reviewer signs for an approval, as
+/// [`PayloadKind::Approval`](crate::signature::PayloadKind::Approval): the number of the pull
+/// request and the head that was reviewed. The head binds the approval: a commit on the branch
+/// makes another head, and the signature does not verify for it (ADR-004 rule 4). The number keeps
+/// it from standing for another pull request of the same head.
+pub fn approval_payload(pull: u64, head: &CommitId) -> Vec<u8> {
+    format!("pull {pull}\ncommit {head}\n").into_bytes()
+}
+
+/// Why an approval of the log does not count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NotCounted {
+    /// The entry stands before the opening of the pull request, which no writer produces.
+    BeforeOpening,
+    /// The reviewer named another head than the current one: a commit came after the review.
+    OtherHead,
+    /// The reviewer opened the pull request or wrote one of its commits.
+    SelfApproval(SelfApproval),
+    /// The proof is missing, or the register does not accept it. Carries the reason.
+    Proof(String),
+    /// The same identity approved this head before.
+    Repeat,
+}
+
+/// The approvals of one pull request as they count for its current head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recount {
+    counted: Vec<Approval>,
+    void: Vec<(Approval, NotCounted)>,
+}
+
+impl Recount {
+    /// The approvals that count, one for each identity, in the order of their entries.
+    pub fn counted(&self) -> &[Approval] {
+        &self.counted
+    }
+
+    /// The approvals of the pull request that do not count, with the reason.
+    pub fn void(&self) -> &[(Approval, NotCounted)] {
+        &self.void
+    }
+
+    /// How many approvals count.
+    pub fn count(&self) -> usize {
+        self.counted.len()
+    }
+}
+
+/// Which approvals of `pull` count for `head`, the head of the branch now (ADR-004 rule 4): a pure
+/// function over what the log says. `authors` wrote the commits that the pull request brings.
+/// `proof` checks the signature of one approval against the register; it is the only part that
+/// reads anything else. An approval counts if it names `head`, its reviewer is neither the opener
+/// nor an author, its proof holds, and its identity has no approval that counts already.
+///
+/// The writer of an approval asks the same questions before it writes the entry, but an entry can
+/// come from another hand, or the head can move after the entry; the recount does not trust the
+/// writer.
+pub fn recount(
+    pull: &PullRequest,
+    head: &CommitId,
+    authors: &[Actor],
+    approvals: &[Approval],
+    proof: &dyn Fn(&Approval) -> Result<(), String>,
+) -> Recount {
+    let mut counted: Vec<Approval> = Vec::new();
+    let mut void = Vec::new();
+    for approval in approvals.iter().filter(|a| a.pull() == pull.number()) {
+        let verdict = if approval.entry() <= pull.number() {
+            Some(NotCounted::BeforeOpening)
+        } else if approval.head() != head {
+            Some(NotCounted::OtherHead)
+        } else if let Some(reason) = self_approval(approval.reviewer(), pull.opener(), authors) {
+            Some(NotCounted::SelfApproval(reason))
+        } else if let Err(reason) = proof(approval) {
+            Some(NotCounted::Proof(reason))
+        } else if counted
+            .iter()
+            .any(|earlier| Identity::of(earlier.reviewer()) == Identity::of(approval.reviewer()))
+        {
+            Some(NotCounted::Repeat)
+        } else {
+            None
+        };
+        match verdict {
+            Some(reason) => void.push((approval.clone(), reason)),
+            None => counted.push(approval.clone()),
+        }
+    }
+    Recount { counted, void }
 }
 
 /// The open pull request of `branch`, if it has one. `Repository::open_pull` lets at most one

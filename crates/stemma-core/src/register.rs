@@ -71,8 +71,9 @@
 //!
 //! A proof of a log entry is a file `proofs/<number>` in the metadata directory ([`ProofFile`]):
 //! the actor and the SSHSIG signature over the hash of the entry. [`check_proofs`] checks them
-//! against a register. Nothing writes a proof yet; the operations whose rule depends on who acts
-//! come with the later slices of phase 4.
+//! against a register. The proof of an entry `pr-approve` signs the pull request and the head
+//! ([`pull::approval_payload`]) as [`PayloadKind::Approval`]; any other proof signs the hash of
+//! its entry as [`PayloadKind::LogEntry`].
 
 use std::error::Error;
 use std::fmt;
@@ -83,7 +84,8 @@ use std::str::FromStr;
 
 use crate::actor::{Actor, ActorRef};
 use crate::object::{Kind, ObjectId};
-use crate::oplog::Entry;
+use crate::oplog::{Entry, PullKind, Record};
+use crate::pull;
 use crate::repository::Repository;
 use crate::signature::{self, PayloadKind, PublicKey, Signature};
 use crate::store::{ObjectStore, ReadError};
@@ -1703,14 +1705,39 @@ pub fn check_proofs(
         if entry.actor() != &proof.actor {
             return Err(CheckError::ActorMismatch { number });
         }
-        register
-            .verify_log_entry(
-                &proof.actor,
-                number,
-                hash.to_string().as_bytes(),
-                &proof.signature,
-            )
-            .map_err(|error| CheckError::Proof { number, error })?;
+        let approval = entry
+            .pull()
+            .filter(|pull| pull.kind() == PullKind::Approve)
+            .and_then(|pull| Some(pull::approval_payload(pull.pull()?, pull.commit()?)));
+        let checked = match &approval {
+            // The proof of an approval signs the pull request and the head, not the hash of the
+            // entry. A key that was revoked since makes the approval void, which the recount
+            // shows; it is no damage of the log.
+            Some(payload) => {
+                match register.verify_approval(&proof.actor, payload, &proof.signature) {
+                    Err(ProofError::KeyNoLongerCounts { .. }) => Ok(()),
+                    other => other.map(|_| ()),
+                }
+            }
+            None => register
+                .verify_log_entry(
+                    &proof.actor,
+                    number,
+                    hash.to_string().as_bytes(),
+                    &proof.signature,
+                )
+                .map(|_| ())
+                // A purge may have replaced an approval with a stub, which keeps the hash but no
+                // longer says what the proof signed. The approval is gone, so the proof is too.
+                .or_else(|error| {
+                    if matches!(entry.record(), Record::Stub(_)) {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                }),
+        };
+        checked.map_err(|error| CheckError::Proof { number, error })?;
     }
     Ok(numbers.len())
 }

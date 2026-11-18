@@ -221,6 +221,10 @@ pub const PR_CLOSE: &str = "pr-close";
 /// The operation of the entry that records the merge of a pull request.
 pub const PR_MERGE: &str = "pr-merge";
 
+/// The operation of the entry that approves the head of a pull request (ADR-004 rule 4). The
+/// approver signs it; the signature is a proof file, not a line of the entry.
+pub const PR_APPROVE: &str = "pr-approve";
+
 /// The most reviewers that the entry of an opening names.
 pub const MAX_REVIEWERS: usize = 32;
 
@@ -490,7 +494,7 @@ impl fmt::Display for EntryError {
                 "a change cannot have the operation `{PURGE}`, which only the entry of a purge has, \
                  or an operation `{LEASE_ACQUIRE}`, `{LEASE_RELEASE}`, `{LEASE_TAKEOVER}`, or \
                  `{LEASE_OVERRIDE}`, which only the entry of a lease has, or `{PR_OPEN}`, `{PR_CLOSE}`, \
-                 or `{PR_MERGE}`, which only the entry of a pull request has"
+                 `{PR_MERGE}`, or `{PR_APPROVE}`, which only the entry of a pull request has"
             ),
             Self::StubNotBefore { stub, purge } => write!(
                 f,
@@ -1322,6 +1326,8 @@ pub enum PullKind {
     Close,
     /// The pull request was merged.
     Merge,
+    /// An actor approved the head of the pull request.
+    Approve,
 }
 
 impl PullKind {
@@ -1331,6 +1337,7 @@ impl PullKind {
             Self::Open => PR_OPEN,
             Self::Close => PR_CLOSE,
             Self::Merge => PR_MERGE,
+            Self::Approve => PR_APPROVE,
         }
     }
 
@@ -1340,6 +1347,7 @@ impl PullKind {
             PR_OPEN => Some(Self::Open),
             PR_CLOSE => Some(Self::Close),
             PR_MERGE => Some(Self::Merge),
+            PR_APPROVE => Some(Self::Approve),
             _ => None,
         }
     }
@@ -1352,7 +1360,8 @@ impl PullKind {
 /// a repair, the red commit (`repairs <commit>`, ADR-019). A closing names the pull request and no
 /// commit. A merge names the pull request and the commit that it merged. The entries that name a
 /// commit can become stubs in a purge; the purge refuses to replace the opening of a pull request
-/// that is still open.
+/// that is still open. An approval names the pull request and the head that the approver reviewed
+/// (`pull <number>`, `commit <id>`); it counts for that head only (ADR-004 rule 4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullEntry {
     time: i64,
@@ -1431,6 +1440,31 @@ impl PullEntry {
         )
     }
 
+    /// The entry of an approval: `actor` approves the head `commit` of the pull request `pull`.
+    /// Whether the actor may, and whether the approval counts, is decided by the writer and by the
+    /// recount, not by the entry (ADR-004 rule 4).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::NumberOutOfRange`] if `pull` is 0 or larger than [`MAX_NUMBER`].
+    pub fn approve(
+        time: i64,
+        actor: Actor,
+        pull: u64,
+        commit: CommitId,
+    ) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            PullKind::Approve,
+            None,
+            Some(pull),
+            Some(commit),
+            Vec::new(),
+            None,
+        )
+    }
+
     /// The one place of the rules of a pull request entry, for the constructors and the reader.
     #[allow(clippy::too_many_arguments)]
     fn build(
@@ -1452,7 +1486,9 @@ impl PullEntry {
         let shaped = match kind {
             PullKind::Open => branch.is_some() && pull.is_none() && commit.is_some(),
             PullKind::Close => branch.is_none() && pull.is_some() && commit.is_none(),
-            PullKind::Merge => branch.is_none() && pull.is_some() && commit.is_some(),
+            PullKind::Merge | PullKind::Approve => {
+                branch.is_none() && pull.is_some() && commit.is_some()
+            }
         };
         if !shaped || (kind != PullKind::Open && (!reviewers.is_empty() || repairs.is_some())) {
             return Err(EntryError::BadPullShape);
@@ -2185,8 +2221,8 @@ fn parse_lease(
 }
 
 /// Reads the body of a pull request entry, which starts with the line `operation pr-…` at the
-/// index `body`: `branch <name>` (an opening) or `pull <number>` (a closing and a merge), then
-/// `commit <id>` (an opening and a merge), and for an opening `reviewer <actor>` in ascending
+/// index `body`: `branch <name>` (an opening) or `pull <number>` (a closing, a merge, and an
+/// approval), then `commit <id>` (an opening, a merge, and an approval), and for an opening `reviewer <actor>` in ascending
 /// order and `repairs <id>`.
 fn parse_pull(
     lines: &[&str],
@@ -2535,10 +2571,10 @@ pub enum EntryMalformed {
     /// A takeover or an override has no line `reason <text>`, a takeover has another reason than
     /// `expired`, or another entry has the line.
     ExpectedReason,
-    /// An opening, a merge, or a pull request entry has no line `commit <id>` or `repairs <id>`
+    /// An opening, a merge, an approval, or a pull request entry has no line `commit <id>` or `repairs <id>`
     /// where it belongs.
     ExpectedCommit,
-    /// A closing or a merge has no line `pull <number>`.
+    /// A closing, a merge, or an approval has no line `pull <number>`.
     ExpectedPull,
 }
 
@@ -8303,6 +8339,7 @@ mod tests {
             .unwrap(),
             PullEntry::close(TIME, human(), 3).unwrap(),
             PullEntry::merge(TIME, mia(), 3, commit(B)).unwrap(),
+            PullEntry::approve(TIME, mia(), 3, commit(A)).unwrap(),
         ]
     }
 
@@ -8346,6 +8383,10 @@ mod tests {
             "operation pr-merge\npull 3\ncommit {}\n",
             commit(B)
         )));
+        assert!(text(entries[3].clone()).ends_with(&format!(
+            "operation pr-approve\npull 3\ncommit {}\n",
+            commit(A)
+        )));
     }
 
     #[test]
@@ -8355,6 +8396,7 @@ mod tests {
         let open = good(entries[0].clone());
         let close = good(entries[1].clone());
         let merge = good(entries[2].clone());
+        let approve = good(entries[3].clone());
         let cases = [
             // A pull request entry names the chain: no older encoding has it.
             open.replace("stemma-oplog 3", "stemma-oplog 1"),
@@ -8371,6 +8413,11 @@ mod tests {
             close.replace("pull 3", "pull 03"),
             merge.replace(&format!("commit {}\n", commit(B)), ""),
             merge.replace("pull 3\n", "pull 3\nbranch main\n"),
+            // An approval names the pull request and the head, and nothing else.
+            approve.replace(&format!("commit {}\n", commit(A)), ""),
+            approve.replace("pull 3\n", ""),
+            approve.clone() + "reviewer human zoe\n",
+            approve.clone() + "repairs x\n",
             // The reviewers are not in ascending order, or name the opener.
             open.replace(
                 "reviewer agent claude model=opus-5-5 session=s1 sponsor=daniel\nreviewer human mia\n",
@@ -8385,7 +8432,7 @@ mod tests {
 
     #[test]
     fn a_change_cannot_take_a_pull_operation() {
-        for kind in [PR_OPEN, PR_CLOSE, PR_MERGE] {
+        for kind in [PR_OPEN, PR_CLOSE, PR_MERGE, PR_APPROVE] {
             let result = Change::try_new(
                 TIME,
                 human(),
@@ -8454,6 +8501,7 @@ mod tests {
         assert_eq!(open.commits(), vec![commit(A), commit(B)]);
         assert!(pull_entry(2, entries[1].clone()).commits().is_empty());
         assert_eq!(pull_entry(3, entries[2].clone()).commits(), vec![commit(B)]);
+        assert_eq!(pull_entry(4, entries[3].clone()).commits(), vec![commit(A)]);
         let stub = open.to_stub().expect("an opening can become a stub");
         assert!(stub.pull().is_none() && stub.commits().is_empty());
         assert_eq!(stub.hash(), open.hash());

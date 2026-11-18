@@ -145,11 +145,13 @@ Der Zustand wird nicht gespeichert, sondern aus dem Log berechnet:
 \type{closed} und \type{merged} sind endgültig; die nächste Änderung eines Branches ist ein neuer
 Pull Request mit neuer Nummer.
 Ob ein offener Pull Request freigegeben ist, steht nicht im Log, sondern folgt aus den Freigaben
-auf dem aktuellen Kopf (ADR-004, Regel 4); die Freigaben sind noch nicht umgesetzt.
+auf dem aktuellen Kopf (ADR-004, Regel 4).
+Jede Freigabe ist ein eigener Eintrag \type{pr-approve}; er ändert den Zustand nicht.
+Die Neuzählung entscheidet, welche Freigaben zählen (siehe unten).
 
 Die Einträge folgen denen der Lease: Sie nennen keinen Zeiger, stehen immer in der Hash-Kette,
-und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9 (ADR-009,
-ADR-011).
+und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9 und mit dem
+ersten Eintrag \type{pr-approve} auf 10 (ADR-009, ADR-011).
 Der Eintrag \type{pr-open} nennt den Branch, den Commit an seiner Spitze, die Reviewer und
 optional \type{repairs <commit>}, den roten Commit, den der Pull Request zu beheben erklärt
 (ADR-019).
@@ -175,6 +177,46 @@ deshalb lehnt der Purge das ab und nennt die Nummer.
 Wer den Pull Request schliesst oder mergt, kann den Purge danach wiederholen.
 Ersetzte der Purge nur \type{pr-merge} und liesse \type{pr-open} stehen, wäre der Pull Request
 wieder offen; deshalb ersetzt er in diesem Fall auch das \type{pr-open}.
+
+{\bf Freigabe.}
+Der Eintrag \type{pr-approve} nennt die Nummer des Pull Requests und den Kopf, den der Reviewer
+geprüft hat.
+Die Freigabe ist an diesen Kopf gebunden: Kommt ein Commit auf den Branch, ist der Kopf ein
+anderer, und jede Freigabe des alten zählt nicht mehr.
+Wer den neuen Kopf geprüft hat, gibt ihn neu frei.
+Der Kern prüft beim Schreiben unter \type{refs.lock}:
+
+\startitemize
+\item Der Pull Request ist offen, und der Branch hat noch den Kopf, den der Reviewer signiert hat.
+Hat sich der Kopf während des Signierens bewegt, schreibt der Kern nichts.
+\item Niemand gibt seine eigene Arbeit frei: Der Reviewer ist weder der Eröffner noch der Autor
+eines Commits, den der Pull Request mitbringt (das sind die Commits, die der Kopf erreicht und
+\type{main} nicht).
+Die Regel gilt für die Identität, also gelten Modell und Session eines Agenten nicht als anderer
+Reviewer.
+Zwei Agenten desselben Sponsors zählen als zwei Freigaben; die strengere Regel für den Schreiber
+eines \type{check} steht in ADR-019.
+\item Wo das Repository ein Register hat, ist die Freigabe signiert: Der Reviewer signiert die
+Nummer und den Kopf mit einem Schlüssel, den das Register für ihn führt.
+Die Signatur wird vor dem Eintrag geprüft; der Beweis ist die Datei
+\type{.stemma/proofs/<Nummer des Eintrags>}.
+Im offenen Modus gibt es kein Register und keine Signatur.
+\stopitemize
+
+Der Eintrag steht vor dem Beweis.
+Ein Absturz dazwischen lässt eine Freigabe ohne Beweis zurück, und die zählt nicht:
+Der Ausfall geht auf die sichere Seite.
+
+{\bf Neuzählung.}
+Die Neuzählung traut dem Schreiber nicht.
+Sie liest die Einträge und zählt eine Freigabe nur, wenn sie den aktuellen Kopf nennt,
+ihr Reviewer weder Eröffner noch Autor ist, ihr Beweis gegen das Register hält
+und ihre Identität noch keine andere Freigabe hat, die zählt.
+Ein Eintrag, den jemand von Hand geschrieben hat, besteht also nur, wenn er dieselben Fragen
+besteht wie einer des Kerns.
+Ein widerrufener Schlüssel macht seine Freigaben ungültig; ein ausgemusterter lässt sie stehen,
+denn keine Nummer begrenzt sie (siehe \in{Abschnitt}[sec:register]).
+Die Neuzählung nennt zu jeder Freigabe, die nicht zählt, den Grund.
 
 \startplacefigure[title={Ablauf eines Pull Requests bis zur Zeigerbewegung von main},
     reference=fig:pull-request-flow,location=here]
@@ -791,12 +833,16 @@ und verlangt im durchsetzenden Modus einen \type{Verified}-Akteur, der der Akteu
 
 {\bf Beweise und \type{op verify}.}
 Der Beweis eines Logeintrags ist eine Datei \type{.stemma/proofs/<Nummer>} mit dem Akteur
-und der SSHSIG-Signatur über den Hash des Eintrags.
+und der SSHSIG-Signatur.
+Signiert wird bei den meisten Einträgen der Hash des Eintrags, bei einem Eintrag
+\type{pr-approve} die Nummer des Pull Requests mit dem geprüften Kopf.
 \type{op verify} prüft in einem durchsetzenden Repository jeden Beweis gegen das Register:
 Der Eintrag muss in der Hash-Kette stehen, der Akteur des Beweises der des Eintrags sein,
 und der Schlüssel muss zum Akteur gehören und für diese Nummer zählen.
-Noch schreibt keine Operation einen Beweis; die Operationen, deren Regel vom Akteur abhängt,
-kommen mit den weiteren Teilen von Phase~4.
+Eine Freigabe, deren Schlüssel seither widerrufen wurde, gilt als ungültig, nicht als Schaden des
+Logs, und \type{op verify} lässt sie durch.
+Geschrieben wird ein Beweis bisher von der Freigabe; die weiteren Operationen, deren Regel vom
+Akteur abhängt, kommen mit den weiteren Teilen von Phase~4.
 Die CLI-Befehle \type{register add-key}, \type{register retire}, \type{register revoke}
 und \type{register add-agent} ändern die Datei im Arbeitsverzeichnis;
 die Änderung ist ein gewöhnlicher Commit der Stufe~3.

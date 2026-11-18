@@ -18,7 +18,10 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
 3. Protected branches such as `main` change only through pull requests. A pull request is a
    sequence of entries in the operation log (STEMMA-226, STEMMA-238).
 4. Agents may review and approve. No self-approval. Approvals are signed and bound to the head
-   commit they name; any new commit voids them (STEMMA-227).
+   commit they name; any new commit voids them (STEMMA-227). An approval is the entry
+   `pr-approve` (ADR-011). "No self-approval" means by identity: the reviewer is neither the
+   opener of the pull request nor the author of a commit that it brings. The writer and the
+   recount ask the same question, so an entry written by hand does not count.
 5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths.
    The policy file is itself level 3.
 6. Diff display is level 1, diff computation in the merge path is level 2.

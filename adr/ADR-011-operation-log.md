@@ -220,8 +220,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   the layout (ADR-009), and `Repository::open` rejects version 1 with the existing
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again. Version 3 came with the purge (ADR-014), version 4 with
-  the hash chain (below), version 8 with the lease entries, and version 9 with the pull request
-  entries (below).
+  the hash chain (below), version 8 with the lease entries, version 9 with the pull request
+  entries, and version 10 with the approval entry (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change, a stub, and a `purge` entry;
@@ -470,7 +470,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   `pr-close`, and `pr-merge`, named by the number of its `pr-open` entry, and they move no
   pointer, like the lease entries. The state is derived and not stored: `open`, `closed`, or
   `merged`, folded from the log by `pull::pull_requests`. "Approved" is no state of the log; it
-  follows from the approvals on the current head (STEMMA-227). The prototype of STEMMA-226
+  follows from the approvals on the current head (below). The prototype of STEMMA-226
   compared an object chain, one mutable reference, and entries of the log. Entries won, since the
   log is already the history, the hash chain, and the signature; the other two would have needed
   a new object kind or a new reference namespace, and a store that a purge rewrites.
@@ -502,6 +502,40 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     it replaces the opening of a pull request together with its `pr-merge`, so that the pull
     request is not open again. `op restore` refuses a pull request entry, and
     `outcomes` passes over it.
+
+- **The approval entry `pr-approve`** *(confirmed; STEMMA-227, STEMMA-239)*. An approval is the
+  fourth entry of a pull request. It moves no pointer and changes no state of the fold:
+  "approved" stays a count over the log and not a state of it.
+  - **The encoding stays `stemma-oplog 3`, the format rises to 10**, for the reason of the
+    entries before it: a program that knows only version 9 refuses the repository instead of
+    calling the entry damaged (ADR-009).
+  - **The lines.** `operation pr-approve`, `pull <number>`, and `commit <id>`, the head that the
+    reviewer reviewed. Any other line is an error. The reviewer is the actor of the entry.
+  - **The signature is not a line.** Where the repository has a register, the proof is the file
+    `proofs/<number of the entry>` (ADR-003). It signs, as the type `approval`, the bytes
+    `pull <number>\ncommit <id>\n`: the pull request and the head, not the hash of the entry.
+    Binding it to the head is what lets a new commit void it (ADR-004 rule 4), and the number
+    keeps it from standing for another pull request of the same head. A revoked key voids the
+    approval, a retired one does not, as the register says (ADR-003). `op verify` checks the
+    proof as it checks any other, and a void approval is no damage of the log.
+  - **The rules of the writer** (`Repository::approve_pull`), checked under the lock of the
+    references: the pull request is open; the branch still has the head that the reviewer signed
+    (the signature is made before the lock, since a key may ask for a passphrase, so the head is
+    read again under it); the reviewer is neither the opener nor the author of a commit that the
+    pull request brings, by identity (`allowed::self_approval`); and with a register, the
+    signature is accepted before the entry is written. The entry comes before the proof. A crash
+    in between leaves an approval without a proof, which does not count.
+  - **The recount does not trust the writer** (`Repository::recount_approvals`,
+    `pull::recount`). An approval counts if it names the head of the branch now (the merged
+    head for a merged pull request), its reviewer passes the ban on self-approval again, its
+    proof holds against the register, and no earlier approval of the same identity counts. So an
+    entry that was written by hand counts only if it passes the same questions. The recount
+    names the reason for each approval that does not count. How many approvals a level needs is
+    the policy (ADR-004), and the merge gate asks for it (ADR-019).
+  - **Purge.** An approval names a commit, so a purge may replace it with a stub, like any
+    entry that names a rewritten commit. It is no opening, so the purge guard for open pull
+    requests does not apply. A proof file whose entry became a stub no longer says what it
+    signed; `op verify` lets it pass.
 
 ## Consequences
 
