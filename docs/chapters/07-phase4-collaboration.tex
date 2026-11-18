@@ -345,6 +345,9 @@ Die Tests der Logik brauchen keinen Schlüssel auf der Platte: ein \type{Signer}
 einen Schlüssel aus einem festen Startwert ab.
 Nur die Tests der Implementierung mit \type{ssh-keygen} legen einen Schlüssel in einem
 temporären Verzeichnis an und werden ohne \type{ssh-keygen} mit einem Hinweis übersprungen.
+Ist \type{STEMMA_REQUIRE_SSH_KEYGEN} gesetzt, wie in \type{just ci} und im CI-Workflow,
+schlägt ein solcher Test stattdessen fehl,
+damit ein Lauf ohne \type{ssh-keygen} nicht unbemerkt nichts prüft.
 
 \section[sec:policy-file]{Die Policy-Datei}
 

@@ -1,7 +1,7 @@
 # Stemma — task runner (version control system in Rust)
 #
 # Prereqs:
-#   just ≥ 1.18 (brew install just)   ·   Rust toolchain (rustup)   ·   ConTeXt (for the book)
+#   just ≥ 1.18 (brew install just)   ·   Rust toolchain (rustup)   ·   OpenSSH ssh-keygen (signing tests)   ·   ConTeXt (for the book)
 #
 # List all recipes by group:   `just`
 # Single group:                `just --list | grep -A99 '\[Quality\]'`
@@ -11,6 +11,9 @@ set shell := ["bash", "-uc"]
 set positional-arguments
 
 docs_dir := "docs"
+
+# The tests that sign with `ssh-keygen` fail, instead of skipping themselves, when it is missing.
+export STEMMA_REQUIRE_SSH_KEYGEN := "1"
 
 # The version of the workspace, from `Cargo.toml` (the only place where it is written).
 version := `sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' Cargo.toml`
