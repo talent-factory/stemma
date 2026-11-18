@@ -6,26 +6,20 @@
 # this repository switches to enforcing mode is a separate decision of the owner.
 stemma-policy 1
 
-# Level 3: RBAC, keys, CI and release, policy files. The policy file and the files of the actor
-# register have level 3 by the floor of the core and need no line here.
+# Level 3: RBAC, signatures and keys, CI and release, policy files. The policy file and the files
+# of the actor register have level 3 by the floor of the core and need no line here.
 level 3 crates/stemma-core/src/actor.rs
 level 3 crates/stemma-core/src/allowed.rs
-level 3 .github/workflows/
+# The code that checks signatures, reads the register, and holds the floors of the policy: a change
+# here could weaken the level 3 rules themselves.
+level 3 crates/stemma-core/src/signature.rs
+level 3 crates/stemma-core/src/register.rs
+level 3 crates/stemma-core/src/policy.rs
+# The whole of .github/, not only the workflows: a CODEOWNERS file would change who must review.
+level 3 /.github/
 level 3 /justfile
 level 3 /deny.toml
-# Proposals of the review, not in the table of ADR-004; the owner decides. The table of ADR-004
-# predates these modules: signatures and keys, the register, and the code of the floors are
-# level 3 in the ADR text.
-# level 3 crates/stemma-core/src/signature.rs
-# level 3 crates/stemma-core/src/register.rs
-# level 3 crates/stemma-core/src/policy.rs
-# Further proposals of the second review: CI and agent configuration outside the listed paths, and
-# the ADRs that define the floors (a level 0 line for adr/ below lets one agent edit them).
-# level 3 /.github/
-# level 3 /.claude/
-# level 2 /adr/ADR-003-permissions.md
-# level 2 /adr/ADR-004-branch-ownership-review.md
-# level 2 /adr/ADR-014-purge.md
+# /.claude/ stays at the default level 2 on purpose: agents work there (skills, wave settings).
 
 # Level 2: object and store, refs, operation log, repository, index, diff computation in the
 # merge path, verify, and the exclusion file (it can let a secret into history). Every path that
@@ -40,6 +34,11 @@ level 2 crates/stemma-core/src/index.rs
 level 2 crates/stemma-core/src/diff.rs
 level 2 crates/stemma-core/src/verify.rs
 level 2 /.stemmaignore
+# The ADRs that justify the level 3 rules and the ban on purge. The line for adr/ below gives level 0
+# to the other ADRs; the highest level of all lines counts.
+level 2 /adr/ADR-003-permissions.md
+level 2 /adr/ADR-004-branch-ownership-review.md
+level 2 /adr/ADR-014-purge.md
 # A dependency is level 2 whatever the crate: the lines for the crates below would otherwise lower
 # their Cargo.toml to level 1 or 0.
 level 2 /Cargo.toml
@@ -66,6 +65,8 @@ level 0 /fuzz/
 level 0 /examples/
 
 # Run-time operations that touch no path. Only a human may purge (ADR-014).
+# Approvals, lease and weakened-level are left to the defaults of the core: a line that only
+# repeats a default can go stale when the core changes.
 operation purge 3
 operation take-over 3
 operation checkout 2
@@ -74,13 +75,3 @@ operation restore 2
 operation snapshot 2
 operation tag 2
 operation untag 2
-
-# Agent approvals per level: the floors of the core, written down.
-approvals 0 1
-approvals 1 2
-approvals 2 2
-approvals 3 0
-
-# Default bounds.
-lease 60
-weakened-level 2
