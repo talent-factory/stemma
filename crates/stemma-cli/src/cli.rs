@@ -5870,7 +5870,7 @@ mod tests {
             std::env::temp_dir().join(format!("stemma-cli-unit-track-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
-        run(
+        let _ = run(
             parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Vec::new(),
         )
@@ -5887,12 +5887,12 @@ mod tests {
         assert_eq!(full.exit_code(), ExitCode::from(3));
         // The file is tracked although the result was not written.
         let mut out = Vec::new();
-        run(parse(&track_args("a.txt")), &mut out).unwrap();
+        let _ = run(parse(&track_args("a.txt")), &mut out).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "No new files to track\n");
         // A reader that has had enough is not a failure; the file is tracked.
-        run(parse(&track_args("b.txt")), &mut Closed).unwrap();
+        let _ = run(parse(&track_args("b.txt")), &mut Closed).unwrap();
         let mut out = Vec::new();
-        run(parse(&track_args("b.txt")), &mut out).unwrap();
+        let _ = run(parse(&track_args("b.txt")), &mut out).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "No new files to track\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6232,10 +6232,10 @@ mod tests {
             all.extend(actor);
             parse(&all)
         };
-        run(call(&["init"]), &mut Vec::new()).unwrap();
+        let _ = run(call(&["init"]), &mut Vec::new()).unwrap();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
-        run(call(&["track", "a.txt"]), &mut Vec::new()).unwrap();
-        run(call(&["commit", "-m", "first"]), &mut Vec::new()).unwrap();
+        let _ = run(call(&["track", "a.txt"]), &mut Vec::new()).unwrap();
+        let _ = run(call(&["commit", "-m", "first"]), &mut Vec::new()).unwrap();
 
         // A tag that is made although the result was not written: the command must not be repeated.
         let made = run(call(&["tag", "v1"]), &mut Full).unwrap_err();
@@ -6252,8 +6252,8 @@ mod tests {
         assert!(deleted.to_string().contains("is deleted, but"), "{deleted}");
         assert!(!dir.join(".stemma/refs/tags/v1").exists());
         // A reader that has had enough is not a failure; the change is made.
-        run(call(&["tag", "v2"]), &mut Closed).unwrap();
-        run(call(&["tag", "--delete", "v2"]), &mut Closed).unwrap();
+        let _ = run(call(&["tag", "v2"]), &mut Closed).unwrap();
+        let _ = run(call(&["tag", "--delete", "v2"]), &mut Closed).unwrap();
         assert!(!dir.join(".stemma/refs/tags/v2").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6269,10 +6269,10 @@ mod tests {
             all.extend(["-C", path.as_str(), "--actor", "human daniel"]);
             parse(&all)
         };
-        run(call(&["init"]), &mut Vec::new()).unwrap();
+        let _ = run(call(&["init"]), &mut Vec::new()).unwrap();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
-        run(call(&["track", "a.txt"]), &mut Vec::new()).unwrap();
-        run(
+        let _ = run(call(&["track", "a.txt"]), &mut Vec::new()).unwrap();
+        let _ = run(
             call(&["commit", "-m", "first\nsecond line"]),
             &mut Vec::new(),
         )
@@ -6282,7 +6282,7 @@ mod tests {
 
     fn output(call: &impl Fn(&[&str]) -> Cli, args: &[&str]) -> Result<String, CliError> {
         let mut out = Vec::new();
-        run(call(args), &mut out)?;
+        let _ = run(call(args), &mut out)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -6388,7 +6388,7 @@ mod tests {
             std::env::temp_dir().join(format!("stemma-cli-unit-branch-new-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
-        run(
+        let _ = run(
             parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Vec::new(),
         )
@@ -6404,7 +6404,7 @@ mod tests {
         let mut listed = Vec::new();
         let list = run(parse(&["branch", "-C", path]), &mut listed);
         let _ = std::fs::remove_dir_all(&dir);
-        list.unwrap();
+        let _ = list.unwrap();
         assert!(listed.is_empty(), "{}", String::from_utf8_lossy(&listed));
     }
 
@@ -6443,12 +6443,12 @@ mod tests {
         let deleted = run(call(&["branch", "-d", "b"]), &mut Full).unwrap_err();
         assert_eq!(deleted.exit_code(), ExitCode::from(3));
         assert!(!dir.join(".stemma/refs/heads/b").exists());
-        run(call(&["branch", "c"]), &mut Closed).unwrap();
+        let _ = run(call(&["branch", "c"]), &mut Closed).unwrap();
         // Listing only reads: a failed write is code 1, and a closed pipe is quiet.
         let listed = run(call(&["branch"]), &mut Full).unwrap_err();
         assert!(matches!(listed, CliError::BranchWrite { .. }), "{listed}");
         assert_eq!(listed.exit_code(), ExitCode::FAILURE);
-        run(call(&["branch"]), &mut Closed).unwrap();
+        let _ = run(call(&["branch"]), &mut Closed).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6457,7 +6457,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("stemma-cli-unit-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
-        run(
+        let _ = run(
             parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Vec::new(),
         )
@@ -6479,7 +6479,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("stemma-cli-unit-num-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.to_str().unwrap();
-        run(
+        let _ = run(
             parse(&["init", "-C", path, "--actor", "human daniel"]),
             &mut Vec::new(),
         )
