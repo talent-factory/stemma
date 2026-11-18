@@ -409,7 +409,7 @@ Nicht jede Änderung ist gleich gefährlich.
 Ein Tippfehler in der Dokumentation kann nichts zerstören;
 eine Änderung am Code, der Signaturen prüft, kann alle Regeln aufheben.
 Stemma ordnet deshalb jeder Änderung eine Risikostufe von 0 bis 3 zu,
-und die Stufe bestimmt, wer die Änderung freigeben muss.
+und die Stufe bestimmt, wer die Änderung freigeben muss (\in{Tabelle}[tab:risk-levels]).
 Die Policy-Datei ist die Liste, die einem Pfad seine Stufe gibt.
 
 \startplacetable[title={Die vier Risikostufen aus Sicht der Beteiligten},reference=tab:risk-levels]
@@ -442,38 +442,35 @@ Die Policy-Datei ist die Liste, die einem Pfad seine Stufe gibt.
 \stopxtable
 \stopplacetable
 
-Je höher die Stufe, desto weniger Agenten zählen.
-Bei Stufe 2 genügen Agenten allein nicht mehr, bei Stufe 3 zählen sie gar nicht.
-Der Grund ist die Lage des Agenten:
+Bis Stufe 2 steigt die Zahl der Agenten, die freigeben müssen.
+Ab Stufe 2 genügen Agenten allein nicht mehr, und nach dem Boden des Kerns zählen sie
+bei Stufe 3 gar nicht.
+Der Grund liegt in der Lage des Agenten:
 Er kann Fehler machen und kann in die Irre geführt werden.
-Wo ein Fehler die Regeln selbst trifft, soll ihn ein Mensch verantworten.
+Wo ein Fehler die Regeln selbst trifft, soll ein Mensch ihn verantworten.
 
-{\bf Der Code der Regeln hat selbst Stufe 3.}
+{\bf Auch der Code der Rechte hat Stufe 3.}
 Die Policy-Datei und das Akteursregister haben Stufe 3, und der Kern senkt sie nie.
-Dasselbe gilt für den Code, der Signaturen prüft, das Register liest und die Freigaben zählt.
-Wer ihn ändern darf, könnte sich beim nächsten Mal selbst mehr Rechte geben:
-Eine Änderung dort macht die Prüfung schwächer,
+ADR-004 setzt auch Signaturen, Schlüssel und Rechte auf Stufe 3,
+und der Entwurf der Policy dieses Repositorys führt \type{actor.rs} und \type{allowed.rs} auf.
+Der Grund ist derselbe:
+Wer diesen Code ändern darf, könnte die Prüfung schwächen,
 ohne dass es jemand an einer anderen Stelle merkt.
-ADR-004 nennt Signaturen, Schlüssel und Rechte deshalb Stufe 3.
-Der Entwurf der Policy dieses Repositorys führt \type{actor.rs} und \type{allowed.rs} so auf;
-die Dateien für Signaturen, Register und Policy stehen dort als Vorschlag, den der Owner
-entscheidet.
+Weitere Dateien, etwa für Signaturen, Register und Policy, stehen im Entwurf als Vorschlag.
+Der Owner entscheidet darüber.
 
 {\bf Die höchste Stufe gewinnt.}
 Eine Zeile kann einen Pfad nur anheben, nie senken, den eine andere Zeile hebt.
-Ohne diese Regel könnte eine breite Zeile \type{level 0 /crates/*/tests/} die Tests der
-Befehlszeile auf Stufe 0 setzen, obwohl \type{level 1 crates/stemma-cli/} das ganze Verzeichnis
-auf Stufe 1 hebt.
+Ohne diese Regel könnte eine breite Zeile \type{level 0 /crates/*/tests/}
+die Tests der Befehlszeile auf Stufe 0 setzen,
+obwohl \type{level 1 crates/stemma-cli/} das ganze Verzeichnis auf Stufe 1 hebt.
 Weil die höchste Stufe gilt, bleiben die Tests von \type{stemma-cli} auf Stufe 1.
-Die Reihenfolge der Zeilen spielt keine Rolle;
-wer die Datei liest, muss nicht prüfen, welche Zeile zuletzt kommt.
 
 {\bf Ein unbekannter Pfad hat Stufe 2.}
 Kein Verfasser kennt alle Pfade, die später entstehen.
 Ein neues Verzeichnis oder eine neue Dateiart soll deshalb weder frei noch gesperrt sein.
 Stufe 2 verlangt einen Menschen als Maintainer und lässt dem Owner die Wahl,
 die Stufe mit einer Zeile festzulegen.
-Eine Lücke in der Liste bedeutet so zusätzliche Aufsicht und nie zusätzliche Freiheit.
 
 {\bf Verankert oder an jeder Tiefe.}
 Ein Muster ohne \type{/} in der Mitte trifft einen Namen in jeder Tiefe.
@@ -482,11 +479,13 @@ Ein führender Schrägstrich verankert das Muster an der Wurzel:
 \type{/docs/} trifft nur das Verzeichnis \type{docs/} im Wurzelverzeichnis.
 Ein \type{/} in der Mitte verankert ebenfalls.
 Die Unterscheidung hat Folgen für die Sicherheit.
-\type{level 3 justfile} hebt jede Datei dieses Namens in jeder Tiefe an, auch eine in einem
-Beispiel;
-\type{level 0 docs/} senkt jeden Ordner \type{docs/}, auch einen, der ausführbaren Code enthält.
-Die Policy dieses Repositorys verankert deshalb die Dateien, die sie sichern will
-(\type{/justfile}, \type{/deny.toml}, \type{/docs/}).
+\type{level 3 justfile} hebt jede Datei dieses Namens in jeder Tiefe an,
+auch eine in einem Beispiel;
+\type{level 0 docs/} senkt jedes Verzeichnis \type{docs/}, auch eines, das ausführbaren Code
+enthält.
+Die Policy dieses Repositorys verankert deshalb ihre Muster:
+\type{/justfile} und \type{/deny.toml} heben nur die Dateien der Wurzel an,
+\type{/docs/} senkt nur das Verzeichnis der Wurzel.
 
 {\bf Die Zeilen.}
 Die erste Zeile, die weder leer noch ein Kommentar ist, ist der Kopf \type{stemma-policy 1}.
@@ -536,8 +535,8 @@ Der Name \type{.stemmaignore} ist erlaubt, denn ADR-004 gibt der Datei die Stufe
 \type{lease} und \type{weakened-level} stehen höchstens einmal, \type{approvals} einmal je Stufe,
 \type{operation} einmal je Name und \type{assertion} einmal je Pfad (höchstens 64 Zeilen).
 Ein Auszug aus dem Entwurf der \type{.stemma-policy} dieses Repositorys
-(er stammt aus der Tabelle der Pfade von ADR-004; der Owner hat ihn noch nicht signiert,
-und er gilt noch nicht):
+(er folgt der Tabelle der Pfade von ADR-004, den Regeln 7 und 8 und ADR-014;
+der Owner hat ihn noch nicht signiert, und er gilt noch nicht):
 
 \starttyping
 stemma-policy 1
