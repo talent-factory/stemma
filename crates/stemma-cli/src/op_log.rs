@@ -232,12 +232,12 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// operation did not change them, and `branches` is a list, empty if no branch changed. A pointer
 /// that did not exist or does not exist any more has `null` as its old or new value.
 ///
-/// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, `purge`, or
+/// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, `purge`,
 /// `lease`, or `pull`. A pull request entry has `time`, `actor`, `operation` (`pr-open`,
-/// `pr-close`, or `pr-merge`), `branch`, `pull`, `commit`, `reviewers`, a list, and `repairs`; the
-/// fields that the operation has not are `null`. A lease has `time`, `actor`, `operation`
-/// (`lease-acquire`, `lease-release`,
-/// `lease-takeover`, or `lease-override`), `branch`, `from`, `expires`, and `reason`; the last
+/// `pr-close`, or `pr-merge`), `branch`, `pull`, `commit`, `reviewers`, a list that is empty
+/// where the operation has none, and `repairs`; the other fields that the operation has not are
+/// `null`. A lease has `time`, `actor`, `operation`
+/// (`lease-acquire`, `lease-release`, `lease-takeover`, or `lease-override`), `branch`, `from`, `expires`, and `reason`; the last
 /// three are `null` where the operation has none.
 /// A stub has only `time` and `actor` besides; a purge has `time`, `actor`, `operation`,
 /// `commits`, `tags`, and `stubs`, a list of ranges `[start, end]` (ADR-014). The fields above

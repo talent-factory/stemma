@@ -498,9 +498,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   - **Purge.** An opening and a merge name commits, so a purge may replace them with stubs, as
     any entry that names a rewritten commit. A closing names none. The purge refuses to replace
     the opening of a pull request that is still open (`PurgeError::OpenPullRequest`), because the
-    pull request would vanish from the log. It also refuses to replace a `pr-merge` and keep its
-    `pr-open`, which would open the pull request again (`PurgeError::EndedPullRequest`). It
-    replaces the opening of a closed or merged one. `op restore` refuses a pull request entry, and
+    pull request would vanish from the log. It replaces the opening of a closed or merged one, and
+    it replaces the opening of a pull request together with its `pr-merge`, so that the pull
+    request is not open again. `op restore` refuses a pull request entry, and
     `outcomes` passes over it.
 
 ## Consequences

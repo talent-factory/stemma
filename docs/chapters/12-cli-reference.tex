@@ -2446,8 +2446,9 @@ Stub; für einen offenen lehnt er ab.
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
 \type{change}, \type{stub}, \type{purge}, \type{lease} oder \type{pull}.
 Ein Eintrag des Pull Requests hat dazu \type{time}, \type{actor}, \type{operation},
-\type{branch}, \type{pull}, \type{commit}, \type{reviewers} (eine Liste) und \type{repairs};
-Felder, die die Operation nicht kennt, sind \type{null}.
+\type{branch}, \type{pull}, \type{commit}, \type{reviewers} (eine Liste, leer, wo die Operation
+keine kennt) und \type{repairs}; die übrigen Felder, die die Operation nicht kennt, sind
+\type{null}.
 Ein Eintrag der Lease hat dazu \type{time}, \type{actor}, \type{operation}, \type{branch},
 \type{from}, \type{expires} (Sekunden seit dem 1.1.1970) und \type{reason}; die letzten drei sind
 \type{null}, wo die Operation sie nicht kennt (das Feld \type{kind} kam mit einem Wert dazu,

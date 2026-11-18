@@ -196,9 +196,9 @@ Facts that bound the design:
   nothing; the person closes the pull request or merges it, and runs the purge again. A closed or
   merged pull request loses its opening to a stub, as any change does, and its entry of closing
   then tells of nothing. The merge can name another commit than the opening, so a plan may replace
-  `pr-merge` and keep `pr-open`; the pull request would then be open again. The plan folds the log
-  as it would stand after the purge and refuses if a pull request that was ended is open in it
-  (`PurgeError::EndedPullRequest`).
+  `pr-merge` and keep `pr-open`; the pull request would then be open again, and nobody could end
+  it a second time. The plan therefore replaces the opening of a merged pull request whenever it
+  replaces its `pr-merge`.
 
 ### The steps
 

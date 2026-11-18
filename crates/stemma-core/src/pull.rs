@@ -146,18 +146,21 @@ pub fn pull_requests(entries: &[Entry]) -> Vec<PullRequest> {
                 if !target.is_open() {
                     continue;
                 }
-                target.state = match pull.commit() {
-                    Some(commit) => PullState::Merged {
+                target.state = match (pull.kind(), pull.commit()) {
+                    (PullKind::Merge, Some(commit)) => PullState::Merged {
                         entry: entry.number(),
                         by: entry.actor().clone(),
                         time: entry.time(),
                         commit: *commit,
                     },
-                    None => PullState::Closed {
+                    (PullKind::Close, None) => PullState::Closed {
                         entry: entry.number(),
                         by: entry.actor().clone(),
                         time: entry.time(),
                     },
+                    _ => {
+                        unreachable!("a merge has a commit and a close has none: PullEntry::build")
+                    }
                 };
             }
         }
@@ -165,7 +168,8 @@ pub fn pull_requests(entries: &[Entry]) -> Vec<PullRequest> {
     pulls
 }
 
-/// The open pull request of `branch`, if it has one. There is at most one (ADR-004).
+/// The open pull request of `branch`, if it has one. `Repository::open_pull` lets at most one
+/// exist (ADR-004); of two in a log that was edited by hand, the first is returned.
 pub fn open_for<'a>(pulls: &'a [PullRequest], branch: &BranchName) -> Option<&'a PullRequest> {
     pulls
         .iter()

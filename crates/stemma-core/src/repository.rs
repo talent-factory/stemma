@@ -98,9 +98,8 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` writes, and that a purge and every new entry
-/// of the log move a repository to: version 8, the lease of a branch: the entries `lease-acquire`,
-/// `lease-release`, `lease-takeover`, and `lease-override` and the directory `leases/` (ADR-004,
-/// ADR-009, ADR-011).
+/// of the log move a repository to: version 9, the pull request entries `pr-open`, `pr-close`, and
+/// `pr-merge` (ADR-004, ADR-011). Version 8 was the lease of a branch (ADR-009).
 const FORMAT_VERSION: u32 = 9;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
@@ -120,7 +119,8 @@ const FORMAT_VERSION: u32 = 9;
 /// the same rise and for the same reason. Version 8 adds the four lease entries and the directory
 /// `leases/`: a repository moves to it with its next entry or purge, the first lease entry among
 /// them, so that a program that knows only version 7 refuses a log whose entries it cannot
-/// read, instead of reporting damage.
+/// read, instead of reporting damage. Version 9 adds the three pull request entries, with the
+/// same rise and for the same reason.
 const READ_VERSIONS: [u32; 8] = [2, 3, 4, 5, 6, 7, 8, 9];
 
 // A purge and every new entry of the log move a repository to `FORMAT_VERSION` (ADR-011,

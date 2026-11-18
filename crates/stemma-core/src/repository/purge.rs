@@ -28,6 +28,7 @@ use super::snapshot::{read_any_commit, read_object, SnapshotError};
 use super::{Repository, UpdateError};
 use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::object::{BlobId, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
+use crate::oplog::PullKind;
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
 use crate::pull::{self, PullRequest};
 use crate::refs::{BranchName, Head, RefError};
@@ -328,12 +329,27 @@ impl Repository {
                 )
             })
             .collect();
-        let (replaced, kept): (Vec<&Entry>, Vec<&Entry>) = log.iter().partition(|entry| {
+        let (mut replaced, mut kept): (Vec<&Entry>, Vec<&Entry>) = log.iter().partition(|entry| {
             entry
                 .commits()
                 .iter()
                 .any(|commit| rewritten.contains(commit))
         });
+        // The merge of a pull request can name another commit than its opening. If the purge
+        // replaces the merge and kept the opening, the pull request would be open again, and the
+        // person could not close it a second time. The opening is replaced with it (STEMMA-238).
+        let merged: HashSet<u64> = replaced
+            .iter()
+            .filter_map(|entry| entry.pull())
+            .filter(|pull| pull.kind() == PullKind::Merge)
+            .filter_map(|pull| pull.pull())
+            .collect();
+        let (openings, rest): (Vec<&Entry>, Vec<&Entry>) = kept
+            .into_iter()
+            .partition(|entry| merged.contains(&entry.number()));
+        kept = rest;
+        replaced.extend(openings);
+        replaced.sort_by_key(|entry| entry.number());
 
         // The roots that stay: the pointers after the purge, and the entries that are not
         // replaced.
@@ -374,32 +390,6 @@ impl Repository {
         if let Some(entry) = replaced.iter().find(|entry| open.contains(&entry.number())) {
             return Err(PurgeError::OpenPullRequest {
                 number: entry.number(),
-            });
-        }
-        // The merge of a pull request can name another commit than its opening. If a purge
-        // replaces the merge and keeps the opening, the pull request would be open again.
-        let replaced_numbers: HashSet<u64> = replaced.iter().map(|entry| entry.number()).collect();
-        let after: Vec<Entry> = log
-            .iter()
-            .map(|entry| {
-                if replaced_numbers.contains(&entry.number()) {
-                    entry.to_stub().unwrap_or_else(|_| entry.clone())
-                } else {
-                    entry.clone()
-                }
-            })
-            .collect();
-        let was_open: HashSet<u64> = pull::pull_requests(&log)
-            .iter()
-            .filter(|pull| pull.is_open())
-            .map(PullRequest::number)
-            .collect();
-        if let Some(pull) = pull::pull_requests(&after)
-            .iter()
-            .find(|pull| pull.is_open() && !was_open.contains(&pull.number()))
-        {
-            return Err(PurgeError::EndedPullRequest {
-                number: pull.number(),
             });
         }
         // A log with 2^24 entries is too large for a test, so no test notices if this goes.
@@ -1011,13 +1001,6 @@ pub enum PurgeError {
         /// The number of the pull request.
         number: u64,
     },
-    /// The plan would replace the entry that ends a pull request (`pr-merge`) but not its
-    /// opening, so that the pull request would be open again after the purge. Nothing was
-    /// written (STEMMA-238).
-    EndedPullRequest {
-        /// The number of the pull request.
-        number: u64,
-    },
     /// Tags point to commits that the purge would rewrite. A tag never moves (ADR-008), so the
     /// purge would leave the commits with the secret reachable.
     TaggedCommit {
@@ -1087,11 +1070,6 @@ impl PurgeError {
                 "the pull request {number} is still open and names a commit that the purge would \
                  rewrite; close it or merge it first"
             ),
-            Self::EndedPullRequest { number } => write!(
-                f,
-                "the purge would replace the merge of the pull request {number} but not its \
-                 opening, which would open the pull request again"
-            ),
             Self::Rewrite { commit, source } => write!(
                 f,
                 "the rewrite of the commit {commit} gives a sum of trees that no commit can hold: \
@@ -1152,7 +1130,6 @@ impl Error for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::TooManyEntries { .. }
             | Self::OpenPullRequest { .. }
-            | Self::EndedPullRequest { .. }
             | Self::TaggedCommit { .. }
             | Self::Unsound { .. } => None,
         }
@@ -1549,7 +1526,7 @@ mod tests {
     }
 
     #[test]
-    fn a_purge_refuses_to_replace_the_merge_of_a_pull_request_and_keep_its_opening() {
+    fn a_purge_that_replaces_the_merge_of_a_pull_request_replaces_its_opening_too() {
         use crate::oplog::PullEntry;
         let dir = TempDir::new();
         let repository = repository(&dir);
@@ -1558,16 +1535,14 @@ mod tests {
         let number = open_pull(&repository, first);
         let merge = PullEntry::merge(2, actor(), number, second).unwrap();
         repository.oplog().append_pull(&merge).unwrap();
-        let error = repository
+        let plan = repository
             .plan_purge(secret(), &actor(), &AllowAll)
-            .unwrap_err();
+            .expect("a merged pull request does not stand in the way");
+        assert!(plan.entries().contains(&number), "{:?}", plan.entries());
         assert!(
-            matches!(error, PurgeError::EndedPullRequest { number: n } if n == number),
-            "{error:?}"
-        );
-        assert!(
-            error.to_string().contains("open the pull request again"),
-            "{error}"
+            plan.entries().contains(&(number + 1)),
+            "{:?}",
+            plan.entries()
         );
     }
 
