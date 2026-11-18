@@ -404,6 +404,89 @@ Sie ist so streng wie die Ausschlussdatei \type{.stemmaignore} (ADR-012):
 gleiche Grenzen für Zeilen und Datei, ein einheitliches Zeilenende, keine wiederholte Zeile,
 und eine Zeile, die der Leser nicht kennt, ist ein Fehler mit ihrer Nummer.
 
+{\bf Die Idee in einfachen Worten.}
+Nicht jede Änderung ist gleich gefährlich.
+Ein Tippfehler in der Dokumentation kann nichts zerstören;
+eine Änderung am Code, der Signaturen prüft, kann alle Regeln aufheben.
+Stemma ordnet deshalb jeder Änderung eine Risikostufe von 0 bis 3 zu,
+und die Stufe bestimmt, wer die Änderung freigeben muss (\in{Tabelle}[tab:risk-levels]).
+Die Policy-Datei ist die Liste, die einem Pfad seine Stufe gibt.
+
+\startplacetable[title={Die vier Risikostufen aus Sicht der Beteiligten},reference=tab:risk-levels]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Stufe} \stopxcell
+\startxcell {\bf Typische Änderung} \stopxcell
+\startxcell {\bf Wer gibt frei?} \stopxcell
+\stopxrow
+\startxrow
+\startxcell 0 \stopxcell
+\startxcell Dokumentation, Beispiele, Tests \stopxcell
+\startxcell Ein unabhängiger Agent; ein Agent darf mergen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell 1 \stopxcell
+\startxcell Neue Befehle, Ausgabeformate, Logik ohne Speicherung \stopxcell
+\startxcell Zwei unabhängige Agenten; ein Agent darf mergen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell 2 \stopxcell
+\startxcell Objektformat, Zeiger, Lease, Merge, neue Abhängigkeiten \stopxcell
+\startxcell Zwei Agenten und ein Mensch als Maintainer. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell 3 \stopxcell
+\startxcell Rechte, Signaturen und Schlüssel, CI und Release, die Policy selbst \stopxcell
+\startxcell Allein der Mensch mit der Rolle Owner, dazu ein ADR. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Von Stufe 0 auf Stufe 1 steigt die Zahl der Agenten, die freigeben müssen, von einem auf zwei.
+Ab Stufe 2 genügen Agenten allein nicht mehr, und für Stufe 3 verlangt der Kern
+keinen Agenten mehr.
+Der Grund liegt in der Lage des Agenten:
+Er kann Fehler machen und kann in die Irre geführt werden.
+Wo ein Fehler die Regeln selbst trifft, soll ein Mensch ihn verantworten.
+
+{\bf Auch der Code der Rechte hat Stufe 3.}
+Die Policy-Datei und das Akteursregister haben Stufe 3, und der Kern senkt sie nie.
+ADR-004 setzt auch Signaturen, Schlüssel und Rechte auf Stufe 3,
+und der Entwurf der Policy dieses Repositorys führt \type{actor.rs} und \type{allowed.rs} auf.
+Der Grund ist derselbe:
+Wer diesen Code ändern darf, könnte die Prüfung schwächen,
+ohne dass es jemand an einer anderen Stelle merkt.
+Weitere Dateien, etwa für Signaturen, Register und Policy, stehen im Entwurf als Vorschlag.
+Der Owner entscheidet darüber.
+
+{\bf Die höchste Stufe gewinnt.}
+Eine Zeile kann einen Pfad nur anheben, nie senken, den eine andere Zeile hebt.
+Ohne diese Regel könnte eine breite Zeile \type{level 0 /crates/*/tests/}
+die Tests der Befehlszeile auf Stufe 0 setzen,
+obwohl \type{level 1 crates/stemma-cli/} das ganze Verzeichnis auf Stufe 1 hebt.
+Weil die höchste Stufe gilt, bleiben die Tests von \type{stemma-cli} auf Stufe 1.
+
+{\bf Ein unbekannter Pfad hat Stufe 2.}
+Kein Verfasser kennt alle Pfade, die später entstehen.
+Ein neues Verzeichnis oder eine neue Dateiart soll deshalb weder frei noch gesperrt sein.
+Stufe 2 verlangt einen Menschen als Maintainer und lässt dem Owner die Wahl,
+die Stufe mit einer Zeile festzulegen.
+
+{\bf Verankert oder an jeder Tiefe.}
+Ein Muster ohne \type{/} in der Mitte trifft einen Namen in jeder Tiefe.
+\type{docs/} trifft darum \type{docs/}, aber auch \type{crates/stemma-core/docs/}.
+Ein führender Schrägstrich verankert das Muster an der Wurzel:
+\type{/docs/} trifft nur das Verzeichnis \type{docs/} im Wurzelverzeichnis.
+Ein \type{/} in der Mitte verankert ebenfalls.
+Die Unterscheidung hat Folgen für die Sicherheit.
+\type{level 3 justfile} hebt jede Datei dieses Namens in jeder Tiefe an,
+auch eine in einem Beispiel;
+\type{level 0 docs/} senkt jedes Verzeichnis \type{docs/}, auch eines, das ausführbaren Code
+enthält.
+Der Entwurf der Policy dieses Repositorys verankert deshalb seine Muster:
+\type{/justfile} und \type{/deny.toml} heben nur die Dateien der Wurzel an,
+\type{/docs/} senkt nur das Verzeichnis der Wurzel.
+
 {\bf Die Zeilen.}
 Die erste Zeile, die weder leer noch ein Kommentar ist, ist der Kopf \type{stemma-policy 1}.
 Eine andere Version oder ein fehlender Kopf macht die Datei ungültig.
@@ -451,16 +534,23 @@ Das Muster hat die Sprache von ADR-012, mit einer Ausnahme:
 Der Name \type{.stemmaignore} ist erlaubt, denn ADR-004 gibt der Datei die Stufe 2.
 \type{lease} und \type{weakened-level} stehen höchstens einmal, \type{approvals} einmal je Stufe,
 \type{operation} einmal je Name und \type{assertion} einmal je Pfad (höchstens 64 Zeilen).
-Ein Beispiel mit Zeilen aus der Tabelle der Pfade von ADR-004:
+Ein Auszug aus dem Entwurf der \type{.stemma-policy} dieses Repositorys
+(er folgt der Tabelle der Pfade von ADR-004, den Regeln 7 und 8 und ADR-014;
+der Owner hat ihn noch nicht signiert, und er gilt noch nicht):
 
 \starttyping
 stemma-policy 1
+level 3 crates/stemma-core/src/actor.rs
 level 3 .github/workflows/
-level 3 justfile
-level 2 .stemmaignore
+level 3 /justfile
+level 2 /.stemmaignore
+level 2 /Cargo.toml
+level 2 crates/stemma-cli/Cargo.toml
 level 1 crates/stemma-cli/
-level 0 docs/
-level 0 *.md
+level 0 /docs/
+level 0 /crates/*/tests/
+operation purge 3
+approvals 2 2
 \stoptyping
 
 {\bf Die Stufe einer Änderung.}
