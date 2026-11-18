@@ -4304,6 +4304,18 @@ fn enforce(args: EnforceArgs, out: &mut dyn Write) -> Result<(), CliError> {
         Err(error) => return Err(CliError::RegisterDamaged(error.to_string())),
     }
     let path = repository.path().join(register::FILE);
+    // The directory of the register must not be a link: the write would reach a file outside the
+    // repository.
+    if let Some(parent) = path.parent() {
+        if let Ok(meta) = fs::symlink_metadata(parent) {
+            if !meta.is_dir() {
+                return Err(CliError::Register(format!(
+                    "{} exists in the working copy and is not a directory; move it away first",
+                    parent.display()
+                )));
+            }
+        }
+    }
     if fs::symlink_metadata(&path).is_ok() {
         return Err(CliError::Register(format!(
             "{} exists in the working copy already; the repository is open, so move it away \
@@ -4313,14 +4325,19 @@ fn enforce(args: EnforceArgs, out: &mut dyn Write) -> Result<(), CliError> {
     }
     register::enter_enforcing(&repository, &register).map_err(|error| {
         CliError::RegisterNotWritten(format!(
-            "the actor register could not be written completely ({error}); the repository may \
-             be enforcing without a register file, so do not run `enforce` again"
+            "the actor register could not be written completely ({error}); the marker {} in the \
+             metadata directory may be set without a complete {}, which makes the repository \
+             damaged and not open. Check both before any further step; do not run `enforce` \
+             again",
+            register::MARKER,
+            register::FILE
         ))
     })?;
     writeln!(
         out,
-        "Enforcing mode: {} names {actor} as the owner; commit it. There is no way back to the \
-         open mode.",
+        "Enforcing mode: {} names {actor} as the owner; track and commit it, because \
+         until then `register` and `op verify` end with code 5. There is no way back to the open \
+         mode.",
         register::FILE
     )
     .and_then(|()| out.flush())

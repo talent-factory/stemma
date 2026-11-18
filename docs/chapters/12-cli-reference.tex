@@ -376,7 +376,7 @@ ein zweites \type{init} bricht ab, weil \type{.stemma} besteht. \stopxcell
 aber die Ausgabe liess sich nicht schreiben,
 oder das Schreiben selbst ist nicht vollständig. \stopxcell
 \startxcell Nicht wiederholen;
-ein zweites \type{enforce} bricht ab oder trifft ein halbes Register. \stopxcell
+ein zweites \type{enforce} endet mit Exit-Code 5. \stopxcell
 \stopxrow
 \startxrow
 \startxcell[width=0.26\textwidth] \type{track} \stopxcell
@@ -715,11 +715,13 @@ Owner des Registers.
 
 {\bf Verhalten.} \type{enforce} schreibt das Register mit dem Akteur als Owner nach
 \type{.stemma-actors/register} im Arbeitsverzeichnis und setzt die Datei \type{.stemma/enforcing}.
-Die Registerdatei gehört in den nächsten Commit; der Befehl committet sie nicht.
+Die Registerdatei muss verfolgt und committet werden; der Befehl tut beides nicht.
+Bis zu diesem Commit hat die Basis des Repositories kein Register,
+und \type{register} und \type{op verify} enden mit Exit-Code 5.
 Der Schritt hat keinen Weg zurück. Die Ausgabe ist eine Zeile:
 
 \starttyping
-Enforcing mode: .stemma-actors/register names human daniel as the owner; commit it. There is no way back to the open mode.
+Enforcing mode: .stemma-actors/register names human daniel as the owner; track and commit it, because until then `register` and `op verify` end with code 5. There is no way back to the open mode.
 \stoptyping
 
 Der Befehl bricht mit Exit-Code 1 ab und ändert nichts, wenn

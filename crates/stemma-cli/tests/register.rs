@@ -727,6 +727,8 @@ fn enforce_takes_an_open_repository_with_history_to_the_enforcing_mode() {
         format!("stemma-register 1\nentry human daniel owner\nkey {OWNER_KEY} active\n")
     );
     assert!(dir.path().join(".stemma/enforcing").is_file());
+    // Until the register is committed, the base has none: damage, not the open mode.
+    assert_eq!(run(dir.path(), &["op", "verify"]).code, 5);
     commit_register(dir.path());
     let result = ok(dir.path(), &["op", "verify"]);
     assert!(
@@ -813,5 +815,21 @@ fn enforce_without_an_owner_key_is_a_usage_error() {
     let dir = open_with_a_commit();
     let result = run(dir.path(), &["enforce", "--actor", ACTOR]);
     assert_eq!(result.code, 2, "{}", result.stderr);
+    assert!(!dir.path().join(".stemma/enforcing").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn enforce_refuses_a_link_in_place_of_the_register_directory() {
+    let keys = Dir::new();
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    let dir = open_with_a_commit();
+    std::os::unix::fs::symlink(keys.path(), dir.path().join(".stemma-actors")).unwrap();
+    let result = run(
+        dir.path(),
+        &["enforce", "--actor", ACTOR, "--owner-key", &owner],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(!keys.path().join("register").exists());
     assert!(!dir.path().join(".stemma/enforcing").exists());
 }
