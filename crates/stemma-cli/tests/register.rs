@@ -729,6 +729,14 @@ fn enforce_takes_an_open_repository_with_history_to_the_enforcing_mode() {
     assert!(dir.path().join(".stemma/enforcing").is_file());
     // Until the register is committed, the base has none: damage, not the open mode.
     assert_eq!(run(dir.path(), &["op", "verify"]).code, 5);
+    let again = run(
+        dir.path(),
+        &["enforce", "--actor", ACTOR, "--owner-key", &owner],
+    );
+    assert_eq!(again.code, 5, "{}", again.stderr);
+    let key = key_file(&keys, "new.pub", OTHER_KEY);
+    let changed = run(dir.path(), &["register", "add-key", "--actor", ACTOR, &key]);
+    assert_eq!(changed.code, 5, "{}", changed.stderr);
     commit_register(dir.path());
     let result = ok(dir.path(), &["op", "verify"]);
     assert!(
@@ -832,4 +840,16 @@ fn enforce_refuses_a_link_in_place_of_the_register_directory() {
     assert_eq!(result.code, 1, "{}", result.stdout);
     assert!(!keys.path().join("register").exists());
     assert!(!dir.path().join(".stemma/enforcing").exists());
+}
+
+#[test]
+fn enforce_works_from_a_subdirectory_with_c() {
+    let keys = Dir::new();
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    let dir = open_with_a_commit();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let sub = dir.path().join("sub");
+    ok(&sub, &["enforce", "--actor", ACTOR, "--owner-key", &owner]);
+    assert!(dir.path().join(REGISTER).is_file());
+    assert!(!sub.join(".stemma-actors").exists());
 }

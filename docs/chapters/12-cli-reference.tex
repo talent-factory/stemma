@@ -705,7 +705,8 @@ stemma enforce [-C VERZEICHNIS] --owner-key DATEI --actor AKTEUR
 
 \startitemize
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories
-oder ein Verzeichnis darunter. Standard ist das aktuelle.
+oder ein Verzeichnis darunter.
+Standard ist das aktuelle.
 \item {\bf \type{--owner-key} DATEI:} Die Datei eines öffentlichen Ed25519-Schlüssels
 (eine \type{.pub}-Datei). Die Angabe ist Pflicht; fehlt sie, ist das ein Aufruffehler
 (Exit-Code 2).
@@ -719,8 +720,8 @@ und setzt die Datei \type{.stemma/enforcing}.
 Die Registerdatei muss verfolgt und committet werden; der Befehl tut beides nicht.
 Bis zu diesem Commit hat die Basis des Repositories kein Register,
 und \type{register}, \type{op verify} und ein zweites \type{enforce} enden mit Exit-Code 5.
-Der Schritt hat keinen Weg zurück. Die Ausgabe ist eine Zeile,
-die hier der Breite wegen umbrochen ist:
+Der Schritt hat keinen Weg zurück.
+Die Ausgabe ist eine Zeile, die hier der Breite wegen umbrochen ist:
 
 \starttyping
 Enforcing mode: .stemma-actors/register names human daniel as the owner;
@@ -2914,7 +2915,8 @@ sein; die Signatur geht auf die Standardausgabe.
 und dem Schlüssel an; nur ein Owner tut das.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und ändert nichts, wenn das Repository offen ist
-(\type{init --owner-key} beginnt ein durchsetzendes), wenn der Akteur kein Owner ist und eine
+(\type{init --owner-key} beginnt ein durchsetzendes,
+\type{enforce --owner-key} führt ein bestehendes dorthin), wenn der Akteur kein Owner ist und eine
 andere Identität nennt, wenn die Identität oder der Schlüssel im Register fehlt,
 wenn der Schlüssel schon im Register steht, nicht mehr aktiv oder schon widerrufen ist
 und wenn kein Owner mit einem aktiven Schlüssel übrig bliebe.

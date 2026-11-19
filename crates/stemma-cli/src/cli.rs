@@ -4448,7 +4448,7 @@ fn load_register(repository: Repository) -> Result<(Repository, PathBuf, Registe
     if mode == Mode::Open {
         return Err(CliError::Register(
             "the repository is open and has no actor register; `init --owner-key` starts an \
-             enforcing repository"
+             enforcing repository, and `enforce --owner-key` takes an existing one there"
                 .to_owned(),
         ));
     }

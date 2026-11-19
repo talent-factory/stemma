@@ -1455,24 +1455,42 @@ pub fn is_enforcing(metadata_dir: &Path) -> io::Result<bool> {
 /// # Errors
 ///
 /// An error of the file system. An existing register file is an error
-/// ([`io::ErrorKind::AlreadyExists`]) and stays as it is.
+/// ([`io::ErrorKind::AlreadyExists`]) and stays as it is. If the register file cannot be created,
+/// the marker that this call set is removed again.
 pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Result<()> {
     // The marker comes first and is flushed: a failure or a crash between the two steps leaves a
     // repository that is enforcing without a register (an error), never an open one that has a
     // register file.
     let metadata = repository.metadata_dir();
-    let mut marker = fs::File::create(metadata.join(MARKER))?;
+    let marker_path = metadata.join(MARKER);
+    let marker_was_set = marker_path.exists();
+    let mut marker = fs::File::create(&marker_path)?;
     io::Write::write_all(&mut marker, MARKER_CONTENT.as_bytes())?;
     marker.sync_all()?;
     fs::File::open(&metadata)?.sync_all()?;
     let path = repository.path().join(FILE);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
+    // As long as no register file exists, this call can take its own marker back. A failure after
+    // the file exists leaves both in place: the repository is then damaged, not open.
+    let created = (|| {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+    })();
+    let mut file = match created {
+        Ok(file) => file,
+        Err(error) => {
+            if !marker_was_set {
+                // Best effort: if this fails as well, the marker stays and the repository is
+                // reported as damaged, which is the safe side.
+                let _ = fs::remove_file(&marker_path);
+            }
+            return Err(error);
+        }
+    };
     io::Write::write_all(&mut file, register.encode().as_bytes())?;
     file.sync_all()?;
     Ok(())
@@ -2140,6 +2158,22 @@ mod tests {
         // A file that is not a register is an error as well.
         fs::write(dir.path().join(FILE), "garbage").unwrap();
         assert!(matches!(Mode::of(&repository), Err(ModeError::Parse(_))));
+    }
+
+    #[test]
+    fn a_register_that_cannot_be_created_takes_its_marker_back() {
+        let dir = crate::testutil::TempDir::new();
+        let repository = Repository::init(
+            dir.path(),
+            &crate::repository::InitOptions::default(),
+            &daniel(),
+            &crate::AllowAll,
+        )
+        .unwrap();
+        // A file where the directory of the register belongs: the register cannot be created.
+        fs::write(dir.path().join(".stemma-actors"), "in the way").unwrap();
+        assert!(enter_enforcing(&repository, &register()).is_err());
+        assert!(!is_enforcing(&repository.metadata_dir()).unwrap());
     }
 
     #[test]
