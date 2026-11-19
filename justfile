@@ -24,6 +24,11 @@ default:
 
 # ─────────────────────────── Development ───────────────────────────────────
 
+# Use the versioned Git hooks of `.githooks/` (the check of the commit message) in this clone.
+[group('Development')]
+hooks:
+    git config core.hooksPath .githooks
+
 # Build the whole workspace (debug).
 [group('Development')]
 build:

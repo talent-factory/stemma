@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Checks the commit message against the rules of CLAUDE.md ("Commits"):
+#   - the first line is `<emoji> <type>: <description>` and has at most 72 characters,
+#   - no `Co-Authored-By:` and no `Claude-Session:` line.
+# Install with `just hooks`.
+set -euo pipefail
+# The length counts characters, not bytes: an emoji is one.
+if locale -a | grep -qi '^en_US\.utf-\?8$'; then
+    export LC_ALL=en_US.UTF-8
+else
+    export LC_ALL=C.UTF-8
+fi
+
+file=$1
+subject=$(grep -v '^#' "$file" | sed -n '1p')
+
+# Merges, reverts, and autosquash commits keep the text that Git wrote.
+case $subject in
+    Merge\ * | Revert\ * | fixup!\ * | squash!\ * | amend!\ *) exit 0 ;;
+esac
+
+status=0
+fail() {
+    echo "commit-msg: $1" >&2
+    status=1
+}
+
+types='feat|fix|docs|test|refactor|perf|style|build|ci|chore|revert'
+first=${subject%% *}
+# An emoji is a character outside printable ASCII; the check runs on bytes, where that is any
+# byte above 0x7F.
+if ! (LC_ALL=C; [[ $first =~ [^\ -~] ]]); then
+    fail "the first line starts with an emoji: '<emoji> <type>: <description>'"
+fi
+if [[ ! $subject =~ ^[^\ ]+\ ($types)(\([a-z0-9-]+\))?:\ .+ ]]; then
+    fail "the first line is '<emoji> <type>: <description>' with a type of: ${types//|/, }"
+fi
+if ((${#subject} > 72)); then
+    fail "the first line has ${#subject} characters; the limit is 72"
+fi
+if grep -qiE '^(co-authored-by|claude-session):' "$file"; then
+    fail "remove the 'Co-Authored-By:' and 'Claude-Session:' lines (CLAUDE.md, 'Commits')"
+fi
+exit $status
