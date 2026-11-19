@@ -22,7 +22,8 @@ All routine tasks run through `just` (see `justfile`, list with `just`):
 
 ## Commits
 
-- Create commits with the `git-workflow:professional-commit-workflow` skill (`/git-workflow:professional-commit-workflow`).
+- Create commits with the `git-workflow:commit` skill (`/git-workflow:commit`).
+- `just hooks` installs `.githooks/commit-msg`, which refuses a message that breaks the format, the 72 characters, or the trailer rules of this section.
 - Never add `Claude-Session:` lines (or any other link to a session transcript) to commit messages or PR descriptions. The link points to a full conversation transcript and does not belong in a permanent, potentially public history. Remove such lines if a tool adds them.
 
 ## Releases
