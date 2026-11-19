@@ -32,6 +32,7 @@
 mod actor;
 mod allowed;
 pub mod change;
+pub mod check;
 pub mod conflict;
 pub mod diff;
 pub mod failure;

@@ -198,7 +198,8 @@ Facts that bound the design:
   then tells of nothing. The merge can name another commit than the opening, so a plan may replace
   `pr-merge` and keep `pr-open`; the pull request would then be open again, and nobody could end
   it a second time. The plan therefore replaces the opening of a merged pull request whenever it
-  replaces its `pr-merge`.
+  replaces its `pr-merge`. An entry `check` names commits too (ADR-011) and is replaced by a stub
+  like any other entry that names a rewritten commit; it stops no purge.
 
 ### The steps
 

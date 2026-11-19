@@ -1,7 +1,7 @@
 # ADR-019: The merge gate without a global lock
 
-**Status:** Accepted (decided in STEMMA-229). Nothing here is implemented; the implementation
-slices are on the map of phase 4.
+**Status:** Accepted (decided in STEMMA-229). The evidence of the checks is implemented
+(STEMMA-240); the gate itself is not, and its implementation slices are on the map of phase 4.
 The pull request as an object, the checks, and the merge gate belong to phase 4. The ADR defines
 what "`main` is always green" means for the gate (ADR-006 decides the GitHub side, which stays
 open) and gives ADR-004 the meaning of its "merge gate".
@@ -63,9 +63,9 @@ first object (ADR-014, STEMMA-49); the amendment does not reach them.
 ### A check result is evidence about a pair of commits
 
 A result names the commit that was tested and the tip of `main` it was merged onto for the test
-(its *base*). The pull request keeps its results as long as its branch is unchanged. Whether a
-result is still enough when `main` has moved is decided by the risk level of the change
-(ADR-004), as follows.
+(its *base*). The result is the entry `check` of the operation log (ADR-011), one entry per pair.
+The pull request keeps its results as long as its branch is unchanged. Whether a result is still
+enough when `main` has moved is decided by the risk level of the change (ADR-004), as follows.
 
 | Level | Rule when `main` moved after the check |
 |---|---|
@@ -144,10 +144,12 @@ the merge cannot: two changes that merge cleanly and break each other (a semanti
 - The *last green tip* is the newest commit of `main` that a finished run covered with success. The
   *first red tip* is the oldest commit after it that a finished run covered with failure. To find
   the cause in a window of unverified commits, the gate bisects the linear history of `main`
-  between the two.
-- The form of the entry `pr-open` and the syntax of `repairs` are fixed (ADR-011, STEMMA-238);
-  the form of `check` belongs to the approvals of phase 4 (STEMMA-227). This ADR fixes what the
-  gate does with them, not how they are written.
+  between the two. A failing run does not take back a passing run of the same commit: the core
+  reads the last green tip from the passing runs alone (ADR-011), and the failure stays in the log
+  for the gate.
+- The form of the entry `pr-open` and the syntax of `repairs` are fixed (ADR-011, STEMMA-238),
+  and so is the form of the entry `check` (ADR-011, STEMMA-240). This ADR fixes what the gate
+  does with them, not how they are written.
 
 ### What "`main` is always green" means
 
@@ -168,11 +170,19 @@ The gate relies on the ban on self-approval (STEMMA-227) and gives "independent"
 meaning: different actor IDs.
 
 - A `check` for level 2 and 3 counts only if its writer is not the opener of the change, not the
-  author of a commit in `base..head`, and not an agent whose sponsor is one of them. For level 0
-  and 1 every registered actor counts.
+  author of a commit in `base..head`, and not an agent whose sponsor is one of them. It does not
+  count either if its writer is the sponsor of an agent that opened the change or wrote a commit
+  in it (ADR-004). For level 0 and 1 every registered actor counts. The identity counts, not the
+  model or the session. The rule is `check::is_independent` and `check::counts`;
+  `Repository::counted_checks` applies it, with the proof of the signature (ADR-011).
 - Two agents of one sponsor count as two reviews. The fields `model` and `session` are descriptive
   only (STEMMA-222), so a stronger independence cannot be verified. The human at level 2 and 3
   stays the anchor.
+- The sponsor of an actor is the one of the register where the actor is registered, and
+  otherwise the claim of its actor line. An author that is no registered agent can therefore name
+  another sponsor than the true one, and the sponsor rule does not reach it. The check of the
+  writer asks for a registered actor wherever a register exists; the same for the authors is a
+  rule for the gate.
 
 ## Consequences
 
@@ -188,8 +198,8 @@ meaning: different actor IDs.
   checks. The reservation bounds this: after `N` invalidated runs the change is merged before
   any other change continues, at the price of a short pause that the timeout of the reservation
   limits.
-- A result is stored with its base, so the pull request of phase 4 needs a place for evidence
-  that is keyed by a pair of commits. The format is left to that phase.
+- A result is stored with its base: the entry `check` of the operation log is the evidence about a
+  pair of commits (ADR-011, STEMMA-240).
 - An automatic run on a pull request and required checks on GitHub need their own decision that
   amends ADR-006; this ADR does not make it. It defines what "green" means for the gate of
   Stemma, which a later decision on GitHub can reuse.
@@ -214,10 +224,12 @@ meaning: different actor IDs.
 - [x] The author decides the proposal: the table of rules by risk level, the pause for levels 2
   and 3 while the tip is red, and the repair by a new change. Decided in STEMMA-229 as proposed;
   the repair is declared by `repairs <commit>`.
-- [ ] The form of the evidence and where phase 4 stores it (a result per pair of commits).
+- [x] The form of the evidence and where phase 4 stores it: the entry `check` of the log, one
+  entry per pair of commits, and a run on a tip without a base (ADR-011, STEMMA-240).
 - [x] The form of the entry `pr-open` and the syntax of `repairs`: the lines `repairs <commit>`
   after the reviewers (ADR-011, STEMMA-238).
-- [ ] The form of the entry `check` (STEMMA-227); this ADR fixes only what the gate does with it.
+- [x] The form of the entry `check`: the lines `version 1`, `commit`, `base`, and `result`
+  (ADR-011, STEMMA-240). The approval (STEMMA-227) is a separate record.
 - [ ] Whether a result may name a *set* of tested base commits when several changes were tested
   together, and what this does to the rule for levels 0 and 1.
 - [x] A bound for the retries of a change of level 2 or 3: the reservation after `N` = 3

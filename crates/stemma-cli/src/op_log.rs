@@ -3,7 +3,9 @@
 
 use std::fmt::{self, Display, Write};
 
-use stemma_core::oplog::{Change, Entry, LeaseEntry, Moved, Outcome, PullEntry, Purge, Record};
+use stemma_core::oplog::{
+    Change, CheckEntry, Entry, LeaseEntry, Moved, Outcome, PullEntry, Purge, Record, CHECK,
+};
 use stemma_core::refs::Head;
 
 /// The `schema` of every JSON object the program writes (ADR-018). One number covers all of them:
@@ -124,6 +126,19 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             out.push('\n');
             return out;
         }
+        Record::Check(check) => {
+            let mut out = head(&CHECK);
+            let _ = write!(out, "    commit {}", check.commit());
+            match check.base() {
+                Some(base) => {
+                    let _ = write!(out, "  base {base}");
+                }
+                None => out.push_str("  base -"),
+            }
+            let _ = write!(out, "  result {}", check.result().name());
+            out.push('\n');
+            return out;
+        }
         Record::Purge(purge) => {
             // The tags are named only when the purge moved some, so that an entry from before
             // them reads as before.
@@ -233,7 +248,9 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// that did not exist or does not exist any more has `null` as its old or new value.
 ///
 /// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, `purge`,
-/// `lease`, or `pull`. A pull request entry has `time`, `actor`, `operation` (`pr-open`,
+/// `lease`, `pull`, or `check`. A check has `time`, `actor`, `operation` (`check`), `commit`,
+/// `base` (`null` for a run on the tip of `main` itself), and `result` (`pass` or `fail`).
+/// A pull request entry has `time`, `actor`, `operation` (`pr-open`,
 /// `pr-close`, or `pr-merge`), `branch`, `pull`, `commit`, `reviewers`, a list that is empty
 /// where the operation has none, and `repairs`; the other fields that the operation has not are
 /// `null`. A lease has `time`, `actor`, `operation`
@@ -255,7 +272,24 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
         Record::Purge(purge) => purge_json(entry, purge),
         Record::Lease(lease) => lease_json(entry, lease),
         Record::Pull(pull) => pull_json(entry, pull),
+        Record::Check(check) => check_json(entry, check),
     }
+}
+
+fn check_json(entry: &Entry, check: &CheckEntry) -> String {
+    let base = check
+        .base()
+        .map_or_else(|| "null".to_owned(), |base| quote(&base.to_string()));
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"check\",\"time\":{},\"actor\":{},\
+         \"operation\":{},\"commit\":{},\"base\":{base},\"result\":{}}}",
+        entry.number(),
+        entry.time(),
+        quote(&entry.actor().to_string()),
+        quote(CHECK),
+        quote(&check.commit().to_string()),
+        quote(check.result().name())
+    )
 }
 
 fn pull_json(entry: &Entry, pull: &PullEntry) -> String {
@@ -464,6 +498,44 @@ mod tests {
             line.ends_with(
                 "\"branch\":null,\"pull\":7,\"commit\":null,\"reviewers\":[],\"repairs\":null}"
             ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_check_entry_shows_its_commit_base_and_result() {
+        let commit = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
+        let base = "b3:4feb2d73a2c706e33c2a71f6f03cbfb48f0a20b48567936fca293159e7e3b32c";
+        let text = format!(
+            "stemma-oplog 3\nnumber 9\ntime 1700000000\nactor human mia\nprevious -\n\
+             operation check\nversion 1\ncommit {commit}\nbase {base}\nresult pass\n"
+        );
+        let run = Entry::parse(text.as_bytes()).unwrap();
+        assert_eq!(
+            super::text(&run, Outcome::Unknown, false),
+            format!(
+                "9  2023-11-14T22:13:20Z  human mia  check\n    commit {commit}  base {base}  \
+                 result pass\n"
+            )
+        );
+        assert_eq!(
+            json(&run, Outcome::Unknown, false),
+            format!(
+                "{{\"schema\":1,\"number\":9,\"kind\":\"check\",\"time\":1700000000,\
+                 \"actor\":\"human mia\",\"operation\":\"check\",\"commit\":\"{commit}\",\
+                 \"base\":\"{base}\",\"result\":\"pass\"}}"
+            )
+        );
+        let tip = text
+            .replace(&format!("base {base}"), "base -")
+            .replace("pass", "fail");
+        let line = json(
+            &Entry::parse(tip.as_bytes()).unwrap(),
+            Outcome::Unknown,
+            false,
+        );
+        assert!(
+            line.ends_with("\"base\":null,\"result\":\"fail\"}"),
             "{line}"
         );
     }

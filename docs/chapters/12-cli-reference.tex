@@ -2508,8 +2508,23 @@ Ein \type{pr-approve} ersetzt er wie jeden Eintrag, der einen umgeschriebenen Co
     branch feature/x  commit b3:1d71...  reviewer human daniel
 \stoptyping
 
+{\bf Prüfung.} Der Eintrag einer Prüfung (ADR-011, ADR-019) zeigt die Operation \type{check} und
+in der zweiten Zeile den getesteten Commit (\type{commit}), die Basis (\type{base}, \type{-} für
+einen Lauf auf der Spitze von \type{main} selbst) und das Ergebnis (\type{result pass} oder
+\type{result fail}).
+Wie die Einträge der Lease und des Pull Requests nennt er keinen Zeiger; sein Ausgang ist weder
+\type{!} noch \type{?}, und \type{op restore} lehnt ihn ab.
+Ein Purge ersetzt ihn durch einen Stub, wenn er einen der beiden Commits umschreibt.
+
+\starttyping
+9  2023-11-14T22:13:20Z  human mia  check
+    commit b3:1d71...  base b3:4feb...  result pass
+\stoptyping
+
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
-\type{change}, \type{stub}, \type{purge}, \type{lease} oder \type{pull}.
+\type{change}, \type{stub}, \type{purge}, \type{lease}, \type{pull} oder \type{check}.
+Ein Eintrag der Prüfung hat dazu \type{time}, \type{actor}, \type{operation}, \type{commit},
+\type{base} (\type{null} für einen Lauf ohne Basis) und \type{result}.
 Ein Eintrag des Pull Requests hat dazu \type{time}, \type{actor}, \type{operation},
 \type{branch}, \type{pull}, \type{commit}, \type{reviewers} (eine Liste, leer, wo die Operation
 keine kennt) und \type{repairs}; die übrigen Felder, die die Operation nicht kennt, sind

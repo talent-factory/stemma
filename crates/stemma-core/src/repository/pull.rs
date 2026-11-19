@@ -360,7 +360,7 @@ impl Repository {
 
     /// Refuses an ID that the store does not hold as a commit: a purge reads every commit that an
     /// entry names, so an ID of a blob or a tree would stop every later purge.
-    fn ensure_commit(&self, commit: CommitId) -> Result<(), PullError> {
+    pub(super) fn ensure_commit(&self, commit: CommitId) -> Result<(), PullError> {
         match self.objects().kind_of(&commit.object_id())? {
             Some(Kind::Commit | Kind::Commit2) => Ok(()),
             Some(Kind::Blob | Kind::Tree) | None => Err(PullError::NoSuchCommit { commit }),
@@ -700,7 +700,7 @@ mod tests {
         let pull = entry.pull().unwrap();
         assert_eq!(pull.kind(), PullKind::Open);
         assert_eq!(pull.commit(), Some(&start));
-        assert_eq!(format(&dir), "stemma-repository 10\n");
+        assert_eq!(format(&dir), "stemma-repository 11\n");
         let pulls = repository.pull_requests().unwrap();
         assert_eq!(pulls.len(), 1);
         assert_eq!(pulls[0].number(), entry.number());
