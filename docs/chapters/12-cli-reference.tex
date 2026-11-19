@@ -2491,15 +2491,17 @@ ihr Ausgang ist weder \type{!} noch \type{?}, und ein Purge nennt sie nie.
     branch feature/x  from human daniel  expires 2023-11-14T23:13:20Z  reason expired
 \stoptyping
 
-{\bf Pull Request.} Die drei Einträge des Pull Requests (ADR-004, ADR-011) zeigen die Operation
-\type{pr-open}, \type{pr-close} oder \type{pr-merge}.
+{\bf Pull Request.} Die vier Einträge des Pull Requests (ADR-004, ADR-011) zeigen die Operation
+\type{pr-open}, \type{pr-close}, \type{pr-merge} oder \type{pr-approve}.
 Ein Eintrag \type{pr-open} nennt in der zweiten Zeile Branch, Commit, Reviewer und, wenn der
 Eröffner sie erklärt hat, \type{repairs}; \type{pr-close} und \type{pr-merge} nennen die Nummer
-des Pull Requests (\type{pull}), \type{pr-merge} dazu den gemergten Kopf.
+des Pull Requests (\type{pull}), \type{pr-merge} dazu den gemergten Kopf und \type{pr-approve}
+dazu den Kopf, den der Reviewer freigegeben hat.
 Wie die Einträge der Lease nennen sie keinen Zeiger; ihr Ausgang ist weder \type{!} noch
 \type{?}, und \type{op restore} lehnt sie ab.
 Ein Purge ersetzt \type{pr-open} und \type{pr-merge} eines beendeten Pull Requests durch einen
 Stub; für einen offenen lehnt er ab.
+Ein \type{pr-approve} ersetzt er wie jeden Eintrag, der einen umgeschriebenen Commit nennt.
 
 \starttyping
 7  2023-11-14T22:13:20Z  human mia  pr-open

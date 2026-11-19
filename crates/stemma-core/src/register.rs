@@ -71,8 +71,9 @@
 //!
 //! A proof of a log entry is a file `proofs/<number>` in the metadata directory ([`ProofFile`]):
 //! the actor and the SSHSIG signature over the hash of the entry. [`check_proofs`] checks them
-//! against a register. Nothing writes a proof yet; the operations whose rule depends on who acts
-//! come with the later slices of phase 4.
+//! against a register. The proof of an entry `pr-approve` signs the pull request and the head
+//! ([`pull::approval_payload`]) as [`PayloadKind::Approval`]; any other proof signs the hash of
+//! its entry as [`PayloadKind::LogEntry`].
 
 use std::error::Error;
 use std::fmt;
@@ -83,7 +84,8 @@ use std::str::FromStr;
 
 use crate::actor::{Actor, ActorRef};
 use crate::object::{Kind, ObjectId};
-use crate::oplog::Entry;
+use crate::oplog::{Entry, PullKind, Record};
+use crate::pull;
 use crate::repository::Repository;
 use crate::signature::{self, PayloadKind, PublicKey, Signature};
 use crate::store::{ObjectStore, ReadError};
@@ -923,7 +925,10 @@ impl Register {
         )
     }
 
-    /// Checks the proof of an approval. A revoked key never counts; a retired one does.
+    /// Checks the proof of an approval. A revoked key never counts. A retired key counts for the
+    /// approvals written before its retirement: `entry` is the number of the approval entry, and
+    /// `None` is a new approval whose entry is not written yet, where the caller asks
+    /// [`Register::is_active_key`] besides.
     ///
     /// # Errors
     ///
@@ -933,8 +938,9 @@ impl Register {
         actor: &Actor,
         payload: &[u8],
         signature: &Signature,
+        entry: Option<u64>,
     ) -> Result<Verified, ProofError> {
-        self.verify(actor, PayloadKind::Approval, payload, signature, None)
+        self.verify(actor, PayloadKind::Approval, payload, signature, entry)
     }
 
     fn verify(
@@ -964,25 +970,38 @@ impl Register {
             .iter()
             .find(|held| held.key == key)
             .ok_or(ProofError::KeyNotOfActor)?;
+        // The signature first: a key that no longer counts must not hide a forged proof.
+        signature::verify(&key, kind, signature::FORMAT_VERSION, payload, signature)
+            .map_err(ProofError::Signature)?;
+        let approval = kind == PayloadKind::Approval;
         let counts = match (held.state, number) {
-            (KeyState::Active, _) => true,
-            (KeyState::Retired { from } | KeyState::Revoked { from }, Some(number)) => {
-                number < from
-            }
-            (KeyState::Retired { .. }, None) => true,
+            (KeyState::Active, _) | (KeyState::Retired { .. }, None) => true,
+            (KeyState::Retired { from }, Some(number)) => number < from,
+            // The approvals of a revoked key are void, whatever their number.
+            (KeyState::Revoked { .. }, _) if approval => false,
+            (KeyState::Revoked { from }, Some(number)) => number < from,
             (KeyState::Revoked { .. }, None) => false,
         };
         if !counts {
             return Err(ProofError::KeyNoLongerCounts {
                 state: held.state,
-                number,
+                number: number
+                    .filter(|_| !(approval && matches!(held.state, KeyState::Revoked { .. }))),
             });
         }
-        signature::verify(&key, kind, signature::FORMAT_VERSION, payload, signature)
-            .map_err(ProofError::Signature)?;
         Ok(Verified {
             actor: actor.clone(),
             key,
+        })
+    }
+
+    /// Whether `key` is an active key of `identity`: a retired or revoked key signs nothing new.
+    pub fn is_active_key(&self, identity: &Identity, key: &PublicKey) -> bool {
+        self.entry(identity).is_some_and(|entry| {
+            entry
+                .keys
+                .iter()
+                .any(|held| &held.key == key && held.state == KeyState::Active)
         })
     }
 
@@ -1721,14 +1740,48 @@ pub fn check_proofs(
         if entry.actor() != &proof.actor {
             return Err(CheckError::ActorMismatch { number });
         }
-        register
-            .verify_log_entry(
-                &proof.actor,
-                number,
-                hash.to_string().as_bytes(),
-                &proof.signature,
-            )
-            .map_err(|error| CheckError::Proof { number, error })?;
+        let approval = entry
+            .pull()
+            .filter(|pull| pull.kind() == PullKind::Approve)
+            .and_then(|pull| Some(pull::approval_payload(pull.pull()?, pull.commit()?)));
+        let checked = match &approval {
+            // The proof of an approval signs the pull request and the head, not the hash of the
+            // entry. A key that was revoked since makes the approval void, which the recount
+            // shows; it is no damage of the log.
+            Some(payload) => {
+                match register.verify_approval(
+                    &proof.actor,
+                    payload,
+                    &proof.signature,
+                    Some(number),
+                ) {
+                    Err(ProofError::KeyNoLongerCounts { .. }) => Ok(()),
+                    other => other.map(|_| ()),
+                }
+            }
+            None => register
+                .verify_log_entry(
+                    &proof.actor,
+                    number,
+                    hash.to_string().as_bytes(),
+                    &proof.signature,
+                )
+                .map(|_| ())
+                // A purge may have replaced an approval with a stub, which keeps the hash but no
+                // longer says what the proof signed, so a stub cannot be told from the stub of any
+                // other entry. Only a signature that does not verify is let through, for every
+                // stub; a key that is not the actor's still fails.
+                .or_else(|error| {
+                    if matches!(entry.record(), Record::Stub(_))
+                        && matches!(error, ProofError::Signature(_))
+                    {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                }),
+        };
+        checked.map_err(|error| CheckError::Proof { number, error })?;
     }
     Ok(numbers.len())
 }
@@ -1927,7 +1980,7 @@ mod tests {
         ));
         // A signature of a log entry is no approval.
         assert!(matches!(
-            register.verify_approval(&daniel(), b"b3:abc", &signature),
+            register.verify_approval(&daniel(), b"b3:abc", &signature, None),
             Err(ProofError::Signature(_))
         ));
         // A key that the register does not hold.
@@ -1952,11 +2005,16 @@ mod tests {
             register.verify_log_entry(&mia_actor, 10, b"h", &old),
             Err(ProofError::KeyNoLongerCounts { .. })
         ));
-        // An approval is bound to a commit, not to a position: it stays valid.
+        // An approval is bound to a commit, not to a position: one from before the retirement
+        // stays valid, and one from after it does not count.
         let approval = signature::sign(&signer, PayloadKind::Approval, b"c").unwrap();
         assert!(register
-            .verify_approval(&mia_actor, b"c", &approval)
+            .verify_approval(&mia_actor, b"c", &approval, Some(9))
             .is_ok());
+        assert!(matches!(
+            register.verify_approval(&mia_actor, b"c", &approval, Some(10)),
+            Err(ProofError::KeyNoLongerCounts { .. })
+        ));
         // The state is kept in the file.
         assert!(register.encode().contains(" retired 10\n"));
         assert_eq!(
@@ -1982,7 +2040,7 @@ mod tests {
         let approval = signature::sign(&signer, PayloadKind::Approval, b"c").unwrap();
         assert_eq!(
             register
-                .verify_approval(&mia_actor, b"c", &approval)
+                .verify_approval(&mia_actor, b"c", &approval, Some(5))
                 .unwrap_err(),
             ProofError::KeyNoLongerCounts {
                 state: KeyState::Revoked { from: 20 },
@@ -2061,7 +2119,7 @@ mod tests {
         let register = register();
         let signature = signature::sign(&Seeded::new(1), PayloadKind::Approval, b"c").unwrap();
         let verified = register
-            .verify_approval(&daniel(), b"c", &signature)
+            .verify_approval(&daniel(), b"c", &signature, None)
             .unwrap();
         let operation = OperationName::try_new("commit").unwrap();
         let open = Mode::Open;
@@ -2272,6 +2330,62 @@ mod tests {
         assert!(matches!(
             check_proofs(&metadata, &register(), &entries),
             Err(CheckError::UnexpectedFile(_))
+        ));
+    }
+
+    #[test]
+    fn a_proof_of_an_approval_is_checked_by_its_payload() {
+        use crate::oplog::{Chain, PullEntry, Record};
+        let (_dir, repository) = enforcing_repository();
+        let metadata = repository.metadata_dir();
+        let head = repository.refs().working_copy().unwrap();
+        let approve = |number: u64, previous: Chain| {
+            let entry = PullEntry::approve(1, daniel(), 1, head).unwrap();
+            Entry::linked(number, previous, Record::Pull(entry)).unwrap()
+        };
+        let entry = approve(2, Chain::Start);
+        let entries = [entry.clone()];
+        let sign = |kind, payload: &[u8]| signature::sign(&Seeded::new(1), kind, payload).unwrap();
+        let proof_of = |signature| ProofFile {
+            actor: daniel(),
+            signature,
+        };
+        // The payload of the pull request and the head holds.
+        let payload = pull::approval_payload(1, &head);
+        write_proof(
+            &metadata,
+            2,
+            &proof_of(sign(PayloadKind::Approval, &payload)),
+        )
+        .unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &entries).unwrap(), 1);
+        // A signature of the hash of the entry is the proof of another kind of entry.
+        fs::remove_file(proof_path(&metadata, 2)).unwrap();
+        let hash = entry.hash().unwrap().to_string();
+        let wrong = sign(PayloadKind::LogEntry, hash.as_bytes());
+        write_proof(&metadata, 2, &proof_of(wrong)).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &entries),
+            Err(CheckError::Proof { number: 2, .. })
+        ));
+        // The stub of an approval keeps no payload to check, so a signature that does not verify
+        // is let through; a key that is not the actor's is not.
+        fs::remove_file(proof_path(&metadata, 2)).unwrap();
+        let stub = entry.to_stub().unwrap();
+        let stubs = [stub];
+        write_proof(
+            &metadata,
+            2,
+            &proof_of(sign(PayloadKind::Approval, &payload)),
+        )
+        .unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &stubs).unwrap(), 1);
+        fs::remove_file(proof_path(&metadata, 2)).unwrap();
+        let foreign = signature::sign(&Seeded::new(9), PayloadKind::Approval, &payload).unwrap();
+        write_proof(&metadata, 2, &proof_of(foreign)).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &stubs),
+            Err(CheckError::Proof { number: 2, .. })
         ));
     }
 
@@ -2508,7 +2622,9 @@ mod tests {
         ));
         // Approvals of a revoked key are void.
         let approval = signature::sign(&signer, PayloadKind::Approval, b"x").unwrap();
-        assert!(register.verify_approval(&agent, b"x", &approval).is_err());
+        assert!(register
+            .verify_approval(&agent, b"x", &approval, Some(5))
+            .is_err());
     }
 
     #[test]
