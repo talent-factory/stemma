@@ -15,6 +15,9 @@ work items such as `STEMMA-12`). Use the `plane` MCP server for all operations; 
   Set `priority` (`urgent`, `high`, `medium`, `low`, `none`) when it is known.
 - **Read an issue**: `workitem retrieve_by_identifier` with `workitem_identifier="STEMMA-12"`.
   Comments are not part of that result; read them through the web UI if a skill needs them.
+  A long `description_html` can come back as a placeholder such as `<<ccr:…,html,3.3KB>>`
+  or as a compression marker with `hash=…`. That is not the text: fetch it with
+  `headroom_retrieve` and read the whole description before the scope of a task is set.
 - **List issues**: `workitem list` with `project_id`.
   This Plane edition rejects `pql` filters, so filter the result on the client side
   (for example by `state` with `expand=state`).
@@ -25,7 +28,17 @@ work items such as `STEMMA-12`). Use the `plane` MCP server for all operations; 
   Labels are referenced by UUID: resolve a name with `label list` first.
   Create a missing label with `label create`.
 - **Change state**: `workitem update` with `state` set to a state UUID from `state list`.
-  States are Backlog (default), Todo, In Progress, Done, Cancelled.
+  States are Backlog (default), Todo, In Progress, In Review, Done, Cancelled.
+  The `project_id` is the UUID above, never the slug `STEMMA` (that gives a 404).
+
+  | State       | UUID                                   |
+  | ----------- | -------------------------------------- |
+  | In Progress | `612fc934-8cb0-4e88-8182-4430876a266c` |
+  | In Review   | `d567ec07-faf7-4af6-9f95-1ed2e47da941` |
+  | Done        | `06ba4314-afe2-48e2-a234-eb84e48f6234` |
+
+  Example: `workitem update` with `workspace="tf"`, `project_id`, `workitem_id=<issue UUID>`,
+  `state=<state UUID>`. `retrieve_by_identifier` returns the issue UUID as `id`.
 - **Close**: set the state to Done (finished) or Cancelled (will not be actioned).
   There is no separate close action.
 
