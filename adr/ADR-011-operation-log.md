@@ -516,7 +516,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     `pull <number>\ncommit <id>\n`: the pull request and the head, not the hash of the entry.
     Binding it to the head is what lets a new commit void it (ADR-004 rule 4), and the number
     keeps it from standing for another pull request of the same head. A revoked key voids the
-    approval, a retired one does not, as the register says (ADR-003). `op verify` checks the
+    approval, a retired one only for approvals written before its retirement, as the register says
+    (ADR-003). The signature is checked before the state of the key, so a key that no longer counts
+    cannot hide a forged proof. `op verify` checks the
     proof as it checks any other, and a void approval is no damage of the log.
   - **The rules of the writer** (`Repository::approve_pull`), checked under the lock of the
     references: the pull request is open; the branch still has the head that the reviewer signed

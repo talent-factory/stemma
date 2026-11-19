@@ -234,7 +234,7 @@ impl Repository {
         }
         if let (Some(register), Some((_, payload, signature))) = (register, &signed) {
             let verified = register
-                .verify_approval(actor, payload, signature)
+                .verify_approval(actor, payload, signature, None)
                 .map_err(|error| PullError::Proof(Box::new(error)))?;
             // A retired key keeps the approvals it made, but it signs nothing new.
             if !register.is_active_key(&Identity::of(actor), verified.key()) {
@@ -308,7 +308,12 @@ impl Repository {
                 return Err("the actor of the proof is not the reviewer".to_owned());
             }
             register
-                .verify_approval(approval.reviewer(), &payload, &file.signature)
+                .verify_approval(
+                    approval.reviewer(),
+                    &payload,
+                    &file.signature,
+                    Some(approval.entry()),
+                )
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         };
@@ -1422,5 +1427,313 @@ mod tests {
         // `op verify` does not call a void approval damage.
         let entries = repository.oplog().verify().unwrap();
         register::check_proofs(&repository.metadata_dir(), &register, &entries).unwrap();
+    }
+
+    /// Stores a commit with the tree of its first parent and moves `branch` from `old` to it.
+    fn put_commit(
+        repository: &Repository,
+        branch: &BranchName,
+        old: CommitId,
+        parents: Vec<CommitId>,
+        author: &Actor,
+    ) -> CommitId {
+        let tree = repository
+            .objects()
+            .get_commit(&parents[0])
+            .unwrap()
+            .unwrap()
+            .tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            parents,
+            crate::change::sample_change(),
+            author.clone(),
+            1,
+            "more".to_owned(),
+        )
+        .unwrap();
+        let new = repository.objects().put_commit(&commit).unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        repository
+            .update_branch(&operation, branch, Some(old), new, author, &AllowAll)
+            .unwrap();
+        new
+    }
+
+    #[test]
+    fn an_author_of_main_may_approve_and_an_author_of_the_branch_may_not() {
+        let dir = TempDir::new();
+        let (repository, start) = repository(&dir);
+        let main = BranchName::try_new(TARGET).unwrap();
+        let zoe = Actor::human("zoe").unwrap();
+        repository
+            .create_branch(
+                &OperationName::try_new("branch").unwrap(),
+                &main,
+                start.object_id(),
+                &daniel(),
+                &AllowAll,
+            )
+            .unwrap();
+        // Ana wrote a commit that `main` takes over: it is no commit of the pull request.
+        let by_ana = push_commit(&repository, &ana());
+        repository
+            .update_branch(
+                &OperationName::try_new("commit").unwrap(),
+                &main,
+                Some(start),
+                by_ana,
+                &ana(),
+                &AllowAll,
+            )
+            .unwrap();
+        // Zoe writes the commit that only the branch has.
+        push_commit(&repository, &zoe);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        repository
+            .approve_pull(number, &ana(), None, None, &AllowAll)
+            .unwrap();
+        let error = repository
+            .approve_pull(number, &zoe, None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_author_on_the_second_parent_of_a_merge_may_not_approve() {
+        let dir = TempDir::new();
+        let (repository, start) = repository(&dir);
+        let zoe = Actor::human("zoe").unwrap();
+        // Zoe wrote a side commit, and Daniel merged it into the branch.
+        let side_branch = BranchName::try_new("side").unwrap();
+        repository
+            .create_branch(
+                &OperationName::try_new("branch").unwrap(),
+                &side_branch,
+                start.object_id(),
+                &zoe,
+                &AllowAll,
+            )
+            .unwrap();
+        let side = put_commit(&repository, &side_branch, start, vec![start], &zoe);
+        put_commit(&repository, &feature(), start, vec![start, side], &daniel());
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let error = repository
+            .approve_pull(number, &zoe, None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        repository
+            .approve_pull(number, &ana(), None, None, &AllowAll)
+            .unwrap();
+    }
+
+    #[test]
+    fn two_sessions_of_one_agent_are_one_approval() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        for session in ["s1", "s2"] {
+            let agent = Actor::agent("claude", "opus-5-5", session, "mia").unwrap();
+            repository
+                .approve_pull(number, &agent, None, None, &AllowAll)
+                .unwrap();
+        }
+        let recount = repository.recount_approvals(number, None).unwrap();
+        assert_eq!(recount.count(), 1);
+        assert_eq!(recount.void()[0].1, pull::NotCounted::Repeat);
+    }
+
+    #[test]
+    fn a_head_that_moves_while_signing_is_refused_and_nothing_is_written() {
+        struct Moving<'a>(&'a Repository);
+
+        impl Signer for Moving<'_> {
+            fn sign(&self, message: &[u8]) -> Result<crate::signature::Signature, SignError> {
+                push_commit(self.0, &Actor::human("zoe").unwrap());
+                Seeded::new(2).sign(message)
+            }
+        }
+
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let register = approvers();
+        repository
+            .claim_lease(&feature(), &daniel(), 60, &AllowAll)
+            .unwrap();
+        let number = repository
+            .open_pull(
+                &feature(),
+                &daniel(),
+                vec![],
+                None,
+                Some(&register),
+                &AllowAll,
+            )
+            .unwrap()
+            .number();
+        let before = repository.oplog().entries().unwrap().len();
+        let error = repository
+            .approve_pull(
+                number,
+                &mia(),
+                Some(&register),
+                Some(&Moving(&repository)),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(matches!(error, PullError::HeadMoved { .. }), "{error:?}");
+        // The only new entry is the commit that moved the head.
+        assert_eq!(repository.oplog().entries().unwrap().len(), before + 1);
+        assert!(pull::approvals(&repository.oplog().entries().unwrap()).is_empty());
+        assert_eq!(proof_files(&dir), 0);
+        // A new try on the new head counts.
+        repository
+            .approve_pull(
+                number,
+                &mia(),
+                Some(&register),
+                Some(&Seeded::new(2)),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .recount_approvals(number, Some(&register))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_key_retired_before_the_entry_voids_it_in_the_recount() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let mut register = approvers();
+        repository
+            .claim_lease(&feature(), &daniel(), 60, &AllowAll)
+            .unwrap();
+        let number = repository
+            .open_pull(
+                &feature(),
+                &daniel(),
+                vec![],
+                None,
+                Some(&register),
+                &AllowAll,
+            )
+            .unwrap()
+            .number();
+        let entry = repository
+            .approve_pull(
+                number,
+                &ana(),
+                Some(&register),
+                Some(&Seeded::new(3)),
+                &AllowAll,
+            )
+            .unwrap();
+        // Retired from the entry on: this approval is not one of before the retirement.
+        register
+            .retire(&Identity::of(&ana()), &key(3), entry.number())
+            .unwrap();
+        let recount = repository
+            .recount_approvals(number, Some(&register))
+            .unwrap();
+        assert_eq!(recount.count(), 0);
+        assert!(matches!(recount.void()[0].1, pull::NotCounted::Proof(_)));
+        // Retired one entry later, the approval was made before and counts.
+        let mut register = approvers();
+        register
+            .retire(&Identity::of(&ana()), &key(3), entry.number() + 1)
+            .unwrap();
+        assert_eq!(
+            repository
+                .recount_approvals(number, Some(&register))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_forged_proof_of_a_revoked_key_is_damage_of_the_log() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let mut register = approvers();
+        repository
+            .claim_lease(&feature(), &daniel(), 60, &AllowAll)
+            .unwrap();
+        let number = repository
+            .open_pull(
+                &feature(),
+                &daniel(),
+                vec![],
+                None,
+                Some(&register),
+                &AllowAll,
+            )
+            .unwrap()
+            .number();
+        let entry = repository
+            .approve_pull(
+                number,
+                &mia(),
+                Some(&register),
+                Some(&Seeded::new(2)),
+                &AllowAll,
+            )
+            .unwrap();
+        // The proof now holds a signature of the key of Mia over something else.
+        let forged = signature::sign(&Seeded::new(2), PayloadKind::Approval, b"other").unwrap();
+        let path = register::proof_path(&repository.metadata_dir(), entry.number());
+        let proof = ProofFile {
+            actor: mia(),
+            signature: forged,
+        };
+        std::fs::write(path, proof.encode()).unwrap();
+        register
+            .revoke(&Identity::of(&mia()), &key(2), 100)
+            .unwrap();
+        let entries = repository.oplog().verify().unwrap();
+        let error =
+            register::check_proofs(&repository.metadata_dir(), &register, &entries).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                register::CheckError::Proof {
+                    error: ProofError::Signature(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 }

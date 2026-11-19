@@ -925,7 +925,10 @@ impl Register {
         )
     }
 
-    /// Checks the proof of an approval. A revoked key never counts; a retired one does.
+    /// Checks the proof of an approval. A revoked key never counts. A retired key counts for the
+    /// approvals written before its retirement: `entry` is the number of the approval entry, and
+    /// `None` is a new approval whose entry is not written yet, where the caller asks
+    /// [`Register::is_active_key`] besides.
     ///
     /// # Errors
     ///
@@ -935,8 +938,9 @@ impl Register {
         actor: &Actor,
         payload: &[u8],
         signature: &Signature,
+        entry: Option<u64>,
     ) -> Result<Verified, ProofError> {
-        self.verify(actor, PayloadKind::Approval, payload, signature, None)
+        self.verify(actor, PayloadKind::Approval, payload, signature, entry)
     }
 
     fn verify(
@@ -966,22 +970,25 @@ impl Register {
             .iter()
             .find(|held| held.key == key)
             .ok_or(ProofError::KeyNotOfActor)?;
+        // The signature first: a key that no longer counts must not hide a forged proof.
+        signature::verify(&key, kind, signature::FORMAT_VERSION, payload, signature)
+            .map_err(ProofError::Signature)?;
+        let approval = kind == PayloadKind::Approval;
         let counts = match (held.state, number) {
-            (KeyState::Active, _) => true,
-            (KeyState::Retired { from } | KeyState::Revoked { from }, Some(number)) => {
-                number < from
-            }
-            (KeyState::Retired { .. }, None) => true,
+            (KeyState::Active, _) | (KeyState::Retired { .. }, None) => true,
+            (KeyState::Retired { from }, Some(number)) => number < from,
+            // The approvals of a revoked key are void, whatever their number.
+            (KeyState::Revoked { .. }, _) if approval => false,
+            (KeyState::Revoked { from }, Some(number)) => number < from,
             (KeyState::Revoked { .. }, None) => false,
         };
         if !counts {
             return Err(ProofError::KeyNoLongerCounts {
                 state: held.state,
-                number,
+                number: number
+                    .filter(|_| !(approval && matches!(held.state, KeyState::Revoked { .. }))),
             });
         }
-        signature::verify(&key, kind, signature::FORMAT_VERSION, payload, signature)
-            .map_err(ProofError::Signature)?;
         Ok(Verified {
             actor: actor.clone(),
             key,
@@ -1724,7 +1731,12 @@ pub fn check_proofs(
             // entry. A key that was revoked since makes the approval void, which the recount
             // shows; it is no damage of the log.
             Some(payload) => {
-                match register.verify_approval(&proof.actor, payload, &proof.signature) {
+                match register.verify_approval(
+                    &proof.actor,
+                    payload,
+                    &proof.signature,
+                    Some(number),
+                ) {
                     Err(ProofError::KeyNoLongerCounts { .. }) => Ok(()),
                     other => other.map(|_| ()),
                 }
@@ -1738,8 +1750,9 @@ pub fn check_proofs(
                 )
                 .map(|_| ())
                 // A purge may have replaced an approval with a stub, which keeps the hash but no
-                // longer says what the proof signed. Only a signature that does not verify is
-                // let through; a key that is not the actor's still fails.
+                // longer says what the proof signed, so a stub cannot be told from the stub of any
+                // other entry. Only a signature that does not verify is let through, for every
+                // stub; a key that is not the actor's still fails.
                 .or_else(|error| {
                     if matches!(entry.record(), Record::Stub(_))
                         && matches!(error, ProofError::Signature(_))
@@ -1949,7 +1962,7 @@ mod tests {
         ));
         // A signature of a log entry is no approval.
         assert!(matches!(
-            register.verify_approval(&daniel(), b"b3:abc", &signature),
+            register.verify_approval(&daniel(), b"b3:abc", &signature, None),
             Err(ProofError::Signature(_))
         ));
         // A key that the register does not hold.
@@ -1974,11 +1987,16 @@ mod tests {
             register.verify_log_entry(&mia_actor, 10, b"h", &old),
             Err(ProofError::KeyNoLongerCounts { .. })
         ));
-        // An approval is bound to a commit, not to a position: it stays valid.
+        // An approval is bound to a commit, not to a position: one from before the retirement
+        // stays valid, and one from after it does not count.
         let approval = signature::sign(&signer, PayloadKind::Approval, b"c").unwrap();
         assert!(register
-            .verify_approval(&mia_actor, b"c", &approval)
+            .verify_approval(&mia_actor, b"c", &approval, Some(9))
             .is_ok());
+        assert!(matches!(
+            register.verify_approval(&mia_actor, b"c", &approval, Some(10)),
+            Err(ProofError::KeyNoLongerCounts { .. })
+        ));
         // The state is kept in the file.
         assert!(register.encode().contains(" retired 10\n"));
         assert_eq!(
@@ -2004,7 +2022,7 @@ mod tests {
         let approval = signature::sign(&signer, PayloadKind::Approval, b"c").unwrap();
         assert_eq!(
             register
-                .verify_approval(&mia_actor, b"c", &approval)
+                .verify_approval(&mia_actor, b"c", &approval, Some(5))
                 .unwrap_err(),
             ProofError::KeyNoLongerCounts {
                 state: KeyState::Revoked { from: 20 },
@@ -2083,7 +2101,7 @@ mod tests {
         let register = register();
         let signature = signature::sign(&Seeded::new(1), PayloadKind::Approval, b"c").unwrap();
         let verified = register
-            .verify_approval(&daniel(), b"c", &signature)
+            .verify_approval(&daniel(), b"c", &signature, None)
             .unwrap();
         let operation = OperationName::try_new("commit").unwrap();
         let open = Mode::Open;
@@ -2570,7 +2588,9 @@ mod tests {
         ));
         // Approvals of a revoked key are void.
         let approval = signature::sign(&signer, PayloadKind::Approval, b"x").unwrap();
-        assert!(register.verify_approval(&agent, b"x", &approval).is_err());
+        assert!(register
+            .verify_approval(&agent, b"x", &approval, Some(5))
+            .is_err());
     }
 
     #[test]

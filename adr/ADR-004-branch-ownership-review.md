@@ -17,8 +17,9 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    touches it (STEMMA-225). The override changes who writes, never what the merge gate asks.
 3. Protected branches such as `main` change only through pull requests. A pull request is a
    sequence of entries in the operation log (STEMMA-226, STEMMA-238).
-4. Agents may review and approve. No self-approval. Approvals are signed and bound to the head
-   commit they name; any new commit voids them (STEMMA-227). An approval is the entry
+4. Agents may review and approve. No self-approval. Approvals are bound to the head
+   commit they name, and signed where the repository has a register (ADR-011); any new commit
+   voids them (STEMMA-227). An approval is the entry
    `pr-approve` (ADR-011). "No self-approval" means by identity: the reviewer is neither the
    opener of the pull request nor the author of a commit that it brings. The writer and the
    recount ask the same question, so an entry written by hand does not count.

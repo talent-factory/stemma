@@ -1,8 +1,9 @@
 //! The pull request as the state that its entries add up to (ADR-004, ADR-011, STEMMA-238).
 //!
 //! A pull request has no object and no reference. It is the sequence of the entries `pr-open`,
-//! `pr-close`, and `pr-merge` in the operation log ([`PullEntry`](crate::oplog::PullEntry)), named by the number of its
-//! `pr-open` entry. The state is derived: [`pull_requests`] folds the log and returns one
+//! `pr-close`, and `pr-merge` in the operation log ([`PullEntry`](crate::oplog::PullEntry)), named
+//! by the number of its `pr-open` entry. The entry `pr-approve` belongs to it but changes no state.
+//! The state is derived: [`pull_requests`] folds the log and returns one
 //! [`PullRequest`] for every opening that is still in the log.
 //!
 //! ```text

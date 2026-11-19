@@ -150,8 +150,9 @@ Jede Freigabe ist ein eigener Eintrag \type{pr-approve}; er ändert den Zustand 
 Die Neuzählung entscheidet, welche Freigaben zählen (siehe unten).
 
 Die Einträge folgen denen der Lease: Sie nennen keinen Zeiger, stehen immer in der Hash-Kette,
-und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9 und mit dem
-ersten Eintrag \type{pr-approve} auf 10 (ADR-009, ADR-011).
+und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9. Der Eintrag
+\type{pr-approve} ist der Grund für die Version 10, auf die das Repository mit dem nächsten
+Eintrag oder Purge steigt (ADR-009, ADR-011).
 Der Eintrag \type{pr-open} nennt den Branch, den Commit an seiner Spitze, die Reviewer und
 optional \type{repairs <commit>}, den roten Commit, den der Pull Request zu beheben erklärt
 (ADR-019).
@@ -188,7 +189,8 @@ Der Kern prüft beim Schreiben unter \type{refs.lock}:
 
 \startitemize
 \item Der Pull Request ist offen, und der Branch hat noch den Kopf, den der Reviewer signiert hat.
-Hat sich der Kopf während des Signierens bewegt, schreibt der Kern nichts.
+Hat sich der Kopf während des Signierens bewegt, schreibt der Kern nichts. Ohne Register gibt es
+keine Signatur und damit keinen Zeitraum, in dem sich der Kopf bewegen könnte.
 \item Niemand gibt seine eigene Arbeit frei: Der Reviewer ist weder der Eröffner noch der Autor
 eines Commits, den der Pull Request mitbringt (das sind die Commits, die der Kopf erreicht und
 \type{main} nicht).
@@ -214,8 +216,9 @@ ihr Reviewer weder Eröffner noch Autor ist, ihr Beweis gegen das Register hält
 und ihre Identität noch keine andere Freigabe hat, die zählt.
 Ein Eintrag, den jemand von Hand geschrieben hat, besteht also nur, wenn er dieselben Fragen
 besteht wie einer des Kerns.
-Ein widerrufener Schlüssel macht seine Freigaben ungültig; ein ausgemusterter lässt sie stehen,
-denn keine Nummer begrenzt sie (siehe \in{Abschnitt}[sec:register]).
+Ein widerrufener Schlüssel macht seine Freigaben ungültig. Bei einem ausgemusterten zählen die
+Freigaben, die vor der Ausmusterung geschrieben wurden; eine Freigabe mit einer späteren
+Nummer zählt nicht (siehe \in{Abschnitt}[sec:register]).
 Die Neuzählung nennt zu jeder Freigabe, die nicht zählt, den Grund.
 
 \startplacefigure[title={Ablauf eines Pull Requests bis zur Zeigerbewegung von main},

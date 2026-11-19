@@ -211,8 +211,8 @@ pub const LEASE_TAKEOVER: &str = "lease-takeover";
 pub const LEASE_OVERRIDE: &str = "lease-override";
 
 /// The operation of the entry that the write owner of a branch writes when it opens a pull
-/// request (ADR-004, ADR-011). The three pull request operations belong to the entry of a pull
-/// request and to no change.
+/// request (ADR-004, ADR-011). The pull request operations belong to the entry of a pull request
+/// and to no change.
 pub const PR_OPEN: &str = "pr-open";
 
 /// The operation of the entry that ends a pull request without a merge.
