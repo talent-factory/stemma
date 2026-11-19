@@ -371,6 +371,14 @@ aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesic
 ein zweites \type{init} bricht ab, weil \type{.stemma} besteht. \stopxcell
 \stopxrow
 \startxrow
+\startxcell[width=0.26\textwidth] \type{enforce} \stopxcell
+\startxcell[width=0.35\textwidth] Das Register ist geschrieben und das Repository durchsetzend,
+aber die Ausgabe liess sich nicht schreiben,
+oder das Schreiben selbst ist nicht vollständig. \stopxcell
+\startxcell Nicht wiederholen;
+ein zweites \type{enforce} endet mit Exit-Code 5. \stopxcell
+\stopxrow
+\startxrow
 \startxcell[width=0.26\textwidth] \type{track} \stopxcell
 \startxcell[width=0.35\textwidth] Die Dateien sind verfolgt,
 aber die Ausgabe liess sich nicht schreiben oder der Zeiger ist nicht gesichert. \stopxcell
@@ -683,6 +691,61 @@ stemma init --actor "human daniel"
 stemma init --owner-key ~/.ssh/id_ed25519.pub --actor "human daniel"
 stemma init -C projekt --initial-branch trunk --actor "human daniel"
 STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" stemma init
+\stoptyping
+
+\section{enforce}
+
+Führt ein bestehendes, offenes Repository in den durchsetzenden Modus.
+Das ist der Schritt von \type{init --owner-key} für ein Repository, das schon Commits hat
+(\in{Abschnitt}[sec:register]).
+
+\starttyping
+stemma enforce [-C VERZEICHNIS] --owner-key DATEI --actor AKTEUR
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Das Verzeichnis des Repositories
+oder ein Verzeichnis darunter.
+Standard ist das aktuelle.
+\item {\bf \type{--owner-key} DATEI:} Die Datei eines öffentlichen Ed25519-Schlüssels
+(eine \type{.pub}-Datei). Die Angabe ist Pflicht; fehlt sie, ist das ein Aufruffehler
+(Exit-Code 2).
+\item {\bf \type{--actor} AKTEUR:} Siehe oben. Der Akteur muss ein Mensch sein und wird
+Owner des Registers.
+\stopitemize
+
+{\bf Verhalten.} \type{enforce} schreibt das Register mit dem Akteur als Owner nach
+\type{.stemma-actors/register} im Arbeitsverzeichnis
+und setzt die Datei \type{.stemma/enforcing}.
+Die Registerdatei muss verfolgt und committet werden; der Befehl tut beides nicht.
+Bis zu diesem Commit hat die Basis des Repositories kein Register,
+und \type{register}, \type{op verify} und ein zweites \type{enforce} enden mit Exit-Code 5.
+Der Schritt hat keinen Weg zurück.
+Die Ausgabe ist eine Zeile, die hier der Breite wegen umbrochen ist:
+
+\starttyping
+Enforcing mode: .stemma-actors/register names human daniel as the owner;
+track and commit it, because until then `register` and `op verify` end with
+code 5. There is no way back to the open mode.
+\stoptyping
+
+Der Befehl bricht mit Exit-Code 1 ab und ändert nichts, wenn
+das Repository schon durchsetzend und das Register committet ist
+(das Register ändert dann \type{register}),
+im Arbeitsverzeichnis schon eine Datei \type{.stemma-actors/register} liegt,
+\type{.stemma-actors} ein Verweis oder kein Verzeichnis ist,
+der Akteur ein Agent ist, oder die Schlüsseldatei sich nicht lesen lässt
+oder keinen Ed25519-Schlüssel enthält.
+Ein beschädigtes Register oder Marker endet mit Exit-Code 5.
+Gelingt das Schreiben nicht vollständig oder die Ausgabe nicht, endet der Befehl mit Exit-Code 3;
+das Repository kann dann durchsetzend sein, und ein Skript ruft \type{enforce} nicht wieder auf.
+
+{\bf Beispiel.}
+
+\starttyping
+stemma enforce --owner-key ~/.ssh/id_ed25519.pub --actor "human daniel"
+stemma track .stemma-actors/register
+stemma commit -m "Add the actor register" --actor "human daniel"
 \stoptyping
 
 \section{track}
@@ -2852,7 +2915,8 @@ sein; die Signatur geht auf die Standardausgabe.
 und dem Schlüssel an; nur ein Owner tut das.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und ändert nichts, wenn das Repository offen ist
-(\type{init --owner-key} beginnt ein durchsetzendes), wenn der Akteur kein Owner ist und eine
+(\type{init --owner-key} beginnt ein durchsetzendes,
+\type{enforce --owner-key} führt ein bestehendes dorthin), wenn der Akteur kein Owner ist und eine
 andere Identität nennt, wenn die Identität oder der Schlüssel im Register fehlt,
 wenn der Schlüssel schon im Register steht, nicht mehr aktiv oder schon widerrufen ist
 und wenn kein Owner mit einem aktiven Schlüssel übrig bliebe.

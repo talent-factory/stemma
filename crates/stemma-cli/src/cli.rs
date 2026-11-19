@@ -126,6 +126,8 @@ struct Cli {
 enum Command {
     /// Create an empty repository
     Init(InitArgs),
+    /// Take an existing open repository to the enforcing mode; there is no way back
+    Enforce(EnforceArgs),
     /// Track files: from now on a snapshot saves them
     Track(TrackArgs),
     /// Name the working-copy commit and start a new one
@@ -908,6 +910,28 @@ struct InitArgs {
     /// open mode
     #[arg(long, value_name = "FILE")]
     owner_key: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct EnforceArgs {
+    /// The directory of the repository, or a directory below its root
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// Who runs the command, and becomes the owner: `human <id>`; required unless the
+    /// environment sets STEMMA_ACTOR
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
+
+    /// The file of an Ed25519 public key (a `.pub` file) that makes the actor, who must be a
+    /// human, the owner of the actor register
+    #[arg(long, value_name = "FILE", required = true)]
+    owner_key: PathBuf,
 }
 
 /// Why a command fails.
@@ -1772,6 +1796,7 @@ impl Error for CliError {}
 fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
     match cli.command {
         Command::Init(args) => init(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Enforce(args) => enforce(args, out).map(|()| ExitCode::SUCCESS),
         Command::Track(args) => track(args, out).map(|()| ExitCode::SUCCESS),
         Command::Commit(args) => commit(args, out).map(|()| ExitCode::SUCCESS),
         Command::Switch(args) => switch(args, out).map(|()| ExitCode::SUCCESS),
@@ -4258,6 +4283,71 @@ fn init(args: InitArgs, out: &mut dyn Write) -> Result<(), CliError> {
     Ok(())
 }
 
+/// `enforce`: the step from the open to the enforcing mode for a repository that exists. It does
+/// what `init --owner-key` does for a new one: the register file with the actor as the owner is
+/// written to the working copy, the marker is set, and the file goes into the next commit. A
+/// repository that is enforcing already, or whose working copy has a register file already, is
+/// left as it is. There is no way back.
+fn enforce(args: EnforceArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    // The key is read before anything is changed, so that a wrong file leaves the repository open.
+    let register = owner_register(&actor, &args.owner_key)?;
+    let repository = open(&args.repository)?;
+    match Mode::of(&repository) {
+        Ok(Mode::Open) => {}
+        Ok(Mode::Enforcing(_)) => {
+            return Err(CliError::Register(
+                "the repository is enforcing already; `register` changes its actor register"
+                    .to_owned(),
+            ))
+        }
+        Err(error) => return Err(CliError::RegisterDamaged(error.to_string())),
+    }
+    let path = repository.path().join(register::FILE);
+    // The directory of the register must not be a link: the write would reach a file outside the
+    // repository.
+    if let Some(parent) = path.parent() {
+        if let Ok(meta) = fs::symlink_metadata(parent) {
+            if !meta.is_dir() {
+                return Err(CliError::Register(format!(
+                    "{} exists in the working copy and is not a directory; move it away first",
+                    parent.display()
+                )));
+            }
+        }
+    }
+    if fs::symlink_metadata(&path).is_ok() {
+        return Err(CliError::Register(format!(
+            "{} exists in the working copy already; the repository is open, so move it away \
+             first",
+            register::FILE
+        )));
+    }
+    register::enter_enforcing(&repository, &register).map_err(|error| {
+        CliError::RegisterNotWritten(format!(
+            "the actor register could not be written completely ({error}); the marker {} in the \
+             metadata directory may be set without a complete {}, which makes the repository \
+             damaged and not open. Check both before any further step; do not run `enforce` \
+             again",
+            register::MARKER,
+            register::FILE
+        ))
+    })?;
+    writeln!(
+        out,
+        "Enforcing mode: {} names {actor} as the owner; track and commit it, because \
+         until then `register` and `op verify` end with code 5. There is no way back to the open \
+         mode.",
+        register::FILE
+    )
+    .and_then(|()| out.flush())
+    .map_err(|source| {
+        CliError::RegisterNotWritten(format!(
+            "the repository is enforcing, but the result could not be written: {source}"
+        ))
+    })
+}
+
 /// The register that `init --owner-key` makes: the actor, a human, owns it with the key of the
 /// file.
 fn owner_register(actor: &Actor, path: &Path) -> Result<Register, CliError> {
@@ -4358,7 +4448,7 @@ fn load_register(repository: Repository) -> Result<(Repository, PathBuf, Registe
     if mode == Mode::Open {
         return Err(CliError::Register(
             "the repository is open and has no actor register; `init --owner-key` starts an \
-             enforcing repository"
+             enforcing repository, and `enforce --owner-key` takes an existing one there"
                 .to_owned(),
         ));
     }

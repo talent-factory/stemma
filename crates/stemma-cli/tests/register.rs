@@ -1,4 +1,5 @@
-//! The actor register, run as a process: `init --owner-key`, `register`, and `op verify`.
+//! The actor register, run as a process: `init --owner-key`, `enforce`, `register`, and
+//! `op verify`.
 
 mod common;
 
@@ -695,4 +696,160 @@ fn a_co_signature_of_a_key_that_is_not_the_sponsors_is_refused() {
         fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
         before
     );
+}
+
+/// An open repository with one commit, as `enforce` meets it.
+fn open_with_a_commit() -> Dir {
+    let dir = common::repository();
+    fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+    track_ok(dir.path(), "a.txt");
+    ok(dir.path(), &["commit", "-m", "one", "--actor", ACTOR]);
+    dir
+}
+
+#[test]
+fn enforce_takes_an_open_repository_with_history_to_the_enforcing_mode() {
+    let keys = Dir::new();
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    let dir = open_with_a_commit();
+    let result = ok(
+        dir.path(),
+        &["enforce", "--actor", ACTOR, "--owner-key", &owner],
+    );
+    assert!(
+        result.stdout.contains("Enforcing mode"),
+        "{}",
+        result.stdout
+    );
+    assert!(result.stdout.contains("no way back"), "{}", result.stdout);
+    assert_eq!(
+        fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+        format!("stemma-register 1\nentry human daniel owner\nkey {OWNER_KEY} active\n")
+    );
+    assert!(dir.path().join(".stemma/enforcing").is_file());
+    // Until the register is committed, the base has none: damage, not the open mode.
+    assert_eq!(run(dir.path(), &["op", "verify"]).code, 5);
+    let again = run(
+        dir.path(),
+        &["enforce", "--actor", ACTOR, "--owner-key", &owner],
+    );
+    assert_eq!(again.code, 5, "{}", again.stderr);
+    let key = key_file(&keys, "new.pub", OTHER_KEY);
+    let changed = run(dir.path(), &["register", "add-key", "--actor", ACTOR, &key]);
+    assert_eq!(changed.code, 5, "{}", changed.stderr);
+    commit_register(dir.path());
+    let result = ok(dir.path(), &["op", "verify"]);
+    assert!(
+        result
+            .stdout
+            .contains("The actor register is valid, and 0 proofs of log entries hold against it."),
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
+fn enforce_refuses_an_enforcing_repository_and_changes_nothing() {
+    let (dir, keys) = enforcing();
+    commit_register(dir.path());
+    let other = key_file(&keys, "other.pub", OTHER_KEY);
+    let before = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    let result = run(
+        dir.path(),
+        &["enforce", "--actor", ACTOR, "--owner-key", &other],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("enforcing already"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn enforce_refuses_an_agent_a_bad_key_and_an_existing_file_and_stays_open() {
+    let keys = Dir::new();
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    let bad = keys.path().join("bad.pub");
+    fs::write(&bad, "ssh-rsa AAAA nonsense\n").unwrap();
+    let dir = open_with_a_commit();
+    let agent = "agent bot model=m session=s sponsor=daniel";
+    let result = run(
+        dir.path(),
+        &["enforce", "--actor", agent, "--owner-key", &owner],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("an agent cannot be an owner"),
+        "{}",
+        result.stderr
+    );
+    let result = run(
+        dir.path(),
+        &[
+            "enforce",
+            "--actor",
+            ACTOR,
+            "--owner-key",
+            bad.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    fs::create_dir_all(dir.path().join(".stemma-actors")).unwrap();
+    fs::write(dir.path().join(REGISTER), "mine\n").unwrap();
+    let result = run(
+        dir.path(),
+        &["enforce", "--actor", ACTOR, "--owner-key", &owner],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("exists in the working copy"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+        "mine\n"
+    );
+    assert!(!dir.path().join(".stemma/enforcing").exists());
+}
+
+#[test]
+fn enforce_without_an_owner_key_is_a_usage_error() {
+    let dir = open_with_a_commit();
+    let result = run(dir.path(), &["enforce", "--actor", ACTOR]);
+    assert_eq!(result.code, 2, "{}", result.stderr);
+    assert!(!dir.path().join(".stemma/enforcing").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn enforce_refuses_a_link_in_place_of_the_register_directory() {
+    let keys = Dir::new();
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    let dir = open_with_a_commit();
+    std::os::unix::fs::symlink(keys.path(), dir.path().join(".stemma-actors")).unwrap();
+    let result = run(
+        dir.path(),
+        &["enforce", "--actor", ACTOR, "--owner-key", &owner],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(!keys.path().join("register").exists());
+    assert!(!dir.path().join(".stemma/enforcing").exists());
+}
+
+#[test]
+fn enforce_works_from_a_subdirectory_with_c() {
+    let keys = Dir::new();
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    let dir = open_with_a_commit();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let sub = dir.path().join("sub");
+    ok(&sub, &["enforce", "--actor", ACTOR, "--owner-key", &owner]);
+    assert!(dir.path().join(REGISTER).is_file());
+    assert!(!sub.join(".stemma-actors").exists());
 }

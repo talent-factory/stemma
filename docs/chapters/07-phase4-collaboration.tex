@@ -776,6 +776,11 @@ und niemand prüft.
 Es beginnt offen oder mit \type{init --owner-key}, das den Akteur zum Owner macht
 und das Register in das Arbeitsverzeichnis schreibt;
 es gehört in den ersten Commit.
+Ein offenes Repository mit Geschichte führt \type{enforce --owner-key} in den durchsetzenden Modus:
+Der Befehl schreibt das Register und setzt die Marke.
+Die Datei muss danach verfolgt und committet werden;
+bis dahin hat die Basis kein Register, und \type{register}, \type{op verify}
+und ein zweites \type{enforce} enden mit Exit-Code 5.
 Dann ist das Repository durchsetzend, und der Schritt hat keinen Weg zurück:
 Die Datei \type{.stemma/enforcing} hält ihn fest, und ein durchsetzendes Repository,
 dessen Basis kein Register hat, ist beschädigt und nicht offen (Exit-Code 5 bei \type{op verify}).
