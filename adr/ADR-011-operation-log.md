@@ -221,7 +221,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again. Version 3 came with the purge (ADR-014), version 4 with
   the hash chain (below), version 8 with the lease entries, version 9 with the pull request
-  entries, and version 10 with the approval entry (below).
+  entries, version 10 with the approval entry, and version 11 with the check entry (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change, a stub, and a `purge` entry;
@@ -502,6 +502,45 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     it replaces the opening of a pull request together with its `pr-merge`, so that the pull
     request is not open again. `op restore` refuses a pull request entry, and
     `outcomes` passes over it.
+- **The check entry** *(confirmed; STEMMA-240)*. A check run is evidence about a pair of commits
+  (ADR-019): the commit that was tested and the tip of `main` it was merged onto for the test, its
+  base. It is an entry of the log, like the pull request entries, and for the same reason: the log
+  is already the history, the hash chain, and the place of the signature. A proof of the writer is
+  the proof of the entry (ADR-003), so a check needs no format of its own for it.
+  - **The encoding stays `stemma-oplog 3`, the format rises to 11.** The entry is always in the
+    chain and has no older encoding. A program that knows only version 10 refuses the repository
+    instead of calling the entry damaged (ADR-009).
+  - **The lines.** `operation check`, `version 1`, `commit <id>`, `base <id>` or `base -`, and
+    `result pass` or `result fail`, in this order. The line `version` gives the entry a version;
+    the reader accepts version 1 only. `base -` is a run on the tip of `main` itself, the run
+    after a merge (ADR-019). One entry holds one base: a result for a pair of commits is the
+    entry with that `commit` and that `base`, and a run against another tip is another entry.
+    The target is always `main`, so no line names it.
+  - **The writer asks no more than the authorizer.** `Repository::record_check` asks the
+    authorizer for `check`, takes the lock of the references, refuses a commit that the store
+    does not hold as a commit and a base that is the commit itself, and writes the entry. It
+    does not judge the writer: who counts depends on the pull request, its authors, and its risk
+    level, which the entry does not hold, so the rule is applied when the evidence is read, in
+    `check::counts` and `Repository::counted_checks` (ADR-019, "Who counts as independent").
+    Any actor that the authorizer allows can therefore write a result through the core (no
+    command does yet), and it counts
+    only for some changes; a check that the opener wrote stays in the log as what it is. The
+    sponsor that the rule uses is the one of the register where the actor is registered, and
+    otherwise the claim of the actor line, so an actor that is not registered can claim a
+    sponsor; every level asks for a registered writer where a register exists.
+  - **The proof.** Where the repository is enforcing, the writer signs the hash of the entry with
+    a key of the register and writes the proof file, as for the entries whose rule depends on who
+    acts (ADR-003). `counted_checks` counts a result only with a proof that the register accepts
+    for the number of the entry, and `Repository::last_green_tip` reads the last green tip by the
+    same rule: the newest commit in the first-parent history of the tip of `main` that a passing run
+    without a base covered, where a run on another commit says nothing about `main`.
+    A missing or malformed proof does not count. A failed run never counts towards a merge, but
+    it stays in the log, where the gate finds the first red tip. `stemma op verify` checks the
+    proof files that exist, and a missing proof only means that the result does not count. In
+    the open mode the actor is a claim and no proof exists.
+  - **Purge and restore.** The entry names commits, so a purge may replace it with a stub, as any
+    entry that names a rewritten commit; the evidence for a rewritten commit is then gone, and the
+    change is checked again. `op restore` refuses it, and `outcomes` passes over it.
 
 - **The approval entry `pr-approve`** *(confirmed; STEMMA-227, STEMMA-239)*. An approval is the
   fourth entry of a pull request. It moves no pointer and changes no state of the fold:

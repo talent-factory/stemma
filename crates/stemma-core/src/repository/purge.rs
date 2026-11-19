@@ -1515,6 +1515,42 @@ mod tests {
     }
 
     #[test]
+    fn a_purge_replaces_a_check_that_names_a_rewritten_commit() {
+        use crate::oplog::{CheckEntry, CheckResult};
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let entry = CheckEntry::new(1, actor(), second, Some(first), CheckResult::Pass);
+        let number = repository.oplog().append_check(&entry).unwrap().number();
+        let plan = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .expect("a check does not stand in the way of a purge");
+        assert!(plan.entries().contains(&number), "{:?}", plan.entries());
+    }
+
+    #[test]
+    fn a_purge_replaces_a_check_whose_base_alone_is_rewritten_and_keeps_the_others() {
+        use crate::oplog::{CheckEntry, CheckResult};
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let append = |entry: CheckEntry| repository.oplog().append_check(&entry).unwrap().number();
+        let base_only = append(CheckEntry::new(
+            1,
+            actor(),
+            first,
+            Some(second),
+            CheckResult::Pass,
+        ));
+        let kept = append(CheckEntry::new(2, actor(), first, None, CheckResult::Pass));
+        let plan = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .expect("a check does not stand in the way of a purge");
+        assert!(plan.entries().contains(&base_only), "{:?}", plan.entries());
+        assert!(!plan.entries().contains(&kept), "{:?}", plan.entries());
+    }
+
+    #[test]
     fn a_purge_that_does_not_touch_the_commit_of_an_open_pull_request_goes_on() {
         let dir = TempDir::new();
         let repository = repository(&dir);

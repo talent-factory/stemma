@@ -221,6 +221,16 @@ pub const PR_CLOSE: &str = "pr-close";
 /// The operation of the entry that records the merge of a pull request.
 pub const PR_MERGE: &str = "pr-merge";
 
+/// The operation of the entry that records the result of a check run: the tested commit, the tip
+/// of `main` it was merged onto for the test, and whether it passed (ADR-019, STEMMA-240). It
+/// belongs to the entry of a check and to no change.
+pub const CHECK: &str = "check";
+
+/// The version of the body of a `check` entry, the line `version 1`. The entry holds a type and a
+/// version, as the signed payload does (ADR-003), so a later form is told from this one. A reader
+/// accepts this version only.
+pub const CHECK_VERSION: u32 = 1;
+
 /// The operation of the entry that approves the head of a pull request (ADR-004 rule 4). The
 /// approver signs it; the signature is a proof file, not a line of the entry.
 pub const PR_APPROVE: &str = "pr-approve";
@@ -473,6 +483,12 @@ pub enum EntryError {
     BadReviewers,
     /// A pull request entry has fields that its kind does not have, or lacks one that it has.
     BadPullShape,
+    /// A check entry was written before the hash chain. Carries its number. The entry came with
+    /// the chain, so it has no older encoding.
+    CheckOutsideChain(u64),
+    /// A check entry names the commit it tested as its base: a run merged onto itself says
+    /// nothing. Carries its number.
+    CheckBaseIsCommit(u64),
 }
 
 impl fmt::Display for EntryError {
@@ -494,7 +510,8 @@ impl fmt::Display for EntryError {
                 "a change cannot have the operation `{PURGE}`, which only the entry of a purge has, \
                  or an operation `{LEASE_ACQUIRE}`, `{LEASE_RELEASE}`, `{LEASE_TAKEOVER}`, or \
                  `{LEASE_OVERRIDE}`, which only the entry of a lease has, or `{PR_OPEN}`, `{PR_CLOSE}`, \
-                 `{PR_MERGE}`, or `{PR_APPROVE}`, which only the entry of a pull request has"
+                 `{PR_MERGE}`, or `{PR_APPROVE}`, which only the entry of a pull request has, or \
+                 `{CHECK}`, which only the entry of a check has"
             ),
             Self::StubNotBefore { stub, purge } => write!(
                 f,
@@ -569,6 +586,14 @@ impl fmt::Display for EntryError {
             Self::BadPullShape => {
                 f.write_str("a pull request entry has the fields of its kind and no others")
             }
+            Self::CheckOutsideChain(number) => write!(
+                f,
+                "the check entry {number} cannot be older than the hash chain"
+            ),
+            Self::CheckBaseIsCommit(number) => write!(
+                f,
+                "the base of the check entry {number} is the commit it tested"
+            ),
             Self::BadReason => write!(
                 f,
                 "the reason of an override is one line of 1 to {MAX_REASON_LEN} bytes, without a \
@@ -654,6 +679,7 @@ impl Change {
         if operation.as_str() == PURGE
             || LeaseKind::from_operation(operation.as_str()).is_some()
             || PullKind::from_operation(operation.as_str()).is_some()
+            || operation.as_str() == CHECK
         {
             return Err(EntryError::ReservedOperation);
         }
@@ -1592,6 +1618,117 @@ impl PullEntry {
     }
 }
 
+/// The result of a check run (ADR-019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CheckResult {
+    /// The tree of the tested commit passed the set of tests.
+    Pass,
+    /// It failed.
+    Fail,
+}
+
+impl CheckResult {
+    /// The word that the entry has for the result.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "pass" => Some(Self::Pass),
+            "fail" => Some(Self::Fail),
+            _ => None,
+        }
+    }
+}
+
+/// The entry of a check: the result of a run, as evidence about a pair of commits (ADR-019,
+/// STEMMA-240).
+///
+/// It names the commit that was tested and the tip of `main` it was merged onto for the test, its
+/// *base*; a run on the tip of `main` itself, after a merge, has no base. One entry holds one
+/// base, so a run against another tip is another entry. The entry says nothing about who may
+/// count it: that follows from the writer, the register, and the risk level when the evidence is
+/// read ([`crate::check`]). In an enforcing repository the writer signs the hash of the entry, as
+/// for every entry whose rule depends on who acts (ADR-003).
+///
+/// It names commits, so a purge replaces it with a stub when it rewrites one of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckEntry {
+    time: i64,
+    actor: Actor,
+    commit: CommitId,
+    base: Option<CommitId>,
+    result: CheckResult,
+}
+
+impl CheckEntry {
+    /// The entry of a run by `actor`: `commit` was tested, merged onto `base` (or run as it is,
+    /// for `None`, the run on the tip of `main`), with `result`.
+    pub fn new(
+        time: i64,
+        actor: Actor,
+        commit: CommitId,
+        base: Option<CommitId>,
+        result: CheckResult,
+    ) -> Self {
+        Self {
+            time,
+            actor,
+            commit,
+            base,
+            result,
+        }
+    }
+
+    /// The time that the writer claims, in seconds since the Unix epoch (UTC).
+    pub fn time(&self) -> i64 {
+        self.time
+    }
+
+    /// The actor who ran the check and wrote the entry.
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    /// The commit that was tested.
+    pub fn commit(&self) -> &CommitId {
+        &self.commit
+    }
+
+    /// The tip of `main` that the commit was merged onto for the test, or `None` for a run on the
+    /// tip itself.
+    pub fn base(&self) -> Option<&CommitId> {
+        self.base.as_ref()
+    }
+
+    /// The result of the run.
+    pub fn result(&self) -> CheckResult {
+        self.result
+    }
+
+    /// Every commit that the entry names, which a purge may rewrite.
+    pub fn commits(&self) -> Vec<CommitId> {
+        std::iter::once(self.commit).chain(self.base).collect()
+    }
+
+    /// The lines of the body, which the hash of the body covers.
+    fn body_text(&self) -> String {
+        let base = self
+            .base
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), ToString::to_string);
+        format!(
+            "operation {CHECK}\nversion {CHECK_VERSION}\ncommit {}\nbase {base}\nresult {}\n",
+            self.commit,
+            self.result.name()
+        )
+    }
+}
+
 /// What an entry holds. The enum is exhaustive on purpose: a new kind of entry has to be handled
 /// by every reader, which the compiler then shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1606,6 +1743,8 @@ pub enum Record {
     Lease(LeaseEntry),
     /// A pull request: opened, closed, or merged (ADR-004).
     Pull(PullEntry),
+    /// The result of a check run (ADR-019).
+    Check(CheckEntry),
 }
 
 /// An entry of the log: a number, its place in the hash chain, and a record, which is a change,
@@ -1671,6 +1810,12 @@ impl Entry {
             }
             (Record::Pull(_), Chain::Unchained) => {
                 return Err(EntryError::PullOutsideChain(number));
+            }
+            (Record::Check(_), Chain::Unchained) => {
+                return Err(EntryError::CheckOutsideChain(number));
+            }
+            (Record::Check(check), _) if check.base() == Some(check.commit()) => {
+                return Err(EntryError::CheckBaseIsCommit(number));
             }
             (Record::Lease(_), Chain::Unchained) => {
                 return Err(EntryError::LeaseOutsideChain(number));
@@ -1760,6 +1905,7 @@ impl Entry {
             }
             Record::Lease(lease) => Some(lease.body_text()),
             Record::Pull(pull) => Some(pull.body_text()),
+            Record::Check(check) => Some(check.body_text()),
             Record::Change(change) => {
                 let mut out = format!("operation {}\n", change.operation);
                 if let Some(tag) = change.worktree.as_deref() {
@@ -1805,7 +1951,11 @@ impl Entry {
     pub fn change(&self) -> Option<&Change> {
         match &self.record {
             Record::Change(change) => Some(change),
-            Record::Stub(_) | Record::Purge(_) | Record::Lease(_) | Record::Pull(_) => None,
+            Record::Stub(_)
+            | Record::Purge(_)
+            | Record::Lease(_)
+            | Record::Pull(_)
+            | Record::Check(_) => None,
         }
     }
 
@@ -1813,7 +1963,11 @@ impl Entry {
     pub fn lease(&self) -> Option<&LeaseEntry> {
         match &self.record {
             Record::Lease(lease) => Some(lease),
-            Record::Change(_) | Record::Stub(_) | Record::Purge(_) | Record::Pull(_) => None,
+            Record::Change(_)
+            | Record::Stub(_)
+            | Record::Purge(_)
+            | Record::Pull(_)
+            | Record::Check(_) => None,
         }
     }
 
@@ -1821,7 +1975,23 @@ impl Entry {
     pub fn pull(&self) -> Option<&PullEntry> {
         match &self.record {
             Record::Pull(pull) => Some(pull),
-            Record::Change(_) | Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => None,
+            Record::Change(_)
+            | Record::Stub(_)
+            | Record::Purge(_)
+            | Record::Lease(_)
+            | Record::Check(_) => None,
+        }
+    }
+
+    /// The check that the entry records, or `None` for any other entry.
+    pub fn check(&self) -> Option<&CheckEntry> {
+        match &self.record {
+            Record::Check(check) => Some(check),
+            Record::Change(_)
+            | Record::Stub(_)
+            | Record::Purge(_)
+            | Record::Lease(_)
+            | Record::Pull(_) => None,
         }
     }
 
@@ -1834,6 +2004,7 @@ impl Entry {
             Record::Purge(purge) => purge.time,
             Record::Lease(lease) => lease.time,
             Record::Pull(pull) => pull.time,
+            Record::Check(check) => check.time,
         }
     }
 
@@ -1846,6 +2017,7 @@ impl Entry {
             Record::Purge(purge) => &purge.actor,
             Record::Lease(lease) => &lease.actor,
             Record::Pull(pull) => &pull.actor,
+            Record::Check(check) => &check.actor,
         }
     }
 
@@ -1854,6 +2026,7 @@ impl Entry {
         match &self.record {
             Record::Change(change) => change.commits(),
             Record::Pull(pull) => pull.commits(),
+            Record::Check(check) => check.commits(),
             Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => Vec::new(),
         }
     }
@@ -2000,6 +2173,9 @@ impl Entry {
             .get(body)
             .and_then(|line| line.strip_prefix("operation "))
             .and_then(PullKind::from_operation);
+        if version == 3 && lines.get(body).copied() == Some(&format!("operation {CHECK}")) {
+            return parse_check(&lines, body, number, chain, time, actor);
+        }
         if let (3, Some(kind)) = (version, pull_kind) {
             return parse_pull(&lines, body, number, chain, time, actor, kind);
         }
@@ -2218,6 +2394,61 @@ fn parse_lease(
     LeaseEntry::build(time, actor, kind, branch, from, expires, reason)
         .and_then(|lease| Entry::linked(number, chain, Record::Lease(lease)))
         .map_err(EntryParseError::Entry)
+}
+
+/// Reads the body of a check entry, which starts with the line `operation check` at the index
+/// `body`: `version 1`, `commit <id>`, `base <id>` or `base -`, and `result pass` or
+/// `result fail`.
+fn parse_check(
+    lines: &[&str],
+    body: usize,
+    number: u64,
+    chain: Chain,
+    time: i64,
+    actor: Actor,
+) -> Result<Entry, EntryParseError> {
+    let malformed = |line, reason| EntryParseError::Malformed { line, reason };
+    let line_at = |index: usize, key: &str, reason| -> Result<&str, EntryParseError> {
+        lines
+            .get(index)
+            .and_then(|line| line.strip_prefix(key))
+            .ok_or_else(|| malformed(index + 1, reason))
+    };
+    let commit_of = |index: usize, text: &str| -> Result<CommitId, EntryParseError> {
+        ObjectId::from_str(text)
+            .map(CommitId::new)
+            .map_err(|source| EntryParseError::InvalidObjectId {
+                line: index + 1,
+                source,
+            })
+    };
+    if line_at(body + 1, "version ", EntryMalformed::ExpectedVersion)? != CHECK_VERSION.to_string()
+    {
+        return Err(malformed(body + 2, EntryMalformed::ExpectedVersion));
+    }
+    let commit = commit_of(
+        body + 2,
+        line_at(body + 2, "commit ", EntryMalformed::ExpectedCommit)?,
+    )?;
+    let base = match line_at(body + 3, "base ", EntryMalformed::ExpectedBase)? {
+        "-" => None,
+        text => Some(commit_of(body + 3, text)?),
+    };
+    let result = CheckResult::from_name(line_at(
+        body + 4,
+        "result ",
+        EntryMalformed::ExpectedResult,
+    )?)
+    .ok_or_else(|| malformed(body + 5, EntryMalformed::ExpectedResult))?;
+    if body + 5 < lines.len() {
+        return Err(malformed(body + 6, EntryMalformed::TrailingLine));
+    }
+    Entry::linked(
+        number,
+        chain,
+        Record::Check(CheckEntry::new(time, actor, commit, base, result)),
+    )
+    .map_err(EntryParseError::Entry)
 }
 
 /// Reads the body of a pull request entry, which starts with the line `operation pr-…` at the
@@ -2576,6 +2807,12 @@ pub enum EntryMalformed {
     ExpectedCommit,
     /// A closing, a merge, or an approval has no line `pull <number>`.
     ExpectedPull,
+    /// A check has no line `version 1` after the operation.
+    ExpectedVersion,
+    /// A check has no line `base <id>` or `base -` after the commit.
+    ExpectedBase,
+    /// A check has no line `result pass` or `result fail` after the base.
+    ExpectedResult,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -2627,6 +2864,9 @@ impl fmt::Display for EntryMalformed {
             }
             Self::ExpectedCommit => "expected the line `commit <id>` or `repairs <id>`",
             Self::ExpectedPull => "expected the line `pull <number>`",
+            Self::ExpectedVersion => "expected the line `version 1`",
+            Self::ExpectedBase => "expected the line `base <id>` or `base -`",
+            Self::ExpectedResult => "expected the line `result pass` or `result fail`",
         })
     }
 }
@@ -3696,6 +3936,16 @@ impl FsOpLog {
         self.append_record(&Record::Pull(pull.clone()))
     }
 
+    /// Writes the entry of a check, as [`append`](Self::append) writes the entry of a change. The
+    /// entry names no pointer, so the caller holds the lock of the references (ADR-019).
+    ///
+    /// # Errors
+    ///
+    /// See [`append`](Self::append).
+    pub(crate) fn append_check(&self, check: &CheckEntry) -> Result<Entry, OpLogError> {
+        self.append_record(&Record::Check(check.clone()))
+    }
+
     /// Writes the entries of a purge, as [`append`](Self::append) writes an entry, and returns
     /// them. A list of stubs that does not fit into one entry is split over several, and the first
     /// has the count of commits (ADR-014). The entries go after the ones that they list. Before
@@ -3717,7 +3967,7 @@ impl FsOpLog {
         for (start, end) in purge.stubs() {
             for number in *start..=*end {
                 let entry = self.read(number)?;
-                if entry.change().is_none() && entry.pull().is_none() {
+                if entry.change().is_none() && entry.pull().is_none() && entry.check().is_none() {
                     return Err(OpLogError::NotAChange { number });
                 }
             }
@@ -4328,7 +4578,11 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     for (index, entry) in entries.iter().enumerate().rev() {
         let change = match entry.record() {
             Record::Change(change) if !behind_stub => change,
-            Record::Change(_) | Record::Purge(_) | Record::Lease(_) | Record::Pull(_) => continue,
+            Record::Change(_)
+            | Record::Purge(_)
+            | Record::Lease(_)
+            | Record::Pull(_)
+            | Record::Check(_) => continue,
             Record::Stub(_) => {
                 behind_stub = true;
                 continue;
@@ -8527,6 +8781,181 @@ mod tests {
         let written = log.append_purge(purge).unwrap();
         assert_eq!(written.len(), 1);
         assert!(matches!(written[0].record(), Record::Purge(_)));
+        log.verify().expect("the whole log is in the chain");
+    }
+
+    fn check_entry(number: u64, check: CheckEntry) -> Entry {
+        Entry::linked(number, Chain::Start, Record::Check(check)).expect("valid entry")
+    }
+
+    fn check_entries() -> Vec<CheckEntry> {
+        vec![
+            CheckEntry::new(TIME, mia(), commit(A), Some(commit(B)), CheckResult::Pass),
+            CheckEntry::new(TIME, human(), commit(B), None, CheckResult::Fail),
+        ]
+    }
+
+    #[test]
+    fn a_check_entry_is_written_as_it_is_read() {
+        for check in check_entries() {
+            let entry = check_entry(4, check);
+            let bytes = entry.encode();
+            assert!(bytes.starts_with(b"stemma-oplog 3\n"));
+            let again = Entry::parse(&bytes).expect("reads back");
+            assert_eq!(again, entry);
+            assert_eq!(again.encode(), bytes);
+            assert!(again.hash().is_some(), "a check entry is in the chain");
+            assert!(again.change().is_none() && again.pull().is_none());
+            assert_eq!(again.check(), entry.check());
+        }
+    }
+
+    #[test]
+    fn the_two_encodings_of_a_check_are_fixed() {
+        let text = |check| String::from_utf8(check_entry(7, check).encode()).unwrap();
+        let entries = check_entries();
+        let with_base = text(entries[0].clone());
+        assert!(
+            with_base.starts_with("stemma-oplog 3\nnumber 7\n")
+                && with_base.contains("\noperation check\n"),
+            "{with_base}"
+        );
+        assert!(with_base.ends_with(&format!(
+            "operation check\nversion 1\ncommit {}\nbase {}\nresult pass\n",
+            commit(A),
+            commit(B)
+        )));
+        assert!(text(entries[1].clone()).ends_with(&format!(
+            "operation check\nversion 1\ncommit {}\nbase -\nresult fail\n",
+            commit(B)
+        )));
+    }
+
+    #[test]
+    fn the_reader_refuses_what_the_check_writer_does_not_write() {
+        let good = String::from_utf8(check_entry(7, check_entries().remove(0)).encode()).unwrap();
+        let cases = [
+            // A check names the chain: no older encoding has it.
+            good.replace("stemma-oplog 3", "stemma-oplog 1"),
+            good.replace("stemma-oplog 3", "stemma-oplog 2"),
+            // Another version, or none.
+            good.replace("version 1", "version 2"),
+            good.replace("version 1\n", ""),
+            // Lines missing, out of order, repeated, or added.
+            good.replace(&format!("commit {}\n", commit(A)), ""),
+            good.replace(&format!("base {}\n", commit(B)), ""),
+            good.replace("result pass\n", ""),
+            good.clone() + "result pass\n",
+            good.clone() + "base -\n",
+            good.replace("result pass", "result green"),
+            good.replace("result pass", "result Pass"),
+            good.replace(&format!("base {}", commit(B)), "base x"),
+            good.replace(&format!("base {}", commit(B)), "base"),
+            // A run merged onto itself.
+            good.replace(
+                &format!("base {}", commit(B)),
+                &format!("base {}", commit(A)),
+            ),
+        ];
+        for bad in cases {
+            assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_hash_of_a_check_covers_each_field_of_its_body() {
+        let good = String::from_utf8(check_entry(7, check_entries().remove(0)).encode()).unwrap();
+        let hash = |text: &str| Entry::parse(text.as_bytes()).unwrap().hash();
+        let original = hash(&good);
+        assert!(original.is_some());
+        for changed in [
+            good.replace("result pass", "result fail"),
+            good.replace(&format!("base {}", commit(B)), "base -"),
+            good.replace(
+                &format!("commit {}", commit(A)),
+                &format!("commit {}", commit(C)),
+            ),
+        ] {
+            assert_ne!(hash(&changed), original, "{changed}");
+        }
+        // The writer, the time, and the number are part of the hash too: the proof of a check
+        // signs it, so a proof of one writer is no proof of another.
+        let first = check_entries().remove(0);
+        let other = |number: u64, time: i64, actor: Actor| {
+            let check = CheckEntry::new(
+                time,
+                actor,
+                *first.commit(),
+                first.base().copied(),
+                first.result(),
+            );
+            check_entry(number, check).hash()
+        };
+        let same = other(7, TIME, mia());
+        assert_eq!(same, original);
+        assert_ne!(other(7, TIME, human()), same);
+        assert_ne!(other(7, TIME + 1, mia()), same);
+        assert_ne!(other(8, TIME, mia()), same);
+    }
+
+    #[test]
+    fn a_check_cannot_name_its_own_commit_as_its_base() {
+        let own = CheckEntry::new(TIME, mia(), commit(A), Some(commit(A)), CheckResult::Pass);
+        assert_eq!(
+            Entry::linked(5, Chain::Start, Record::Check(own)),
+            Err(EntryError::CheckBaseIsCommit(5))
+        );
+    }
+
+    #[test]
+    fn a_change_cannot_take_the_check_operation() {
+        let result = Change::try_new(
+            TIME,
+            human(),
+            operation(CHECK),
+            None,
+            None,
+            vec![moves("main", None, Some(A))],
+        );
+        assert_eq!(result, Err(EntryError::ReservedOperation));
+        assert_eq!(
+            Entry::of(3, Record::Check(check_entries().remove(0))),
+            Err(EntryError::CheckOutsideChain(3))
+        );
+    }
+
+    #[test]
+    fn a_check_entry_names_its_commits_and_becomes_a_stub() {
+        let entries = check_entries();
+        let with_base = check_entry(1, entries[0].clone());
+        assert_eq!(with_base.commits(), vec![commit(A), commit(B)]);
+        assert_eq!(
+            check_entry(2, entries[1].clone()).commits(),
+            vec![commit(B)]
+        );
+        let stub = with_base.to_stub().expect("a check can become a stub");
+        assert!(stub.check().is_none() && stub.commits().is_empty());
+        assert_eq!(stub.hash(), with_base.hash());
+        let next = Entry::linked(
+            2,
+            Chain::After(with_base.hash().unwrap()),
+            Record::Check(entries[1].clone()),
+        )
+        .unwrap();
+        check_chain(&[with_base, next.clone()]).expect("the chain holds");
+        check_chain(&[stub, next]).expect("the chain holds over the stub");
+    }
+
+    #[test]
+    fn the_log_appends_reads_and_lets_a_purge_list_a_check_entry() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let written = log.append_check(&check_entries().remove(0)).unwrap();
+        assert_eq!(written.number(), 1);
+        assert_eq!(log.read(1).unwrap().check(), written.check());
+        log.verify().expect("the whole log is in the chain");
+        let purge = Purge::try_new(TIME, human(), 2, &[1]).unwrap();
+        log.append_purge(purge).unwrap();
         log.verify().expect("the whole log is in the chain");
     }
 }

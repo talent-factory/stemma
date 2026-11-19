@@ -153,6 +153,7 @@ Die Einträge folgen denen der Lease: Sie nennen keinen Zeiger, stehen immer in 
 und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9. Der Eintrag
 \type{pr-approve} ist der Grund für die Version 10, auf die das Repository mit dem nächsten
 Eintrag oder Purge steigt (ADR-009, ADR-011).
+Der Eintrag \type{check} hebt sie später auf 11.
 Der Eintrag \type{pr-open} nennt den Branch, den Commit an seiner Spitze, die Reviewer und
 optional \type{repairs <commit>}, den roten Commit, den der Pull Request zu beheben erklärt
 (ADR-019).
@@ -309,6 +310,57 @@ die das Gate an verschiedenen Stellen erkennt.
 \externalfigure[images/conflict-gate.pdf][width=\textwidth]
 \stopplacefigure
 
+{\bf Das Ergebnis einer Prüfung.}
+Ein Prüflauf sagt etwas über einen Commit: Sein Baum hat die Tests bestanden oder nicht.
+Über den Commit, der \type{main} wird, wenn die Änderung landet, sagt er nichts, denn andere
+Änderungen können vorher landen.
+Das Ergebnis ist deshalb ein Beleg über ein Paar von Commits: den getesteten Commit und die Spitze
+von \type{main}, auf die er für den Test gemergt wurde, seine Basis.
+Es steht als Eintrag \type{check} im Operationslog.
+Er nennt in dieser Reihenfolge \type{version 1}, \type{commit <id>}, \type{base <id>} und
+\type{result pass} oder \type{result fail}.
+Ein Eintrag hat genau eine Basis; ein Lauf gegen eine andere Spitze ist ein anderer Eintrag.
+Ein Lauf auf der Spitze von \type{main} selbst, wie ihn die Prüfung nach dem Merge macht
+(siehe unten), hat keine Basis und schreibt \type{base -}.
+Der Eintrag steht wie die des Pull Requests immer in der Hash-Kette, nennt keinen Zeiger und hebt
+die Format-Version des Repositories auf 11.
+
+Der Kern schreibt den Eintrag unter \type{refs.lock} und lehnt einen Commit ab, den der Store nicht
+als Commit kennt, und eine Basis, die der Commit selbst ist; der Leser lehnt einen solchen Eintrag
+ebenfalls ab.
+Über den Schreiber fragt er nur den Authorizer nach der Operation \type{check}, denn ob ein
+Ergebnis zählt, hängt vom Pull Request, seinen Autoren und der Risikostufe ab, und keines davon
+steht im Eintrag.
+Die Regel gilt beim Lesen:
+
+\startitemize
+\item Auf den Stufen 0 und 1 zählt das Ergebnis jedes eingetragenen Akteurs.
+Hat sich \type{main} bewegt, bleibt es gültig, wenn der Merge auf die neue Spitze sauber ist; das
+rechnet das Gate im Moment des Merges.
+\item Auf den Stufen 2 und 3 gilt ein Ergebnis nur für die Spitze, gegen die es lief, und nur,
+wenn sein Schreiber unabhängig ist: nicht der Eröffner, nicht der Autor eines Commits in
+\type{tip..head} (die Spitze von \type{main}, auf die der Merge läuft), kein Agent, dessen Sponsor
+einer von ihnen ist, und nicht der Sponsor eines Agenten, der eröffnet oder einen Commit
+geschrieben hat.
+Es zählt die Identität, nicht Modell oder Session; zwei Agenten desselben Sponsors bleiben zwei
+Prüfungen (ADR-004, ADR-019).
+\item In einem Repository mit Register zählt ein Ergebnis nur mit einem Beweis: Der Schreiber
+signiert den Hash des Eintrags mit einem Schlüssel des Registers, und die Beweisdatei liegt neben
+dem Log.
+Ein fehlender oder ungültiger Beweis lässt das Ergebnis nicht zählen.
+\stopitemize
+
+Wer die Ergebnisse einer Änderung liest, ruft dafür \type{counted_checks} des Kerns auf.
+Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein erfolgreicher Lauf ohne
+Basis abdeckte; ein Lauf auf einem Commit ausserhalb von \type{main} zählt nicht.
+Ein späterer fehlgeschlagener Lauf auf demselben Commit nimmt einen erfolgreichen nicht zurück; er
+bleibt im Log, und das Gate sucht danach die erste rote Spitze.
+\type{last_green_tip} des Kerns liest sie aus dem Verlauf der aktuellen Spitze und verlangt in
+einem Repository mit Register ebenfalls einen Beweis.
+Das Gate selbst, das beides anwendet, ist noch nicht umgesetzt.
+Auch schreibt noch kein Befehl den Eintrag; er entsteht nur über den Kern
+(\type{record_check}).
+
 {\bf Die Prüfung nach dem Merge.}
 Zwei Änderungen können sauber zusammengehen und sich doch gegenseitig brechen, ein semantischer
 Konflikt.
@@ -365,7 +417,7 @@ Zwei Agenten desselben Sponsors zählen als zwei Freigaben.
 nicht prüfen; der Mensch bei den Stufen 2 und 3 bleibt der Anker.
 Für die Stufen 2 und 3 zählt eine Prüfung (\type{check}) nur,
 wenn ihr Schreiber weder die Änderung eröffnet
-noch einen Commit in \type{base..head} verfasst hat
+noch einen Commit in \type{tip..head} verfasst hat
 und kein Agent ist, dessen Sponsor einer von beiden ist;
 bei den Stufen 0 und 1 zählt jeder registrierte Akteur.
 

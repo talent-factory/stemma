@@ -30,8 +30,8 @@ use crate::object::{
     TreeParseError,
 };
 use crate::oplog::{
-    Chain, Change, Entry, EntryParseError, LeaseEntry, Moved, OperationName, PullEntry, Purge,
-    Record, MAX_NUMBER, MAX_REASON_LEN, MAX_REVIEWERS,
+    Chain, Change, CheckEntry, CheckResult, Entry, EntryParseError, LeaseEntry, Moved,
+    OperationName, PullEntry, Purge, Record, MAX_NUMBER, MAX_REASON_LEN, MAX_REVIEWERS,
 };
 use crate::refs::{BranchName, Head, RefParseError};
 use crate::register::Identity;
@@ -401,15 +401,36 @@ fn random_moved<T: PartialEq>(
 /// An entry of either encoding: the entry of a change (encoding 1), or a stub or the entry of a
 /// purge (encoding 2).
 fn random_entry(rng: &mut Rng) -> Entry {
-    match rng.below(6) {
+    match rng.below(7) {
         0 => random_change_entry(rng)
             .to_stub()
             .expect("the entry of a change can become a stub"),
         1 => random_purge_entry(rng),
         2 => random_lease_entry(rng),
         3 => random_pull_entry(rng),
+        4 => random_check_entry(rng),
         _ => random_change_entry(rng),
     }
+}
+
+/// The entry of a check, in the chain, with a base or without one.
+fn random_check_entry(rng: &mut Rng) -> Entry {
+    let number = random_number(rng);
+    let time = *rng.pick(&[0, 1, 1_700_000_000]);
+    let commit = random_commit_id(rng);
+    // A run merged onto itself is no entry (`EntryError::CheckBaseIsCommit`).
+    let base = rng
+        .one_in(2)
+        .then(|| random_commit_id(rng))
+        .filter(|base| *base != commit);
+    let result = if rng.one_in(2) {
+        CheckResult::Pass
+    } else {
+        CheckResult::Fail
+    };
+    let entry = CheckEntry::new(time, random_actor(rng), commit, base, result);
+    Entry::linked(number, Chain::Start, Record::Check(entry))
+        .expect("a random check entry is valid")
 }
 
 /// The entry of a pull request: one of the three kinds, in the chain, with up to the most
@@ -1209,8 +1230,8 @@ fn every_entry_the_code_can_build_is_read_back() {
         assert_eq!(again, entry, "{context}");
         assert_eq!(again.encode(), bytes, "{context}");
     }
-    // The entry of a change, a stub, the entry of a purge, and the entry of a lease.
-    assert_eq!(kinds.len(), 5, "the run did not build every kind of entry");
+    // The entry of a change, a stub, a purge, a lease, a pull request, and a check.
+    assert_eq!(kinds.len(), 6, "the run did not build every kind of entry");
 }
 
 #[test]

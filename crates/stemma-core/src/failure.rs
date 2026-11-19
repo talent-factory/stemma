@@ -379,6 +379,7 @@ impl Classify for RestoreError {
             | Self::IsPurge { .. }
             | Self::IsLease { .. }
             | Self::IsPull { .. }
+            | Self::IsCheck { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
