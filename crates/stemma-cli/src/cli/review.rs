@@ -7,7 +7,9 @@
 //! Exit codes follow the rest of the program: 1 for a refusal, 5 for damage, 6 for a lock that is
 //! held (try again), and 3 if an entry is written and the rest of the command could not finish: a
 //! proof that is not written, a lease file that is not replaced, or a merge whose move is not
-//! flushed. A script must not repeat a command that ends with 3.
+//! flushed. What to do after 3 depends on the command: `pr merge` repeated finishes the move,
+//! while a repeated `pr approve` or `check record` writes a second entry (the first does not
+//! count without its proof), and a repeated `lease` command decides again from the lease file.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -21,12 +23,14 @@ use clap::{Args, Subcommand};
 use stemma_core::failure::{Classify, FailureKind};
 use stemma_core::lease::DEFAULT_MINUTES;
 use stemma_core::object::CommitId;
-use stemma_core::oplog::{CheckResult, Entry};
+use stemma_core::oplog::{CheckResult, Entry, OpLogError};
 use stemma_core::policy::RiskLevel;
 use stemma_core::pull::{NotCounted, PullState};
 use stemma_core::refs::BranchName;
-use stemma_core::register::{self, Mode, ProofFile, Register};
-use stemma_core::repository::{CheckError, GateError, LeaseError, PullError, Repository, Revision};
+use stemma_core::register::{self, Identity, Mode, ProofFile, Register};
+use stemma_core::repository::{
+    CheckError, GateError, LeaseError, PullError, Repository, Retry, Revision,
+};
 use stemma_core::signature::{self, PayloadKind, SshKeygen};
 use stemma_core::store::{ObjectStore, StoreError};
 use stemma_core::{Actor, AllowAll};
@@ -84,13 +88,21 @@ impl From<ReviewError> for CliError {
     }
 }
 
+/// A log error that says the entry is in the log although it is not known to be flushed: the
+/// command is not repeated (a second attempt writes a second entry).
+fn not_flushed(error: &OpLogError) -> bool {
+    matches!(error, OpLogError::NotFlushed { .. })
+}
+
 fn pull_error(error: PullError) -> ReviewError {
     let kind = match &error {
         PullError::Refs(inner) => inner.kind(),
         PullError::Log(inner) => inner.kind(),
         _ => FailureKind::Other,
     };
-    if matches!(error, PullError::ProofNotWritten { .. }) {
+    if matches!(error, PullError::ProofNotWritten { .. })
+        || matches!(&error, PullError::Log(inner) if not_flushed(inner))
+    {
         return ReviewError::incomplete(error.to_string());
     }
     ReviewError::of_kind(error.to_string(), kind)
@@ -103,11 +115,21 @@ fn gate_error(error: GateError) -> ReviewError {
         _ => FailureKind::Other,
     };
     if matches!(
+        &error,
+        GateError::Contended {
+            last: Retry::Locked,
+            ..
+        }
+    ) {
+        return ReviewError::of_kind(error.to_string(), FailureKind::Locked);
+    }
+    if matches!(
         error,
         GateError::MoveFailed { .. }
             | GateError::PullNotRecorded { .. }
             | GateError::NotDurable { .. }
-    ) {
+    ) || matches!(&error, GateError::Log(inner) if not_flushed(inner))
+    {
         return ReviewError::incomplete(error.to_string());
     }
     ReviewError::of_kind(error.to_string(), kind)
@@ -119,6 +141,11 @@ fn check_error(error: CheckError) -> ReviewError {
         CheckError::Log(inner) => inner.kind(),
         _ => FailureKind::Other,
     };
+    if matches!(&error, CheckError::Log(inner) if not_flushed(inner)) {
+        return ReviewError::incomplete(format!(
+            "{error}; the entry may be in the log, so do not repeat the command"
+        ));
+    }
     ReviewError::of_kind(error.to_string(), kind)
 }
 
@@ -128,8 +155,17 @@ fn lease_error(error: LeaseError) -> ReviewError {
         LeaseError::Log(inner) => inner.kind(),
         _ => FailureKind::Other,
     };
-    if matches!(error, LeaseError::Io { .. }) {
-        return ReviewError::incomplete(error.to_string());
+    // Only a failed write follows an entry; a failed read wrote nothing and can be repeated.
+    let wrote = match &error {
+        LeaseError::Io { operation, .. } => !operation.starts_with("read"),
+        LeaseError::Log(inner) => not_flushed(inner),
+        _ => false,
+    };
+    if wrote {
+        return ReviewError::incomplete(format!(
+            "{error}; the entry may be in the log without a proof or a lease file, so do not \
+             repeat the command"
+        ));
     }
     ReviewError::of_kind(error.to_string(), kind)
 }
@@ -409,6 +445,30 @@ fn prove(
             entry.number()
         ))
     })?;
+    // The reader refuses a proof that the register does not accept, and so does the writer: a
+    // wrong key must not leave a file that `op verify` reports as damage.
+    let register = register.expect("an enforcing repository has a register");
+    let verified = register
+        .verify_log_entry(
+            actor,
+            entry.number(),
+            hash.to_string().as_bytes(),
+            &signature,
+        )
+        .map_err(|error| {
+            ReviewError::incomplete(format!(
+                "entry {} is written, but the key does not prove it for {actor}: {error}; no \
+                 proof is written, and the entry does not count",
+                entry.number()
+            ))
+        })?;
+    if !register.is_active_key(&Identity::of(actor), verified.key()) {
+        return Err(ReviewError::incomplete(format!(
+            "entry {} is written, but the key of {actor} is not active; no proof is written, \
+             and the entry does not count",
+            entry.number()
+        )));
+    }
     let proof = ProofFile {
         actor: actor.clone(),
         signature,
@@ -564,22 +624,24 @@ fn pr_list(args: PrListArgs, out: &mut dyn Write) -> Result<(), CliError> {
             PullState::Merged { .. } => "merged",
         };
         let approvals = if pull.is_open() {
-            let recount = repository
-                .recount_approvals(pull.number(), register.as_ref())
-                .map_err(pull_error)?;
-            let void = recount.void().len();
-            let voided = recount
-                .void()
-                .iter()
-                .filter(|(_, why)| matches!(why, NotCounted::OtherHead))
-                .count();
-            if void == 0 {
-                format!(" approvals {}", recount.count())
-            } else {
-                format!(
-                    " approvals {} ({void} void, {voided} for an older head)",
-                    recount.count()
-                )
+            match repository.recount_approvals(pull.number(), register.as_ref()) {
+                Err(error) => format!(" approvals unknown ({error})"),
+                Ok(recount) => {
+                    let void = recount.void().len();
+                    let older = recount
+                        .void()
+                        .iter()
+                        .filter(|(_, why)| matches!(why, NotCounted::OtherHead))
+                        .count();
+                    if void == 0 {
+                        format!(" approvals {}", recount.count())
+                    } else {
+                        format!(
+                            " approvals {} ({void} void, {older} for an older head)",
+                            recount.count()
+                        )
+                    }
+                }
             }
         } else {
             String::new()

@@ -405,3 +405,178 @@ fn open_pull_as(dir: &Path, actor: &str) -> String {
         .expect("the output names the number")
         .to_owned()
 }
+
+#[test]
+fn a_signature_that_fails_after_the_entry_ends_with_code_3_and_the_entry_stays() {
+    let keys = Dir::new();
+    let (Some(owner), Some(other)) = (
+        generate_key(keys.path(), "owner"),
+        generate_key(keys.path(), "other"),
+    ) else {
+        return;
+    };
+    let dir = enforcing(&owner, &other);
+    let missing = keys.path().join("missing");
+    let result = run(
+        dir.path(),
+        &[
+            "check",
+            "record",
+            "feat",
+            "--result",
+            "pass",
+            "--key",
+            missing.to_str().unwrap(),
+            "--actor",
+            OTHER,
+        ],
+    );
+    assert_eq!(result.code, 3, "{}", result.stdout);
+    assert!(result.stderr.contains("is written"), "{}", result.stderr);
+    assert!(ok(dir.path(), &["check", "list"]).stdout.contains(" pass "));
+}
+
+#[test]
+fn a_member_cannot_override_a_lease_and_nothing_changes() {
+    let keys = Dir::new();
+    let (Some(owner), Some(other)) = (
+        generate_key(keys.path(), "owner"),
+        generate_key(keys.path(), "other"),
+    ) else {
+        return;
+    };
+    let dir = enforcing(&owner, &other);
+    ok(dir.path(), &["lease", "take", "feat", "--actor", ACTOR]);
+    let result = run(
+        dir.path(),
+        &[
+            "lease", "override", "feat", "--reason", "x", "--key", &other, "--actor", OTHER,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    let shown = ok(dir.path(), &["lease", "show", "feat"]);
+    assert!(
+        shown.stdout.contains("held by human daniel"),
+        "{}",
+        shown.stdout
+    );
+}
+
+#[test]
+fn an_approval_signed_with_the_wrong_key_is_refused() {
+    let keys = Dir::new();
+    let (Some(owner), Some(other)) = (
+        generate_key(keys.path(), "owner"),
+        generate_key(keys.path(), "other"),
+    ) else {
+        return;
+    };
+    let dir = enforcing(&owner, &other);
+    ok(dir.path(), &["lease", "take", "feat", "--actor", ACTOR]);
+    ok(dir.path(), &["switch", "feat", "--actor", ACTOR]);
+    write(dir.path(), "b.txt", "b\n");
+    track_ok(dir.path(), "b.txt");
+    ok(dir.path(), &["commit", "-m", "feature", "--actor", ACTOR]);
+    let number = open_pull_as(dir.path(), ACTOR);
+    let result = run(
+        dir.path(),
+        &["pr", "approve", &number, "--key", &owner, "--actor", OTHER],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    let listed = ok(dir.path(), &["pr", "list"]);
+    assert!(listed.stdout.contains("approvals 0"), "{}", listed.stdout);
+}
+
+#[test]
+fn a_merge_moves_main_to_the_commit_that_it_names() {
+    let dir = with_feature_branch();
+    let number = open_pull(dir.path());
+    ok(
+        dir.path(),
+        &[
+            "check", "record", "feat", "--base", "main", "--result", "pass", "--actor", OTHER,
+        ],
+    );
+    let merged = ok(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
+    );
+    let branches = ok(dir.path(), &["branch"]);
+    let main = branches
+        .stdout
+        .lines()
+        .find(|line| line.trim_start_matches(['*', ' ']).starts_with("main "))
+        .expect("main is listed");
+    assert!(main.contains("Merge pull request"), "{main}");
+    let short = main.split_whitespace().nth(1).unwrap();
+    assert!(merged.stdout.contains(short), "{}", merged.stdout);
+    let again = run(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
+    );
+    assert_eq!(again.code, 1, "{}", again.stdout);
+}
+
+#[test]
+fn bad_arguments_are_refused_before_anything_is_written() {
+    let dir = with_feature_branch();
+    let before = ok(dir.path(), &["op", "log"]).stdout;
+    for args in [
+        &[
+            "pr",
+            "open",
+            "feat",
+            "--reviewer",
+            "garbage",
+            "--actor",
+            ACTOR,
+        ][..],
+        &[
+            "pr",
+            "open",
+            "feat",
+            "--repairs",
+            "nothing",
+            "--actor",
+            ACTOR,
+        ][..],
+    ] {
+        let result = run(dir.path(), args);
+        assert_eq!(result.code, 1, "{args:?}: {}", result.stdout);
+    }
+    for args in [
+        &[
+            "check", "record", "feat", "--result", "bogus", "--actor", OTHER,
+        ][..],
+        &["lease", "take", "feat", "--minutes", "0", "--actor", ACTOR][..],
+    ] {
+        let result = run(dir.path(), args);
+        assert_eq!(result.code, 2, "{args:?}: {}", result.stdout);
+    }
+    assert_eq!(ok(dir.path(), &["op", "log"]).stdout, before);
+}
+
+#[test]
+fn a_check_signed_with_a_key_of_another_actor_writes_no_proof_and_verify_stays_clean() {
+    let keys = Dir::new();
+    let (Some(owner), Some(other)) = (
+        generate_key(keys.path(), "owner"),
+        generate_key(keys.path(), "other"),
+    ) else {
+        return;
+    };
+    let dir = enforcing(&owner, &other);
+    let result = run(
+        dir.path(),
+        &[
+            "check", "record", "feat", "--result", "pass", "--key", &owner, "--actor", OTHER,
+        ],
+    );
+    assert_eq!(result.code, 3, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("no proof is written"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(ok(dir.path(), &["op", "verify"]).code, 0);
+}

@@ -3055,8 +3055,11 @@ kein Ergebnis einer Prüfung zählt. Bei einem Konflikt rebased der Autor und ö
 Pull Request. Ein gehaltenes Lock der Referenzen endet mit Exit-Code 6; der Aufruf lässt sich
 wiederholen. Ein beschädigtes Log endet mit Exit-Code 5. Exit-Code 3 meldet einen Eintrag, der
 geschrieben ist, während der Rest nicht gelang: eine Beweisdatei, die fehlt, oder eine Bewegung
-von \type{main}, deren Spülen nicht feststeht. Ein Befehl mit Exit-Code 3 wird nicht wiederholt;
-ein erneuter \type{pr merge} schliesst eine Bewegung von \type{main} ab.
+von \type{main}, deren Spülen nicht feststeht. Ein erneuter \type{pr merge} schliesst die
+Bewegung von \type{main} ab; ein erneuter \type{pr approve} schreibt eine zweite Genehmigung,
+denn die erste zählt ohne Beweis nicht.
+Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
+Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.
 
 {\bf Beispiele.}
 
@@ -3100,8 +3103,10 @@ Ergebnis, die ersten zwölf Stellen des Commits, die Basis (\type{on KURZE-ID} o
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Commit oder die
 Basis nicht existiert, wenn die Basis der Commit selbst ist und wenn in einem durchsetzenden
-Repository der Schlüssel fehlt. Exit-Code 3 meldet einen Eintrag, dessen Signatur oder Beweisdatei
-fehlt: Das Ergebnis ist im Log und zählt nicht; der Lauf wird noch einmal eingetragen.
+Repository der Schlüssel fehlt. Exit-Code 3 meldet einen Eintrag, dessen Beweis fehlt: Die Signatur
+gelang nicht, oder das Register kennt den Schlüssel nicht für den Akteur. Der Befehl schreibt dann
+keine Beweisdatei; das Ergebnis ist im Log und zählt nicht, und der Lauf wird noch einmal
+eingetragen.
 
 {\bf Beispiele.}
 
