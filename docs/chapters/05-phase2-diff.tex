@@ -561,33 +561,93 @@ dieselben Farben für ihre Zeilen (\in{Abschnitt}[sec:tui]).
 \section[sec:tui]{Die Oberfläche im Terminal}
 
 \type{diff --tui} zeigt denselben Diff in einer schreibgeschützten Oberfläche: links die Dateien,
-rechts die Zeilen der gewählten Datei, unten eine Zeile mit den Tasten. Die Bibliothek ist ratatui
-mit dem Backend crossterm (ADR-016). Die Crate \type{stemma-tui} bekommt den fertigen Diff von der
-Kommandozeile und berechnet ihn nicht neu; sie braucht seine Typen und \type{moved_lines}, um
-verschobene Zeilen zu färben (\in{Abschnitt}[sec:moved]). Der Kern hängt nicht von
-ihr ab, und der Text von \type{diff} bleibt die Bezugsgrösse für Skripte und Tests.
+rechts die Zeilen aller Dateien in einem durchgehenden Strom, unten eine Zeile mit den Tasten.
+Jede Datei beginnt im Strom mit einer Kopfzeile, die den Pfad und die Zahl der eingefügten und
+entfernten Zeilen nennt (\type{+n -m}). Die Liste links markiert die Datei, die oben im Bild steht.
+Die Bibliothek ist ratatui mit dem Backend crossterm (ADR-016). Die Crate \type{stemma-tui}
+bekommt den fertigen Diff von der Kommandozeile und berechnet ihn nicht neu; sie braucht seine
+Typen und \type{moved_lines}, um verschobene Zeilen zu färben (\in{Abschnitt}[sec:moved]).
+Der Kern hängt nicht von ihr ab, und der Text von \type{diff} bleibt die Bezugsgrösse für Skripte
+und Tests.
 Der Zustand ist ein einfacher Wert, der sich durch Eingaben ändert, und die
 Darstellung zeichnet ihn in einen beliebigen Bildschirm. Tests brauchen daher kein Terminal. Nur
 die Schleife der Oberfläche (\type{run}) berührt das echte Terminal.
 
+\subsection{Der Strom}
+
+Der Strom ist die Liste der Zeilen, die das rechte Feld zeigt. Er enthält nacheinander für jede
+Datei eine Kopfzeile, danach bei einer Textdatei für jeden Hunk die Zeile \type{@@} und seine
+Zeilen, bei einer Binärdatei oder einer zu grossen Datei eine Zeile mit der Meldung. Zwischen
+zwei Dateien steht eine Leerzeile; sie gehört zur Datei darüber. Eine Zeile des Stroms heisst
+im Folgenden kurz Zeile, eine Zeile einer Datei Dateizeile.
+
+Der Strom hängt von der Breite des Feldes, vom Layout und vom Umbruch ab. Die Oberfläche baut
+ihn einmal für diese drei Werte und nicht für jedes Bild neu; sie baut ihn erst wieder, wenn sich
+einer von ihnen ändert. Dabei zählt die Breite in Spalten des Terminals, nicht in Bytes: Ein
+breites Zeichen wie ein chinesisches nimmt zwei Spalten ein. Ein Zeichen, das über den Rand
+reichen würde, kommt in die nächste Zeile; ohne Umbruch wird die Zeile abgeschnitten, und die
+letzte Spalte zeigt \type{…}, damit der Schnitt zu sehen ist. Ein Zeichen, das breiter ist als
+die ganze Spalte, erscheint als \type{…}.
+
+\startitemize[n]
+\item {\bf Unified.} Eine Dateizeile ist eine Zeile des Stroms. Vor der Marke (Leerzeichen,
+\type{-} oder \type{+}) stehen zwei Spalten mit Zeilennummern, links die der alten und
+daneben die der neuen Seite. Eine entfernte Zeile hat nur die alte, eine eingefügte nur die
+neue Nummer; eine Kontextzeile hat beide. Die Spalten sind so breit wie die Nummer der
+längsten Datei.
+\item {\bf Split.} Links steht die alte, rechts die neue Seite, getrennt durch einen senkrechten
+Strich. Jede Seite hat ihre eigene Nummer und Marke. Eine Kontextzeile steht auf beiden Seiten.
+Eine zusammenhängende Gruppe aus Löschungen und Einfügungen wird Zeile für Zeile gepaart: die
+erste Löschung mit der ersten Einfügung, die zweite mit der zweiten, und die Seite mit weniger
+Zeilen bleibt darunter leer. Ein Paar belegt eine Zeile des Stroms; ohne Umbruch hat der Strom
+daher im Layout Split höchstens so viele Zeilen wie im Layout Unified.
+\item {\bf Auto.} Das Layout ist Split, wenn das Feld mindestens 120 Spalten innerhalb seines
+Rahmens hat, und sonst Unified. Jede Hälfte hat dann 59 oder 60 Spalten, von denen die Nummer
+und die Marke einige nehmen. Die Liste der Dateien nimmt ein Viertel des Terminals, aber nicht
+mehr als 40 Spalten, und der Rahmen des Feldes zwei; ein Terminal von 162 Spalten und mehr
+teilt also, eines von 161 Spalten nicht.
+Die Tasten \type{1}, \type{2} und \type{0} wählen Unified, Split und Auto.
+\item {\bf Umbruch.} Ohne Umbruch (der Anfangszustand) schneidet die Oberfläche eine Zeile am
+Rand der Spalte ab und zeigt \type{…} in der letzten Spalte. Mit Umbruch (Taste \type{w}) geht
+sie in der nächsten Zeile des Stroms weiter, deren Nummernspalten und Marke leer sind. Die Zeile
+\type{\ No newline at end of file} wird in beiden Layouts ebenso umgebrochen oder abgeschnitten.
+\stopitemize
+
+Entfernte Zeilen haben einen roten, eingefügte einen grünen Hintergrund, der bis an den Rand der
+Spalte reicht. Verschobene Zeilen (\in{Abschnitt}[sec:moved]) behalten die Vordergrundfarben
+magenta und cyan ohne Hintergrund und bleiben so von gewöhnlichen Änderungen zu unterscheiden.
+Ein Tabulator erscheint als vier Leerzeichen. Ein anderes Steuerzeichen erscheint in
+Caret-Schreibweise, etwa \type{^[} für Escape, \type{^M} für ein CR mitten in der Zeile und
+\type{^?} für DEL, ein Zeichen des Bereichs C1 als \type{^@}; so erreicht keine Folge aus der
+Datei das Terminal. Das CR eines Zeilenendes \type{\r\n} gehört zum Zeilenende und entfällt.
+Ein Pfad, der länger ist als das Feld, wird in der Kopfzeile abgeschnitten und endet auf
+\type{…}, damit die Zahlen der Kopfzeile sichtbar bleiben.
+
 \subsection{Definition}
 
-Der Zustand $S = (f, h, s)$ besteht aus der Nummer der gewählten Datei $f$, der Nummer des
-gewählten Hunks $h$ in dieser Datei und der Zahl $s$ der Zeilen der Datei, die oben aus dem Bild
-gerollt sind (im Code \type{State}). Der Diff $D$ ist fest und wird bei jedem Aufruf mitgegeben.
-Er hat $F$ Dateien. Die Datei $f$ hat $H(f)$ Hunks. $H(f) = 0$ gilt für eine binäre Datei und für
-eine neue oder gelöschte leere Datei. Das rechte Feld hat $L(f)$ Zeilen. Bei einer Textdatei sind
-das die Zeile \type{@@} jedes Hunks, dahinter seine Zeilen mit der Marke für Kontext, Löschung
-oder Einfügung und gegebenenfalls die Zeile \type{\ No newline at end of file}. Eine binäre
-Datei hat eine Zeile mit der Meldung, eine leere Datei keine. Mit $\mathrm{start}(f, h)$ sei der
-Index der Zeile \type{@@} des Hunks $h$ in diesem Feld bezeichnet, und $\mathrm{start}(f, 0) = 0$
-für eine Datei ohne Hunk.
+Der Zustand ist $S = (f, h, s, m, w, c)$ (im Code \type{State}). Dabei ist $f$ die Nummer der
+Datei im Bild, nämlich der Datei, zu der die oberste Zeile des Feldes gehört. Die Nummer $h$ ist
+die des gewählten Hunks in dieser Datei, und $s$ ist die Zahl der Zeilen des Stroms, die oben aus
+dem Bild gerollt sind. Das Layout $m$ ist eines von Auto, Unified und Split, der Umbruch
+$w$ ist an oder aus, und $c$ ist die Breite des Terminals in Spalten, die der Zustand durch die
+Eingabe \type{Resize} erfährt. Der Diff $D$ ist fest und wird bei jedem Aufruf mitgegeben.
+Er hat $F$ Dateien. Die Datei $f$ hat $H(f)$ Hunks. $H(f) = 0$ gilt für eine binäre Datei und
+für eine neue oder gelöschte leere Datei. Der Strom hat $R$ Zeilen; er hängt von $c$, $m$
+und $w$ ab. Mit $\mathrm{kopf}(f)$ sei der Index der Kopfzeile der Datei $f$ im Strom bezeichnet,
+mit $\mathrm{start}(f, h)$ der Index der Zeile \type{@@} des Hunks $h$, und
+$\mathrm{start}(f, 0) = \mathrm{kopf}(f)$ für eine Datei ohne Hunk. Die Funktion
+$\mathrm{datei}(s)$ liefert die Datei, zu der die Zeile $s$ gehört. Der Anker der Auswahl ist
+$\mathrm{anker}(f, h) = \mathrm{kopf}(f)$ für $h = 0$ und $\mathrm{start}(f, h)$ sonst: die Zeile,
+die oben stehen soll, wenn die Auswahl $(f, h)$ ist.
 
-Eine Eingabe (im Code \type{Input}) ist eine der Tasten aus \in{Tabelle}[tab:tui-transitions].
-Die Funktion $\mathrm{apply}$ bildet einen Zustand und eine Eingabe auf den nächsten Zustand ab.
+Eine Eingabe (im Code \type{Input}) ist eine der Tasten aus \in{Tabelle}[tab:tui-transitions],
+oder die Meldung \type{Resize}, die die Schleife schickt, wenn sich die Breite des Terminals
+ändert. Die Funktion $\mathrm{apply}$ bildet einen Zustand und eine Eingabe auf den nächsten
+Zustand ab.
 Sie liefert zugleich, ob die Oberfläche weiterläuft: Nur das Beenden liefert \type{false}.
+Die Tabelle nennt nur die Teile des Zustands, die sich ändern; die übrigen bleiben.
 
-\startplacetable[title={Übergänge des Zustands $(f, h, s)$},
+\startplacetable[title={Übergänge des Zustands $(f, h, s, m, w, c)$},
   reference=tab:tui-transitions,location=here]
 \startxtable[frame=off,option=stretch]
 \startxrow[topframe=on,bottomframe=on]
@@ -606,56 +666,79 @@ Sie liefert zugleich, ob die Oberfläche weiterläuft: Nur das Beenden liefert \
 \startxcell Nächste Datei \stopxcell
 \startxcell \type{J}, Tab \stopxcell
 \startxcell $f + 1 < F$ \stopxcell
-\startxcell $(f+1,\ 0,\ 0)$ \stopxcell
+\startxcell $f := f+1$, $h := 0$, $s := \mathrm{kopf}(f+1)$ \stopxcell
 \stopxrow
 \startxrow
 \startxcell Vorige Datei \stopxcell
 \startxcell \type{K}, Shift-Tab \stopxcell
 \startxcell $f > 0$ \stopxcell
-\startxcell $(f-1,\ 0,\ 0)$ \stopxcell
+\startxcell $f := f-1$, $h := 0$, $s := \mathrm{kopf}(f-1)$ \stopxcell
 \stopxrow
 \startxrow
 \startxcell Nächster Hunk \stopxcell
 \startxcell \type{n} \stopxcell
 \startxcell $h + 1 < H(f)$ \stopxcell
-\startxcell $(f,\ h+1,\ \mathrm{start}(f, h+1))$ \stopxcell
+\startxcell $h := h+1$, $s := \mathrm{start}(f, h+1)$ \stopxcell
 \stopxrow
 \startxrow
 \startxcell \stopxcell
 \startxcell \stopxcell
 \startxcell $h + 1 \ge H(f)$ und $f + 1 < F$ \stopxcell
-\startxcell $(f+1,\ 0,\ 0)$ \stopxcell
+\startxcell $f := f+1$, $h := 0$, $s := \mathrm{kopf}(f+1)$ \stopxcell
 \stopxrow
 \startxrow
 \startxcell Voriger Hunk \stopxcell
 \startxcell \type{p} \stopxcell
 \startxcell $h > 0$ \stopxcell
-\startxcell $(f,\ h-1,\ \mathrm{start}(f, h-1))$ \stopxcell
+\startxcell $h := h-1$, $s := \mathrm{start}(f, h-1)$ \stopxcell
 \stopxrow
 \startxrow
 \startxcell \stopxcell
 \startxcell \stopxcell
 \startxcell $h = 0$ und $f > 0$ \stopxcell
-\startxcell $(f-1,\ h',\ \mathrm{start}(f-1, h'))$ mit $h' = \max(H(f-1) - 1, 0)$ \stopxcell
+\startxcell $f := f-1$, $h := h'$, $s := \mathrm{start}(f-1, h')$
+mit $h' = \max(H(f-1) - 1, 0)$ \stopxcell
 \stopxrow
 \startxrow
 \startxcell Abwärts blättern um $k$ \stopxcell
 \startxcell \type{j}, Pfeil ab ($k = 1$); Leertaste, Bild ab ($k = 20$) \stopxcell
 \startxcell immer \stopxcell
-\startxcell $(f,\ h,\ \min(s + k,\ \max(L(f) - 1, 0)))$ \stopxcell
+\startxcell $s := \min(s + k,\ \max(R - 1, 0))$; wechselt dadurch die Datei, ist
+$f := \mathrm{datei}(s)$ und $h := 0$ \stopxcell
 \stopxrow
-\startxrow[bottomframe=on]
+\startxrow
 \startxcell Aufwärts blättern um $k$ \stopxcell
 \startxcell \type{k}, Pfeil auf ($k = 1$); \type{b}, Bild auf ($k = 20$) \stopxcell
 \startxcell immer \stopxcell
-\startxcell $(f,\ h,\ \max(s - k,\ 0))$ \stopxcell
+\startxcell $s := \max(s - k,\ 0)$; wechselt dadurch die Datei, ist
+$f := \mathrm{datei}(s)$ und $h := 0$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Layout wählen \stopxcell
+\startxcell \type{1} Unified, \type{2} Split, \type{0} Auto \stopxcell
+\startxcell immer \stopxcell
+\startxcell $m := $ gewähltes Layout; der Strom wird neu gebaut und
+$s := \min(\mathrm{anker}(f, h),\ \max(R' - 1, 0))$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Umbruch umschalten \stopxcell
+\startxcell \type{w} \stopxcell
+\startxcell immer \stopxcell
+\startxcell $w := \neg w$; der Strom wird neu gebaut und $s$ wie beim Layout \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Breite melden \stopxcell
+\startxcell keine Taste, \type{Resize} \stopxcell
+\startxcell immer \stopxcell
+\startxcell $c := $ neue Breite; der Strom wird neu gebaut und $s$ wie beim Layout \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
 
-Trifft keine Bedingung einer Zeile zu, etwa \type{J} auf der letzten Datei, bleibt der Zustand
-unverändert. Der Ausgangszustand ist $(0, 0, 0)$. Der Ablauf ist in \in{Abbildung}[fig:tui-states]
-gezeichnet.
+Dabei ist $R'$ die Zahl der Zeilen des neuen Stroms. Trifft keine Bedingung einer Zeile zu, etwa
+\type{J} auf der letzten Datei, bleibt der Zustand unverändert. Der Ausgangszustand ist
+$(0, 0, 0, \mathrm{Auto}, \mathrm{aus}, 80)$, bis die Schleife die wahre Breite meldet.
+Der Ablauf ist in \in{Abbildung}[fig:tui-states] gezeichnet.
 
 \startplacefigure[title={Zustände der Oberfläche von \type{diff --tui}},
     reference=fig:tui-states,location=here]
@@ -665,28 +748,41 @@ gezeichnet.
 \subsection{Invariante}
 
 Für jeden Zustand, den die Übergänge aus dem Ausgangszustand erreichen, gilt: $f < F$
-(oder $f = 0$ bei einem leeren Diff), $h < \max(H(f), 1)$ und $s \le \max(L(f) - 1, 0)$.
-Die Datei wechselt nur mit den Tasten für Dateien und Hunks, und jeder Wechsel setzt $h$ und $s$
-neu. Blättern ändert $f$ und $h$ nicht. Darum gehen \type{n} und \type{p} vom zuletzt gewählten
-Hunk aus und nicht von dem, den das Blättern ins Bild gebracht hat.
+(oder $f = 0$ bei einem leeren Diff), $h < \max(H(f), 1)$ und $s \le \max(R - 1, 0)$.
+Ausserdem gehört die oberste Zeile zur Datei im Bild: $f = \mathrm{datei}(s)$, wenn der Diff
+Dateien hat. Die Datei wechselt nur mit den Tasten für Dateien und Hunks und dadurch, dass das
+Blättern eine andere Datei an den oberen Rand bringt; jeder Wechsel setzt $h$ neu. Blättern
+innerhalb einer Datei ändert $f$ und $h$ nicht. Darum gehen \type{n} und \type{p} vom zuletzt
+gewählten Hunk aus und nicht von dem, den das Blättern ins Bild gebracht hat.
 
 \subsection{Komplexität}
 
-Sei $\ell$ die Zahl der Zeilen der gewählten Datei im rechten Feld. Abwärts blättern und einen
-Hunk wählen bauen die Zeilen der Datei neu auf und kosten $O(\ell)$. Aufwärts blättern und die
-Wahl einer Datei kosten $O(1)$. Das Zeichnen kostet $O(\ell + F)$: Es baut die Zeilen auf,
-verwirft die oben gerollten und listet alle $F$ Dateien. Die Oberfläche speichert nur den
-Zustand $(f, h, s)$, keine Kopie des Diffs.
+Sei $T$ die Zahl der Zeichen in den Hunks aller Dateien. Den Strom zu bauen kostet
+$O(T + R \cdot c)$ für jede Änderung von $c$, $m$ oder $w$, und er braucht $O(R \cdot c)$
+Speicher, weil jede Zeile bis an den Rand aufgefüllt ist. Die Zeilen hängen damit nicht mehr vom
+Zeichnen ab: Die Wahl einer Datei oder eines Hunks, das Blättern und das Zeichnen lesen den
+fertigen Strom. Eine Datei oder einen Hunk zu wählen kostet $O(1)$, und
+$\mathrm{datei}(s)$ kostet $O(\log F)$ durch binäre Suche. Das Zeichnen kostet $O(h_t + F)$ mit
+der Höhe $h_t$ des Terminals: Es kopiert nur die Zeilen im Bild und listet alle $F$ Dateien.
+Ausser dem Zustand hält die Oberfläche den Strom, aber keine Kopie des Diffs selbst.
 
 \subsection{Korrektheit}
 
 Die Invarianten folgen aus der Tabelle. Jede Zeile hält die Schranken ein: Der Wechsel zur
 nächsten Datei prüft $f + 1 < F$, der zum nächsten Hunk $h + 1 < H(f)$,
-und $\mathrm{start}$ liefert den Index einer Zeile des Feldes. Blättern nach unten begrenzt $s$
-durch die letzte Zeile, nach oben durch null. Die Funktion $\mathrm{apply}$ ist total: Jede
-Eingabe hat ein Ergebnis, und kein Zustand lässt sie scheitern. Ein Zustand, der zu einem anderen
-Diff gehört, zeigt ein leeres Feld, löst aber keinen Fehler aus. Weil $\mathrm{apply}$ nur den
-Zustand und den Diff liest, prüfen die Tests sie ohne Terminal.
+und $\mathrm{kopf}$ und $\mathrm{start}$ liefern den Index einer Zeile des Stroms.
+Blättern nach unten begrenzt $s$ durch die letzte Zeile, nach oben durch null, und $f$ wird
+danach aus $s$ bestimmt. Beim Wechsel des Layouts, des Umbruchs oder der Breite fällt die Zahl der
+Zeilen anders aus; $s$ wird deshalb auf die Zeile des Ankers gesetzt und durch die neue letzte
+Zeile begrenzt. Die Auswahl bleibt dabei erhalten, nur ihre Zeile im Strom ändert sich. Die
+Auswahl stand an einer Zeile, die es auch im neuen Strom gibt, denn jede Datei und jeder Hunk
+hat in jedem Layout genau eine Kopfzeile und eine Zeile \type{@@}. Die Funktion $\mathrm{apply}$
+ist total: Jede Eingabe hat ein Ergebnis, und kein Zustand lässt sie scheitern. Ein Zustand, der
+zu einem anderen Diff gehört, zeigt ein leeres Feld, löst aber keinen Fehler aus. Weil
+$\mathrm{apply}$ nur den Zustand, den Diff und den Strom liest, prüfen die Tests sie ohne Terminal.
+Dasselbe gilt für ein sehr kleines Terminal: Eine Spalte kann die Breite null haben, und sie
+zeigt dann nichts, auch kein \type{…}. Was nicht hineinpasst, schneidet die Oberfläche oder
+ratatui ab, ohne zu scheitern.
 
 \subsection{Garantien}
 
@@ -705,8 +801,9 @@ dem Exit-Code des Signals. Der Handler wartet darauf höchstens zwei Sekunden.
 \item Ohne Unterschiede startet die Oberfläche nicht, und der Befehl endet ohne Ausgabe.
 \item Ist die Standardausgabe kein Terminal oder läuft der Befehl unter Windows, endet er mit
 Exit-Code 1, ehe er etwas liest oder speichert.
-\item Ein Tabulator erscheint als vier Leerzeichen, nicht ausgerichtet auf Tabulatorstopps, denn
-ratatui verwirft Steuerzeichen. Ein Wagenrücklauf (CR) vor dem Zeilenende erscheint nicht.
+\item Ein Tabulator erscheint als vier Leerzeichen, nicht ausgerichtet auf Tabulatorstopps.
+Ein anderes Steuerzeichen erscheint in Caret-Schreibweise (\type{^[}, \type{^M}, \type{^?}),
+das CR vor dem Zeilenende erscheint nicht.
 \item Eine Zeile ohne Zeilenende erhält die Zeile \type{\ No newline at end of file}.
 \item Eine binäre Datei zeigt die Meldung \type{Binary file differs}, eine zu grosse Datei die
 Meldung \type{File too large to compare}; beide haben keinen Hunk.
