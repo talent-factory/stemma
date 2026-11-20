@@ -22,6 +22,8 @@
 //! | `operation NAME N` | The operation `NAME`, which touches no path, has level `N`. |
 //! | `approvals N COUNT` | A change of level `N` needs `COUNT` agent approvals (at most 8). |
 //! | `lease MINUTES` | The lease of a branch lasts `MINUTES` (5 to 1,440). |
+//! | `reservation N` | A change of level 2 or 3 gets a reservation after `N` invalidated runs in a row (1 to 100, ADR-019). |
+//! | `max-unverified COUNT` | Merges wait when `COUNT` commits lie after the latest verified tip (1 to 1,000, ADR-019). |
 //! | `assertion PATH` | The macro `PATH` (`pretty_assertions::assert_eq`) counts as an assertion; a last name that starts with `debug_` counts as a debug assertion. |
 //! | `weakened-level N` | A change that weakens tests has level `N` (2 or 3) at least. |
 //!
@@ -110,6 +112,20 @@ pub const MAX_LEASE_MINUTES: u32 = 24 * 60;
 
 /// The lease of a branch if the policy sets none, in minutes (ADR-004).
 pub const DEFAULT_LEASE_MINUTES: u32 = 60;
+
+/// The invalidated runs in a row after which a change of level 2 or 3 gets a reservation, if the
+/// policy sets none (ADR-019).
+pub const DEFAULT_RESERVATION_AFTER: u32 = 3;
+
+/// The most invalidated runs that a policy may ask for before a reservation.
+pub const MAX_RESERVATION_AFTER: u32 = 100;
+
+/// The commits after the latest verified tip at which merges wait, if the policy sets none
+/// (ADR-019).
+pub const DEFAULT_MAX_UNVERIFIED: u32 = 10;
+
+/// The most unverified commits that a policy may allow.
+pub const MAX_MAX_UNVERIFIED: u32 = 1000;
 
 /// The most `level` lines that a policy may have, and the most parts that a path may have in
 /// [`Policy::level_of_path`]. Together with the limits of a line they bound the time of one
@@ -259,6 +275,8 @@ pub struct Policy {
     operations: BTreeMap<String, RiskLevel>,
     approvals: [Option<u32>; 4],
     lease_minutes: Option<u32>,
+    reservation_after: Option<u32>,
+    max_unverified: Option<u32>,
     /// The paths of the extra assertion macros, in order.
     assertions: Vec<String>,
     weakened_level: Option<RiskLevel>,
@@ -414,6 +432,36 @@ impl Policy {
                 once("lease".to_owned())?;
                 self.lease_minutes = Some(minutes);
             }
+            "reservation" => {
+                let [_, count] = fields[..] else {
+                    return Err(PolicyProblem::Usage("reservation N"));
+                };
+                let count = read_number(count).ok_or(PolicyProblem::BadNumber(count.to_owned()))?;
+                if !(1..=MAX_RESERVATION_AFTER).contains(&count) {
+                    return Err(PolicyProblem::BoundOutOfRange {
+                        setting: "reservation",
+                        count,
+                        max: MAX_RESERVATION_AFTER,
+                    });
+                }
+                once("reservation".to_owned())?;
+                self.reservation_after = Some(count);
+            }
+            "max-unverified" => {
+                let [_, count] = fields[..] else {
+                    return Err(PolicyProblem::Usage("max-unverified COUNT"));
+                };
+                let count = read_number(count).ok_or(PolicyProblem::BadNumber(count.to_owned()))?;
+                if !(1..=MAX_MAX_UNVERIFIED).contains(&count) {
+                    return Err(PolicyProblem::BoundOutOfRange {
+                        setting: "max-unverified",
+                        count,
+                        max: MAX_MAX_UNVERIFIED,
+                    });
+                }
+                once("max-unverified".to_owned())?;
+                self.max_unverified = Some(count);
+            }
             "assertion" => {
                 let [_, path] = fields[..] else {
                     return Err(PolicyProblem::Usage("assertion PATH"));
@@ -452,6 +500,12 @@ impl Policy {
         let mut text = format!("{HEADER} {VERSION}\n");
         if let Some(minutes) = self.lease_minutes {
             text.push_str(&format!("lease {minutes}\n"));
+        }
+        if let Some(count) = self.reservation_after {
+            text.push_str(&format!("reservation {count}\n"));
+        }
+        if let Some(count) = self.max_unverified {
+            text.push_str(&format!("max-unverified {count}\n"));
         }
         for (level, count) in self.approvals.iter().enumerate() {
             if let Some(count) = count {
@@ -565,7 +619,24 @@ impl Policy {
 
     /// The lease of a branch: the line of the policy, or [`DEFAULT_LEASE_MINUTES`].
     pub fn lease(&self) -> Duration {
-        Duration::from_secs(u64::from(self.lease_minutes.unwrap_or(DEFAULT_LEASE_MINUTES)) * 60)
+        Duration::from_secs(u64::from(self.lease_minutes()) * 60)
+    }
+
+    /// The lease of a branch in minutes: the line of the policy, or [`DEFAULT_LEASE_MINUTES`].
+    pub fn lease_minutes(&self) -> u32 {
+        self.lease_minutes.unwrap_or(DEFAULT_LEASE_MINUTES)
+    }
+
+    /// `N` of ADR-019: the invalidated runs in a row after which a change of level 2 or 3 gets a
+    /// reservation. The line `reservation`, or [`DEFAULT_RESERVATION_AFTER`].
+    pub fn reservation_after(&self) -> u32 {
+        self.reservation_after.unwrap_or(DEFAULT_RESERVATION_AFTER)
+    }
+
+    /// `max_unverified` of ADR-019: the commits after the latest verified tip at which merges
+    /// wait. The line `max-unverified`, or [`DEFAULT_MAX_UNVERIFIED`].
+    pub fn max_unverified(&self) -> u32 {
+        self.max_unverified.unwrap_or(DEFAULT_MAX_UNVERIFIED)
     }
 }
 
@@ -750,8 +821,8 @@ pub enum PolicyProblem {
     UnknownVersion(String),
     /// A second header line.
     SecondHeader,
-    /// The first word is not one of `level`, `operation`, `approvals`, `lease`, `assertion`, and
-    /// `weakened-level`.
+    /// The first word is not one of `level`, `operation`, `approvals`, `lease`, `reservation`,
+    /// `max-unverified`, `assertion`, and `weakened-level`.
     UnknownLine(String),
     /// The line does not have the fields of its form. Carries the form.
     Usage(&'static str),
@@ -800,6 +871,15 @@ pub enum PolicyProblem {
         /// The minutes as written.
         minutes: u32,
     },
+    /// A `reservation` or `max-unverified` count outside of its bounds (1 to `max`).
+    BoundOutOfRange {
+        /// The line.
+        setting: &'static str,
+        /// The count as written.
+        count: u32,
+        /// The largest count that the line allows.
+        max: u32,
+    },
     /// More than [`MAX_LEVEL_LINES`] `level` lines.
     TooManyLevelLines,
     /// The path of an `assertion` line is not names joined by `::`.
@@ -839,8 +919,8 @@ impl fmt::Display for PolicyProblem {
             Self::SecondHeader => f.write_str("the header stands once, in the first line"),
             Self::UnknownLine(word) => write!(
                 f,
-                "unknown line `{}`; expected `level`, `operation`, `approvals`, `lease`, `assertion`, or \
-                 `weakened-level`",
+                "unknown line `{}`; expected `level`, `operation`, `approvals`, `lease`, `reservation`, \
+                 `max-unverified`, `assertion`, or `weakened-level`",
                 word.escape_debug()
             ),
             Self::Usage(form) => write!(f, "expected `{form}`"),
@@ -880,6 +960,11 @@ impl fmt::Display for PolicyProblem {
                 "a lease of {minutes} minutes; the lease is {MIN_LEASE_MINUTES} to \
                  {MAX_LEASE_MINUTES} minutes"
             ),
+            Self::BoundOutOfRange {
+                setting,
+                count,
+                max,
+            } => write!(f, "`{setting} {count}`: the count is 1 to {max}"),
             Self::TooManyLevelLines => {
                 write!(f, "more than {MAX_LEVEL_LINES} `level` lines")
             }
@@ -1466,6 +1551,33 @@ mod tests {
     }
 
     #[test]
+    fn the_bounds_of_the_gate_have_defaults_and_limits() {
+        let none = policy("stemma-policy 1\n");
+        assert_eq!(none.reservation_after(), DEFAULT_RESERVATION_AFTER);
+        assert_eq!(none.max_unverified(), DEFAULT_MAX_UNVERIFIED);
+        assert_eq!(none.lease_minutes(), DEFAULT_LEASE_MINUTES);
+        let set = policy("stemma-policy 1\nreservation 5\nmax-unverified 20\n");
+        assert_eq!(set.reservation_after(), 5);
+        assert_eq!(set.max_unverified(), 20);
+        assert_eq!(parse(&set.encode()).unwrap(), set);
+        for count in ["0", "101"] {
+            assert_eq!(
+                message(&format!("stemma-policy 1\nreservation {count}\n")),
+                format!("line 2: `reservation {count}`: the count is 1 to 100")
+            );
+        }
+        for count in ["0", "1001"] {
+            assert_eq!(
+                message(&format!("stemma-policy 1\nmax-unverified {count}\n")),
+                format!("line 2: `max-unverified {count}`: the count is 1 to 1000")
+            );
+        }
+        assert!(message("stemma-policy 1\nreservation 3\nreservation 4\n").contains("set again"));
+        assert!(message("stemma-policy 1\nmax-unverified\n").contains("max-unverified COUNT"));
+        assert!(message("stemma-policy 1\nreservation x\n").contains("is not a number"));
+    }
+
+    #[test]
     fn an_unknown_version_or_line_is_an_error() {
         assert_eq!(
             message("stemma-policy 2\n"),
@@ -1481,8 +1593,8 @@ mod tests {
         );
         assert_eq!(
             message("stemma-policy 1\nowner alice\n"),
-            "line 2: unknown line `owner`; expected `level`, `operation`, `approvals`, `lease`, `assertion`, or \
-             `weakened-level`"
+            "line 2: unknown line `owner`; expected `level`, `operation`, `approvals`, `lease`, `reservation`, \
+             `max-unverified`, `assertion`, or `weakened-level`"
         );
         assert!(message("stemma-policy 1\nLevel 1 a\n").contains("unknown line `Level`"));
         assert_eq!(
