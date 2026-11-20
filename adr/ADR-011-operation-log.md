@@ -63,7 +63,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   snapshot to its last move, so that no purge deletes an object between the two (ADR-014,
   STEMMA-49); while it saves, a reader finds the lock held and reads the newest entry as
   possibly unfinished. Ctrl-C and a termination signal remove the lock before the process ends.
-  The merge gate (decided in STEMMA-229, not implemented) writes its objects before the lock and
+  The merge gate (decided in STEMMA-229, implemented in STEMMA-241) writes its objects before
+  the lock and
   checks under the lock that its commit is in the store; if a purge removed it, the gate starts
   again (ADR-019, STEMMA-229).
 - **An entry is an intent, not a proof, and nothing is written after the move** *(confirmed)*.
@@ -490,8 +491,20 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     request, `main` is never the branch, and the opener names the reviewers from the register
     (none in open mode). A pull request is closed by its opener or an owner, and an ended pull
     request is final: the next change of the branch is a new pull request with a new number. The
-    entry of a merge records the merge; the gate that moves `main` writes it (ADR-019), and it
-    checks no approval itself.
+    entry of a merge records the merge; the gate that moves `main` writes it (ADR-019,
+    `Repository::merge_gate`) under the same lock as the move, after the entry `gate-merge` that
+    names the move and after the move itself, and it checks no approval itself. The log takes one
+    entry per append, so the two entries cannot be one step. The order keeps the dangerous state
+    out: `pr-merge` never stands without the change on `main`. The state that is left is a pull
+    request that is open while `main` holds its change (a crash or a failed write between the
+    move and `pr-merge`). The next call of the gate repairs it: it finds that merging the branch
+    onto the tip changes nothing, and records `pr-merge` under the lock without a move. An entry
+    `gate-merge` whose move failed stays in the log as an intent, like any entry of ADR-011. The
+    name `gate-merge` is not reserved: any writer can make such an entry through
+    `update_branch`, so no reader takes it as proof that the gate moved `main`. Likewise "merged"
+    in the log is no proof that `main` holds the change: the log is no evidence for the content
+    of `main`, and later slices (approvals, repairs) must not take it as such. A move that is not
+    known to be flushed writes no `pr-merge` either; the repair path records it later.
   - **The reader is tolerant, the writer is not.** After a purge the log can hold a closing whose
     opening is a stub. The fold skips an entry about a pull request that it does not know and an
     entry after the end of one.

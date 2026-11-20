@@ -1,7 +1,12 @@
 # ADR-019: The merge gate without a global lock
 
-**Status:** Accepted (decided in STEMMA-229). The evidence of the checks is implemented
-(STEMMA-240); the gate itself is not, and its implementation slices are on the map of phase 4.
+**Status:** Accepted (decided in STEMMA-229). The evidence of the checks (STEMMA-240) and the
+core of the gate (STEMMA-241: the rule table, the optimistic swap, the objects before the lock)
+are implemented. Not implemented, and left to the caller of the gate until their slices land:
+the approvals (ADR-004), the pause of the levels 2 and 3 while the last verified tip is red (with
+the exemption of a declared repair), the bounds (STEMMA-242), the policy hook (STEMMA-246), the
+rule that the authors of a change are registered actors, and the command. Their slices are on
+the map of phase 4.
 The pull request as an object, the checks, and the merge gate belong to phase 4. The ADR defines
 what "`main` is always green" means for the gate (ADR-006 decides the GitHub side, which stays
 open) and gives ADR-004 the meaning of its "merge gate".
@@ -88,6 +93,14 @@ To merge, the gate
 If another change moved `main` in between, the swap fails with `Stale`, or with `Locked` if the
 lock of that change is still held, and the gate starts again at step 1 with the new tip.
 Nothing is held between the steps.
+`Repository::merge_gate` is this loop. It takes the risk level from the caller, because the
+policy that derives it from the paths is a separate slice. Under the lock it writes the entry
+`gate-merge` (the move of `main`, an ordinary change entry, so `op restore` and `op verify` see it
+as they see any move), moves `main`, and then writes `pr-merge` (ADR-011). The loop is cut
+off after 8 attempts with `Contended`, a technical cap that is not the reservation below.
+The record of the merge, `pr-merge`, follows the swap under the same lock. A stop between the
+two leaves the pull request open while `main` holds its change; the next call finds that merging
+the branch onto the tip changes nothing and records `pr-merge` without a move (the repair path).
 A repeated attempt is cheap because only the tree merge and the table are repeated, and a check
 is repeated only for levels 2 and 3.
 
