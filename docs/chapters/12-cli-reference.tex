@@ -1711,20 +1711,38 @@ ebenfalls ab, bis der Pager endet.
 Ist die Ausgabe kein Terminal, also eine Pipe oder eine Datei, gibt es weder Farbe noch Pager,
 damit Skripte reinen Text lesen. Unter Windows gibt es zurzeit immer reinen Text.
 
-Mit \type{--tui} zeigt der Befehl links die Dateien und rechts die Zeilen der gewählten Datei.
-Entfernte Zeilen sind rot, eingefügte grün und die Zeilen \type{@@} cyan; der Pfad steht im
-Rahmen der Datei, Kopfzeilen mit \type{diff}, \type{---} und \type{+++} gibt es nicht.
+Mit \type{--tui} zeigt der Befehl links die Dateien und rechts die Zeilen aller Dateien in
+einem durchgehenden Strom. Jede Datei beginnt mit einer Kopfzeile mit dem Pfad und den Zahlen
+\type{+n -m} der eingefügten und entfernten Zeilen; die Liste links markiert die Datei, die
+oben im Bild steht. Entfernte Zeilen haben einen roten, eingefügte einen grünen Hintergrund,
+die Zeilen \type{@@} sind cyan; Kopfzeilen mit \type{diff}, \type{---} und \type{+++} gibt es
+nicht. Vor jeder Zeile stehen die Zeilennummern der alten und der neuen Seite.
+Verschobene Zeilen behalten die Vordergrundfarbe (fett magenta und fett cyan) ohne Hintergrund.
 Hat die letzte Zeile kein Zeilenende, folgt ihr die Zeile
 \type{\ No newline at end of file}, wie im Text des Befehls.
-Ein Tabulator erscheint als vier Leerzeichen.
-Die Pfade stehen in der Liste und im Rahmen der Datei unmaskiert, anders als im Text des Befehls:
+Ein Tabulator erscheint als vier Leerzeichen, ein anderes Steuerzeichen in Caret-Schreibweise
+(\type{^[} für Escape, \type{^M} für ein CR mitten in der Zeile, \type{^?} für DEL).
+Das CR eines Zeilenendes \type{\r\n} erscheint nicht.
+Die Pfade stehen in der Liste und in der Kopfzeile unmaskiert, anders als im Text des Befehls:
 Ein Backslash im Namen erscheint unverändert, im Text verdoppelt.
 Eine Binärdatei zeigt die Oberfläche mit der Zeile \type{Binary file differs}, eine zu grosse
 Datei mit der Zeile \type{File too large to compare}.
+Ein Pfad, der länger ist als das Feld, ist in der Kopfzeile abgeschnitten und endet auf
+\type{…}, damit die Zahlen \type{+n -m} sichtbar bleiben.
+
+Die Oberfläche kennt zwei Layouts. Im Layout {\bf unified} steht eine Zeile unter der anderen.
+Im Layout {\bf split} steht die alte Seite links und die neue rechts, und eine Löschung steht
+neben der Einfügung, die sie ersetzt. Das Layout {\bf auto}, der Anfangszustand, wählt split,
+wenn das Terminal mindestens 162 Spalten breit ist (das Feld der Zeilen hat dann 120 Spalten
+innerhalb des Rahmens, wenn die Liste der Dateien 40 Spalten nimmt), und sonst unified.
+Eine Zeile, die länger ist als ihre Spalte, wird abgeschnitten und endet auf \type{…};
+mit dem Umbruch geht sie in der nächsten Zeile weiter, auch die Zeile
+\type{\ No newline at end of file}.
+Die Titelzeile des Feldes nennt das Layout, das gerade gilt, und den Umbruch.
 Die unterste Zeile nennt die Tasten:
 
 \starttyping
-q quit · J/K file · n/p hunk · j/k scroll · space/b page
+q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap
 \stoptyping
 
 Die Oberfläche ist schreibgeschützt. Die Tasten:
@@ -1732,9 +1750,15 @@ Die Oberfläche ist schreibgeschützt. Die Tasten:
 \type{n} und \type{p} den nächsten und den vorigen Hunk, über Dateigrenzen hinweg,
 \type{j} und \type{k} (oder die Pfeiltasten) blättern um eine Zeile,
 Leertaste und \type{b} (oder Bild ab und Bild auf) um 20 Zeilen.
-Das Blättern endet an der letzten Zeile der Datei, die dann als oberste Zeile steht.
-Es verschiebt die Auswahl nicht: \type{n} und \type{p} gehen vom zuletzt gewählten Hunk aus,
-auch wenn das Blättern einen anderen ins Bild gebracht hat.
+\type{1} wählt das Layout unified, \type{2} das Layout split und \type{0} wieder auto.
+\type{w} schaltet den Umbruch langer Zeilen an und aus.
+Ein Wechsel des Layouts oder des Umbruchs, und auch eine Änderung der Grösse des Terminals,
+lässt die gewählte Datei und den gewählten Hunk oben im Bild stehen.
+Das Blättern endet an der letzten Zeile des Stroms, die dann als oberste Zeile steht.
+Es verschiebt die Auswahl nicht, solange es innerhalb einer Datei bleibt: \type{n} und \type{p}
+gehen vom zuletzt gewählten Hunk aus, auch wenn das Blättern einen anderen ins Bild gebracht hat.
+Bringt das Blättern eine andere Datei an den oberen Rand, wird diese Datei die gewählte, mit
+ihrem ersten Hunk.
 \type{q}, Esc und Ctrl-C beenden die Oberfläche. Ctrl-C kommt im Raw-Modus als Taste an und
 wirkt wie \type{q}: Der Befehl endet mit 0, oder mit 4 bei \type{--exit-code} und
 Unterschieden, nicht mit 130.

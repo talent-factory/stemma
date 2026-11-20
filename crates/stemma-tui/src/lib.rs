@@ -10,16 +10,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListState, Paragraph};
 use ratatui::Frame;
-use stemma_core::diff::Edit;
-use stemma_core::moved::{moved_lines, MovedLines};
-use stemma_core::repository::{Content, Diff, FileDiff};
+use stemma_core::repository::{Diff, FileDiff};
 
-/// What a key asks the view to do.
+mod stream;
+
+pub use stream::{LayoutMode, Stream};
+
+/// What the view is asked to do: what a key stands for, or a change of the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Input {
@@ -34,11 +36,17 @@ pub enum Input {
     /// Select the previous hunk of the file, or the last hunk of the previous file before the
     /// first one.
     PreviousHunk,
-    /// Scroll the file down by this many lines, but not past its last line, which can then be
-    /// the only line at the top of the pane.
+    /// Scroll the stream down by this many rows, but not past its last row, which can then be the
+    /// only row at the top of the pane.
     ScrollDown(u16),
-    /// Scroll the file up by this many lines, but not above its first line.
+    /// Scroll the stream up by this many rows, but not above its first row.
     ScrollUp(u16),
+    /// The terminal has this many columns now.
+    Resize(u16),
+    /// Lay the rows out in this mode.
+    SetLayout(LayoutMode),
+    /// Switch the wrapping of long lines on or off.
+    ToggleWrap,
 }
 
 impl Input {
@@ -56,232 +64,235 @@ impl Input {
             KeyCode::Char('k') | KeyCode::Up => Self::ScrollUp(1),
             KeyCode::PageDown | KeyCode::Char(' ') => Self::ScrollDown(PAGE),
             KeyCode::PageUp | KeyCode::Char('b') => Self::ScrollUp(PAGE),
+            KeyCode::Char('1') => Self::SetLayout(LayoutMode::Unified),
+            KeyCode::Char('2') => Self::SetLayout(LayoutMode::Split),
+            KeyCode::Char('0') => Self::SetLayout(LayoutMode::Auto),
+            KeyCode::Char('w') => Self::ToggleWrap,
             _ => return None,
         })
     }
 }
 
-/// The number of lines that a page key scrolls: a fixed number, not the height of the view.
+/// The number of rows that a page key scrolls: a fixed number, not the height of the view.
 const PAGE: u16 = 20;
+
+/// The width of the terminal that a state assumes until it is told the real one.
+const DEFAULT_WIDTH: u16 = 80;
+
+/// The most columns that the list of files takes; it takes a quarter of the terminal below that.
+const MAX_LIST_WIDTH: u16 = 40;
 
 /// How long the interface waits for a key before it looks at the request to stop.
 const STOP_POLL: Duration = Duration::from_millis(100);
 
-/// Which file and hunk are selected, and how far the file is scrolled.
+/// Which file is in view, which hunk is selected, and how far the stream is scrolled.
 ///
-/// The indices refer to the [`Diff`] that is passed to [`State::apply`] and to [`render`]; use the
-/// same diff throughout. Another diff cannot make a call fail: an index that is out of range for
-/// it shows an empty pane.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The file is the one that holds the top row of the pane. The indices refer to the [`Diff`] that
+/// is passed to [`State::apply`] and to [`render_with`]; use the same diff throughout. Another diff
+/// cannot make a call fail: an index that is out of range for it shows an empty pane.
+///
+/// The state also holds the width of the terminal, and [`render_with`] lays the stream out for
+/// that width, so that the scroll position always refers to the rows that are drawn. A change of
+/// the width, the layout, or the wrapping puts the row of the selection (the header of the file
+/// for the first hunk, the `@@` row of the hunk after that) at the top again; a position inside a
+/// file between two such rows is not kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct State {
     file: usize,
     hunk: usize,
     scroll: usize,
+    width: u16,
+    layout: LayoutMode,
+    wrap: bool,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            file: 0,
+            hunk: 0,
+            scroll: 0,
+            width: DEFAULT_WIDTH,
+            layout: LayoutMode::Auto,
+            wrap: false,
+        }
+    }
 }
 
 impl State {
-    /// The index of the selected file.
+    /// The index of the file in view: the file that holds the top row of the pane.
     pub fn file(&self) -> usize {
         self.file
     }
 
-    /// The index of the selected hunk in the selected file. It changes only through the hunk and
-    /// file keys, not through scrolling, so that `n` and `p` go on from the last selected hunk
-    /// and not from the hunk that scrolling has brought into view.
+    /// The index of the selected hunk in the file in view. It changes through the hunk and file
+    /// keys, and when scrolling brings another file to the top, not through scrolling inside a
+    /// file, so that `n` and `p` go on from the last selected hunk and not from the hunk that
+    /// scrolling has brought into view. A change of the width, the layout, or the wrapping puts
+    /// the selection at the top again and keeps the file in view and the hunk.
     pub fn hunk(&self) -> usize {
         self.hunk
     }
 
-    /// The number of lines of the selected file that are scrolled off the top.
+    /// The number of rows of the stream that are scrolled off the top.
     pub fn scroll(&self) -> usize {
         self.scroll
     }
 
+    /// The number of columns of the terminal that the state has been told (see [`Input::Resize`]).
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    /// The layout that the user asked for: `auto` until `1` or `2` is pressed, and again after `0`.
+    pub fn layout(&self) -> LayoutMode {
+        self.layout
+    }
+
+    /// Tells whether long lines wrap; they are cut at the edge of the pane until `w` is pressed.
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
     /// Applies `input`. Returns `false` once the user asked to quit, and `true` otherwise.
-    pub fn apply(&mut self, input: Input, diff: &Diff) -> bool {
-        let files = diff.files().len();
+    ///
+    /// `apply` lays the stream out for the width, the layout, and the wrapping of the state first,
+    /// so a fresh [`Stream::new`] needs no call of its own. Keep one stream for the whole run, or
+    /// the rows are laid out again with each call.
+    pub fn apply(&mut self, input: Input, diff: &Diff, stream: &mut Stream) -> bool {
+        if input == Input::Quit {
+            return false;
+        }
         match input {
-            Input::Quit => return false,
+            Input::Resize(width) => self.width = width,
+            Input::SetLayout(layout) => self.layout = layout,
+            Input::ToggleWrap => self.wrap = !self.wrap,
+            _ => {}
+        }
+        stream.fit(diff, text_width(self.width), self.layout, self.wrap);
+        let files = stream.file_count();
+        match input {
+            Input::Quit => {}
+            // The rows are different now, so the selection decides what is at the top again.
+            Input::Resize(_) | Input::SetLayout(_) | Input::ToggleWrap => {
+                self.scroll = self.anchor(stream);
+                self.follow(stream);
+            }
             Input::NextFile => {
                 if self.file + 1 < files {
-                    self.select_file(self.file + 1);
+                    self.select_file(self.file + 1, stream);
                 }
             }
             Input::PreviousFile => {
                 if self.file > 0 {
-                    self.select_file(self.file - 1);
+                    self.select_file(self.file - 1, stream);
                 }
             }
             Input::NextHunk => {
-                if self.hunk + 1 < hunk_count(diff.files().get(self.file)) {
-                    self.select_hunk(self.hunk + 1, diff);
+                if self.hunk + 1 < stream.hunk_count(self.file) {
+                    self.select_hunk(self.hunk + 1, stream);
                 } else if self.file + 1 < files {
-                    self.select_file(self.file + 1);
+                    self.select_file(self.file + 1, stream);
                 }
             }
             Input::PreviousHunk => {
                 if self.hunk > 0 {
-                    self.select_hunk(self.hunk - 1, diff);
+                    self.select_hunk(self.hunk - 1, stream);
                 } else if self.file > 0 {
-                    self.select_file(self.file - 1);
-                    let last = hunk_count(diff.files().get(self.file)).saturating_sub(1);
-                    self.select_hunk(last, diff);
+                    self.select_file(self.file - 1, stream);
+                    let last = stream.hunk_count(self.file).saturating_sub(1);
+                    self.select_hunk(last, stream);
                 }
             }
-            Input::ScrollDown(lines) => {
-                let last = diff.files().get(self.file).map_or(0, |file| {
-                    // The moves colour lines but do not change their number.
-                    file_lines(self.file, file, &MovedLines::default())
-                        .lines
-                        .len()
-                        .saturating_sub(1)
-                });
-                self.scroll = self.scroll.saturating_add(usize::from(lines)).min(last);
+            Input::ScrollDown(rows) => {
+                let last = stream.len().saturating_sub(1);
+                self.scroll = self.scroll.saturating_add(usize::from(rows)).min(last);
+                self.follow(stream);
             }
-            Input::ScrollUp(lines) => self.scroll = self.scroll.saturating_sub(usize::from(lines)),
+            Input::ScrollUp(rows) => {
+                self.scroll = self.scroll.saturating_sub(usize::from(rows));
+                self.follow(stream);
+            }
         }
         true
     }
 
-    fn select_file(&mut self, file: usize) {
-        *self = Self {
-            file,
-            hunk: 0,
-            scroll: 0,
+    /// The row that shows the selection: the header of the file for the first hunk, the `@@` row
+    /// of the hunk after that. It is clamped to the last row.
+    fn anchor(&self, stream: &Stream) -> usize {
+        let row = if self.hunk == 0 {
+            stream.file_start(self.file)
+        } else {
+            stream.hunk_start(self.file, self.hunk)
         };
+        row.unwrap_or(0).min(stream.len().saturating_sub(1))
     }
 
-    /// Selects a hunk and scrolls the file to the line of its `@@` header.
-    fn select_hunk(&mut self, hunk: usize, diff: &Diff) {
+    /// Makes the file that holds the top row the file in view. Its first hunk is then selected.
+    fn follow(&mut self, stream: &Stream) {
+        if let Some(file) = stream.file_at(self.scroll) {
+            if file != self.file {
+                self.file = file;
+                self.hunk = 0;
+            }
+        }
+    }
+
+    fn select_file(&mut self, file: usize, stream: &Stream) {
+        self.file = file;
+        self.hunk = 0;
+        self.scroll = self.anchor(stream);
+    }
+
+    /// Selects a hunk and scrolls the stream to the line of its `@@` header.
+    fn select_hunk(&mut self, hunk: usize, stream: &Stream) {
         self.hunk = hunk;
-        self.scroll = diff
-            .files()
-            .get(self.file)
-            .and_then(|file| {
-                file_lines(self.file, file, &MovedLines::default())
-                    .hunk_starts
-                    .get(hunk)
-                    .copied()
-            })
+        self.scroll = stream
+            .hunk_start(self.file, hunk)
+            .or_else(|| stream.file_start(self.file))
             .unwrap_or(0);
     }
 }
 
-fn hunk_count(file: Option<&FileDiff>) -> usize {
-    match file.map(FileDiff::content) {
-        Some(Content::Text(text)) => text.hunks().len(),
-        _ => 0,
-    }
-}
-
-/// The lines of one file as the right pane shows them, and where each hunk starts in them.
-struct FileLines {
-    lines: Vec<Line<'static>>,
-    hunk_starts: Vec<usize>,
-}
-
-/// The lines of the right pane for one file, and where its hunks start. A removed line that moved
-/// to another place is bold magenta, and an added line that came from another place is bold cyan,
-/// as with `git diff --color-moved`. `index` is the position of `file` in the diff that `moved`
-/// was found for. The colours never change the number or the order of the lines, so a caller that
-/// needs only the line count or the hunk starts passes `MovedLines::default()`.
-fn file_lines(index: usize, file: &FileDiff, moved: &MovedLines) -> FileLines {
-    let mut lines = Vec::new();
-    let mut hunk_starts = Vec::new();
-    let text = match file.content() {
-        Content::Text(text) => text,
-        Content::Binary => {
-            lines.push(Line::raw("Binary file differs"));
-            return FileLines { lines, hunk_starts };
-        }
-        Content::TooLarge => {
-            lines.push(Line::raw("File too large to compare"));
-            return FileLines { lines, hunk_starts };
-        }
-        // A kind of content that this version of the interface does not know how to show.
-        _ => {
-            lines.push(Line::raw("The content of this file cannot be shown"));
-            return FileLines { lines, hunk_starts };
-        }
-    };
-    let (old_lines, new_lines) = (text.old_lines(), text.new_lines());
-    for hunk in text.hunks() {
-        hunk_starts.push(lines.len());
-        lines.push(Line::styled(
-            format!(
-                "@@ -{} +{} @@",
-                range(hunk.old_start, hunk.old_len),
-                range(hunk.new_start, hunk.new_len)
-            ),
-            Style::new().fg(Color::Cyan),
-        ));
-        for edit in &hunk.edits {
-            let (mark, line, style) = match *edit {
-                Edit::Equal { old, .. } => (' ', old_lines.get(old), Style::new()),
-                Edit::Delete { old } if moved.is_moved_from(index, old) => (
-                    '-',
-                    old_lines.get(old),
-                    Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-                ),
-                Edit::Delete { old } => ('-', old_lines.get(old), Style::new().fg(Color::Red)),
-                Edit::Insert { new } if moved.is_moved_to(index, new) => (
-                    '+',
-                    new_lines.get(new),
-                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
-                Edit::Insert { new } => ('+', new_lines.get(new), Style::new().fg(Color::Green)),
-            };
-            push_edit(&mut lines, mark, line, style);
-        }
-    }
-    FileLines { lines, hunk_starts }
-}
-
-/// A range of lines as the `@@` line writes it, as `diff` does. `start` is the zero-based index of
-/// the first line. A range that has lines writes `start + 1` and, unless it is one line, its
-/// length; an empty range writes `start`, the line before it, and the length 0.
-fn range(start: usize, len: usize) -> String {
-    match len {
-        0 => format!("{start},0"),
-        1 => format!("{}", start + 1),
-        _ => format!("{},{len}", start + 1),
-    }
-}
-
-/// Appends one line of a hunk with its mark, and after a last line without a line end the marker
-/// that `diff` writes there. The core builds the hunks from the very lines it holds, so a line is
-/// always there; a missing one is shown, not a reason to panic in the middle of a frame.
-fn push_edit(lines: &mut Vec<Line<'static>>, mark: char, line: Option<&String>, style: Style) {
-    let line = line.map_or("(line missing)", String::as_str);
-    let (content, line_end) = match line.strip_suffix('\n') {
-        Some(content) => (content, true),
-        None => (line, false),
-    };
-    // Ratatui drops every control character, so a tab would vanish together with the indentation
-    // and the `\r` of a line that ends in `\r\n` would vanish. A tab is shown as four spaces, not
-    // aligned to tab stops.
-    lines.push(Line::styled(
-        format!("{mark}{}", content.replace('\t', "    ")),
-        style,
-    ));
-    if !line_end {
-        lines.push(Line::raw("\\ No newline at end of file"));
-    }
-}
-
-/// Draws the view: the files on the left with a marker for the selected one, and the lines of the
-/// selected file on the right, scrolled by the state.
-pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
-    render_with(frame, state, diff, &moved_lines(diff));
-}
-
-/// Like [`render`], with the moved lines of `diff` given, so that a loop that draws the same diff
-/// again and again finds them once. `moved` must come from [`moved_lines`] for this very `diff`.
-pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, moved: &MovedLines) {
+/// The three areas of the terminal: the list of files, the pane of the stream, and the help line.
+fn areas(terminal: Rect) -> [Rect; 3] {
     let [main, help] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
-    let [files_area, text_area] =
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).areas(main);
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(terminal);
+    let list = (main.width / 4).min(MAX_LIST_WIDTH);
+    let [files, text] =
+        Layout::horizontal([Constraint::Length(list), Constraint::Min(0)]).areas(main);
+    [files, text, help]
+}
+
+/// The columns of the pane of the stream inside its border, for a terminal of this width.
+fn text_width(terminal_width: u16) -> u16 {
+    areas(Rect::new(0, 0, terminal_width, 3))[1]
+        .width
+        .saturating_sub(2)
+}
+
+/// Draws the view: the files on the left, with a marker for the file in view, and the stream of the
+/// lines of all files on the right, scrolled by the state. The stream is laid out for the width of
+/// the frame, not for the width that the state has been told, so the scroll position of a state
+/// that was told another width refers to other rows. Use [`render_with`] and [`Input::Resize`] in
+/// a loop.
+pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
+    let state = State {
+        width: frame.area().width,
+        ..*state
+    };
+    render_with(frame, &state, diff, &mut Stream::new(diff));
+}
+
+/// Like [`render`], with the stream of `diff` given, so that a loop that draws the same diff again
+/// and again finds the moved lines once and lays the rows out again only when the width, whether
+/// the layout is split, or the wrapping changes. `stream` must come from [`Stream::new`] for this
+/// very `diff`. The rows are laid out for the width that the state has been told (see
+/// [`Input::Resize`]), which is the width of the frame in a loop that sends it on every change.
+pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut Stream) {
+    let [files_area, text_area, help] = areas(frame.area());
+    let text_width = text_width(state.width);
+    stream.fit(diff, text_width, state.layout, state.wrap);
 
     let paths: Vec<&str> = diff.files().iter().map(FileDiff::path).collect();
     let mut list_state = ListState::default().with_selected(Some(state.file));
@@ -290,31 +301,47 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, moved: &MovedL
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     frame.render_stateful_widget(list, files_area, &mut list_state);
 
-    let (title, mut body) = match diff.files().get(state.file) {
-        Some(file) => (
-            file.path().to_owned(),
-            file_lines(state.file, file, moved).lines,
-        ),
-        None if diff.files().is_empty() => ("No differences".to_owned(), Vec::new()),
-        // A state that belongs to another diff.
-        None => (String::new(), Vec::new()),
+    let title = if diff.files().is_empty() {
+        "No differences".to_owned()
+    } else {
+        let split = if state.layout.is_split(text_width) {
+            "split"
+        } else {
+            "unified"
+        };
+        let auto = if state.layout == LayoutMode::Auto {
+            " (auto)"
+        } else {
+            ""
+        };
+        let wrap = if state.wrap { ", wrap" } else { "" };
+        format!("Diff · {split}{auto}{wrap}")
     };
-    // The lines above the pane are dropped here, not scrolled by the widget, whose offset is a
-    // `u16`: a file of more than 65535 lines can be read to its end.
-    body.drain(..state.scroll.min(body.len()));
+    // Only the rows in view are copied, and the rows above the pane are skipped here, not scrolled
+    // by the widget, whose offset is a `u16`: a stream of more than 65535 rows can be read to its
+    // end.
+    let body: Vec<Line> = stream
+        .lines()
+        .iter()
+        .skip(state.scroll)
+        .take(usize::from(text_area.height))
+        .cloned()
+        .collect();
     let text = Paragraph::new(body).block(Block::new().borders(Borders::ALL).title(title));
     frame.render_widget(text, text_area);
 
     frame.render_widget(
-        Paragraph::new("q quit · J/K file · n/p hunk · j/k scroll · space/b page"),
+        Paragraph::new(
+            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap",
+        ),
         help,
     );
 }
 
 /// Runs the interface on the terminal until the user quits or `stop` is set, and gives the terminal
-/// back on return. `stop` is for a handler of a signal on another thread: the interface looks at it
-/// ten times a second, so the handler never has to touch the terminal. A panic restores the
-/// terminal through the hook that ratatui installs.
+/// back on return. `stop` is for a handler of a signal on another thread: while no key arrives, the
+/// interface looks at it ten times a second, so the handler never has to touch the terminal. A
+/// panic restores the terminal through the hook that ratatui installs.
 ///
 /// # Errors
 ///
@@ -340,11 +367,16 @@ fn event_loop(
     stop: &AtomicBool,
 ) -> io::Result<()> {
     let mut state = State::default();
-    // The diff does not change while the view is open, so the moves are found once.
-    let moved = moved_lines(diff);
+    // The diff does not change while the view is open, so the moves are found once, and the rows
+    // are laid out again only when the width, whether the layout is split, or the wrapping changes.
+    let mut stream = Stream::new(diff);
     loop {
-        terminal.draw(|frame| render_with(frame, &state, diff, &moved))?;
-        // The request to stop is looked at between two keys, and also while no key comes.
+        let width = terminal.size()?.width;
+        if width != state.width() {
+            state.apply(Input::Resize(width), diff, &mut stream);
+        }
+        terminal.draw(|frame| render_with(frame, &state, diff, &mut stream))?;
+        // The request to stop is looked at every 100 ms, but only while no key arrives.
         while !event::poll(STOP_POLL)? {
             if stop.load(Ordering::SeqCst) {
                 return Ok(());
@@ -356,7 +388,7 @@ fn event_loop(
                 continue;
             }
             if let Some(input) = Input::from_key(key) {
-                if !state.apply(input, diff) {
+                if !state.apply(input, diff, &mut stream) {
                     return Ok(());
                 }
             }
