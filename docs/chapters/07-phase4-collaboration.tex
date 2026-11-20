@@ -25,7 +25,8 @@ Merge-Regeln.
 
 Dieser Abschnitt beschreibt ADR-004, das für Phase 4 angenommen ist.
 Die Lease und die Einträge des Pull Requests sind im Kern umgesetzt (siehe unten);
-die Befehle dazu, die Anbindung an die schreibenden Operationen und das Merge-Gate folgen.
+die Befehle dazu und die Anbindung an die schreibenden Operationen folgen.
+Der Kern des Merge-Gates ist umgesetzt (\in{Abschnitt}[sec:merge-gate]).
 Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
 Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
 Request.
@@ -234,7 +235,13 @@ Bei vielen Schreibern, Menschen wie Agenten, wächst die Wartezeit mit ihrer Zah
 Dauer einer Prüfung.
 Die Frage ist, was eine grüne Prüfung noch heisst, wenn während ihres Laufs viele andere
 Änderungen landen.
-ADR-019 beantwortet sie; er ist angenommen, aber noch nicht umgesetzt.
+ADR-019 beantwortet sie.
+Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch und die Objekte
+vor der Sperre.
+Noch nicht umgesetzt sind die Freigaben (ADR-004), die Pause der Stufen 2 und 3 bei roter Spitze
+mit der Ausnahme für einen erklärten Fix, die Schranken, die Anbindung an die Policy, die Regel,
+dass die Autoren einer Änderung registrierte Akteure sind, und der Befehl;
+bis dahin muss der Aufrufer des Kerns sie durchsetzen.
 
 {\bf Der Ablauf.}
 
@@ -260,6 +267,38 @@ Weil ein Purge unreferenzierte Objekte löschen könnte, prüft das Gate unter d
 ob \type{M} im Speicher liegt, und beginnt sonst bei Schritt 1 von vorn.
 \type{track}, \type{commit}, \type{status} und \type{op restore} nehmen die Sperre weiterhin
 vor ihrem ersten Objekt.
+
+Der Kern führt diese Schritte in \type{merge_gate} aus.
+Das Gate prüft vor der Sperre, dass der Zweig noch den Kopf hat, den die Eröffnung nennt, und
+dass der Merge sauber ist.
+Ändert der Merge den Tree der Spitze nicht, liegt die Änderung schon auf \type{main}, und das
+Gate nimmt den Reparaturweg (siehe unten).
+Unter der Sperre prüft es den offenen Zustand des Pull Requests und den Kopf des Zweiges noch
+einmal, denn beides kann sich seit dem Schreiben von \type{M} geändert haben.
+Die Risikostufe gibt der Aufrufer an, denn die Policy, die sie aus den Pfaden ableitet, ist ein
+eigener Schritt.
+Unter der Sperre schreibt es zuerst den Eintrag \type{gate-merge} für die Bewegung von
+\type{main}, bewegt \type{main} und schreibt danach \type{pr-merge} für den Pull Request.
+Das Log nimmt nur einen Eintrag je Schreibvorgang auf; die Reihenfolge verhindert den schlimmen
+Zustand, einen als gemergt gebuchten Pull Request, dessen Änderung nicht auf \type{main} liegt.
+Scheitert der Tausch mit \type{Stale}, hält eine andere Änderung die Sperre (\type{Locked}) oder
+fehlt \type{M} im Speicher, beginnt es bei Schritt 1 von vorn, höchstens achtmal;
+nach \type{Locked} wartet es kurz.
+Danach meldet es \type{Contended} und nennt den Grund des letzten Versuchs.
+Bricht der Prozess nach der Bewegung und vor \type{pr-merge} ab, oder scheitert dieser Eintrag,
+liegt die Änderung auf \type{main}, und der Pull Request bleibt offen.
+Nichts geht verloren.
+Der nächste Aufruf des Gates findet, dass der Merge der Änderung auf die Spitze nichts mehr
+ändert, prüft unter der Sperre noch einmal, ob der Pull Request offen und der Zweig unverändert
+ist, und schreibt \type{pr-merge}, ohne \type{main} zu bewegen (Reparaturweg).
+Für einen Pull Request, der nicht offen ist, schreibt er nichts.
+Dasselbe gilt, wenn die Bewegung von \type{main} nicht als gespeichert gilt (\type{NotFlushed}):
+Das Gate schreibt dann kein \type{pr-merge}, und der nächste Aufruf bucht den Merge nach.
+\type{merged} im Log belegt nicht, dass \type{main} die Änderung enthält; spätere Schritte
+(Freigaben, Reparaturen) dürfen es nicht als Beleg nehmen.
+Jeder gescheiterte Versuch lässt die Objekte seines Merges im Speicher zurück; keine Referenz
+erreicht sie, und ein Purge räumt sie ab (ADR-014).
+Diese Grenze ist technisch und nicht die Reservierung gegen Aushungern (ADR-019).
 
 {\bf Was ein Prüfergebnis aussagt.}
 Eine Prüfung ist eine Aussage über einen Commit: Sein Tree hat bestanden oder nicht.
@@ -357,9 +396,10 @@ Ein späterer fehlgeschlagener Lauf auf demselben Commit nimmt einen erfolgreich
 bleibt im Log, und das Gate sucht danach die erste rote Spitze.
 \type{last_green_tip} des Kerns liest sie aus dem Verlauf der aktuellen Spitze und verlangt in
 einem Repository mit Register ebenfalls einen Beweis.
-Das Gate selbst, das beides anwendet, ist noch nicht umgesetzt.
-Auch schreibt noch kein Befehl den Eintrag; er entsteht nur über den Kern
-(\type{record_check}).
+Das Gate wendet \type{counted_checks} an (siehe oben, \type{merge_gate}).
+\type{last_green_tip} wendet es noch nicht an: Die Pause der Stufen 2 und 3 bei roter Spitze
+ist nicht umgesetzt.
+Noch schreibt kein Befehl den Eintrag; er entsteht nur über den Kern (\type{record_check}).
 
 {\bf Die Prüfung nach dem Merge.}
 Zwei Änderungen können sauber zusammengehen und sich doch gegenseitig brechen, ein semantischer
@@ -915,7 +955,7 @@ Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 
 \startitemize
 \item Schnellweg für triviale Änderungen: Wer darf ihn nutzen?
-\item Merge-Gate: Form und Ablage der Prüfergebnisse und die Frage, ob ein Ergebnis eine Menge
-getesteter Basis-Commits nennen darf (offene Punkte in ADR-019).
+\item Merge-Gate: die Frage, ob ein Ergebnis eine Menge getesteter Basis-Commits nennen darf
+(offener Punkt in ADR-019).
 Ein billigerer Test als der saubere Merge ist ausserhalb des Umfangs der ersten Version.
 \stopitemize

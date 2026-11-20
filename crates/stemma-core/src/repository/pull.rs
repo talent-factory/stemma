@@ -160,11 +160,24 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
         let lock = self.lock_for_pull(PR_MERGE, &format!("pull {number}"), actor, authorizer)?;
+        self.record_pull_merge_locked(&lock, number, actor, commit)
+    }
+
+    /// The body of [`record_pull_merge`](Self::record_pull_merge) for a caller that holds the lock
+    /// of the references already, as the merge gate does: it records the merge in the same
+    /// critical section that moved `main`, so that no second gate merges the pull request again.
+    pub(super) fn record_pull_merge_locked(
+        &self,
+        lock: &crate::refs::WriteLock,
+        number: u64,
+        actor: &Actor,
+        commit: CommitId,
+    ) -> Result<Entry, PullError> {
         let pulls = self.pull_requests()?;
         open_pull_of(&pulls, number)?;
         self.ensure_commit(commit)?;
         let entry = PullEntry::merge(now(), actor.clone(), number, commit)?;
-        Ok(self.append_pull(&lock, &entry)?)
+        Ok(self.append_pull(lock, &entry)?)
     }
 
     /// `actor` approves the head of the open pull request `number`, which is the tip of its
@@ -327,7 +340,7 @@ impl Repository {
     }
 
     /// The tip of `branch`.
-    fn branch_head(&self, branch: &BranchName) -> Result<CommitId, PullError> {
+    pub(super) fn branch_head(&self, branch: &BranchName) -> Result<CommitId, PullError> {
         self.refs()
             .branch(branch)
             .map_err(PullError::Refs)?
@@ -387,7 +400,7 @@ impl Repository {
 }
 
 /// The pull request `number` if it is open.
-fn open_pull_of(pulls: &[PullRequest], number: u64) -> Result<&PullRequest, PullError> {
+pub(super) fn open_pull_of(pulls: &[PullRequest], number: u64) -> Result<&PullRequest, PullError> {
     let pull = pulls
         .iter()
         .find(|pull| pull.number() == number)
