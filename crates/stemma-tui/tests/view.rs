@@ -1423,3 +1423,49 @@ fn a_click_before_the_first_frame_changes_nothing() {
     assert!(state.apply(click(3, 2), &diff, &mut stream));
     assert_eq!(state, State::default());
 }
+
+#[test]
+fn a_click_on_a_scrolled_list_selects_the_file_in_that_row() {
+    let fixture = Fixture::new();
+    let names: Vec<String> = (0..20).map(|n| format!("f{n:02}.txt")).collect();
+    for name in &names {
+        fixture.dir.write(name, "old\n");
+    }
+    let paths: Vec<&str> = names.iter().map(String::as_str).collect();
+    fixture.track(&paths);
+    fixture.commit();
+    for name in &names {
+        fixture.dir.write(name, "new\n");
+    }
+    let diff = fixture.diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    state.apply(Input::Resize(80), &diff, &mut stream);
+    // Selecting the last file scrolls the list of the 12-row terminal (9 name rows).
+    for _ in 0..19 {
+        state.apply(Input::NextFile, &diff, &mut stream);
+    }
+    draw_frame(&state, &diff, &mut stream);
+
+    // The first name row is not file 0 any more: 20 files, 9 rows, the last one selected.
+    state.apply(click(3, 1), &diff, &mut stream);
+    assert_eq!(state.file(), 11);
+    state.apply(click(3, 9), &diff, &mut stream);
+    assert_eq!(state.file(), 19);
+}
+
+#[test]
+fn a_wheel_past_the_next_header_changes_the_file_and_stops_at_the_end() {
+    let (_fixture, diff) = diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    let wheel = Input::from_mouse(mouse(MouseEventKind::ScrollDown, 40, 5)).unwrap();
+    for _ in 0..4 {
+        state.apply(wheel, &diff, &mut stream);
+    }
+    assert_eq!((state.file(), state.hunk()), (0, 0));
+    for _ in 0..100 {
+        state.apply(wheel, &diff, &mut stream);
+    }
+    assert_eq!((state.file(), state.scroll()), (1, stream.len() - 1));
+}

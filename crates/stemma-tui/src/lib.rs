@@ -111,7 +111,7 @@ const DEFAULT_WIDTH: u16 = 80;
 /// The most columns that the list of files takes; it takes a quarter of the terminal below that.
 const MAX_LIST_WIDTH: u16 = 40;
 
-/// How long the interface waits for a key before it looks at the request to stop.
+/// How long the interface waits for an event before it looks at the request to stop.
 const STOP_POLL: Duration = Duration::from_millis(100);
 
 /// Which file is in view, which hunk is selected, and how far the stream is scrolled.
@@ -367,8 +367,7 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 
     frame.render_widget(
         Paragraph::new(
-            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap · \
-         wheel, click · Shift selects",
+            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap",
         ),
         help,
     );
@@ -377,7 +376,8 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 /// Runs the interface on the terminal until the user quits or `stop` is set, and gives the terminal
 /// back on return. `stop` is for a handler of a signal on another thread: while no key arrives, the
 /// interface looks at it ten times a second, so the handler never has to touch the terminal. A
-/// panic restores the terminal through the hook that ratatui installs.
+/// panic restores the terminal through the hook that ratatui installs, which this function extends
+/// to turn the mouse off.
 ///
 /// # Errors
 ///
@@ -415,28 +415,37 @@ fn event_loop(
     // The diff does not change while the view is open, so the moves are found once, and the rows
     // are laid out again only when the width, whether the layout is split, or the wrapping changes.
     let mut stream = Stream::new(diff);
+    // Only an input or a change of the width asks for a new frame: a terminal that reports every
+    // move of the pointer would otherwise draw all the time.
+    let mut dirty = true;
     loop {
+        // Looked at in every turn, so that a stream of mouse events cannot hold the request back.
+        if stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let width = terminal.size()?.width;
         if width != state.width() {
             state.apply(Input::Resize(width), diff, &mut stream);
+            dirty = true;
         }
-        terminal.draw(|frame| render_with(frame, &state, diff, &mut stream))?;
-        // The request to stop is looked at every 100 ms, but only while no key arrives.
-        while !event::poll(STOP_POLL)? {
-            if stop.load(Ordering::SeqCst) {
-                return Ok(());
-            }
+        if dirty {
+            terminal.draw(|frame| render_with(frame, &state, diff, &mut stream))?;
+            dirty = false;
         }
-        // A resize event only redraws, which the next turn of the loop does.
+        if !event::poll(STOP_POLL)? {
+            continue;
+        }
         let input = match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => Input::from_key(key),
             Event::Mouse(mouse) => Input::from_mouse(mouse),
+            // A resize is found by the width at the top of the next turn.
             _ => None,
         };
         if let Some(input) = input {
             if !state.apply(input, diff, &mut stream) {
                 return Ok(());
             }
+            dirty = true;
         }
     }
 }
