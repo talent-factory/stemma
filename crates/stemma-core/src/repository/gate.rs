@@ -32,8 +32,9 @@ use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, PR_MERGE};
 use crate::policy::RiskLevel;
 use crate::pull::TARGET;
 use crate::refs::{BranchName, Logged, RefError};
+use crate::register::Mode;
 use crate::register::Register;
-use crate::repository::{CheckError, PullError, UpdateError};
+use crate::repository::{CheckError, LevelError, PolicyError, PullError, UpdateError};
 use crate::store::{ObjectStore, ReadError, StoreError};
 use crate::{Actor, Authorizer};
 
@@ -164,6 +165,12 @@ pub enum GateError {
     Refs(RefError),
     /// The log could not be read or written.
     Log(OpLogError),
+    /// The policy of the base commit cannot be used: in an enforcing repository it is missing,
+    /// unreadable, or of an unknown version. The merge is refused, and nothing was written but
+    /// objects.
+    Policy(PolicyError),
+    /// The level of the change cannot be told. The merge is refused.
+    Level(LevelError),
     /// The entry of the move is written, and the file system failed before `main` moved. The
     /// pointer is where it was; the entry stays in the log as an intent, and `pr-merge` is not
     /// written. The call can be repeated.
@@ -238,6 +245,8 @@ impl fmt::Display for GateError {
             Self::Store(error) => error.fmt(f),
             Self::Refs(error) => error.fmt(f),
             Self::Log(error) => error.fmt(f),
+            Self::Policy(error) => write!(f, "the merge is refused: {error}"),
+            Self::Level(error) => write!(f, "the merge is refused: {error}"),
             Self::MoveFailed { source, .. } => {
                 write!(f, "the entry of the move is written, but `{TARGET}` did not move: {source}")
             }
@@ -269,6 +278,8 @@ impl Error for GateError {
             Self::PullNotRecorded { source, .. } => Some(source),
             Self::Read(error) => Some(error),
             Self::Log(error) => Some(error),
+            Self::Policy(error) => Some(error),
+            Self::Level(error) => Some(error),
             _ => None,
         }
     }
@@ -295,6 +306,8 @@ from_error! {
     RefError => Refs,
     OpLogError => Log,
     ReadError => Read,
+    PolicyError => Policy,
+    LevelError => Level,
 }
 
 impl Repository {
@@ -317,7 +330,8 @@ impl Repository {
     /// exist: the approvals of ADR-004 (none is asked here), the pause of the levels 2 and 3
     /// while the last verified tip is red (with the exemption of a declared repair), the bound
     /// `max_unverified`, the reservation against starving, and the rule that the authors of a
-    /// change are registered actors (STEMMA-242, STEMMA-246, and the command).
+    /// change are registered actors (STEMMA-242 and the command). The level and the policy of the base
+    /// commit come from [`merge_gate_by_policy`](Self::merge_gate_by_policy) (STEMMA-246).
     ///
     /// The commit `M` has the single parent `T`, the tree of the merge, the gate `actor` as its
     /// author, and a change ID of its own. The objects of the merge are written before the lock.
@@ -369,6 +383,52 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<GateMerge, GateError> {
+        self.merge_gate_with(number, Some(level), register, actor, authorizer)
+    }
+
+    /// [`merge_gate`](Self::merge_gate) with the rules of the policy of the base commit
+    /// (STEMMA-246): the level of the change is derived from the policy file of the tip of `main`
+    /// that the attempt merges onto ([`level_of_change`](Self::level_of_change)), and `mode` says
+    /// which results of checks count (the register of an enforcing repository).
+    ///
+    /// In the open mode a repository without a policy file has the default policy: every path has
+    /// level 2. In the enforcing mode a policy that is missing, unreadable, or of an unknown
+    /// version refuses every merge with [`GateError::Policy`], which names the reason. The policy
+    /// is read again for every attempt, so a change that moves `main` onto a new policy is judged
+    /// by the policy of the tip it lands on. The values `reservation_after` and `max_unverified`
+    /// of the same policy ([`policy_of_main`](Self::policy_of_main)) are the bounds that the
+    /// slices for the reservation and the unverified window apply; the gate does not apply
+    /// them yet.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`merge_gate`](Self::merge_gate), [`GateError::Policy`], and
+    /// [`GateError::Level`].
+    pub fn merge_gate_by_policy(
+        &self,
+        number: u64,
+        mode: &Mode,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<GateMerge, GateError> {
+        let register = match mode {
+            Mode::Open => None,
+            Mode::Enforcing(register) => Some(register),
+        };
+        self.merge_gate_with(number, None, register, actor, authorizer)
+    }
+
+    /// The loop of the gate. `fixed` is the level that the caller gave; without one the level
+    /// comes from the policy of the tip of each attempt, and `register` says whether the
+    /// repository is enforcing.
+    fn merge_gate_with(
+        &self,
+        number: u64,
+        fixed: Option<RiskLevel>,
+        register: Option<&Register>,
+        actor: &Actor,
+        authorizer: &dyn Authorizer,
+    ) -> Result<GateMerge, GateError> {
         let ask = |operation: &str, target: &str| {
             let name = OperationName::try_new(operation).expect("an operation name");
             self.authorize(actor, authorizer, &name, target)
@@ -385,7 +445,7 @@ impl Repository {
         let allowed = ask(OPERATION, TARGET)?;
         let mut last = Retry::Stale;
         for attempt in 1..=MAX_ATTEMPTS {
-            match self.gate_attempt(number, level, register, actor, &allowed)? {
+            match self.gate_attempt(number, fixed, register, actor, &allowed)? {
                 Ok(mut merged) => {
                     merged.attempts = attempt;
                     return Ok(merged);
@@ -409,7 +469,7 @@ impl Repository {
     fn gate_attempt(
         &self,
         number: u64,
-        level: RiskLevel,
+        fixed: Option<RiskLevel>,
         register: Option<&Register>,
         actor: &Actor,
         allowed: &crate::Allowed,
@@ -437,7 +497,14 @@ impl Repository {
             return self.record_landed(number, head, tip, actor, allowed);
         }
 
-        // Step 2: the rule table.
+        // Step 2: the rule table, at the level of the caller or of the policy of the tip.
+        let level = match fixed {
+            Some(level) => level,
+            None => {
+                let policy = self.policy_at(&tip, register.is_some())?;
+                self.level_of_change(&policy, &tip, *tree)?
+            }
+        };
         if self
             .counted_checks(number, &head, &tip, level, register)?
             .is_empty()
@@ -1352,6 +1419,246 @@ mod tests {
             assert_eq!(f.main(), f.base);
             assert_eq!(f.entries(), before);
         }
+    }
+
+    /// Lands a commit with the policy file on `main`; the feature of the fixture merges onto it.
+    fn land_policy(f: &Fixture, text: &str) -> CommitId {
+        let landed = commit_of(
+            &f.repository,
+            f.main(),
+            &[("c.txt", "zero\n"), (crate::policy::FILE_NAME, text)],
+            "daniel",
+        );
+        set_branch(&f.repository, "main", Some(f.main()), landed);
+        landed
+    }
+
+    fn gate_by_policy(f: &Fixture, mode: &Mode) -> Result<GateMerge, GateError> {
+        f.repository
+            .merge_gate_by_policy(f.number, mode, &human("daniel"), &AllowAll)
+    }
+
+    #[test]
+    fn the_open_mode_without_a_policy_file_takes_level_2_for_every_path() {
+        let f = fixture("zero\n");
+        // `main` moves on, so a result for the old tip counts at levels 0 and 1 only.
+        f.land_other();
+        f.check(f.base);
+        let before = f.entries();
+
+        let error = gate_by_policy(&f, &Mode::Open).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                GateError::NotChecked {
+                    level: RiskLevel::Two,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(f.entries(), before);
+
+        f.check(f.main());
+        let merged = gate_by_policy(&f, &Mode::Open).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn the_level_of_the_change_comes_from_the_policy_of_the_base_commit() {
+        let f = fixture("zero\n");
+        f.land_other();
+        land_policy(&f, "stemma-policy 1\nlevel 0 a.txt\n");
+        // The change adds `a.txt` only, which the policy puts at level 0: a result for an older
+        // tip counts.
+        f.check(f.base);
+
+        let merged = gate_by_policy(&f, &Mode::Open).unwrap();
+
+        assert_eq!(f.main(), merged.commit);
+        assert_eq!(f.landings(), 2);
+    }
+
+    #[test]
+    fn a_path_that_the_policy_raises_needs_a_result_for_the_current_tip() {
+        let f = fixture("zero\n");
+        land_policy(&f, "stemma-policy 1\nlevel 3 a.txt\n");
+        f.check(f.base);
+        let tip = f.main();
+
+        let error = gate_by_policy(&f, &Mode::Open).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                GateError::NotChecked {
+                    level: RiskLevel::Three,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(f.main(), tip);
+    }
+
+    #[test]
+    fn a_policy_in_the_change_does_not_lower_its_own_level() {
+        // The branch adds a policy that gives everything level 0. The tip has none, so the
+        // default applies, and the policy file itself has level 3 by the floor.
+        let f = fixture("zero\n");
+        let head = commit_of(
+            &f.repository,
+            f.base,
+            &[
+                ("a.txt", "a\n"),
+                ("c.txt", "zero\n"),
+                (crate::policy::FILE_NAME, "stemma-policy 1\nlevel 0 a.txt\n"),
+            ],
+            "mia",
+        );
+        set_branch(&f.repository, "relax", None, head);
+        let number = f
+            .repository
+            .open_pull(
+                &branch("relax"),
+                &human("mia"),
+                vec![],
+                None,
+                None,
+                &AllowAll,
+            )
+            .unwrap()
+            .number();
+        f.land_other();
+        f.record(head, Some(f.base), CheckResult::Pass, "ana");
+
+        let error = f
+            .repository
+            .merge_gate_by_policy(number, &Mode::Open, &human("daniel"), &AllowAll)
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                GateError::NotChecked {
+                    level: RiskLevel::Three,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_enforcing_repository_without_a_policy_refuses_every_merge_and_names_the_reason() {
+        let f = fixture("zero\n");
+        let enforcing = Mode::Enforcing(register());
+        let before = f.entries();
+
+        let error = gate_by_policy(&f, &enforcing).unwrap_err();
+
+        assert!(
+            matches!(error, GateError::Policy(PolicyError::Missing)),
+            "{error}"
+        );
+        assert!(error.to_string().contains(".stemma-policy"), "{error}");
+        assert_eq!(f.main(), f.base);
+        assert_eq!(f.entries(), before);
+    }
+
+    #[test]
+    fn an_enforcing_repository_refuses_an_unreadable_or_unknown_policy() {
+        for (text, reason) in [
+            ("stemma-policy 2\n", "unknown version"),
+            ("not a policy\n", "first line has to be"),
+            ("", "no header"),
+            ("stemma-policy 1\nlevel 9 x\n", "not a level"),
+        ] {
+            let f = fixture("zero\n");
+            let tip = land_policy(&f, text);
+            let before = f.entries();
+
+            let error = gate_by_policy(&f, &Mode::Enforcing(register())).unwrap_err();
+
+            assert!(
+                matches!(error, GateError::Policy(PolicyError::Invalid(_))),
+                "{error}"
+            );
+            assert!(error.to_string().contains(reason), "{text:?}: {error}");
+            assert_eq!(f.main(), tip);
+            assert_eq!(f.entries(), before);
+        }
+    }
+
+    #[test]
+    fn a_policy_that_is_a_directory_is_refused() {
+        let f = fixture("zero\n");
+        let landed = commit_of(
+            &f.repository,
+            f.main(),
+            &[("c.txt", "zero\n"), (".stemma-policy/x", "1")],
+            "daniel",
+        );
+        set_branch(&f.repository, "main", Some(f.main()), landed);
+
+        for mode in [Mode::Open, Mode::Enforcing(register())] {
+            let error = gate_by_policy(&f, &mode).unwrap_err();
+            assert!(
+                matches!(error, GateError::Policy(PolicyError::NotAFile)),
+                "{error}"
+            );
+        }
+        assert_eq!(f.main(), landed);
+    }
+
+    #[test]
+    fn a_policy_file_that_exists_but_is_invalid_also_refuses_in_the_open_mode() {
+        let f = fixture("zero\n");
+        land_policy(&f, "stemma-policy 3\n");
+        f.check(f.main());
+
+        let error = gate_by_policy(&f, &Mode::Open).unwrap_err();
+
+        assert!(
+            matches!(error, GateError::Policy(PolicyError::Invalid(_))),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_valid_policy_lets_the_gate_land_in_an_enforcing_repository() {
+        let f = fixture("zero\n");
+        let register = register();
+        land_policy(
+            &f,
+            "stemma-policy 1\nlevel 0 a.txt\nreservation 5\nmax-unverified 20\n",
+        );
+        let policy = f.repository.policy_of_main(true).unwrap();
+        assert_eq!(
+            (policy.reservation_after(), policy.max_unverified()),
+            (5, 20)
+        );
+        let entry = f.record(f.head, Some(f.main()), CheckResult::Pass, "ana");
+        let signature = signature::sign(
+            &Seeded::new(2),
+            PayloadKind::LogEntry,
+            entry.hash().unwrap().to_string().as_bytes(),
+        )
+        .unwrap();
+        write_proof(
+            &f.repository.metadata_dir(),
+            entry.number(),
+            &ProofFile {
+                actor: human("ana"),
+                signature,
+            },
+        )
+        .unwrap();
+
+        let merged = gate_by_policy(&f, &Mode::Enforcing(register)).unwrap();
+
+        assert_eq!(f.main(), merged.commit);
     }
 
     #[test]

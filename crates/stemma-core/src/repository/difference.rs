@@ -491,7 +491,7 @@ impl Repository {
     /// conflict. A commit with a conflict is the tree that shows it: the text with markers at
     /// each conflicted path, the one that the working directory holds (ADR-010).
     #[allow(clippy::type_complexity)]
-    fn files_of(
+    pub(super) fn files_of(
         &self,
         commit: CommitId,
     ) -> Result<(BTreeMap<String, ObjectId>, BTreeSet<String>), DiffError> {
@@ -568,7 +568,10 @@ fn view_error(error: SnapshotError) -> DiffError {
 
 /// Lists the files of a tree, depth first, with the IDs of their blobs. A directory is read and
 /// not listed; the mode of a file is not compared, so only a change of content shows.
-fn files(objects: &dyn ObjectStore, root: TreeId) -> Result<BTreeMap<String, ObjectId>, DiffError> {
+pub(super) fn files(
+    objects: &dyn ObjectStore,
+    root: TreeId,
+) -> Result<BTreeMap<String, ObjectId>, DiffError> {
     let mut found = BTreeMap::new();
     let mut pending = vec![(String::new(), root)];
     while let Some((prefix, id)) = pending.pop() {
