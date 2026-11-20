@@ -2982,6 +2982,191 @@ stemma register cosign ~/.ssh/mia --agent bot --actor "human mia" > bot.sig
 stemma register add-agent bot.pub --agent bot --sponsor mia --cosign bot.sig --actor "human daniel"
 \stoptyping
 
+\section{pr}
+
+Öffnet, schliesst, genehmigt und merged einen Pull Request und listet die Pull Requests
+(ADR-004, ADR-019). Ein Pull Request ist eine Folge von Einträgen im Operationslog; seine Nummer
+ist die Nummer des Eintrags, der ihn öffnet.
+
+\starttyping
+stemma pr open [-C VERZEICHNIS] [--reviewer AKTEUR]... [--repairs COMMIT] --actor AKTEUR BRANCH
+stemma pr close [-C VERZEICHNIS] --actor AKTEUR NUMMER
+stemma pr approve [-C VERZEICHNIS] [--key SCHLÜSSELDATEI] --actor AKTEUR NUMMER
+stemma pr merge [-C VERZEICHNIS] [--level STUFE] --actor AKTEUR NUMMER
+stemma pr list [-C VERZEICHNIS]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories.
+Standard ist das aktuelle.
+\item {\bf BRANCH:} Der Branch, den der Pull Request in \type{main} merged. Seine Spitze ist der
+Head des Pull Requests.
+\item {\bf NUMMER:} Die Nummer des Pull Requests, wie \type{pr list} sie zeigt.
+\item {\bf \type{--reviewer} AKTEUR:} Ein Reviewer, als Akteurszeile; die Option darf mehrfach
+stehen. Ein Reviewer ist eine Identität des Registers und nicht der Öffner.
+\item {\bf \type{--repairs} COMMIT:} Der Commit, den der Pull Request repariert: eine
+Commit-ID, ein Branch oder ein Tag.
+\item {\bf \type{--key} SCHLÜSSELDATEI:} Der Schlüssel des Akteurs für
+\type{ssh-keygen -Y sign}: der private Schlüssel, oder der öffentliche, wenn \type{ssh-agent} ihn
+hält. In einem durchsetzenden Repository ist die Option Pflicht, in einem offenen wird sie nicht
+gelesen.
+\item {\bf \type{--level} STUFE:} Die Risikostufe der Änderung, von 0 bis 3. Die Regeltabelle
+des Merge-Gates verlangt Prüfungen je nach Stufe. Die Policy-Datei leitet die Stufe noch nicht ab;
+darum ist der Standard 3, die strengste Stufe.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\stopitemize
+
+{\bf Verhalten.} \type{open} schreibt den Eintrag \type{pr-open}. Öffnen darf nur, wer den Branch
+schreiben darf: In einem durchsetzenden Repository hält der Akteur dazu eine gültige Lease
+(Abschnitt \type{lease}). Für einen Branch ist höchstens ein Pull Request offen.
+\type{close} beendet einen offenen Pull Request ohne Merge; das darf der Öffner und, wo ein
+Register besteht, ein Owner.
+\type{approve} genehmigt den Head, den der Branch beim Aufruf hat. Die Genehmigung bindet sich an
+diesen Head; jeder spätere Commit macht sie ungültig. Wer den Pull Request öffnete oder einen
+Commit darin schrieb, genehmigt ihn nicht selbst. In einem durchsetzenden Repository signiert
+der Befehl die Genehmigung mit dem Schlüssel und schreibt die Signatur als Beweisdatei.
+\type{merge} führt den Pull Request durch das Merge-Gate (ADR-019): Das Gate merged den Branch auf
+die Spitze von \type{main}, prüft, ob ein Ergebnis einer Prüfung für diese Stufe und diese Spitze
+zählt, bewegt \type{main} in einem Schritt und schreibt \type{pr-merge}. Hat \type{main} die
+Änderung schon, weil ein früherer Aufruf nach der Bewegung stoppte, schreibt der Befehl nur den
+fehlenden Eintrag \type{pr-merge}. Das Gate prüft die Genehmigungen nicht; \type{pr list} zeigt
+ihre Zahl.
+\type{list} liest nur und schreibt nichts.
+
+{\bf Ausgabe.} \type{open}, \type{close}, \type{approve} und \type{merge} nennen in einer Zeile,
+was sie taten. \type{list} schreibt je Pull Request eine Zeile in der Reihenfolge der
+Öffnungen: die Nummer, den Zustand (\type{open}, \type{closed} oder \type{merged}), den Branch,
+die ersten zwölf Stellen des Heads und den Öffner. Bei einem offenen Pull Request folgt die Zahl
+der Genehmigungen, die für den Head zählen; ungültige nennt die Zeile mit ihrer Zahl.
+
+\starttyping
+8 open feat 08e522cd0b90 by human daniel approvals 1
+7 merged fix 5f1d0a3c92ab by human anna
+\stoptyping
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Branch fehlt oder
+\type{main} ist, wenn für den Branch schon ein Pull Request offen ist, wenn der Akteur den
+Branch nicht schreiben darf, wenn die Nummer unbekannt ist oder der Pull Request nicht mehr offen
+ist, wenn ein Reviewer im Register fehlt, wenn die Genehmigung gegen das Verbot der eigenen
+Genehmigung verstösst, wenn in einem durchsetzenden Repository der Schlüssel fehlt oder die
+Signatur das Register nicht überzeugt, wenn der Branch sich während der Signatur bewegte, wenn
+der Branch seit dem Öffnen einen neuen Head hat, wenn das Merge einen Konflikt enthält und wenn
+kein Ergebnis einer Prüfung zählt. Bei einem Konflikt rebased der Autor und öffnet einen neuen
+Pull Request. Ein gehaltenes Lock der Referenzen endet mit Exit-Code 6; der Aufruf lässt sich
+wiederholen. Ein beschädigtes Log endet mit Exit-Code 5. Exit-Code 3 meldet einen Eintrag, der
+geschrieben ist, während der Rest nicht gelang: eine Beweisdatei, die fehlt, oder eine Bewegung
+von \type{main}, deren Spülen nicht feststeht. Ein erneuter \type{pr merge} schliesst die
+Bewegung von \type{main} ab; ein erneuter \type{pr approve} schreibt eine zweite Genehmigung,
+denn die erste zählt ohne Beweis nicht.
+Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
+Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma pr open feat --reviewer "human anna" --actor "human daniel"
+stemma pr approve 8 --key ~/.ssh/anna --actor "human anna"
+stemma pr merge 8 --level 2 --actor "human daniel"
+stemma pr list
+\stoptyping
+
+\section{check}
+
+Schreibt das Ergebnis eines Prüflaufs für einen Commit ins Log und listet die Ergebnisse
+(ADR-019). Ob ein Ergebnis für eine Änderung zählt, entscheidet erst das Merge-Gate beim Lesen,
+denn es hängt vom Pull Request, seinen Autoren und der Stufe ab.
+
+\starttyping
+stemma check record [-C VERZEICHNIS] --result ERGEBNIS [--base COMMIT] [--key SCHLÜSSELDATEI]
+        --actor AKTEUR COMMIT
+stemma check list [-C VERZEICHNIS]
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories.
+Standard ist das aktuelle.
+\item {\bf COMMIT:} Der getestete Commit: eine Commit-ID, ein Branch oder ein Tag.
+\item {\bf \type{--result} ERGEBNIS:} \type{pass} oder \type{fail}.
+\item {\bf \type{--base} COMMIT:} Die Spitze von \type{main}, auf die der Commit für den Lauf
+gemerged wurde. Ohne die Option lief der Test auf dem Commit, wie er ist. Ein Lauf gegen eine
+andere Spitze ist ein eigener Aufruf.
+\item {\bf \type{--key} SCHLÜSSELDATEI:} Der Schlüssel des Akteurs, wie bei \type{pr}. In einem
+durchsetzenden Repository ist die Option Pflicht.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\stopitemize
+
+{\bf Verhalten.} \type{record} schreibt den Eintrag \type{check}. In einem durchsetzenden
+Repository signiert der Befehl den Hash des Eintrags und schreibt die Beweisdatei; ein Ergebnis
+ohne Beweis zählt nicht. \type{list} liest nur und zeigt je Ergebnis die Nummer des Eintrags, das
+Ergebnis, die ersten zwölf Stellen des Commits, die Basis (\type{on KURZE-ID} oder
+\type{as it is}) und den Akteur.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Commit oder die
+Basis nicht existiert, wenn die Basis der Commit selbst ist und wenn in einem durchsetzenden
+Repository der Schlüssel fehlt. Exit-Code 3 meldet einen Eintrag, dessen Beweis fehlt: Die Signatur
+gelang nicht, oder das Register kennt den Schlüssel nicht für den Akteur. Der Befehl schreibt dann
+keine Beweisdatei; das Ergebnis ist im Log und zählt nicht, und der Lauf wird noch einmal
+eingetragen.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma check record feat --base main --result pass --actor "human anna"
+stemma check record feat --result fail --key ~/.ssh/anna --actor "human anna"
+stemma check list
+\stoptyping
+
+\section{lease}
+
+Zeigt die Lease eines Branches, nimmt sie, gibt sie zurück oder übernimmt sie von einem anderen
+Akteur (ADR-004). Die Lease ist das befristete Recht eines Akteurs, einen Branch zu schreiben.
+Sie gilt nur in einem durchsetzenden Repository, dessen Register mehr als eine Identität
+enthält; sonst enden \type{take}, \type{release} und \type{override} mit Exit-Code 1.
+
+\starttyping
+stemma lease show [-C VERZEICHNIS] BRANCH
+stemma lease take [-C VERZEICHNIS] [--minutes MINUTEN] --actor AKTEUR BRANCH
+stemma lease release [-C VERZEICHNIS] --actor AKTEUR BRANCH
+stemma lease override [-C VERZEICHNIS] --reason TEXT [--minutes MINUTEN] --key SCHLÜSSELDATEI
+        --actor AKTEUR BRANCH
+\stoptyping
+
+\startitemize
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories.
+Standard ist das aktuelle.
+\item {\bf \type{--minutes} MINUTEN:} Wie lange die Lease gilt. Standard sind 60 Minuten.
+\item {\bf \type{--reason} TEXT:} Der Grund der Übernahme: eine Zeile, höchstens 1 KiB.
+\item {\bf \type{--key} SCHLÜSSELDATEI:} Der Schlüssel des Owners, wie bei \type{pr}.
+\item {\bf \type{--actor} AKTEUR:} Siehe oben.
+\stopitemize
+
+{\bf Verhalten.} \type{show} liest nur und sagt, ob der Branch keine Lease hat, ob die Lease
+abgelaufen ist (der nächste Schreiber übernimmt sie) oder wer sie noch wie viele Minuten hält.
+\type{take} erwirbt die Lease eines freien oder abgelaufenen Branches, übernimmt die abgelaufene
+Lease eines anderen Akteurs oder erneuert die eigene; nur Erwerb und Übernahme schreiben einen
+Eintrag, eine Erneuerung nicht. \type{release} gibt die eigene Lease zurück und schreibt einen
+Eintrag. \type{override} übernimmt die Lease eines anderen Akteurs vor ihrem Ablauf; das darf nur
+ein Mensch mit der Rolle Owner. Der Eintrag nennt den früheren Halter und den Grund. Der Owner
+signiert ihn mit seinem Schlüssel, und die Signatur ist die Beweisdatei. Der Branch und die Arbeit
+des früheren Halters bleiben.
+
+{\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn ein anderer Akteur die
+Lease hält (\type{take}), wenn der Akteur sie nicht hält oder keine gültige besteht
+(\type{release}), wenn der Akteur kein Owner ist, der Owner die Lease schon hält oder keine
+gültige besteht (\type{override}) und wenn der Schlüssel fehlt. Exit-Code 6 meldet ein gehaltenes
+Lock der Referenzen. Exit-Code 3 meldet einen Eintrag, der geschrieben ist, während die Datei der
+Lease nicht ersetzt wurde oder die Beweisdatei fehlt; der nächste Aufruf liest die Datei und
+entscheidet neu.
+
+{\bf Beispiele.}
+
+\starttyping
+stemma lease show feat
+stemma lease take feat --minutes 120 --actor "human anna"
+stemma lease release feat --actor "human anna"
+stemma lease override feat --reason "Anna ist krank" --key ~/.ssh/daniel --actor "human daniel"
+\stoptyping
+
 \section{purge}
 
 Entfernt ein Geheimnis aus dem Verlauf und dem Operation Log (ADR-014). Ohne \type{--apply}
