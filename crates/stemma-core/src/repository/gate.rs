@@ -165,9 +165,9 @@ pub enum GateError {
     Refs(RefError),
     /// The log could not be read or written.
     Log(OpLogError),
-    /// The policy of the base commit cannot be used: in an enforcing repository it is missing,
-    /// unreadable, or of an unknown version. The merge is refused, and nothing was written but
-    /// objects.
+    /// The policy of the base commit cannot be used: it is invalid, of an unknown version, or not
+    /// a file (in either mode), or it is missing or unreadable in an enforcing repository. The
+    /// merge is refused, and nothing was written but objects.
     Policy(PolicyError),
     /// The level of the change cannot be told. The merge is refused.
     Level(LevelError),
@@ -320,6 +320,10 @@ impl Repository {
     /// the gate; the gate does not ask for approvals either (ADR-011: the entry of a merge checks
     /// no approval).
     ///
+    /// This entry reads no policy: the level and the register are the caller's. A caller that
+    /// enforces the policy of the base commit uses
+    /// [`merge_gate_by_policy`](Self::merge_gate_by_policy).
+    ///
     /// The rule of the table: at least one result of a check must count. At levels 0 and 1 a
     /// passing result for the head counts whatever tip it names as its base, as the merge onto
     /// the tip is clean (a conflict is refused below); a run without a base is the run on a tip
@@ -330,8 +334,8 @@ impl Repository {
     /// exist: the approvals of ADR-004 (none is asked here), the pause of the levels 2 and 3
     /// while the last verified tip is red (with the exemption of a declared repair), the bound
     /// `max_unverified`, the reservation against starving, and the rule that the authors of a
-    /// change are registered actors (STEMMA-242 and the command). The level and the policy of the base
-    /// commit come from [`merge_gate_by_policy`](Self::merge_gate_by_policy) (STEMMA-246).
+    /// change are registered actors (STEMMA-242 and the command). The level and the policy of the
+    /// base commit come from [`merge_gate_by_policy`](Self::merge_gate_by_policy) (STEMMA-246).
     ///
     /// The commit `M` has the single parent `T`, the tree of the merge, the gate `actor` as its
     /// author, and a change ID of its own. The objects of the merge are written before the lock.

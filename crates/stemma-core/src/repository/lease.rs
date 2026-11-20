@@ -425,7 +425,7 @@ impl fmt::Display for LeaseError {
                 f,
                 "{actor} is not a human with the role owner, so it cannot override a lease"
             ),
-            Self::Policy(error) => error.fmt(f),
+            Self::Policy(error) => write!(f, "the lease is refused: {error}"),
             Self::Io {
                 operation,
                 path,

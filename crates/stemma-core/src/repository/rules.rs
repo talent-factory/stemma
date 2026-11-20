@@ -19,10 +19,11 @@ use std::fmt;
 
 use super::difference::{self, DiffError};
 use super::{Claimed, LeaseError, Repository};
-use crate::object::{CommitId, Kind, ObjectId, TreeId};
+use crate::object::{CommitId, EntryMode, Kind, ObjectId, TreeId};
 use crate::policy::{self, PathChange, PathError, Policy, PolicyParseError, RiskLevel};
 use crate::pull::TARGET;
 use crate::refs::{BranchName, RefError};
+use crate::register::Mode;
 use crate::store::{ObjectStore, ReadError};
 use crate::{Actor, Authorizer};
 
@@ -34,7 +35,8 @@ pub enum PolicyError {
     Missing,
     /// The repository is enforcing and has no base commit: `main` does not exist.
     NoBase,
-    /// The path of the policy file is taken by something that is not a regular file.
+    /// The path of the policy file is taken by something that is not a blob, such as a
+    /// directory or a symbolic link.
     NotAFile,
     /// The file is not a valid policy: a problem of its form, or a version that this reader does
     /// not know.
@@ -59,11 +61,7 @@ impl fmt::Display for PolicyError {
                 "the repository is enforcing and has no branch `{TARGET}`, so there is no policy \
                  to read"
             ),
-            Self::NotAFile => write!(
-                f,
-                "{} in the base commit is not a regular file",
-                policy::FILE_NAME
-            ),
+            Self::NotAFile => write!(f, "{} in the base commit is not a file", policy::FILE_NAME),
             Self::Invalid(error) => {
                 write!(
                     f,
@@ -134,7 +132,7 @@ impl Repository {
             .get(&id)
             .map_err(|error| unreadable(ReadError::Store(Box::new(error))))?
             .ok_or_else(|| unreadable("the file is not in the store"))?;
-        if raw.kind() != Kind::Blob {
+        if raw.kind() != Kind::Blob || entry.mode() == EntryMode::Symlink {
             return Err(PolicyError::NotAFile);
         }
         Policy::parse(raw.body()).map_err(PolicyError::Invalid)
@@ -172,18 +170,24 @@ impl Repository {
         tip: &CommitId,
         result: TreeId,
     ) -> Result<RiskLevel, LevelError> {
-        let (before, _) = self.files_of(*tip).map_err(LevelError::Diff)?;
-        let after = difference::files(self.objects(), result).map_err(LevelError::Diff)?;
+        let before = self.files_with_modes_of(*tip).map_err(LevelError::Diff)?;
+        let after =
+            difference::files_with_modes(self.objects(), result).map_err(LevelError::Diff)?;
+        // The mode counts as well: a script made executable is a change of that path.
         let mut changes = Vec::new();
-        for (path, id) in &after {
+        for (path, entry) in &after {
             match before.get(path) {
                 None => changes.push(PathChange::Added { path }),
-                Some(old) if old != id => changes.push(PathChange::Modified { path }),
+                Some(old) if old != entry => changes.push(PathChange::Modified { path }),
                 Some(_) => {}
             }
         }
         for path in before.keys().filter(|path| !after.contains_key(*path)) {
             changes.push(PathChange::Deleted { path });
+        }
+        // The trees differ, so a change that touches no path is a bug here, never level 0.
+        if changes.is_empty() {
+            return Err(LevelError::NoChange);
         }
         policy.level_of(&changes).map_err(LevelError::Path)
     }
@@ -191,7 +195,7 @@ impl Repository {
     /// [`claim_lease`](Self::claim_lease) with the duration of the lease from the policy of the
     /// tip of `main` (the line `lease`, or 60 minutes).
     ///
-    /// `enforcing` is whether the repository has a register. In an enforcing repository a policy
+    /// `mode` is the mode of the repository ([`Mode::of`]). In an enforcing repository a policy
     /// that cannot be read refuses the claim ([`LeaseError::Policy`]) and nothing is written.
     ///
     /// # Errors
@@ -201,11 +205,11 @@ impl Repository {
         &self,
         branch: &BranchName,
         actor: &Actor,
-        enforcing: bool,
+        mode: &Mode,
         authorizer: &dyn Authorizer,
     ) -> Result<Claimed, LeaseError> {
         let minutes = self
-            .policy_of_main(enforcing)
+            .policy_of_main(matches!(mode, Mode::Enforcing(_)))
             .map_err(LeaseError::Policy)?
             .lease_minutes();
         self.claim_lease(branch, actor, minutes, authorizer)
@@ -220,6 +224,9 @@ pub enum LevelError {
     Diff(DiffError),
     /// A path that the policy cannot judge.
     Path(PathError),
+    /// The result has no file that differs from the tip, so there is nothing to judge. The gate
+    /// does not ask for a result that equals the tip (the repair path), so this is refused.
+    NoChange,
 }
 
 impl fmt::Display for LevelError {
@@ -227,6 +234,7 @@ impl fmt::Display for LevelError {
         match self {
             Self::Diff(error) => write!(f, "cannot compare the change with the tip: {error}"),
             Self::Path(error) => write!(f, "cannot tell the level of the change: {error}"),
+            Self::NoChange => f.write_str("the change has no file that differs from the tip"),
         }
     }
 }
@@ -236,6 +244,7 @@ impl Error for LevelError {
         match self {
             Self::Diff(error) => Some(error),
             Self::Path(error) => Some(error),
+            Self::NoChange => None,
         }
     }
 }
@@ -247,12 +256,23 @@ mod tests {
     use crate::index::Index;
     use crate::object::{Blob, Commit, FileMode};
     use crate::oplog::OperationName;
+    use crate::register::Register;
     use crate::repository::InitOptions;
     use crate::testutil::TempDir;
     use crate::AllowAll;
 
     fn human(id: &str) -> Actor {
         Actor::human(id).unwrap()
+    }
+
+    /// A register with one owner, for the enforcing mode.
+    fn register() -> Register {
+        let key = ssh_key::PrivateKey::from(ssh_key::private::Ed25519Keypair::from_seed(&[1; 32]));
+        let text = format!(
+            "stemma-register 1\nentry human daniel owner\nkey {} active\n",
+            key.public_key().to_openssh().unwrap()
+        );
+        Register::parse(text.as_bytes()).unwrap()
     }
 
     fn name(text: &str) -> BranchName {
@@ -360,7 +380,12 @@ mod tests {
         );
 
         let claimed = repository
-            .claim_lease_by_policy(&name("feature"), &human("mia"), true, &AllowAll)
+            .claim_lease_by_policy(
+                &name("feature"),
+                &human("mia"),
+                &Mode::Enforcing(register()),
+                &AllowAll,
+            )
             .unwrap();
 
         assert_eq!(claimed.lease.expires() - claimed.lease.acquired(), 30 * 60);
@@ -373,7 +398,12 @@ mod tests {
         land(&repository, &[("x.txt", "x\n")]);
 
         let refused = repository
-            .claim_lease_by_policy(&name("feature"), &human("mia"), true, &AllowAll)
+            .claim_lease_by_policy(
+                &name("feature"),
+                &human("mia"),
+                &Mode::Enforcing(register()),
+                &AllowAll,
+            )
             .unwrap_err();
 
         assert!(
@@ -382,7 +412,7 @@ mod tests {
         );
         assert_eq!(repository.lease(&name("feature")).unwrap(), None);
         let claimed = repository
-            .claim_lease_by_policy(&name("feature"), &human("mia"), false, &AllowAll)
+            .claim_lease_by_policy(&name("feature"), &human("mia"), &Mode::Open, &AllowAll)
             .unwrap();
         assert_eq!(
             claimed.lease.expires() - claimed.lease.acquired(),
@@ -391,11 +421,231 @@ mod tests {
     }
 
     #[test]
+    fn an_unusable_policy_refuses_the_lease_in_both_modes_and_writes_nothing() {
+        for (files, reason) in [
+            (
+                vec![("x.txt", "x\n"), (".stemma-policy", "stemma-policy 2\n")],
+                "unknown version",
+            ),
+            (
+                vec![("x.txt", "x\n"), (".stemma-policy", "junk\n")],
+                "first line has to be",
+            ),
+            (
+                vec![("x.txt", "x\n"), (".stemma-policy/y", "1")],
+                "not a file",
+            ),
+        ] {
+            for mode in [Mode::Open, Mode::Enforcing(register())] {
+                let dir = TempDir::new();
+                let repository = repository(&dir);
+                land(&repository, &files);
+
+                let error = repository
+                    .claim_lease_by_policy(&name("feature"), &human("mia"), &mode, &AllowAll)
+                    .unwrap_err();
+
+                assert!(matches!(error, LeaseError::Policy(_)), "{error}");
+                assert!(error.to_string().contains(reason), "{error}");
+                assert!(
+                    error.to_string().starts_with("the lease is refused"),
+                    "{error}"
+                );
+                assert_eq!(repository.lease(&name("feature")).unwrap(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn a_repository_without_main_refuses_the_lease_when_enforcing() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+
+        let error = repository
+            .claim_lease_by_policy(
+                &name("feature"),
+                &human("mia"),
+                &Mode::Enforcing(register()),
+                &AllowAll,
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(error, LeaseError::Policy(PolicyError::NoBase)),
+            "{error}"
+        );
+    }
+
+    /// The level of the change from the tip to a commit with these files.
+    fn level(
+        repository: &Repository,
+        policy: &str,
+        tip_files: &[(&str, &str, FileMode)],
+        result_files: &[(&str, &str, FileMode)],
+    ) -> Result<RiskLevel, LevelError> {
+        let tree = |files: &[(&str, &str, FileMode)]| {
+            let mut index = Index::new();
+            for (path, text, mode) in files {
+                let blob = repository.objects().put_blob(&Blob::new(*text)).unwrap();
+                index.insert(*path, *mode, blob).unwrap();
+            }
+            index.write_tree(repository.objects()).unwrap()
+        };
+        let tip = repository
+            .objects()
+            .put_commit(
+                &Commit::try_new(
+                    tree(tip_files),
+                    vec![],
+                    ChangeId::generate().unwrap(),
+                    human("daniel"),
+                    1,
+                    "tip".to_owned(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let policy = Policy::parse(policy.as_bytes()).unwrap();
+        repository.level_of_change(&policy, &tip, tree(result_files))
+    }
+
+    #[test]
+    fn the_level_of_a_change_is_the_highest_level_of_the_files_that_differ() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let policy = "stemma-policy 1\nlevel 0 docs.md\nlevel 1 mid.rs\nlevel 3 core.rs\n";
+        let file = FileMode::File;
+        let base = [
+            ("docs.md", "d\n", file),
+            ("mid.rs", "m\n", file),
+            ("core.rs", "c\n", file),
+        ];
+        let case = |result: &[(&str, &str, FileMode)]| level(&repository, policy, &base, result);
+
+        // Modified, added, and deleted files each count with their path.
+        let modified = [
+            ("docs.md", "d2\n", file),
+            ("mid.rs", "m\n", file),
+            ("core.rs", "c\n", file),
+        ];
+        assert_eq!(case(&modified).unwrap(), RiskLevel::Zero);
+        let modified_mid = [
+            ("docs.md", "d\n", file),
+            ("mid.rs", "m2\n", file),
+            ("core.rs", "c\n", file),
+        ];
+        assert_eq!(case(&modified_mid).unwrap(), RiskLevel::One);
+        let deleted = [("docs.md", "d\n", file), ("mid.rs", "m\n", file)];
+        assert_eq!(case(&deleted).unwrap(), RiskLevel::Three);
+        let added = [
+            ("docs.md", "d\n", file),
+            ("mid.rs", "m\n", file),
+            ("core.rs", "c\n", file),
+            ("new.txt", "n\n", file),
+        ];
+        assert_eq!(case(&added).unwrap(), RiskLevel::Two);
+        // A move touches the old and the new path.
+        let moved = [
+            ("docs.md", "d\n", file),
+            ("mid.rs", "m\n", file),
+            ("moved.rs", "c\n", file),
+        ];
+        assert_eq!(case(&moved).unwrap(), RiskLevel::Three);
+    }
+
+    #[test]
+    fn a_change_of_the_mode_alone_has_the_level_of_its_path() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let policy = "stemma-policy 1\nlevel 3 core.sh\nlevel 0 docs.md\n";
+
+        let executable = level(
+            &repository,
+            policy,
+            &[
+                ("core.sh", "run\n", FileMode::File),
+                ("docs.md", "d\n", FileMode::File),
+            ],
+            &[
+                ("core.sh", "run\n", FileMode::Executable),
+                ("docs.md", "d\n", FileMode::File),
+            ],
+        );
+
+        assert_eq!(executable.unwrap(), RiskLevel::Three);
+    }
+
+    #[test]
+    fn a_result_that_equals_the_tip_has_no_level() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let same = [("a.txt", "a\n", FileMode::File)];
+
+        let error = level(&repository, "stemma-policy 1\n", &same, &same).unwrap_err();
+
+        assert!(matches!(error, LevelError::NoChange), "{error}");
+    }
+
+    #[test]
+    fn a_path_that_is_too_deep_is_refused_and_not_judged() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let deep = vec!["d"; policy::MAX_PATH_PARTS + 1].join("/");
+
+        let error = level(
+            &repository,
+            "stemma-policy 1\n",
+            &[("a.txt", "a\n", FileMode::File)],
+            &[
+                ("a.txt", "a\n", FileMode::File),
+                (deep.as_str(), "x\n", FileMode::File),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, LevelError::Path(_)), "{error}");
+    }
+
+    #[test]
+    fn a_policy_that_is_a_link_is_refused() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let mut index = Index::new();
+        let blob = repository
+            .objects()
+            .put_blob(&Blob::new("stemma-policy 1\n"))
+            .unwrap();
+        index
+            .insert(".stemma-policy", FileMode::Symlink, blob)
+            .unwrap();
+        let tree = index.write_tree(repository.objects()).unwrap();
+        let commit = repository
+            .objects()
+            .put_commit(
+                &Commit::try_new(
+                    tree,
+                    vec![],
+                    ChangeId::generate().unwrap(),
+                    human("daniel"),
+                    1,
+                    "link".to_owned(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            repository.policy_at(&commit, true),
+            Err(PolicyError::NotAFile)
+        ));
+    }
+
+    #[test]
     fn the_errors_name_the_policy_file_and_the_reason() {
         for (error, part) in [
             (PolicyError::Missing, "has no .stemma-policy"),
             (PolicyError::NoBase, "no branch `main`"),
-            (PolicyError::NotAFile, "not a regular file"),
+            (PolicyError::NotAFile, "not a file"),
             (
                 PolicyError::Invalid(Policy::parse(b"stemma-policy 9\n").unwrap_err()),
                 "unknown version",

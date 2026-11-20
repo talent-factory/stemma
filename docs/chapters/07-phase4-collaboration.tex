@@ -683,6 +683,7 @@ Der Name \type{.stemmaignore} ist erlaubt, denn ADR-004 gibt der Datei die Stufe
 \type{lease}, \type{reservation}, \type{max-unverified} und \type{weakened-level} stehen
 höchstens einmal, \type{approvals} einmal je Stufe,
 \type{operation} einmal je Name und \type{assertion} einmal je Pfad (höchstens 64 Zeilen).
+
 {\bf Welche Policy gilt.}
 Das Gate und die Lease lesen die Policy des Basis-Commits, also der Spitze von \type{main},
 nie die des Arbeitsverzeichnisses und nie die des Zweiges, der geprüft wird.
@@ -695,7 +696,7 @@ Der offene Modus und der erzwingende Modus unterscheiden sich im Fehlerfall:
 \item Im offenen Modus gilt ohne Datei die eingebaute Policy: jeder Pfad hat Stufe 2, und die
 Freigaben werden nicht erzwungen.
 \item Im erzwingenden Modus ist die Datei Pflicht.
-Fehlt sie, ist sie kein Blob, nicht lesbar oder von unbekannter Version, lehnt das Gate jeden
+Fehlt sie, ist sie keine Datei, nicht lesbar oder von unbekannter Version, lehnt das Gate jeden
 Merge ab (\type{GateError::Policy}), und die Meldung nennt den Grund.
 Auf die eingebaute Policy fällt dort nichts zurück.
 \item Eine Datei, die vorhanden, aber ungültig ist, lehnt das Gate in beiden Modi ab:
