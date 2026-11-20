@@ -330,11 +330,13 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 
     let paths: Vec<&str> = diff.files().iter().map(FileDiff::path).collect();
     let mut list_state = ListState::default().with_selected(Some(state.file));
+    let block = Block::bordered().title("Files");
+    let names_area = block.inner(files_area);
     let list = List::new(paths)
-        .block(Block::new().borders(Borders::ALL).title("Files"))
+        .block(block)
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     frame.render_stateful_widget(list, files_area, &mut list_state);
-    stream.set_file_list(Block::bordered().inner(files_area), list_state.offset());
+    stream.set_file_list(names_area, list_state.offset());
 
     let title = if diff.files().is_empty() {
         "No differences".to_owned()
@@ -374,8 +376,8 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 }
 
 /// Runs the interface on the terminal until the user quits or `stop` is set, and gives the terminal
-/// back on return. `stop` is for a handler of a signal on another thread: while no key arrives, the
-/// interface looks at it ten times a second, so the handler never has to touch the terminal. A
+/// back on return. `stop` is for a handler of a signal on another thread: the interface looks at it
+/// at least ten times a second and after every event, so the handler never has to touch the terminal. A
 /// panic restores the terminal through the hook that ratatui installs, which this function extends
 /// to turn the mouse off.
 ///
@@ -438,7 +440,11 @@ fn event_loop(
         let input = match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => Input::from_key(key),
             Event::Mouse(mouse) => Input::from_mouse(mouse),
-            // A resize is found by the width at the top of the next turn.
+            // The terminal may have changed in height only, which the width does not show.
+            Event::Resize(..) => {
+                dirty = true;
+                None
+            }
             _ => None,
         };
         if let Some(input) = input {

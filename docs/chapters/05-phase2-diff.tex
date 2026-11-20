@@ -819,7 +819,8 @@ Text lässt sich im Terminal weiter markieren, solange man die Taste hält, die 
 vorsieht (meist Umschalt, in iTerm2 die Wahltaste); die Hilfe von \type{diff --tui} sagt es.
 Gelingt die Rückgabe nach einem Fehler nicht, nennt die Meldung beide Fehler.
 Ein Handler für Signale läuft auf einem anderen Thread und fasst das Terminal nicht an. Er setzt
-eine Marke, die die Oberfläche zehnmal in der Sekunde liest, solange keine Taste kommt. Die
+eine Marke, die die Oberfläche mindestens zehnmal in der Sekunde und nach jedem Ereignis liest,
+auch nach einem der Maus. Die
 Oberfläche beendet sich dann und gibt das Terminal zurück, und erst danach endet der Befehl mit
 dem Exit-Code des Signals. Der Handler wartet darauf höchstens zwei Sekunden.
 
