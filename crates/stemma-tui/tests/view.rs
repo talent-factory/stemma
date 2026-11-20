@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::Terminal;
 use stemma_core::repository::{Comparison, Diff, InitOptions, Repository};
 use stemma_core::{Actor, AllowAll};
@@ -1319,4 +1321,151 @@ fn a_stream_that_is_used_with_another_diff_is_caught() {
     let (_other_fixture, other) = special_diff();
     let mut stream = Stream::new(&diff);
     stream.fit(&other, 80, LayoutMode::Auto, false);
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn click(column: u16, row: u16) -> Input {
+    Input::from_mouse(mouse(MouseEventKind::Down(MouseButton::Left), column, row)).unwrap()
+}
+
+/// Draws one frame of 80 columns and 12 rows with `stream`, as the loop does before it reads.
+fn draw_frame(state: &State, diff: &Diff, stream: &mut Stream) {
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    terminal
+        .draw(|frame| render_with(frame, state, diff, stream))
+        .unwrap();
+}
+
+#[test]
+fn the_wheel_scrolls_the_stream_like_the_keys() {
+    let (_fixture, diff) = diff();
+    let down = Input::from_mouse(mouse(MouseEventKind::ScrollDown, 40, 5)).unwrap();
+    let up = Input::from_mouse(mouse(MouseEventKind::ScrollUp, 40, 5)).unwrap();
+    assert_eq!(down, Input::ScrollDown(3));
+    assert_eq!(up, Input::ScrollUp(3));
+
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    state.apply(down, &diff, &mut stream);
+    assert_eq!(state.scroll(), 3);
+    state.apply(up, &diff, &mut stream);
+    state.apply(up, &diff, &mut stream);
+    assert_eq!(state.scroll(), 0);
+}
+
+#[test]
+fn other_mouse_events_are_not_used() {
+    for kind in [
+        MouseEventKind::Down(MouseButton::Right),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Moved,
+        MouseEventKind::ScrollLeft,
+    ] {
+        assert_eq!(Input::from_mouse(mouse(kind, 2, 2)), None, "{kind:?}");
+    }
+}
+
+#[test]
+fn a_click_on_a_file_jumps_to_its_header() {
+    let (_fixture, diff) = diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    draw_frame(&state, &diff, &mut stream);
+
+    // The list has its border in row 0 and column 0, so `b.txt` is in row 2.
+    assert!(state.apply(click(3, 2), &diff, &mut stream));
+    assert_eq!((state.file(), state.hunk()), (1, 0));
+    assert_eq!(Some(state.scroll()), stream.file_start(1));
+
+    // A click on the first file goes back to its header.
+    assert!(state.apply(click(1, 1), &diff, &mut stream));
+    assert_eq!((state.file(), state.hunk(), state.scroll()), (0, 0, 0));
+}
+
+#[test]
+fn a_click_outside_the_names_changes_nothing() {
+    let (_fixture, diff) = diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    state.apply(Input::ScrollDown(5), &diff, &mut stream);
+    draw_frame(&state, &diff, &mut stream);
+    let before = state;
+
+    for (column, row) in [
+        (3, 0),     // the top border of the list
+        (0, 1),     // the left border
+        (19, 1),    // the right border
+        (3, 3),     // below the last name
+        (3, 10),    // the empty part of the list
+        (40, 1),    // the diff pane
+        (3, 11),    // the help line
+        (200, 200), // outside the terminal
+    ] {
+        assert!(state.apply(click(column, row), &diff, &mut stream));
+        assert_eq!(state, before, "({column}, {row})");
+    }
+}
+
+#[test]
+fn a_click_before_the_first_frame_changes_nothing() {
+    let (_fixture, diff) = diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    assert!(state.apply(click(3, 2), &diff, &mut stream));
+    assert_eq!(state, State::default());
+}
+
+#[test]
+fn a_click_on_a_scrolled_list_selects_the_file_in_that_row() {
+    let fixture = Fixture::new();
+    let names: Vec<String> = (0..20).map(|n| format!("f{n:02}.txt")).collect();
+    for name in &names {
+        fixture.dir.write(name, "old\n");
+    }
+    let paths: Vec<&str> = names.iter().map(String::as_str).collect();
+    fixture.track(&paths);
+    fixture.commit();
+    for name in &names {
+        fixture.dir.write(name, "new\n");
+    }
+    let diff = fixture.diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    state.apply(Input::Resize(80), &diff, &mut stream);
+    // Selecting the last file scrolls the list of the 12-row terminal (9 name rows).
+    for _ in 0..19 {
+        state.apply(Input::NextFile, &diff, &mut stream);
+    }
+    draw_frame(&state, &diff, &mut stream);
+
+    // The first name row is not file 0 any more: 20 files, 9 rows, the last one selected.
+    state.apply(click(3, 1), &diff, &mut stream);
+    assert_eq!(state.file(), 11);
+    state.apply(click(3, 9), &diff, &mut stream);
+    assert_eq!(state.file(), 19);
+}
+
+#[test]
+fn a_wheel_past_the_next_header_changes_the_file_and_stops_at_the_end() {
+    let (_fixture, diff) = diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    let wheel = Input::from_mouse(mouse(MouseEventKind::ScrollDown, 40, 5)).unwrap();
+    for _ in 0..4 {
+        state.apply(wheel, &diff, &mut stream);
+    }
+    assert_eq!((state.file(), state.hunk()), (0, 0));
+    for _ in 0..100 {
+        state.apply(wheel, &diff, &mut stream);
+    }
+    assert_eq!((state.file(), state.scroll()), (1, stream.len() - 1));
 }
