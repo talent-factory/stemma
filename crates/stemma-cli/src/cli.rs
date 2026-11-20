@@ -864,7 +864,8 @@ struct DiffArgs {
 
     /// Browse the files and hunks in a terminal interface instead of printing the diff;
     /// it needs a terminal on standard output and is not available on Windows yet. Press `q` to
-    /// leave
+    /// leave. The mouse wheel scrolls and a click on a file selects it; to select text, hold
+    /// Shift (Option in iTerm2)
     #[arg(long)]
     tui: bool,
 

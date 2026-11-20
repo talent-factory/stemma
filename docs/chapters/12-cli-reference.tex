@@ -1575,6 +1575,9 @@ unterscheidet; sonst mit 0. Ohne diese Option endet er mit 0, auch bei Unterschi
 \item {\bf \type{--tui}:} Zeigt den Diff in einer Terminal-Oberfläche, in der man durch
 die Dateien und Hunks blättert, statt ihn auszugeben (ADR-016). Sie braucht ein Terminal
 auf der Standardausgabe.
+Die Maus ist eingeschaltet: Das Rad blättert um drei Zeilen, ein Klick auf eine Datei in der
+Liste springt zu ihrer Kopfzeile; die Tasten bleiben vollständig. Text markiert man mit der
+Taste, die das Terminal dafür vorsieht (meist Umschalt, in iTerm2 die Wahltaste).
 \item {\bf \type{COMMIT}:} Die Kennung eines Commits, so wie \type{op log} sie schreibt,
 also \type{b3:} gefolgt vom Hash. Ohne Argument vergleicht der Befehl den Working-Copy-Commit
 mit seinem Elternteil. Mit einem Argument vergleicht er diesen Commit mit dem

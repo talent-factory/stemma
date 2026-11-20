@@ -640,9 +640,15 @@ $\mathrm{datei}(s)$ liefert die Datei, zu der die Zeile $s$ gehört. Der Anker d
 $\mathrm{anker}(f, h) = \mathrm{kopf}(f)$ für $h = 0$ und $\mathrm{start}(f, h)$ sonst: die Zeile,
 die oben stehen soll, wenn die Auswahl $(f, h)$ ist.
 
-Eine Eingabe (im Code \type{Input}) ist eine der Tasten aus \in{Tabelle}[tab:tui-transitions],
-oder die Meldung \type{Resize}, die die Schleife schickt, wenn sich die Breite des Terminals
-ändert. Die Funktion $\mathrm{apply}$ bildet einen Zustand und eine Eingabe auf den nächsten
+Eine Eingabe (im Code \type{Input}) ist eine der Tasten oder eine der Mausaktionen aus
+\in{Tabelle}[tab:tui-transitions], oder die Meldung \type{Resize}, die die Schleife schickt,
+wenn sich die Breite des Terminals ändert.
+Die Maus ist wie die Tasten ein einfacher Wert: Ein Klick trägt die Spalte und die Zeile der
+Zelle. Die Oberfläche merkt sich, wo das letzte Bild die Namen der Dateien gezeichnet hat
+($\mathrm{liste}(x, y)$ liefert die Datei, deren Name in der Zelle $(x, y)$ steht), und bildet
+den Klick damit auf eine Datei ab; so brauchen auch die Tests der Maus kein Terminal.
+Die Tastatur bleibt vollständig, die Maus ist nur eine Abkürzung.
+Die Funktion $\mathrm{apply}$ bildet einen Zustand und eine Eingabe auf den nächsten
 Zustand ab.
 Sie liefert zugleich, ob die Oberfläche weiterläuft: Nur das Beenden liefert \type{false}.
 Die Tabelle nennt nur die Teile des Zustands, die sich ändern; die übrigen bleiben.
@@ -712,6 +718,24 @@ $f := \mathrm{datei}(s)$ und $h := 0$ \stopxcell
 \startxcell immer \stopxcell
 \startxcell $s := \max(s - k,\ 0)$; wechselt dadurch die Datei, ist
 $f := \mathrm{datei}(s)$ und $h := 0$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Mausrad $k = 3$ \stopxcell
+\startxcell Rad ab, Rad auf \stopxcell
+\startxcell immer \stopxcell
+\startxcell wie Abwärts und Aufwärts blättern um $k$ \stopxcell
+\stopxrow
+\startxrow
+\startxcell Datei anklicken \stopxcell
+\startxcell linke Maustaste auf den Namen einer Datei in der Liste \stopxcell
+\startxcell $\mathrm{liste}(x, y) = g$ \stopxcell
+\startxcell $f := g$, $h := 0$, $s := \mathrm{kopf}(g)$, wie bei den Tasten für Dateien \stopxcell
+\stopxrow
+\startxrow
+\startxcell \stopxcell
+\startxcell \stopxcell
+\startxcell die Zelle liegt ausserhalb der Namen, oder es gab noch kein Bild \stopxcell
+\startxcell unverändert \stopxcell
 \stopxrow
 \startxrow
 \startxcell Layout wählen \stopxcell
@@ -789,7 +813,11 @@ ratatui ab, ohne zu scheitern.
 Die Oberfläche liest nur. Der Befehl hat den Snapshot vor dem Start gemacht, wie bei der
 Textausgabe, und danach schreibt er nichts mehr ins Repository. Die Oberfläche gibt das Terminal
 bei jedem Ende zurück: beim Beenden, bei einem Fehler und bei einer Panik, für die ratatui einen
-Haken setzt. Gelingt die Rückgabe nach einem Fehler nicht, nennt die Meldung beide Fehler.
+Haken setzt. Die Maus schaltet die Oberfläche mit sich ein und bei jedem dieser Enden wieder aus;
+den Haken für die Panik erweitert sie darum, denn der von ratatui kennt die Maus nicht.
+Text lässt sich im Terminal weiter markieren, solange man die Taste hält, die das Terminal dafür
+vorsieht (meist Umschalt, in iTerm2 die Wahltaste); die Hilfezeile sagt es.
+Gelingt die Rückgabe nach einem Fehler nicht, nennt die Meldung beide Fehler.
 Ein Handler für Signale läuft auf einem anderen Thread und fasst das Terminal nicht an. Er setzt
 eine Marke, die die Oberfläche zehnmal in der Sekunde liest, solange keine Taste kommt. Die
 Oberfläche beendet sich dann und gibt das Terminal zurück, und erst danach endet der Befehl mit

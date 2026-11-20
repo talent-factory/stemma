@@ -9,7 +9,11 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -21,7 +25,7 @@ mod stream;
 
 pub use stream::{LayoutMode, Stream};
 
-/// What the view is asked to do: what a key stands for, or a change of the terminal.
+/// What the view is asked to do: what a key or the mouse stands for, or a change of the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Input {
@@ -47,6 +51,14 @@ pub enum Input {
     SetLayout(LayoutMode),
     /// Switch the wrapping of long lines on or off.
     ToggleWrap,
+    /// The left mouse button went down in this cell of the terminal. A cell on the name of a file
+    /// in the list selects that file, as `J` and `K` do; any other cell changes nothing.
+    Click {
+        /// The column of the cell, counted from the left edge of the terminal.
+        column: u16,
+        /// The row of the cell, counted from the top edge of the terminal.
+        row: u16,
+    },
 }
 
 impl Input {
@@ -71,10 +83,27 @@ impl Input {
             _ => return None,
         })
     }
+
+    /// The input that a mouse event stands for, or `None` for an event that the view does not use:
+    /// the wheel scrolls the stream by three rows, and the left button is a click.
+    pub fn from_mouse(event: MouseEvent) -> Option<Self> {
+        match event.kind {
+            MouseEventKind::ScrollDown => Some(Self::ScrollDown(WHEEL)),
+            MouseEventKind::ScrollUp => Some(Self::ScrollUp(WHEEL)),
+            MouseEventKind::Down(MouseButton::Left) => Some(Self::Click {
+                column: event.column,
+                row: event.row,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// The number of rows that a page key scrolls: a fixed number, not the height of the view.
 const PAGE: u16 = 20;
+
+/// The number of rows that one notch of the mouse wheel scrolls.
+const WHEEL: u16 = 3;
 
 /// The width of the terminal that a state assumes until it is told the real one.
 const DEFAULT_WIDTH: u16 = 80;
@@ -213,6 +242,11 @@ impl State {
                 self.scroll = self.scroll.saturating_sub(usize::from(rows));
                 self.follow(stream);
             }
+            Input::Click { column, row } => {
+                if let Some(file) = stream.file_at_cell(column, row) {
+                    self.select_file(file, stream);
+                }
+            }
         }
         true
     }
@@ -300,6 +334,7 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
         .block(Block::new().borders(Borders::ALL).title("Files"))
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     frame.render_stateful_widget(list, files_area, &mut list_state);
+    stream.set_file_list(Block::bordered().inner(files_area), list_state.offset());
 
     let title = if diff.files().is_empty() {
         "No differences".to_owned()
@@ -332,7 +367,8 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 
     frame.render_widget(
         Paragraph::new(
-            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap",
+            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap · \
+         wheel, click · Shift selects",
         ),
         help,
     );
@@ -350,8 +386,17 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 pub fn run(diff: &Diff, stop: &AtomicBool) -> io::Result<()> {
     // Setting up may have turned on raw mode before it failed.
     let mut terminal = ratatui::try_init().inspect_err(|_| ratatui::restore())?;
-    let result = event_loop(&mut terminal, diff, stop);
-    let restored = ratatui::try_restore();
+    // The hook of ratatui gives back the raw mode and the alternate screen, not the mouse.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        hook(info);
+    }));
+    let result = execute!(io::stdout(), EnableMouseCapture)
+        .and_then(|()| event_loop(&mut terminal, diff, stop));
+    // Off again on every way out, also when turning it on failed half way.
+    let mouse = execute!(io::stdout(), DisableMouseCapture);
+    let restored = ratatui::try_restore().and(mouse);
     match (result, restored) {
         (Err(error), Err(restore_error)) => Err(io::Error::new(
             error.kind(),
@@ -383,14 +428,14 @@ fn event_loop(
             }
         }
         // A resize event only redraws, which the next turn of the loop does.
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-            if let Some(input) = Input::from_key(key) {
-                if !state.apply(input, diff, &mut stream) {
-                    return Ok(());
-                }
+        let input = match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => Input::from_key(key),
+            Event::Mouse(mouse) => Input::from_mouse(mouse),
+            _ => None,
+        };
+        if let Some(input) = input {
+            if !state.apply(input, diff, &mut stream) {
+                return Ok(());
             }
         }
     }

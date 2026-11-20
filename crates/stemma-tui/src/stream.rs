@@ -4,6 +4,7 @@
 //! for each frame; [`Stream::fit`] computes it again only when the width, whether the layout is
 //! split, or the wrapping changes.
 
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use stemma_core::diff::Edit;
@@ -65,6 +66,9 @@ pub struct Stream {
     rows: Vec<Line<'static>>,
     file_starts: Vec<usize>,
     hunk_starts: Vec<Vec<usize>>,
+    /// Where the last frame drew the names of the files: the area inside the border of the list and
+    /// the index of its first name. `None` before the first frame.
+    file_list: Option<(Rect, usize)>,
 }
 
 impl Stream {
@@ -78,7 +82,27 @@ impl Stream {
             rows: Vec::new(),
             file_starts: Vec::new(),
             hunk_starts: Vec::new(),
+            file_list: None,
         }
+    }
+
+    /// Records where the last frame drew the names of the files: `inner` is the area inside the
+    /// border of the list, and `offset` the index of the file in its first row. [`Stream::file_at_cell`]
+    /// maps a click through it.
+    pub(crate) fn set_file_list(&mut self, inner: Rect, offset: usize) {
+        self.file_list = Some((inner, offset));
+    }
+
+    /// The file whose name the last frame drew in the cell (`column`, `row`), or `None` for a cell
+    /// outside the names, and for every cell before the first frame.
+    pub(crate) fn file_at_cell(&self, column: u16, row: u16) -> Option<usize> {
+        let (inner, offset) = self.file_list?;
+        let inside = column >= inner.x
+            && column - inner.x < inner.width
+            && row >= inner.y
+            && row - inner.y < inner.height;
+        let file = offset + usize::from(row.checked_sub(inner.y)?);
+        (inside && file < self.files).then_some(file)
     }
 
     /// Lays the rows out for a pane that is `width` columns wide inside its border, in `layout`,
