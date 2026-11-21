@@ -3105,11 +3105,10 @@ Ergebnis, die ersten zwölf Stellen des Commits, die Basis (\type{on KURZE-ID} o
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Commit oder die
 Basis nicht existiert, wenn die Basis der Commit selbst ist und wenn in einem durchsetzenden
-Repository der Schlüssel fehlt oder nicht signieren kann; die Probe geschieht, bevor der Befehl
-etwas schreibt. Exit-Code 3 meldet einen Eintrag, dessen Beweis fehlt: Das Register kennt den
-Schlüssel nicht für den Akteur, oder der Schlüssel ist nicht aktiv. Der Befehl schreibt dann
-keine Beweisdatei; das Ergebnis ist im Log und zählt nicht, und der Lauf wird noch einmal
-eingetragen.
+Repository der Schlüssel fehlt, nicht signieren kann oder im Register nicht als aktiver Schlüssel
+des Akteurs steht; der Befehl probiert den Schlüssel, bevor er etwas schreibt. Exit-Code 3 meldet
+einen Eintrag, dessen Beweis trotzdem fehlt, etwa weil die Beweisdatei sich nicht schreiben liess.
+Das Ergebnis ist im Log und zählt nicht, und der Lauf wird noch einmal eingetragen.
 Steht nicht fest, ob der Eintrag gesichert ist (auch Exit-Code 3), zeigt \type{check list}, ob er
 im Log steht; fehlt er, wiederholt man den Aufruf.
 
@@ -3159,12 +3158,11 @@ des früheren Halters bleiben.
 Lease hält (\type{take}), wenn der Akteur sie nicht hält oder keine gültige besteht
 (\type{release}), wenn der Akteur kein Owner ist, der Owner die Lease schon hält oder keine
 gültige besteht (\type{override}) und wenn der Schlüssel von \type{override} fehlt oder nicht
-signieren kann. Exit-Code 6 meldet ein gehaltenes Lock der Referenzen. Exit-Code 3 meldet einen
-Eintrag, der geschrieben ist, während die Datei der Lease nicht ersetzt wurde; der nächste Aufruf
-liest die Datei und entscheidet neu. Auch bei einem \type{override} mit Exit-Code 3, dessen Beweis
-fehlt, weil das Register den Schlüssel nicht für den Akteur kennt, hat der Owner die Lease schon
-übernommen: Der Eintrag bleibt ohne Beweis, und ein zweiter Aufruf endet mit Exit-Code 1, weil der
-Owner sie hält.
+signieren kann oder im Register nicht als aktiver Schlüssel des Owners steht; der Befehl probiert
+den Schlüssel, bevor er etwas schreibt. Exit-Code 6 meldet ein gehaltenes Lock der Referenzen.
+Exit-Code 3 meldet einen Eintrag, der geschrieben ist, während die Datei der Lease nicht ersetzt
+wurde oder die Beweisdatei sich nicht schreiben liess; der nächste Aufruf liest die Datei und
+entscheidet neu.
 
 {\bf Beispiele.}
 

@@ -10,9 +10,9 @@
 //! proof that is not written, a lease file that is not replaced, or a merge whose move is not
 //! flushed. What to do after 3 depends on the command: `pr merge` repeated finishes the move,
 //! a repeated `pr approve` or `check record` writes a second entry (the first does not count
-//! without its proof), and a repeated `lease` command decides again from the lease file. A
-//! `lease override` whose proof fails has already taken the lease over, so the repeat is refused
-//! as "already the holder"; the entry stays without a proof.
+//! without its proof), and a repeated `lease` command decides again from the lease file. The key
+//! of `check record` and `lease override` is tried against the register before anything is
+//! written, so exit 3 after the proof step is left for a failure that the probe cannot see.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -445,19 +445,30 @@ fn commit_of(repository: &Repository, revision: &Revision) -> Result<CommitId, R
     found.ok_or_else(|| ReviewError::refused(format!("{revision} names no commit")))
 }
 
-/// Tries the key before an entry is written: a key that cannot sign is a refusal that leaves the
-/// log alone, not an entry without a proof. Whether the register accepts the key for the actor
-/// shows only on the written entry, so that check stays in `prove`.
-fn probe_key(register: Option<&Register>, signing: &Signing) -> Result<(), ReviewError> {
-    if register.is_none() {
+/// Tries the key before an entry is written: a key that cannot sign, or that the register does not
+/// accept as an active key of `actor`, is a refusal that leaves the log and the lease file alone,
+/// not an entry without a proof. The probe is signed in the namespace of an approval, because the
+/// register checks a new approval against the keys of the actor without an entry number.
+fn probe_key(
+    register: Option<&Register>,
+    signing: &Signing,
+    actor: &Actor,
+) -> Result<(), ReviewError> {
+    let Some(register) = register else {
         return Ok(());
-    }
+    };
     let key = signing.key.as_deref().ok_or_else(missing_key)?;
-    signature::sign(&SshKeygen::new(key), PayloadKind::LogEntry, b"probe")
-        .map(|_| ())
-        .map_err(|error| {
-            ReviewError::refused(format!("the key cannot sign: {error}; nothing is written"))
-        })
+    let refuse = |why: String| ReviewError::refused(format!("{why}; nothing is written"));
+    let probe = b"probe";
+    let signature = signature::sign(&SshKeygen::new(key), PayloadKind::Approval, probe)
+        .map_err(|error| refuse(format!("the key cannot sign: {error}")))?;
+    let verified = register
+        .verify_approval(actor, probe, &signature, None)
+        .map_err(|error| refuse(format!("the key does not prove {actor}: {error}")))?;
+    if !register.is_active_key(&Identity::of(actor), verified.key()) {
+        return Err(refuse(format!("the key of {actor} is not active")));
+    }
+    Ok(())
 }
 
 /// Signs the hash of the entry with the key of `actor`, checks the signature and the key against
@@ -716,7 +727,7 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
     let who = actor(args.common.actor)?;
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
-    probe_key(register.as_ref(), &args.signing)?;
+    probe_key(register.as_ref(), &args.signing, &who)?;
     let commit = commit_of(&repository, &args.commit)?;
     let base = args
         .base
@@ -844,7 +855,7 @@ fn lease_override(args: LeaseOverrideArgs, out: &mut dyn Write) -> Result<(), Cl
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
     let register = require_leases(register.as_ref())?;
-    probe_key(Some(register), &args.signing)?;
+    probe_key(Some(register), &args.signing, &who)?;
     let claimed = repository
         .override_lease(
             &branch,

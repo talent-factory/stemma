@@ -568,7 +568,7 @@ fn bad_arguments_are_refused_before_anything_is_written() {
 }
 
 #[test]
-fn a_check_signed_with_a_key_of_another_actor_writes_no_proof_and_verify_stays_clean() {
+fn a_check_signed_with_a_key_of_another_actor_is_refused_and_writes_nothing() {
     let keys = Dir::new();
     let (Some(owner), Some(other)) = (
         generate_key(keys.path(), "owner"),
@@ -577,23 +577,24 @@ fn a_check_signed_with_a_key_of_another_actor_writes_no_proof_and_verify_stays_c
         return;
     };
     let dir = enforcing(&owner, &other);
+    let before = ok(dir.path(), &["op", "log"]).stdout;
     let result = run(
         dir.path(),
         &[
             "check", "record", "feat", "--result", "pass", "--key", &owner, "--actor", OTHER,
         ],
     );
-    assert_eq!(result.code, 3, "{}", result.stdout);
+    assert_eq!(result.code, 1, "{}", result.stdout);
     assert!(
-        result.stderr.contains("no proof is written"),
+        result.stderr.contains("nothing is written"),
         "{}",
         result.stderr
     );
+    assert_eq!(ok(dir.path(), &["op", "log"]).stdout, before);
     assert_eq!(ok(dir.path(), &["op", "verify"]).code, 0);
 }
-
 #[test]
-fn an_override_with_the_key_of_another_actor_takes_the_lease_without_a_proof() {
+fn an_override_with_the_key_of_another_actor_is_refused_and_the_lease_stays() {
     let keys = Dir::new();
     let (Some(owner), Some(other)) = (
         generate_key(keys.path(), "owner"),
@@ -603,23 +604,23 @@ fn an_override_with_the_key_of_another_actor_takes_the_lease_without_a_proof() {
     };
     let dir = enforcing(&owner, &other);
     ok(dir.path(), &["lease", "take", "feat", "--actor", OTHER]);
+    let before = ok(dir.path(), &["op", "log"]).stdout;
     let result = run(
         dir.path(),
         &[
             "lease", "override", "feat", "--reason", "stuck", "--key", &other, "--actor", ACTOR,
         ],
     );
-    assert_eq!(result.code, 3, "{}", result.stdout);
+    assert_eq!(result.code, 1, "{}", result.stdout);
     assert!(
-        result.stderr.contains("no proof is written"),
+        result.stderr.contains("nothing is written"),
         "{}",
         result.stderr
     );
-    assert_eq!(ok(dir.path(), &["op", "verify"]).code, 0);
-    // The core replaced the lease file before the proof failed; the repeat finds the holder.
+    assert_eq!(ok(dir.path(), &["op", "log"]).stdout, before);
     let shown = ok(dir.path(), &["lease", "show", "feat"]);
     assert!(
-        shown.stdout.contains("held by human daniel"),
+        shown.stdout.contains("held by human other"),
         "{}",
         shown.stdout
     );
