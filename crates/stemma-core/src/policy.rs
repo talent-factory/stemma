@@ -7,8 +7,9 @@
 //! touches.
 //!
 //! The policy is read in the version of the base commit, not from the working directory, so this
-//! module only reads bytes. Which commit to read, and the question to the authorizer, belong to the
-//! slices that enforce the rules.
+//! module only reads bytes. Which commit to read is decided by `Repository::policy_at`
+//! (`repository/rules.rs`); the question to the authorizer belongs to the slices that enforce
+//! the rules.
 //!
 //! # Format
 //!
@@ -28,9 +29,9 @@
 //! | `weakened-level N` | A change that weakens tests has level `N` (2 or 3) at least. |
 //!
 //! The pattern is the pattern language of ADR-012, with one difference: the name `.stemmaignore`
-//! is allowed, since the policy gives it level 2. `lease` stands at most once, `approvals` once
-//! for each level, and `operation` once for each name. `weakened-level` stands at most once, and
-//! `assertion` once for each path.
+//! is allowed, since the policy gives it level 2. `lease`, `reservation`, and `max-unverified`
+//! stand at most once, `approvals` once for each level, and `operation` once for each name.
+//! `weakened-level` stands at most once, and `assertion` once for each path.
 //!
 //! # Rules
 //!
@@ -1575,6 +1576,20 @@ mod tests {
         assert!(message("stemma-policy 1\nreservation 3\nreservation 4\n").contains("set again"));
         assert!(message("stemma-policy 1\nmax-unverified\n").contains("max-unverified COUNT"));
         assert!(message("stemma-policy 1\nreservation x\n").contains("is not a number"));
+        // The edges of both ranges are accepted.
+        for value in [1, 100] {
+            let edge = policy(&format!("stemma-policy 1\nreservation {value}\n"));
+            assert_eq!(edge.reservation_after(), value);
+        }
+        for value in [1, 1000] {
+            let edge = policy(&format!("stemma-policy 1\nmax-unverified {value}\n"));
+            assert_eq!(edge.max_unverified(), value);
+        }
+        // A value that is not a plain count is refused, and so is a field too many.
+        for text in ["-1", "+5", "4294967296", "3 4"] {
+            let source = format!("stemma-policy 1\nreservation {text}\n");
+            assert!(Policy::parse(source.as_bytes()).is_err(), "{text}");
+        }
     }
 
     #[test]

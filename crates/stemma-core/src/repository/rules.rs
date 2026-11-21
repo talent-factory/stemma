@@ -5,14 +5,17 @@
 //! whoever changes a policy is subject to the policy that stands before the change.
 //!
 //! - **Open mode** (no register): a repository without a policy file has the built-in default
-//!   ([`Policy::default`]): every path has level 2, and the approvals are not enforced, as the
-//!   gate asks for none (ADR-011).
+//!   ([`Policy::default`]): every path has level 2, except the files that the floor of the core
+//!   keeps at level 3 (the policy file, the register), and the approvals are not enforced, as
+//!   the gate asks for none (ADR-011).
 //! - **Enforcing mode** (a register): the policy is required. A missing, unreadable, or invalid
 //!   file, one with an unknown version among them, is an error that names the reason, and the
 //!   caller refuses the merge. Nothing falls back to the default there.
 //!
-//! A policy file that exists but is not valid is an error in the open mode as well: a repository
-//! that wrote a policy meant it, and a rule that is silently not applied is worse than a refusal.
+//! Only a *missing* file (or a missing `main`) depends on the mode. A policy file that exists but
+//! is not valid, is not a file, or cannot be read is an error in the open mode as well: a
+//! repository that wrote a policy meant it, and a rule that is silently not applied is worse
+//! than a refusal.
 
 use std::error::Error;
 use std::fmt;
@@ -95,27 +98,37 @@ fn unreadable(error: impl fmt::Display) -> PolicyError {
     PolicyError::Unreadable(error.to_string())
 }
 
+fn not_in_store(what: &str, id: impl fmt::Display) -> PolicyError {
+    unreadable(format!("{what} {id} is not in the store"))
+}
+
 impl Repository {
     /// The policy of a base commit: the file [`policy::FILE_NAME`] in its root.
     ///
     /// `enforcing` says whether the repository is in the enforcing mode. Without a file the open
-    /// mode gets the built-in default, and the enforcing mode an error (see the module).
+    /// mode gets the built-in default, and the enforcing mode an error (see the module). The
+    /// callers derive it from the [`Mode`] of the repository; the function is not public so that
+    /// no caller can pass a flag that disagrees with the register.
     ///
     /// # Errors
     ///
     /// [`PolicyError::Missing`] for an enforcing repository without a file,
     /// [`PolicyError::NotAFile`], [`PolicyError::Invalid`] for a file that does not parse, and
     /// [`PolicyError::Unreadable`] if an object cannot be read.
-    pub fn policy_at(&self, base: &CommitId, enforcing: bool) -> Result<Policy, PolicyError> {
+    pub(crate) fn policy_at(
+        &self,
+        base: &CommitId,
+        enforcing: bool,
+    ) -> Result<Policy, PolicyError> {
         let store = self.objects();
         let commit = store
             .get_commit(base)
             .map_err(unreadable)?
-            .ok_or_else(|| unreadable("the base commit is not in the store"))?;
+            .ok_or_else(|| not_in_store("the base commit", base))?;
         let tree = store
             .get_tree(&commit.tree())
             .map_err(unreadable)?
-            .ok_or_else(|| unreadable("the tree of the base commit is not in the store"))?;
+            .ok_or_else(|| not_in_store("the tree of the base commit", commit.tree()))?;
         let Some(entry) = tree
             .entries()
             .iter()
@@ -131,7 +144,7 @@ impl Repository {
         let raw = store
             .get(&id)
             .map_err(|error| unreadable(ReadError::Store(Box::new(error))))?
-            .ok_or_else(|| unreadable("the file is not in the store"))?;
+            .ok_or_else(|| not_in_store("the policy file", id))?;
         if raw.kind() != Kind::Blob || entry.mode() == EntryMode::Symlink {
             return Err(PolicyError::NotAFile);
         }
@@ -146,7 +159,7 @@ impl Repository {
     ///
     /// The errors of [`policy_at`](Self::policy_at), [`PolicyError::NoBase`], and
     /// [`PolicyError::Refs`].
-    pub fn policy_of_main(&self, enforcing: bool) -> Result<Policy, PolicyError> {
+    pub(crate) fn policy_of_main(&self, enforcing: bool) -> Result<Policy, PolicyError> {
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         match self.refs().branch(&main).map_err(PolicyError::Refs)? {
             Some(tip) => self.policy_at(&tip, enforcing),
@@ -161,9 +174,9 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// [`LevelError::Diff`] if a tree cannot be read, and [`LevelError::Path`] for a path that
-    /// the policy cannot judge (too deep, or a name that a tree refuses). Neither is a lower
-    /// level.
+    /// [`LevelError::Diff`] if a tree cannot be read, [`LevelError::Path`] for a path that the
+    /// policy cannot judge (too deep, or a name that a tree refuses), and
+    /// [`LevelError::NoChange`] if no file differs. None of them is a lower level.
     pub fn level_of_change(
         &self,
         policy: &Policy,
@@ -195,8 +208,10 @@ impl Repository {
     /// [`claim_lease`](Self::claim_lease) with the duration of the lease from the policy of the
     /// tip of `main` (the line `lease`, or 60 minutes).
     ///
-    /// `mode` is the mode of the repository ([`Mode::of`]). In an enforcing repository a policy
-    /// that cannot be read refuses the claim ([`LeaseError::Policy`]) and nothing is written.
+    /// `mode` is the mode of the repository ([`Mode::of`]); the claim is only as strict as the
+    /// mode the caller passes. A policy that cannot be used refuses the claim
+    /// ([`LeaseError::Policy`]) and nothing is written: in either mode a file that is invalid,
+    /// not a file, or unreadable, and in an enforcing repository also a missing file.
     ///
     /// # Errors
     ///

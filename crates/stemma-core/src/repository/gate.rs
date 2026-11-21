@@ -166,7 +166,7 @@ pub enum GateError {
     /// The log could not be read or written.
     Log(OpLogError),
     /// The policy of the base commit cannot be used: it is invalid, of an unknown version, or not
-    /// a file (in either mode), or it is missing or unreadable in an enforcing repository. The
+    /// a file (in either mode), or it is missing in an enforcing repository, or unreadable. The
     /// merge is refused, and nothing was written but objects.
     Policy(PolicyError),
     /// The level of the change cannot be told. The merge is refused.
@@ -396,13 +396,16 @@ impl Repository {
     /// which results of checks count (the register of an enforcing repository).
     ///
     /// In the open mode a repository without a policy file has the default policy: every path has
-    /// level 2. In the enforcing mode a policy that is missing, unreadable, or of an unknown
-    /// version refuses every merge with [`GateError::Policy`], which names the reason. The policy
-    /// is read again for every attempt, so a change that moves `main` onto a new policy is judged
-    /// by the policy of the tip it lands on. The values `reservation_after` and `max_unverified`
-    /// of the same policy ([`policy_of_main`](Self::policy_of_main)) are the bounds that the
-    /// slices for the reservation and the unverified window apply; the gate does not apply
-    /// them yet.
+    /// level 2, except the files that the floor of the core keeps at level 3. In the enforcing
+    /// mode a policy that is missing refuses every merge that is not already on `main`, and an
+    /// invalid, unknown-version, non-file, or unreadable policy refuses in both modes
+    /// ([`GateError::Policy`] names the reason). The policy is read again for every attempt: a
+    /// change that carries a new policy is judged by the policy of the tip it merges onto, not by
+    /// its own. A pull request that is already on `main` (the repair path) reads no policy, as
+    /// it moves nothing. The values `reservation_after` and `max_unverified` of the same policy
+    /// (`policy_of_main`) are bounds that STEMMA-242 applies; the gate
+    /// does not apply them yet. `mode` is only as strict as the caller makes it: derive it with
+    /// [`Mode::of`].
     ///
     /// # Errors
     ///
@@ -1662,6 +1665,125 @@ mod tests {
 
         let merged = gate_by_policy(&f, &Mode::Enforcing(register)).unwrap();
 
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    /// Signs the entry as `ana` and writes the proof, so that it counts in an enforcing repository.
+    fn prove(f: &Fixture, entry: &Entry) {
+        let signature = signature::sign(
+            &Seeded::new(2),
+            PayloadKind::LogEntry,
+            entry.hash().unwrap().to_string().as_bytes(),
+        )
+        .unwrap();
+        write_proof(
+            &f.repository.metadata_dir(),
+            entry.number(),
+            &ProofFile {
+                actor: human("ana"),
+                signature,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_policy_is_read_again_when_main_moves_between_the_attempts() {
+        // The first tip says level 0 for `a.txt`, so a result for it is enough. While the gate
+        // waits for the lock, `main` moves onto a policy with level 3. The second attempt must
+        // judge by that policy, and a result for the old tip no longer counts.
+        let f = fixture("zero\n");
+        let first = land_policy(&f, "stemma-policy 1\nlevel 0 a.txt\n");
+        f.check(first);
+        let path = f.path();
+        let second = commit_of(
+            &f.repository,
+            first,
+            &[
+                ("b.txt", "b\n"),
+                ("c.txt", "zero\n"),
+                (crate::policy::FILE_NAME, "stemma-policy 1\nlevel 3 a.txt\n"),
+            ],
+            "zoe",
+        );
+        pause::queue(move |_| {
+            let repository = Repository::open(&path).unwrap();
+            set_branch(&repository, "main", Some(first), second);
+        });
+
+        let error = gate_by_policy(&f, &Mode::Open).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                GateError::NotChecked {
+                    level: RiskLevel::Three,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(f.main(), second);
+    }
+
+    #[test]
+    fn an_enforcing_repository_refuses_when_main_moves_onto_a_commit_without_a_policy() {
+        // Attempt 1 has a valid policy and a signed result. Then `main` moves onto a commit that
+        // has no policy file. Attempt 2 must refuse: nothing falls back to the old policy.
+        let f = fixture("zero\n");
+        let first = land_policy(&f, "stemma-policy 1\nlevel 0 a.txt\n");
+        let entry = f.record(f.head, Some(first), CheckResult::Pass, "ana");
+        prove(&f, &entry);
+        let path = f.path();
+        let second = commit_of(
+            &f.repository,
+            first,
+            &[("b.txt", "b\n"), ("c.txt", "zero\n")],
+            "zoe",
+        );
+        pause::queue(move |_| {
+            let repository = Repository::open(&path).unwrap();
+            set_branch(&repository, "main", Some(first), second);
+        });
+
+        let error = gate_by_policy(&f, &Mode::Enforcing(register())).unwrap_err();
+
+        assert!(
+            matches!(error, GateError::Policy(PolicyError::Missing)),
+            "{error}"
+        );
+        assert_eq!(f.main(), second);
+        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+    }
+
+    #[test]
+    fn a_pull_request_that_main_already_holds_is_recorded_without_reading_the_policy() {
+        // The first call lands in the open mode and is not flushed. The second call is
+        // enforcing, and `main` has no policy file: the repair moves nothing, so it needs none.
+        let f = fixture("zero\n");
+        f.check(f.base);
+        let denied = crate::store::fail_flush_of(&f.path().join(".stemma/refs/heads"));
+        let error = gate_by_policy(&f, &Mode::Open).unwrap_err();
+        drop(denied);
+        assert!(matches!(error, GateError::NotDurable { .. }), "{error}");
+
+        let repaired = gate_by_policy(&f, &Mode::Enforcing(register())).unwrap();
+
+        assert!(repaired.repaired);
+        assert!(!f.repository.pull_requests().unwrap()[0].is_open());
+    }
+
+    #[test]
+    fn the_register_of_the_mode_decides_which_results_count() {
+        // The same unsigned result: it counts in the open mode and not in the enforcing mode.
+        let f = fixture("zero\n");
+        land_policy(&f, "stemma-policy 1\nlevel 0 a.txt\n");
+        f.record(f.head, Some(f.main()), CheckResult::Pass, "ana");
+
+        let error = gate_by_policy(&f, &Mode::Enforcing(register())).unwrap_err();
+        assert!(matches!(error, GateError::NotChecked { .. }), "{error}");
+
+        let merged = gate_by_policy(&f, &Mode::Open).unwrap();
         assert_eq!(f.main(), merged.commit);
     }
 

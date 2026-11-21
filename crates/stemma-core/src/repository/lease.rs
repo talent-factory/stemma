@@ -363,8 +363,9 @@ pub enum LeaseError {
         /// The actor who tried.
         actor: Box<Actor>,
     },
-    /// The policy of the base commit that names the duration cannot be used (an enforcing
-    /// repository). Nothing was written.
+    /// The policy of the base commit that names the duration cannot be used: it is invalid, of
+    /// an unknown version, or not a file (in either mode), or it is missing or unreadable in an
+    /// enforcing repository. Nothing was written.
     Policy(PolicyError),
     /// The file system failed.
     Io {

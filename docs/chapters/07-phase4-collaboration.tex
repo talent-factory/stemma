@@ -691,20 +691,28 @@ Wer die Policy ändert, steht damit noch unter der Policy davor.
 Das Gate liest sie bei jedem Versuch neu, denn eine Bewegung von \type{main} kann eine neue
 Policy bringen; die Stufe ist die höchste Stufe der Dateien, in denen sich der Merge-Tree vom
 Tree der Spitze unterscheidet.
-Der offene Modus und der erzwingende Modus unterscheiden sich im Fehlerfall:
+Auch eine geänderte Dateirechte-Einstellung zählt als Änderung der Datei,
+und ein Verschieben zählt als Löschen und Hinzufügen, es berührt also beide Pfade.
+Der offene Modus und der erzwingende Modus unterscheiden sich nur, wenn die Datei fehlt:
 \startitemize
-\item Im offenen Modus gilt ohne Datei die eingebaute Policy: jeder Pfad hat Stufe 2, und die
-Freigaben werden nicht erzwungen.
+\item Im offenen Modus gilt ohne Datei die eingebaute Policy: jeder Pfad hat Stufe 2, ausser den
+Dateien, die der Kern immer auf Stufe 3 hält (die Policy-Datei und das Register),
+und die Freigaben werden nicht erzwungen.
 \item Im erzwingenden Modus ist die Datei Pflicht.
-Fehlt sie, ist sie keine Datei, nicht lesbar oder von unbekannter Version, lehnt das Gate jeden
-Merge ab (\type{GateError::Policy}), und die Meldung nennt den Grund.
+Fehlt sie, lehnt das Gate jeden Merge ab (\type{GateError::Policy}),
+und die Meldung nennt den Grund.
 Auf die eingebaute Policy fällt dort nichts zurück.
-\item Eine Datei, die vorhanden, aber ungültig ist, lehnt das Gate in beiden Modi ab:
+\item Eine Datei, die vorhanden, aber ungültig, von unbekannter Version, keine Datei oder nicht
+lesbar ist, lehnt das Gate in beiden Modi ab:
 Eine Regel, die still nicht gilt, ist schlimmer als eine Ablehnung.
 \stopitemize
+Ein Pull Request, der schon auf \type{main} liegt, braucht die Policy nicht:
+Das Gate bewegt dort nichts und trägt nur den Eintrag nach.
+Hat die Spitze von \type{main} eine ungültige Policy, lehnt das Gate auch den Merge ab, der sie
+reparieren würde; einen eigenen Reparaturweg gibt es noch nicht.
 Die Werte \type{reservation} und \type{max-unverified} liefert dieselbe Policy
 (\type{Policy::reservation_after}, \type{Policy::max_unverified});
-die Schranken selbst setzt eine eigene Scheibe um.
+die Schranken selbst setzt eine spätere Ausbaustufe um.
 Die Dauer der Lease liest \type{claim_lease_by_policy} aus der Zeile \type{lease}.
 
 Ein Auszug aus dem Entwurf der \type{.stemma-policy} dieses Repositorys
