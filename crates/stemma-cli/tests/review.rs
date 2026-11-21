@@ -112,11 +112,17 @@ fn a_failed_check_does_not_count() {
             "check", "record", "feat", "--base", "main", "--result", "fail", "--actor", OTHER,
         ],
     );
+    ok(dir.path(), &["pr", "approve", &number, "--actor", OTHER]);
     let result = run(
         dir.path(),
         &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
     );
     assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("no result of a check counts"),
+        "{}",
+        result.stderr
+    );
     let checks = ok(dir.path(), &["check", "list"]);
     assert!(checks.stdout.contains(" fail "), "{}", checks.stdout);
 }
@@ -407,7 +413,7 @@ fn open_pull_as(dir: &Path, actor: &str) -> String {
 }
 
 #[test]
-fn a_signature_that_fails_after_the_entry_ends_with_code_3_and_the_entry_stays() {
+fn a_key_that_cannot_sign_is_refused_before_the_entry_is_written() {
     let keys = Dir::new();
     let (Some(owner), Some(other)) = (
         generate_key(keys.path(), "owner"),
@@ -417,6 +423,7 @@ fn a_signature_that_fails_after_the_entry_ends_with_code_3_and_the_entry_stays()
     };
     let dir = enforcing(&owner, &other);
     let missing = keys.path().join("missing");
+    let before = ok(dir.path(), &["op", "log"]).stdout;
     let result = run(
         dir.path(),
         &[
@@ -431,9 +438,13 @@ fn a_signature_that_fails_after_the_entry_ends_with_code_3_and_the_entry_stays()
             OTHER,
         ],
     );
-    assert_eq!(result.code, 3, "{}", result.stdout);
-    assert!(result.stderr.contains("is written"), "{}", result.stderr);
-    assert!(ok(dir.path(), &["check", "list"]).stdout.contains(" pass "));
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("nothing is written"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(ok(dir.path(), &["op", "log"]).stdout, before);
 }
 
 #[test]
@@ -579,4 +590,37 @@ fn a_check_signed_with_a_key_of_another_actor_writes_no_proof_and_verify_stays_c
         result.stderr
     );
     assert_eq!(ok(dir.path(), &["op", "verify"]).code, 0);
+}
+
+#[test]
+fn an_override_with_the_key_of_another_actor_takes_the_lease_without_a_proof() {
+    let keys = Dir::new();
+    let (Some(owner), Some(other)) = (
+        generate_key(keys.path(), "owner"),
+        generate_key(keys.path(), "other"),
+    ) else {
+        return;
+    };
+    let dir = enforcing(&owner, &other);
+    ok(dir.path(), &["lease", "take", "feat", "--actor", OTHER]);
+    let result = run(
+        dir.path(),
+        &[
+            "lease", "override", "feat", "--reason", "stuck", "--key", &other, "--actor", ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 3, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("no proof is written"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(ok(dir.path(), &["op", "verify"]).code, 0);
+    // The core replaced the lease file before the proof failed; the repeat finds the holder.
+    let shown = ok(dir.path(), &["lease", "show", "feat"]);
+    assert!(
+        shown.stdout.contains("held by human daniel"),
+        "{}",
+        shown.stdout
+    );
 }

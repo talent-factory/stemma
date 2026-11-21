@@ -1,15 +1,18 @@
 //! The commands of the review path: `pr`, `check`, and `lease` (ADR-004, ADR-019).
 //!
 //! Each command is a thin layer over one operation of the core. The core decides and writes the
-//! entry; this module reads the arguments, loads the register of an enforcing repository, signs
-//! where the rule asks for a signature, and prints the result.
+//! entry; this module reads the arguments, loads the register of an enforcing repository, and
+//! prints the result. `check record` and `lease override` also sign the entry and write its proof
+//! (`prove`); `pr approve` hands a signer to the core.
 //!
 //! Exit codes follow the rest of the program: 1 for a refusal, 5 for damage, 6 for a lock that is
 //! held (try again), and 3 if an entry is written and the rest of the command could not finish: a
 //! proof that is not written, a lease file that is not replaced, or a merge whose move is not
 //! flushed. What to do after 3 depends on the command: `pr merge` repeated finishes the move,
-//! while a repeated `pr approve` or `check record` writes a second entry (the first does not
-//! count without its proof), and a repeated `lease` command decides again from the lease file.
+//! a repeated `pr approve` or `check record` writes a second entry (the first does not count
+//! without its proof), and a repeated `lease` command decides again from the lease file. A
+//! `lease override` whose proof fails has already taken the lease over, so the repeat is refused
+//! as "already the holder"; the entry stays without a proof.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -28,9 +31,7 @@ use stemma_core::policy::RiskLevel;
 use stemma_core::pull::{NotCounted, PullState};
 use stemma_core::refs::BranchName;
 use stemma_core::register::{self, Identity, Mode, ProofFile, Register};
-use stemma_core::repository::{
-    CheckError, GateError, LeaseError, PullError, Repository, Retry, Revision,
-};
+use stemma_core::repository::{CheckError, GateError, LeaseError, PullError, Repository, Revision};
 use stemma_core::signature::{self, PayloadKind, SshKeygen};
 use stemma_core::store::{ObjectStore, StoreError};
 use stemma_core::{Actor, AllowAll};
@@ -88,74 +89,104 @@ impl From<ReviewError> for CliError {
     }
 }
 
-/// A log error that says the entry is in the log although it is not known to be flushed: the
-/// command is not repeated (a second attempt writes a second entry).
+/// A log error that says the entry may be in the log although its flush is not confirmed.
 fn not_flushed(error: &OpLogError) -> bool {
     matches!(error, OpLogError::NotFlushed { .. })
 }
 
-fn pull_error(error: PullError) -> ReviewError {
-    let kind = match &error {
+// The core classifies the errors of the storage layers, but not the errors of the review path that
+// wrap them. These functions look through the wrapping, so that damage ends with 5 and a held lock
+// with 6 wherever it surfaces.
+
+fn pull_kind(error: &PullError) -> FailureKind {
+    match error {
         PullError::Refs(inner) => inner.kind(),
         PullError::Log(inner) => inner.kind(),
+        PullError::History(inner) => inner.kind(),
+        PullError::Store(inner) => inner.kind(),
+        PullError::Lease(inner) => lease_kind(inner),
         _ => FailureKind::Other,
-    };
+    }
+}
+
+fn check_kind(error: &CheckError) -> FailureKind {
+    match error {
+        CheckError::Refs(inner) => inner.kind(),
+        CheckError::Log(inner) => inner.kind(),
+        CheckError::Store(inner) => inner.kind(),
+        CheckError::History(inner) => inner.kind(),
+        _ => FailureKind::Other,
+    }
+}
+
+fn lease_kind(error: &LeaseError) -> FailureKind {
+    match error {
+        LeaseError::Refs(inner) => inner.kind(),
+        LeaseError::Log(inner) => inner.kind(),
+        LeaseError::Corrupt { .. } => FailureKind::Damaged,
+        _ => FailureKind::Other,
+    }
+}
+
+fn gate_kind(error: &GateError) -> FailureKind {
+    match error {
+        GateError::Refs(inner) => inner.kind(),
+        GateError::Log(inner) => inner.kind(),
+        GateError::Store(inner) => inner.kind(),
+        GateError::History(inner) => inner.kind(),
+        GateError::Merge(inner) => inner.kind(),
+        GateError::Update(inner) => inner.kind(),
+        GateError::Pull(inner) => pull_kind(inner),
+        GateError::Check(inner) => check_kind(inner),
+        _ => FailureKind::Other,
+    }
+}
+
+fn pull_error(error: PullError) -> ReviewError {
     if matches!(error, PullError::ProofNotWritten { .. })
         || matches!(&error, PullError::Log(inner) if not_flushed(inner))
     {
         return ReviewError::incomplete(error.to_string());
     }
-    ReviewError::of_kind(error.to_string(), kind)
+    ReviewError::of_kind(error.to_string(), pull_kind(&error))
 }
 
 fn gate_error(error: GateError) -> ReviewError {
-    let kind = match &error {
-        GateError::Refs(inner) => inner.kind(),
-        GateError::Log(inner) => inner.kind(),
-        _ => FailureKind::Other,
-    };
-    if matches!(
-        &error,
-        GateError::Contended {
-            last: Retry::Locked,
-            ..
-        }
-    ) {
+    // A lock that is held, or a `main` that moves while the gate works: try again.
+    let contended = matches!(&error, GateError::Contended { .. });
+    if contended {
         return ReviewError::of_kind(error.to_string(), FailureKind::Locked);
     }
-    if matches!(
-        error,
-        GateError::MoveFailed { .. }
-            | GateError::PullNotRecorded { .. }
-            | GateError::NotDurable { .. }
-    ) || matches!(&error, GateError::Log(inner) if not_flushed(inner))
+    // The repair path records the merge itself, so its flush error arrives as `Pull`.
+    let unflushed = match &error {
+        GateError::Log(inner) => not_flushed(inner),
+        GateError::Pull(PullError::Log(inner)) => not_flushed(inner),
+        _ => false,
+    };
+    if unflushed
+        || matches!(
+            error,
+            GateError::MoveFailed { .. }
+                | GateError::PullNotRecorded { .. }
+                | GateError::NotDurable { .. }
+        )
     {
         return ReviewError::incomplete(error.to_string());
     }
-    ReviewError::of_kind(error.to_string(), kind)
+    ReviewError::of_kind(error.to_string(), gate_kind(&error))
 }
 
 fn check_error(error: CheckError) -> ReviewError {
-    let kind = match &error {
-        CheckError::Refs(inner) => inner.kind(),
-        CheckError::Log(inner) => inner.kind(),
-        _ => FailureKind::Other,
-    };
     if matches!(&error, CheckError::Log(inner) if not_flushed(inner)) {
         return ReviewError::incomplete(format!(
-            "{error}; the entry may be in the log, so do not repeat the command"
+            "{error}; look at `check list`, and repeat the command if the entry is not there"
         ));
     }
-    ReviewError::of_kind(error.to_string(), kind)
+    ReviewError::of_kind(error.to_string(), check_kind(&error))
 }
 
 fn lease_error(error: LeaseError) -> ReviewError {
-    let kind = match &error {
-        LeaseError::Refs(inner) => inner.kind(),
-        LeaseError::Log(inner) => inner.kind(),
-        _ => FailureKind::Other,
-    };
-    // Only a failed write follows an entry; a failed read wrote nothing and can be repeated.
+    // Only a failed write can follow an entry; a failed read wrote nothing.
     let wrote = match &error {
         LeaseError::Io { operation, .. } => !operation.starts_with("read"),
         LeaseError::Log(inner) => not_flushed(inner),
@@ -163,11 +194,11 @@ fn lease_error(error: LeaseError) -> ReviewError {
     };
     if wrote {
         return ReviewError::incomplete(format!(
-            "{error}; the entry may be in the log without a proof or a lease file, so do not \
-             repeat the command"
+            "{error}; an entry may be in the log without the lease file following it: repeat \
+             the command, which decides again from the lease file"
         ));
     }
-    ReviewError::of_kind(error.to_string(), kind)
+    ReviewError::of_kind(error.to_string(), lease_kind(&error))
 }
 
 /// The directory of the repository and the actor, the two arguments that every command has.
@@ -184,7 +215,7 @@ pub(super) struct Common {
 
     /// Who runs the command: `human <id>` or
     /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
-    /// environment sets STEMMA_ACTOR
+    /// environment sets STEMMA_ACTOR (the commands that only read ignore it)
     #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
     actor: Option<OsString>,
 }
@@ -387,7 +418,7 @@ fn register_of(repository: &Repository) -> Result<Option<Register>, ReviewError>
 }
 
 /// The commit that a revision names: a commit ID that the store holds, or the tip of a branch or
-/// a tag.
+/// a tag. A bare name that is both a branch and a tag is refused; `heads/` or `tags/` decide.
 fn commit_of(repository: &Repository, revision: &Revision) -> Result<CommitId, ReviewError> {
     let refs = repository.refs();
     let read =
@@ -414,8 +445,25 @@ fn commit_of(repository: &Repository, revision: &Revision) -> Result<CommitId, R
     found.ok_or_else(|| ReviewError::refused(format!("{revision} names no commit")))
 }
 
-/// Signs the hash of the entry with the key of `actor` and writes the proof file, as the core asks
-/// the caller of an entry whose rule depends on who acts. Nothing is done in an open repository.
+/// Tries the key before an entry is written: a key that cannot sign is a refusal that leaves the
+/// log alone, not an entry without a proof. Whether the register accepts the key for the actor
+/// shows only on the written entry, so that check stays in `prove`.
+fn probe_key(register: Option<&Register>, signing: &Signing) -> Result<(), ReviewError> {
+    if register.is_none() {
+        return Ok(());
+    }
+    let key = signing.key.as_deref().ok_or_else(missing_key)?;
+    signature::sign(&SshKeygen::new(key), PayloadKind::LogEntry, b"probe")
+        .map(|_| ())
+        .map_err(|error| {
+            ReviewError::refused(format!("the key cannot sign: {error}; nothing is written"))
+        })
+}
+
+/// Signs the hash of the entry with the key of `actor`, checks the signature and the key against
+/// the register, and only then writes the proof file, as the core asks the caller of an entry whose
+/// rule depends on who acts. Every failure is exit 3, because the entry is written already.
+/// Nothing is done in an open repository.
 fn prove(
     repository: &Repository,
     register: Option<&Register>,
@@ -668,9 +716,7 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
     let who = actor(args.common.actor)?;
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
-    if register.is_some() && args.signing.key.is_none() {
-        return Err(missing_key().into());
-    }
+    probe_key(register.as_ref(), &args.signing)?;
     let commit = commit_of(&repository, &args.commit)?;
     let base = args
         .base
@@ -798,9 +844,7 @@ fn lease_override(args: LeaseOverrideArgs, out: &mut dyn Write) -> Result<(), Cl
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
     let register = require_leases(register.as_ref())?;
-    if args.signing.key.is_none() {
-        return Err(missing_key().into());
-    }
+    probe_key(Some(register), &args.signing)?;
     let claimed = repository
         .override_lease(
             &branch,

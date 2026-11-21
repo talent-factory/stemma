@@ -3085,7 +3085,9 @@ stemma check list [-C VERZEICHNIS]
 \startitemize
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories.
 Standard ist das aktuelle.
-\item {\bf COMMIT:} Der getestete Commit: eine Commit-ID, ein Branch oder ein Tag.
+\item {\bf COMMIT:} Der getestete Commit: eine Commit-ID, ein Branch oder ein Tag. Trägt ein
+Name einen Branch und ein Tag, lehnt der Befehl ihn ab; \type{heads/NAME} oder \type{tags/NAME}
+entscheidet.
 \item {\bf \type{--result} ERGEBNIS:} \type{pass} oder \type{fail}.
 \item {\bf \type{--base} COMMIT:} Die Spitze von \type{main}, auf die der Commit für den Lauf
 gemerged wurde. Ohne die Option lief der Test auf dem Commit, wie er ist. Ein Lauf gegen eine
@@ -3103,10 +3105,13 @@ Ergebnis, die ersten zwölf Stellen des Commits, die Basis (\type{on KURZE-ID} o
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Commit oder die
 Basis nicht existiert, wenn die Basis der Commit selbst ist und wenn in einem durchsetzenden
-Repository der Schlüssel fehlt. Exit-Code 3 meldet einen Eintrag, dessen Beweis fehlt: Die Signatur
-gelang nicht, oder das Register kennt den Schlüssel nicht für den Akteur. Der Befehl schreibt dann
+Repository der Schlüssel fehlt oder nicht signieren kann; die Probe geschieht, bevor der Befehl
+etwas schreibt. Exit-Code 3 meldet einen Eintrag, dessen Beweis fehlt: Das Register kennt den
+Schlüssel nicht für den Akteur, oder der Schlüssel ist nicht aktiv. Der Befehl schreibt dann
 keine Beweisdatei; das Ergebnis ist im Log und zählt nicht, und der Lauf wird noch einmal
 eingetragen.
+Steht nicht fest, ob der Eintrag gesichert ist (auch Exit-Code 3), zeigt \type{check list}, ob er
+im Log steht; fehlt er, wiederholt man den Aufruf.
 
 {\bf Beispiele.}
 
@@ -3153,10 +3158,13 @@ des früheren Halters bleiben.
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn ein anderer Akteur die
 Lease hält (\type{take}), wenn der Akteur sie nicht hält oder keine gültige besteht
 (\type{release}), wenn der Akteur kein Owner ist, der Owner die Lease schon hält oder keine
-gültige besteht (\type{override}) und wenn der Schlüssel fehlt. Exit-Code 6 meldet ein gehaltenes
-Lock der Referenzen. Exit-Code 3 meldet einen Eintrag, der geschrieben ist, während die Datei der
-Lease nicht ersetzt wurde oder die Beweisdatei fehlt; der nächste Aufruf liest die Datei und
-entscheidet neu.
+gültige besteht (\type{override}) und wenn der Schlüssel von \type{override} fehlt oder nicht
+signieren kann. Exit-Code 6 meldet ein gehaltenes Lock der Referenzen. Exit-Code 3 meldet einen
+Eintrag, der geschrieben ist, während die Datei der Lease nicht ersetzt wurde; der nächste Aufruf
+liest die Datei und entscheidet neu. Auch bei einem \type{override} mit Exit-Code 3, dessen Beweis
+fehlt, weil das Register den Schlüssel nicht für den Akteur kennt, hat der Owner die Lease schon
+übernommen: Der Eintrag bleibt ohne Beweis, und ein zweiter Aufruf endet mit Exit-Code 1, weil der
+Owner sie hält.
 
 {\bf Beispiele.}
 
