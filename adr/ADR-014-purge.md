@@ -76,6 +76,10 @@ Facts that bound the design:
   `stemma op restore` refuses it and says that it was purged. All entries that name a rewritten
   commit are replaced, also those of descendants that do not hold the blob themselves, because
   their commit has the secret among its ancestors.
+  Since STEMMA-256 a stub also keeps what it replaced, an approval or another entry
+  (`stub <hash> approval`, entry encoding `stemma-oplog 4`, ADR-011): `op verify` checks the
+  proof of the stub of any entry but an approval, whose proof signs the pull request and the
+  head that the purge removes.
 - **The purge writes an entry of its own** *(confirmed)*. Operation `purge`, with the actor who
   ran it, the time, the number of rewritten commits, and the **numbers of the replaced entries**
   (as ranges). The entry carries **no pointer line and no ID**: the audit must not keep what it

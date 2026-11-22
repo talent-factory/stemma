@@ -84,7 +84,7 @@ use std::str::FromStr;
 
 use crate::actor::{Actor, ActorRef};
 use crate::object::{Kind, ObjectId};
-use crate::oplog::{Entry, PullKind, Record};
+use crate::oplog::{Entry, PullKind, Record, StubKind};
 use crate::pull;
 use crate::repository::Repository;
 use crate::signature::{self, PayloadKind, PublicKey, Signature};
@@ -1768,13 +1768,19 @@ pub fn check_proofs(
                 )
                 .map(|_| ())
                 // A purge may have replaced an approval with a stub, which keeps the hash but no
-                // longer says what the proof signed, so a stub cannot be told from the stub of any
-                // other entry. Only a signature that does not verify is let through, for every
-                // stub; a key that is not the actor's still fails.
+                // longer has what the proof signed (pull request and head). Only the stub of an
+                // approval, or an older stub that does not say what it replaced, lets a signature
+                // that does not verify through; the stub of any other entry keeps the hash that
+                // the proof signed. A key that is not the actor's still fails.
                 .or_else(|error| {
-                    if matches!(entry.record(), Record::Stub(_))
-                        && matches!(error, ProofError::Signature(_))
-                    {
+                    let lenient = match entry.record() {
+                        Record::Stub(stub) => match stub.replaced() {
+                            Some(StubKind::Other) => false,
+                            Some(StubKind::Approval) | None => true,
+                        },
+                        _ => false,
+                    };
+                    if lenient && matches!(error, ProofError::Signature(_)) {
                         Ok(())
                     } else {
                         Err(error)
@@ -2331,6 +2337,60 @@ mod tests {
             check_proofs(&metadata, &register(), &entries),
             Err(CheckError::UnexpectedFile(_))
         ));
+    }
+
+    #[test]
+    fn the_stub_of_an_entry_that_is_no_approval_keeps_its_proof_checked() {
+        let (_dir, repository) = enforcing_repository();
+        let metadata = repository.metadata_dir();
+        let entries = repository.oplog().verify().unwrap();
+        let stubs = [entries[0].to_stub().unwrap()];
+        // Daniel's own key signs something other than the hash of the entry.
+        let wrong =
+            signature::sign(&Seeded::new(1), PayloadKind::LogEntry, b"not the hash").unwrap();
+        let proof = ProofFile {
+            actor: Actor::human("daniel").unwrap(),
+            signature: wrong,
+        };
+        write_proof(&metadata, 1, &proof).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &stubs),
+            Err(CheckError::Proof { number: 1, .. })
+        ));
+        // The hash that the stub keeps is what the proof signs: the right proof is accepted, a
+        // key that is not the actor's is refused.
+        let hash = entries[0].hash().unwrap().to_string();
+        let proof_of = |signer: u8| ProofFile {
+            actor: Actor::human("daniel").unwrap(),
+            signature: signature::sign(
+                &Seeded::new(signer),
+                PayloadKind::LogEntry,
+                hash.as_bytes(),
+            )
+            .unwrap(),
+        };
+        fs::remove_file(proof_path(&metadata, 1)).unwrap();
+        write_proof(&metadata, 1, &proof_of(1)).unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &stubs).unwrap(), 1);
+        fs::remove_file(proof_path(&metadata, 1)).unwrap();
+        write_proof(&metadata, 1, &proof_of(9)).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &stubs),
+            Err(CheckError::Proof { number: 1, .. })
+        ));
+        // A stub from before the kind was kept does not say what it replaced, so a signature that
+        // does not verify still passes, as for the stub of an approval.
+        let legacy = {
+            let text = String::from_utf8(stubs[0].encode()).unwrap();
+            let text = text
+                .replace("stemma-oplog 4", "stemma-oplog 3")
+                .replace(" other\n", "\n");
+            Entry::parse(text.as_bytes()).unwrap()
+        };
+        assert_eq!(legacy.hash(), stubs[0].hash());
+        fs::remove_file(proof_path(&metadata, 1)).unwrap();
+        write_proof(&metadata, 1, &proof).unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &[legacy]).unwrap(), 1);
     }
 
     #[test]

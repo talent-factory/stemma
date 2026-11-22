@@ -109,14 +109,14 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 11, the version of the entry `check` (ADR-019, ADR-011), and
-  `open` reads versions 2 to 11: a repository made before the purge existed (2), before the chain
+  supports: `init` writes version 12, the version of the kind in the stub (ADR-011, ADR-014), and
+  `open` reads versions 2 to 12: a repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
   `lease-override` and the directory `leases/`; ADR-004, ADR-011), before the pull requests (8, the
   entries `pr-open`, `pr-close`, and `pr-merge`; ADR-004, ADR-011), before the approvals (9, the
-  entry `pr-approve`; ADR-004, ADR-011), or before the checks (10) rises to 11 with its next entry
-  or purge (ADR-014, ADR-011, ADR-010).
+  entry `pr-approve`; ADR-004, ADR-011), before the checks (10), or before the kind in the stub (11) rises to 12 with its next
+  entry or purge (ADR-014, ADR-011, ADR-010).
   Version 4 is the version of the hash chain of the log (ADR-011). From version 5
   on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that
   raises the version records none, and the next entry of a change does (ADR-010). A version

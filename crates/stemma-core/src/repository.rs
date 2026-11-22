@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 11" and a newline; 2 to 10 before the check entry
+//! ├── format          "stemma-repository 12" and a newline; 2 to 11 before the kind in the stub
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
@@ -106,10 +106,11 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` writes, and that a purge and every new entry
-/// of the log move a repository to: version 11, the entry `check` (ADR-019, ADR-011). Version
-/// 10 was the entry `pr-approve` (ADR-004, ADR-011), version 9 the pull request entries
+/// of the log move a repository to: version 12, the kind in the stub (ADR-011, ADR-014). Version
+/// 11 was the entry `check` (ADR-019, ADR-011),
+/// version 10 was the entry `pr-approve` (ADR-004, ADR-011), version 9 the pull request entries
 /// `pr-open`, `pr-close`, and `pr-merge`, version 8 the lease of a branch (ADR-009).
-const FORMAT_VERSION: u32 = 11;
+const FORMAT_VERSION: u32 = 12;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -129,9 +130,10 @@ const FORMAT_VERSION: u32 = 11;
 /// `leases/`: a repository moves to it with its next entry or purge, the first lease entry among
 /// them, so that a program that knows only version 7 refuses a log whose entries it cannot
 /// read, instead of reporting damage. Version 9 adds the three pull request entries, version
-/// 10 the entry `pr-approve` and the proofs of approvals, and version 11 the entry `check`,
-/// with the same rise and for the same reason.
-const READ_VERSIONS: [u32; 10] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+/// 10 the entry `pr-approve` and the proofs of approvals, version 11 the entry `check`, and
+/// version 12 the kind in the stub (`stemma-oplog 4`, STEMMA-256), with the same rise and for the
+/// same reason.
+const READ_VERSIONS: [u32; 11] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
 // A purge and every new entry of the log move a repository to `FORMAT_VERSION` (ADR-011,
 // ADR-014). It is the highest that this code reads, so neither lowers a version.
@@ -2869,7 +2871,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 11\n"
+            b"stemma-repository 12\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4202,7 +4204,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "12",
+            "13",
             "99",
             "4294967295",
             "4294967296",
@@ -4252,7 +4254,7 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 11\n"
+            "stemma-repository 12\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
     }
@@ -4278,7 +4280,7 @@ mod tests {
         // A program that knows only version 5 refuses what the entry may now carry.
         assert_eq!(
             fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
-            "stemma-repository 11\n"
+            "stemma-repository 12\n"
         );
     }
 
@@ -4309,7 +4311,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 11\n"
+            "stemma-repository 12\n"
         );
     }
 
@@ -4342,7 +4344,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 11\n"
+            "stemma-repository 12\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -4586,7 +4588,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 11\n"
+            "stemma-repository 12\n"
         );
     }
 
@@ -4663,7 +4665,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 11\n");
+        assert_eq!(read(), "stemma-repository 12\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -4683,6 +4685,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 10\n");
         raise_format(&meta, 11).unwrap();
         assert_eq!(read(), "stemma-repository 11\n");
+        raise_format(&meta, 12).unwrap();
+        assert_eq!(read(), "stemma-repository 12\n");
     }
 
     #[test]
@@ -4727,7 +4731,7 @@ mod tests {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 11\n");
+        assert_eq!(format, "stemma-repository 12\n");
         for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
@@ -4899,14 +4903,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 11",
+                "stemma-repository 12",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
-                    found: "12".to_string(),
+                    found: "13".to_string(),
                 },
-                "version 12, but this code supports versions 2 to 11",
+                "version 13, but this code supports versions 2 to 12",
             ),
         ];
         for (error, text) in cases {

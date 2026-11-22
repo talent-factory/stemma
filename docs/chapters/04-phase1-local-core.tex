@@ -1908,9 +1908,12 @@ die Pläne mit \type{--dry-run} oder ohne \type{--apply} und die abgelehnten Res
 Damit behält er den Hash des ganzen Eintrags,
 und die Kette hält über einen Purge hinweg, während Zeit und Akteur weiter geschützt sind
 (\in{Abbildung}[fig:oplog-chain], ADR-014).
-\item In der Hash-Kette haben Stub und Eintrag \type{purge}
+\item In der Hash-Kette haben ein Stub ohne Art und der Eintrag \type{purge}
 die Version 3 der Kodierung wie jeder andere Eintrag;
 ein Stub eines Eintrags aus der Zeit vor der Kette behält die Version 2.
+\item Ein neuer Stub nennt zusätzlich, was er ersetzt hat (\type{stub b3:… approval} oder
+\type{… other}) und hat die Version 4 der Kodierung.
+Der Hash des Eintrags ändert sich dadurch nicht; ein älterer Stub der Version 3 hat keine Art.
 \item Ein Stub, den kein Purge nennt, ist ein Fehler des Logs wie eine Lücke.
 \stopitemize
 \stopinfobox
