@@ -349,8 +349,14 @@ impl Repository {
             })
     }
 
-    /// The authors of the commits that a pull request with the head `head` brings: those that
+    /// The writers of the commits that a pull request with the head `head` brings: those that
     /// `head` reaches and `main` does not.
+    ///
+    /// A writer is the author of such a commit, and the actor of every entry of the log that moved
+    /// a branch to such a commit. The author is a claim of whoever made the commit, and nothing
+    /// compares it with the actor; the actor of the entry is the one that the authorizer let in
+    /// (and, in an enforcing repository, whose signature the register accepts). So a commit under
+    /// a foreign author name still counts its real writer (ADR-004 rule 4, STEMMA-255).
     fn pull_authors(&self, head: &CommitId) -> Result<Vec<Actor>, PullError> {
         let store = self.objects();
         let own = history::ancestors(store, *head, Parents::All, None)?;
@@ -366,6 +372,23 @@ impl Repository {
         for (id, commit) in &own {
             if !known.contains(id) && !authors.contains(commit.author()) {
                 authors.push(commit.author().clone());
+            }
+        }
+        let brought: HashSet<CommitId> = own
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| !known.contains(id))
+            .collect();
+        for entry in self.oplog().entries().map_err(PullError::Log)? {
+            let Some(change) = entry.change() else {
+                continue;
+            };
+            let moved_to_brought = change
+                .branches()
+                .iter()
+                .any(|(_, moved)| moved.after().is_some_and(|new| brought.contains(new)));
+            if moved_to_brought && !authors.contains(change.actor()) {
+                authors.push(change.actor().clone());
             }
         }
         Ok(authors)
@@ -1191,6 +1214,49 @@ mod tests {
         assert_eq!(
             recount.void()[0].1,
             pull::NotCounted::SelfApproval(SelfApproval::Author)
+        );
+    }
+
+    /// STEMMA-255: the author of a commit is a claim of its writer. `update_branch` asks the
+    /// authorizer about the actor and never compares the actor with the author, so a writer who
+    /// puts a foreign name into the field is no author of the change in the recount.
+    #[test]
+    fn a_commit_under_a_foreign_author_name_does_not_let_its_writer_approve() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        // Mia moves the branch to a commit that names Ana as its author.
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            vec![tip],
+            crate::change::sample_change(),
+            ana(),
+            1,
+            "more".to_owned(),
+        )
+        .unwrap();
+        let new = repository.objects().put_commit(&commit).unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        repository
+            .update_branch(&operation, &feature(), Some(tip), new, &mia(), &AllowAll)
+            .unwrap();
+        // Mia wrote the change and must not approve it.
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, PullError::SelfApproval { .. }),
+            "mia approved her own change: {error:?}"
         );
     }
 
