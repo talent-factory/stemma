@@ -241,7 +241,7 @@ impl Repository {
                 return Err(PullError::HeadMoved { number });
             }
         }
-        let authors = self.pull_authors(pull.branch(), &head)?;
+        let authors = self.pull_authors(&head)?;
         if let Some(reason) = self_approval(actor, pull.opener(), &authors) {
             return Err(PullError::SelfApproval { number, reason });
         }
@@ -302,7 +302,7 @@ impl Repository {
             return Err(PullError::NotOpen { number });
         }
         let head = self.branch_head(pull.branch())?;
-        let authors = self.pull_authors(pull.branch(), &head)?;
+        let authors = self.pull_authors(&head)?;
         let metadata = self.metadata_dir();
         let payload = pull::approval_payload(number, &head);
         let proof = |approval: &Approval| -> Result<(), String> {
@@ -352,14 +352,15 @@ impl Repository {
     /// The writers of the commits that a pull request with the head `head` brings: those that
     /// `head` reaches and `main` does not.
     ///
-    /// A writer is the author of such a commit, and the actor of every entry of the log that moved
-    /// `branch`, the branch of the pull request, to such a commit. Moves of other branches do not
-    /// count: whoever only makes a branch at the tip to look at it wrote nothing. The author is a
-    /// claim of whoever made the commit, and `update_branch` does not compare it with the actor;
-    /// the actor of the entry is the one that the authorizer let in (in open mode that is a claim
-    /// as well, ADR-003). So a commit under a foreign author name still counts the actor that put
-    /// it on the branch (ADR-004 rule 4, STEMMA-255).
-    fn pull_authors(&self, branch: &BranchName, head: &CommitId) -> Result<Vec<Actor>, PullError> {
+    /// A writer is the author of such a commit, and the actor of the entry of the log that first
+    /// brought such a commit under a branch, whichever branch that was. A later move to a commit
+    /// that a branch reached before, such as a branch that a reviewer makes at the tip to look at
+    /// it, wrote nothing and does not count. The author is a claim of whoever made the commit, and
+    /// `update_branch` does not compare it with the actor; the actor of the entry is the one that
+    /// the authorizer let in (in open mode that is a claim as well, ADR-003). So a commit under a
+    /// foreign author name still counts the actor that put it on a branch (ADR-004 rule 4,
+    /// STEMMA-255).
+    fn pull_authors(&self, head: &CommitId) -> Result<Vec<Actor>, PullError> {
         let store = self.objects();
         let own = history::ancestors(store, *head, Parents::All, None)?;
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
@@ -381,15 +382,29 @@ impl Repository {
             .map(|(id, _)| *id)
             .filter(|id| !known.contains(id))
             .collect();
+        // The entries are in order. A commit is reached once a branch moved to it or to a
+        // descendant; the entry that does so first is the one that brought it.
+        let mut reached: HashSet<CommitId> = HashSet::new();
         for entry in self.oplog().entries().map_err(PullError::Log)? {
             let Some(change) = entry.change() else {
                 continue;
             };
-            let moved_to_brought = change.branches().iter().any(|(name, moved)| {
-                name == branch && moved.after().is_some_and(|new| brought.contains(new))
-            });
-            if moved_to_brought && !authors.contains(change.actor()) {
-                authors.push(change.actor().clone());
+            for new in change
+                .branches()
+                .iter()
+                .filter_map(|(_, moved)| moved.after())
+            {
+                if !brought.contains(new) || reached.contains(new) {
+                    continue;
+                }
+                if !authors.contains(change.actor()) {
+                    authors.push(change.actor().clone());
+                }
+                reached.insert(*new);
+                // A commit that the store cannot read is only itself reached: the safe side.
+                if let Ok(ancestors) = history::ancestors(store, *new, Parents::All, None) {
+                    reached.extend(ancestors.into_iter().map(|(id, _)| id));
+                }
             }
         }
         Ok(authors)
@@ -1281,6 +1296,56 @@ mod tests {
         assert_eq!(
             recount.void()[0].1,
             pull::NotCounted::SelfApproval(SelfApproval::Author)
+        );
+    }
+
+    /// Mia makes the commit on a branch of her own, and the owner of the branch of the pull request
+    /// moves it there. The first entry that brought the commit is hers, so she is a writer.
+    #[test]
+    fn the_writer_who_made_the_commit_on_another_branch_may_not_approve_either() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            vec![tip],
+            crate::change::sample_change(),
+            ana(),
+            1,
+            "more".to_owned(),
+        )
+        .unwrap();
+        let new = repository.objects().put_commit(&commit).unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        let scratch = BranchName::try_new("scratch").unwrap();
+        repository
+            .update_branch(&operation, &scratch, None, new, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .update_branch(&operation, &feature(), Some(tip), new, &daniel(), &AllowAll)
+            .unwrap();
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
+            "{error:?}"
         );
     }
 
