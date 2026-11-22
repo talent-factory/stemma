@@ -659,6 +659,13 @@ Beide gehören nicht zu \type{just ci}, weil sie Werkzeuge ausserhalb des Projek
 \type{just release-check} prüft vor einem Release-Tag, dass Tag, \type{Cargo.toml} und Programm
 dieselbe Version nennen und dass das Programm keine Fehlereinspritzung enthält;
 die Version steht nur in \type{Cargo.toml}, und eine Phase ist eine Minor-Version.
+Gibt es das Release schon als Entwurf oder veröffentlicht,
+prüft es auch, dass die Notizen den Abschnitt \quotation{Stemma history} enthalten
+und keine Zeile \quotation{Not part of this release} mehr.
+Gibt es noch kein Release, gibt der Befehl nur einen Hinweis aus,
+und der Mensch bleibt verantwortlich:
+Er führt vor dem Tag \type{stemma op verify} aus
+und trägt Anker und Eintrag in die Notizen ein.
 
 Jeder Pull Request füllt eine Vorlage aus:
 \type{just ci} ist grün, das betroffene Kapitel und die Befehlsreferenz sind nachgeführt,
