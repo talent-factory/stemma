@@ -149,8 +149,11 @@ impl Repository {
                 bounds::reservation(runs, other.head(), &tip, other.opened(), n)
                     .filter(|window| window.holds_at(now()))
             };
-            // A cheap look first; the runs of an independent writer decide.
-            if held(runs).is_none() {
+            // A cheap look first: without a window on all proven runs there is none on the
+            // independent runs either (dropping passing runs only removes counted ones). The
+            // time is no part of it: the window of the independent runs starts and ends at
+            // other runs, so only they decide whether it holds now.
+            if bounds::reservation(runs, other.head(), &tip, other.opened(), n).is_none() {
                 continue;
             }
             let window = if own {

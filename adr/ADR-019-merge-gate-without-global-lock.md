@@ -183,16 +183,17 @@ the merge cannot: two changes that merge cleanly and break each other (a semanti
   since the break may lie in level 2 code. Changes of level 0 and 1 continue, since they cannot
   make the repair harder to find.
 - A repair is declared and then checked by its content. The pull request names the red commit
-  (`repairs <commit>`). The gate accepts the declaration only if that commit lies between the last
-  green and the first red tip, and the diff of the repair reverts that commit or changes the paths
+  (`repairs <commit>`). The gate accepts the declaration only if that commit lies after the last
+  green tip, up to and including the first red tip, and the diff of the repair reverts that commit or changes the paths
   that it changed. The gate computes this as a pure function over the two diffs, as for the rule on
   weakened tests (ADR-004, rule 10); nobody has to confirm it. A change that only declares a repair
   gets no exemption. The checks of the repair follow the rule table: levels 2 and 3 need a result
   with the current tip as base, levels 0 and 1 a clean merge onto it.
 - The *last green tip* is the newest commit of `main` that a finished run covered with success. The
   *first red tip* is the oldest commit after it that a finished run covered with failure. To find
-  the cause in a window of unverified commits, the gate bisects the linear history of `main`
-  between the two. A failing run does not take back a passing run of the same commit: the core
+  the cause in a window of unverified commits, the linear history of `main` between the two
+  is the window of a bisection (`Repository::red_window`, `bounds::bisect`; the gate itself does
+  not bisect). A failing run does not take back a passing run of the same commit: the core
   reads the last green tip from the passing runs alone (ADR-011), and the failure stays in the log
   for the gate.
 - The form of the entry `pr-open` and the syntax of `repairs` are fixed (ADR-011, STEMMA-238),

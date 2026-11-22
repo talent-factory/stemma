@@ -19,7 +19,7 @@
 //!
 //! The log records finished runs only, so a run that has started but not finished is not known.
 //! Where ADR-019 says "until a run on the tip has started", the gate therefore waits until a
-//! finished run covers a commit after the window began ([`unverified`]).
+//! finished run covers a commit newer than the latest verified tip ([`unverified`]).
 
 use std::collections::BTreeSet;
 
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_a_valid_result_or_the_same_base_twice_breaks_the_row() {
+    fn a_failure_breaks_the_row_and_a_valid_result_or_a_repeated_base_does_not() {
         let failed = log(&[
             (1, 7, Some(1), Pass),
             (2, 7, Some(2), Pass),

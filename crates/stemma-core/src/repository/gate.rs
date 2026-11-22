@@ -2548,6 +2548,59 @@ mod tests {
         assert_eq!(f.main(), merged.commit);
     }
 
+    /// The merge of a level 0 change while a change of level 2 lost its runs: the last at `last`,
+    /// `gap` seconds after the one before. Margins of the tests are far above a second.
+    fn merge_against_lost_runs(last: i64, gap: i64) -> Result<GateMerge, GateError> {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        lose_runs(&f, last, gap);
+        let (z, other) = open_branch(
+            &f,
+            "zfile",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("z.txt", "z\n"),
+                (crate::policy::FILE_NAME, BOUNDED),
+            ],
+            None,
+        );
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        f.record(tip, None, CheckResult::Pass, "ana");
+        by_policy(&f, other, &Mode::Open)
+    }
+
+    #[test]
+    fn the_reservation_holds_just_before_its_end_and_ends_just_after() {
+        // The window is twice the 200 s of the last run: 400 s from its entry.
+        let at = now();
+        let held = merge_against_lost_runs(at - 370, 200).unwrap_err();
+        let Pause::Reserved { until, .. } = paused(held) else {
+            panic!("expected the reservation");
+        };
+        assert_eq!(until, at - 370 + 400);
+        assert!(merge_against_lost_runs(at - 430, 200).is_ok());
+    }
+
+    #[test]
+    fn the_reservation_lasts_one_hour_at_most_however_long_the_claimed_run() {
+        // 10 days between the two entries would be 20 days of window.
+        let at = now();
+        let held = merge_against_lost_runs(at - 3000, 864_000).unwrap_err();
+        let Pause::Reserved { until, .. } = paused(held) else {
+            panic!("expected the reservation");
+        };
+        assert_eq!(until, at - 3000 + 3600);
+        assert!(merge_against_lost_runs(at - 3700, 864_000).is_ok());
+    }
+
+    #[test]
+    fn an_entry_dated_in_the_future_holds_nothing() {
+        assert!(merge_against_lost_runs(now() + 1000, 100).is_ok());
+    }
+
     #[test]
     fn fewer_than_n_invalidated_runs_hold_no_reservation() {
         let f = fixture("zero\n");
