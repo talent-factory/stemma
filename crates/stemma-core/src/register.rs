@@ -84,7 +84,7 @@ use std::str::FromStr;
 
 use crate::actor::{Actor, ActorRef};
 use crate::object::{Kind, ObjectId};
-use crate::oplog::{Entry, PullKind, Record};
+use crate::oplog::{Entry, PullKind, Record, StubKind};
 use crate::pull;
 use crate::repository::Repository;
 use crate::signature::{self, PayloadKind, PublicKey, Signature};
@@ -252,7 +252,7 @@ pub fn sponsorship_payload(agent: &Identity, role: Role, sponsor: &Identity) -> 
 pub enum KeyState {
     /// Signs new records.
     Active,
-    /// Replaced; counts for log entries below `from`, and for approvals.
+    /// StubKind; counts for log entries below `from`, and for approvals.
     Retired {
         /// The number of the first log entry that the key no longer counts for.
         from: u64,
@@ -1768,13 +1768,16 @@ pub fn check_proofs(
                 )
                 .map(|_| ())
                 // A purge may have replaced an approval with a stub, which keeps the hash but no
-                // longer says what the proof signed, so a stub cannot be told from the stub of any
-                // other entry. Only a signature that does not verify is let through, for every
-                // stub; a key that is not the actor's still fails.
+                // longer has what the proof signed (pull request and head). Only the stub of an
+                // approval, or an older stub that does not say what it replaced, lets a signature
+                // that does not verify through; the stub of any other entry keeps the hash that
+                // the proof signed. A key that is not the actor's still fails.
                 .or_else(|error| {
-                    if matches!(entry.record(), Record::Stub(_))
-                        && matches!(error, ProofError::Signature(_))
-                    {
+                    let lenient = matches!(
+                        entry.record(),
+                        Record::Stub(stub) if stub.replaced() != Some(StubKind::Other)
+                    );
+                    if lenient && matches!(error, ProofError::Signature(_)) {
                         Ok(())
                     } else {
                         Err(error)
@@ -2330,6 +2333,26 @@ mod tests {
         assert!(matches!(
             check_proofs(&metadata, &register(), &entries),
             Err(CheckError::UnexpectedFile(_))
+        ));
+    }
+
+    #[test]
+    fn the_stub_of_an_entry_that_is_no_approval_keeps_its_proof_checked() {
+        let (_dir, repository) = enforcing_repository();
+        let metadata = repository.metadata_dir();
+        let entries = repository.oplog().verify().unwrap();
+        let stubs = [entries[0].to_stub().unwrap()];
+        // Daniel's own key signs something other than the hash of the entry.
+        let wrong =
+            signature::sign(&Seeded::new(1), PayloadKind::LogEntry, b"not the hash").unwrap();
+        let proof = ProofFile {
+            actor: Actor::human("daniel").unwrap(),
+            signature: wrong,
+        };
+        write_proof(&metadata, 1, &proof).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &stubs),
+            Err(CheckError::Proof { number: 1, .. })
         ));
     }
 

@@ -434,6 +434,17 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   working-copy b3:1d71…eed9 b3:4feb…b32c
   ```
 
+- **The stub names the kind of the entry it replaced** *(confirmed; STEMMA-256)*. Entry encoding
+  `stemma-oplog 4` is version 3 for a stub with one more word on the line of the hash:
+  `stub <hash of the body> approval` or `stub <hash of the body> other`. The writer writes it for
+  every stub of an entry in the chain, and the repository format version rises to 12 with it. The
+  hash of the entry is the same as without the word, so the chain does not change. A stub of
+  version 3 has no kind and is read as before; its proof is not checked, as the proof of a stub
+  of an approval is not. The kind is not covered by the hash of the entry: whoever can rewrite
+  the log files can mark any stub as an approval, and so give it an unchecked proof. The proof
+  adds nothing there that the files do not already allow; the anchor (`op verify --anchor`)
+  covers the chain, not the kind.
+
 - **The four lease entries** *(confirmed; STEMMA-225, STEMMA-237)*. The lease of a branch is
   state in a file (ADR-004); the log records its changes in four entries that name a branch and
   actors and no commit: `lease-acquire`, `lease-release`, `lease-takeover`, and `lease-override`.
@@ -590,8 +601,11 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     the policy (ADR-004), and the merge gate asks for it (ADR-019).
   - **Purge.** An approval names a commit, so a purge may replace it with a stub, like any
     entry that names a rewritten commit. It is no opening, so the purge guard for open pull
-    requests does not apply. A proof file whose entry became a stub no longer says what it
-    signed; `op verify` lets it pass.
+    requests does not apply. The proof of an approval signs the pull request and the head, which
+    the stub no longer has, so `op verify` lets the proof of an approval stub pass even if its
+    signature does not verify. The proof of any other entry signs the hash of the entry, which a
+    stub keeps, so `op verify` checks it for the stub of any other entry (STEMMA-256; before, a
+    stub of any entry passed). The stub says which of the two it is: encoding 4 below.
 
 ## Consequences
 

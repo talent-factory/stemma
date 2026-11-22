@@ -182,6 +182,11 @@ const HEADER_2: &str = "stemma-oplog 2";
 /// every new entry and for the stub of an entry in the chain.
 const HEADER_3: &str = "stemma-oplog 3";
 
+/// The first line of the stub that says what it replaced (ADR-011, ADR-014, STEMMA-256): version 3
+/// plus the kind of the entry after the hash of the body. A writer writes it for the stub of an
+/// entry in the chain; a stub of version 3 is older and has no kind.
+const HEADER_4: &str = "stemma-oplog 4";
+
 /// The first line of the text that the hash of an entry in the chain is computed over.
 const HASH_HEADER: &str = "stemma-oplog-hash 1";
 
@@ -939,6 +944,28 @@ pub struct Stub {
     time: i64,
     actor: Actor,
     body: Option<BodyHash>,
+    replaced: Option<StubKind>,
+}
+
+/// What a stub replaced, as far as the proof of the entry needs to know (STEMMA-256). The proof of
+/// an approval signs the pull request and the head, which a purge removes, so the stub of an
+/// approval cannot check it; the proof of any other entry signs the hash of the entry, which the
+/// stub keeps. The kind is not covered by the hash of the entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StubKind {
+    /// An approval of a pull request.
+    Approval,
+    /// Any other entry.
+    Other,
+}
+
+impl StubKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::Other => "other",
+        }
+    }
 }
 
 impl Stub {
@@ -956,6 +983,11 @@ impl Stub {
     /// written before the chain.
     pub fn body(&self) -> Option<BodyHash> {
         self.body
+    }
+
+    /// What the stub replaced, or `None` for a stub written before the kind was kept.
+    pub fn replaced(&self) -> Option<StubKind> {
+        self.replaced
     }
 }
 
@@ -2047,10 +2079,20 @@ impl Entry {
         if matches!(self.record, Record::Lease(_)) {
             return Err(EntryError::LeaseNotReplaceable(self.number));
         }
+        let body = self.body_hash();
+        let replaced = match (&self.record, &self.chain) {
+            (Record::Stub(stub), _) => stub.replaced,
+            (_, Chain::Unchained) => None,
+            (_, _) if self.pull().is_some_and(|p| p.kind() == PullKind::Approve) => {
+                Some(StubKind::Approval)
+            }
+            (_, _) => Some(StubKind::Other),
+        };
         let stub = Stub {
             time: self.time(),
             actor: self.actor().clone(),
-            body: self.body_hash(),
+            body,
+            replaced,
         };
         Self::linked(self.number, self.chain, Record::Stub(stub))
     }
@@ -2073,12 +2115,21 @@ impl Entry {
         let mut out = match (&previous, &self.record) {
             (None, Record::Change(_)) => envelope(HEADER),
             (None, _) => envelope(HEADER_2),
+            (
+                Some(previous),
+                Record::Stub(Stub {
+                    replaced: Some(_), ..
+                }),
+            ) => envelope(HEADER_4) + &format!("previous {previous}\n"),
             (Some(previous), _) => envelope(HEADER_3) + &format!("previous {previous}\n"),
         };
         match (&self.record, self.body_text()) {
-            (Record::Stub(stub), _) => match stub.body {
-                Some(body) => out.push_str(&format!("stub {body}\n")),
-                None => out.push_str("stub\n"),
+            (Record::Stub(stub), _) => match (stub.body, stub.replaced) {
+                (Some(body), Some(kind)) => {
+                    out.push_str(&format!("stub {body} {}\n", kind.name()));
+                }
+                (Some(body), None) => out.push_str(&format!("stub {body}\n")),
+                (None, _) => out.push_str("stub\n"),
             },
             (_, Some(body)) => out.push_str(&body),
             (_, None) => {}
@@ -2093,7 +2144,7 @@ impl Entry {
     /// # Errors
     ///
     /// Returns [`EntryParseError`] for input that is not UTF-8, a last line without a newline, a
-    /// header that is missing, repeated, unknown, or out of order, a version other than 1 to 3, a
+    /// header that is missing, repeated, unknown, or out of order, a version other than 1 to 4, a
     /// number, time, actor, operation, commit ID, or branch name that is not in canonical form, a
     /// pointer whose old and new value are equal, branches that are not strictly ascending, a
     /// version-1 entry without a pointer or with the operation `purge`, a version-2 entry that is
@@ -2126,6 +2177,7 @@ impl Entry {
             Some("1") => 1,
             Some("2") => 2,
             Some("3") => 3,
+            Some("4") => 4,
             Some(version) if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit()) => {
                 return Err(EntryParseError::UnsupportedVersion(version.to_owned()));
             }
@@ -2147,7 +2199,7 @@ impl Entry {
         let actor = Actor::from_str(actor)
             .map_err(|source| EntryParseError::InvalidActor { line: 4, source })?;
         // An entry in the chain names the entry before it; its body starts one line later.
-        let (chain, body) = if version == 3 {
+        let (chain, body) = if version >= 3 {
             let previous = value(4, "previous ", EntryMalformed::ExpectedPrevious)?;
             let chain = if previous == "-" {
                 Chain::Start
@@ -2182,8 +2234,8 @@ impl Entry {
         if let (3, Some(kind)) = (version, lease_kind) {
             return parse_lease(&lines, body, number, chain, time, actor, kind);
         }
-        if version == 2 || (version == 3 && (is_stub || is_purge)) {
-            return parse_stub_or_purge(&lines, body, number, chain, time, actor);
+        if version == 2 || (version == 3 && (is_stub || is_purge)) || version == 4 {
+            return parse_stub_or_purge(&lines, body, number, chain, time, actor, version == 4);
         }
         let operation = value(body, "operation ", EntryMalformed::ExpectedOperation)?;
         let operation = OperationName::try_new(operation).map_err(|source| {
@@ -2548,12 +2600,23 @@ fn parse_stub_or_purge(
     chain: Chain,
     time: i64,
     actor: Actor,
+    with_kind: bool,
 ) -> Result<Entry, EntryParseError> {
     let malformed = |line, reason| EntryParseError::Malformed { line, reason };
     let first = lines.get(body).copied();
     let record = match first {
         Some(line) if line == "stub" || line.starts_with("stub ") => {
-            let hash = match (line.strip_prefix("stub "), chain) {
+            // Version 4 ends the line with the kind; no other version has one.
+            let (text, replaced) = match (line.strip_prefix("stub "), with_kind) {
+                (Some(rest), true) => match rest.rsplit_once(' ') {
+                    Some((hash, "approval")) => (Some(hash), Some(StubKind::Approval)),
+                    Some((hash, "other")) => (Some(hash), Some(StubKind::Other)),
+                    _ => return Err(malformed(body + 1, EntryMalformed::ExpectedStubOrPurge)),
+                },
+                (_, true) => return Err(malformed(body + 1, EntryMalformed::ExpectedStubOrPurge)),
+                (rest, false) => (rest, None),
+            };
+            let hash = match (text, chain) {
                 (None, Chain::Unchained) => None,
                 (Some(hash), Chain::Start | Chain::After(_)) => {
                     Some(BodyHash::from_str(hash).map_err(|source| {
@@ -2572,9 +2635,10 @@ fn parse_stub_or_purge(
                 time,
                 actor,
                 body: hash,
+                replaced,
             })
         }
-        Some(line) if line == format!("operation {PURGE}") => {
+        Some(line) if line == format!("operation {PURGE}") && !with_kind => {
             let commits = lines
                 .get(body + 1)
                 .and_then(|line| line.strip_prefix("commits "))
@@ -2967,7 +3031,7 @@ impl fmt::Display for EntryParseError {
             Self::Malformed { line, reason } => write!(f, "line {line}: {reason}"),
             Self::UnsupportedVersion(version) => write!(
                 f,
-                "the entry has version {version}, but this code reads versions 1 to 3"
+                "the entry has version {version}, but this code reads versions 1 to 4"
             ),
             Self::InvalidNumber { line, reason } => write!(f, "line {line}: {reason}"),
             Self::InvalidTime { line, reason } => write!(f, "line {line}: {reason}"),
@@ -5564,9 +5628,9 @@ mod tests {
     }
 
     #[test]
-    fn a_version_other_than_1_to_3_is_unsupported_and_not_malformed() {
+    fn a_version_other_than_1_to_4_is_unsupported_and_not_malformed() {
         let text = golden();
-        for version in ["0", "4", "10", "99999999999999999999"] {
+        for version in ["0", "5", "10", "99999999999999999999"] {
             assert_eq!(
                 parse_error(with(
                     &text,
@@ -5577,9 +5641,9 @@ mod tests {
                 "{version}"
             );
         }
-        let message = parse_error(with(&text, "stemma-oplog 1", "stemma-oplog 4")).to_string();
+        let message = parse_error(with(&text, "stemma-oplog 1", "stemma-oplog 5")).to_string();
         assert!(
-            message.contains("version 4") && message.contains("versions 1 to 3"),
+            message.contains("version 5") && message.contains("versions 1 to 4"),
             "{message}"
         );
     }
@@ -7004,9 +7068,43 @@ mod tests {
             Err(EntryParseError::Entry(EntryError::ReservedOperation))
         ));
         assert!(matches!(
-            Entry::parse(b"stemma-oplog 4\n"),
-            Err(EntryParseError::UnsupportedVersion(version)) if version == "4"
+            Entry::parse(b"stemma-oplog 5\n"),
+            Err(EntryParseError::UnsupportedVersion(version)) if version == "5"
         ));
+    }
+
+    #[test]
+    fn a_stub_in_the_chain_names_what_it_replaced_in_version_4() {
+        let body = BodyHash::of("");
+        let stub = |replaced| {
+            let stub = Stub {
+                time: TIME,
+                actor: human(),
+                body: Some(body),
+                replaced,
+            };
+            Entry::linked(2, Chain::After(EntryHash::of("x")), Record::Stub(stub)).unwrap()
+        };
+        for (kind, name) in [(StubKind::Approval, "approval"), (StubKind::Other, "other")] {
+            let entry = stub(Some(kind));
+            let text = String::from_utf8(entry.encode()).unwrap();
+            assert!(text.starts_with("stemma-oplog 4\n"), "{text}");
+            assert!(text.ends_with(&format!("stub {body} {name}\n")), "{text}");
+            assert_eq!(Entry::parse(text.as_bytes()).unwrap(), entry);
+        }
+        // A stub without a kind is the older one: version 3, and the hash does not change.
+        let old = stub(None);
+        assert!(old.encode().starts_with(b"stemma-oplog 3\n"));
+        assert_eq!(old.hash(), stub(Some(StubKind::Other)).hash());
+        // Version 4 has the kind, and nothing else.
+        let text = String::from_utf8(stub(Some(StubKind::Other)).encode()).unwrap();
+        for bad in [
+            text.replace(" other\n", "\n"),
+            text.replace(" other\n", " approve\n"),
+            text.replace("stemma-oplog 4", "stemma-oplog 3"),
+        ] {
+            assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -7955,6 +8053,7 @@ mod tests {
                 time: TIME,
                 actor: human(),
                 body,
+                replaced: None,
             })
         };
         let body = Some(BodyHash::of(""));
