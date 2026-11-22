@@ -21,14 +21,15 @@ Merge-Regeln.
 \item Automatische Eskalation bei Lockerung bestehender Tests.
 \stopitemize
 
-Der Stand dieser Punkte ist uneinheitlich, denn die Phase ist noch nicht abgeschlossen.
+Die Phase ist abgeschlossen; einige Punkte sind dabei nur im Kern umgesetzt.
 Umgesetzt sind der Kern der Lease, die Einträge des Pull Requests, die Signaturen,
 das Akteursregister, die Policy-Datei mit der Eskalation und das Merge-Gate samt Schranken;
 die Befehle \type{lease}, \type{pr}, \type{check}, \type{register} und \type{enforce} bedienen
 sie (\in{Kapitel}[chap:cli]).
-Offen sind die Anbindung der Lease an die übrigen schreibenden Befehle, die Prüfung der
-Freigaben im Gate, die Regel für registrierte Autoren, die Ableitung der Stufe aus der Policy in
-\type{pr merge} und die Policy-Datei dieses Repositorys selbst.
+Als Folgearbeit bleiben die Anbindung der Lease an die übrigen schreibenden Befehle,
+die Prüfung der Freigaben im Gate, die Regel für registrierte Autoren,
+die Ableitung der Stufe aus der Policy in \type{pr merge} und die Policy-Datei dieses Repositorys
+selbst.
 Das Kapitel kennzeichnet an jeder Stelle, was davon noch fehlt, und Kapitel
 \in{}[chap:outlook] sammelt es.
 
@@ -346,7 +347,7 @@ erreicht sie, und ein Purge räumt sie ab (ADR-014).
 Diese Grenze ist technisch und nicht die Reservierung gegen Aushungern (ADR-019).
 \in{Abbildung}[fig:gate-crash] zeigt die Absturzpunkte des Gates,
 \in{Abbildung}[fig:gate-pointers] die Zeiger vor dem Gate, nach ihm und nach einem Absturz
-vor \type{pr-merge}.
+zwischen der Bewegung von \type{main} und \type{pr-merge}.
 
 \startplacefigure[title={Ablauf des Merge-Gates mit Absturzpunkten},
     reference=fig:gate-crash,location=here]

@@ -40,9 +40,10 @@
   <text x="96" y="85">ändert den Zustand nicht</text>
 </g>
 <!-- crash: the pointer of main moved, pr-merge is missing -->
-<path d="M185 180 L185 290 L494 290 L494 262" fill="none" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-crash)"/>
-<text x="200" y="283" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz nach der Bewegung von main:</text>
-<text x="200" y="305" font-size="12" fill="#0F172A">pr-merge fehlt; der Pull Request bleibt open.</text>
-<text x="200" y="320" font-size="12" fill="#0F172A">Der nächste pr merge bucht den Merge nach.</text>
+<path d="M185 292 L185 182" fill="none" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-crash)"/>
+<text x="200" y="268" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz nach der Bewegung von <tspan font-family="Courier, monospace">main</tspan>:</text>
+<text x="200" y="284" font-size="12" fill="#0F172A"><tspan font-family="Courier, monospace">pr-merge</tspan> fehlt; der Pull Request bleibt <tspan font-family="Courier, monospace">open</tspan>.</text>
+<text x="200" y="312" font-size="12" fill="#64748B">Der nächste <tspan font-family="Courier, monospace">pr merge</tspan> schreibt <tspan font-family="Courier, monospace">pr-merge</tspan> nachträglich</text>
+<text x="200" y="326" font-size="12" fill="#64748B">(Reparaturweg) und führt ihn nach <tspan font-family="Courier, monospace">merged</tspan>.</text>
 <text x="20" y="344" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">closed</tspan> und <tspan font-family="Courier, monospace">merged</tspan> sind endgültig; die nächste Änderung des Branches ist ein neuer Pull Request.</text>
 </svg>

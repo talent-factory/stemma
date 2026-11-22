@@ -22,8 +22,8 @@
 <line x1="138" y1="148" x2="138" y2="143" stroke="#2F7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
 <text x="320" y="60" font-size="12" font-weight="bold" fill="#6B46C1">Log</text>
 <text x="320" y="78" font-size="12" font-family="Courier, monospace" fill="#6B46C1">pr-open n</text>
-<text x="320" y="108" font-size="11.5" fill="#64748B">Der Pull Request ist offen. main zeigt auf die</text>
-<text x="320" y="123" font-size="11.5" fill="#64748B">Spitze T, feature auf den Kopf F.</text>
+<text x="320" y="108" font-size="11.5" fill="#64748B">Der Pull Request ist offen. <tspan font-family="Courier, monospace">main</tspan> zeigt auf die</text>
+<text x="320" y="123" font-size="11.5" fill="#64748B">Spitze <tspan font-family="Courier, monospace">T</tspan>, <tspan font-family="Courier, monospace">feature</tspan> auf den Kopf <tspan font-family="Courier, monospace">F</tspan>.</text>
 <text x="20" y="220" font-size="13" font-weight="bold" fill="#0F172A">Nach dem Gate</text>
 <rect x="20" y="288" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="48" y="305" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">Basis</text>
@@ -46,9 +46,9 @@
 <text x="320" y="278" font-size="12" font-family="Courier, monospace" fill="#6B46C1">pr-open n</text>
 <text x="320" y="294" font-size="12" font-family="Courier, monospace" fill="#6B46C1">gate-merge</text>
 <text x="320" y="310" font-size="12" font-family="Courier, monospace" fill="#6B46C1">pr-merge</text>
-<text x="320" y="336" font-size="11.5" fill="#64748B">M ist der Squash-Commit der Änderung auf T;</text>
-<text x="320" y="351" font-size="11.5" fill="#64748B">feature bleibt bei F.</text>
-<text x="20" y="420" font-size="13" font-weight="bold" fill="#B91C1C">Nach einem Absturz vor pr-merge</text>
+<text x="320" y="336" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">M</tspan> ist der Squash-Commit der Änderung auf <tspan font-family="Courier, monospace">T</tspan>;</text>
+<text x="320" y="351" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">feature</tspan> bleibt bei <tspan font-family="Courier, monospace">F</tspan>.</text>
+<text x="20" y="420" font-size="13" font-weight="bold" fill="#B91C1C">Nach einem Absturz nach der Bewegung von <tspan font-family="Courier, monospace">main</tspan></text>
 <rect x="20" y="488" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="48" y="505" font-size="12" font-family="Courier, monospace" font-weight="bold" text-anchor="middle" fill="#0F172A">Basis</text>
 <rect x="110" y="466" width="56" height="26" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
@@ -69,9 +69,9 @@
 <text x="320" y="460" font-size="12" font-weight="bold" fill="#6B46C1">Log</text>
 <text x="320" y="478" font-size="12" font-family="Courier, monospace" fill="#6B46C1">pr-open n</text>
 <text x="320" y="494" font-size="12" font-family="Courier, monospace" fill="#6B46C1">gate-merge</text>
-<text x="320" y="512" font-size="12" font-weight="bold" fill="#B91C1C">pr-merge fehlt: Pull Request open</text>
+<text x="320" y="512" font-size="12" font-weight="bold" fill="#B91C1C"><tspan font-family="Courier, monospace">pr-merge</tspan> fehlt: Pull Request <tspan font-family="Courier, monospace">open</tspan></text>
 <line x1="316" y1="500" x2="560" y2="500" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="320" y="538" font-size="11.5" fill="#64748B">Reparaturweg: Der Merge von F auf M ändert den</text>
-<text x="320" y="553" font-size="11.5" fill="#64748B">Tree nicht. Das Gate schreibt nur pr-merge, main</text>
-<text x="320" y="568" font-size="11.5" fill="#64748B">bleibt bei M.</text>
+<text x="320" y="538" font-size="11.5" fill="#64748B">Reparaturweg: Der Merge von <tspan font-family="Courier, monospace">F</tspan> auf <tspan font-family="Courier, monospace">M</tspan> ändert den</text>
+<text x="320" y="553" font-size="11.5" fill="#64748B">Tree nicht. Das Gate schreibt nur <tspan font-family="Courier, monospace">pr-merge</tspan>, <tspan font-family="Courier, monospace">main</tspan></text>
+<text x="320" y="568" font-size="11.5" fill="#64748B">bleibt bei <tspan font-family="Courier, monospace">M</tspan>.</text>
 </svg>

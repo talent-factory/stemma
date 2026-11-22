@@ -27,9 +27,9 @@
 <text x="56" y="285" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">refs.lock</tspan> entfernen</text>
 <line x1="20" y1="157" x2="292" y2="157" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
 <text x="302" y="153" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz: Eintrag steht</text>
-<text x="302" y="170" font-size="12" fill="#0F172A">Die alte Datei ist ganz da; das Log</text>
-<text x="302" y="185" font-size="12" fill="#0F172A">nennt eine Lease, die nicht galt. Der</text>
-<text x="302" y="200" font-size="12" fill="#0F172A">nächste Aufruf entscheidet von vorn.</text>
+<text x="302" y="170" font-size="12" fill="#0F172A">Eine vorhandene Datei ist ganz da; das</text>
+<text x="302" y="185" font-size="12" fill="#0F172A">Log nennt eine Lease, die nicht galt.</text>
+<text x="302" y="200" font-size="12" fill="#0F172A">Der nächste Aufruf entscheidet von vorn.</text>
 <line x1="20" y1="233" x2="292" y2="233" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
 <text x="302" y="229" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz: Datei ersetzt</text>
 <text x="302" y="246" font-size="12" fill="#0F172A">Der Zustand stimmt; nur die Sperre</text>
