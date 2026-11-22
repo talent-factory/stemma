@@ -400,11 +400,13 @@ impl Repository {
                 }
                 // The commit may be one that the pull request does not bring, a descendant of
                 // one that it does: the walk finds the commits of the pull request below it. A
-                // commit that the store cannot read reaches only itself.
+                // commit that the store does not hold any more (a purge removed it, ADR-014)
+                // reaches only itself; any other failure of the walk refuses the approval.
                 let below: Vec<CommitId> = match history::ancestors(store, *new, Parents::All, None)
                 {
                     Ok(ancestors) => ancestors.into_iter().map(|(id, _)| id).collect(),
-                    Err(_) => vec![*new],
+                    Err(HistoryError::Missing { .. }) => vec![*new],
+                    Err(error) => return Err(error.into()),
                 };
                 let first = below
                     .iter()
@@ -1417,6 +1419,79 @@ mod tests {
             ),
             "{error:?}"
         );
+    }
+
+    /// Three commits, each put on the branch by another actor: all three are writers, and an
+    /// unrelated reviewer still approves.
+    #[test]
+    fn every_actor_that_brought_a_commit_is_a_writer() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let zoe = Actor::human("zoe").unwrap();
+        let max = Actor::human("max").unwrap();
+        push_commit(&repository, &zoe);
+        push_commit(&repository, &max);
+        push_commit(&repository, &mia());
+        for writer in [&zoe, &max, &mia()] {
+            let error = repository
+                .approve_pull(number, writer, None, None, &AllowAll)
+                .unwrap_err();
+            assert!(matches!(error, PullError::SelfApproval { .. }), "{error:?}");
+        }
+        repository
+            .approve_pull(number, &ana(), None, None, &AllowAll)
+            .unwrap();
+    }
+
+    /// The owner sets the branch of the pull request to the lower commit first; Mia moves a branch
+    /// of her own to the one above it afterwards. She did not bring the lower commit, so she may
+    /// approve, and the owner stays barred.
+    #[test]
+    fn a_later_move_to_a_descendant_does_not_count() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let zoe = Actor::human("zoe").unwrap();
+        let lower = push_commit(&repository, &zoe);
+        let tree = repository
+            .objects()
+            .get_commit(&lower)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let above = crate::object::Commit::try_new(
+            tree,
+            vec![lower],
+            crate::change::sample_change(),
+            zoe.clone(),
+            2,
+            "above".to_owned(),
+        )
+        .unwrap();
+        let above = repository.objects().put_commit(&above).unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        let scratch = BranchName::try_new("scratch").unwrap();
+        repository
+            .update_branch(&operation, &scratch, None, above, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap();
+        let recount = repository.recount_approvals(number, None).unwrap();
+        assert_eq!((recount.count(), recount.void().len()), (1, 0));
+        assert!(matches!(
+            repository
+                .approve_pull(number, &daniel(), None, None, &AllowAll)
+                .unwrap_err(),
+            PullError::SelfApproval { .. }
+        ));
     }
 
     /// A reviewer who only makes another branch at the tip, to look at it, wrote nothing.
