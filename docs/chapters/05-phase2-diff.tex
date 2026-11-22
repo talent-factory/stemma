@@ -632,8 +632,11 @@ Die Oberfläche färbt den Text der Zeilen nach der Syntax der Datei (ADR-021). 
 Grammatik nach der Endung des Pfads: \type{.rs} (Rust), \type{.toml}, \type{.sh} und \type{.bash},
 \type{.json} sowie \type{.md} und \type{.markdown} (nur die Blockstruktur von Markdown, also
 Überschriften und Codeblöcke).
+Die Endung gilt ohne Rücksicht auf Gross- und Kleinschreibung.
 Eine Datei mit einer anderen Endung, und ein Text, den die Grammatik nicht lesen kann, behalten
 die Farben ohne Hervorhebung; ein Fehler entsteht dabei nie.
+Dasselbe gilt für eine Zeile, die länger als 2000 Byte ist: Sie behält die Farben ihrer
+Änderung, damit eine sehr lange Zeile die Darstellung nicht bremst.
 
 Die Hervorhebung liest den ganzen Text einer Seite auf einmal, die alte und die neue Seite je
 für sich, und nicht Zeile für Zeile. Ein Block-Kommentar oder ein mehrzeiliger String ist so in

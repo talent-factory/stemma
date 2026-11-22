@@ -199,9 +199,8 @@ impl State {
     /// Applies `input`. Returns `false` once the user asked to quit, and `true` otherwise.
     ///
     /// `apply` lays the stream out for the width, the layout, the wrapping, and the theme of the
-    /// state first,
-    /// so a fresh [`Stream::new`] needs no call of its own. Keep one stream for the whole run, or
-    /// the rows are laid out again with each call.
+    /// state first, so a fresh [`Stream::new`] needs no call of its own. Keep one stream for the
+    /// whole run, or the rows are laid out again with each call.
     pub fn apply(&mut self, input: Input, diff: &Diff, stream: &mut Stream) -> bool {
         if input == Input::Quit {
             return false;
@@ -338,8 +337,8 @@ pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
 
 /// Like [`render`], with the stream of `diff` given, so that a loop that draws the same diff again
 /// and again finds the moved lines once and lays the rows out again only when the width, whether
-/// the layout is split, or the wrapping changes. `stream` must come from [`Stream::new`] for this
-/// very `diff`. The rows are laid out for the width that the state has been told (see
+/// the layout is split, the wrapping, or the theme changes. `stream` must come from
+/// [`Stream::new`] for this very `diff`. The rows are laid out for the width that the state has been told (see
 /// [`Input::Resize`]), which is the width of the frame in a loop that sends it on every change.
 pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut Stream) {
     let [files_area, text_area, help] = areas(frame.area());
@@ -393,7 +392,7 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 
     frame.render_widget(
         Paragraph::new(
-            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap · t theme",
+            "q quit J/K file n/p hunk j/k scroll space/b page 1/2/0 layout w wrap t theme",
         ),
         help,
     );

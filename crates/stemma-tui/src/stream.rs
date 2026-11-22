@@ -125,8 +125,8 @@ impl Stream {
 
     /// Lays the rows out for a pane that is `width` columns wide inside its border, in `layout`,
     /// and the theme of [`Stream::set_theme`], unless the stream is laid out for these very
-    /// settings already. With `wrap`, a line that is
-    /// longer than its column goes on in the rows below; without it, the end of the line is cut.
+    /// settings already. With `wrap`, a line that is longer than its column goes on in the rows
+    /// below; without it, the end of the line is cut.
     /// `diff` must be the diff that the stream was made for; in a debug build a diff with another
     /// number of files is caught.
     pub fn fit(&mut self, diff: &Diff, width: u16, layout: LayoutMode, wrap: bool) {

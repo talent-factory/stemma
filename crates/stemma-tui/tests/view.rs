@@ -743,6 +743,8 @@ fn the_title_of_the_pane_names_the_layout() {
     assert!(!unified.contains("(auto)"), "{unified}");
     let help = screen(&State::default(), &diff);
     assert!(help.contains("1/2/0 layout"), "{help}");
+    // The whole help line fits the default width of 80 columns.
+    assert!(help.contains("w wrap t theme"), "{help}");
 }
 
 #[test]

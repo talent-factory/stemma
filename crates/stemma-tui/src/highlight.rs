@@ -25,37 +25,25 @@ pub(crate) enum Category {
     Constant,
 }
 
-/// The capture names that the grammars use, in the order of [`CATEGORIES`]. A capture such as
+/// The capture names that the grammars use, each with its category. A capture such as
 /// `keyword.control` matches the name `keyword`; a capture that no name matches is not coloured.
-const NAMES: [&str; 10] = [
-    "comment",
-    "string",
-    "number",
-    "keyword",
-    "function",
-    "type",
-    "property",
-    "constant",
+/// The index of an entry is the index that the highlighter reports.
+const CAPTURES: [(&str, Category); 10] = [
+    ("comment", Category::Comment),
+    ("string", Category::String),
+    ("number", Category::Number),
+    ("keyword", Category::Keyword),
+    ("function", Category::Function),
+    ("type", Category::Type),
+    ("property", Category::Property),
+    ("constant", Category::Constant),
     // The captures of the block grammar of Markdown: a heading and a code block.
-    "text.title",
-    "text.literal",
+    ("text.title", Category::Keyword),
+    ("text.literal", Category::String),
 ];
 
-/// The category of the capture name with the same index in [`NAMES`].
-const CATEGORIES: [Category; 10] = [
-    Category::Comment,
-    Category::String,
-    Category::Number,
-    Category::Keyword,
-    Category::Function,
-    Category::Type,
-    Category::Property,
-    Category::Constant,
-    Category::Keyword,
-    Category::String,
-];
-
-/// The colours of the view. `Dark` suits a terminal with a dark background. `Plain` keeps these colours and turns the highlighting off.
+/// The colours of the view. `Dark` suits a terminal with a dark background. `Plain` has the
+/// colours of `Dark` and turns the highlighting off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Theme {
@@ -143,7 +131,7 @@ impl Theme {
 }
 
 /// The grammars that the view knows.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Language {
     Rust,
     Toml,
@@ -157,7 +145,7 @@ impl Language {
     fn of(path: &str) -> Option<Self> {
         let name = path.rsplit('/').next().unwrap_or(path);
         let (_, extension) = name.rsplit_once('.')?;
-        Some(match extension {
+        Some(match extension.to_ascii_lowercase().as_str() {
             "rs" => Self::Rust,
             "toml" => Self::Toml,
             "sh" | "bash" => Self::Bash,
@@ -206,7 +194,7 @@ impl Language {
         cell.get_or_init(|| {
             let mut configuration =
                 HighlightConfiguration::new(language.into(), "stemma", query, "", "").ok()?;
-            configuration.configure(&NAMES);
+            configuration.configure(&CAPTURES.map(|(name, _)| name));
             Some(configuration)
         })
         .as_ref()
@@ -255,7 +243,9 @@ fn highlight(configuration: &HighlightConfiguration, lines: &[String]) -> Option
     for event in events {
         match event.ok()? {
             HighlightEvent::HighlightStart(highlight) => {
-                stack.push(*CATEGORIES.get(highlight.0)?);
+                let capture = CAPTURES.get(highlight.0);
+                debug_assert!(capture.is_some(), "a capture outside the table");
+                stack.push(capture?.1);
             }
             HighlightEvent::HighlightEnd => {
                 stack.pop();
@@ -322,6 +312,8 @@ mod tests {
     fn an_unknown_extension_has_no_language() {
         assert!(Language::of("a.txt").is_none());
         assert!(Language::of("Makefile").is_none());
+        assert_eq!(Language::of("docs/README.MD"), Some(Language::Markdown));
+        assert_eq!(Language::of("SRC/Lib.RS"), Some(Language::Rust));
         assert!(FileHighlights::of("a.txt", &lines("x\n"), &[]).is_none());
     }
 

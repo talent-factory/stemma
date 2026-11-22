@@ -44,7 +44,8 @@ Candidates, measured on 2026-11-22 in a scratch crate against `deny.toml` (toolc
   them (ADR-016). The version of `tree-sitter-highlight` is exact, until the workspace moves to
   Rust 1.90.
 - **The grammar follows the extension of the path.** `.rs`, `.toml`, `.sh`, `.bash`, `.json`,
-  `.md`, `.markdown`. Any other file, and a text that cannot be parsed, is drawn without highlighting.
+  `.md`, `.markdown`, in any letter case. Any other file, a text that cannot be parsed, and a line
+  longer than 2000 bytes are drawn without highlighting.
   Markdown uses the block grammar only: the inline grammar needs injections.
 - **A whole side is parsed at once**, the old and the new text each, so that a multi-line
   construct is coloured on every line. The parser tolerates errors.
