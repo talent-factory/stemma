@@ -228,7 +228,11 @@ impl Repository {
     ///
     /// Returns [`CheckError::TipReachesHead`] if `tip` reaches `commit`, and
     /// [`CheckError::History`] if a commit cannot be read.
-    fn change_authors(&self, commit: &CommitId, tip: &CommitId) -> Result<Vec<Actor>, CheckError> {
+    pub(super) fn change_authors(
+        &self,
+        commit: &CommitId,
+        tip: &CommitId,
+    ) -> Result<Vec<Actor>, CheckError> {
         let store = self.objects();
         let known: HashSet<CommitId> = history::ancestors(store, *tip, Parents::All, None)?
             .into_iter()

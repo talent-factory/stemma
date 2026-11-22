@@ -3,7 +3,8 @@
 **Status:** Accepted (decided in STEMMA-229). The evidence of the checks (STEMMA-240), the
 core of the gate (STEMMA-241: the rule table, the optimistic swap, the objects before the lock),
 and the bounds (STEMMA-242: the pause at a red tip with the exemption of a declared repair, the
-reservation, `max_unverified`, and the bisection) are implemented. Not implemented, and left to
+reservation, `max_unverified`, and the window and helper for the bisection; the gate itself does
+not bisect) are implemented. Not implemented, and left to
 the caller of the gate until their slices land: the approvals (ADR-004), the rule that the
 authors of a change are registered actors, and the command. Their slices are on the map of
 phase 4.
@@ -106,27 +107,35 @@ is repeated only for levels 2 and 3.
 
 ### Bounds for retries and for the unverified window
 
-The gate applies both bounds, and the pause at a red tip below, after the rule table and before
-it writes the commit `M`; a change that has to wait gets `GateError::Paused`, and nothing is
-written. It reads them again for every attempt. The rules are pure functions over the log
-(`stemma_core::bounds`); the log is the only state, so no entry is new. Where the log lacks a
+The gate applies the two bounds, and the pause at a red tip below, after the rule table and
+before it writes the commit `M`. A change that has to wait gets `GateError::Paused`; no entry, no
+commit `M`, and no reference change is written (the blobs and trees of the merge may stay,
+ADR-014). The gate reads the bounds again for every attempt. The rules are pure functions over the
+log (`stemma_core::bounds`); the log is the only state, so no entry is new. Where the log lacks a
 fact, the implementation takes the nearest one it has:
 
 - The log records finished runs only. "Until a run on the tip has started" is therefore "until a
   finished run covers a newer commit". The unverified count is the position of the latest verified
   tip in the history of `main`, and all of `main` if no run on a tip exists.
 - The duration of a check run is not recorded. It is the time between the entry of the run and the
-  entry before it (the previous run of the change, or the opening). A time is a claim of its
-  writer, so a reservation lasts at most one hour, and a reservation that begins in the future
-  holds nothing yet.
+  entry of the run before it in the log (any run of the change), or the opening for its first run.
+  A time is a claim of its writer, so a reservation lasts at most one hour, and a reservation that
+  begins in the future holds nothing yet.
 - An invalidated run is a passing result for the head whose base is not the current tip. The runs
-  count in a row up to a failing result or a result for the current tip, one per base. The
-  reservation begins at the `N`-th run, and again at every further `N`; the oldest change that
-  holds one wins. A run counts in an enforcing repository only with a proof of its writer, for the
-  same reason as a check of a change: anyone can write the entry of a run.
+  count in a row up to a failing result, one per base. A result for the current tip counts as no
+  run and does not end the reservation: it is what the holder needs to merge. The reservation
+  begins at the `N`-th run, and again at every further `N`; the oldest change that holds one wins,
+  and only a change of level 2 or 3 holds one.
+- Only the runs of a writer who is independent of the change count for its bounds (the rule of
+  `check::is_independent`): the opener and the authors of a change could otherwise clear a red tip
+  or start a reservation for their own change. In an enforcing repository a run counts only with a
+  proof of its writer, a failing one as well: anyone can write the entry of a run.
 - Whoever calls the gate with a level of its own (`merge_gate`) reads no policy: the bounds have
   their defaults, and the reservation is not applied, as the levels of the other changes are the
   policy's to tell (`merge_gate_by_policy`).
+- Where one commit has a passing and a failing run, the pass stands (the core reads the last green
+  tip from the passing runs alone). In the open mode an actor can therefore write a pass for a red
+  commit; the open mode trusts every actor, and the proof of the register closes it.
 
 Two bounds keep the gate from starving a change and from running far ahead of its checks. Both
 values are in the policy file (ADR-004), so changing them is level 3: a human owner and an ADR. An

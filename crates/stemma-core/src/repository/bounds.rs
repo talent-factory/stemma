@@ -2,7 +2,8 @@
 //!
 //! [`crate::bounds`] holds the rules as pure functions over the log. This module reads the log, the
 //! history of `main`, and the pull requests, applies them for one merge, and names the reason if
-//! the merge has to wait ([`Pause`]). Three bounds can pause a merge:
+//! the merge has to wait ([`Pause`]). Three pauses can hold a merge back, and two of them are
+//! bounds with values in the policy:
 //!
 //! - **A red tip.** While the latest verified tip is red, changes of level 2 and 3 wait; levels 0
 //!   and 1 continue.
@@ -20,8 +21,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::difference;
-use super::{now, CheckError, GateError, Repository};
+use super::{now, CheckError, GateError, LevelError, PullError, Repository};
 use crate::bounds::{self, Verification};
+use crate::check::{self, Check};
 use crate::history::{self, Parents};
 use crate::merge::merge_commits;
 use crate::object::{CommitId, EntryMode, ObjectId, TreeId};
@@ -30,8 +32,9 @@ use crate::pull::{PullRequest, TARGET};
 use crate::refs::BranchName;
 use crate::register::Register;
 
-/// Why the gate does not merge a change yet. Nothing was written; the call can be repeated when
-/// the reason has gone.
+/// Why the gate does not merge a change yet. No entry, no merge commit, and no reference change
+/// was written (the blobs and trees of the merge may stay in the store, ADR-014); the call can be
+/// repeated when the reason has gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pause {
@@ -110,7 +113,10 @@ impl Repository {
         register: Option<&Register>,
     ) -> Result<Option<Pause>, GateError> {
         let tip = subject.tip;
-        let checks = self.proven_checks(register)?;
+        // Only a run of a writer who is independent of the change counts for its bounds: the
+        // opener, the authors, and their sponsors could clear a red tip for their own change.
+        let proven = self.proven_checks(register)?;
+        let checks = self.independent_checks(&proven, subject.pull, &tip, register)?;
         let main = self.main_history(&tip)?;
         let verification = bounds::verification(&checks, &main);
 
@@ -133,17 +139,28 @@ impl Repository {
         let n = policy.reservation_after();
         let mut candidates = Vec::new();
         for other in self.pull_requests()?.iter().filter(|pull| pull.is_open()) {
-            let Some(window) = bounds::reservation(&checks, other.head(), &tip, other.opened(), n)
-            else {
-                continue;
+            let own = other.number() == subject.pull.number();
+            let runs = if own { &checks } else { &proven };
+            let held = |runs: &[Check]| {
+                bounds::reservation(runs, other.head(), &tip, other.opened(), n)
+                    .filter(|window| window.holds_at(now()))
             };
-            if !window.holds_at(now()) {
+            // A cheap look first; the runs of an independent writer decide.
+            if held(runs).is_none() {
                 continue;
             }
-            let level = if other.number() == subject.pull.number() {
+            let window = if own {
+                held(&checks)
+            } else {
+                held(&self.independent_checks(&proven, other, &tip, register)?)
+            };
+            let Some(window) = window else {
+                continue;
+            };
+            let level = if own {
                 Some(subject.level)
             } else {
-                self.level_of_other(policy, &tip, other)
+                self.level_of_other(policy, &tip, other)?
             };
             if level.is_some_and(|level| level >= RiskLevel::Two) {
                 candidates.push((other.number(), other.opened(), window));
@@ -183,7 +200,7 @@ impl Repository {
         let objects = self.objects();
         let after = self
             .files_with_modes_of(*red)
-            .map_err(|error| GateError::Level(super::LevelError::Diff(error)))?;
+            .map_err(|error| GateError::Level(LevelError::Diff(error)))?;
         // The commit before the red one on `main`; the root has none and changed all its files.
         let before = match main
             .iter()
@@ -192,40 +209,73 @@ impl Repository {
         {
             Some(parent) if parent < main.len() => self
                 .files_with_modes_of(main[parent])
-                .map_err(|error| GateError::Level(super::LevelError::Diff(error)))?,
+                .map_err(|error| GateError::Level(LevelError::Diff(error)))?,
             _ => BTreeMap::new(),
         };
         let red_paths = changed_paths(&before, &after);
         let tip_files = self
             .files_with_modes_of(subject.tip)
-            .map_err(|error| GateError::Level(super::LevelError::Diff(error)))?;
+            .map_err(|error| GateError::Level(LevelError::Diff(error)))?;
         let merged = difference::files_with_modes(objects, subject.tree)
-            .map_err(|error| GateError::Level(super::LevelError::Diff(error)))?;
+            .map_err(|error| GateError::Level(LevelError::Diff(error)))?;
         Ok(bounds::touches_the_red_paths(
             &red_paths,
             &changed_paths(&tip_files, &merged),
         ))
     }
 
-    /// The level of another open pull request merged onto the tip, or `None` if it cannot be
-    /// told: the branch moved away from the opening, the merge conflicts, or a tree cannot be
-    /// read. Such a change cannot land as it is, so it holds no reservation.
+    /// `checks` without the runs of a writer who is not independent of the change `pull`
+    /// ([`check::is_independent`]: the opener, the authors of the commits `tip..head`, and their
+    /// sponsors). A pull request that `tip` reaches has no authors of its own to exclude.
+    fn independent_checks(
+        &self,
+        checks: &[Check],
+        pull: &PullRequest,
+        tip: &CommitId,
+        register: Option<&Register>,
+    ) -> Result<Vec<Check>, GateError> {
+        let authors = match self.change_authors(pull.head(), tip) {
+            Ok(authors) => authors,
+            Err(CheckError::TipReachesHead { .. }) => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(checks
+            .iter()
+            .filter(|check| {
+                check::is_independent(check.writer(), pull.opener(), &authors, register)
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// The level of another open pull request merged onto the tip, or `None` if the change cannot
+    /// land as it is, so that it holds no reservation: its branch is gone or moved away from the
+    /// opening, the merge conflicts, or the merge changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// A failure to read the refs, the objects, or the policy is an error: a reservation that
+    /// vanishes with a flaky store would let others pass the change that waits.
     fn level_of_other(
         &self,
         policy: &Policy,
         tip: &CommitId,
         other: &PullRequest,
-    ) -> Option<RiskLevel> {
-        if self.branch_head(other.branch()).ok()? != *other.head() {
-            return None;
+    ) -> Result<Option<RiskLevel>, GateError> {
+        match self.branch_head(other.branch()) {
+            Ok(head) if head == *other.head() => {}
+            Ok(_) | Err(PullError::NoSuchBranch { .. }) => return Ok(None),
+            Err(error) => return Err(error.into()),
         }
-        let sum = merge_commits(self.objects(), *tip, *other.head())
-            .ok()?
-            .simplify();
+        let sum = merge_commits(self.objects(), *tip, *other.head())?.simplify();
         let [tree] = sum.terms() else {
-            return None;
+            return Ok(None);
         };
-        self.level_of_change(policy, tip, *tree).ok()
+        match self.level_of_change(policy, tip, *tree) {
+            Ok(level) => Ok(Some(level)),
+            Err(LevelError::NoChange) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// The window between the last green and the first red tip, oldest commit first: the commits

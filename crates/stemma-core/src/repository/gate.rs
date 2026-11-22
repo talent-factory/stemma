@@ -4,8 +4,8 @@
 //! and moves `main` from `T` to the result `M` by compare and swap. Nothing is held while a check
 //! runs, and nothing is held between the steps:
 //!
-//! 1. Read `T`, merge the change onto `T`, and write the blobs, the trees, and the commit `M`
-//!    (one parent, `T`, so that `main` stays linear). A conflict ends the call here: it never
+//! 1. Read `T`, merge the change onto `T`, and write the blobs and the trees (the commit `M` follows
+//!    after step 2; it has one parent, `T`, so that `main` stays linear). A conflict ends the call here: it never
 //!    enters `main`.
 //! 2. Apply the rule table of ADR-019 to the results of the checks (levels 0 and 1: a clean merge
 //!    onto the new tip is enough; levels 2 and 3: a result with `T` as its base).
@@ -348,7 +348,8 @@ impl Repository {
     /// The bounds of ADR-019 are applied after the rule table ([`GateError::Paused`], see
     /// [`Pause`]): the pause of the levels 2 and 3 while the latest verified tip is red (a declared
     /// repair is exempt), the window `max_unverified`, and the reservation. Here, where the caller
-    /// gives the level and no policy is read, `max_unverified` has its default of 10 and no
+    /// gives the level and no policy is read, `max_unverified` has its default
+    /// ([`DEFAULT_MAX_UNVERIFIED`](crate::policy::DEFAULT_MAX_UNVERIFIED)) and no
     /// reservation is applied, as the levels of the other changes are the policy's to tell; the
     /// pause and the window hold in both modes. The gate does not yet ask for the approvals of
     /// ADR-004 (none is asked here), nor for the rule that the authors of a change are registered
@@ -393,7 +394,8 @@ impl Repository {
     /// is asked once, before anything is written),
     /// [`GateError::Pull`] for a pull request that is unknown or not open,
     /// [`GateError::BranchMoved`], [`GateError::NoMain`], [`GateError::Conflict`],
-    /// [`GateError::NotChecked`], [`GateError::Paused`], and [`GateError::Contended`]. For all of these nothing is
+    /// [`GateError::NotChecked`], [`GateError::Paused`], and [`GateError::Contended`]. For all of
+    /// these nothing is
     /// written but objects. [`GateError::MoveFailed`] and [`GateError::PullNotRecorded`] leave
     /// the entry of the move, as above. The other variants wrap a failure of the store, the
     /// references, or the log.
@@ -2102,7 +2104,7 @@ mod tests {
         commit: CommitId,
         base: Option<CommitId>,
         result: CheckResult,
-    ) {
+    ) -> Entry {
         let name = OperationName::try_new("check").unwrap();
         let allowed = f
             .repository
@@ -2110,7 +2112,7 @@ mod tests {
             .unwrap();
         let lock = f.repository.refs_store().lock_writer(&allowed).unwrap();
         let entry = crate::oplog::CheckEntry::new(time, human("ana"), commit, base, result);
-        f.repository.append_check(&lock, &entry).unwrap();
+        f.repository.append_check(&lock, &entry).unwrap()
     }
 
     /// A branch `name` with one commit on `parent` that holds `files`, and its open pull request,
@@ -2498,6 +2500,13 @@ mod tests {
 
         // The holder lands with a result for the tip, and the reservation ends with it.
         f.check(tip);
+        assert!(
+            matches!(
+                by_policy(&f, other, &Mode::Open),
+                Err(GateError::Paused { .. })
+            ),
+            "its own result for the tip does not end the reservation"
+        );
         let merged = gate_by_policy(&f, &Mode::Open).unwrap();
         assert_eq!(f.main(), merged.commit);
         let merged =
@@ -2660,5 +2669,239 @@ mod tests {
         let green = fixture("zero\n");
         green.record(green.base, None, CheckResult::Pass, "ana");
         assert!(green.repository.red_window(None).unwrap().is_empty());
+    }
+
+    fn by_policy(f: &Fixture, number: u64, mode: &Mode) -> Result<GateMerge, GateError> {
+        f.repository
+            .merge_gate_by_policy(number, mode, &human("daniel"), &AllowAll)
+    }
+
+    /// The pull request `zfile` of level 0 (`z.txt`) on `tip`, with a result for `tip`.
+    fn z_change(f: &Fixture, tip: CommitId, policy: &str) -> u64 {
+        let (z, number) = open_branch(
+            f,
+            "zfile",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("z.txt", "z\n"),
+                (crate::policy::FILE_NAME, policy),
+            ],
+            None,
+        );
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        number
+    }
+
+    #[test]
+    fn the_holder_keeps_the_reservation_when_its_result_for_the_tip_is_recorded() {
+        // Its fresh result must not end the reservation before it merges, or any other change
+        // lands first and invalidates the result again.
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        lose_runs(&f, now(), 100);
+        let other = z_change(&f, tip, BOUNDED);
+        f.record(tip, None, CheckResult::Pass, "ana");
+        f.check(tip);
+
+        let error = by_policy(&f, other, &Mode::Open).unwrap_err();
+
+        assert!(matches!(paused(error), Pause::Reserved { holder, .. } if holder == f.number));
+    }
+
+    #[test]
+    fn a_closed_change_and_a_holder_of_level_0_hold_no_reservation() {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        lose_runs(&f, now(), 100);
+        let other = z_change(&f, tip, BOUNDED);
+        f.record(tip, None, CheckResult::Pass, "ana");
+        f.repository
+            .close_pull(f.number, &human("mia"), None, &AllowAll)
+            .unwrap();
+        assert!(by_policy(&f, other, &Mode::Open).is_ok(), "a closed change");
+
+        // `a.txt` has level 0, so the feature is no change of level 2 or 3.
+        let g = fixture("zero\n");
+        let policy =
+            "stemma-policy 1\nreservation 2\nmax-unverified 3\nlevel 0 a.txt\nlevel 0 z.txt\n";
+        let tip = land_policy(&g, policy);
+        lose_runs(&g, now(), 100);
+        let other = z_change(&g, tip, policy);
+        g.record(tip, None, CheckResult::Pass, "ana");
+        assert!(
+            by_policy(&g, other, &Mode::Open).is_ok(),
+            "a holder of level 0"
+        );
+    }
+
+    #[test]
+    fn a_declared_repair_goes_ahead_of_a_reservation() {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        let red = commit_of(
+            &f.repository,
+            tip,
+            &[("c.txt", "red\n"), (crate::policy::FILE_NAME, BOUNDED)],
+            "zoe",
+        );
+        set_branch(&f.repository, "main", Some(tip), red);
+        f.record(red, None, CheckResult::Fail, "ana");
+        lose_runs(&f, now(), 100);
+        let (fix, repair) = open_branch(
+            &f,
+            "fix",
+            red,
+            &[("c.txt", "zero\n"), (crate::policy::FILE_NAME, BOUNDED)],
+            Some(red),
+        );
+        f.repository
+            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+
+        let merged = by_policy(&f, repair, &Mode::Open).unwrap();
+
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn in_an_enforcing_repository_runs_without_a_proof_make_no_reservation() {
+        for proven in [false, true] {
+            let f = fixture("zero\n");
+            let register = register();
+            let tip = land_policy(&f, BOUNDED);
+            let root = f.repository.refs().working_copy().unwrap();
+            for (time, base) in [(now() - 100, root), (now(), f.base)] {
+                let entry = record_at(&f, time, f.head, Some(base), CheckResult::Pass);
+                if proven {
+                    prove(&f, &entry);
+                }
+            }
+            // The result of the other change and the run on the tip carry proofs in both cases.
+            let other = z_change(&f, tip, BOUNDED);
+            let run = f.record(tip, None, CheckResult::Pass, "ana");
+            prove(&f, &run);
+            let entries = f.repository.oplog().entries().unwrap();
+            let z_check = entries
+                .iter()
+                .rev()
+                .find(|entry| {
+                    entry
+                        .check()
+                        .is_some_and(|check| *check.commit() != f.head && check.base().is_some())
+                })
+                .unwrap();
+            prove(&f, z_check);
+
+            let result = by_policy(&f, other, &Mode::Enforcing(register));
+
+            if proven {
+                assert!(matches!(
+                    paused(result.unwrap_err()),
+                    Pause::Reserved { .. }
+                ));
+            } else {
+                assert!(result.is_ok(), "no reservation without a proof: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unproven_pass_does_not_clear_a_red_tip_in_an_enforcing_repository() {
+        let f = fixture("zero\n");
+        let register = register();
+        let entry = f.record(f.head, Some(f.base), CheckResult::Pass, "ana");
+        prove(&f, &entry);
+        let failing = f.record(f.base, None, CheckResult::Fail, "ana");
+        prove(&f, &failing);
+        // The pass is only written, never signed.
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        let before = f.entries();
+
+        let error = f
+            .repository
+            .merge_gate(
+                f.number,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap_err();
+
+        assert_eq!(paused(error), Pause::RedTip { red: f.base });
+        assert_eq!(f.entries(), before);
+    }
+
+    #[test]
+    fn a_run_of_the_opener_or_an_author_does_not_clear_a_red_tip_for_their_change() {
+        let f = fixture("zero\n");
+        f.record(f.base, None, CheckResult::Fail, "ana");
+        f.check(f.base);
+        // Mia opened the change and wrote its commit.
+        f.record(f.base, None, CheckResult::Pass, "mia");
+        assert_eq!(
+            paused(f.gate(RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red: f.base }
+        );
+
+        f.record(f.base, None, CheckResult::Pass, "zoe");
+        let merged = f.gate(RiskLevel::Two).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn one_commit_less_than_the_bound_lands() {
+        let f = fixture("zero\n");
+        let policy = land_policy(&f, "stemma-policy 1\nmax-unverified 3\nlevel 0 a.txt\n");
+        let tip = commit_of(
+            &f.repository,
+            policy,
+            &[
+                ("b.txt", "b\n"),
+                ("c.txt", "zero\n"),
+                (
+                    crate::policy::FILE_NAME,
+                    "stemma-policy 1\nmax-unverified 3\nlevel 0 a.txt\n",
+                ),
+            ],
+            "zoe",
+        );
+        set_branch(&f.repository, "main", Some(policy), tip);
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        f.check(tip);
+        // Two commits lie after `base`, and the bound is three.
+        let merged = gate_by_policy(&f, &Mode::Open).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn the_red_window_runs_from_after_the_last_green_to_the_first_red_tip() {
+        let f = fixture("zero\n");
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        let mut chain = Vec::new();
+        let mut tip = f.base;
+        for at in 0..3 {
+            tip = commit_of(
+                &f.repository,
+                tip,
+                &[("c.txt", "zero\n"), ("n.txt", &at.to_string())],
+                "zoe",
+            );
+            set_branch(&f.repository, "main", Some(f.main()), tip);
+            chain.push(tip);
+        }
+        f.record(chain[1], None, CheckResult::Fail, "ana");
+
+        assert_eq!(f.repository.red_window(None).unwrap(), [chain[0], chain[1]]);
+        assert!(
+            f.repository
+                .red_window(Some(&register()))
+                .unwrap()
+                .is_empty(),
+            "no proof"
+        );
     }
 }

@@ -35,7 +35,8 @@ pub struct Verification {
     /// The oldest commit newer than the last green tip that a failing run covered: the first red
     /// tip. `Some` exactly when the latest verified tip is red.
     pub first_red: Option<usize>,
-    /// The newest commit that any finished run covered: the latest verified tip.
+    /// The newest commit that any finished run on a tip of `main` covered: the latest verified
+    /// tip.
     pub latest_verified: Option<usize>,
 }
 
@@ -88,8 +89,9 @@ pub fn unverified(verification: &Verification, main_len: usize) -> usize {
     verification.latest_verified.unwrap_or(main_len)
 }
 
-/// Whether the commit `repairs` lies between the last green and the first red tip: at or before
-/// the first red tip, and after the last green tip. Without a red tip no commit does.
+/// Whether the commit `repairs` lies between the last green and the first red tip: the first red
+/// tip itself or older (a larger position), and newer than the last green tip. Without a red tip
+/// no commit does.
 pub fn is_declared_repair(
     verification: &Verification,
     main: &[CommitId],
@@ -138,19 +140,21 @@ impl Window {
     }
 }
 
-/// The reservation of one change of level 2 or 3, or `None`.
+/// The reservation of one change, or `None`. The caller restricts it to the levels 2 and 3.
 ///
 /// An *invalidated run* is a passing result for `head` whose base is not the current `tip`: `main`
 /// moved after the run, so the rule table asks for a new one (the level 2 and 3 rule). The runs
-/// count *in a row*: from the newest back, up to a failing result (the change failed) or a result
-/// for the current tip (a valid result exists, nothing is invalidated). Of several results for the
-/// same base the oldest counts once.
+/// count *in a row*: from the newest back, up to a failing result (the change failed). A result
+/// for the current `tip` counts as no run and breaks nothing: it is what the holder needs to merge,
+/// and the reservation holds until the change is merged, closed, or the window ends. Of several
+/// results for the same base the oldest counts once.
 ///
 /// With `n` runs in a row the change holds a reservation, and again after every further `n` runs.
 /// The window starts at the entry of the `n`-th run of the last group, and lasts twice the
 /// duration of that run. The log has no start of a run, so the duration is the time since the
-/// entry before (the previous run of the change, or the opening at `opened` for the first), at
-/// least 0. The window is at most [`MAX_RESERVATION_SECONDS`] long. `n` of 0 counts as 1.
+/// entry of the run before it in the log (any run of the change, whatever its base or result), or
+/// since the opening at `opened` if it is the first run of the change, at least 0. The window is
+/// at most [`MAX_RESERVATION_SECONDS`] long. `n` of 0 counts as 1.
 pub fn reservation(
     checks: &[Check],
     head: &CommitId,
@@ -163,31 +167,29 @@ pub fn reservation(
         .iter()
         .filter(|check| check.commit() == head && check.base().is_some())
         .collect();
-    // The row: from the newest run back, up to a failure or a result for the current tip.
-    let mut row = runs.len();
-    for (at, run) in runs.iter().enumerate().rev() {
-        if !run.passed() || run.base() == Some(tip) {
-            break;
-        }
-        row = at;
-    }
+    // The row: from the newest run back, up to a failure.
+    let row = runs
+        .iter()
+        .rposition(|run| !run.passed())
+        .map_or(0, |at| at + 1);
     // Of several results for one base the oldest counts, once.
-    let mut counted: Vec<&Check> = Vec::new();
-    for run in &runs[row..] {
-        if counted.iter().all(|seen| seen.base() != run.base()) {
-            counted.push(run);
+    let mut counted: Vec<usize> = Vec::new();
+    for at in row..runs.len() {
+        let base = runs[at].base();
+        if base != Some(tip) && counted.iter().all(|seen| runs[*seen].base() != base) {
+            counted.push(at);
         }
     }
     let group = counted.len() / n;
     if group == 0 {
         return None;
     }
-    let last = group * n - 1;
-    let from = counted[last].time();
+    let last = counted[group * n - 1];
+    let from = runs[last].time();
     let before = if last == 0 {
         opened
     } else {
-        counted[last - 1].time()
+        runs[last - 1].time()
     };
     let length = from
         .saturating_sub(before)
@@ -465,10 +467,14 @@ mod tests {
             (2, 7, Some(2), Pass),
             (3, 7, Some(0), Pass),
         ]);
-        assert!(
-            reservation(&valid, &id(7), &id(0), 0, 2).is_none(),
-            "valid for the tip"
+        // A result for the tip is what the holder needs: it ends nothing and counts for nothing.
+        let window = reservation(&valid, &id(7), &id(0), 0, 2).unwrap();
+        assert_eq!(
+            window,
+            Window { from: 2, until: 4 },
+            "the reservation survives it"
         );
+        assert!(reservation(&valid, &id(7), &id(0), 0, 3).is_none());
         let twice = log(&[
             (1, 7, Some(1), Pass),
             (2, 7, Some(1), Pass),
@@ -479,6 +485,42 @@ mod tests {
             "two bases only"
         );
         assert!(reservation(&twice, &id(7), &id(0), 0, 2).is_some());
+    }
+
+    #[test]
+    fn the_duration_is_the_time_since_the_run_before_in_the_log() {
+        // A retry on the base B at 100 does not widen the window of the run at 110.
+        let found = log(&[
+            (0, 7, Some(1), Pass),
+            (10, 7, Some(2), Pass),
+            (100, 7, Some(2), Pass),
+            (110, 7, Some(3), Pass),
+        ]);
+        let window = reservation(&found, &id(7), &id(0), 0, 3).unwrap();
+        assert_eq!(
+            window,
+            Window {
+                from: 110,
+                until: 130
+            }
+        );
+    }
+
+    #[test]
+    fn the_row_starts_after_a_failure_and_a_zero_n_counts_as_one() {
+        let found = log(&[
+            (1, 7, Some(1), Pass),
+            (2, 7, Some(2), Fail),
+            (3, 7, Some(3), Pass),
+            (5, 7, Some(4), Pass),
+        ]);
+        assert!(
+            reservation(&found, &id(7), &id(0), 0, 3).is_none(),
+            "only two after the failure"
+        );
+        let window = reservation(&found, &id(7), &id(0), 0, 2).unwrap();
+        assert_eq!(window, Window { from: 5, until: 9 });
+        assert!(reservation(&found, &id(7), &id(0), 0, 0).is_some());
     }
 
     #[test]
