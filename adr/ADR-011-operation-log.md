@@ -222,10 +222,12 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again. Version 3 came with the purge (ADR-014), version 4 with
   the hash chain (below), version 8 with the lease entries, version 9 with the pull request
-  entries, version 10 with the approval entry, version 11 with the check entry, and version 12 with the kind in the stub (below).
+  entries, version 10 with the approval entry, version 11 with the check entry, and version 12 
+  with the kind in the stub (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
-  that starts the chain. The writer writes this version for a change and a `purge` entry, and a stub (version 4 below);
+  that starts the chain. The writer writes this version for a change and a `purge` entry; a new stub has version 4
+  (below), a stub that a purge replaces again keeps its version,
   only the stub of an entry from before the chain keeps version 2. The reader checks the chain: a
   change, a removal, an insertion, or a swap of entries breaks it at that place
   (`OpLogError::ChainBroken`, which names the hash it expected and the one it found).

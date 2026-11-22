@@ -548,7 +548,7 @@ impl fmt::Display for EntryError {
             }
             Self::StubBodyOutsideChain(number) => write!(
                 f,
-                "the stub {number} was written before the hash chain, but has the hash of a body"
+                "the stub {number} was written before the hash chain, but has the hash of a body or a kind"
             ),
             Self::StubWithoutBody(number) => write!(
                 f,
@@ -953,7 +953,8 @@ pub struct Stub {
 /// What a stub replaced, as far as the proof of the entry needs to know (STEMMA-256). The proof of
 /// an approval signs the pull request and the head, which a purge removes, so the stub of an
 /// approval cannot check it; the proof of any other entry signs the hash of the entry, which the
-/// stub keeps. The kind is not covered by the hash of the entry.
+/// stub keeps. The kind is not covered by the hash of the entry,
+/// so it is a convenience for an honest log and no boundary against one that is rewritten.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StubKind {
     /// An approval of a pull request.
@@ -1820,7 +1821,7 @@ impl Entry {
     /// [`EntryError::FirstAfter`] for entry 1 that names an entry before it,
     /// [`EntryError::StubNotBefore`] if a purge lists its own number or a later one,
     /// [`EntryError::StubBodyOutsideChain`] for a stub outside the chain that has the hash of a
-    /// body, and [`EntryError::StubWithoutBody`] for a stub in the chain that has none. A
+    /// body or a kind, and [`EntryError::StubWithoutBody`] for a stub in the chain that has none. A
     /// [`Purge`] checks its own bounds when it is built, so every entry that is built here reads
     /// back equal.
     pub(crate) fn linked(number: u64, chain: Chain, record: Record) -> Result<Self, EntryError> {
@@ -1837,10 +1838,9 @@ impl Entry {
                     purge: number,
                 });
             }
-            (Record::Stub(stub), Chain::Unchained) if stub.replaced.is_some() => {
-                return Err(EntryError::StubBodyOutsideChain(number));
-            }
-            (Record::Stub(stub), Chain::Unchained) if stub.body.is_some() => {
+            (Record::Stub(stub), Chain::Unchained)
+                if stub.replaced.is_some() || stub.body.is_some() =>
+            {
                 return Err(EntryError::StubBodyOutsideChain(number));
             }
             (Record::Stub(stub), Chain::Start | Chain::After(_)) if stub.body.is_none() => {
@@ -2906,7 +2906,7 @@ impl fmt::Display for EntryMalformed {
             Self::UnknownHeadValue => "expected `-`, `branch:<name>`, or `commit:<id>`",
             Self::TooLong => "the file is too large to be an entry",
             Self::ExpectedStubOrPurge => {
-                "expected `stub` (version 2), `stub <hash>` (version 3), or `operation purge`"
+                "expected `stub` (version 2), `stub <hash>` (version 3), `stub <hash> <kind>` (version 4), or `operation purge`"
             }
             Self::ExpectedCommits => "expected `commits <n>`",
             Self::BadTags => "expected `tags <n>` with a count above 0, or no line `tags`",
@@ -7103,6 +7103,17 @@ mod tests {
         }
         // A stub without a kind is the older one: version 3, and the hash does not change.
         let old = stub(None);
+        // A kind has no place outside the chain.
+        let outside = Stub {
+            time: TIME,
+            actor: human(),
+            body: None,
+            replaced: Some(StubKind::Other),
+        };
+        assert_eq!(
+            Entry::linked(2, Chain::Unchained, Record::Stub(outside)),
+            Err(EntryError::StubBodyOutsideChain(2))
+        );
         assert!(old.encode().starts_with(b"stemma-oplog 3\n"));
         assert_eq!(old.hash(), stub(Some(StubKind::Other)).hash());
         // Version 4 has the kind, and nothing else.

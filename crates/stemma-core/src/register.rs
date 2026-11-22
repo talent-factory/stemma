@@ -1773,10 +1773,13 @@ pub fn check_proofs(
                 // that does not verify through; the stub of any other entry keeps the hash that
                 // the proof signed. A key that is not the actor's still fails.
                 .or_else(|error| {
-                    let lenient = matches!(
-                        entry.record(),
-                        Record::Stub(stub) if stub.replaced() != Some(StubKind::Other)
-                    );
+                    let lenient = match entry.record() {
+                        Record::Stub(stub) => match stub.replaced() {
+                            Some(StubKind::Other) => false,
+                            Some(StubKind::Approval) | None => true,
+                        },
+                        _ => false,
+                    };
                     if lenient && matches!(error, ProofError::Signature(_)) {
                         Ok(())
                     } else {
