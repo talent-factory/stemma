@@ -327,6 +327,15 @@ art, not a template (ADR-015).
   other refusals of a repository state have (exit code 1), so it needs no exit code of its
   own. Every move of the working-copy commit keeps the owner, `op restore` included: the owner
   is not a pointer, and a restore does not give the directory back to an earlier actor.
+  **A worktree whose directory is gone** (STEMMA-217) has no place where `status --take-over`
+  can run. `worktree remove` has the option `--take-over` for that case and no other: while the
+  directory exists, its files are saved first, and the take-over belongs to `status`. It is level
+  3 like every take-over: an agent is refused (and told to ask a human), the authorizer is asked
+  for `take-over` with the target `working-copy` and for `worktree-remove`, and the entry of
+  `worktree-remove` names the former owner in the line `former-owner` (ADR-011). It differs from
+  `status --take-over` in what it does: the actor does not become the owner and no entry of
+  `take-over` is written, as there is nothing left to own; the state is removed, and the owner
+  of the log is found in that one entry. An owner who passes the option changes nothing.
 - **A second working copy is a linked worktree** (STEMMA-175). The rule "every actor works in a
   working copy of its own" has a place to stand now: `stemma worktree add` makes a second
   directory of the same repository, with the `HEAD` and the file `working-copy` (and so the

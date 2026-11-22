@@ -122,6 +122,9 @@ pub struct RemovedWorktree {
     /// The files that the working-copy commit did not track and `--force` removed with the
     /// directory. They are in no commit, so nothing brings them back.
     pub discarded: Vec<String>,
+    /// The owner of the working copy, if a human removed its state without being that owner
+    /// (`take_over` and a directory that was gone). The entry names it.
+    pub former_owner: Option<Actor>,
 }
 
 impl Repository {
@@ -132,7 +135,12 @@ impl Repository {
     /// The steps are: an open purge refuses the call; the authorizer is asked for
     /// `worktree-remove` (the target is `worktree`); the lock of the references is taken and held
     /// to the last move; the worktree is found under the lock, and the main worktree and the one
-    /// of this call are refused; the owner of the working copy is checked; if the directory
+    /// of this call are refused; the owner of the working copy is checked (`take_over` lets a
+    /// human whose authorizer allows `take-over` pass when the directory is gone and another
+    /// actor owns the working copy: no command can run in it, so the owner cannot be changed with
+    /// `status --take-over`; the entry then names the former owner, and no entry of `take-over`
+    /// is written, as the working copy is gone with the call; an agent is refused, and so is the
+    /// option when the directory exists); if the directory
     /// exists, it
     /// must hold the pointer file of this worktree, and the files are saved in a snapshot of the
     /// worktree first (a second question to the authorizer, `snapshot`, and the owner of the
@@ -163,6 +171,7 @@ impl Repository {
         &self,
         worktree: &str,
         force: bool,
+        take_over: bool,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<RemovedWorktree, WorktreeError> {
@@ -196,14 +205,33 @@ impl Repository {
         let (_, owner) = crate::refs::FsRefStore::for_worktree(&shared, &state)
             .working_copy_and_owner()
             .map_err(WorktreeError::Refs)?;
-        view.check_owner(actor, owner.as_ref()).map_err(|error| {
-            let error = if exists {
-                error.without_take_over_option()
-            } else {
-                error.without_directory()
-            };
-            WorktreeError::Snapshot(Box::new(error))
-        })?;
+        // Taking over is decided here only for a directory that is gone: `status --take-over` can
+        // run in no other way there. With a directory, the files are saved first, and that is the
+        // work of its owner or of `status --take-over`.
+        let overriding = take_over && !exists;
+        let checked = if overriding {
+            view.taking_over()
+        } else {
+            view.clone()
+        };
+        let overridden = checked
+            .check_owner(actor, owner.as_ref())
+            .map_err(|error| {
+                let error = if exists {
+                    error.without_take_over_option()
+                } else {
+                    error.without_directory()
+                };
+                WorktreeError::Snapshot(Box::new(error))
+            })?;
+        let former_owner = if overridden { owner.clone() } else { None };
+        if overridden {
+            // Level 3 (ADR-004): the authorizer is asked for `take-over`, as for the other
+            // commands that take over.
+            checked
+                .ask_take_over(actor, authorizer)
+                .map_err(|error| WorktreeError::Snapshot(Box::new(error)))?;
+        }
         let mut snapshot = None;
         let mut late = None;
         if exists {
@@ -254,6 +282,10 @@ impl Repository {
                     Vec::new(),
                 )
                 .and_then(|change| change.in_worktree(Some(info.name.clone()), Some(text.clone())))
+                .and_then(|change| match &former_owner {
+                    Some(owner) => change.with_former_owner(owner.clone()),
+                    None => Ok(change),
+                })
                 .map_err(|error| {
                     WorktreeError::Update(UpdateError::Log(OpLogError::Entry(error)))
                 })?;
@@ -302,6 +334,7 @@ impl Repository {
             head: head.clone(),
             working_copy,
             discarded: discarded.clone(),
+            former_owner: former_owner.clone(),
         };
         let result = match logged.map_err(WorktreeError::Refs) {
             Err(error) => Err(error),
@@ -1906,7 +1939,7 @@ mod tests {
         fs::write(path.join("a.txt"), "changed").unwrap();
 
         let error = repository
-            .remove_worktree("linked", false, &actor(), &AllowAll)
+            .remove_worktree("linked", false, false, &actor(), &AllowAll)
             .unwrap_err();
 
         assert!(

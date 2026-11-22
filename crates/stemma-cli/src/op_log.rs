@@ -167,6 +167,13 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             ),
             None => writeln!(out, "    worktree {}", worktree.escape_debug()),
         };
+        if let Some(owner) = change.former_owner() {
+            let _ = writeln!(
+                out,
+                "    former owner  {}",
+                owner.to_string().escape_debug()
+            );
+        }
     }
     let mut line = |name: String, old: String, new: String| {
         // Writing to a string does not fail.
@@ -395,7 +402,7 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
         .collect();
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
-         \"worktree\":{},\"location\":{},\
+         \"worktree\":{},\"location\":{},\"former_owner\":{},\
          \"head\":{head},\
          \"working_copy\":{working_copy},\"branches\":[{}],\"tags\":[{}],\"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",
@@ -405,6 +412,9 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
         quote(change.operation().as_str()),
         quote(change.worktree_name()),
         change.location().map_or_else(|| "null".to_owned(), quote),
+        change
+            .former_owner()
+            .map_or_else(|| "null".to_owned(), |owner| quote(&owner.to_string())),
         branches.join(","),
         tags.join(",")
     )

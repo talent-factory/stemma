@@ -351,6 +351,12 @@ struct WorktreeRemoveArgs {
     #[arg(long)]
     force: bool,
 
+    /// Remove the state of a worktree whose directory is gone and whose owner is another actor;
+    /// only a human may. `status --take-over` cannot run in a directory that is gone. The entry
+    /// names the former owner. With a directory, run `status --take-over` there first
+    #[arg(long)]
+    take_over: bool,
+
     /// A directory of the repository: the one that contains `.stemma`, or one below it. The
     /// command may not run in the worktree that it removes
     #[arg(
@@ -1906,7 +1912,13 @@ fn worktree_remove(args: WorktreeRemoveArgs, out: &mut dyn Write) -> Result<(), 
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
     let removed = repository
-        .remove_worktree(&args.worktree, args.force, &actor, &AllowAll)
+        .remove_worktree(
+            &args.worktree,
+            args.force,
+            args.take_over,
+            &actor,
+            &AllowAll,
+        )
         .map_err(CliError::Worktree)?;
     let mut text = format!(
         "Removed the worktree {} in {} as entry {}\n",
@@ -1934,6 +1946,11 @@ fn worktree_remove(args: WorktreeRemoveArgs, out: &mut dyn Write) -> Result<(), 
         if let Some(left_out @ 1..) = removed.discarded.len().checked_sub(DISCARDED_LISTED) {
             text.push_str(&format!("    and {left_out} more\n"));
         }
+    }
+    if let Some(former) = &removed.former_owner {
+        text.push_str(&format!(
+            "The working copy belonged to {former}; the entry names it as the former owner\n"
+        ));
     }
     if removed.directory_missing {
         text.push_str("The directory was gone already; only the state was removed\n");

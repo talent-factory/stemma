@@ -212,19 +212,23 @@ Lehnt der Autorisierer ab, ist der Akteur ein Agent oder scheitert die Übernahm
 endet der Befehl dort; der Exit-Code folgt der Ursache wie bei den anderen Fehlern.
 Ist die Übernahme gemacht, aber nicht gesichert, endet er mit Exit-Code 3.
 Die Übernahme ist Risikostufe 3 nach ADR-004: Sie entscheidet, wessen Änderungen ein Snapshot
-speichern darf, und nur ein Mensch darf sie machen. \type{purge --apply} und
-\type{worktree remove} haben die Option nicht;
-wer dort übernehmen muss, ruft vorher \type{stemma status --take-over} auf,
-und ihre Ablehnung nennt diesen Umweg statt der Option.
+speichern darf, und nur ein Mensch darf sie machen. \type{purge --apply} hat
+die Option nicht; wer dort übernehmen muss, ruft vorher \type{stemma status --take-over} auf,
+und die Ablehnung nennt diesen Umweg statt der Option.
+\type{worktree remove} hat die Option nur für einen Worktree, dessen Verzeichnis fehlt
+(siehe \type{worktree remove}) und übernimmt dort nichts: Es entfernt den Zustand.
 Ein Programm, das nur Format 4 kennt, lehnt ein Repository im Format 5 ab, auch für Befehle,
 die nur lesen. Dasselbe gilt für Format 6, das die Zeilen \type{worktree} und \type{location}
 im Log und das Journal des Purge über mehrere Worktrees einführt (ADR-009, ADR-011, ADR-014):
 Ein Repository steigt mit seinem nächsten Eintrag oder Purge auf Format 6, und ein Programm,
 das nur Format 5 kennt, meldet die unbekannte Version und keinen Schaden.
-Format 7 ist die neueste Stufe: Es führt die Zeile \type{tags} im Eintrag \type{purge} und das
+Format 7 führt die Zeile \type{tags} im Eintrag \type{purge} und das
 Journal \type{stemma-purge 3} für einen Purge ein, der Tags bewegt (ADR-014). Ein Repository
 steigt mit seinem nächsten Eintrag oder Purge auf Format 7, und ein Programm, das nur
 Format 6 kennt, meldet die unbekannte Version und keinen Schaden.
+Format 13 ist die neueste Stufe: Es führt die Zeile \type{former-owner} im Eintrag
+\type{worktree-remove} ein (siehe \type{worktree remove}), mit demselben Anstieg und demselben
+Grund; die Stufen dazwischen stehen in ADR-009.
 
 Ein Git-Worktree ist keine eigene Arbeitskopie für Stemma. Ohne ein eigenes \type{stemma init}
 öffnet ein Befehl im Worktree das \type{.stemma} der Wurzel, weil die Suche die übergeordneten
@@ -2291,7 +2295,7 @@ Entfernt einen Worktree: sein Verzeichnis und sein Zustandsverzeichnis. Der Bran
 Commits bleiben (ADR-009).
 
 \starttyping
-stemma worktree remove [-C VERZEICHNIS] [--force] --actor AKTEUR WORKTREE
+stemma worktree remove [-C VERZEICHNIS] [--force] [--take-over] --actor AKTEUR WORKTREE
 \stoptyping
 
 \startitemize
@@ -2308,11 +2312,19 @@ Standard ist das aktuelle.
 \type{STEMMA_ACTOR}. Der Akteur muss der Eigentümer der Arbeitskopie des Worktrees sein; der Befehl
 prüft das auch, wenn das Verzeichnis fehlt. Hat der Befehl dort einen Snapshot zu nehmen,
 gilt dieselbe Prüfung wie bei jedem Snapshot.
-Der Befehl hat die Option \type{--take-over} nicht; wer übernehmen muss,
-ruft vorher \type{stemma status --take-over} im Worktree auf, der entfernt wird,
-und die Ablehnung nennt diesen Umweg.
-Fehlt das Verzeichnis, kann \type{status} dort nicht laufen; die Ablehnung nennt dann keinen Umweg,
-sondern sagt, dass nur der Eigentümer den Worktree entfernen kann.
+Wer übernehmen muss, ruft vorher \type{stemma status --take-over} im Worktree auf, der entfernt
+wird, und die Ablehnung nennt diesen Umweg.
+Fehlt das Verzeichnis, kann \type{status} dort nicht laufen; die Ablehnung nennt dann
+\type{--take-over} dieses Befehls.
+\item {\bf \type{--take-over}:} Entfernt den Zustand eines Worktrees, dessen Verzeichnis gelöscht
+ist und dessen Arbeitskopie einem anderen Akteur gehört. Nur ein Mensch darf es (Risikostufe 3
+nach ADR-004); ein Agent wird abgelehnt und soll einen Menschen fragen. Der Autorisierer wird nach
+\type{take-over} mit dem Ziel \type{working-copy} gefragt, zusätzlich zu \type{worktree-remove}.
+Der Akteur wird dabei nicht Eigentümer: Es entsteht kein Eintrag \type{take-over}, sondern der
+eine Eintrag \type{worktree-remove}, dessen Zeile \type{former-owner} den bisherigen Eigentümer
+nennt. Besteht das Verzeichnis, gilt die Option nicht: Die Dateien sind zu sichern, und das
+übernimmt \type{status --take-over} im Worktree. Gehört die Arbeitskopie dem Akteur, ändert die
+Option nichts.
 \stopitemize
 
 Der Befehl hat keine JSON-Form.
@@ -2336,11 +2348,15 @@ Verzeichnis und danach das Zustandsverzeichnis, die Datei \type{HEAD} zuerst. Da
 wird dazu erst unter einem versteckten Namen (\type{.stemma-removing-...}) neben seinen Platz
 verschoben und dann gelöscht; ein Abbruch lässt also nie eine halbe Kopie am alten Pfad zurück.
 Der Eintrag trägt den Namen des Worktrees und sein Verzeichnis und nennt HEAD und den
-Working-Copy-Commit mit \type{-} als neuem Wert. Der Branch wird frei, und der Working-Copy-Commit
+Working-Copy-Commit mit \type{-} als neuem Wert.
+Bei \type{--take-over} nennt er auch den bisherigen Eigentümer; die Ausgabe von \type{op log}
+zeigt ihn in der Zeile \type{former owner}. Der Branch wird frei, und der Working-Copy-Commit
 bleibt im Log erhalten.
 Fehlt das Verzeichnis des Worktrees, weil es ohne Stemma gelöscht wurde, entfällt die Prüfung der
 Zeigerdatei, der Snapshot und die Suche nach nicht verfolgten Dateien; der Befehl prüft den
 Eigentümer und entfernt nur das Zustandsverzeichnis.
+Gehört der Worktree dann einem anderen Akteur, entfernt ihn nur \type{--take-over}
+(siehe dort).
 
 Die Ausgabe nennt Name, Pfad und Eintrag, danach den Snapshot, falls einer entstand, die Dateien,
 die \type{--force} mit dem Verzeichnis entfernt hat (kein Commit hält sie), und den
@@ -2355,7 +2371,8 @@ The working-copy commit b3:2222...2222 is named by the entry; the branch stays
 
 (Im Beispiel ist die Commit-ID gekürzt; der Befehl gibt sie vollständig aus.) Fehlte das
 Verzeichnis, steht dazwischen die Zeile \type{The directory was gone already; only the state was
-removed}.
+removed}; bei \type{--take-over} davor die Zeile \type{The working copy belonged to <Akteur>; the
+entry names it as the former owner}.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem fehlenden \type{--actor}, einem
 Worktree, den es nicht gibt, dem Worktree der Wurzel, dem Worktree des Aufrufs, einem Verzeichnis
@@ -2385,11 +2402,12 @@ als Worktree, \type{worktree list} zeigt es nicht, und der Befehl endet mit Exit
 das. \type{worktree add} in einem Verzeichnis mit demselben letzten Pfadteil übernimmt den Namen
 und räumt den Rest. Ein Worktree, dessen Zustandsverzeichnis sich nicht lesen lässt, hindert das
 Entfernen eines anderen nicht; der Befehl nennt für ihn selbst, was von Hand zu löschen ist.
-Gehört der Worktree einem anderen Akteur, übernimmt man ihn zuerst mit \type{status --take-over}
-im Worktree, so wie vor einem \type{purge --apply}; \type{worktree remove} hat die Option nicht.
+Gehört der Worktree einem anderen Akteur und besteht sein Verzeichnis, übernimmt man ihn zuerst
+mit \type{status --take-over} im Worktree, so wie vor einem \type{purge --apply}; die Option
+\type{--take-over} dieses Befehls gilt dort nicht, denn die Dateien sind erst zu sichern.
 Ist das Verzeichnis gelöscht und gehört der Worktree einem anderen Akteur, gibt es keinen Ort für
-\type{status --take-over}: Die Ablehnung rät dann nicht dazu, und nur der Eigentümer entfernt das
-Zustandsverzeichnis.
+\type{status --take-over}: Die Ablehnung nennt dann \type{--take-over} dieses Befehls, und einem
+Agenten rät sie, einen Menschen zu fragen.
 
 Scheitert ein Schritt, nachdem der Eintrag im Log steht, endet der Befehl mit Exit-Code 3: Die
 Meldung nennt den Eintrag und sagt, was von Hand zu entfernen ist. Konnte er das Verzeichnis
@@ -2409,7 +2427,11 @@ Ablehnung wegen nicht verfolgter Dateien lässt er sich unbedenklich wiederholen
 \starttyping
 stemma worktree remove linked --actor "human daniel"
 stemma worktree remove ../review --force --actor "human daniel"
+stemma worktree remove linked --take-over --actor "human daniel"
 \stoptyping
+
+Das letzte Beispiel entfernt den Zustand eines Worktrees, dessen Verzeichnis gelöscht wurde und
+der einem anderen Akteur gehört.
 
 \section{op log}
 
@@ -2584,7 +2606,9 @@ kam ohne neues \type{schema} dazu, denn ein Feld
 hinzuzufügen ändert es nicht (ADR-018). \type{worktree} und \type{location} kamen ebenso dazu:
 \type{worktree} ist der Name des Worktrees des Eintrags, \type{main} für die Wurzel, und
 \type{location} ist der Pfad seines Verzeichnisses bei \type{worktree-add} und
-\type{worktree-remove}, sonst \type{null}. Ein Wert, den es nicht gibt, ist \type{null}.
+\type{worktree-remove}, sonst \type{null}. \type{former_owner} kam ebenso dazu: der Eigentümer
+der Arbeitskopie, die ein Mensch mit \type{worktree remove --take-over} entfernt hat, sonst
+\type{null}. Ein Wert, den es nicht gibt, ist \type{null}.
 HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
