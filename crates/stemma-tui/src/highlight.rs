@@ -27,12 +27,22 @@ pub(crate) enum Category {
 
 /// The capture names that the grammars use, in the order of [`CATEGORIES`]. A capture such as
 /// `keyword.control` matches the name `keyword`; a capture that no name matches is not coloured.
-const NAMES: [&str; 8] = [
-    "comment", "string", "number", "keyword", "function", "type", "property", "constant",
+const NAMES: [&str; 10] = [
+    "comment",
+    "string",
+    "number",
+    "keyword",
+    "function",
+    "type",
+    "property",
+    "constant",
+    // The captures of the block grammar of Markdown: a heading and a code block.
+    "text.title",
+    "text.literal",
 ];
 
 /// The category of the capture name with the same index in [`NAMES`].
-const CATEGORIES: [Category; 8] = [
+const CATEGORIES: [Category; 10] = [
     Category::Comment,
     Category::String,
     Category::Number,
@@ -41,10 +51,11 @@ const CATEGORIES: [Category; 8] = [
     Category::Type,
     Category::Property,
     Category::Constant,
+    Category::Keyword,
+    Category::String,
 ];
 
-/// The colours of the view. `Dark` is the look that the view had before the themes: it suits a
-/// terminal with a dark background. `Plain` keeps these colours and turns the highlighting off.
+/// The colours of the view. `Dark` suits a terminal with a dark background. `Plain` keeps these colours and turns the highlighting off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Theme {
@@ -69,7 +80,7 @@ impl Theme {
         }
     }
 
-    /// The name that the title of the pane shows.
+    /// The name of the theme in the title of the pane, which the view leaves out for `Dark`.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -343,6 +354,54 @@ mod tests {
     #[test]
     fn broken_text_does_not_fail() {
         let text = lines("fn ( { \"unterminated\n\u{0}\n");
-        assert!(FileHighlights::of("a.rs", &text, &text).is_some());
+        let found = FileHighlights::of("a.rs", &text, &text).unwrap();
+        for (line, ranges) in found.new.iter().enumerate() {
+            let mut end = 0;
+            for (range, _) in ranges {
+                assert!(
+                    range.start >= end && range.end <= text[line].len(),
+                    "{ranges:?}"
+                );
+                end = range.end;
+            }
+        }
+    }
+
+    /// The categories of the first line of `text`, for the file `path`.
+    fn first_line(path: &str, text: &str) -> Vec<Category> {
+        let found = FileHighlights::of(path, &lines(text), &[]).unwrap();
+        found.old[0].iter().map(|(_, category)| *category).collect()
+    }
+
+    #[test]
+    fn every_grammar_colours_something() {
+        assert!(first_line("a.toml", "key = \"v\"\n").contains(&Category::String));
+        assert!(first_line("a.sh", "echo \"x\" # c\n").contains(&Category::Comment));
+        assert!(first_line("a.json", "{\"a\": 1}\n").contains(&Category::Number));
+        assert!(first_line("a.rs", "pub fn f() {}\n").contains(&Category::Keyword));
+        // A heading and a fenced code block of Markdown.
+        assert!(first_line("a.md", "# Title\n").contains(&Category::Keyword));
+        let code = FileHighlights::of("a.md", &lines("```\ncode\n```\n"), &[]).unwrap();
+        assert!(code
+            .old
+            .iter()
+            .flatten()
+            .any(|(_, c)| *c == Category::String));
+    }
+
+    #[test]
+    fn the_colours_follow_non_ascii_characters() {
+        // The byte ranges of the string cover three bytes per character.
+        let text = lines("let s = \"日本語\"; // é\n");
+        let found = FileHighlights::of("a.rs", &text, &[]).unwrap();
+        let content = text[0].trim_end_matches('\n');
+        let colours = char_colors(content, &found.old[0], Theme::Dark);
+        let at = |needle: &str| content[..content.find(needle).unwrap()].chars().count();
+        let string = Theme::Dark.color(Category::String);
+        let comment = Theme::Dark.color(Category::Comment);
+        assert_eq!(colours[at("日")], Some(string));
+        assert_eq!(colours[at("語") + 1], Some(string));
+        assert_eq!(colours[at("//")], Some(comment));
+        assert_eq!(colours[at("é")], Some(comment));
     }
 }

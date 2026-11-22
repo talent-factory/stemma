@@ -7,7 +7,7 @@ library of the interface and the crate `stemma-tui`; this ADR adds what colours 
 ## Context
 
 The interface of `diff --tui` colours the change (red and green backgrounds) and the moved lines
-(ADR-016, ADR-017), but not the text itself. A reader of a diff of code wants keywords, strings,
+(ADR-016 and the section on moved lines of the book), but not the text itself. A reader of a diff of code wants keywords, strings,
 and comments to stand out, as in every other diff viewer. Two constraints come from the
 project:
 
@@ -24,9 +24,9 @@ Candidates, measured on 2026-11-22 in a scratch crate against `deny.toml` (toolc
   reads the bundled syntax dumps, `yaml-rust` loads syntax definitions. Using the crate would
   need two permanent `ignore` entries for the advisories.
 - **`tree-sitter-highlight` 0.25.10** with the grammar crates `tree-sitter-rust`, `-toml-ng`,
-  `-bash`, `-json`, and `-md` (all MIT). 21 crates in the tree of the scratch crate, of which
-  the grammars and `tree-sitter` bring C code that `cc` compiles; the rest are `regex`,
-  `memchr`, `aho-corasick`, `streaming-iterator`, and `thiserror`. `cargo audit` and
+  `-bash`, `-json`, and `-md` (all MIT). The lockfile of the workspace grows by 17 entries (150
+  to 167); the grammars and `tree-sitter` bring C code that `cc` compiles, and the rest is
+  `regex` with its parts, `memchr`, `aho-corasick`, and `streaming-iterator`. `cargo audit` and
   `cargo deny` report no advisory, ban, license, or source problem. It needs a C compiler at
   build time and takes 4 to 40 seconds more to build from scratch; the binary grows by about
   0.4 MB. **Version 0.27.2 needs Rust 1.90**, above the 1.89 of the workspace, so the version is
@@ -44,7 +44,7 @@ Candidates, measured on 2026-11-22 in a scratch crate against `deny.toml` (toolc
   them (ADR-016). The version of `tree-sitter-highlight` is exact, until the workspace moves to
   Rust 1.90.
 - **The grammar follows the extension of the path.** `.rs`, `.toml`, `.sh`, `.bash`, `.json`,
-  `.md`. Any other file, and a text that cannot be parsed, is drawn without highlighting.
+  `.md`, `.markdown`. Any other file, and a text that cannot be parsed, is drawn without highlighting.
   Markdown uses the block grammar only: the inline grammar needs injections.
 - **A whole side is parsed at once**, the old and the new text each, so that a multi-line
   construct is coloured on every line. The parser tolerates errors.

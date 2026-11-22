@@ -630,9 +630,10 @@ Ein Pfad, der länger ist als das Feld, wird in der Kopfzeile abgeschnitten und 
 
 Die Oberfläche färbt den Text der Zeilen nach der Syntax der Datei (ADR-021). Sie wählt die
 Grammatik nach der Endung des Pfads: \type{.rs} (Rust), \type{.toml}, \type{.sh} und \type{.bash},
-\type{.json} sowie \type{.md} (nur die Blockstruktur von Markdown, also Überschriften und
-Codeblöcke). Eine Datei mit einer anderen Endung, und ein Text, den die Grammatik nicht lesen
-kann, behalten die Farben ohne Hervorhebung; ein Fehler entsteht dabei nie.
+\type{.json} sowie \type{.md} und \type{.markdown} (nur die Blockstruktur von Markdown, also
+Überschriften und Codeblöcke).
+Eine Datei mit einer anderen Endung, und ein Text, den die Grammatik nicht lesen kann, behalten
+die Farben ohne Hervorhebung; ein Fehler entsteht dabei nie.
 
 Die Hervorhebung liest den ganzen Text einer Seite auf einmal, die alte und die neue Seite je
 für sich, und nicht Zeile für Zeile. Ein Block-Kommentar oder ein mehrzeiliger String ist so in

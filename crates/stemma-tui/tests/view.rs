@@ -1600,3 +1600,145 @@ fn a_moved_line_keeps_its_colour_in_a_highlighted_file() {
     let colours = colours_of(&State::default(), &diff, "pub fn first_function_name");
     assert!(colours.iter().all(|c| *c == ratatui::style::Color::Magenta));
 }
+
+/// The foreground and the background of the cells that show `text` on the screen of `state`, drawn
+/// with the persistent `stream`.
+fn cells_of(
+    state: &State,
+    diff: &Diff,
+    stream: &mut Stream,
+    text: &str,
+    extra: usize,
+) -> Vec<(ratatui::style::Color, ratatui::style::Color)> {
+    let mut state = *state;
+    state.apply(Input::Resize(100), diff, stream);
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal
+        .draw(|frame| render_with(frame, &state, diff, stream))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    for y in 0..buffer.area.height {
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        if let Some(at) = row.find(text) {
+            let x = row[..at].chars().count();
+            return (x..x + text.chars().count() + extra)
+                .map(|x| {
+                    let cell = &buffer[(u16::try_from(x).unwrap(), y)];
+                    (cell.fg, cell.bg)
+                })
+                .collect();
+        }
+    }
+    panic!("`{text}` is not on the screen");
+}
+
+#[test]
+fn one_stream_follows_the_themes_through_a_whole_cycle() {
+    use ratatui::style::Color;
+    let (_fixture, diff) = highlight_diff();
+    let mut stream = Stream::new(&diff);
+    let mut state = State::default();
+    let dark = cells_of(&state, &diff, &mut stream, "+pub fn", 0)[1];
+    assert_eq!(dark.1, Color::Indexed(22));
+    for expected_background in [194, 22, 22] {
+        state.apply(Input::CycleTheme, &diff, &mut stream);
+        let cell = cells_of(&state, &diff, &mut stream, "+pub fn", 0)[1];
+        match state.theme() {
+            Theme::Light => {
+                assert_eq!(cell.1, Color::Indexed(expected_background));
+                assert_ne!(cell.0, dark.0);
+            }
+            Theme::Plain => {
+                assert_eq!(cell, (Color::White, Color::Indexed(expected_background)));
+            }
+            _ => assert_eq!(cell, dark),
+        }
+    }
+}
+
+#[test]
+fn removed_and_context_lines_are_coloured_from_their_own_side() {
+    use ratatui::style::Color;
+    let (_fixture, diff) = highlight_diff();
+    let mut stream = Stream::new(&diff);
+    let state = State::default();
+    let comment = colours_of(&state, &diff, "// old")[0];
+    let removed = cells_of(&state, &diff, &mut stream, "// old", 0);
+    assert!(removed
+        .iter()
+        .all(|(fg, bg)| *fg == comment && *bg == Color::Indexed(52)));
+    let keyword = cells_of(&state, &diff, &mut stream, "let kept", 0);
+    assert_ne!(keyword[0].0, keyword[4].0);
+}
+
+#[test]
+fn colours_follow_tabs_wide_characters_and_wrapping() {
+    use ratatui::style::Color;
+    let fixture = Fixture::new();
+    fixture.dir.write("a.rs", "x\n");
+    fixture.track(&["a.rs"]);
+    fixture.commit();
+    fixture
+        .dir
+        .write("a.rs", "\tlet s = \"日本語日本語日本語日本語\"; // end\n");
+    let diff = fixture.diff();
+    for layout in [LayoutMode::Unified, LayoutMode::Split] {
+        for wrap in [false, true] {
+            let mut state = with_layout(layout, &diff);
+            if wrap {
+                apply(&mut state, Input::ToggleWrap, &diff);
+            }
+            let mut stream = Stream::new(&diff);
+            // The tab is four spaces, and the keyword after them is coloured.
+            let keyword = cells_of(&state, &diff, &mut stream, "let", 0);
+            assert!(
+                keyword.iter().all(|c| c.0 != Color::White),
+                "{layout:?} {wrap}"
+            );
+            let spaces = cells_of(&state, &diff, &mut stream, "    let", 0);
+            assert_eq!(spaces[0].0, Color::White, "{layout:?} {wrap}");
+            // The wide characters of the string share one colour, whatever the layout and the
+            // wrapping.
+            let string = cells_of(&state, &diff, &mut stream, "let s = \"", 8);
+            // Ratatui leaves the second cell of a wide character without a style of its own.
+            let inside: Vec<_> = string[9..].iter().step_by(2).collect();
+            assert!(
+                inside.iter().all(|c| c.0 == inside[0].0),
+                "{layout:?} {wrap}"
+            );
+            assert_ne!(inside[0].0, Color::White);
+        }
+    }
+}
+
+#[test]
+fn a_context_line_is_coloured_from_the_text_on_each_side_in_the_split_layout() {
+    let fixture = Fixture::new();
+    fixture.dir.write("a.rs", "fn a() {}\nlet x = 1;\n");
+    fixture.track(&["a.rs"]);
+    fixture.commit();
+    // An opening comment above the unchanged line turns it into a comment on the new side only.
+    fixture
+        .dir
+        .write("a.rs", "fn a() {}\n/* open\nlet x = 1;\n");
+    let diff = fixture.diff();
+    let state = with_layout(LayoutMode::Split, &diff);
+    let terminal = terminal_of_size(&state, &diff, 120, 12);
+    let buffer = terminal.backend().buffer().clone();
+    let row = (0..buffer.area.height)
+        .find(|&y| {
+            let text: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            text.matches("let x").count() == 2
+        })
+        .expect("a row with both sides of the context line");
+    let cells: Vec<(usize, ratatui::style::Color)> = (0..buffer.area.width)
+        .filter(|&x| buffer[(x, row)].symbol() == "l")
+        .map(|x| (usize::from(x), buffer[(x, row)].fg))
+        .collect();
+    assert_eq!(cells.len(), 2, "{cells:?}");
+    assert_ne!(cells[0].1, cells[1].1, "{cells:?}");
+}

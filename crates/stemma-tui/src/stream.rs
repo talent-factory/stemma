@@ -2,7 +2,7 @@
 //!
 //! The view scrolls through this list. It is computed once for a set of settings, and not again
 //! for each frame; [`Stream::fit`] computes it again only when the width, whether the layout is
-//! split, or the wrapping changes.
+//! split, the wrapping, or the theme changes.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -14,6 +14,10 @@ use stemma_core::repository::{Content, Diff, FileDiff, TextDiff};
 use std::ops::Range;
 
 use crate::highlight::{char_colors, Category, FileHighlights, Theme};
+
+/// The longest line, in bytes, that is coloured by syntax. A longer line is drawn in the colours
+/// of its change only.
+const MAX_HIGHLIGHTED_LINE: usize = 2000;
 
 /// The text of the marker that `diff` writes after a last line without a line end.
 const NO_LINE_END: &str = "\\ No newline at end of file";
@@ -56,7 +60,7 @@ impl LayoutMode {
 pub struct Stream {
     moved: MovedLines,
     /// The width, the split, and the wrapping that the rows are laid out for; `None` before the
-    /// first fit.
+    /// first fit, and after a change of the theme.
     fitted: Option<(u16, bool, bool)>,
     /// The number of files of the diff that the stream was made for.
     files: usize,
@@ -68,8 +72,9 @@ pub struct Stream {
     file_list: Option<(Rect, usize)>,
     /// The colours of the rows, and whether they carry syntax highlighting.
     theme: Theme,
-    /// The highlighted ranges of each file, found on the first fit with a theme that highlights.
-    /// `None` for a file whose language is not known.
+    /// The highlighted ranges of each file, found on the first fit with a theme that highlights:
+    /// the outer `None` means that they are not found yet, and an inner `None` that the language
+    /// of the file is not known.
     highlights: Option<Vec<Option<FileHighlights>>>,
 }
 
@@ -119,7 +124,8 @@ impl Stream {
     }
 
     /// Lays the rows out for a pane that is `width` columns wide inside its border, in `layout`,
-    /// unless the stream is laid out for these very settings already. With `wrap`, a line that is
+    /// and the theme of [`Stream::set_theme`], unless the stream is laid out for these very
+    /// settings already. With `wrap`, a line that is
     /// longer than its column goes on in the rows below; without it, the end of the line is cut.
     /// `diff` must be the diff that the stream was made for; in a debug build a diff with another
     /// number of files is caught.
@@ -154,7 +160,7 @@ impl Stream {
             let mut starts = Vec::new();
             match file.content() {
                 Content::Text(text) => {
-                    let marks = highlights.as_ref().and_then(|all| all[index].as_ref());
+                    let marks = highlights.as_ref().and_then(|all| all.get(index)?.as_ref());
                     self.text_rows(index, text, marks, &grid, &mut starts);
                 }
                 Content::Binary => self.rows.push(Line::raw("Binary file differs")),
@@ -169,9 +175,9 @@ impl Stream {
         self.highlights = highlights;
     }
 
-    /// The highlighted ranges of all files, found now if they are not yet, or `None` for a theme
-    /// without highlighting. The ranges do not depend on the theme, so they are kept when the
-    /// theme changes.
+    /// The highlighted ranges of all files, found now if they are not yet. A theme without
+    /// highlighting gets the ranges that were kept, if any, and does not use them. The ranges do
+    /// not depend on the theme, so they are kept when the theme changes.
     fn take_highlights(&mut self, diff: &Diff) -> Option<Vec<Option<FileHighlights>>> {
         if !self.theme.highlights() {
             return self.highlights.take();
@@ -221,7 +227,9 @@ impl Stream {
                         mark: ' ',
                         line: old_lines.get(old),
                         style: Style::new(),
-                        ranges: marks.and_then(|m| m.new.get(new)),
+                        // The text around a context line can colour it differently on each side.
+                        old_ranges: marks.and_then(|m| m.old.get(old)),
+                        new_ranges: marks.and_then(|m| m.new.get(new)),
                         theme,
                     },
                     Edit::Delete { old } => {
@@ -237,7 +245,8 @@ impl Stream {
                                 Style::new().fg(theme.text()).bg(theme.removed_background())
                             },
                             // A moved line keeps the colour that says so.
-                            ranges: marks.filter(|_| !moved).and_then(|m| m.old.get(old)),
+                            old_ranges: marks.filter(|_| !moved).and_then(|m| m.old.get(old)),
+                            new_ranges: None,
                             theme,
                         }
                     }
@@ -253,7 +262,8 @@ impl Stream {
                             } else {
                                 Style::new().fg(theme.text()).bg(theme.added_background())
                             },
-                            ranges: marks.filter(|_| !moved).and_then(|m| m.new.get(new)),
+                            old_ranges: None,
+                            new_ranges: marks.filter(|_| !moved).and_then(|m| m.new.get(new)),
                             theme,
                         }
                     }
@@ -321,9 +331,11 @@ struct Piece<'a> {
     mark: char,
     line: Option<&'a String>,
     style: Style,
-    /// The highlighted ranges of the line, in bytes of the line; `None` for a line that is not
-    /// highlighted.
-    ranges: Option<&'a Vec<(Range<usize>, Category)>>,
+    /// The highlighted ranges of the line in the old and in the new text, in bytes of the line;
+    /// `None` for a side that has no such line or whose line is not highlighted. A context line
+    /// has both, because the text around it can colour it differently on each side.
+    old_ranges: Option<&'a Vec<(Range<usize>, Category)>>,
+    new_ranges: Option<&'a Vec<(Range<usize>, Category)>>,
     theme: Theme,
 }
 
@@ -331,15 +343,23 @@ impl Piece<'_> {
     /// The line without its line end, the colour of each of its characters, and whether it had a
     /// line end. The core builds the hunks from the very lines it holds, so a line is always
     /// there; a missing one is shown, not a reason to panic in the middle of a frame.
-    fn content(&self) -> (Text, bool) {
+    fn content(&self, old_side: bool) -> (Text, bool) {
         let line = self.line.map_or("(line missing)", String::as_str);
         let (content, line_end) = match line.strip_suffix('\n') {
             // The `\r` of a `\r\n` line end is part of the end, not of the text.
             Some(content) => (content.strip_suffix('\r').unwrap_or(content), true),
             None => (line, false),
         };
-        let colors = match self.ranges {
-            Some(ranges) if self.line.is_some() => char_colors(content, ranges, self.theme),
+        let ranges = if old_side {
+            self.old_ranges
+        } else {
+            self.new_ranges
+        };
+        let colors = match ranges {
+            // A line of minified text is not coloured: it would cost more than it shows.
+            Some(ranges) if self.line.is_some() && content.len() <= MAX_HIGHLIGHTED_LINE => {
+                char_colors(content, ranges, self.theme)
+            }
             _ => Vec::new(),
         };
         (printable(content, &colors), line_end)
@@ -390,7 +410,8 @@ fn number(number: Option<usize>, width: usize) -> String {
 /// Appends the rows of one line of a hunk in the unified layout, and after a last line without a
 /// line end the marker that `diff` writes there.
 fn unified_rows(piece: &Piece, grid: &Grid, rows: &mut Vec<Line<'static>>) {
-    let (text, line_end) = piece.content();
+    // A removed line is read in the old text, any other line in the new one.
+    let (text, line_end) = piece.content(piece.mark == '-');
     let gutter = format!(
         "{} {} {}",
         number(piece.old, grid.number_width),
@@ -426,7 +447,7 @@ fn unified_rows(piece: &Piece, grid: &Grid, rows: &mut Vec<Line<'static>>) {
 /// text. A line that wraps has more than one row. A line without a line end is followed by the
 /// rows of the marker, which wrap or are cut like the text.
 fn side_rows(piece: &Piece, old_side: bool, width: usize, grid: &Grid) -> Vec<Vec<Span<'static>>> {
-    let (text, line_end) = piece.content();
+    let (text, line_end) = piece.content(old_side);
     let gutter = format!(
         "{} {}",
         number(

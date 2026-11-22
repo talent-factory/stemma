@@ -129,7 +129,8 @@ const STOP_POLL: Duration = Duration::from_millis(100);
 /// that width, so that the scroll position always refers to the rows that are drawn. A change of
 /// the width, the layout, or the wrapping puts the row of the selection (the header of the file
 /// for the first hunk, the `@@` row of the hunk after that) at the top again; a position inside a
-/// file between two such rows is not kept.
+/// file between two such rows is not kept. A change of the theme keeps the position, because the
+/// rows do not change, only their colours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct State {
     file: usize,
@@ -197,7 +198,8 @@ impl State {
 
     /// Applies `input`. Returns `false` once the user asked to quit, and `true` otherwise.
     ///
-    /// `apply` lays the stream out for the width, the layout, and the wrapping of the state first,
+    /// `apply` lays the stream out for the width, the layout, the wrapping, and the theme of the
+    /// state first,
     /// so a fresh [`Stream::new`] needs no call of its own. Keep one stream for the whole run, or
     /// the rows are laid out again with each call.
     pub fn apply(&mut self, input: Input, diff: &Diff, stream: &mut Stream) -> bool {
