@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod bounds;
 mod check;
 mod checkout;
 mod commit;
@@ -55,6 +56,7 @@ mod switch;
 mod track;
 mod worktree;
 
+pub use bounds::Pause;
 pub use check::CheckError;
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};
 pub use commit::{CommitError, Committed};

@@ -31,6 +31,7 @@
 
 mod actor;
 mod allowed;
+pub mod bounds;
 pub mod change;
 pub mod check;
 pub mod conflict;

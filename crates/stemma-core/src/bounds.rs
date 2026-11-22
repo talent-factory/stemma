@@ -1,0 +1,590 @@
+//! The bounds of the merge gate as pure functions over the log (ADR-019, STEMMA-242).
+//!
+//! The gate keeps no state of its own. Everything that it needs to pause a merge is read from the
+//! checks of the log ([`Check`]) and the first-parent history of `main` (a slice of commit IDs,
+//! the tip first):
+//!
+//! - [`verification`] tells which commits of `main` a finished run covered, and from that the last
+//!   green tip, the first red tip, and whether the latest verified tip is red.
+//! - [`is_declared_repair`] and [`touches_the_red_paths`] decide whether a change that names a red
+//!   commit (`repairs <commit>`) is a repair that the pause does not hold back.
+//! - [`unverified`] counts the commits after the latest verified tip (`max_unverified`).
+//! - [`reservation`] and [`holder`] find the change that holds the reservation against starving
+//!   (`N` invalidated runs in a row).
+//! - [`bisect`] finds the first bad commit in the window between the last green and the first red
+//!   tip.
+//!
+//! A position is an index into the history of `main`: 0 is the tip, and a larger index is an older
+//! commit. The functions read no clock; the caller passes `now`.
+//!
+//! The log records finished runs only, so a run that has started but not finished is not known.
+//! Where ADR-019 says "until a run on the tip has started", the gate therefore waits until a
+//! finished run covers a commit newer than the latest verified tip ([`unverified`]).
+
+use std::collections::BTreeSet;
+
+use crate::check::Check;
+use crate::object::CommitId;
+
+/// What the finished runs on the tip of `main` say about its history. Positions are indexes into
+/// the history of `main`, the tip first (see the module).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Verification {
+    /// The newest commit that a passing run covered: the last green tip.
+    pub last_green: Option<usize>,
+    /// The oldest commit newer than the last green tip that a failing run covered: the first red
+    /// tip. `Some` exactly when the latest verified tip is red.
+    pub first_red: Option<usize>,
+    /// The newest commit that any finished run on a tip of `main` covered: the latest verified
+    /// tip.
+    pub latest_verified: Option<usize>,
+}
+
+impl Verification {
+    /// Whether the latest verified tip is red: a finished run covered it with failure, and no
+    /// passing run covered it or a newer commit (a failing run does not take back a passing run
+    /// of the same commit).
+    pub fn is_red(&self) -> bool {
+        self.first_red.is_some()
+    }
+}
+
+/// Reads the verification of `main` from the runs without a base (the runs on a tip). `main` is
+/// the first-parent history, the tip first. A run on a commit that is not in it says nothing about
+/// `main` and is left out. The caller passes only the runs that count (in an enforcing repository
+/// those with a proof of the writer).
+pub fn verification(checks: &[Check], main: &[CommitId]) -> Verification {
+    let position = |check: &Check| main.iter().position(|commit| commit == check.commit());
+    let runs: Vec<(usize, bool)> = checks
+        .iter()
+        .filter(|check| check.base().is_none())
+        .filter_map(|check| Some((position(check)?, check.passed())))
+        .collect();
+    let last_green = runs
+        .iter()
+        .filter(|(_, passed)| *passed)
+        .map(|(at, _)| *at)
+        .min();
+    let latest_verified = runs.iter().map(|(at, _)| *at).min();
+    // Only a failure newer than the last green tip is red; without a green tip every failure is.
+    let first_red = runs
+        .iter()
+        .filter(|(at, passed)| !*passed && last_green.is_none_or(|green| *at < green))
+        .map(|(at, _)| *at)
+        .max();
+    Verification {
+        last_green,
+        first_red,
+        latest_verified,
+    }
+}
+
+/// The commits after the latest verified tip: its position in the history of `main`. Without a
+/// verified tip the whole history is unverified, and the count is its length.
+///
+/// ADR-019 lets a merge wait "until a run on the tip has started". The log records finished runs
+/// only, so the count falls when a run has finished on a commit newer than the latest verified
+/// one.
+pub fn unverified(verification: &Verification, main_len: usize) -> usize {
+    verification.latest_verified.unwrap_or(main_len)
+}
+
+/// Whether the commit `repairs` lies between the last green and the first red tip: the first red
+/// tip itself or older (a larger position), and newer than the last green tip. Without a red tip
+/// no commit does.
+pub fn is_declared_repair(
+    verification: &Verification,
+    main: &[CommitId],
+    repairs: &CommitId,
+) -> bool {
+    let (Some(red), Some(at)) = (
+        verification.first_red,
+        main.iter().position(|commit| commit == repairs),
+    ) else {
+        return false;
+    };
+    at >= red && verification.last_green.is_none_or(|green| at < green)
+}
+
+/// Whether the paths of a change that declares a repair meet the paths of the red commit.
+///
+/// A revert of the red commit changes every path that the commit changed, so it meets them; a fix
+/// meets them at the paths where the break is. A change that shares no path with the red commit
+/// repairs nothing of it. This is the pure function over the two diffs of ADR-019; nobody has to
+/// confirm it.
+pub fn touches_the_red_paths(red: &BTreeSet<String>, change: &BTreeSet<String>) -> bool {
+    red.intersection(change).next().is_some()
+}
+
+/// The longest a reservation lasts, in seconds, whatever the times of the entries say. The time of
+/// an entry is a claim of its writer, and a stuck change must not block `main` (ADR-019): an hour
+/// is far above twice the duration of a check run in practice.
+pub const MAX_RESERVATION_SECONDS: i64 = 3600;
+
+/// The window of a reservation (ADR-019): from the entry of the run that made the change reach
+/// `n` invalidated runs, until twice the duration of that run later. The change holds the
+/// reservation while `now` is before `until`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    /// The time of the entry of the run that started the reservation.
+    pub from: i64,
+    /// The time when the reservation ends.
+    pub until: i64,
+}
+
+impl Window {
+    /// Whether the reservation holds at `now`: it has begun and not ended. The time of an entry
+    /// is a claim of its writer, so a window that begins in the future holds nothing yet.
+    pub fn holds_at(&self, now: i64) -> bool {
+        self.from <= now && now < self.until
+    }
+}
+
+/// The reservation of one change, or `None`. The caller restricts it to the levels 2 and 3.
+///
+/// An *invalidated run* is a passing result for `head` whose base is not the current `tip`: `main`
+/// moved after the run, so the rule table asks for a new one (the level 2 and 3 rule). The runs
+/// count *in a row*: from the newest back, up to a failing result (the change failed). A result
+/// for the current `tip` counts as no run and breaks nothing: it is what the holder needs to merge,
+/// and the reservation holds until the change is merged, closed, or the window ends. Of several
+/// results for the same base the oldest counts once.
+///
+/// With `n` runs in a row the change holds a reservation, and again after every further `n` runs.
+/// The window starts at the entry of the `n`-th run of the last group, and lasts twice the
+/// duration of that run. The log has no start of a run, so the duration is the time since the
+/// entry of the run before it in the log (any run of the change, whatever its base or result), or
+/// since the opening at `opened` if it is the first run of the change, at least 0. The window is
+/// at most [`MAX_RESERVATION_SECONDS`] long. `n` of 0 counts as 1.
+pub fn reservation(
+    checks: &[Check],
+    head: &CommitId,
+    tip: &CommitId,
+    opened: i64,
+    n: u32,
+) -> Option<Window> {
+    let n = usize::try_from(n.max(1)).unwrap_or(usize::MAX);
+    let runs: Vec<&Check> = checks
+        .iter()
+        .filter(|check| check.commit() == head && check.base().is_some())
+        .collect();
+    // The row: from the newest run back, up to a failure.
+    let row = runs
+        .iter()
+        .rposition(|run| !run.passed())
+        .map_or(0, |at| at + 1);
+    // Of several results for one base the oldest counts, once.
+    let mut counted: Vec<usize> = Vec::new();
+    for at in row..runs.len() {
+        let base = runs[at].base();
+        if base != Some(tip) && counted.iter().all(|seen| runs[*seen].base() != base) {
+            counted.push(at);
+        }
+    }
+    let group = counted.len() / n;
+    if group == 0 {
+        return None;
+    }
+    let last = counted[group * n - 1];
+    let from = runs[last].time();
+    let before = if last == 0 {
+        opened
+    } else {
+        runs[last - 1].time()
+    };
+    let length = from
+        .saturating_sub(before)
+        .max(0)
+        .saturating_mul(2)
+        .min(MAX_RESERVATION_SECONDS);
+    Some(Window {
+        from,
+        until: from.saturating_add(length),
+    })
+}
+
+/// One open pull request of level 2 or 3 with a reservation that holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Holder {
+    /// The number of the pull request.
+    pub number: u64,
+    /// The window of the reservation.
+    pub window: Window,
+}
+
+/// The holder of the reservation among `candidates` (the number, the time of opening, and the
+/// window of each): at most one exists, and the oldest change wins. A window that has ended at
+/// `now` holds nothing.
+pub fn holder(candidates: &[(u64, i64, Window)], now: i64) -> Option<Holder> {
+    candidates
+        .iter()
+        .filter(|(_, _, window)| window.holds_at(now))
+        .min_by_key(|(number, opened, _)| (*opened, *number))
+        .map(|(number, _, window)| Holder {
+            number: *number,
+            window: *window,
+        })
+}
+
+/// The first bad commit of a window, by bisection (ADR-019). `window` is the linear history
+/// between the last green and the first red tip, the oldest first, so the last commit is the first
+/// red tip and known to be bad. `is_bad` runs the test on one commit; it is called O(log n) times.
+/// Returns the index of the first bad commit, or `None` for an empty window.
+///
+/// The search assumes that the history is good and then bad. If a commit in between passes after
+/// one that failed, the result is a commit that fails and whose predecessor passes, not
+/// necessarily the first.
+///
+/// # Errors
+///
+/// The first error of `is_bad`.
+pub fn bisect<T, E>(
+    window: &[T],
+    mut is_bad: impl FnMut(&T) -> Result<bool, E>,
+) -> Result<Option<usize>, E> {
+    if window.is_empty() {
+        return Ok(None);
+    }
+    let (mut low, mut high) = (0, window.len() - 1);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if is_bad(&window[middle])? {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    Ok(Some(low))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::check::checks;
+    use crate::oplog::{Chain, CheckEntry, CheckResult, Entry, Record};
+    use crate::Actor;
+
+    fn id(byte: u8) -> CommitId {
+        CommitId::new(
+            format!("b3:{}", format!("{byte:02x}").repeat(32))
+                .parse()
+                .unwrap(),
+        )
+    }
+
+    /// The history of `main`, the tip first: `id(0)` is the tip, `id(len - 1)` the root.
+    fn main(len: u8) -> Vec<CommitId> {
+        (0..len).map(id).collect()
+    }
+
+    fn log(runs: &[(i64, u8, Option<u8>, CheckResult)]) -> Vec<Check> {
+        let writer = Actor::human("ana").unwrap();
+        let entries: Vec<Entry> = runs
+            .iter()
+            .enumerate()
+            .map(|(at, (time, commit, base, result))| {
+                let check =
+                    CheckEntry::new(*time, writer.clone(), id(*commit), base.map(id), *result);
+                Entry::linked(at as u64 + 1, Chain::Start, Record::Check(check)).unwrap()
+            })
+            .collect();
+        checks(&entries)
+    }
+
+    use CheckResult::{Fail, Pass};
+
+    #[test]
+    fn nothing_is_verified_without_a_run_and_nothing_is_red() {
+        let v = verification(&[], &main(5));
+        assert_eq!(
+            v,
+            Verification {
+                last_green: None,
+                first_red: None,
+                latest_verified: None
+            }
+        );
+        assert!(!v.is_red());
+        assert_eq!(unverified(&v, 5), 5);
+    }
+
+    #[test]
+    fn a_failing_run_newer_than_the_last_green_tip_makes_the_tip_red() {
+        // Green at 6, failures at 2 and 4: the first red tip is the oldest, 4.
+        let found = log(&[
+            (1, 6, None, Pass),
+            (2, 4, None, Fail),
+            (3, 2, None, Fail),
+            (4, 0, Some(9), Pass),
+        ]);
+        let v = verification(&found, &main(8));
+        assert_eq!(v.last_green, Some(6));
+        assert_eq!(v.first_red, Some(4));
+        assert_eq!(v.latest_verified, Some(2));
+        assert!(v.is_red());
+        assert_eq!(unverified(&v, 8), 2);
+    }
+
+    #[test]
+    fn a_later_pass_ends_the_red_and_a_failure_does_not_take_back_a_pass() {
+        let green_again = log(&[(1, 4, None, Fail), (2, 1, None, Pass)]);
+        let v = verification(&green_again, &main(6));
+        assert_eq!(v.first_red, None);
+        assert!(!v.is_red());
+
+        // The same commit failed and passed: the pass stays, so it is no red tip.
+        let both = log(&[(1, 2, None, Pass), (2, 2, None, Fail)]);
+        let v = verification(&both, &main(6));
+        assert_eq!(v.last_green, Some(2));
+        assert_eq!(v.first_red, None);
+    }
+
+    #[test]
+    fn a_failure_without_any_green_tip_is_red_and_a_run_off_main_says_nothing() {
+        let found = log(&[(1, 3, None, Fail), (2, 9, None, Fail)]);
+        let v = verification(&found, &main(5));
+        assert_eq!(v.last_green, None);
+        assert_eq!(v.first_red, Some(3));
+        let off = log(&[(1, 9, None, Fail)]);
+        assert!(!verification(&off, &main(5)).is_red());
+        // A result with a base is the result of a change, not a run on a tip.
+        let based = log(&[(1, 1, Some(0), Fail)]);
+        assert!(!verification(&based, &main(5)).is_red());
+    }
+
+    #[test]
+    fn a_repair_names_a_commit_from_the_first_red_tip_back_to_the_one_after_the_last_green() {
+        let history = main(8);
+        let v = Verification {
+            last_green: Some(6),
+            first_red: Some(3),
+            latest_verified: Some(2),
+        };
+        let declared = |at: u8| is_declared_repair(&v, &history, &id(at));
+        assert!(!declared(2), "newer than the first red tip");
+        assert!(declared(3), "the first red tip itself");
+        assert!(declared(5), "between the two");
+        assert!(!declared(6), "the last green tip is not red");
+        assert!(!declared(7), "older than the last green tip");
+        assert!(!declared(99), "not on main");
+        let green = Verification {
+            last_green: Some(1),
+            first_red: None,
+            latest_verified: Some(1),
+        };
+        assert!(!is_declared_repair(&green, &history, &id(3)), "no red tip");
+        let no_green = Verification {
+            last_green: None,
+            first_red: Some(3),
+            latest_verified: Some(3),
+        };
+        assert!(
+            is_declared_repair(&no_green, &history, &id(7)),
+            "back to the root"
+        );
+    }
+
+    #[test]
+    fn a_repair_must_share_a_path_with_the_red_commit() {
+        let set = |paths: &[&str]| paths.iter().map(|path| (*path).to_owned()).collect();
+        assert!(touches_the_red_paths(&set(&["a", "b"]), &set(&["b", "c"])));
+        assert!(!touches_the_red_paths(&set(&["a"]), &set(&["c"])));
+        assert!(!touches_the_red_paths(&set(&[]), &set(&["c"])));
+    }
+
+    #[test]
+    fn n_invalidated_runs_in_a_row_make_a_reservation_that_lasts_twice_the_last_run() {
+        // Three runs against three old tips (1, 2, 3); the tip is 0. The opening is at 100.
+        let found = log(&[
+            (130, 7, Some(1), Pass),
+            (150, 7, Some(2), Pass),
+            (200, 7, Some(3), Pass),
+        ]);
+        let window = reservation(&found, &id(7), &id(0), 100, 3).unwrap();
+        // The third run took 50 s (200 - 150): the window ends 100 s after it.
+        assert_eq!(
+            window,
+            Window {
+                from: 200,
+                until: 300
+            }
+        );
+        assert!(window.holds_at(299));
+        assert!(!window.holds_at(300), "the reservation timeout");
+        assert!(reservation(&found, &id(7), &id(0), 100, 4).is_none());
+        assert!(
+            reservation(&found, &id(8), &id(0), 100, 3).is_none(),
+            "another head"
+        );
+    }
+
+    #[test]
+    fn the_first_run_takes_its_duration_from_the_opening() {
+        let found = log(&[(160, 7, Some(1), Pass)]);
+        let window = reservation(&found, &id(7), &id(0), 100, 1).unwrap();
+        assert_eq!(
+            window,
+            Window {
+                from: 160,
+                until: 280
+            }
+        );
+        // A run that is recorded before the opening has no negative duration.
+        let early = log(&[(50, 7, Some(1), Pass)]);
+        let window = reservation(&early, &id(7), &id(0), 100, 1).unwrap();
+        assert_eq!(
+            window,
+            Window {
+                from: 50,
+                until: 50
+            }
+        );
+    }
+
+    #[test]
+    fn a_window_is_bounded_and_a_window_in_the_future_holds_nothing() {
+        // A writer claims a run of ten days.
+        let long = log(&[(1_000_000, 7, Some(1), Pass)]);
+        let window = reservation(&long, &id(7), &id(0), 100, 1).unwrap();
+        assert_eq!(window.until - window.from, MAX_RESERVATION_SECONDS);
+        // An entry dated in the future has not begun.
+        assert!(!window.holds_at(999_999));
+        assert!(window.holds_at(1_000_000));
+    }
+
+    #[test]
+    fn a_failure_breaks_the_row_and_a_valid_result_or_a_repeated_base_does_not() {
+        let failed = log(&[
+            (1, 7, Some(1), Pass),
+            (2, 7, Some(2), Pass),
+            (3, 7, Some(3), Fail),
+        ]);
+        assert!(
+            reservation(&failed, &id(7), &id(0), 0, 2).is_none(),
+            "failed"
+        );
+        let valid = log(&[
+            (1, 7, Some(1), Pass),
+            (2, 7, Some(2), Pass),
+            (3, 7, Some(0), Pass),
+        ]);
+        // A result for the tip is what the holder needs: it ends nothing and counts for nothing.
+        let window = reservation(&valid, &id(7), &id(0), 0, 2).unwrap();
+        assert_eq!(
+            window,
+            Window { from: 2, until: 4 },
+            "the reservation survives it"
+        );
+        assert!(reservation(&valid, &id(7), &id(0), 0, 3).is_none());
+        let twice = log(&[
+            (1, 7, Some(1), Pass),
+            (2, 7, Some(1), Pass),
+            (3, 7, Some(2), Pass),
+        ]);
+        assert!(
+            reservation(&twice, &id(7), &id(0), 0, 3).is_none(),
+            "two bases only"
+        );
+        assert!(reservation(&twice, &id(7), &id(0), 0, 2).is_some());
+    }
+
+    #[test]
+    fn the_duration_is_the_time_since_the_run_before_in_the_log() {
+        // A retry on the base B at 100 does not widen the window of the run at 110.
+        let found = log(&[
+            (0, 7, Some(1), Pass),
+            (10, 7, Some(2), Pass),
+            (100, 7, Some(2), Pass),
+            (110, 7, Some(3), Pass),
+        ]);
+        let window = reservation(&found, &id(7), &id(0), 0, 3).unwrap();
+        assert_eq!(
+            window,
+            Window {
+                from: 110,
+                until: 130
+            }
+        );
+    }
+
+    #[test]
+    fn the_row_starts_after_a_failure_and_a_zero_n_counts_as_one() {
+        let found = log(&[
+            (1, 7, Some(1), Pass),
+            (2, 7, Some(2), Fail),
+            (3, 7, Some(3), Pass),
+            (5, 7, Some(4), Pass),
+        ]);
+        assert!(
+            reservation(&found, &id(7), &id(0), 0, 3).is_none(),
+            "only two after the failure"
+        );
+        let window = reservation(&found, &id(7), &id(0), 0, 2).unwrap();
+        assert_eq!(window, Window { from: 5, until: 9 });
+        assert!(reservation(&found, &id(7), &id(0), 0, 0).is_some());
+    }
+
+    #[test]
+    fn a_stuck_change_gets_the_next_reservation_after_n_more_runs() {
+        let found = log(&[
+            (10, 7, Some(1), Pass),
+            (20, 7, Some(2), Pass),
+            (40, 7, Some(3), Pass),
+            (50, 7, Some(4), Pass),
+        ]);
+        // Two runs make the first group; the fourth run closes the second and starts a window.
+        let window = reservation(&found, &id(7), &id(0), 0, 2).unwrap();
+        assert_eq!(
+            window,
+            Window {
+                from: 50,
+                until: 70
+            }
+        );
+        // Three runs: the fourth does not make a second group.
+        let window = reservation(&found, &id(7), &id(0), 0, 3).unwrap();
+        assert_eq!(
+            window,
+            Window {
+                from: 40,
+                until: 80
+            }
+        );
+    }
+
+    #[test]
+    fn at_most_one_reservation_holds_and_the_oldest_change_wins() {
+        let live = Window {
+            from: 0,
+            until: 100,
+        };
+        let ended = Window { from: 0, until: 40 };
+        let candidates = [(9, 30, live), (4, 20, ended), (6, 25, live), (2, 25, live)];
+        // The change opened at 20 has ended its window at 50: the oldest that still holds wins.
+        let found = holder(&candidates, 50).unwrap();
+        assert_eq!(found.number, 2, "opened at 25 with the lower number");
+        assert_eq!(holder(&candidates, 100), None, "all windows ended");
+        assert_eq!(holder(&[], 0), None);
+    }
+
+    #[test]
+    fn bisection_finds_the_first_bad_commit_of_a_window() {
+        let window: Vec<u32> = (0..9).collect();
+        for first_bad in 0..window.len() {
+            let mut calls = 0;
+            let found = bisect(&window, |at| {
+                calls += 1;
+                Ok::<_, ()>(*at as usize >= first_bad)
+            })
+            .unwrap();
+            assert_eq!(found, Some(first_bad));
+            assert!(calls <= 4, "O(log n) runs: {calls}");
+        }
+        assert_eq!(bisect(&[] as &[u32], |_| Ok::<_, ()>(true)), Ok(None));
+        assert_eq!(
+            bisect(&[1], |_| Err("no run")),
+            Ok(Some(0)),
+            "a window of one needs no run"
+        );
+        assert_eq!(bisect(&[1, 2], |_| Err("no run")), Err("no run"));
+    }
+}

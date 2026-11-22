@@ -4,11 +4,13 @@
 //! and moves `main` from `T` to the result `M` by compare and swap. Nothing is held while a check
 //! runs, and nothing is held between the steps:
 //!
-//! 1. Read `T`, merge the change onto `T`, and write the blobs, the trees, and the commit `M`
-//!    (one parent, `T`, so that `main` stays linear). A conflict ends the call here: it never
+//! 1. Read `T`, merge the change onto `T`, and write the blobs and the trees (the commit `M` follows
+//!    after step 2; it has one parent, `T`, so that `main` stays linear). A conflict ends the call here: it never
 //!    enters `main`.
 //! 2. Apply the rule table of ADR-019 to the results of the checks (levels 0 and 1: a clean merge
 //!    onto the new tip is enough; levels 2 and 3: a result with `T` as its base).
+//!    Then apply the bounds of ADR-019 ([`GateError::Paused`]): a red tip, the unverified window,
+//!    and the reservation of another change, unless the change is a declared repair.
 //! 3. Take the lock of the references, and under it check that the pull request is still open
 //!    and that `M` is in the store, write the entry of the move, swap the pointer, and then write
 //!    `pr-merge`.
@@ -22,7 +24,8 @@
 use std::error::Error;
 use std::fmt;
 
-use super::{now, Repository};
+use super::bounds::Subject;
+use super::{now, Pause, Repository};
 use crate::change::{ChangeId, GenerateError};
 use crate::conflict::FromSumError;
 use crate::history::HistoryError;
@@ -134,6 +137,15 @@ pub enum GateError {
         /// The tip of `main` that the rule was applied to.
         tip: CommitId,
     },
+    /// A bound of ADR-019 holds the change back: a red tip, the unverified window, or the
+    /// reservation of another change. Nothing was written but objects; the call can be repeated
+    /// when the reason has gone (see [`Pause`]).
+    Paused {
+        /// The number of the pull request.
+        number: u64,
+        /// Why it waits.
+        pause: Pause,
+    },
     /// The gate started again [`MAX_ATTEMPTS`] times without a landing.
     Contended {
         /// The number of the pull request.
@@ -226,6 +238,9 @@ impl fmt::Display for GateError {
                 "no result of a check counts for pull request {number} at level {} on the tip {tip}",
                 *level as u8
             ),
+            Self::Paused { number, pause } => {
+                write!(f, "pull request {number} waits: {pause}")
+            }
             Self::Contended {
                 number,
                 attempts,
@@ -330,12 +345,16 @@ impl Repository {
     /// of `main` and never counts for a change. At levels 2 and 3 only a result with the current
     /// tip as its base counts.
     ///
-    /// The gate does not enforce these rules yet; the caller must until the slices for them
-    /// exist: the approvals of ADR-004 (none is asked here), the pause of the levels 2 and 3
-    /// while the last verified tip is red (with the exemption of a declared repair), the bound
-    /// `max_unverified`, the reservation against starving, and the rule that the authors of a
-    /// change are registered actors (STEMMA-242 and the command). The level and the policy of the
-    /// base commit come from [`merge_gate_by_policy`](Self::merge_gate_by_policy) (STEMMA-246).
+    /// The bounds of ADR-019 are applied after the rule table ([`GateError::Paused`], see
+    /// [`Pause`]): the pause of the levels 2 and 3 while the latest verified tip is red (a declared
+    /// repair is exempt), the window `max_unverified`, and the reservation. Here, where the caller
+    /// gives the level and no policy is read, `max_unverified` has its default
+    /// ([`DEFAULT_MAX_UNVERIFIED`](crate::policy::DEFAULT_MAX_UNVERIFIED)) and no
+    /// reservation is applied, as the levels of the other changes are the policy's to tell; the
+    /// pause and the window hold in both modes. The gate does not yet ask for the approvals of
+    /// ADR-004 (none is asked here), nor for the rule that the authors of a change are registered
+    /// actors (the command). The level and the policy of the base commit come from
+    /// [`merge_gate_by_policy`](Self::merge_gate_by_policy) (STEMMA-246).
     ///
     /// The commit `M` has the single parent `T`, the tree of the merge, the gate `actor` as its
     /// author, and a change ID of its own. The objects of the merge are written before the lock.
@@ -375,7 +394,8 @@ impl Repository {
     /// is asked once, before anything is written),
     /// [`GateError::Pull`] for a pull request that is unknown or not open,
     /// [`GateError::BranchMoved`], [`GateError::NoMain`], [`GateError::Conflict`],
-    /// [`GateError::NotChecked`], and [`GateError::Contended`]. For all of these nothing is
+    /// [`GateError::NotChecked`], [`GateError::Paused`], and [`GateError::Contended`]. For all of
+    /// these nothing is
     /// written but objects. [`GateError::MoveFailed`] and [`GateError::PullNotRecorded`] leave
     /// the entry of the move, as above. The other variants wrap a failure of the store, the
     /// references, or the log.
@@ -403,8 +423,9 @@ impl Repository {
     /// change that carries a new policy is judged by the policy of the tip it merges onto, not by
     /// its own. A pull request that is already on `main` (the repair path) reads no policy, as
     /// it moves nothing. The values `reservation_after` and `max_unverified` of the same policy
-    /// (`policy_of_main`) are bounds that STEMMA-242 applies; the gate
-    /// does not apply them yet. `mode` is only as strict as the caller makes it: derive it with
+    /// are the bounds of ADR-019 that the gate applies ([`GateError::Paused`]), and the levels of
+    /// the other open changes, which the reservation needs, come from the same policy.
+    /// `mode` is only as strict as the caller makes it: derive it with
     /// [`Mode::of`].
     ///
     /// # Errors
@@ -505,11 +526,11 @@ impl Repository {
         }
 
         // Step 2: the rule table, at the level of the caller or of the policy of the tip.
-        let level = match fixed {
-            Some(level) => level,
+        let (level, policy) = match fixed {
+            Some(level) => (level, None),
             None => {
                 let policy = self.policy_at(&tip, register.is_some())?;
-                self.level_of_change(&policy, &tip, *tree)?
+                (self.level_of_change(&policy, &tip, *tree)?, Some(policy))
             }
         };
         if self
@@ -517,6 +538,18 @@ impl Repository {
             .is_empty()
         {
             return Err(GateError::NotChecked { number, level, tip });
+        }
+        // The bounds of ADR-019 come after the rule table, so that a repair is exempt only with
+        // a result that counts, and they are read again for every attempt: a run, a landing, or
+        // a reservation can appear while the gate starts again.
+        let subject = Subject {
+            pull,
+            tip,
+            tree: *tree,
+            level,
+        };
+        if let Some(pause) = self.pause_of(&subject, policy.as_ref(), register)? {
+            return Err(GateError::Paused { number, pause });
         }
 
         let message = format!("Merge pull request {number} ({})", pull.branch());
@@ -2048,5 +2081,907 @@ mod tests {
         assert_eq!(f.landings(), 2);
         assert!(!f.repository.pull_requests().unwrap()[0].is_open());
         f.repository.oplog().verify().expect("the chain holds");
+    }
+
+    // The bounds of ADR-019 (STEMMA-242).
+
+    fn merge(f: &Fixture, number: u64, level: RiskLevel) -> Result<GateMerge, GateError> {
+        f.repository
+            .merge_gate(number, level, None, &human("daniel"), &AllowAll)
+    }
+
+    fn paused(error: GateError) -> Pause {
+        match error {
+            GateError::Paused { pause, .. } => pause,
+            other => panic!("expected a pause, got: {other}"),
+        }
+    }
+
+    /// Writes the entry of a check with the time `time`, which the clock does not give.
+    fn record_at(
+        f: &Fixture,
+        time: i64,
+        commit: CommitId,
+        base: Option<CommitId>,
+        result: CheckResult,
+    ) -> Entry {
+        let name = OperationName::try_new("check").unwrap();
+        let allowed = f
+            .repository
+            .authorize(&human("ana"), &AllowAll, &name, "x")
+            .unwrap();
+        let lock = f.repository.refs_store().lock_writer(&allowed).unwrap();
+        let entry = crate::oplog::CheckEntry::new(time, human("ana"), commit, base, result);
+        f.repository.append_check(&lock, &entry).unwrap()
+    }
+
+    /// A branch `name` with one commit on `parent` that holds `files`, and its open pull request,
+    /// declared as the repair of `repairs`.
+    fn open_branch(
+        f: &Fixture,
+        name: &str,
+        parent: CommitId,
+        files: &[(&str, &str)],
+        repairs: Option<CommitId>,
+    ) -> (CommitId, u64) {
+        let head = commit_of(&f.repository, parent, files, "mia");
+        set_branch(&f.repository, name, None, head);
+        let number = f
+            .repository
+            .open_pull(
+                &branch(name),
+                &human("mia"),
+                vec![],
+                repairs,
+                None,
+                &AllowAll,
+            )
+            .unwrap()
+            .number();
+        (head, number)
+    }
+
+    /// `main` at `red`, which edits `c.txt`; a failing run covers it.
+    fn red_tip(f: &Fixture) -> CommitId {
+        let red = commit_of(&f.repository, f.base, &[("c.txt", "red\n")], "zoe");
+        set_branch(&f.repository, "main", Some(f.base), red);
+        f.record(red, None, CheckResult::Fail, "ana");
+        red
+    }
+
+    #[test]
+    fn a_red_tip_pauses_levels_2_and_3_and_lets_levels_0_and_1_go() {
+        for (level, lands) in [
+            (RiskLevel::Zero, true),
+            (RiskLevel::One, true),
+            (RiskLevel::Two, false),
+            (RiskLevel::Three, false),
+        ] {
+            let f = fixture("zero\n");
+            f.record(f.base, None, CheckResult::Fail, "ana");
+            f.check(f.base);
+            let before = f.entries();
+
+            let result = f.gate(level);
+
+            if lands {
+                assert_eq!(f.main(), result.unwrap().commit, "{level:?}");
+            } else {
+                assert_eq!(paused(result.unwrap_err()), Pause::RedTip { red: f.base });
+                assert_eq!(f.main(), f.base);
+                assert_eq!(f.entries(), before, "{level:?}: nothing is written");
+            }
+        }
+    }
+
+    #[test]
+    fn a_passing_run_on_a_newer_tip_ends_the_pause() {
+        let f = fixture("zero\n");
+        f.record(f.base, None, CheckResult::Fail, "ana");
+        let tip = f.land_other();
+        f.check(tip);
+        assert!(matches!(
+            f.gate(RiskLevel::Two),
+            Err(GateError::Paused { .. })
+        ));
+
+        f.record(tip, None, CheckResult::Pass, "ana");
+
+        let merged = f.gate(RiskLevel::Two).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn a_declared_repair_lands_during_a_red_tip_and_another_change_does_not() {
+        let f = fixture("zero\n");
+        let red = red_tip(&f);
+        f.check(red);
+        let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(red));
+        f.repository
+            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+
+        let error = merge(&f, f.number, RiskLevel::Two).unwrap_err();
+        assert_eq!(paused(error), Pause::RedTip { red });
+
+        let merged = merge(&f, repair, RiskLevel::Two).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn a_change_that_only_declares_a_repair_is_not_exempt() {
+        let f = fixture("zero\n");
+        let red = red_tip(&f);
+        // It names the red commit and changes another path.
+        let (elsewhere, other) = open_branch(
+            &f,
+            "elsewhere",
+            red,
+            &[("z.txt", "z\n"), ("c.txt", "red\n")],
+            Some(red),
+        );
+        f.repository
+            .record_check(
+                elsewhere,
+                Some(red),
+                CheckResult::Pass,
+                &human("ana"),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(
+            paused(merge(&f, other, RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red }
+        );
+    }
+
+    #[test]
+    fn a_repair_must_name_a_commit_between_the_last_green_and_the_first_red_tip() {
+        let f = fixture("zero\n");
+        // `base` is green, so it is not in the window; the red commit is.
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        let red = red_tip(&f);
+        let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(f.base));
+        f.repository
+            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+
+        assert_eq!(
+            paused(merge(&f, repair, RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red }
+        );
+    }
+
+    #[test]
+    fn a_red_tip_that_appears_between_the_attempts_pauses_the_second_attempt() {
+        // The result is valid for the first tip. While the gate waits for the lock, `main` moves
+        // and the new tip turns red. The second attempt must see the red tip.
+        let f = fixture("zero\n");
+        f.check(f.base);
+        let path = f.path();
+        let (base, head) = (f.base, f.head);
+        pause::queue(move |_| {
+            let repository = Repository::open(&path).unwrap();
+            let next = commit_of(
+                &repository,
+                base,
+                &[("b.txt", "b\n"), ("c.txt", "zero\n")],
+                "zoe",
+            );
+            set_branch(&repository, "main", Some(base), next);
+            repository
+                .record_check(
+                    head,
+                    Some(next),
+                    CheckResult::Pass,
+                    &human("ana"),
+                    &AllowAll,
+                )
+                .unwrap();
+            repository
+                .record_check(next, None, CheckResult::Fail, &human("ana"), &AllowAll)
+                .unwrap();
+        });
+
+        let error = f.gate(RiskLevel::Two).unwrap_err();
+
+        assert!(matches!(
+            paused(error),
+            Pause::RedTip { red } if red == f.main()
+        ));
+    }
+
+    #[test]
+    fn an_unproven_failing_run_does_not_pause_an_enforcing_repository() {
+        let f = fixture("zero\n");
+        let register = register();
+        let entry = f.record(f.head, Some(f.base), CheckResult::Pass, "ana");
+        prove(&f, &entry);
+        // Anyone can write the entry of a failing run; without a proof it says nothing.
+        let failing = f.record(f.base, None, CheckResult::Fail, "ana");
+        let gate = || {
+            f.repository.merge_gate(
+                f.number,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+        };
+        let before = f.entries();
+        prove(&f, &failing);
+        assert!(
+            matches!(gate(), Err(GateError::Paused { .. })),
+            "a proven failure pauses"
+        );
+        assert_eq!(f.entries(), before);
+
+        let other = fixture("zero\n");
+        let entry = other.record(other.head, Some(other.base), CheckResult::Pass, "ana");
+        prove(&other, &entry);
+        other.record(other.base, None, CheckResult::Fail, "ana");
+        let merged = other
+            .repository
+            .merge_gate(
+                other.number,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap();
+        assert_eq!(other.main(), merged.commit);
+    }
+
+    const BOUNDED: &str = "stemma-policy 1\nreservation 2\nmax-unverified 3\nlevel 0 z.txt\n";
+
+    #[test]
+    fn the_unverified_window_stops_every_merge_until_a_run_covers_a_newer_commit() {
+        let f = fixture("zero\n");
+        // History: base, the policy, one more commit; the run covers `base`, two commits older.
+        let policy = land_policy(&f, "stemma-policy 1\nmax-unverified 2\nlevel 0 a.txt\n");
+        let tip = commit_of(
+            &f.repository,
+            policy,
+            &[
+                ("b.txt", "b\n"),
+                ("c.txt", "zero\n"),
+                (
+                    crate::policy::FILE_NAME,
+                    "stemma-policy 1\nmax-unverified 2\nlevel 0 a.txt\n",
+                ),
+            ],
+            "zoe",
+        );
+        set_branch(&f.repository, "main", Some(policy), tip);
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        f.check(tip);
+        let before = f.entries();
+
+        let error = gate_by_policy(&f, &Mode::Open).unwrap_err();
+
+        assert_eq!(paused(error), Pause::Unverified { count: 2, max: 2 });
+        assert_eq!(f.main(), tip);
+        assert_eq!(f.entries(), before);
+
+        f.record(tip, None, CheckResult::Pass, "ana");
+        let merged = gate_by_policy(&f, &Mode::Open).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn the_unverified_window_has_the_default_bound_of_10_where_the_caller_gives_the_level() {
+        let f = fixture("zero\n");
+        let mut tip = f.base;
+        for at in 0..10 {
+            tip = commit_of(
+                &f.repository,
+                tip,
+                &[("c.txt", "zero\n"), ("n.txt", &at.to_string())],
+                "zoe",
+            );
+            set_branch(&f.repository, "main", Some(f.main()), tip);
+        }
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        f.check(tip);
+        assert_eq!(
+            paused(f.gate(RiskLevel::Zero).unwrap_err()),
+            Pause::Unverified { count: 10, max: 10 }
+        );
+        f.record(tip, None, CheckResult::Pass, "ana");
+        assert!(f.gate(RiskLevel::Zero).is_ok());
+    }
+
+    #[test]
+    fn a_repair_is_exempt_from_the_unverified_window() {
+        let f = fixture("zero\n");
+        let policy = land_policy(&f, "stemma-policy 1\nmax-unverified 1\nlevel 0 a.txt\n");
+        let red = commit_of(
+            &f.repository,
+            policy,
+            &[
+                ("c.txt", "red\n"),
+                (
+                    crate::policy::FILE_NAME,
+                    "stemma-policy 1\nmax-unverified 1\nlevel 0 a.txt\n",
+                ),
+            ],
+            "zoe",
+        );
+        set_branch(&f.repository, "main", Some(policy), red);
+        let tip = commit_of(
+            &f.repository,
+            red,
+            &[
+                ("c.txt", "red\n"),
+                ("n.txt", "n\n"),
+                (
+                    crate::policy::FILE_NAME,
+                    "stemma-policy 1\nmax-unverified 1\nlevel 0 a.txt\n",
+                ),
+            ],
+            "zoe",
+        );
+        set_branch(&f.repository, "main", Some(red), tip);
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        f.record(red, None, CheckResult::Fail, "ana");
+        f.check(tip);
+        // `max-unverified 1`: `n.txt` is one commit after the latest verified tip `red`.
+        assert!(matches!(
+            paused(gate_by_policy(&f, &Mode::Open).unwrap_err()),
+            Pause::Unverified { .. }
+        ));
+
+        let (fix, repair) = open_branch(
+            &f,
+            "fix",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("n.txt", "n\n"),
+                (
+                    crate::policy::FILE_NAME,
+                    "stemma-policy 1\nmax-unverified 1\nlevel 0 a.txt\n",
+                ),
+            ],
+            Some(red),
+        );
+        f.repository
+            .record_check(fix, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        let merged = f
+            .repository
+            .merge_gate_by_policy(repair, &Mode::Open, &human("daniel"), &AllowAll)
+            .unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    /// `n` invalidated runs for the head of the fixture, the last one at `last`, `gap` seconds
+    /// after the one before. The bases are old commits, so none is valid for the tip.
+    fn lose_runs(f: &Fixture, last: i64, gap: i64) {
+        let root = f.repository.refs().working_copy().unwrap();
+        record_at(f, last - gap, f.head, Some(root), CheckResult::Pass);
+        record_at(f, last, f.head, Some(f.base), CheckResult::Pass);
+    }
+
+    #[test]
+    fn a_change_that_lost_n_runs_holds_a_reservation_and_levels_0_and_1_report_paused() {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        lose_runs(&f, now(), 100);
+        let (z, other) = open_branch(
+            &f,
+            "zfile",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("z.txt", "z\n"),
+                (crate::policy::FILE_NAME, BOUNDED),
+            ],
+            None,
+        );
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        f.record(tip, None, CheckResult::Pass, "ana");
+        let before = f.entries();
+
+        let error = f
+            .repository
+            .merge_gate_by_policy(other, &Mode::Open, &human("daniel"), &AllowAll)
+            .unwrap_err();
+
+        let Pause::Reserved { holder, until } = paused(error) else {
+            panic!("expected the reservation");
+        };
+        assert_eq!(holder, f.number);
+        assert!(until > now() + 100, "twice the 100 s of the last run");
+        assert_eq!(f.entries(), before);
+
+        // The holder lands with a result for the tip, and the reservation ends with it.
+        f.check(tip);
+        assert!(
+            matches!(
+                by_policy(&f, other, &Mode::Open),
+                Err(GateError::Paused { .. })
+            ),
+            "its own result for the tip does not end the reservation"
+        );
+        let merged = gate_by_policy(&f, &Mode::Open).unwrap();
+        assert_eq!(f.main(), merged.commit);
+        let merged =
+            f.repository
+                .merge_gate_by_policy(other, &Mode::Open, &human("daniel"), &AllowAll);
+        assert!(
+            !matches!(merged, Err(GateError::Paused { .. })),
+            "{merged:?}"
+        );
+    }
+
+    #[test]
+    fn the_reservation_ends_after_twice_the_duration_of_the_last_run() {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        // The last run ended 1000 s ago after 100 s; the window ended 800 s ago.
+        lose_runs(&f, now() - 1000, 100);
+        let (z, other) = open_branch(
+            &f,
+            "zfile",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("z.txt", "z\n"),
+                (crate::policy::FILE_NAME, BOUNDED),
+            ],
+            None,
+        );
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        f.record(tip, None, CheckResult::Pass, "ana");
+
+        let merged = f
+            .repository
+            .merge_gate_by_policy(other, &Mode::Open, &human("daniel"), &AllowAll)
+            .unwrap();
+
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    /// The merge of a level 0 change while a change of level 2 lost its runs: the last at `last`,
+    /// `gap` seconds after the one before. Margins of the tests are far above a second.
+    fn merge_against_lost_runs(last: i64, gap: i64) -> Result<GateMerge, GateError> {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        lose_runs(&f, last, gap);
+        let (z, other) = open_branch(
+            &f,
+            "zfile",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("z.txt", "z\n"),
+                (crate::policy::FILE_NAME, BOUNDED),
+            ],
+            None,
+        );
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        f.record(tip, None, CheckResult::Pass, "ana");
+        by_policy(&f, other, &Mode::Open)
+    }
+
+    #[test]
+    fn the_reservation_holds_just_before_its_end_and_ends_just_after() {
+        // The window is twice the 200 s of the last run: 400 s from its entry.
+        let at = now();
+        let held = merge_against_lost_runs(at - 370, 200).unwrap_err();
+        let Pause::Reserved { until, .. } = paused(held) else {
+            panic!("expected the reservation");
+        };
+        assert_eq!(until, at - 370 + 400);
+        assert!(merge_against_lost_runs(at - 430, 200).is_ok());
+    }
+
+    #[test]
+    fn the_reservation_lasts_one_hour_at_most_however_long_the_claimed_run() {
+        // 10 days between the two entries would be 20 days of window.
+        let at = now();
+        let held = merge_against_lost_runs(at - 3000, 864_000).unwrap_err();
+        let Pause::Reserved { until, .. } = paused(held) else {
+            panic!("expected the reservation");
+        };
+        assert_eq!(until, at - 3000 + 3600);
+        assert!(merge_against_lost_runs(at - 3700, 864_000).is_ok());
+    }
+
+    #[test]
+    fn an_entry_dated_in_the_future_holds_nothing() {
+        assert!(merge_against_lost_runs(now() + 1000, 100).is_ok());
+    }
+
+    #[test]
+    fn fewer_than_n_invalidated_runs_hold_no_reservation() {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        record_at(&f, now(), f.head, Some(f.base), CheckResult::Pass);
+        let (z, other) = open_branch(
+            &f,
+            "zfile",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("z.txt", "z\n"),
+                (crate::policy::FILE_NAME, BOUNDED),
+            ],
+            None,
+        );
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        f.record(tip, None, CheckResult::Pass, "ana");
+
+        assert!(f
+            .repository
+            .merge_gate_by_policy(other, &Mode::Open, &human("daniel"), &AllowAll)
+            .is_ok());
+    }
+
+    #[test]
+    fn a_reservation_that_appears_between_the_attempts_pauses_the_second_attempt() {
+        // A level 0 change lands on the first tip. While the gate waits for the lock, `main`
+        // moves and the other change loses its second run; the second attempt must pause.
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        let files = [
+            ("c.txt", "zero\n"),
+            ("z.txt", "z\n"),
+            (crate::policy::FILE_NAME, BOUNDED),
+        ];
+        let (z, other) = open_branch(&f, "zfile", tip, &files, None);
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        f.record(tip, None, CheckResult::Pass, "ana");
+        let path = f.path();
+        let (head, base) = (f.head, f.base);
+        let root = f.repository.refs().working_copy().unwrap();
+        pause::queue(move |_| {
+            let repository = Repository::open(&path).unwrap();
+            let next = commit_of(
+                &repository,
+                tip,
+                &[
+                    ("c.txt", "zero\n"),
+                    ("y.txt", "y\n"),
+                    (crate::policy::FILE_NAME, BOUNDED),
+                ],
+                "zoe",
+            );
+            set_branch(&repository, "main", Some(tip), next);
+            let at = |time, base| {
+                let name = OperationName::try_new("check").unwrap();
+                let allowed = repository
+                    .authorize(&human("ana"), &AllowAll, &name, "x")
+                    .unwrap();
+                let lock = repository.refs_store().lock_writer(&allowed).unwrap();
+                let entry = crate::oplog::CheckEntry::new(
+                    time,
+                    human("ana"),
+                    head,
+                    Some(base),
+                    CheckResult::Pass,
+                );
+                repository.append_check(&lock, &entry).unwrap();
+            };
+            at(now() - 100, root);
+            at(now(), base);
+            repository
+                .record_check(z, Some(next), CheckResult::Pass, &human("ana"), &AllowAll)
+                .unwrap();
+        });
+
+        let error = f
+            .repository
+            .merge_gate_by_policy(other, &Mode::Open, &human("daniel"), &AllowAll)
+            .unwrap_err();
+
+        assert!(matches!(paused(error), Pause::Reserved { holder, .. } if holder == f.number));
+    }
+
+    #[test]
+    fn bisection_over_the_red_window_finds_the_commit_that_broke_main() {
+        let f = fixture("zero\n");
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        let mut window = Vec::new();
+        let mut tip = f.base;
+        for at in 0..5 {
+            let next = commit_of(
+                &f.repository,
+                tip,
+                &[("c.txt", "zero\n"), ("n.txt", &at.to_string())],
+                "zoe",
+            );
+            set_branch(&f.repository, "main", Some(tip), next);
+            window.push(next);
+            tip = next;
+        }
+        f.record(tip, None, CheckResult::Fail, "ana");
+        assert_eq!(f.repository.red_window(None).unwrap(), window);
+
+        // The third commit broke it; the test is what a run of the checks on one commit says.
+        let broken = window[2];
+        let position = |commit: &CommitId| window.iter().position(|c| c == commit).unwrap();
+        let found = crate::bounds::bisect(&window, |commit| {
+            Ok::<_, ()>(position(commit) >= position(&broken))
+        })
+        .unwrap();
+
+        assert_eq!(found.map(|at| window[at]), Some(broken));
+        let green = fixture("zero\n");
+        green.record(green.base, None, CheckResult::Pass, "ana");
+        assert!(green.repository.red_window(None).unwrap().is_empty());
+    }
+
+    fn by_policy(f: &Fixture, number: u64, mode: &Mode) -> Result<GateMerge, GateError> {
+        f.repository
+            .merge_gate_by_policy(number, mode, &human("daniel"), &AllowAll)
+    }
+
+    /// The pull request `zfile` of level 0 (`z.txt`) on `tip`, with a result for `tip`.
+    fn z_change(f: &Fixture, tip: CommitId, policy: &str) -> u64 {
+        let (z, number) = open_branch(
+            f,
+            "zfile",
+            tip,
+            &[
+                ("c.txt", "zero\n"),
+                ("z.txt", "z\n"),
+                (crate::policy::FILE_NAME, policy),
+            ],
+            None,
+        );
+        f.repository
+            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+        number
+    }
+
+    #[test]
+    fn the_holder_keeps_the_reservation_when_its_result_for_the_tip_is_recorded() {
+        // Its fresh result must not end the reservation before it merges, or any other change
+        // lands first and invalidates the result again.
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        lose_runs(&f, now(), 100);
+        let other = z_change(&f, tip, BOUNDED);
+        f.record(tip, None, CheckResult::Pass, "ana");
+        f.check(tip);
+
+        let error = by_policy(&f, other, &Mode::Open).unwrap_err();
+
+        assert!(matches!(paused(error), Pause::Reserved { holder, .. } if holder == f.number));
+    }
+
+    #[test]
+    fn a_closed_change_and_a_holder_of_level_0_hold_no_reservation() {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        lose_runs(&f, now(), 100);
+        let other = z_change(&f, tip, BOUNDED);
+        f.record(tip, None, CheckResult::Pass, "ana");
+        f.repository
+            .close_pull(f.number, &human("mia"), None, &AllowAll)
+            .unwrap();
+        assert!(by_policy(&f, other, &Mode::Open).is_ok(), "a closed change");
+
+        // `a.txt` has level 0, so the feature is no change of level 2 or 3.
+        let g = fixture("zero\n");
+        let policy =
+            "stemma-policy 1\nreservation 2\nmax-unverified 3\nlevel 0 a.txt\nlevel 0 z.txt\n";
+        let tip = land_policy(&g, policy);
+        lose_runs(&g, now(), 100);
+        let other = z_change(&g, tip, policy);
+        g.record(tip, None, CheckResult::Pass, "ana");
+        assert!(
+            by_policy(&g, other, &Mode::Open).is_ok(),
+            "a holder of level 0"
+        );
+    }
+
+    #[test]
+    fn a_declared_repair_goes_ahead_of_a_reservation() {
+        let f = fixture("zero\n");
+        let tip = land_policy(&f, BOUNDED);
+        let red = commit_of(
+            &f.repository,
+            tip,
+            &[("c.txt", "red\n"), (crate::policy::FILE_NAME, BOUNDED)],
+            "zoe",
+        );
+        set_branch(&f.repository, "main", Some(tip), red);
+        f.record(red, None, CheckResult::Fail, "ana");
+        lose_runs(&f, now(), 100);
+        let (fix, repair) = open_branch(
+            &f,
+            "fix",
+            red,
+            &[("c.txt", "zero\n"), (crate::policy::FILE_NAME, BOUNDED)],
+            Some(red),
+        );
+        f.repository
+            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+
+        let merged = by_policy(&f, repair, &Mode::Open).unwrap();
+
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn in_an_enforcing_repository_runs_without_a_proof_make_no_reservation() {
+        for proven in [false, true] {
+            let f = fixture("zero\n");
+            let register = register();
+            let tip = land_policy(&f, BOUNDED);
+            let root = f.repository.refs().working_copy().unwrap();
+            for (time, base) in [(now() - 100, root), (now(), f.base)] {
+                let entry = record_at(&f, time, f.head, Some(base), CheckResult::Pass);
+                if proven {
+                    prove(&f, &entry);
+                }
+            }
+            // The result of the other change and the run on the tip carry proofs in both cases.
+            let other = z_change(&f, tip, BOUNDED);
+            let run = f.record(tip, None, CheckResult::Pass, "ana");
+            prove(&f, &run);
+            let entries = f.repository.oplog().entries().unwrap();
+            let z_check = entries
+                .iter()
+                .rev()
+                .find(|entry| {
+                    entry
+                        .check()
+                        .is_some_and(|check| *check.commit() != f.head && check.base().is_some())
+                })
+                .unwrap();
+            prove(&f, z_check);
+
+            let result = by_policy(&f, other, &Mode::Enforcing(register));
+
+            if proven {
+                assert!(matches!(
+                    paused(result.unwrap_err()),
+                    Pause::Reserved { .. }
+                ));
+            } else {
+                assert!(result.is_ok(), "no reservation without a proof: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unproven_pass_does_not_clear_a_red_tip_in_an_enforcing_repository() {
+        let f = fixture("zero\n");
+        let register = register();
+        let entry = f.record(f.head, Some(f.base), CheckResult::Pass, "ana");
+        prove(&f, &entry);
+        let failing = f.record(f.base, None, CheckResult::Fail, "ana");
+        prove(&f, &failing);
+        // The pass is only written, never signed.
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        let before = f.entries();
+
+        let error = f
+            .repository
+            .merge_gate(
+                f.number,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap_err();
+
+        assert_eq!(paused(error), Pause::RedTip { red: f.base });
+        assert_eq!(f.entries(), before);
+    }
+
+    #[test]
+    fn a_run_of_the_opener_or_an_author_does_not_clear_a_red_tip_for_their_change() {
+        let f = fixture("zero\n");
+        f.record(f.base, None, CheckResult::Fail, "ana");
+        f.check(f.base);
+        // Mia opened the change and wrote its commit.
+        f.record(f.base, None, CheckResult::Pass, "mia");
+        assert_eq!(
+            paused(f.gate(RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red: f.base }
+        );
+
+        // A failing run of the author still pauses: it only holds a merge back.
+        let other = fixture("zero\n");
+        other.check(other.base);
+        other.record(other.base, None, CheckResult::Fail, "mia");
+        assert_eq!(
+            paused(other.gate(RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red: other.base }
+        );
+
+        f.record(f.base, None, CheckResult::Pass, "zoe");
+        let merged = f.gate(RiskLevel::Two).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn a_failing_run_of_the_repairing_author_does_not_open_the_exemption() {
+        let f = fixture("zero\n");
+        let red = commit_of(&f.repository, f.base, &[("c.txt", "red\n")], "zoe");
+        set_branch(&f.repository, "main", Some(f.base), red);
+        // Mia writes the failing run, the fix, and opens the pull request.
+        f.record(red, None, CheckResult::Fail, "mia");
+        let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(red));
+        f.repository
+            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+
+        assert_eq!(
+            paused(merge(&f, repair, RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red }
+        );
+    }
+
+    #[test]
+    fn one_commit_less_than_the_bound_lands() {
+        let f = fixture("zero\n");
+        let policy = land_policy(&f, "stemma-policy 1\nmax-unverified 3\nlevel 0 a.txt\n");
+        let tip = commit_of(
+            &f.repository,
+            policy,
+            &[
+                ("b.txt", "b\n"),
+                ("c.txt", "zero\n"),
+                (
+                    crate::policy::FILE_NAME,
+                    "stemma-policy 1\nmax-unverified 3\nlevel 0 a.txt\n",
+                ),
+            ],
+            "zoe",
+        );
+        set_branch(&f.repository, "main", Some(policy), tip);
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        f.check(tip);
+        // Two commits lie after `base`, and the bound is three.
+        let merged = gate_by_policy(&f, &Mode::Open).unwrap();
+        assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn the_red_window_runs_from_after_the_last_green_to_the_first_red_tip() {
+        let f = fixture("zero\n");
+        f.record(f.base, None, CheckResult::Pass, "ana");
+        let mut chain = Vec::new();
+        let mut tip = f.base;
+        for at in 0..3 {
+            tip = commit_of(
+                &f.repository,
+                tip,
+                &[("c.txt", "zero\n"), ("n.txt", &at.to_string())],
+                "zoe",
+            );
+            set_branch(&f.repository, "main", Some(f.main()), tip);
+            chain.push(tip);
+        }
+        f.record(chain[1], None, CheckResult::Fail, "ana");
+
+        assert_eq!(f.repository.red_window(None).unwrap(), [chain[0], chain[1]]);
+        assert!(
+            f.repository
+                .red_window(Some(&register()))
+                .unwrap()
+                .is_empty(),
+            "no proof"
+        );
     }
 }

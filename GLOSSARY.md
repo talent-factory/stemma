@@ -124,13 +124,15 @@ unverified window. (geprüfte Spitze)
 **Unverified window**:
 The commits of `main` after the verified tip. Its size is bounded by `max_unverified` of the policy
 (10 by default) plus what lands during one run; at that size all merges wait until a run on the tip
-has started; the repairing change is exempt. (Fenster ungeprüfter Commits)
+has started; the repairing change is exempt. The log records finished runs only, so the gate waits
+until a finished run covers a newer commit. (Fenster ungeprüfter Commits)
 
 **Reservation**:
 The claim that a change of level 2 or 3 gets after `N` invalidated runs in a row (3 by default),
 so that every other change, except the repair of a red tip, waits until it is merged, failed, or
 closed. A run is invalidated when `main` moved while it ran. The reservation ends after twice the
-duration of its last check run; at most one exists. (Reservierung)
+duration of its last check run; at most one exists. The log has no start of a run, so the duration
+is the time since the entry before it, and a reservation lasts one hour at most. (Reservierung)
 
 **Clean merge**:
 A tree merge that returns one tree, not a sum of several. (sauberer Merge)

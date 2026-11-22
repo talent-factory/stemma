@@ -3052,7 +3052,15 @@ Genehmigung verstösst, wenn in einem durchsetzenden Repository der Schlüssel f
 Signatur das Register nicht überzeugt, wenn der Branch sich während der Signatur bewegte, wenn
 der Branch seit dem Öffnen einen neuen Head hat, wenn das Merge einen Konflikt enthält und wenn
 kein Ergebnis einer Prüfung zählt. Bei einem Konflikt rebased der Autor und öffnet einen neuen
-Pull Request. Ein gehaltenes Lock der Referenzen endet mit Exit-Code 6; der Aufruf lässt sich
+Pull Request.
+Ebenfalls Exit-Code 1 ohne Schreiben meldet \type{Paused}, wenn eine Schranke von ADR-019 die
+Änderung hält: Die Spitze von \type{main} ist rot (Stufen 2 und 3), zu viele Commits sind
+ungeprüft (\type{max-unverified}, Standard 10), oder eine andere Änderung hält die Reservierung.
+Der Aufruf lässt sich wiederholen, sobald ein Lauf die Lage ändert; eine erklärte Behebung der
+roten Spitze ist von allen drei Schranken ausgenommen.
+\type{pr merge} ruft das Gate mit der Stufe von \type{--level} auf und liest keine Policy:
+Die Reservierung gilt dort nie, und \type{max-unverified} hat seinen Standardwert.
+Ein gehaltenes Lock der Referenzen endet mit Exit-Code 6; der Aufruf lässt sich
 wiederholen. Ein beschädigtes Log endet mit Exit-Code 5. Exit-Code 3 meldet einen Eintrag, der
 geschrieben ist, während der Rest nicht gelang: eine Beweisdatei, die fehlt, oder eine Bewegung
 von \type{main}, deren Spülen nicht feststeht. Ein erneuter \type{pr merge} schliesst die

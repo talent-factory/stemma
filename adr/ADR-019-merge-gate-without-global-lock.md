@@ -1,12 +1,13 @@
 # ADR-019: The merge gate without a global lock
 
-**Status:** Accepted (decided in STEMMA-229). The evidence of the checks (STEMMA-240) and the
-core of the gate (STEMMA-241: the rule table, the optimistic swap, the objects before the lock)
-are implemented. Not implemented, and left to the caller of the gate until their slices land:
-the approvals (ADR-004), the pause of the levels 2 and 3 while the last verified tip is red (with
-the exemption of a declared repair), the bounds (STEMMA-242), the policy hook (STEMMA-246), the
-rule that the authors of a change are registered actors, and the command. Their slices are on
-the map of phase 4.
+**Status:** Accepted (decided in STEMMA-229). The evidence of the checks (STEMMA-240), the
+core of the gate (STEMMA-241: the rule table, the optimistic swap, the objects before the lock),
+and the bounds (STEMMA-242: the pause at a red tip with the exemption of a declared repair, the
+reservation, `max_unverified`, and the window and helper for the bisection; the gate itself does
+not bisect) are implemented. Not implemented, and left to
+the caller of the gate until their slices land: the approvals (ADR-004), the rule that the
+authors of a change are registered actors, and the command. Their slices are on the map of
+phase 4.
 The pull request as an object, the checks, and the merge gate belong to phase 4. The ADR defines
 what "`main` is always green" means for the gate (ADR-006 decides the GitHub side, which stays
 open) and gives ADR-004 the meaning of its "merge gate".
@@ -106,6 +107,40 @@ is repeated only for levels 2 and 3.
 
 ### Bounds for retries and for the unverified window
 
+The gate applies the two bounds, and the pause at a red tip below, after the rule table and
+before it writes the commit `M`. A change that has to wait gets `GateError::Paused`; no entry, no
+commit `M`, and no reference change is written (the blobs and trees of the merge may stay,
+ADR-014). The gate reads the bounds again for every attempt. The rules are pure functions over the
+log (`stemma_core::bounds`); the log is the only state, so no entry is new. Where the log lacks a
+fact, the implementation takes the nearest one it has:
+
+- The log records finished runs only. "Until a run on the tip has started" is therefore "until a
+  finished run covers a newer commit". The unverified count is the position of the latest verified
+  tip in the history of `main`, and all of `main` if no run on a tip exists.
+- The duration of a check run is not recorded. It is the time between the entry of the run and the
+  entry of the run before it in the log (any run of the change), or the opening for its first run.
+  A time is a claim of its writer, so a reservation lasts at most one hour, and a reservation that
+  begins in the future holds nothing yet.
+- An invalidated run is a passing result for the head whose base is not the current tip. The runs
+  count in a row up to a failing result, one per base. A result for the current tip counts as no
+  run and does not end the reservation: it is what the holder needs to merge. The reservation
+  begins at the `N`-th run, and again at every further `N`; the oldest change that holds one wins,
+  and only a change of level 2 or 3 holds one.
+- Only the runs of a writer who is independent of the change count for its bounds (the rule of
+  `check::is_independent`): the opener and the authors of a change could otherwise clear a red tip
+  or start a reservation for their own change. In an enforcing repository a run counts only with a
+  proof of its writer, a failing one as well: anyone can write the entry of a run. A failing run
+  stays whoever wrote it, since it only holds a merge back. A change whose path has no level holds
+  no reservation: the gate refuses it at its own merge, and it must not stop another change.
+  The exemption of a repair counts independent runs only, so nobody opens it for their own change
+  by writing the failing run.
+- Whoever calls the gate with a level of its own (`merge_gate`) reads no policy: the bounds have
+  their defaults, and the reservation is not applied, as the levels of the other changes are the
+  policy's to tell (`merge_gate_by_policy`).
+- Where one commit has a passing and a failing run, the pass stands (the core reads the last green
+  tip from the passing runs alone). In the open mode an actor can therefore write a pass for a red
+  commit; the open mode trusts every actor, and the proof of the register closes it.
+
 Two bounds keep the gate from starving a change and from running far ahead of its checks. Both
 values are in the policy file (ADR-004), so changing them is level 3: a human owner and an ADR. An
 agent cannot loosen the bounds under which its own change is merged.
@@ -148,16 +183,17 @@ the merge cannot: two changes that merge cleanly and break each other (a semanti
   since the break may lie in level 2 code. Changes of level 0 and 1 continue, since they cannot
   make the repair harder to find.
 - A repair is declared and then checked by its content. The pull request names the red commit
-  (`repairs <commit>`). The gate accepts the declaration only if that commit lies between the last
-  green and the first red tip, and the diff of the repair reverts that commit or changes the paths
+  (`repairs <commit>`). The gate accepts the declaration only if that commit lies after the last
+  green tip, up to and including the first red tip, and the diff of the repair reverts that commit or changes the paths
   that it changed. The gate computes this as a pure function over the two diffs, as for the rule on
   weakened tests (ADR-004, rule 10); nobody has to confirm it. A change that only declares a repair
   gets no exemption. The checks of the repair follow the rule table: levels 2 and 3 need a result
   with the current tip as base, levels 0 and 1 a clean merge onto it.
 - The *last green tip* is the newest commit of `main` that a finished run covered with success. The
   *first red tip* is the oldest commit after it that a finished run covered with failure. To find
-  the cause in a window of unverified commits, the gate bisects the linear history of `main`
-  between the two. A failing run does not take back a passing run of the same commit: the core
+  the cause in a window of unverified commits, the linear history of `main` between the two
+  is the window of a bisection (`Repository::red_window`, `bounds::bisect`; the gate itself does
+  not bisect). A failing run does not take back a passing run of the same commit: the core
   reads the last green tip from the passing runs alone (ADR-011), and the failure stays in the log
   for the gate.
 - The form of the entry `pr-open` and the syntax of `repairs` are fixed (ADR-011, STEMMA-238),
