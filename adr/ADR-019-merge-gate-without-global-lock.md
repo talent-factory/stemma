@@ -129,7 +129,9 @@ fact, the implementation takes the nearest one it has:
 - Only the runs of a writer who is independent of the change count for its bounds (the rule of
   `check::is_independent`): the opener and the authors of a change could otherwise clear a red tip
   or start a reservation for their own change. In an enforcing repository a run counts only with a
-  proof of its writer, a failing one as well: anyone can write the entry of a run.
+  proof of its writer, a failing one as well: anyone can write the entry of a run. A failing run
+  stays whoever wrote it, since it only holds a merge back. A change whose path has no level holds
+  no reservation: the gate refuses it at its own merge, and it must not stop another change.
 - Whoever calls the gate with a level of its own (`merge_gate`) reads no policy: the bounds have
   their defaults, and the reservation is not applied, as the levels of the other changes are the
   policy's to tell (`merge_gate_by_policy`).

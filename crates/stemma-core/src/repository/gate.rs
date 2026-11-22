@@ -2847,6 +2847,15 @@ mod tests {
             Pause::RedTip { red: f.base }
         );
 
+        // A failing run of the author still pauses: it only holds a merge back.
+        let other = fixture("zero\n");
+        other.check(other.base);
+        other.record(other.base, None, CheckResult::Fail, "mia");
+        assert_eq!(
+            paused(other.gate(RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red: other.base }
+        );
+
         f.record(f.base, None, CheckResult::Pass, "zoe");
         let merged = f.gate(RiskLevel::Two).unwrap();
         assert_eq!(f.main(), merged.commit);

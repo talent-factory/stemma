@@ -224,9 +224,10 @@ impl Repository {
         ))
     }
 
-    /// `checks` without the runs of a writer who is not independent of the change `pull`
+    /// `checks` without the passing runs of a writer who is not independent of the change `pull`
     /// ([`check::is_independent`]: the opener, the authors of the commits `tip..head`, and their
-    /// sponsors). A pull request that `tip` reaches has no authors of its own to exclude.
+    /// sponsors). A failing run stays whoever wrote it: it only holds a merge back, so no writer
+    /// gains from it, and it must not vanish because its writer is involved in the change. A pull request that `tip` reaches has no authors of its own to exclude.
     fn independent_checks(
         &self,
         checks: &[Check],
@@ -242,7 +243,8 @@ impl Repository {
         Ok(checks
             .iter()
             .filter(|check| {
-                check::is_independent(check.writer(), pull.opener(), &authors, register)
+                !check.passed()
+                    || check::is_independent(check.writer(), pull.opener(), &authors, register)
             })
             .cloned()
             .collect())
@@ -250,11 +252,11 @@ impl Repository {
 
     /// The level of another open pull request merged onto the tip, or `None` if the change cannot
     /// land as it is, so that it holds no reservation: its branch is gone or moved away from the
-    /// opening, the merge conflicts, or the merge changes nothing.
+    /// opening, the merge conflicts, the merge changes nothing, or a path of it has no level.
     ///
     /// # Errors
     ///
-    /// A failure to read the refs, the objects, or the policy is an error: a reservation that
+    /// A failure to read the refs or the objects is an error: a reservation that
     /// vanishes with a flaky store would let others pass the change that waits.
     fn level_of_other(
         &self,
@@ -273,7 +275,10 @@ impl Repository {
         };
         match self.level_of_change(policy, tip, *tree) {
             Ok(level) => Ok(Some(level)),
-            Err(LevelError::NoChange) => Ok(None),
+            // The change has a path that no level can be told for, or changes nothing: the gate
+            // refuses it at its own merge, so it cannot land and holds no reservation. It must not
+            // stop the merge of another change, and its author chooses the paths.
+            Err(LevelError::NoChange | LevelError::Path(_)) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
