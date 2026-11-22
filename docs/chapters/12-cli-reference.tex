@@ -2978,6 +2978,13 @@ diesem Agenten, dieser Rolle und diesem Sponsor.
 nicht signiert.
 Ein Register, das sich nicht lesen lässt, endet mit Exit-Code 5.
 
+{\bf Wiederholung.} Ein zweiter Aufruf von \type{add-key}, \type{retire}, \type{revoke} oder
+\type{add-agent} mit denselben Argumenten endet mit Exit-Code 1 und ändert nichts, denn der
+Schlüssel oder der Agent steht schon im Register oder ist nicht mehr aktiv.
+Ein Absturz während des Schreibens lässt die Datei ganz alt oder ganz neu zurück (atomares
+Ersetzen), und der Aufruf lässt sich danach wiederholen.
+\type{cosign} verändert nichts und lässt sich beliebig oft aufrufen.
+
 {\bf Beispiele.}
 
 \starttyping
@@ -2991,7 +2998,7 @@ stemma register add-agent bot.pub --agent bot --sponsor mia --cosign bot.sig --a
 \section{pr}
 
 Öffnet, schliesst, genehmigt und merged einen Pull Request und listet die Pull Requests
-(ADR-004, ADR-019). Ein Pull Request ist eine Folge von Einträgen im Operationslog; seine Nummer
+(ADR-004, ADR-019). Ein Pull Request ist eine Folge von Einträgen im Operation Log; seine Nummer
 ist die Nummer des Eintrags, der ihn öffnet.
 
 \starttyping
@@ -3075,6 +3082,13 @@ denn die erste zählt ohne Beweis nicht.
 Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
 Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.
 
+{\bf Wiederholung.} \type{open} und \type{close} lassen sich nach einem Erfolg nicht wiederholen
+(Exit-Code 1: der Pull Request ist offen oder nicht mehr offen), nach einem Fehler schon.
+\type{approve} lässt sich wiederholen; die Genehmigungen derselben Identität zählen einmal.
+\type{merge} lässt sich nach jedem Fehler und nach einem Absturz wiederholen; nach einem Erfolg
+endet der Aufruf mit Exit-Code 1, weil der Pull Request nicht mehr offen ist.
+\type{list} liest nur.
+
 {\bf Beispiele.}
 
 \starttyping
@@ -3125,6 +3139,8 @@ einen Eintrag, dessen Beweis trotzdem fehlt, etwa weil die Beweisdatei sich nich
 Das Ergebnis ist im Log und zählt nicht, und der Lauf wird noch einmal eingetragen.
 Steht nicht fest, ob der Eintrag gesichert ist (auch Exit-Code 3), zeigt \type{check list}, ob er
 im Log steht; fehlt er, wiederholt man den Aufruf.
+Ein Aufruf nach einem Erfolg schreibt einen zweiten, gleichen Eintrag; der Befehl erkennt keine
+Wiederholung. \type{list} liest nur.
 
 {\bf Beispiele.}
 
@@ -3177,6 +3193,10 @@ den Schlüssel, bevor er etwas schreibt. Exit-Code 6 meldet ein gehaltenes Lock 
 Exit-Code 3 meldet einen Eintrag, der geschrieben ist, während die Datei der Lease nicht ersetzt
 wurde oder die Beweisdatei sich nicht schreiben liess; der nächste Aufruf liest die Datei und
 entscheidet neu.
+
+{\bf Wiederholung.} \type{take} lässt sich wiederholen: Wer die Lease hält, erneuert sie ohne
+Eintrag. \type{release} und \type{override} enden nach einem Erfolg mit Exit-Code 1, denn die
+Lease besteht nicht mehr oder gehört dem Owner schon. \type{show} liest nur.
 
 {\bf Beispiele.}
 

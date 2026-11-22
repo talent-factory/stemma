@@ -58,11 +58,16 @@ und ein Rebase über Merge-Commits, den der Befehl heute ablehnt.
 ADR-004 und ADR-003 sind für Phase~4 angenommen
 (\in{Kapitel}[chap:phase4]).
 Sie legen die Dauer der Lease, die Identität der Agenten und die Pfade je Risikostufe fest;
-umgesetzt ist das noch nicht.
+umgesetzt sind der Kern der Lease, das Akteursregister, die Signaturen und die Policy-Datei,
+dazu die Befehle \type{lease}, \type{pr}, \type{check}, \type{register} und \type{enforce}.
 Offen bleibt, wer den Schnellweg für triviale Änderungen nutzen darf.
+Die schreibenden Befehle erwerben und erneuern noch keine Lease.
+Die Policy-Datei dieses Repositorys ist ein Entwurf ohne Signatur des Owners,
+\type{pr merge} leitet die Stufe nicht aus der Policy ab, und für eine ungültige Policy auf der
+Spitze von \type{main} gibt es keinen Reparaturweg.
 Das Merge-Gate ohne globale Sperre ist in ADR-019 angenommen; sein Kern ist umgesetzt, auch die
-Pause bei roter Spitze, die Schranken und die Policy-Anbindung; es fehlen die Freigaben, die Regel
-für registrierte Autoren und der Befehl.
+Pause bei roter Spitze, die Schranken und die Policy-Anbindung im Kern; es fehlen die Prüfung der
+Freigaben und die Regel für registrierte Autoren.
 Offen ist dort, ob ein Ergebnis eine Menge getesteter Basis-Commits nennen darf
 (\in{Kapitel}[chap:phase4]).
 Strengere Mindeststufen für Firmenkunden werden erst mit konkreten Kunden relevant;

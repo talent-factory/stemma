@@ -11,8 +11,8 @@ Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate
 \startitemize
 \item Lease pro Branch, die jede schreibende Operation erneuert, mit Ablaufzeit.
 \item Owner-Override nur durch einen Menschen mit der Rolle Owner, signiert, mit Begründung und
-Eintrag im Operationslog, ohne Umgehung des Merge-Gates.
-\item Pull Request als Folge von Einträgen im Operationslog, mit Reviewern, Prüfungen und
+Eintrag im Operation Log, ohne Umgehung des Merge-Gates.
+\item Pull Request als Folge von Einträgen im Operation Log, mit Reviewern, Prüfungen und
 Merge-Regeln.
 \item Ein Merge-Gate ohne globale Sperre (ADR-019).
 \item Freigaben mit Akteur, Modellversion, geprüftem Commit und Ergebnis, signiert.
@@ -21,11 +21,28 @@ Merge-Regeln.
 \item Automatische Eskalation bei Lockerung bestehender Tests.
 \stopitemize
 
+Der Stand dieser Punkte ist uneinheitlich, denn die Phase ist noch nicht abgeschlossen.
+Umgesetzt sind der Kern der Lease, die Einträge des Pull Requests, die Signaturen,
+das Akteursregister, die Policy-Datei mit der Eskalation und das Merge-Gate samt Schranken;
+die Befehle \type{lease}, \type{pr}, \type{check}, \type{register} und \type{enforce} bedienen
+sie (\in{Kapitel}[chap:cli]).
+Offen sind die Anbindung der Lease an die übrigen schreibenden Befehle, die Prüfung der
+Freigaben im Gate, die Regel für registrierte Autoren, die Ableitung der Stufe aus der Policy in
+\type{pr merge} und die Policy-Datei dieses Repositorys selbst.
+Das Kapitel kennzeichnet an jeder Stelle, was davon noch fehlt, und Kapitel
+\in{}[chap:outlook] sammelt es.
+
 \section{Schreibhoheit und Pull Request}
 
 Dieser Abschnitt beschreibt ADR-004, das für Phase 4 angenommen ist.
-Die Lease und die Einträge des Pull Requests sind im Kern umgesetzt (siehe unten);
-die Befehle dazu und die Anbindung an die schreibenden Operationen folgen.
+Die Lease und die Einträge des Pull Requests sind im Kern umgesetzt (siehe unten), und die
+Befehle \type{lease} und \type{pr} bedienen sie.
+Noch nicht umgesetzt ist die Anbindung an die übrigen schreibenden Befehle: \type{commit},
+\type{track} und die Zeigerbefehle erwerben und erneuern keine Lease,
+und erst sie machen aus der Lease eine Schreibhoheit, die der Kern gegen jeden Schreiber
+erzwingt.
+Was die folgenden Absätze über das stille Erwerben und Verlängern sagen, beschreibt diesen
+Zielzustand; heute erwirbt und erneuert nur \type{lease take} eine Lease.
 Der Kern des Merge-Gates ist umgesetzt (\in{Abschnitt}[sec:merge-gate]).
 Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
 Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
@@ -46,7 +63,7 @@ die nach einer Ablaufzeit endet (\in{Abbildung}[fig:branch-lease]).
 Schreibt ein zweiter Akteur, solange die Lease gilt, lehnt der Kern das ab.
 Wer nicht auf den Ablauf warten will, braucht einen Owner-Override.
 Ihn darf nur ein Mensch mit der Rolle Owner auslösen, signiert und mit einer Begründung.
-Er hinterlässt einen Eintrag im Operationslog, den der Purge nie anfasst,
+Er hinterlässt einen Eintrag im Operation Log, den der Purge nie anfasst,
 weil er keinen Commit nennt, und er umgeht das Merge-Gate nie.
 Die Lease ist Zustand, kein Ereignis: eine Datei je Branch im gemeinsamen Verzeichnis
 \type{.stemma/leases/}, die alle Worktrees sehen.
@@ -62,7 +79,7 @@ Die Prüfung der Lease und das Bewegen des Zeigers sind ein Schritt unter \type{
 zwei Akteure schreiben also nie gleichzeitig.
 
 Die folgende Tabelle (\in{Tabelle}[tab:lease-rule]) zeigt, was ein Akteur tut.
-Vier Einträge halten die Änderungen der Lease im Operationslog fest:
+Vier Einträge halten die Änderungen der Lease im Operation Log fest:
 \type{lease-acquire}, \type{lease-release}, \type{lease-takeover} und \type{lease-override}.
 Sie nennen einen Branch und Akteure, aber keinen Commit.
 Deshalb kann der Purge sie nie anfassen, und \type{op restore} lehnt sie ab.
@@ -134,7 +151,7 @@ auf der neuen Spitze.
 
 Ein Pull Request hat kein Objekt und keine Referenz.
 Er ist die Folge der Einträge \type{pr-open}, \type{pr-close} und \type{pr-merge} im
-Operationslog, und seine Nummer ist die Nummer des Eintrags \type{pr-open}.
+Operation Log, und seine Nummer ist die Nummer des Eintrags \type{pr-open}.
 Der Zustand wird nicht gespeichert, sondern aus dem Log berechnet:
 
 \startitemize
@@ -246,9 +263,10 @@ ADR-019 beantwortet sie.
 Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch, die Objekte
 vor der Sperre und die Schranken (Pause bei roter Spitze mit der Ausnahme für eine erklärte
 Behebung, Reservierung und \type{max_unverified}).
-Noch nicht umgesetzt sind die Freigaben (ADR-004), die Regel, dass die Autoren einer Änderung
-registrierte Akteure sind, und der Befehl;
-bis dahin muss der Aufrufer des Kerns sie durchsetzen.
+Noch nicht umgesetzt sind die Prüfung der Freigaben (ADR-004) und die Regel, dass die Autoren
+einer Änderung registrierte Akteure sind; bis dahin muss der Aufrufer des Kerns sie durchsetzen.
+Der Befehl \type{pr merge} ruft das Gate auf, mit der Stufe aus \type{--level} (Standard 3),
+denn die Ableitung der Stufe aus der Policy ist in ihm noch nicht angeschlossen.
 
 {\bf Der Ablauf.}
 
@@ -357,12 +375,9 @@ die das Gate an verschiedenen Stellen erkennt.
 \stopplacefigure
 
 {\bf Das Ergebnis einer Prüfung.}
-Ein Prüflauf sagt etwas über einen Commit: Sein Baum hat die Tests bestanden oder nicht.
-Über den Commit, der \type{main} wird, wenn die Änderung landet, sagt er nichts, denn andere
-Änderungen können vorher landen.
-Das Ergebnis ist deshalb ein Beleg über ein Paar von Commits: den getesteten Commit und die Spitze
-von \type{main}, auf die er für den Test gemergt wurde, seine Basis.
-Es steht als Eintrag \type{check} im Operationslog.
+Das Ergebnis ist ein Beleg über das Paar aus dem getesteten Commit und seiner Basis, der Spitze von
+\type{main}, auf die er für den Test gemergt wurde (siehe oben).
+Es steht als Eintrag \type{check} im Operation Log.
 Er nennt in dieser Reihenfolge \type{version 1}, \type{commit <id>}, \type{base <id>} und
 \type{result pass} oder \type{result fail}.
 Ein Eintrag hat genau eine Basis; ein Lauf gegen eine andere Spitze ist ein anderer Eintrag.
@@ -406,7 +421,7 @@ einem Repository mit Register ebenfalls einen Beweis.
 Das Gate wendet \type{counted_checks} an (siehe oben, \type{merge_gate}) und liest danach die
 Läufe auf der Spitze für die Schranken (siehe unten); in einem Repository mit Register zählt
 auch dort nur ein Lauf mit Beweis, ein fehlgeschlagener ebenso wie ein erfolgreicher.
-Noch schreibt kein Befehl den Eintrag; er entsteht nur über den Kern (\type{record_check}).
+Den Eintrag schreibt der Befehl \type{check record} über den Kern (\type{record_check}).
 
 {\bf Die Prüfung nach dem Merge.}
 Zwei Änderungen können sauber zusammengehen und sich doch gegenseitig brechen, ein semantischer
@@ -546,7 +561,7 @@ die Gründe stehen in ADR-019.
 Dieser Abschnitt beschreibt, wie der Kern Beweise signiert und prüft.
 Das Verfahren steht in ADR-003 fest: SSHSIG mit Ed25519, und die Wahl der Bibliothek in ADR-020.
 Commits sind nicht signiert.
-Ein Beweis signiert einen Eintrag des Operationslogs oder eine Freigabe.
+Ein Beweis signiert einen Eintrag des Operation Logs oder eine Freigabe.
 
 {\bf Was signiert wird.}
 Signiert werden nicht die Nutzdaten allein.
@@ -559,7 +574,7 @@ stemma-proof\n<Typ>\n<Version>\n<Nutzdaten>
 Der Typ ist \type{log-entry} oder \type{approval}, die Version heute 1.
 Das Kennwort, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
 also beginnen die Nutzdaten eindeutig nach dem dritten.
-Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Logeintrag,
+Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Eintrag,
 und eine Signatur einer späteren Formatversion nie als Version 1.
 Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
 
@@ -920,7 +935,7 @@ Das Akteursregister bindet jede Identität, einen Menschen oder einen Agenten, a
 (ADR-003, ADR-004).
 Es liegt als Datei \type{.stemma-actors/register} im Repository und hat Stufe~3.
 Eine Signatur gilt nur gegen das Register des Basis-Commits, und eine Uhr kommt nirgends vor:
-Der Zeitpunkt eines Schlüssels ist eine Position im Operationslog, die Nummer eines Eintrags.
+Der Zeitpunkt eines Schlüssels ist eine Position im Operation Log, die Nummer eines Eintrags.
 Der Leser in \type{stemma-core} (\type{register.rs}) ist so streng wie der der Policy-Datei:
 Er nimmt nur an, was der Schreiber ausgibt, also hat ein Register genau eine Fassung.
 
@@ -950,7 +965,7 @@ und Zeilenende, Leerzeilen und Leerzeichen am Zeilenende gelten wie bei der Poli
 Ein Schlüssel steht in der Form von OpenSSH ohne Kommentar; nur Ed25519 ist erlaubt.
 
 {\bf Agenten.}
-Ein Agent hat einen eigenen Eintrag mit eigenem Schlüssel und eigener Rolle (STEMMA-222).
+Ein Agent hat einen eigenen Eintrag mit eigenem Schlüssel und eigener Rolle.
 Die Rolle ist durch die Rolle seines menschlichen Sponsors begrenzt.
 Pro dauerhafter Agentenidentität gibt es genau einen Eintrag;
 \type{model} und \type{session} der Akteurzeile beschreiben nur und gehören nicht zur Identität.
@@ -989,15 +1004,15 @@ und nicht das Repository: Welchen Schlüssel der Agent erhält, entscheidet der 
 \stopitemize
 
 {\bf Zustände eines Schlüssels.}
-Hinter \type{retired} und \type{revoked} steht die Nummer des ersten Logeintrags,
+Hinter \type{retired} und \type{revoked} steht die Nummer des ersten Eintrags,
 für den der Schlüssel nicht mehr zählt.
 
 \startitemize
 \item {\bf active:} Der Schlüssel signiert neue Beweise.
 \item {\bf retired:} Der Schlüssel wurde ersetzt. Was er vorher signiert hat, bleibt gültig:
-Ein Logeintrag zählt, wenn seine Nummer unter der Grenze liegt, eine Freigabe immer.
+Ein Eintrag zählt, wenn seine Nummer unter der Grenze liegt, eine Freigabe immer.
 \item {\bf revoked:} Der Schlüssel ist möglicherweise kompromittiert.
-Ein Logeintrag zählt nur, wenn er im Log vor dem Widerruf steht;
+Ein Eintrag zählt nur, wenn er im Log vor dem Widerruf steht;
 Freigaben des Schlüssels sind ungültig.
 Widerruft jemand einen ausgemusterten Schlüssel, gilt die frühere Grenze.
 \stopitemize
@@ -1033,7 +1048,7 @@ Der Autorisierer \type{RegisterAuthorizer} lässt im offenen Modus alles durch
 und verlangt im durchsetzenden Modus einen \type{Verified}-Akteur, der der Akteur des Aufrufs ist.
 
 {\bf Beweise und \type{op verify}.}
-Der Beweis eines Logeintrags ist eine Datei \type{.stemma/proofs/<Nummer>} mit dem Akteur
+Der Beweis eines Eintrags ist eine Datei \type{.stemma/proofs/<Nummer>} mit dem Akteur
 und der SSHSIG-Signatur.
 Signiert wird bei den meisten Einträgen der Hash des Eintrags, bei einem Eintrag
 \type{pr-approve} die Nummer des Pull Requests mit dem geprüften Kopf.
@@ -1049,8 +1064,9 @@ gegen den Hash;
 nur der Beweis des Stubs einer Freigabe und der eines älteren Stubs ohne Art
 bleibt ungeprüft.
 Die Art steht im Stub, aber nicht im Hash des Eintrags (ADR-011).
-Geschrieben wird ein Beweis bisher von der Freigabe; die weiteren Operationen, deren Regel vom
-Akteur abhängt, kommen mit den weiteren Teilen von Phase~4.
+Einen Beweis schreiben die Freigabe, das Ergebnis einer Prüfung und der Owner-Override;
+die weiteren Operationen, deren Regel vom Akteur abhängt, folgen mit den restlichen Teilen von
+Phase~4.
 Die CLI-Befehle \type{register add-key}, \type{register retire}, \type{register revoke}
 und \type{register add-agent} ändern die Datei im Arbeitsverzeichnis;
 die Änderung ist ein gewöhnlicher Commit der Stufe~3.
@@ -1066,4 +1082,9 @@ Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 \item Merge-Gate: die Frage, ob ein Ergebnis eine Menge getesteter Basis-Commits nennen darf
 (offener Punkt in ADR-019).
 Ein billigerer Test als der saubere Merge ist ausserhalb des Umfangs der ersten Version.
+\item Lease: Die schreibenden Befehle erwerben und erneuern sie noch nicht.
+\item Policy: \type{pr merge} leitet die Stufe nicht aus der Policy ab, und für eine ungültige
+Policy auf der Spitze von \type{main} gibt es keinen Reparaturweg.
+\item Merge-Gate: Es prüft die Freigaben und die Registrierung der Autoren noch nicht.
+\item Die Policy-Datei dieses Repositorys ist ein Entwurf, den der Owner nicht signiert hat.
 \stopitemize
