@@ -232,6 +232,24 @@ release-check tag:
     fi
     rm -rf "$scratch"
     echo "ok: {{tag}} = Cargo.toml = $shown"
+    # The notes of the release carry the section 'Stemma history' (CLAUDE.md, section Releases).
+    # The check needs the release as a draft or published; before that, or without `gh`, it only
+    # prints a hint and the human stays responsible. It only reads: it never edits the release.
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "hint: gh not found; check by hand that the notes of {{tag}} have the section 'Stemma history'"
+    elif ! notes=$(gh release view "{{tag}}" --json body --jq .body 2>/dev/null); then
+        echo "hint: no release {{tag}} (draft or published) found; after creating it, run this recipe again to check the section 'Stemma history'"
+    else
+        printf '%s\n' "$notes" | grep -qE '^#+ +Stemma history[[:space:]]*$' || {
+            echo "the notes of {{tag}} lack the section 'Stemma history'" >&2
+            exit 1
+        }
+        if printf '%s\n' "$notes" | grep -qF 'Not part of this release'; then
+            echo "the notes of {{tag}} still contain 'Not part of this release'" >&2
+            exit 1
+        fi
+        echo "ok: the notes of {{tag}} have the section 'Stemma history'"
+    fi
 
 # ─────────────────────────── Documentation ─────────────────────────────────
 
