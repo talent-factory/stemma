@@ -188,8 +188,9 @@ impl Repository {
     ///
     /// - the pull request is open, and its branch still has the head that `actor` reviewed, which
     ///   is the tip when the call began;
-    /// - `actor` is neither the opener nor the author of a commit that the pull request brings
-    ///   ([`self_approval`]);
+    /// - `actor` is neither the opener, nor the author of a commit that the pull request brings,
+    ///   nor the actor of the entry of the log that first brought such a commit under a branch, a
+    ///   tag, or the working copy ([`self_approval`]);
     /// - where the repository has a `register`, the approval is signed: `signer` signs
     ///   [`pull::approval_payload`] with a key that the register holds for `actor`, and the
     ///   signature is checked before the entry is written. The proof is the file `proofs/<entry>`
@@ -349,8 +350,18 @@ impl Repository {
             })
     }
 
-    /// The authors of the commits that a pull request with the head `head` brings: those that
+    /// The writers of the commits that a pull request with the head `head` brings: those that
     /// `head` reaches and `main` does not.
+    ///
+    /// A writer is the author of such a commit, and the actor of the entry of the log that first
+    /// brought such a commit under a branch, a tag, or the working copy, whichever it was and
+    /// directly or through a descendant of the commit. A later move to a commit
+    /// that a branch reached before, such as a branch that a reviewer makes at the tip to look at
+    /// it, wrote nothing and does not count. The author is a claim of whoever made the commit, and
+    /// `update_branch` does not compare it with the actor; the actor of the entry is the one that
+    /// the authorizer let in (in open mode that is a claim as well, ADR-003). So a commit under a
+    /// foreign author name still counts the actor that put it on a branch (ADR-004 rule 4,
+    /// STEMMA-255).
     fn pull_authors(&self, head: &CommitId) -> Result<Vec<Actor>, PullError> {
         let store = self.objects();
         let own = history::ancestors(store, *head, Parents::All, None)?;
@@ -366,6 +377,50 @@ impl Repository {
         for (id, commit) in &own {
             if !known.contains(id) && !authors.contains(commit.author()) {
                 authors.push(commit.author().clone());
+            }
+        }
+        let brought: HashSet<CommitId> = own
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| !known.contains(id))
+            .collect();
+        // The entries are in order. A commit is reached once a branch, a tag, or the working copy
+        // moved to it or to a descendant; the entry that does so first is the one that brought it.
+        let mut reached: HashSet<CommitId> = HashSet::new();
+        for entry in self.oplog().entries().map_err(PullError::Log)? {
+            let Some(change) = entry.change() else {
+                continue;
+            };
+            let moved = change
+                .branches()
+                .iter()
+                .map(|(_, moved)| moved)
+                .chain(change.tags().iter().map(|(_, moved)| moved))
+                .chain(change.working_copy());
+            for new in moved.filter_map(|moved| moved.after()) {
+                // The walk goes down from `new` and stops at a commit that was reached before, so
+                // every commit is read once over the whole log. A commit that the store does not
+                // hold any more (a purge removed it, ADR-014) reaches only itself; any other
+                // failure of the walk refuses the approval.
+                let mut first = false;
+                let mut stack = vec![(*new, None)];
+                while let Some((id, child)) = stack.pop() {
+                    if reached.contains(&id) {
+                        continue;
+                    }
+                    reached.insert(id);
+                    first |= brought.contains(&id);
+                    match history::read_commit(store, id, child) {
+                        Ok(commit) => {
+                            stack.extend(commit.parents().iter().map(|&parent| (parent, Some(id))));
+                        }
+                        Err(HistoryError::Missing { .. }) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                if first && !authors.contains(change.actor()) {
+                    authors.push(change.actor().clone());
+                }
             }
         }
         Ok(authors)
@@ -1192,6 +1247,321 @@ mod tests {
             recount.void()[0].1,
             pull::NotCounted::SelfApproval(SelfApproval::Author)
         );
+    }
+
+    /// STEMMA-255: the author of a commit is a claim of its writer. `update_branch` asks the
+    /// authorizer about the actor and never compares the actor with the author, so a writer who
+    /// puts a foreign name into the field must still count as a writer of the change, in the
+    /// approval and in the recount.
+    #[test]
+    fn a_commit_under_a_foreign_author_name_does_not_let_its_writer_approve() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        // Mia moves the branch to a commit that names Ana as its author.
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            vec![tip],
+            crate::change::sample_change(),
+            ana(),
+            1,
+            "more".to_owned(),
+        )
+        .unwrap();
+        let new = repository.objects().put_commit(&commit).unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        repository
+            .update_branch(&operation, &feature(), Some(tip), new, &mia(), &AllowAll)
+            .unwrap();
+        // Mia put the change on the branch and must not approve it.
+        let before = repository.oplog().entries().unwrap().len();
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
+            "mia approved her own change: {error:?}"
+        );
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        // An approval of hers that was written by hand does not count: the recount asks again.
+        let forged = PullEntry::approve(5, mia(), number, new).unwrap();
+        let lock = repository
+            .refs_store()
+            .lock_writer(&Allowed::granted())
+            .unwrap();
+        repository.append_pull(&lock, &forged).unwrap();
+        drop(lock);
+        let recount = repository.recount_approvals(number, None).unwrap();
+        assert_eq!(recount.count(), 0);
+        assert_eq!(
+            recount.void()[0].1,
+            pull::NotCounted::SelfApproval(SelfApproval::Author)
+        );
+    }
+
+    /// Mia makes the commit on a branch of her own, and the owner of the branch of the pull request
+    /// moves it there. The first entry that brought the commit is hers, so she is a writer.
+    #[test]
+    fn the_writer_who_made_the_commit_on_another_branch_may_not_approve_either() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            vec![tip],
+            crate::change::sample_change(),
+            ana(),
+            1,
+            "more".to_owned(),
+        )
+        .unwrap();
+        let new = repository.objects().put_commit(&commit).unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        let scratch = BranchName::try_new("scratch").unwrap();
+        repository
+            .update_branch(&operation, &scratch, None, new, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .update_branch(&operation, &feature(), Some(tip), new, &daniel(), &AllowAll)
+            .unwrap();
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// Mia moves a branch of her own to a commit above the one that the pull request brings, and
+    /// the owner then sets the branch of the pull request back to the lower one: she brought it
+    /// under a branch through its descendant.
+    #[test]
+    fn the_writer_who_moved_a_branch_to_a_descendant_may_not_approve_either() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let make = |parent: CommitId| {
+            let commit = crate::object::Commit::try_new(
+                tree,
+                vec![parent],
+                crate::change::sample_change(),
+                ana(),
+                1,
+                "more".to_owned(),
+            )
+            .unwrap();
+            repository.objects().put_commit(&commit).unwrap()
+        };
+        let lower = make(tip);
+        let upper = make(lower);
+        let operation = OperationName::try_new("commit").unwrap();
+        let scratch = BranchName::try_new("scratch").unwrap();
+        repository
+            .update_branch(&operation, &scratch, None, upper, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .update_branch(
+                &operation,
+                &feature(),
+                Some(tip),
+                lower,
+                &daniel(),
+                &AllowAll,
+            )
+            .unwrap();
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// Three commits, each put on the branch by another actor: all three are writers, and an
+    /// unrelated reviewer still approves.
+    #[test]
+    fn every_actor_that_brought_a_commit_is_a_writer() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let zoe = Actor::human("zoe").unwrap();
+        let max = Actor::human("max").unwrap();
+        push_commit(&repository, &zoe);
+        push_commit(&repository, &max);
+        push_commit(&repository, &mia());
+        for writer in [&zoe, &max, &mia()] {
+            let error = repository
+                .approve_pull(number, writer, None, None, &AllowAll)
+                .unwrap_err();
+            assert!(matches!(error, PullError::SelfApproval { .. }), "{error:?}");
+        }
+        repository
+            .approve_pull(number, &ana(), None, None, &AllowAll)
+            .unwrap();
+    }
+
+    /// The owner sets the branch of the pull request to the lower commit first; Mia moves a branch
+    /// of her own to the one above it afterwards. She did not bring the lower commit, so she may
+    /// approve, and the owner stays barred.
+    #[test]
+    fn a_later_move_to_a_descendant_does_not_count() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let zoe = Actor::human("zoe").unwrap();
+        let lower = push_commit(&repository, &zoe);
+        let tree = repository
+            .objects()
+            .get_commit(&lower)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let above = crate::object::Commit::try_new(
+            tree,
+            vec![lower],
+            crate::change::sample_change(),
+            zoe.clone(),
+            2,
+            "above".to_owned(),
+        )
+        .unwrap();
+        let above = repository.objects().put_commit(&above).unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        let scratch = BranchName::try_new("scratch").unwrap();
+        repository
+            .update_branch(&operation, &scratch, None, above, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap();
+        let recount = repository.recount_approvals(number, None).unwrap();
+        assert_eq!((recount.count(), recount.void().len()), (1, 0));
+        assert!(matches!(
+            repository
+                .approve_pull(number, &daniel(), None, None, &AllowAll)
+                .unwrap_err(),
+            PullError::SelfApproval { .. }
+        ));
+    }
+
+    /// Mia reaches the commit only through a tag of hers; the owner then moves the branch of the
+    /// pull request to it. The tag is the first entry that brought the commit, so she is a writer.
+    #[test]
+    fn the_writer_who_tagged_the_commit_first_may_not_approve_either() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            vec![tip],
+            crate::change::sample_change(),
+            ana(),
+            1,
+            "more".to_owned(),
+        )
+        .unwrap();
+        let new = repository.objects().put_commit(&commit).unwrap();
+        let operation = OperationName::try_new("tag").unwrap();
+        let name = BranchName::try_new("looked-at").unwrap();
+        repository
+            .create_tag(&operation, &name, new.object_id(), &mia(), &AllowAll)
+            .unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        repository
+            .update_branch(&operation, &feature(), Some(tip), new, &daniel(), &AllowAll)
+            .unwrap();
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(matches!(error, PullError::SelfApproval { .. }), "{error:?}");
+    }
+
+    /// A reviewer who only makes another branch at the tip, to look at it, wrote nothing.
+    #[test]
+    fn a_reviewer_who_makes_another_branch_at_the_tip_may_approve() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let zoe = Actor::human("zoe").unwrap();
+        push_commit(&repository, &zoe);
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let look = BranchName::try_new("look").unwrap();
+        let operation = OperationName::try_new("branch").unwrap();
+        repository
+            .update_branch(&operation, &look, None, tip, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap();
     }
 
     #[test]
