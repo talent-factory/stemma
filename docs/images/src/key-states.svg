@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" font-family="Helvetica, Arial, sans-serif">
+<title>Zustände eines Schlüssels im Akteursregister und die Kaskade beim Widerruf</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+</defs>
+<rect x="0" y="0" width="640" height="360" fill="#FFFFFF"/>
+<circle cx="30" cy="60" r="6" fill="#64748B"/>
+<line x1="36" y1="60" x2="58" y2="60" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="20" y="110" font-size="12" font-family="Courier, monospace" fill="#0F172A">add-key</text>
+<g stroke="#64748B" stroke-width="1.5" fill="#FFFFFF">
+  <rect x="60" y="30" width="150" height="62" rx="4"/>
+  <rect x="270" y="30" width="150" height="62" rx="4"/>
+  <rect x="270" y="170" width="150" height="62" rx="4"/>
+</g>
+<g font-size="13" font-weight="bold" fill="#0F172A" text-anchor="middle" font-family="Courier, monospace">
+  <text x="135" y="56">active</text>
+  <text x="345" y="56">retired</text>
+  <text x="345" y="196">revoked</text>
+</g>
+<g font-size="11.5" fill="#64748B" text-anchor="middle">
+  <text x="135" y="74">signiert neue Beweise</text>
+  <text x="345" y="74">ersetzt durch einen neuen</text>
+  <text x="345" y="214">evtl. kompromittiert</text>
+</g>
+<g stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+  <line x1="210" y1="61" x2="268" y2="61"/>
+  <path d="M135 92 L135 200 L268 200"/>
+  <line x1="345" y1="92" x2="345" y2="168"/>
+</g>
+<g font-size="12" fill="#0F172A">
+  <text x="214" y="52" font-family="Courier, monospace" font-weight="bold">retire</text>
+  <text x="142" y="160" font-family="Courier, monospace" font-weight="bold">revoke</text>
+  <text x="352" y="124" font-family="Courier, monospace" font-weight="bold">revoke</text>
+  <text x="352" y="138">die frühere</text>
+  <text x="352" y="152">Grenze bleibt</text>
+</g>
+<!-- what counts -->
+<g font-size="12" fill="#0F172A">
+  <text x="470" y="46" font-weight="bold">Grenze n</text>
+  <text x="470" y="62">die Nummer des nächsten</text>
+  <text x="470" y="76">Eintrags im Log</text>
+  <text x="470" y="108" font-weight="bold">retired ab n</text>
+  <text x="470" y="124">Eintrag zählt, wenn seine</text>
+  <text x="470" y="138">Nummer unter n liegt;</text>
+  <text x="470" y="152">Freigabe immer</text>
+  <text x="470" y="184" font-weight="bold">revoked ab n</text>
+  <text x="470" y="200">Eintrag zählt nur vor n;</text>
+  <text x="470" y="214">Freigaben sind ungültig</text>
+</g>
+<!-- cascade -->
+<rect x="20" y="262" width="600" height="78" rx="4" stroke="#64748B" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="34" y="284" font-size="13" font-weight="bold" fill="#0F172A">Kaskade bei einem Sponsor</text>
+<text x="34" y="304" font-size="12" fill="#0F172A"><tspan font-family="Courier, monospace">revoke</tspan> eines Schlüssels des Sponsors widerruft alle Schlüssel seiner Agenten</text>
+<text x="34" y="320" font-size="12" fill="#0F172A">ab derselben Nummer n; frühere Grenzen bleiben. <tspan font-family="Courier, monospace">retire</tspan> löst keine Kaskade aus,</text>
+<text x="34" y="336" font-size="12" fill="#0F172A">damit eine Rotation die Agenten behält.</text>
+</svg>

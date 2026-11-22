@@ -127,6 +127,13 @@ von höchstens 1 KiB.
 Er verlangt einen Menschen mit der Rolle Owner im Register und eine gültige Lease:
 Eine abgelaufene wird übernommen, dafür braucht es keinen Override.
 Der Inhalt des Branches und die Arbeit des bisherigen Inhabers bleiben, wie sie sind.
+\in{Abbildung}[fig:lease-crash] zeigt die Schritte eines Wechsels und die Folge eines Absturzes
+an jeder Stelle.
+
+\startplacefigure[title={Wechsel einer Lease mit Absturzpunkten},
+    reference=fig:lease-crash,location=here]
+\externalfigure[images/lease-crash.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Die Lease dauert standardmässig 60 Minuten; die Policy kann sie ändern, innerhalb fester Grenzen
 von 5 Minuten bis 24 Stunden.
@@ -166,6 +173,13 @@ Ob ein offener Pull Request freigegeben ist, steht nicht im Log, sondern folgt a
 auf dem aktuellen Kopf (ADR-004, Regel 4).
 Jede Freigabe ist ein eigener Eintrag \type{pr-approve}; er ändert den Zustand nicht.
 Die Neuzählung entscheidet, welche Freigaben zählen (siehe unten).
+\in{Abbildung}[fig:pull-request-states] zeigt die Zustände und die Einträge, die zwischen
+ihnen wechseln.
+
+\startplacefigure[title={Zustände eines Pull Requests},
+    reference=fig:pull-request-states,location=here]
+\externalfigure[images/pull-request-states.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 Die Einträge folgen denen der Lease: Sie nennen keinen Zeiger, stehen immer in der Hash-Kette,
 und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9. Der Eintrag
@@ -234,6 +248,12 @@ Im offenen Modus gibt es kein Register und keine Signatur.
 Der Eintrag steht vor dem Beweis.
 Ein Absturz dazwischen lässt eine Freigabe ohne Beweis zurück, und die zählt nicht:
 Der Ausfall geht auf die sichere Seite.
+\in{Abbildung}[fig:approval-crash] zeigt die Absturzpunkte der Freigabe.
+
+\startplacefigure[title={Ablauf einer Freigabe mit Absturzpunkten},
+    reference=fig:approval-crash,location=here]
+\externalfigure[images/approval-crash.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 {\bf Neuzählung.}
 Die Neuzählung traut dem Schreiber nicht.
@@ -324,6 +344,19 @@ Das Gate schreibt dann kein \type{pr-merge}, und der nächste Aufruf bucht den M
 Jeder gescheiterte Versuch lässt die Objekte seines Merges im Speicher zurück; keine Referenz
 erreicht sie, und ein Purge räumt sie ab (ADR-014).
 Diese Grenze ist technisch und nicht die Reservierung gegen Aushungern (ADR-019).
+\in{Abbildung}[fig:gate-crash] zeigt die Absturzpunkte des Gates,
+\in{Abbildung}[fig:gate-pointers] die Zeiger vor dem Gate, nach ihm und nach einem Absturz
+vor \type{pr-merge}.
+
+\startplacefigure[title={Ablauf des Merge-Gates mit Absturzpunkten},
+    reference=fig:gate-crash,location=here]
+\externalfigure[images/gate-crash.pdf][width=0.9\textwidth]
+\stopplacefigure
+
+\startplacefigure[title={Zeiger beim Merge-Gate und der Reparaturweg},
+    reference=fig:gate-pointers,location=here]
+\externalfigure[images/gate-pointers.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 {\bf Was ein Prüfergebnis aussagt.}
 Eine Prüfung ist eine Aussage über einen Commit: Sein Tree hat bestanden oder nicht.
@@ -1022,6 +1055,12 @@ Das Repository könnte sein Register sonst nie wieder ändern.
 Eine Rotation fügt darum zuerst den neuen Schlüssel hinzu und mustert danach den alten aus.
 Die Grenze nimmt der Befehl \type{register} aus dem Log:
 die Nummer, die der nächste Eintrag erhält.
+\in{Abbildung}[fig:key-states] fasst die Zustände eines Schlüssels und die Kaskade zusammen.
+
+\startplacefigure[title={Zustände eines Schlüssels im Akteursregister},
+    reference=fig:key-states,location=here]
+\externalfigure[images/key-states.pdf][width=0.9\textwidth]
+\stopplacefigure
 
 {\bf Offener und durchsetzender Modus.}
 Ein Repository ohne Register ist offen: Der Akteur ist eine Behauptung, die das Log aufzeichnet

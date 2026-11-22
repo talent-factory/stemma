@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 538" font-family="Helvetica, Arial, sans-serif">
+<title>Ablauf des Merge-Gates mit Absturzpunkten: von den Objekten bis zum Eintrag pr-merge</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
+  <marker id="arrow-crash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
+</defs>
+<rect x="0" y="0" width="580" height="538" fill="#FFFFFF"/>
+<rect x="20" y="20" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="20" width="8" height="46" fill="#64748B"/>
+<text x="40" y="39" font-size="13" font-weight="bold" fill="#0F172A">1  Objekte des Merges speichern</text>
+<text x="56" y="57" font-size="11.5" fill="#64748B">Blobs, Trees und Commit <tspan font-family="Courier, monospace">M</tspan></text>
+<line x1="145" y1="66" x2="145" y2="94" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="96" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="96" width="8" height="46" fill="#64748B"/>
+<text x="40" y="115" font-size="13" font-weight="bold" fill="#0F172A">2  Sperre nehmen, prüfen</text>
+<text x="56" y="133" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">refs.lock</tspan>; Spitze <tspan font-family="Courier, monospace">T</tspan> noch gleich?</text>
+<line x1="145" y1="142" x2="145" y2="170" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="172" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="172" width="8" height="46" fill="#6B46C1"/>
+<text x="40" y="191" font-size="13" font-weight="bold" fill="#6B46C1">3  Eintrag <tspan font-family="Courier, monospace">gate-merge</tspan></text>
+<text x="56" y="209" font-size="11.5" fill="#64748B">Bewegung von <tspan font-family="Courier, monospace">main</tspan>, gesichert</text>
+<line x1="145" y1="218" x2="145" y2="246" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="248" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="248" width="8" height="46" fill="#2F7D32"/>
+<text x="40" y="267" font-size="13" font-weight="bold" fill="#2F7D32">4  <tspan font-family="Courier, monospace">main</tspan> von <tspan font-family="Courier, monospace">T</tspan> auf <tspan font-family="Courier, monospace">M</tspan> bewegen</text>
+<text x="56" y="285" font-size="11.5" fill="#64748B">Compare-and-swap</text>
+<line x1="145" y1="294" x2="145" y2="322" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="324" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="324" width="8" height="46" fill="#6B46C1"/>
+<text x="40" y="343" font-size="13" font-weight="bold" fill="#6B46C1">5  Eintrag <tspan font-family="Courier, monospace">pr-merge</tspan></text>
+<text x="56" y="361" font-size="11.5" fill="#64748B">bucht den Pull Request als gemergt</text>
+<line x1="145" y1="370" x2="145" y2="398" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="400" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="400" width="8" height="46" fill="#64748B"/>
+<text x="40" y="419" font-size="13" font-weight="bold" fill="#0F172A">6  Sperre freigeben</text>
+<text x="56" y="437" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">refs.lock</tspan> entfernen</text>
+<line x1="20" y1="81" x2="292" y2="81" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="302" y="77" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz: Objekte ohne Zeiger</text>
+<text x="302" y="94" font-size="12" fill="#0F172A"><tspan font-family="Courier, monospace">main</tspan> und das Log sind unverändert;</text>
+<text x="302" y="109" font-size="12" fill="#0F172A">die Objekte von <tspan font-family="Courier, monospace">M</tspan> bleiben liegen,</text>
+<text x="302" y="124" font-size="12" fill="#0F172A">ein Purge räumt sie ab.</text>
+<line x1="20" y1="233" x2="292" y2="233" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="302" y="229" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz: <tspan font-family="Courier, monospace">gate-merge</tspan> steht</text>
+<text x="302" y="246" font-size="12" fill="#0F172A"><tspan font-family="Courier, monospace">main</tspan> zeigt noch auf <tspan font-family="Courier, monospace">T</tspan>. Der Ausgang</text>
+<text x="302" y="261" font-size="12" fill="#0F172A">ist unbekannt, bis der nächste</text>
+<text x="302" y="276" font-size="12" fill="#0F172A">Schreiber die Sperre übernimmt.</text>
+<line x1="20" y1="309" x2="292" y2="309" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="302" y="305" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz: <tspan font-family="Courier, monospace">main</tspan> bewegt</text>
+<text x="302" y="322" font-size="12" fill="#0F172A">Die Änderung liegt auf <tspan font-family="Courier, monospace">main</tspan>, der Pull</text>
+<text x="302" y="337" font-size="12" fill="#0F172A">Request bleibt <tspan font-family="Courier, monospace">open</tspan>. Der nächste</text>
+<text x="302" y="352" font-size="12" fill="#0F172A"><tspan font-family="Courier, monospace">pr merge</tspan> bucht nach (Reparaturweg).</text>
+<text x="20" y="486" font-size="11.5" fill="#64748B">Nach jedem Absturz bleibt <tspan font-family="Courier, monospace">refs.lock</tspan> liegen. Der nächste Befehl auf demselben</text>
+<text x="20" y="502" font-size="11.5" fill="#64748B">Rechner übernimmt sie. Scheitert der Tausch (<tspan font-family="Courier, monospace">Stale</tspan>), beginnt das Gate bei Schritt 1.</text>
+</svg>
