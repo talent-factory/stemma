@@ -56,5 +56,5 @@
 <path d="M310 404 L560 404 L560 345 L330 345 L310 320" fill="none" stroke="#64748B" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
 <text x="340" y="364" font-size="11" fill="#0F172A"><tspan font-family="Courier, monospace">main</tspan> hat sich bewegt (Stale oder Locked):</text>
 <text x="340" y="378" font-size="11" fill="#0F172A">neu bei Schritt 4 mit der neuen Spitze</text>
-<text x="20" y="458" font-size="12" fill="#64748B">Vorschlag: ADR-019 hat den Status Proposal, der Ablauf ist noch nicht umgesetzt.</text>
+<text x="20" y="458" font-size="12" fill="#64748B">ADR-019 ist angenommen und im Kern umgesetzt; das Gate prüft die Freigaben noch nicht.</text>
 </svg>
