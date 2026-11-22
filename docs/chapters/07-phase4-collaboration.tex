@@ -239,8 +239,8 @@ ADR-019 beantwortet sie.
 Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch und die Objekte
 vor der Sperre.
 Noch nicht umgesetzt sind die Freigaben (ADR-004), die Pause der Stufen 2 und 3 bei roter Spitze
-mit der Ausnahme für einen erklärten Fix, die Schranken, die Anbindung an die Policy, die Regel,
-dass die Autoren einer Änderung registrierte Akteure sind, und der Befehl;
+mit der Ausnahme für einen erklärten Fix, die Schranken (ihre Werte liefert die Policy bereits),
+die Regel, dass die Autoren einer Änderung registrierte Akteure sind, und der Befehl;
 bis dahin muss der Aufrufer des Kerns sie durchsetzen.
 
 {\bf Der Ablauf.}
@@ -275,8 +275,8 @@ dass der Merge sauber ist.
 Gate nimmt den Reparaturweg (siehe unten).
 Unter der Sperre prüft es den offenen Zustand des Pull Requests und den Kopf des Zweiges noch
 einmal, denn beides kann sich seit dem Schreiben von \type{M} geändert haben.
-Die Risikostufe gibt der Aufrufer an, denn die Policy, die sie aus den Pfaden ableitet, ist ein
-eigener Schritt.
+Die Risikostufe gibt der Aufrufer an (\type{merge_gate}) oder das Gate leitet sie aus der Policy
+der Spitze ab (\type{merge_gate_by_policy}, siehe \in{Abschnitt}[sec:policy-file]).
 Unter der Sperre schreibt es zuerst den Eintrag \type{gate-merge} für die Bewegung von
 \type{main}, bewegt \type{main} und schreibt danach \type{pr-merge} für den Pull Request.
 Das Log nimmt nur einen Eintrag je Schreibvorgang auf; die Reihenfolge verhindert den schlimmen
@@ -535,7 +535,8 @@ damit ein Lauf ohne \type{ssh-keygen} nicht unbemerkt nichts prüft.
 
 Die Risikostufen von ADR-004 stehen in der Datei \type{.stemma-policy} im Wurzelverzeichnis.
 Der Leser in \type{stemma-core} (\type{policy.rs}) ist umgesetzt;
-er liest die Bytes der Datei, die Fassung des Basis-Commits wählt der Aufrufer.
+er liest die Bytes der Datei, und \type{Repository::policy_at} wählt die Fassung des
+Basis-Commits.
 Die Datei ist zeilenweise aufgebaut und ohne neue Abhängigkeit lesbar.
 Sie ist so streng wie die Ausschlussdatei \type{.stemmaignore} (ADR-012):
 gleiche Grenzen für Zeilen und Datei, ein einheitliches Zeilenende, keine wiederholte Zeile,
@@ -628,7 +629,7 @@ Der Entwurf der Policy dieses Repositorys verankert deshalb seine Muster:
 Die erste Zeile, die weder leer noch ein Kommentar ist, ist der Kopf \type{stemma-policy 1}.
 Eine andere Version oder ein fehlender Kopf macht die Datei ungültig.
 Leere Zeilen und Kommentare mit \type{\#} sind erlaubt.
-Jede weitere Zeile hat eine der sechs Formen von \in{Tabelle}[tab:policy-lines].
+Jede weitere Zeile hat eine der acht Formen von \in{Tabelle}[tab:policy-lines].
 
 \startplacetable[title={Die Zeilen einer Policy-Datei},reference=tab:policy-lines]
 \startxtable[frame=off,option=stretch]
@@ -654,6 +655,16 @@ Jede weitere Zeile hat eine der sechs Formen von \in{Tabelle}[tab:policy-lines].
 \startxcell Die Lease eines Branches dauert \type{MINUTEN} (5 bis 1440). \stopxcell
 \stopxrow
 \startxrow
+\startxcell \type{reservation N} \stopxcell
+\startxcell Eine Änderung der Stufe 2 oder 3 erhält nach \type{N} ungültig gewordenen Läufen in
+Folge eine Reservierung (1 bis 100, Standard 3). \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{max-unverified ANZAHL} \stopxcell
+\startxcell Liegen \type{ANZAHL} Commits nach der letzten geprüften Spitze, warten die Merges
+(1 bis 1000, Standard 10). \stopxcell
+\stopxrow
+\startxrow
 \startxcell \type{assertion PFAD} \stopxcell
 \startxcell Das Makro \type{PFAD}, etwa \type{pretty_assertions::assert_eq}, zählt als
 Zusicherung; ein letzter Name, der mit \type{debug_} beginnt, zählt nur im Debug-Build.
@@ -669,8 +680,41 @@ Zusicherung; ein letzter Name, der mit \type{debug_} beginnt, zählt nur im Debu
 
 Das Muster hat die Sprache von ADR-012, mit einer Ausnahme:
 Der Name \type{.stemmaignore} ist erlaubt, denn ADR-004 gibt der Datei die Stufe 2.
-\type{lease} und \type{weakened-level} stehen höchstens einmal, \type{approvals} einmal je Stufe,
+\type{lease}, \type{reservation}, \type{max-unverified} und \type{weakened-level} stehen
+höchstens einmal, \type{approvals} einmal je Stufe,
 \type{operation} einmal je Name und \type{assertion} einmal je Pfad (höchstens 64 Zeilen).
+
+{\bf Welche Policy gilt.}
+Das Gate und die Lease lesen die Policy des Basis-Commits, also der Spitze von \type{main},
+nie die des Arbeitsverzeichnisses und nie die des Zweiges, der geprüft wird.
+Wer die Policy ändert, steht damit noch unter der Policy davor.
+Das Gate liest sie bei jedem Versuch neu, denn eine Bewegung von \type{main} kann eine neue
+Policy bringen; die Stufe ist die höchste Stufe der Dateien, in denen sich der Merge-Tree vom
+Tree der Spitze unterscheidet.
+Auch eine geänderte Dateirechte-Einstellung zählt als Änderung der Datei,
+und ein Verschieben zählt als Löschen und Hinzufügen, es berührt also beide Pfade.
+Der offene Modus und der erzwingende Modus unterscheiden sich nur, wenn die Datei fehlt:
+\startitemize
+\item Im offenen Modus gilt ohne Datei die eingebaute Policy: jeder Pfad hat Stufe 2, ausser den
+Dateien, die der Kern immer auf Stufe 3 hält (die Policy-Datei und das Register),
+und die Freigaben werden nicht erzwungen.
+\item Im erzwingenden Modus ist die Datei Pflicht.
+Fehlt sie, lehnt das Gate jeden Merge ab (\type{GateError::Policy}),
+und die Meldung nennt den Grund.
+Auf die eingebaute Policy fällt dort nichts zurück.
+\item Eine Datei, die vorhanden, aber ungültig, von unbekannter Version, keine Datei oder nicht
+lesbar ist, lehnt das Gate in beiden Modi ab:
+Eine Regel, die still nicht gilt, ist schlimmer als eine Ablehnung.
+\stopitemize
+Ein Pull Request, der schon auf \type{main} liegt, braucht die Policy nicht:
+Das Gate bewegt dort nichts und trägt nur den Eintrag nach.
+Hat die Spitze von \type{main} eine ungültige Policy, lehnt das Gate auch den Merge ab, der sie
+reparieren würde; einen eigenen Reparaturweg gibt es noch nicht.
+Die Werte \type{reservation} und \type{max-unverified} liefert dieselbe Policy
+(\type{Policy::reservation_after}, \type{Policy::max_unverified});
+die Schranken selbst setzt eine spätere Ausbaustufe um.
+Die Dauer der Lease liest \type{claim_lease_by_policy} aus der Zeile \type{lease}.
+
 Ein Auszug aus dem Entwurf der \type{.stemma-policy} dieses Repositorys
 (er folgt der Tabelle der Pfade von ADR-004, den Regeln 7 und 8 und ADR-014;
 der Owner hat ihn noch nicht signiert, und er gilt noch nicht):

@@ -491,7 +491,7 @@ impl Repository {
     /// conflict. A commit with a conflict is the tree that shows it: the text with markers at
     /// each conflicted path, the one that the working directory holds (ADR-010).
     #[allow(clippy::type_complexity)]
-    fn files_of(
+    pub(super) fn files_of(
         &self,
         commit: CommitId,
     ) -> Result<(BTreeMap<String, ObjectId>, BTreeSet<String>), DiffError> {
@@ -499,6 +499,16 @@ impl Repository {
         let view = conflicted::view(self.objects(), &commit.tree_sum()).map_err(view_error)?;
         let conflicts = view.files().into_iter().map(|file| file.path).collect();
         Ok((files(self.objects(), view.tree)?, conflicts))
+    }
+
+    /// [`files_of`](Self::files_of) with the mode of each file, for the level of a change.
+    pub(super) fn files_with_modes_of(
+        &self,
+        commit: CommitId,
+    ) -> Result<BTreeMap<String, (ObjectId, EntryMode)>, DiffError> {
+        let commit = commit_of(self.objects(), commit)?;
+        let view = conflicted::view(self.objects(), &commit.tree_sum()).map_err(view_error)?;
+        files_with_modes(self.objects(), view.tree)
     }
 
     /// Reads the content of a blob, or the empty content for a file that a side lacks.
@@ -568,7 +578,22 @@ fn view_error(error: SnapshotError) -> DiffError {
 
 /// Lists the files of a tree, depth first, with the IDs of their blobs. A directory is read and
 /// not listed; the mode of a file is not compared, so only a change of content shows.
-fn files(objects: &dyn ObjectStore, root: TreeId) -> Result<BTreeMap<String, ObjectId>, DiffError> {
+pub(super) fn files(
+    objects: &dyn ObjectStore,
+    root: TreeId,
+) -> Result<BTreeMap<String, ObjectId>, DiffError> {
+    Ok(files_with_modes(objects, root)?
+        .into_iter()
+        .map(|(path, (id, _))| (path, id))
+        .collect())
+}
+
+/// Lists the files of a tree as [`files`] does, with the mode of each. A change of the mode alone
+/// (a script made executable) changes the path for the level of a change.
+pub(super) fn files_with_modes(
+    objects: &dyn ObjectStore,
+    root: TreeId,
+) -> Result<BTreeMap<String, (ObjectId, EntryMode)>, DiffError> {
     let mut found = BTreeMap::new();
     let mut pending = vec![(String::new(), root)];
     while let Some((prefix, id)) = pending.pop() {
@@ -585,8 +610,8 @@ fn files(objects: &dyn ObjectStore, root: TreeId) -> Result<BTreeMap<String, Obj
             };
             match entry.mode() {
                 EntryMode::Directory => pending.push((path, TreeId::new(entry.id()))),
-                _ => {
-                    found.insert(path, entry.id());
+                mode => {
+                    found.insert(path, (entry.id(), mode));
                 }
             }
         }

@@ -48,6 +48,7 @@ mod rebase;
 mod restore;
 mod revision;
 mod rewrite;
+mod rules;
 mod snapshot;
 mod status;
 mod switch;
@@ -74,6 +75,7 @@ pub use revision::{
     TAG_PREFIX,
 };
 pub use rewrite::{RewriteError, Rewritten};
+pub use rules::{LevelError, PolicyError};
 pub use snapshot::{SnapshotError, TakeOverAdvice, Unsupported};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use switch::{Changes, Handled, Planned, SwitchError, SwitchPlan, SwitchTarget, Switched};

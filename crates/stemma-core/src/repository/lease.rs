@@ -19,6 +19,7 @@ use crate::oplog::{
 };
 use crate::refs::{BranchName, RefError, WriteLock};
 use crate::register::{Identity, IdentityKind, Register};
+use crate::repository::PolicyError;
 use crate::store::{create_dirs_synced, create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, Authorizer};
 
@@ -362,6 +363,10 @@ pub enum LeaseError {
         /// The actor who tried.
         actor: Box<Actor>,
     },
+    /// The policy of the base commit that names the duration cannot be used: it is invalid, of
+    /// an unknown version, or not a file (in either mode), or it is missing or unreadable in an
+    /// enforcing repository. Nothing was written.
+    Policy(PolicyError),
     /// The file system failed.
     Io {
         /// What was tried.
@@ -421,6 +426,7 @@ impl fmt::Display for LeaseError {
                 f,
                 "{actor} is not a human with the role owner, so it cannot override a lease"
             ),
+            Self::Policy(error) => write!(f, "the lease is refused: {error}"),
             Self::Io {
                 operation,
                 path,
@@ -437,6 +443,7 @@ impl Error for LeaseError {
             Self::Refs(error) => Some(error),
             Self::Log(error) => Some(error),
             Self::Entry(error) => Some(error),
+            Self::Policy(error) => Some(error),
             Self::Corrupt { source, .. } => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Denied { .. }
