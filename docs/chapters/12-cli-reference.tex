@@ -2377,7 +2377,8 @@ entry names it as the former owner}.
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem fehlenden \type{--actor}, einem
 Worktree, den es nicht gibt, dem Worktree der Wurzel, dem Worktree des Aufrufs, einem Verzeichnis
 ohne die Zeigerdatei dieses Worktrees, einem Eigentümer, der nicht der Akteur ist, nicht
-verfolgten Dateien ohne \type{--force} (die Meldung nennt die ersten) und bei einem offenen Purge.
+verfolgten Dateien ohne \type{--force} (die Meldung nennt die ersten), bei einem offenen Purge,
+bei einem Agenten mit \type{--take-over} und wenn der Autorisierer \type{take-over} ablehnt.
 Hat der Befehl die Dateien schon in einem Snapshot gesichert, bevor er auf einen dieser Fehler
 stösst, behält er den Exit-Code des Fehlers, und die Meldung nennt den Eintrag des Snapshots; der
 Worktree ist dann unverändert, und der Aufruf mit \type{--force} ist sicher. Nur wenn sich das

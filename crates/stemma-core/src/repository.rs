@@ -108,8 +108,7 @@ use worktree::POINTER_PREFIX;
 /// The version of the repository format that `init` writes, and that a purge and every new entry
 /// of the log move a repository to: version 13, the line `former-owner` of the entry
 /// `worktree-remove` (STEMMA-217, ADR-011). Version 12 was the kind in the stub (ADR-011,
-/// ADR-014), version
-/// 11 was the entry `check` (ADR-019, ADR-011),
+/// ADR-014), version 11 was the entry `check` (ADR-019, ADR-011),
 /// version 10 was the entry `pr-approve` (ADR-004, ADR-011), version 9 the pull request entries
 /// `pr-open`, `pr-close`, and `pr-merge`, version 8 the lease of a branch (ADR-009).
 const FORMAT_VERSION: u32 = 13;

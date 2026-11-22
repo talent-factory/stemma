@@ -138,8 +138,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   `former-owner <actor>`, right after `location`: the owner of the working copy whose state a
   human removed after its directory was gone. The actor of the entry is that human, the owner
   does not change, and no entry of `take-over` is written, as the working copy ends with the
-  call. Only an entry with a `location` has the line; the reader refuses it elsewhere and
-  refuses a line that is no actor. The hash covers it, and `op log` shows it (text and the field
+  call. Only an entry of `worktree-remove` with a `location` has the line; the reader refuses it
+  elsewhere, refuses a line that is no actor, and, as the writer does, refuses an agent as the
+  actor of the entry and the actor as its own former owner. The hash covers it, and `op log` shows it (text and the field
   `former_owner` of `--json`). It is version 13 of the repository format, so an older program
   refuses the log instead of reporting damage.
   `outcomes` judges the pointers by the worktree. The next move of `HEAD` and of the

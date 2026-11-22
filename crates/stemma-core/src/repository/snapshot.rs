@@ -740,7 +740,8 @@ impl SnapshotError {
 pub enum TakeOverAdvice {
     /// Run the command again with its own `--take-over`.
     Option,
-    /// The command has no `--take-over`: run `status --take-over` in the working copy first.
+    /// The command cannot take over a working copy whose directory exists: run
+    /// `status --take-over` in the working copy first.
     Status,
     /// The directory of the working copy is gone, so no command can run in it and `status
     /// --take-over` cannot take it over: `worktree remove --take-over` removes its state, for a
@@ -750,7 +751,7 @@ pub enum TakeOverAdvice {
 
 impl SnapshotError {
     /// The same error for a working copy whose directory is gone: `status` cannot run there, so
-    /// the refusal gives no way to take it over (`worktree remove` of a deleted directory).
+    /// the refusal points to `--take-over` of `worktree remove`, which removes its state.
     #[must_use]
     pub fn without_directory(self) -> Self {
         match self {
@@ -763,9 +764,9 @@ impl SnapshotError {
         }
     }
 
-    /// The same error for a command that has no `--take-over` (`worktree remove`,
-    /// `purge --apply`): a refusal of the owner rule then points to `status --take-over`, as the
-    /// command cannot be run again with an option it does not have.
+    /// The same error for a command that cannot take over (`worktree remove` for a worktree whose
+    /// directory exists, `purge --apply`): a refusal of the owner rule then points to
+    /// `status --take-over`, as the command cannot be run again with an option that works.
     #[must_use]
     pub fn without_take_over_option(self) -> Self {
         match self {
@@ -836,7 +837,8 @@ impl fmt::Display for SnapshotError {
                     ),
                     TakeOverAdvice::Status => write!(
                         f,
-                        "this command has no `--take-over`, so run `status --take-over` in that \
+                        "this command cannot take over a working copy whose directory exists, so \
+                         run `status --take-over` in that \
                          working copy first to make `{actor}` its owner"
                     ),
                     TakeOverAdvice::DirectoryGone => unreachable!("handled above"),
