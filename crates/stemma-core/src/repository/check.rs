@@ -84,6 +84,31 @@ impl Repository {
         Ok(check::checks(&entries))
     }
 
+    /// Every check of the log that an enforcing repository accepts: all of them in the open mode
+    /// (`register` is `None`, the writer is a claim), and in an enforcing one those with a proof
+    /// of the writer, as in [`counted_checks`](Self::counted_checks). A run that fails counts as
+    /// well as one that passes: an unproven failure must not pause `main`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckError::Log`] if the log cannot be read and [`CheckError::Io`] if a proof
+    /// file cannot be read.
+    pub(super) fn proven_checks(
+        &self,
+        register: Option<&Register>,
+    ) -> Result<Vec<Check>, CheckError> {
+        let mut found = Vec::new();
+        for check in self.checks()? {
+            if let Some(register) = register {
+                if !self.has_proof(register, &check)? {
+                    continue;
+                }
+            }
+            found.push(check);
+        }
+        Ok(found)
+    }
+
     /// The results that count for the pull request `pull` with the head `commit` at the risk
     /// `level`, when `main` stands at `tip` (ADR-019).
     ///

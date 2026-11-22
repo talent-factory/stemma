@@ -236,11 +236,11 @@ Dauer einer Prüfung.
 Die Frage ist, was eine grüne Prüfung noch heisst, wenn während ihres Laufs viele andere
 Änderungen landen.
 ADR-019 beantwortet sie.
-Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch und die Objekte
-vor der Sperre.
-Noch nicht umgesetzt sind die Freigaben (ADR-004), die Pause der Stufen 2 und 3 bei roter Spitze
-mit der Ausnahme für einen erklärten Fix, die Schranken (ihre Werte liefert die Policy bereits),
-die Regel, dass die Autoren einer Änderung registrierte Akteure sind, und der Befehl;
+Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch, die Objekte
+vor der Sperre und die Schranken (Pause bei roter Spitze mit der Ausnahme für eine erklärte
+Behebung, Reservierung und \type{max_unverified}).
+Noch nicht umgesetzt sind die Freigaben (ADR-004), die Regel, dass die Autoren einer Änderung
+registrierte Akteure sind, und der Befehl;
 bis dahin muss der Aufrufer des Kerns sie durchsetzen.
 
 {\bf Der Ablauf.}
@@ -396,9 +396,9 @@ Ein späterer fehlgeschlagener Lauf auf demselben Commit nimmt einen erfolgreich
 bleibt im Log, und das Gate sucht danach die erste rote Spitze.
 \type{last_green_tip} des Kerns liest sie aus dem Verlauf der aktuellen Spitze und verlangt in
 einem Repository mit Register ebenfalls einen Beweis.
-Das Gate wendet \type{counted_checks} an (siehe oben, \type{merge_gate}).
-\type{last_green_tip} wendet es noch nicht an: Die Pause der Stufen 2 und 3 bei roter Spitze
-ist nicht umgesetzt.
+Das Gate wendet \type{counted_checks} an (siehe oben, \type{merge_gate}) und liest danach die
+Läufe auf der Spitze für die Schranken (siehe unten); in einem Repository mit Register zählt
+auch dort nur ein Lauf mit Beweis, ein fehlgeschlagener ebenso wie ein erfolgreicher.
 Noch schreibt kein Befehl den Eintrag; er entsteht nur über den Kern (\type{record_check}).
 
 {\bf Die Prüfung nach dem Merge.}
@@ -425,6 +425,41 @@ die Stufen 0 und 1 einen sauberen Merge darauf.
 Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein beendeter Lauf erfolgreich
 abdeckte; die erste rote ist der älteste danach, den ein beendeter Lauf mit Fehler abdeckte.
 Die Ursache in einem Fenster ungeprüfter Commits findet eine Bisektion über den linearen Verlauf.
+
+Das Gate hält keinen Zustand; es liest die Schranken aus dem Log und aus dem Verlauf von
+\type{main}.
+Eine Änderung, die warten muss, endet mit \type{GateError::Paused}, und das Gate schreibt
+dafür nichts.
+Es prüft die Schranken nach der Regeltabelle und vor dem Commit \type{M} und liest sie bei jedem
+Versuch neu, denn ein Lauf oder eine Reservierung kann erscheinen, während das Gate neu beginnt.
+
+\startitemize
+\item Die Pause gilt, solange der neueste geprüfte Commit rot ist: ein beendeter Lauf deckte
+ihn mit Fehler ab, und kein erfolgreicher Lauf deckte ihn oder einen neueren ab.
+Eine Behebung ist ausgenommen, wenn der erklärte Commit zwischen der letzten grünen und der ersten
+roten Spitze liegt und die Pfade ihrer Änderung mindestens einen Pfad dieses Commits treffen.
+Ein Revert trifft alle Pfade des Commits, ein Fix die, an denen der Fehler liegt.
+\item Das Fenster zählt die Commits nach der neuesten geprüften Spitze, bei einem Repository
+ohne jeden Lauf den ganzen Verlauf.
+Das Log kennt nur beendete Läufe; \quotation{bis ein Lauf gestartet ist} heisst daher: bis ein
+beendeter Lauf einen neueren Commit abdeckt.
+\item Die Reservierung zählt ungültig gewordene Läufe aus dem Log: Ergebnisse für den Kopf der
+Änderung, deren Basis nicht die aktuelle Spitze ist, eines je Basis, bis ein fehlgeschlagenes
+Ergebnis oder eines für die aktuelle Spitze die Reihe bricht.
+Sie beginnt beim \type{N}-ten Lauf und danach bei jedem weiteren \type{N}-ten.
+Die Dauer eines Laufs steht nicht im Log; das Gate nimmt die Zeit seit dem Eintrag davor
+(dem vorigen Lauf oder der Eröffnung).
+Die Zeit eines Eintrags ist die Angabe des Schreibers, deshalb dauert eine Reservierung höchstens
+eine Stunde, und eine, die in der Zukunft beginnt, hält noch nichts.
+\item Wer das Gate mit einer eigenen Stufe aufruft (\type{merge_gate}), liest keine Policy:
+Die Schranken haben ihre Standardwerte, und die Reservierung entfällt, weil die Stufen der anderen
+Änderungen die Policy kennt (\type{merge_gate_by_policy}).
+\stopitemize
+
+Die Bisektion liefert \type{Repository::red_window}: die Commits nach der letzten grünen Spitze bis
+zur ersten roten, der älteste zuerst.
+\type{bounds::bisect} sucht darin mit einem Test je Commit den ersten schlechten in logarithmisch
+vielen Läufen.
 
 {\bf Zwei Grenzen.}
 Beide Werte stehen in der Policy-Datei; sie zu ändern ist Stufe 3, also ein Mensch mit der Rolle
