@@ -40,7 +40,10 @@
 //!   name below it still works, which the mode `0o000` of a directory would stop.
 //!
 //! A path in a rule is compared as it is and, if that fails, as the file system names it
-//! (`fs::canonicalize`), so `/var/...` and `/private/var/...` on macOS meet. A path that does not
+//! (`fs::canonicalize`, repeated a few times if it fails for another reason than a missing name,
+//! so that a failure under load does not leave a rule in the wrong spelling), so `/var/...` and
+//! `/private/var/...` on macOS meet. A path is matched as a whole, never as a prefix of another
+//! name (`dir-1` does not meet `dir-10`). A path that does not
 //! exist yet is named by its longest existing prefix, so a rule may name a directory that the
 //! command creates. A rule that matches nothing is not reported: a test asserts the effect of
 //! the failure, not only that the command ran.
@@ -88,6 +91,37 @@ mod armed {
     /// directory that a command creates later. An empty path is the current directory, and a `..`
     /// below a name that is not there is resolved by the name.
     pub(super) fn named(path: &Path) -> PathBuf {
+        named_with(path, &|head| fs::canonicalize(head))
+    }
+
+    /// How often a call of `canonicalize` that fails for another reason than a missing name is
+    /// repeated. A failure of that kind (a system under load, an interrupted call) must not
+    /// leave a rule in the spelling of the caller, which would not meet the spelling of the file
+    /// system (`/var/...` against `/private/var/...`) and make the rule do nothing (STEMMA-218).
+    const CANONICALIZE_TRIES: usize = 4;
+
+    /// [`named`] with the call of `canonicalize` given, so that a test can make it fail.
+    pub(super) fn named_with(
+        path: &Path,
+        canonicalize: &dyn Fn(&Path) -> io::Result<PathBuf>,
+    ) -> PathBuf {
+        let canonical = |head: &Path| {
+            let mut tries = 1;
+            loop {
+                match canonicalize(head) {
+                    Err(error)
+                        if tries < CANONICALIZE_TRIES
+                            && !matches!(
+                                error.kind(),
+                                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                            ) =>
+                    {
+                        tries += 1;
+                    }
+                    result => return result,
+                }
+            }
+        };
         let mut clean = PathBuf::new();
         for component in path.components() {
             if component == Component::ParentDir && clean.file_name().is_some() {
@@ -105,7 +139,7 @@ mod armed {
         let mut rest = Vec::new();
         let mut head = path;
         loop {
-            if let Ok(real) = fs::canonicalize(head) {
+            if let Ok(real) = canonical(head) {
                 return rest.iter().rev().fold(real, |named, name| named.join(name));
             }
             match (head.parent(), head.file_name()) {
@@ -538,9 +572,59 @@ pub(crate) fn set_permissions(path: &Path, permissions: fs::Permissions) -> io::
 
 #[cfg(test)]
 mod tests {
-    use super::armed::{parse, Rule};
+    use super::armed::{named_with, parse, Rule};
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn a_failed_canonicalize_is_repeated_and_the_rule_gets_the_name_of_the_file_system() {
+        use std::cell::Cell;
+        let dir = TempDir::new();
+        let file = dir.path().join("main");
+        fs::write(&file, b"").unwrap();
+        let real = fs::canonicalize(&file).unwrap();
+        let calls = Cell::new(0);
+        let flaky = |path: &Path| {
+            calls.set(calls.get() + 1);
+            if calls.get() <= 2 {
+                Err(io::Error::other("too many open files"))
+            } else {
+                fs::canonicalize(path)
+            }
+        };
+        assert_eq!(named_with(&file, &flaky), real);
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn a_missing_name_is_not_repeated() {
+        use std::cell::Cell;
+        let dir = TempDir::new();
+        let calls = Cell::new(0);
+        let counting = |path: &Path| {
+            calls.set(calls.get() + 1);
+            fs::canonicalize(path)
+        };
+        let _ = named_with(&dir.path().join("absent"), &counting);
+        // One call for the missing name, one for its parent that exists.
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn a_rule_meets_only_the_path_itself_and_not_a_directory_whose_name_starts_alike() {
+        let dir = TempDir::new();
+        let one = dir.path().join("stemma-cli-op_log-1");
+        let ten = dir.path().join("stemma-cli-op_log-10");
+        fs::create_dir(&one).unwrap();
+        fs::create_dir(&ten).unwrap();
+        fs::write(one.join("main"), b"").unwrap();
+        fs::write(ten.join("main"), b"").unwrap();
+        let _guard = deny_reads_of(&one.join("main"));
+        assert!(read(&one.join("main")).is_err());
+        assert!(read(&ten.join("main")).is_ok());
+        let _guard = deny_reads_of(&one);
+        assert!(read_dir(&ten).is_ok());
+    }
 
     #[test]
     fn a_denied_directory_refuses_a_new_name_and_others_stay_open() {
