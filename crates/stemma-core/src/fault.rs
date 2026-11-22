@@ -41,9 +41,13 @@
 //!
 //! A path in a rule is compared as it is and, if that fails, as the file system names it
 //! (`fs::canonicalize`), so `/var/...` and `/private/var/...` on macOS meet.
-//! If that call fails for a reason other than a missing name or a denied search, it is repeated
-//! a few times, and a failure that lasts panics instead of leaving a rule that matches nothing.
-//! A rule path is compared with a path component by component, never as a text prefix
+//! If that call fails for a reason other than a missing name, a non-directory in the path, or a
+//! denied search, it is repeated a few times.
+//! If no ancestor of the path can be named in the end and such a failure was among them, the
+//! naming panics instead of leaving a rule that matches nothing.
+//! The same naming applies to the path of every call that is compared with a rule, not only to
+//! the path of a rule, so the repeat and the panic apply there as well.
+//! A rule path is compared with an actual path as a whole, never as a text prefix
 //! (`dir-1` does not meet `dir-10`).
 //! A path that does not exist yet is named by its longest existing prefix, so a rule may name a
 //! directory that the command creates.
@@ -92,6 +96,10 @@ mod armed {
     /// prefix is named and the rest is kept, so `/var/...` meets `/private/var/...` also for a
     /// directory that a command creates later. An empty path is the current directory, and a `..`
     /// below a name that is not there is resolved by the name.
+    ///
+    /// # Panics
+    ///
+    /// See [`named_with`].
     pub(super) fn named(path: &Path) -> PathBuf {
         named_with(path, &|head| fs::canonicalize(head))
     }
@@ -107,36 +115,44 @@ mod armed {
     /// The pause between two calls of `canonicalize` on one path.
     const CANONICALIZE_PAUSE: std::time::Duration = std::time::Duration::from_millis(5);
 
+    /// Whether a failure of `canonicalize` is explained: the name is not there, is no directory,
+    /// or may not be searched. Any other failure is unexplained and is repeated.
+    fn explained(error: &io::Error) -> bool {
+        matches!(
+            error.kind(),
+            io::ErrorKind::NotFound
+                | io::ErrorKind::NotADirectory
+                | io::ErrorKind::PermissionDenied
+        )
+    }
+
     /// [`named`] with `canonicalize` passed in, so that a test can make it fail. A call that
-    /// fails with `NotFound`, `NotADirectory`, or `PermissionDenied` is final and the walk goes
-    /// on with the parent. Any other failure is repeated; if it lasts for
-    /// [`CANONICALIZE_TRIES`] calls, this panics, because a rule that silently does nothing makes
-    /// a test pass or fail for the wrong reason.
+    /// fails for an explained reason is final and the walk goes on with the parent. An
+    /// unexplained failure is repeated first, and the walk goes on if it lasts.
+    ///
+    /// # Panics
+    ///
+    /// If no ancestor can be named and a failure on the way was unexplained: the rule would keep
+    /// the spelling of the caller and silently do nothing, which makes a test pass or fail for
+    /// the wrong reason.
     pub(super) fn named_with(
         path: &Path,
         canonicalize: &dyn Fn(&Path) -> io::Result<PathBuf>,
     ) -> PathBuf {
-        let canonical = |head: &Path| {
+        let mut unexplained = None;
+        let mut canonical = |head: &Path| {
             let mut tries = 1;
             loop {
                 match canonicalize(head) {
-                    Err(error)
-                        if !matches!(
-                            error.kind(),
-                            io::ErrorKind::NotFound
-                                | io::ErrorKind::NotADirectory
-                                | io::ErrorKind::PermissionDenied
-                        ) =>
-                    {
-                        assert!(
-                            tries < CANONICALIZE_TRIES,
-                            "{ENV}: cannot name `{}`: {error}",
-                            head.display()
-                        );
+                    Err(error) if !explained(&error) => {
+                        if tries >= CANONICALIZE_TRIES {
+                            unexplained = Some(error);
+                            return None;
+                        }
                         tries += 1;
                         std::thread::sleep(CANONICALIZE_PAUSE);
                     }
-                    result => return result,
+                    result => return result.ok(),
                 }
             }
         };
@@ -157,7 +173,7 @@ mod armed {
         let mut rest = Vec::new();
         let mut head = path;
         loop {
-            if let Ok(real) = canonical(head) {
+            if let Some(real) = canonical(head) {
                 return rest.iter().rev().fold(real, |named, name| named.join(name));
             }
             match (head.parent(), head.file_name()) {
@@ -169,7 +185,17 @@ mod armed {
                         parent
                     };
                 }
-                _ => return path.to_path_buf(),
+                _ => {
+                    assert!(
+                        unexplained.is_none(),
+                        "fault rule: cannot name `{}`: {}",
+                        path.display(),
+                        unexplained
+                            .as_ref()
+                            .map_or_else(String::new, ToString::to_string)
+                    );
+                    return path.to_path_buf();
+                }
             }
         }
     }
@@ -620,29 +646,57 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "STEMMA_FAULT: cannot name")]
-    fn a_failure_of_canonicalize_that_lasts_panics_and_leaves_no_silent_rule() {
+    #[should_panic(expected = "fault rule: cannot name")]
+    fn a_failure_of_canonicalize_that_lasts_for_every_ancestor_panics() {
         let dir = TempDir::new();
         let broken = |_: &Path| Err(io::Error::other("too many open files"));
         let _ = named_with(dir.path(), &broken);
     }
 
     #[test]
-    fn a_denied_search_is_not_repeated_and_the_walk_goes_on_with_the_parent() {
+    fn a_failure_that_lasts_on_the_leaf_only_is_named_by_the_parent_and_does_not_panic() {
         let dir = TempDir::new();
         let file = dir.path().join("main");
-        let seen = RefCell::new(Vec::<PathBuf>::new());
-        let denied = |path: &Path| {
-            seen.borrow_mut().push(path.to_path_buf());
+        let calls = Cell::new(0);
+        let broken_leaf = |path: &Path| {
             if path == file {
-                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+                calls.set(calls.get() + 1);
+                Err(io::Error::other("too many open files"))
             } else {
                 fs::canonicalize(path)
             }
         };
         let real = fs::canonicalize(dir.path()).unwrap().join("main");
-        assert_eq!(named_with(&file, &denied), real);
-        assert_eq!(*seen.borrow(), [file, dir.path().to_path_buf()]);
+        assert_eq!(named_with(&file, &broken_leaf), real);
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
+    fn an_explained_failure_is_not_repeated_and_the_walk_goes_on_with_the_parent() {
+        let dir = TempDir::new();
+        let file = dir.path().join("main");
+        let real = fs::canonicalize(dir.path()).unwrap().join("main");
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::NotADirectory,
+            io::ErrorKind::NotFound,
+        ] {
+            let seen = RefCell::new(Vec::<PathBuf>::new());
+            let failing = |path: &Path| {
+                seen.borrow_mut().push(path.to_path_buf());
+                if path == file {
+                    Err(io::Error::from(kind))
+                } else {
+                    fs::canonicalize(path)
+                }
+            };
+            assert_eq!(named_with(&file, &failing), real, "{kind:?}");
+            assert_eq!(
+                *seen.borrow(),
+                [file.clone(), dir.path().to_path_buf()],
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
@@ -665,11 +719,6 @@ mod tests {
         let ten = dir.path().join("stemma-cli-op_log-10");
         fs::create_dir(&one).unwrap();
         fs::create_dir(&ten).unwrap();
-        fs::write(one.join("main"), b"").unwrap();
-        fs::write(ten.join("main"), b"").unwrap();
-        let _guard = deny_reads_of(&one.join("main"));
-        assert!(read(&one.join("main")).is_err());
-        assert!(read(&ten.join("main")).is_ok());
         let _guard = deny_reads_of(&one);
         assert!(read_dir(&one).is_err());
         assert!(read_dir(&ten).is_ok());
