@@ -21,8 +21,10 @@ use ratatui::widgets::{Block, Borders, List, ListState, Paragraph};
 use ratatui::Frame;
 use stemma_core::repository::{Diff, FileDiff};
 
+mod highlight;
 mod stream;
 
+pub use highlight::Theme;
 pub use stream::{LayoutMode, Stream};
 
 /// What the view is asked to do: what a key or the mouse stands for, or a change of the terminal.
@@ -51,6 +53,8 @@ pub enum Input {
     SetLayout(LayoutMode),
     /// Switch the wrapping of long lines on or off.
     ToggleWrap,
+    /// Go on to the next theme: dark, light, and plain, which is without syntax highlighting.
+    CycleTheme,
     /// The left mouse button went down in this cell of the terminal. A cell on the name of a file
     /// in the list selects that file, as `J` and `K` do; any other cell changes nothing.
     Click {
@@ -80,6 +84,7 @@ impl Input {
             KeyCode::Char('2') => Self::SetLayout(LayoutMode::Split),
             KeyCode::Char('0') => Self::SetLayout(LayoutMode::Auto),
             KeyCode::Char('w') => Self::ToggleWrap,
+            KeyCode::Char('t') => Self::CycleTheme,
             _ => return None,
         })
     }
@@ -133,6 +138,7 @@ pub struct State {
     width: u16,
     layout: LayoutMode,
     wrap: bool,
+    theme: Theme,
 }
 
 impl Default for State {
@@ -144,6 +150,7 @@ impl Default for State {
             width: DEFAULT_WIDTH,
             layout: LayoutMode::Auto,
             wrap: false,
+            theme: Theme::default(),
         }
     }
 }
@@ -183,6 +190,11 @@ impl State {
         self.wrap
     }
 
+    /// The theme of the colours: `dark` until `t` is pressed.
+    pub fn theme(&self) -> Theme {
+        self.theme
+    }
+
     /// Applies `input`. Returns `false` once the user asked to quit, and `true` otherwise.
     ///
     /// `apply` lays the stream out for the width, the layout, and the wrapping of the state first,
@@ -196,8 +208,10 @@ impl State {
             Input::Resize(width) => self.width = width,
             Input::SetLayout(layout) => self.layout = layout,
             Input::ToggleWrap => self.wrap = !self.wrap,
+            Input::CycleTheme => self.theme = self.theme.next(),
             _ => {}
         }
+        stream.set_theme(self.theme);
         stream.fit(diff, text_width(self.width), self.layout, self.wrap);
         let files = stream.file_count();
         match input {
@@ -207,6 +221,8 @@ impl State {
                 self.scroll = self.anchor(stream);
                 self.follow(stream);
             }
+            // Only the colours change: the rows and so the position stay.
+            Input::CycleTheme => {}
             Input::NextFile => {
                 if self.file + 1 < files {
                     self.select_file(self.file + 1, stream);
@@ -326,6 +342,7 @@ pub fn render(frame: &mut Frame, state: &State, diff: &Diff) {
 pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut Stream) {
     let [files_area, text_area, help] = areas(frame.area());
     let text_width = text_width(state.width);
+    stream.set_theme(state.theme);
     stream.fit(diff, text_width, state.layout, state.wrap);
 
     let paths: Vec<&str> = diff.files().iter().map(FileDiff::path).collect();
@@ -352,7 +369,12 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
             ""
         };
         let wrap = if state.wrap { ", wrap" } else { "" };
-        format!("Diff · {split}{auto}{wrap}")
+        let theme = if state.theme == Theme::default() {
+            String::new()
+        } else {
+            format!(", {}", state.theme.name())
+        };
+        format!("Diff · {split}{auto}{wrap}{theme}")
     };
     // Only the rows in view are copied, and the rows above the pane are skipped here, not scrolled
     // by the widget, whose offset is a `u16`: a stream of more than 65535 rows can be read to its
@@ -369,7 +391,7 @@ pub fn render_with(frame: &mut Frame, state: &State, diff: &Diff, stream: &mut S
 
     frame.render_widget(
         Paragraph::new(
-            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap",
+            "q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap · t theme",
         ),
         help,
     );

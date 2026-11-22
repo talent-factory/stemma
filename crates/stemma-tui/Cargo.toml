@@ -10,3 +10,11 @@ publish.workspace = true
 # Only the `crossterm` backend, as ADR-016 decides; the default features pull in more crates.
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 stemma-core = { path = "../stemma-core" }
+# Syntax highlighting (ADR-021). `tree-sitter-highlight` stays on 0.25 because 0.27 needs Rust 1.90,
+# above the 1.89 of the workspace. The grammars only need `tree-sitter-language`.
+tree-sitter-highlight = "=0.25.10"
+tree-sitter-rust = "0.24.2"
+tree-sitter-toml-ng = "0.7.0"
+tree-sitter-bash = "0.25.1"
+tree-sitter-json = "0.24.8"
+tree-sitter-md = "0.5.4"

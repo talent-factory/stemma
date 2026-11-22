@@ -1721,6 +1721,9 @@ oben im Bild steht. Entfernte Zeilen haben einen roten, eingefügte einen grüne
 die Zeilen \type{@@} sind cyan; Kopfzeilen mit \type{diff}, \type{---} und \type{+++} gibt es
 nicht. Vor jeder Zeile stehen die Zeilennummern der alten und der neuen Seite.
 Verschobene Zeilen behalten die Vordergrundfarbe (fett magenta und fett cyan) ohne Hintergrund.
+Den Text der übrigen Zeilen färbt die Oberfläche nach der Syntax der Datei, wenn die Endung
+\type{.rs}, \type{.toml}, \type{.sh}, \type{.bash}, \type{.json} oder \type{.md} ist;
+eine andere Datei bleibt ohne Hervorhebung.
 Hat die letzte Zeile kein Zeilenende, folgt ihr die Zeile
 \type{\ No newline at end of file}, wie im Text des Befehls.
 Ein Tabulator erscheint als vier Leerzeichen, ein anderes Steuerzeichen in Caret-Schreibweise
@@ -1741,11 +1744,12 @@ innerhalb des Rahmens, wenn die Liste der Dateien 40 Spalten nimmt), und sonst u
 Eine Zeile, die länger ist als ihre Spalte, wird abgeschnitten und endet auf \type{…};
 mit dem Umbruch geht sie in der nächsten Zeile weiter, auch die Zeile
 \type{\ No newline at end of file}.
-Die Titelzeile des Feldes nennt das Layout, das gerade gilt, und den Umbruch.
+Die Titelzeile des Feldes nennt das Layout, das gerade gilt, den Umbruch und ein Thema, das nicht
+das dunkle ist.
 Die unterste Zeile nennt die Tasten:
 
 \starttyping
-q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap
+q quit · J/K file · n/p hunk · j/k scroll · space/b page · 1/2/0 layout · w wrap · t theme
 \stoptyping
 
 Die Oberfläche ist schreibgeschützt. Die Tasten:
@@ -1755,6 +1759,8 @@ Die Oberfläche ist schreibgeschützt. Die Tasten:
 Leertaste und \type{b} (oder Bild ab und Bild auf) um 20 Zeilen.
 \type{1} wählt das Layout unified, \type{2} das Layout split und \type{0} wieder auto.
 \type{w} schaltet den Umbruch langer Zeilen an und aus.
+\type{t} wechselt das Thema der Farben: dunkel (der Anfangszustand), hell für ein helles Terminal
+und schlicht ohne Syntaxhervorhebung, danach wieder dunkel.
 Ein Wechsel des Layouts oder des Umbruchs, und auch eine Änderung der Grösse des Terminals,
 lässt die gewählte Datei und den gewählten Hunk oben im Bild stehen.
 Das Blättern endet an der letzten Zeile des Stroms, die dann als oberste Zeile steht.
