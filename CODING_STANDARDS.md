@@ -18,3 +18,19 @@ gate. A log can be edited by hand, so the reader trusts no writer.
 Example: `Repository::approve_pull` refused a retired key, but the recount accepted a
 hand-written approval of that key until `verify_approval` took the number of the entry
 (STEMMA-239).
+
+## Every refusal comes before the first write
+
+A command that can refuse for a reason it is able to know in advance (a key that does not
+prove the actor, a limit, a role) decides before it appends the first entry. An entry that is
+written and then fails costs a repair path: exit code 3, an entry without its proof, a state
+that a repeat of the command does not undo.
+
+- When a diff writes an entry and then checks something about the actor or the arguments,
+  move the check in front of the write. Where the core only knows the answer after the write
+  (the number of the entry), try the same question with a probe first.
+- What cannot be known in advance (a full disk, a lock) is exit 3 with a message that names
+  what to do next.
+
+Example: `lease override` replaced the lease file and then found that the key was not the
+key of the owner, so the lease changed hands without a proof (STEMMA-244).
