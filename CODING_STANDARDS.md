@@ -34,3 +34,45 @@ that a repeat of the command does not undo.
 
 Example: `lease override` replaced the lease file and then found that the key was not the
 key of the owner, so the lease changed hands without a proof (STEMMA-244).
+
+## A doc comment names every branch of the condition
+
+A doc comment that says what happens in one mode, role, or state lists the other branches too,
+or points to the item that does. A sentence about one branch reads as a promise that the others
+behave differently.
+
+- When a diff documents a condition (`enforcing`, `open`, an actor's role), read the code for
+  each branch and confirm that the text holds for it.
+- Say which part depends on the condition and which part holds always.
+
+Example: three doc comments said that an unreadable policy refuses "in an enforcing
+repository", but the code refuses in both modes; only a missing file depends on the mode
+(STEMMA-246).
+
+## A loop that reads shared state again has a test that moves the state
+
+Code that retries and reads shared state on each attempt (the merge gate, a lease, a lock)
+needs a test that changes that state between two attempts. A test that sets the state before
+the call passes even when the read is hoisted out of the loop.
+
+- When a diff adds a read inside a retry loop, find the test that moves the state while the
+  loop waits (`pause::queue`, a competing write) and expects the second attempt to see it.
+- Test the direction that matters for safety: a state that disappears or tightens between the
+  attempts, not only one that relaxes.
+
+Example: the gate reads the policy of the tip for every attempt. Only a test that moves `main`
+onto a policy with level 3, or onto a commit without a policy, fails when the read is cached
+(STEMMA-246).
+
+## A public function takes the mode, not a flag that must match it
+
+A public function that needs a fact which another argument already carries takes that
+argument (`&Mode`), not a second value (`enforcing: bool`) that the caller has to keep in
+step. A bare `bool` at a call site says nothing and is easy to invert.
+
+- When a diff adds a `bool` parameter to a public function, ask whether a type of the crate
+  already answers the question, and whether the function needs to be public.
+- Where only the crate calls it, make it `pub(crate)`.
+
+Example: `policy_at(base, enforcing: bool)` was public next to entry points that take
+`&Mode`, so a caller could pass a flag that disagreed with the register (STEMMA-246).
