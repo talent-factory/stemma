@@ -83,6 +83,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand};
 
+mod review;
+
 use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::conflict::AnyCommit;
 use stemma_core::diff::Edit;
@@ -160,6 +162,21 @@ enum Command {
     Register {
         #[command(subcommand)]
         command: RegisterCommand,
+    },
+    /// Open, close, approve, and merge pull requests, and list them
+    Pr {
+        #[command(subcommand)]
+        command: review::PrCommand,
+    },
+    /// Write and list the results of checks
+    Check {
+        #[command(subcommand)]
+        command: review::CheckCommand,
+    },
+    /// Show, take, release, and override the lease of a branch
+    Lease {
+        #[command(subcommand)]
+        command: review::LeaseCommand,
     },
     /// Remove a secret from the history and the log; without --apply, only show what it would do
     Purge(PurgeArgs),
@@ -938,6 +955,9 @@ struct EnforceArgs {
 /// Why a command fails.
 #[derive(Debug)]
 enum CliError {
+    /// A command of the review path (`pr`, `check`, `lease`) failed; the error holds the message
+    /// and the exit code.
+    Review(review::ReviewError),
     /// There is no actor, neither as a flag nor in the environment.
     MissingActor,
     /// The flag or the variable is set, but empty. An empty flag does not fall back to the
@@ -1348,6 +1368,7 @@ impl CliError {
             {
                 ExitCode::from(3)
             }
+            Self::Review(error) => error.exit_code(),
             Self::Init(error) => by_kind(error.kind()),
             Self::Open(error) => by_kind(error.kind()),
             Self::Track(error) => by_kind(error.kind()),
@@ -1410,6 +1431,7 @@ impl CliError {
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Review(error) => error.fmt(f),
             Self::MissingActor => write!(
                 f,
                 "no actor: pass `--actor \"human <id>\"` or set {ACTOR_ENV}; an agent is \
@@ -1818,6 +1840,9 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Tag(args) => tag(args, out).map(|()| ExitCode::SUCCESS),
         Command::Branch(args) => branch(args, out).map(|()| ExitCode::SUCCESS),
         Command::Register { command } => register_command(command, out).map(|()| ExitCode::SUCCESS),
+        Command::Pr { command } => review::pr(command, out).map(|()| ExitCode::SUCCESS),
+        Command::Check { command } => review::check(command, out).map(|()| ExitCode::SUCCESS),
+        Command::Lease { command } => review::lease(command, out).map(|()| ExitCode::SUCCESS),
         Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
         Command::Worktree {
             command: WorktreeCommand::Add(args),
