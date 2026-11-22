@@ -252,7 +252,7 @@ pub fn sponsorship_payload(agent: &Identity, role: Role, sponsor: &Identity) -> 
 pub enum KeyState {
     /// Signs new records.
     Active,
-    /// StubKind; counts for log entries below `from`, and for approvals.
+    /// Replaced; counts for log entries below `from`, and for approvals.
     Retired {
         /// The number of the first log entry that the key no longer counts for.
         from: u64,
@@ -2354,6 +2354,40 @@ mod tests {
             check_proofs(&metadata, &register(), &stubs),
             Err(CheckError::Proof { number: 1, .. })
         ));
+        // The hash that the stub keeps is what the proof signs: the right proof is accepted, a
+        // key that is not the actor's is refused.
+        let hash = entries[0].hash().unwrap().to_string();
+        let proof_of = |signer: u8| ProofFile {
+            actor: Actor::human("daniel").unwrap(),
+            signature: signature::sign(
+                &Seeded::new(signer),
+                PayloadKind::LogEntry,
+                hash.as_bytes(),
+            )
+            .unwrap(),
+        };
+        fs::remove_file(proof_path(&metadata, 1)).unwrap();
+        write_proof(&metadata, 1, &proof_of(1)).unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &stubs).unwrap(), 1);
+        fs::remove_file(proof_path(&metadata, 1)).unwrap();
+        write_proof(&metadata, 1, &proof_of(9)).unwrap();
+        assert!(matches!(
+            check_proofs(&metadata, &register(), &stubs),
+            Err(CheckError::Proof { number: 1, .. })
+        ));
+        // A stub from before the kind was kept does not say what it replaced, so a signature that
+        // does not verify still passes, as for the stub of an approval.
+        let legacy = {
+            let text = String::from_utf8(stubs[0].encode()).unwrap();
+            let text = text
+                .replace("stemma-oplog 4", "stemma-oplog 3")
+                .replace(" other\n", "\n");
+            Entry::parse(text.as_bytes()).unwrap()
+        };
+        assert_eq!(legacy.hash(), stubs[0].hash());
+        fs::remove_file(proof_path(&metadata, 1)).unwrap();
+        write_proof(&metadata, 1, &proof).unwrap();
+        assert_eq!(check_proofs(&metadata, &register(), &[legacy]).unwrap(), 1);
     }
 
     #[test]

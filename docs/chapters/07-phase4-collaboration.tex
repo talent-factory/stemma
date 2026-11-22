@@ -154,7 +154,8 @@ Die Einträge folgen denen der Lease: Sie nennen keinen Zeiger, stehen immer in 
 und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9. Der Eintrag
 \type{pr-approve} ist der Grund für die Version 10, auf die das Repository mit dem nächsten
 Eintrag oder Purge steigt (ADR-009, ADR-011).
-Der Eintrag \type{check} hebt sie später auf 11.
+Der Eintrag \type{check} hebt sie später auf 11,
+und die Art im Stub (siehe unten) auf 12.
 Der Eintrag \type{pr-open} nennt den Branch, den Commit an seiner Spitze, die Reviewer und
 optional \type{repairs <commit>}, den roten Commit, den der Pull Request zu beheben erklärt
 (ADR-019).
@@ -1035,6 +1036,13 @@ Der Eintrag muss in der Hash-Kette stehen, der Akteur des Beweises der des Eintr
 und der Schlüssel muss zum Akteur gehören und für diese Nummer zählen.
 Eine Freigabe, deren Schlüssel seither widerrufen wurde, gilt als ungültig, nicht als Schaden des
 Logs, und \type{op verify} lässt sie durch.
+Ersetzt ein Purge einen Eintrag durch einen Stub, bleibt der Hash des Eintrags erhalten,
+nicht aber Pull Request und Kopf.
+Darum prüft \type{op verify} den Beweis eines Stubs, der keine Freigabe ersetzt hat, weiter
+gegen den Hash;
+nur der Beweis des Stubs einer Freigabe und der eines älteren Stubs ohne Art
+bleibt ungeprüft.
+Die Art steht im Stub, aber nicht im Hash des Eintrags (ADR-011).
 Geschrieben wird ein Beweis bisher von der Freigabe; die weiteren Operationen, deren Regel vom
 Akteur abhängt, kommen mit den weiteren Teilen von Phase~4.
 Die CLI-Befehle \type{register add-key}, \type{register retire}, \type{register revoke}

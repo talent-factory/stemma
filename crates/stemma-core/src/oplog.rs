@@ -73,6 +73,8 @@
 //!
 //! Every new entry that the writer makes names the hash of the entry before it (ADR-011,
 //! STEMMA-41); only the stub of an entry from before the chain keeps version 2 and names none.
+//! A stub that names what it replaced has version 4 (`stub <hash> approval` or
+//! `stub <hash> other`, STEMMA-256); the stub in the example below is older, version 3.
 //! A change, a stub, and a `purge` entry of version 3 have the line `previous` after the actor,
 //! with the hash, or `-` for the entry that starts the chain:
 //!
@@ -179,7 +181,8 @@ const HEADER_2: &str = "stemma-oplog 2";
 
 /// The first line of every entry in the hash chain: a change, a stub, or a `purge` entry that
 /// names the hash of the entry before it (ADR-011, STEMMA-41). A writer writes this version for
-/// every new entry and for the stub of an entry in the chain.
+/// every new entry but a stub, and keeps it for a stub that was written before the kind (see
+/// [`HEADER_4`]).
 const HEADER_3: &str = "stemma-oplog 3";
 
 /// The first line of the stub that says what it replaced (ADR-011, ADR-014, STEMMA-256): version 3
@@ -1834,6 +1837,9 @@ impl Entry {
                     purge: number,
                 });
             }
+            (Record::Stub(stub), Chain::Unchained) if stub.replaced.is_some() => {
+                return Err(EntryError::StubBodyOutsideChain(number));
+            }
             (Record::Stub(stub), Chain::Unchained) if stub.body.is_some() => {
                 return Err(EntryError::StubBodyOutsideChain(number));
             }
@@ -2152,6 +2158,8 @@ impl Entry {
     /// lists its own number or a later one, and a line after the last one; for version 3, a
     /// missing line `previous`, a hash that is not canonical, a stub without the hash of its body
     /// or a version-2 stub with one, and entry 1 that names an entry before it.
+    /// For version 4: an entry that is not a stub, and a stub without a known kind
+    /// (`approval` or `other`) after its hash.
     pub fn parse(bytes: &[u8]) -> Result<Self, EntryParseError> {
         let text = std::str::from_utf8(bytes).map_err(|error| EntryParseError::NotUtf8 {
             valid_up_to: error.valid_up_to(),
@@ -2593,6 +2601,7 @@ fn parse_pull(
 /// Reads the body of a stub or a `purge` entry, which starts at the line with the index `body`:
 /// `stub` alone (version 2) or `stub <hash of the body>` (version 3), or `operation purge`,
 /// `commits <n>`, and `stubs <ranges>`.
+/// Version 4 adds the kind after the hash (`stub <hash> approval` or `stub <hash> other`).
 fn parse_stub_or_purge(
     lines: &[&str],
     body: usize,
