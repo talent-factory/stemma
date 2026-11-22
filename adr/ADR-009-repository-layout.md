@@ -96,6 +96,12 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   working-copy commit with the new value `-`. The branch and the commits stay: the branch is
   free again, and the entry keeps the working-copy commit for the log and for a purge. A
   worktree whose directory was deleted outside Stemma has only its state directory removed.
+  If another actor owns such a worktree, `status --take-over` cannot run in the missing directory,
+  so `worktree remove --take-over` removes the state (STEMMA-217): only a human may (level 3 of
+  ADR-004, the authorizer is asked for `take-over` as well), the owner does not change, and the
+  entry of `worktree-remove` names the former owner in the line `former-owner` (ADR-011). The
+  option does nothing while the directory exists: there the files are saved first, and the owner
+  or `status --take-over` decides.
   A failure after the snapshot that came first keeps the exit code of the failure and names the
   entry of the snapshot; it is code 3 only if the snapshot moved a pointer and stopped or its
   flush failed (ADR-018). The output lists the first 20 files that `--force` removed with the
@@ -109,13 +115,14 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 12, the version of the kind in the stub (ADR-011, ADR-014), and
-  `open` reads versions 2 to 12: a repository made before the purge existed (2), before the chain
+  supports: `init` writes version 13, the version of the line `former-owner` of a `worktree-remove`
+  entry (ADR-011, STEMMA-217), and `open` reads versions 2 to 13: a repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
   `lease-override` and the directory `leases/`; ADR-004, ADR-011), before the pull requests (8, the
   entries `pr-open`, `pr-close`, and `pr-merge`; ADR-004, ADR-011), before the approvals (9, the
-  entry `pr-approve`; ADR-004, ADR-011), before the checks (10), or before the kind in the stub (11) rises to 12 with its next
+  entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub (11), or before the former owner of a
+  worktree (12) rises to 13 with its next
   entry or purge (ADR-014, ADR-011, ADR-010).
   Version 4 is the version of the hash chain of the log (ADR-011). From version 5
   on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that

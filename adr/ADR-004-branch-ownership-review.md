@@ -76,7 +76,7 @@ it.
 
 | Level | Paths and operations |
 |---|---|
-| 3 | `purge` (ADR-014), actor and authorizer (`actor.rs`, `allowed.rs`), CI and release files (`.github/workflows/`, `justfile`, `deny.toml`), policy files, the option `--take-over` |
+| 3 | `purge` (ADR-014), actor and authorizer (`actor.rs`, `allowed.rs`), CI and release files (`.github/workflows/`, `justfile`, `deny.toml`), policy files, the option `--take-over`, also on `worktree remove`, where it removes the state of a worktree whose directory is gone and whose owner is another actor (ADR-010) |
 | 2 | Object and store (`object.rs`, `store.rs`), refs (`refs.rs`), operation log (`oplog.rs`), repository (`repository.rs`, `repository/`), index (`index.rs`), diff computation in the merge path (`diff.rs`), verify (`verify.rs`), `checkout`, `commit`, `restore` and `snapshot`, the parts of phase 3, `.stemmaignore` (ADR-012) |
 | 1 | CLI (`stemma-cli`), TUI (`stemma-tui`), `status`, `track`, the code of the exclusion rules (`ignore.rs`), diff display |
 | 0 | Docs (`docs/`, `adr/`, `README.md`), tests (`tests/`, `fuzz/`), examples |

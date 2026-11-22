@@ -122,6 +122,9 @@ pub struct RemovedWorktree {
     /// The files that the working-copy commit did not track and `--force` removed with the
     /// directory. They are in no commit, so nothing brings them back.
     pub discarded: Vec<String>,
+    /// The owner of the working copy, if a human removed its state without being that owner
+    /// (`take_over` and a directory that was gone). The entry names it.
+    pub former_owner: Option<Actor>,
 }
 
 impl Repository {
@@ -132,14 +135,17 @@ impl Repository {
     /// The steps are: an open purge refuses the call; the authorizer is asked for
     /// `worktree-remove` (the target is `worktree`); the lock of the references is taken and held
     /// to the last move; the worktree is found under the lock, and the main worktree and the one
-    /// of this call are refused; the owner of the working copy is checked; if the directory
-    /// exists, it
-    /// must hold the pointer file of this worktree, and the files are saved in a snapshot of the
-    /// worktree first (a second question to the authorizer, `snapshot`, and the owner of the
-    /// working copy is checked as for every snapshot), then every file that the working-copy
-    /// commit does not track is looked for: with `force` they are removed, else they stop the
-    /// call; the entry is written and flushed, naming the worktree, its directory, HEAD, and the
-    /// working-copy commit with the new value `-`; the directory is removed; and the state
+    /// of this call are refused; the owner of the working copy is checked (`take_over` lets a
+    /// human whose authorizer allows `take-over` pass when the directory is gone and another
+    /// actor owns the working copy: no command can run in it, so the owner cannot be changed with
+    /// `status --take-over`; the entry then names the former owner, and no entry of `take-over`
+    /// is written, as the working copy is gone with the call; an agent is refused, and the option
+    /// is ignored when the directory exists); if the directory exists, it must hold the pointer file
+    /// of this worktree, and the files are saved in a snapshot of the worktree first (a second
+    /// question to the authorizer, `snapshot`, and the owner of the working copy is checked as
+    /// for every snapshot), then every file that the working-copy commit does not track is looked
+    /// for: with `force` they are removed, else they stop the call; the entry is written and
+    /// flushed, naming the worktree, its directory, HEAD, and the working-copy commit with the new value `-`; the directory is removed; and the state
     /// directory goes: `HEAD` first, so that the worktree is gone from `worktree list` and
     /// counts for no branch, then the rest. A worktree whose directory was removed outside
     /// Stemma has only its state directory removed.
@@ -151,8 +157,8 @@ impl Repository {
     /// [`WorktreeError::SeveralDamaged`], [`WorktreeError::Unfinished`],
     /// [`WorktreeError::RemoveMain`],
     /// [`WorktreeError::RemoveCurrent`], [`WorktreeError::NotItsPointer`],
-    /// [`WorktreeError::Snapshot`] (the owner, a file that cannot be saved, or a refused
-    /// `snapshot`), [`WorktreeError::Dirty`], [`WorktreeError::Refs`], and the errors of the
+    /// [`WorktreeError::Snapshot`] (the owner, an agent that takes over, a refused `take-over`, a
+    /// file that cannot be saved, or a refused `snapshot`), [`WorktreeError::Dirty`], [`WorktreeError::Refs`], and the errors of the
     /// storage. The snapshot that came first stays in the log when a later step fails
     /// ([`WorktreeError::AfterSnapshot`], which carries the failed flush of that snapshot, if
     /// there was one: then the call ends with code 3, else it can be repeated). After the entry:
@@ -163,6 +169,7 @@ impl Repository {
         &self,
         worktree: &str,
         force: bool,
+        take_over: bool,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<RemovedWorktree, WorktreeError> {
@@ -196,14 +203,35 @@ impl Repository {
         let (_, owner) = crate::refs::FsRefStore::for_worktree(&shared, &state)
             .working_copy_and_owner()
             .map_err(WorktreeError::Refs)?;
-        view.check_owner(actor, owner.as_ref()).map_err(|error| {
-            let error = if exists {
-                error.without_take_over_option()
-            } else {
-                error.without_directory()
-            };
-            WorktreeError::Snapshot(Box::new(error))
-        })?;
+        // Taking over is decided here only for a directory that is gone: `status --take-over` can
+        // run in no other way there. With a directory, the files are saved first, and that is the
+        // work of its owner or of `status --take-over`.
+        // It applies to another owner only: a working copy without an owner, or one of the actor,
+        // needs no take-over, and the question to the authorizer would be spurious.
+        let overriding = take_over && !exists && owner.as_ref().is_some_and(|owner| owner != actor);
+        let checked = if overriding {
+            view.taking_over()
+        } else {
+            view.clone()
+        };
+        let overridden = checked
+            .check_owner(actor, owner.as_ref())
+            .map_err(|error| {
+                let error = if exists {
+                    error.without_take_over_option()
+                } else {
+                    error.without_directory()
+                };
+                WorktreeError::Snapshot(Box::new(error))
+            })?;
+        let former_owner = if overridden { owner.clone() } else { None };
+        if overridden {
+            // Level 3 (ADR-004): the authorizer is asked for `take-over`, as for the other
+            // commands that take over.
+            checked
+                .ask_take_over(actor, authorizer)
+                .map_err(|error| WorktreeError::Snapshot(Box::new(error)))?;
+        }
         let mut snapshot = None;
         let mut late = None;
         if exists {
@@ -254,6 +282,10 @@ impl Repository {
                     Vec::new(),
                 )
                 .and_then(|change| change.in_worktree(Some(info.name.clone()), Some(text.clone())))
+                .and_then(|change| match &former_owner {
+                    Some(owner) => change.with_former_owner(owner.clone()),
+                    None => Ok(change),
+                })
                 .map_err(|error| {
                     WorktreeError::Update(UpdateError::Log(OpLogError::Entry(error)))
                 })?;
@@ -302,6 +334,7 @@ impl Repository {
             head: head.clone(),
             working_copy,
             discarded: discarded.clone(),
+            former_owner: former_owner.clone(),
         };
         let result = match logged.map_err(WorktreeError::Refs) {
             Err(error) => Err(error),
@@ -1580,6 +1613,7 @@ impl fmt::Display for WorktreeError {
                 path.display(),
                 state.display()
             ),
+            Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(
                 f,
                 "the files of the worktree could not be saved first, and nothing was removed: \
@@ -1880,6 +1914,106 @@ mod tests {
         assert_eq!(repository.oplog().entries().unwrap().len(), before);
     }
 
+    /// Allows everything but the take-over.
+    struct DenyTakeOver;
+
+    impl Authorizer for DenyTakeOver {
+        fn authorize(
+            &self,
+            _actor: &Actor,
+            operation: &OperationName,
+            _target: &str,
+        ) -> crate::Decision {
+            if operation.as_str() == "take-over" {
+                crate::Decision::Deny
+            } else {
+                crate::Decision::Allow
+            }
+        }
+    }
+
+    /// A repository whose worktree `linked` belongs to `actor()` and whose directory is gone.
+    fn with_gone_directory() -> (TempDir, TempDir, Repository) {
+        let dir = TempDir::new();
+        let repository =
+            Repository::init(dir.path(), &InitOptions::default(), &actor(), &AllowAll).unwrap();
+        fs::write(dir.path().join("a.txt"), "one").unwrap();
+        repository
+            .track(&["a.txt".to_owned()], &actor(), &AllowAll)
+            .unwrap();
+        let _first = repository.commit("first", &actor(), &AllowAll).unwrap();
+        let place = TempDir::new();
+        let path = place.path().join("linked");
+        let _added = repository
+            .add_worktree(
+                &path,
+                &WorktreeBranch::Create(BranchName::try_new("feat").unwrap()),
+                None,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        fs::remove_dir_all(&path).unwrap();
+        (dir, place, repository)
+    }
+
+    #[test]
+    fn a_human_removes_the_state_of_a_gone_directory_of_a_foreign_owner_with_take_over() {
+        let (dir, _place, repository) = with_gone_directory();
+        let anna = Actor::human("anna").unwrap();
+
+        let refused = repository
+            .remove_worktree("linked", false, false, &anna, &AllowAll)
+            .unwrap_err();
+        assert!(matches!(refused, WorktreeError::Snapshot(_)), "{refused}");
+        // A refusal of the owner rule says so, and not that files could not be saved.
+        assert!(
+            !refused.to_string().contains("could not be saved"),
+            "{refused}"
+        );
+
+        let removed = repository
+            .remove_worktree("linked", false, true, &anna, &AllowAll)
+            .unwrap();
+
+        assert_eq!(removed.former_owner, Some(actor()));
+        assert!(removed.directory_missing);
+        let change = removed.entry.change().unwrap();
+        assert_eq!(change.actor(), &anna);
+        assert_eq!(change.former_owner(), Some(&actor()));
+        assert!(!dir.path().join(".stemma/worktrees/linked").exists());
+    }
+
+    #[test]
+    fn the_authorizer_decides_the_take_over_of_a_removal_and_a_denial_writes_nothing() {
+        let (dir, _place, repository) = with_gone_directory();
+        let anna = Actor::human("anna").unwrap();
+        let before = repository.oplog().entries().unwrap().len();
+
+        let denied = repository
+            .remove_worktree("linked", false, true, &anna, &DenyTakeOver)
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                &denied,
+                WorktreeError::Snapshot(error) if error.stands_alone()
+            ),
+            "{denied}"
+        );
+        assert!(
+            !denied.to_string().contains("could not be saved"),
+            "{denied}"
+        );
+        assert!(dir.path().join(".stemma/worktrees/linked").exists());
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        // The owner is not asked for the take-over: nothing is taken over.
+        let removed = repository
+            .remove_worktree("linked", false, true, &actor(), &DenyTakeOver)
+            .unwrap();
+        assert_eq!(removed.former_owner, None);
+    }
+
     #[test]
     fn a_dirty_directory_after_a_snapshot_is_reported_with_the_entry_of_the_snapshot() {
         let dir = TempDir::new();
@@ -1906,7 +2040,7 @@ mod tests {
         fs::write(path.join("a.txt"), "changed").unwrap();
 
         let error = repository
-            .remove_worktree("linked", false, &actor(), &AllowAll)
+            .remove_worktree("linked", false, false, &actor(), &AllowAll)
             .unwrap_err();
 
         assert!(

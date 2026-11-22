@@ -134,6 +134,15 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   holds ASCII letters, digits, `-`, `_`, and `.` (not first) and is at most 255 bytes long. A program that does not know the line stops at
   it: the reader refuses an unknown line, so an older program refuses the log and does not read
   it wrongly. The hash of the body covers both lines.
+  The entry of `worktree remove --take-over` (STEMMA-217, ADR-010) has a third line,
+  `former-owner <actor>`, right after `location`: the owner of the working copy whose state a
+  human removed after its directory was gone. The actor of the entry is that human, the owner
+  does not change, and no entry of `take-over` is written, as the working copy ends with the
+  call. Only an entry of `worktree-remove` with a `location` has the line; the reader refuses it
+  elsewhere, refuses a line that is no actor, and, as the writer does, refuses an agent as the
+  actor of the entry and the actor as its own former owner. The hash covers it, and `op log` shows it (text and the field
+  `former_owner` of `--json`). It is version 13 of the repository format, so an older program
+  refuses the log instead of reporting damage.
   `outcomes` judges the pointers by the worktree. The next move of `HEAD` and of the
   working-copy commit that confirms or refutes an entry is the next one *of the same worktree*,
   and the value now (`Current`, which `in_worktree` names, `main` by default) is compared
@@ -222,8 +231,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   `UnsupportedFormat`. No repository exists outside of tests and the author's trials, so the
   migration is to run `init` again. Version 3 came with the purge (ADR-014), version 4 with
   the hash chain (below), version 8 with the lease entries, version 9 with the pull request
-  entries, version 10 with the approval entry, version 11 with the check entry, and version 12 
-  with the kind in the stub (below).
+  entries, version 10 with the approval entry, version 11 with the check entry, version 12
+  with the kind in the stub (below), and version 13 with the line `former-owner` (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change and a `purge` entry; a new stub has version 4

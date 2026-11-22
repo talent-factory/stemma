@@ -1306,14 +1306,15 @@ Auch \type{worktree remove} lehnt zunächst ab, mit Exit-Code 1:
 
 \starttyping
 $ stemma worktree remove notizen-agent
-stemma: the files of the worktree could not be saved first, and nothing was removed: the
-working copy belongs to `agent claude ...`, so `human daniel` may not save it; this command
-has no `--take-over`, so run `status --take-over` in that working copy first to make
-`human daniel` its owner
+stemma: the working copy belongs to `agent claude ...`, so `human daniel` may not save it;
+this command cannot take over a working copy whose directory exists, so run
+`status --take-over` in that working copy first to make `human daniel` its owner
 \stoptyping
 
 Nur der Eigentümer einer Arbeitskopie entfernt sie, und der Befehl sichert vorher ihre Dateien
 mit einem Snapshot (ADR-010).
+Fehlt das Verzeichnis, gibt es nichts zu sichern, und ein Mensch entfernt den Zustand mit
+\type{worktree remove --take-over}; die Befehlsreferenz beschreibt das.
 Daniel übernimmt sie deshalb zuerst, in der Arbeitskopie des Agenten;
 nur ein Mensch darf das:
 

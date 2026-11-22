@@ -2118,7 +2118,7 @@ fn remove_refused_by_the_owner_points_to_status_take_over() {
 }
 
 #[test]
-fn remove_of_a_deleted_directory_with_a_foreign_owner_gives_no_take_over_advice() {
+fn remove_of_a_deleted_directory_with_a_foreign_owner_points_to_its_own_take_over() {
     let sandbox = with_linked();
     let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
     fs::remove_dir_all(&linked).unwrap();
@@ -2131,8 +2131,14 @@ fn remove_of_a_deleted_directory_with_a_foreign_owner_gives_no_take_over_advice(
         "{}",
         refused.stderr
     );
+    // `status --take-over` cannot run there: the way is the option of `worktree remove`.
     assert!(
-        !refused.stderr.contains("--take-over"),
+        refused.stderr.contains("again with `--take-over`"),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        !refused.stderr.contains("status --take-over"),
         "{}",
         refused.stderr
     );
@@ -2140,4 +2146,121 @@ fn remove_of_a_deleted_directory_with_a_foreign_owner_gives_no_take_over_advice(
     assert!(repo.join(".stemma/worktrees/linked").exists());
     ok(&repo, &["worktree", "remove", "linked", "--actor", ACTOR]);
     assert!(!repo.join(".stemma/worktrees/linked").exists());
+}
+
+const AGENT: &str = "agent bot model=m session=s sponsor=daniel";
+
+#[test]
+fn a_human_removes_the_state_of_a_deleted_directory_of_a_foreign_owner_with_take_over() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    fs::remove_dir_all(&linked).unwrap();
+
+    let removed = ok(
+        &repo,
+        &[
+            "worktree",
+            "remove",
+            "linked",
+            "--take-over",
+            "--actor",
+            ANNA,
+        ],
+    );
+
+    assert!(
+        removed.stdout.contains("belonged to human daniel"),
+        "{}",
+        removed.stdout
+    );
+    assert!(removed.stdout.contains("only the state was removed"));
+    assert!(!repo.join(".stemma/worktrees/linked").exists());
+    // The branch stays, and it is free again.
+    assert!(repo.join(".stemma/refs/heads/feature").is_file());
+    // One entry of `worktree-remove` names the actor that acted and the former owner; there is no
+    // entry of `take-over`.
+    let log = ok(&repo, &["op", "log", "--json", "-n", "1"]).stdout;
+    assert!(log.contains("\"operation\":\"worktree-remove\""), "{log}");
+    assert!(log.contains("\"actor\":\"human anna\""), "{log}");
+    assert!(log.contains("\"former_owner\":\"human daniel\""), "{log}");
+    let text = ok(&repo, &["op", "log", "-n", "1"]).stdout;
+    assert!(text.contains("former owner  human daniel"), "{text}");
+    let all = ok(&repo, &["op", "log", "--json"]).stdout;
+    assert!(!all.contains("\"operation\":\"take-over\""), "{all}");
+    // The log, with the new line, verifies.
+    ok(&repo, &["op", "verify"]);
+    // The branch is free again.
+    ok(
+        &repo,
+        &["worktree", "add", "../again", "feature", "--actor", ACTOR],
+    );
+}
+
+#[test]
+fn an_agent_cannot_remove_the_state_of_a_deleted_directory_of_a_foreign_owner() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    fs::remove_dir_all(&linked).unwrap();
+
+    for (extra, human) in [
+        (vec![], "ask a human"),
+        (vec!["--take-over"], "a human has to do it"),
+    ] {
+        let mut args = vec!["worktree", "remove", "linked"];
+        args.extend(extra);
+        args.extend(["--actor", AGENT]);
+        let refused = run(&repo, &args);
+        assert_eq!(refused.code, 1, "{}", refused.stderr);
+        assert!(refused.stderr.contains(human), "{}", refused.stderr);
+        assert!(repo.join(".stemma/worktrees/linked").exists());
+    }
+}
+
+#[test]
+fn the_take_over_of_remove_does_not_apply_while_the_directory_exists() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+
+    let refused = run(
+        &repo,
+        &[
+            "worktree",
+            "remove",
+            "linked",
+            "--take-over",
+            "--actor",
+            ANNA,
+        ],
+    );
+
+    // The files are saved first, and that is for the owner or for `status --take-over` there.
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("status --take-over"),
+        "{}",
+        refused.stderr
+    );
+    assert!(linked.join(".stemma").is_file());
+}
+
+#[test]
+fn the_owner_removes_a_deleted_directory_without_a_former_owner_in_the_entry() {
+    let sandbox = with_linked();
+    let (repo, linked) = (sandbox.repo(), sandbox.at("linked"));
+    fs::remove_dir_all(&linked).unwrap();
+
+    ok(
+        &repo,
+        &[
+            "worktree",
+            "remove",
+            "linked",
+            "--take-over",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    let log = ok(&repo, &["op", "log", "--json", "-n", "1"]).stdout;
+    assert!(log.contains("\"former_owner\":null"), "{log}");
 }

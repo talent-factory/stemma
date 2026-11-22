@@ -168,7 +168,7 @@ use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeE
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
 use crate::register::Identity;
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
-use crate::{Actor, ActorParseError};
+use crate::{Actor, ActorParseError, ActorRef};
 
 /// The first line of an entry of a change from before the hash chain, with the version of the
 /// encoding. It is still read; a writer no longer writes it.
@@ -470,6 +470,8 @@ pub enum EntryError {
     BadWorktree(String),
     /// The directory of a worktree holds a control character, or the entry names no worktree.
     BadLocation(String),
+    /// An entry names the former owner of a working copy but no directory of a worktree.
+    FormerOwnerWithoutRemoval,
     /// A lease entry was written before the hash chain. Carries its number. The four lease
     /// entries came with the chain, so none has an older encoding.
     LeaseOutsideChain(u64),
@@ -567,6 +569,10 @@ impl fmt::Display for EntryError {
                 "`{}` cannot be the directory of a worktree in an entry",
                 path.escape_debug()
             ),
+            Self::FormerOwnerWithoutRemoval => write!(
+                f,
+                "only an entry that removes a worktree can name the former owner of its working copy"
+            ),
             Self::LeaseOutsideChain(number) => write!(
                 f,
                 "the lease entry {number} was written before the hash chain, which no lease entry \
@@ -632,6 +638,9 @@ pub struct Change {
 struct WorktreeTag {
     name: String,
     location: Option<String>,
+    /// The owner of the working copy that a human removed with `worktree remove --take-over`
+    /// while its directory was gone (ADR-010); only an entry of `worktree-remove` has it.
+    former_owner: Option<Actor>,
 }
 
 impl Change {
@@ -789,6 +798,33 @@ impl Change {
         self.worktree.as_deref()?.location.as_deref()
     }
 
+    /// The owner of the working copy that the actor of the entry removed without being that owner
+    /// (`worktree remove --take-over` of a worktree whose directory is gone, ADR-010), or `None`.
+    pub fn former_owner(&self) -> Option<&Actor> {
+        self.worktree.as_deref()?.former_owner.as_ref()
+    }
+
+    /// The change that also names the owner `owner` of the working copy it removes without being
+    /// that owner. The entry must be a `worktree-remove` that names a worktree and its directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::FormerOwnerWithoutRemoval`] for another operation, for an entry that
+    /// names no directory, for an actor that is an agent (only a human takes over, ADR-004), and
+    /// for the actor of the entry as its own former owner.
+    pub(crate) fn with_former_owner(mut self, owner: Actor) -> Result<Self, EntryError> {
+        let removal = self.operation.as_str() == "worktree-remove"
+            && !matches!(self.actor.view(), ActorRef::Agent { .. })
+            && owner != self.actor;
+        match self.worktree.as_deref_mut() {
+            Some(tag) if removal && tag.location.is_some() => {
+                tag.former_owner = Some(owner);
+                Ok(self)
+            }
+            _ => Err(EntryError::FormerOwnerWithoutRemoval),
+        }
+    }
+
     /// The change made for the worktree `worktree` (`None` for the main one), with the directory
     /// `location` if the operation makes or removes the worktree. An entry that names a worktree
     /// already keeps it.
@@ -816,7 +852,13 @@ impl Change {
                 return Err(EntryError::BadLocation(path.clone()));
             }
         }
-        self.worktree = worktree.map(|name| Box::new(WorktreeTag { name, location }));
+        self.worktree = worktree.map(|name| {
+            Box::new(WorktreeTag {
+                name,
+                location,
+                former_owner: None,
+            })
+        });
         Ok(self)
     }
 
@@ -1951,6 +1993,9 @@ impl Entry {
                     if let Some(location) = &tag.location {
                         out.push_str(&format!("location {location}\n"));
                     }
+                    if let Some(owner) = &tag.former_owner {
+                        out.push_str(&format!("former-owner {owner}\n"));
+                    }
                 }
                 if let Some(head) = &change.head {
                     out.push_str(&format!(
@@ -2257,6 +2302,7 @@ impl Entry {
         let mut first = body + 1;
         let mut worktree = None;
         let mut location = None;
+        let mut former_owner = None;
         if let Some(name) = lines
             .get(first)
             .and_then(|line| line.strip_prefix("worktree "))
@@ -2275,6 +2321,15 @@ impl Entry {
                 }
                 location = Some(path.to_owned());
                 first += 1;
+                if let Some(text) = lines
+                    .get(first)
+                    .and_then(|line| line.strip_prefix("former-owner "))
+                {
+                    let owner = Actor::from_str(text)
+                        .map_err(|_| malformed(first + 1, EntryMalformed::BadFormerOwner))?;
+                    former_owner = Some(owner);
+                    first += 1;
+                }
             }
         }
         // The pointers, in the fixed order: head, working-copy, branches, tags.
@@ -2383,6 +2438,10 @@ impl Entry {
         // return a change that the constructor would reject.
         Change::try_new_with_tags(time, actor, operation, head, working_copy, branches, tags)
             .and_then(|change| change.in_worktree(worktree, location))
+            .and_then(|change| match former_owner {
+                Some(owner) => change.with_former_owner(owner),
+                None => Ok(change),
+            })
             .and_then(|change| Entry::linked(number, chain, Record::Change(change)))
             .map_err(EntryParseError::Entry)
     }
@@ -2865,6 +2924,8 @@ pub enum EntryMalformed {
     BadWorktree,
     /// The line `location` is empty or holds a control character.
     BadLocation,
+    /// The line `former-owner` is not an actor.
+    BadFormerOwner,
     /// The line after `operation lease-…` of a lease entry is not `branch <name>`.
     ExpectedBranch,
     /// A takeover or an override has no line `from <actor>`, or another entry has one.
@@ -2922,6 +2983,9 @@ impl fmt::Display for EntryMalformed {
             }
             Self::BadLocation => {
                 "the directory of the worktree is empty or has a control character"
+            }
+            Self::BadFormerOwner => {
+                "the line `former-owner` is not an actor"
             }
             Self::ExpectedBranch => "expected the line `branch <name>`",
             Self::ExpectedFrom => {
@@ -8374,6 +8438,133 @@ mod tests {
         assert_eq!(Entry::parse(text.as_bytes()).unwrap(), entry);
         // The name is covered by the hash of the body.
         assert_ne!(entry.body_hash(), main.body_hash());
+    }
+
+    /// A change of `operation` in the worktree `w` with the directory `/tmp/w`.
+    fn change_of(operation_name: &str, location: Option<&str>) -> Change {
+        Change::try_new(
+            TIME,
+            human(),
+            operation(operation_name),
+            None,
+            None,
+            vec![(branch("main"), moved(None, Some(A)))],
+        )
+        .unwrap()
+        .in_worktree(Some("w".to_owned()), location.map(str::to_owned))
+        .unwrap()
+    }
+
+    fn entry_of(change: Change) -> Entry {
+        Entry::linked(1, Chain::Start, Record::Change(change)).unwrap()
+    }
+
+    #[test]
+    fn the_former_owner_follows_the_directory_of_a_removal() {
+        let owner = Actor::human("anna").unwrap();
+        let removal = change_of("worktree-remove", Some("/tmp/w"));
+        let plain = entry_of(removal.clone());
+        let entry = entry_of(removal.with_former_owner(owner.clone()).unwrap());
+        let text = String::from_utf8(entry.encode()).unwrap();
+        assert!(
+            text.contains("\nworktree w\nlocation /tmp/w\nformer-owner human anna\nbranch main - "),
+            "{text}"
+        );
+        let read = Entry::parse(text.as_bytes()).unwrap();
+        assert_eq!(read, entry);
+        assert_eq!(read.change().unwrap().former_owner(), Some(&owner));
+        // The line is part of the hash of the body.
+        assert_ne!(entry.body_hash(), plain.body_hash());
+        assert_eq!(plain.change().unwrap().former_owner(), None);
+    }
+
+    #[test]
+    fn an_agent_can_be_the_former_owner() {
+        let owner = Actor::agent("bot", "m", "s", "daniel").unwrap();
+        let change = change_of("worktree-remove", Some("/tmp/w"))
+            .with_former_owner(owner.clone())
+            .unwrap();
+        let entry = entry_of(change);
+        let read = Entry::parse(&entry.encode()).unwrap();
+        assert_eq!(read.change().unwrap().former_owner(), Some(&owner));
+        assert_eq!(read, entry);
+    }
+
+    #[test]
+    fn only_the_removal_of_a_worktree_with_a_directory_can_name_a_former_owner() {
+        let owner = Actor::human("anna").unwrap();
+        let main = Change::try_new(
+            TIME,
+            human(),
+            operation("worktree-remove"),
+            None,
+            None,
+            vec![(branch("main"), moved(None, Some(A)))],
+        )
+        .unwrap();
+        for change in [
+            main,
+            change_of("worktree-remove", None),
+            // The entry that makes a worktree has a directory too, and no former owner.
+            change_of("worktree-add", Some("/tmp/w")),
+            change_of("commit", Some("/tmp/w")),
+        ] {
+            assert_eq!(
+                change.with_former_owner(owner.clone()).unwrap_err(),
+                EntryError::FormerOwnerWithoutRemoval
+            );
+        }
+        // Only a human takes over (ADR-004), and nobody is the former owner of their own copy.
+        let removal = change_of("worktree-remove", Some("/tmp/w"));
+        assert_eq!(
+            removal.with_former_owner(human()).unwrap_err(),
+            EntryError::FormerOwnerWithoutRemoval
+        );
+        let mut by_agent = change_of("worktree-remove", Some("/tmp/w"));
+        by_agent.actor = Actor::agent("bot", "m", "s", "daniel").unwrap();
+        assert_eq!(
+            by_agent.with_former_owner(owner).unwrap_err(),
+            EntryError::FormerOwnerWithoutRemoval
+        );
+    }
+
+    #[test]
+    fn the_reader_refuses_a_line_former_owner_that_is_wrong() {
+        let owner = Actor::human("anna").unwrap();
+        let good = entry_of(
+            change_of("worktree-remove", Some("/tmp/w"))
+                .with_former_owner(owner)
+                .unwrap(),
+        );
+        let text = String::from_utf8(good.encode()).unwrap();
+        let line = "former-owner human anna\n";
+        // Not an actor, or nothing after the key.
+        for value in ["former-owner nobody\n", "former-owner \n"] {
+            let bad = text.replace(line, value);
+            assert!(
+                matches!(
+                    Entry::parse(bad.as_bytes()),
+                    Err(EntryParseError::Malformed {
+                        reason: EntryMalformed::BadFormerOwner,
+                        line: 9
+                    })
+                ),
+                "{value:?}: {:?}",
+                Entry::parse(bad.as_bytes())
+            );
+        }
+        // Twice, before `location`, after a pointer, and on an entry that is no removal.
+        let without = text.replace(line, "");
+        let before = without.replace("location /tmp/w\n", &format!("{line}location /tmp/w\n"));
+        let twice = text.replace(line, &format!("{line}{line}"));
+        let after = format!("{without}{line}");
+        let other = text.replace("operation worktree-remove", "operation worktree-add");
+        for bad in [before, twice, after, other] {
+            assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        // Without a directory the line has nothing to follow.
+        let no_location = text.replace("location /tmp/w\n", "");
+        assert!(Entry::parse(no_location.as_bytes()).is_err());
     }
 
     #[test]
