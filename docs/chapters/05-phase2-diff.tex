@@ -564,7 +564,8 @@ dieselben Farben für ihre Zeilen (\in{Abschnitt}[sec:tui]).
 rechts die Zeilen aller Dateien in einem durchgehenden Strom, unten eine Zeile mit den Tasten.
 Jede Datei beginnt im Strom mit einer Kopfzeile, die den Pfad und die Zahl der eingefügten und
 entfernten Zeilen nennt (\type{+n -m}). Die Liste links markiert die Datei, die oben im Bild steht.
-Die Bibliothek ist ratatui mit dem Backend crossterm (ADR-016). Die Crate \type{stemma-tui}
+Die Bibliothek ist ratatui mit dem Backend crossterm (ADR-016); die Syntaxhervorhebung
+kommt von tree-sitter (ADR-021). Die Crate \type{stemma-tui}
 bekommt den fertigen Diff von der Kommandozeile und berechnet ihn nicht neu; sie braucht seine
 Typen und \type{moved_lines}, um verschobene Zeilen zu färben (\in{Abschnitt}[sec:moved]).
 Der Kern hängt nicht von ihr ab, und der Text von \type{diff} bleibt die Bezugsgrösse für Skripte
@@ -614,7 +615,9 @@ sie in der nächsten Zeile des Stroms weiter, deren Nummernspalten und Marke lee
 \stopitemize
 
 Entfernte Zeilen haben einen roten, eingefügte einen grünen Hintergrund, der bis an den Rand der
-Spalte reicht. Verschobene Zeilen (\in{Abschnitt}[sec:moved]) behalten die Vordergrundfarben
+Spalte reicht. Den Text der Zeilen färbt die Syntaxhervorhebung
+(\in{Abschnitt}[sec:tui-highlight]).
+Verschobene Zeilen (\in{Abschnitt}[sec:moved]) behalten die Vordergrundfarben
 magenta und cyan ohne Hintergrund und bleiben so von gewöhnlichen Änderungen zu unterscheiden.
 Ein Tabulator erscheint als vier Leerzeichen. Ein anderes Steuerzeichen erscheint in
 Caret-Schreibweise, etwa \type{^[} für Escape, \type{^M} für ein CR mitten in der Zeile und
@@ -623,14 +626,46 @@ Datei das Terminal. Das CR eines Zeilenendes \type{\r\n} gehört zum Zeilenende 
 Ein Pfad, der länger ist als das Feld, wird in der Kopfzeile abgeschnitten und endet auf
 \type{…}, damit die Zahlen der Kopfzeile sichtbar bleiben.
 
+\subsection[sec:tui-highlight]{Syntaxhervorhebung und Themen}
+
+Die Oberfläche färbt den Text der Zeilen nach der Syntax der Datei (ADR-021). Sie wählt die
+Grammatik nach der Endung des Pfads: \type{.rs} (Rust), \type{.toml}, \type{.sh} und \type{.bash},
+\type{.json} sowie \type{.md} und \type{.markdown} (nur die Blockstruktur von Markdown, also
+Überschriften und Codeblöcke).
+Die Endung gilt ohne Rücksicht auf Gross- und Kleinschreibung.
+Eine Datei mit einer anderen Endung, und ein Text, den die Grammatik nicht lesen kann, behalten
+die Farben ohne Hervorhebung; ein Fehler entsteht dabei nie.
+Dasselbe gilt für eine Zeile, die länger als 2000 Byte ist: Sie behält die Farben ihrer
+Änderung, damit eine sehr lange Zeile die Darstellung nicht bremst.
+
+Die Hervorhebung liest den ganzen Text einer Seite auf einmal, die alte und die neue Seite je
+für sich, und nicht Zeile für Zeile. Ein Block-Kommentar oder ein mehrzeiliger String ist so in
+jeder seiner Zeilen gefärbt, auch wenn der Diff nur eine davon zeigt. Der Parser (tree-sitter)
+ist fehlertolerant: Ein halber Satz oder eine Datei mit einem Syntaxfehler liefert trotzdem
+Farben für die Teile, die er erkennt. Die Bereiche werden beim ersten Bau des Stroms bestimmt und
+danach behalten, auch wenn das Thema wechselt.
+
+Die Hervorhebung ändert nur die Vordergrundfarbe der Zeichen. Der Hintergrund einer entfernten
+oder eingefügten Zeile, der Text, die Breite und der Umbruch bleiben, wie sie ohne sie wären.
+Verschobene Zeilen (\in{Abschnitt}[sec:moved]) werden nicht hervorgehoben, denn ihre Farbe
+sagt, dass sie verschoben sind.
+
+Ein Thema legt die Farben fest. {\bf Dunkel} (der Anfangszustand) ist das Aussehen von früher für
+ein Terminal mit dunklem Hintergrund, mit Hervorhebung. {\bf Hell} hat dunklen Text auf hellen
+Hintergründen für ein helles Terminal. {\bf Schlicht} behält die Farben von Dunkel und schaltet
+die Hervorhebung aus. Die Taste \type{t} wechselt zum nächsten Thema in dieser Reihenfolge, und
+die Titelzeile des Feldes nennt ein Thema, das nicht Dunkel ist. Ein Thema hat keine
+Einstellung ausserhalb der Oberfläche; es gilt, bis man sie beendet.
+
 \subsection{Definition}
 
-Der Zustand ist $S = (f, h, s, m, w, c)$ (im Code \type{State}). Dabei ist $f$ die Nummer der
+Der Zustand ist $S = (f, h, s, m, w, c, t)$ (im Code \type{State}). Dabei ist $f$ die Nummer der
 Datei im Bild, nämlich der Datei, zu der die oberste Zeile des Feldes gehört. Die Nummer $h$ ist
 die des gewählten Hunks in dieser Datei, und $s$ ist die Zahl der Zeilen des Stroms, die oben aus
 dem Bild gerollt sind. Das Layout $m$ ist eines von Auto, Unified und Split, der Umbruch
-$w$ ist an oder aus, und $c$ ist die Breite des Terminals in Spalten, die der Zustand durch die
-Eingabe \type{Resize} erfährt. Der Diff $D$ ist fest und wird bei jedem Aufruf mitgegeben.
+$w$ ist an oder aus, $c$ ist die Breite des Terminals in Spalten, die der Zustand durch die
+Eingabe \type{Resize} erfährt, und $t$ ist das Thema der Farben (Dunkel, Hell oder Schlicht,
+\in{Abschnitt}[sec:tui-highlight]). Der Diff $D$ ist fest und wird bei jedem Aufruf mitgegeben.
 Er hat $F$ Dateien. Die Datei $f$ hat $H(f)$ Hunks. $H(f) = 0$ gilt für eine binäre Datei und
 für eine neue oder gelöschte leere Datei. Der Strom hat $R$ Zeilen; er hängt von $c$, $m$
 und $w$ ab. Mit $\mathrm{kopf}(f)$ sei der Index der Kopfzeile der Datei $f$ im Strom bezeichnet,
@@ -653,7 +688,7 @@ Zustand ab.
 Sie liefert zugleich, ob die Oberfläche weiterläuft: Nur das Beenden liefert \type{false}.
 Die Tabelle nennt nur die Teile des Zustands, die sich ändern; die übrigen bleiben.
 
-\startplacetable[title={Übergänge des Zustands $(f, h, s, m, w, c)$},
+\startplacetable[title={Übergänge des Zustands $(f, h, s, m, w, c, t)$},
   reference=tab:tui-transitions,location=here]
 \startxtable[frame=off,option=stretch]
 \startxrow[topframe=on,bottomframe=on]
@@ -750,6 +785,13 @@ $s := \min(\mathrm{anker}(f, h),\ \max(R' - 1, 0))$ \stopxcell
 \startxcell immer \stopxcell
 \startxcell $w := \neg w$; der Strom wird neu gebaut und $s$ wie beim Layout \stopxcell
 \stopxrow
+\startxrow
+\startxcell Thema wechseln \stopxcell
+\startxcell \type{t} \stopxcell
+\startxcell immer \stopxcell
+\startxcell $t :=$ das nächste Thema (Dunkel, Hell, Schlicht, Dunkel); die Zeilen behalten ihre
+Zahl, darum bleibt $s$ \stopxcell
+\stopxrow
 \startxrow[bottomframe=on]
 \startxcell Breite melden \stopxcell
 \startxcell keine Taste, \type{Resize} \stopxcell
@@ -761,7 +803,8 @@ $s := \min(\mathrm{anker}(f, h),\ \max(R' - 1, 0))$ \stopxcell
 
 Dabei ist $R'$ die Zahl der Zeilen des neuen Stroms. Trifft keine Bedingung einer Zeile zu, etwa
 \type{J} auf der letzten Datei, bleibt der Zustand unverändert. Der Ausgangszustand ist
-$(0, 0, 0, \mathrm{Auto}, \mathrm{aus}, 80)$, bis die Schleife die wahre Breite meldet.
+$(0, 0, 0, \mathrm{Auto}, \mathrm{aus}, 80, \mathrm{Dunkel})$, bis die Schleife die wahre
+Breite meldet.
 Der Ablauf ist in \in{Abbildung}[fig:tui-states] gezeichnet.
 
 \startplacefigure[title={Zustände der Oberfläche von \type{diff --tui}},

@@ -22,3 +22,4 @@
 | [ADR-018](ADR-018-machine-readable-output.md) | The machine-readable contract of the command output | Accepted, implemented |
 | [ADR-019](ADR-019-merge-gate-without-global-lock.md) | The merge gate without a global lock | Accepted |
 | [ADR-020](ADR-020-ssh-key-crate.md) | The `ssh-key` crate for SSHSIG signatures | Accepted |
+| [ADR-021](ADR-021-tui-syntax-highlighting.md) | Syntax highlighting and themes of `diff --tui` | Proposed |
