@@ -26,6 +26,12 @@ texmf-cache/
 # Figures are versioned (English directory name, see CLAUDE.md)
 !docs/images/*
 
+# Leftovers of editors and patch tools (`just stray-files` fails if one is tracked)
+*.bak
+*.orig
+*.rej
+*.swp
+
 # Tooling
 .serena/
 .vscode/

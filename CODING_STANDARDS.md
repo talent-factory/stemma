@@ -76,3 +76,27 @@ step. A bare `bool` at a call site says nothing and is easy to invert.
 
 Example: `policy_at(base, enforcing: bool)` was public next to entry points that take
 `&Mode`, so a caller could pass a flag that disagreed with the register (STEMMA-246).
+
+## A filter on who wrote a result says what it does to each kind of result
+
+A rule that drops or keeps results by their writer (independence from the change) decides
+separately for each kind of result: a pass, a failure, a proof.
+
+- For each kind, ask whether an involved writer (opener, author, sponsor) can use it to make a
+  state that helps the change: clear a pause, open an exemption, end a reservation.
+- A kind that can only make things stricter (a failure) stays, whoever wrote it. A kind that can
+  loosen things counts only from an independent writer.
+- Name the choice for each kind in the doc comment of the filter.
+
+Example: the red tip was cleared by a pass of the opener, a failure of the author was dropped,
+and a declared repair opened its own exemption from the author's failure (STEMMA-242).
+
+## A rule has one wording in the code, the ADR, and the chapter
+
+When a diff changes a rule, search for it in the doc comments, the ADR, the chapter of the book,
+the CLI reference, and the test names, and bring all of them to the same wording in the same
+commit. Check the boundaries too: "between" or "including", "at most" or "fewer than".
+
+Example: chapter 7 said that only independent runs count while the code kept failing runs of
+every writer, and "between the last green and the first red tip" left out the first red tip
+(STEMMA-242).
