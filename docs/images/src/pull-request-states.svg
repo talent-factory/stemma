@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 350" font-family="Helvetica, Arial, sans-serif">
+<title>Zustände eines Pull Requests, berechnet aus den Einträgen des Operation Logs</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-crash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
+</defs>
+<rect x="0" y="0" width="600" height="350" fill="#FFFFFF"/>
+<!-- start -->
+<circle cx="30" cy="150" r="6" fill="#64748B"/>
+<line x1="36" y1="150" x2="118" y2="150" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="38" y="138" font-size="12" font-family="Courier, monospace" fill="#6B46C1">pr-open</text>
+<!-- states -->
+<g stroke="#64748B" stroke-width="1.5" fill="#FFFFFF">
+  <rect x="120" y="120" width="130" height="60" rx="4"/>
+  <rect x="420" y="40" width="150" height="60" rx="4"/>
+  <rect x="420" y="200" width="150" height="60" rx="4"/>
+</g>
+<g font-size="13" font-weight="bold" fill="#0F172A" text-anchor="middle">
+  <text x="185" y="146" font-family="Courier, monospace">open</text>
+  <text x="495" y="66" font-family="Courier, monospace">closed</text>
+  <text x="495" y="226" font-family="Courier, monospace">merged</text>
+</g>
+<g font-size="11.5" fill="#64748B" text-anchor="middle">
+  <text x="185" y="164">offen, nicht beendet</text>
+  <text x="495" y="84">ohne Merge beendet</text>
+  <text x="495" y="244">gemergt, endgültig</text>
+</g>
+<!-- transitions -->
+<g stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+  <path d="M250 130 L335 130 L335 70 L418 70"/>
+  <path d="M250 170 L335 170 L335 230 L418 230"/>
+  <path d="M150 120 C150 80 220 80 220 118"/>
+</g>
+<g font-size="12" fill="#0F172A">
+  <text x="344" y="100" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">pr-close</text>
+  <text x="344" y="114">Eröffner oder Owner</text>
+  <text x="344" y="182" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">pr-merge</text>
+  <text x="344" y="196">schreibt das Merge-Gate</text>
+  <text x="96" y="70" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">pr-approve</text>
+  <text x="96" y="85">ändert den Zustand nicht</text>
+</g>
+<!-- crash: the pointer of main moved, pr-merge is missing -->
+<path d="M185 292 L185 182" fill="none" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-crash)"/>
+<text x="200" y="268" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz nach der Bewegung von <tspan font-family="Courier, monospace">main</tspan>:</text>
+<text x="200" y="284" font-size="12" fill="#0F172A"><tspan font-family="Courier, monospace">pr-merge</tspan> fehlt; der Pull Request bleibt <tspan font-family="Courier, monospace">open</tspan>.</text>
+<text x="200" y="312" font-size="12" fill="#64748B">Der nächste <tspan font-family="Courier, monospace">pr merge</tspan> schreibt <tspan font-family="Courier, monospace">pr-merge</tspan> nachträglich</text>
+<text x="200" y="326" font-size="12" fill="#64748B">(Reparaturweg) und führt ihn nach <tspan font-family="Courier, monospace">merged</tspan>.</text>
+<text x="20" y="344" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">closed</tspan> und <tspan font-family="Courier, monospace">merged</tspan> sind endgültig; die nächste Änderung des Branches ist ein neuer Pull Request.</text>
+</svg>

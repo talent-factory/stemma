@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 386" font-family="Helvetica, Arial, sans-serif">
+<title>Ablauf eines Lease-Wechsels mit Absturzpunkten: vom Eintrag bis zur Lease-Datei</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2F7D32"/></marker>
+  <marker id="arrow-crash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>
+</defs>
+<rect x="0" y="0" width="580" height="386" fill="#FFFFFF"/>
+<rect x="20" y="20" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="20" width="8" height="46" fill="#64748B"/>
+<text x="40" y="39" font-size="13" font-weight="bold" fill="#0F172A">1  Sperre nehmen, entscheiden</text>
+<text x="56" y="57" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">refs.lock</tspan>; Lease-Datei lesen</text>
+<line x1="145" y1="66" x2="145" y2="94" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="96" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="96" width="8" height="46" fill="#6B46C1"/>
+<text x="40" y="115" font-size="13" font-weight="bold" fill="#6B46C1">2  Eintrag der Lease</text>
+<text x="56" y="133" font-size="11.5" fill="#64748B">ein Eintrag je Wechsel, gesichert</text>
+<line x1="145" y1="142" x2="145" y2="170" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="172" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="172" width="8" height="46" fill="#64748B"/>
+<text x="40" y="191" font-size="13" font-weight="bold" fill="#0F172A">3  Lease-Datei ersetzen</text>
+<text x="56" y="209" font-size="11.5" fill="#64748B">atomares Ersetzen der Datei</text>
+<line x1="145" y1="218" x2="145" y2="246" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="20" y="248" width="250" height="46" rx="4" stroke="#64748B" stroke-width="1" fill="#FFFFFF"/>
+<rect x="20" y="248" width="8" height="46" fill="#64748B"/>
+<text x="40" y="267" font-size="13" font-weight="bold" fill="#0F172A">4  Sperre freigeben</text>
+<text x="56" y="285" font-size="11.5" fill="#64748B"><tspan font-family="Courier, monospace">refs.lock</tspan> entfernen</text>
+<line x1="20" y1="157" x2="292" y2="157" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="302" y="153" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz: Eintrag steht</text>
+<text x="302" y="170" font-size="12" fill="#0F172A">Eine vorhandene Datei ist ganz da; das</text>
+<text x="302" y="185" font-size="12" fill="#0F172A">Log nennt eine Lease, die nicht galt.</text>
+<text x="302" y="200" font-size="12" fill="#0F172A">Der nächste Aufruf entscheidet von vorn.</text>
+<line x1="20" y1="233" x2="292" y2="233" stroke="#B91C1C" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="302" y="229" font-size="12.5" font-weight="bold" fill="#B91C1C">Absturz: Datei ersetzt</text>
+<text x="302" y="246" font-size="12" fill="#0F172A">Der Zustand stimmt; nur die Sperre</text>
+<text x="302" y="261" font-size="12" fill="#0F172A">bleibt liegen.</text>
+<text x="20" y="334" font-size="11.5" fill="#64748B">Eine Verlängerung schreibt keinen Eintrag: Sie ersetzt nur die Datei (Schritt 3).</text>
+<text x="20" y="350" font-size="11.5" fill="#64748B">Der Owner-Override schreibt <tspan font-family="Courier, monospace">lease-override</tspan> und einen Beweis; die Datei liegt in <tspan font-family="Courier, monospace">.stemma/leases/</tspan>.</text>
+</svg>
