@@ -42,7 +42,7 @@ Noch nicht umgesetzt ist die Anbindung an die übrigen schreibenden Befehle: \ty
 und erst sie machen aus der Lease eine Schreibhoheit, die der Kern gegen jeden Schreiber
 erzwingt.
 Was die folgenden Absätze über das stille Erwerben und Verlängern sagen, beschreibt diesen
-Zielzustand; heute erwirbt und erneuert nur \type{lease take} eine Lease.
+Zielzustand; heute erwerben und erneuern nur \type{lease take} und \type{lease override} eine Lease.
 Der Kern des Merge-Gates ist umgesetzt (\in{Abschnitt}[sec:merge-gate]).
 Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
 Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
@@ -1083,6 +1083,8 @@ Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 (offener Punkt in ADR-019).
 Ein billigerer Test als der saubere Merge ist ausserhalb des Umfangs der ersten Version.
 \item Lease: Die schreibenden Befehle erwerben und erneuern sie noch nicht.
+\item Register: Die Befehle des Programms übergeben den Autorisierer des Registers nicht;
+sie prüfen den Akteur im durchsetzenden Modus noch nicht.
 \item Policy: \type{pr merge} leitet die Stufe nicht aus der Policy ab, und für eine ungültige
 Policy auf der Spitze von \type{main} gibt es keinen Reparaturweg.
 \item Merge-Gate: Es prüft die Freigaben und die Registrierung der Autoren noch nicht.

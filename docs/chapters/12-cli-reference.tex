@@ -2982,7 +2982,8 @@ Ein Register, das sich nicht lesen lässt, endet mit Exit-Code 5.
 \type{add-agent} mit denselben Argumenten endet mit Exit-Code 1 und ändert nichts, denn der
 Schlüssel oder der Agent steht schon im Register oder ist nicht mehr aktiv.
 Ein Absturz während des Schreibens lässt die Datei ganz alt oder ganz neu zurück (atomares
-Ersetzen), und der Aufruf lässt sich danach wiederholen.
+Ersetzen). Bleibt dabei die temporäre Datei \type{.stemma-actors/register.tmp} liegen, endet jeder
+weitere Aufruf mit Exit-Code 1, bis man sie von Hand löscht.
 \type{cosign} verändert nichts und lässt sich beliebig oft aufrufen.
 
 {\bf Beispiele.}

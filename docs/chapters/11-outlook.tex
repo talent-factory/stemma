@@ -61,7 +61,8 @@ Sie legen die Dauer der Lease, die Identität der Agenten und die Pfade je Risik
 umgesetzt sind der Kern der Lease, das Akteursregister, die Signaturen und die Policy-Datei,
 dazu die Befehle \type{lease}, \type{pr}, \type{check}, \type{register} und \type{enforce}.
 Offen bleibt, wer den Schnellweg für triviale Änderungen nutzen darf.
-Die schreibenden Befehle erwerben und erneuern noch keine Lease.
+Die schreibenden Befehle erwerben und erneuern noch keine Lease,
+und die Befehle übergeben den Autorisierer des Registers noch nicht.
 Die Policy-Datei dieses Repositorys ist ein Entwurf ohne Signatur des Owners,
 \type{pr merge} leitet die Stufe nicht aus der Policy ab, und für eine ungültige Policy auf der
 Spitze von \type{main} gibt es keinen Reparaturweg.

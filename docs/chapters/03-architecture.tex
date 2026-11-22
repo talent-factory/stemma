@@ -60,8 +60,9 @@ und \type{worktree list}), fragen nicht.
 Der Diff fragt nur, wenn eine Seite der Working-Copy-Commit ist,
 weil er dann einen Snapshot der Arbeitskopie speichert.
 Mit zwei Kennungen fragt er nicht, verlangt aber trotzdem einen Akteur.
-In einem offenen Repository erlaubt die Prüfung alles; in einem durchsetzenden verlangt sie
-einen Akteur, dessen Beweis das Register geprüft hat (\in{Abschnitt}[sec:register]).
+Der Kern hat einen Autorisierer, der in einem durchsetzenden Repository einen Akteur verlangt,
+dessen Beweis das Register geprüft hat (\in{Abschnitt}[sec:register]).
+Die Befehle des Programms übergeben ihn noch nicht; für sie erlaubt die Prüfung heute alles.
 Zwei Dinge verweigert der Kern einem Agenten schon vorher, fest im Code:
 einen Purge, denn er lässt sich nicht rückgängig machen (ADR-002, ADR-014),
 und \type{--take-over}, denn die Übernahme entscheidet, wessen Änderungen ein Snapshot speichert
