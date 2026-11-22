@@ -116,12 +116,16 @@ impl Repository {
         // Only a run of a writer who is independent of the change counts for its bounds: the
         // opener, the authors, and their sponsors could clear a red tip for their own change.
         let proven = self.proven_checks(register)?;
-        let checks = self.independent_checks(&proven, subject.pull, &tip, register)?;
+        let checks = self.independent_checks(&proven, subject.pull, &tip, register, true)?;
         let main = self.main_history(&tip)?;
         let verification = bounds::verification(&checks, &main);
+        // The exemption of a repair needs more: a red window that the change did not write itself.
+        // A failing run of an involved writer still pauses (above), but it cannot open the door.
+        let strict = self.independent_checks(&proven, subject.pull, &tip, register, false)?;
+        let repair_window = bounds::verification(&strict, &main);
 
         if let Some(red) = subject.pull.repairs() {
-            if self.is_repair(&verification, &main, red, subject)? {
+            if self.is_repair(&repair_window, &main, red, subject)? {
                 return Ok(None);
             }
         }
@@ -152,7 +156,7 @@ impl Repository {
             let window = if own {
                 held(&checks)
             } else {
-                held(&self.independent_checks(&proven, other, &tip, register)?)
+                held(&self.independent_checks(&proven, other, &tip, register, true)?)
             };
             let Some(window) = window else {
                 continue;
@@ -226,14 +230,17 @@ impl Repository {
 
     /// `checks` without the passing runs of a writer who is not independent of the change `pull`
     /// ([`check::is_independent`]: the opener, the authors of the commits `tip..head`, and their
-    /// sponsors). A failing run stays whoever wrote it: it only holds a merge back, so no writer
-    /// gains from it, and it must not vanish because its writer is involved in the change. A pull request that `tip` reaches has no authors of its own to exclude.
+    /// sponsors). With `keep_failures`, a failing run stays whoever wrote it: it only holds a merge
+    /// back, so it must not vanish because its writer is involved in the change. Without it, only
+    /// independent writers count, which is what the exemption of a repair needs: nobody opens the
+    /// door for their own change by writing the failing run. A pull request that `tip` reaches has no authors of its own to exclude.
     fn independent_checks(
         &self,
         checks: &[Check],
         pull: &PullRequest,
         tip: &CommitId,
         register: Option<&Register>,
+        keep_failures: bool,
     ) -> Result<Vec<Check>, GateError> {
         let authors = match self.change_authors(pull.head(), tip) {
             Ok(authors) => authors,
@@ -243,7 +250,7 @@ impl Repository {
         Ok(checks
             .iter()
             .filter(|check| {
-                !check.passed()
+                (keep_failures && !check.passed())
                     || check::is_independent(check.writer(), pull.opener(), &authors, register)
             })
             .cloned()

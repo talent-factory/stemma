@@ -132,6 +132,8 @@ fact, the implementation takes the nearest one it has:
   proof of its writer, a failing one as well: anyone can write the entry of a run. A failing run
   stays whoever wrote it, since it only holds a merge back. A change whose path has no level holds
   no reservation: the gate refuses it at its own merge, and it must not stop another change.
+  The exemption of a repair counts independent runs only, so nobody opens it for their own change
+  by writing the failing run.
 - Whoever calls the gate with a level of its own (`merge_gate`) reads no policy: the bounds have
   their defaults, and the reservation is not applied, as the levels of the other changes are the
   policy's to tell (`merge_gate_by_policy`).

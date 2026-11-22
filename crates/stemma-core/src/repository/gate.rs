@@ -2862,6 +2862,24 @@ mod tests {
     }
 
     #[test]
+    fn a_failing_run_of_the_repairing_author_does_not_open_the_exemption() {
+        let f = fixture("zero\n");
+        let red = commit_of(&f.repository, f.base, &[("c.txt", "red\n")], "zoe");
+        set_branch(&f.repository, "main", Some(f.base), red);
+        // Mia writes the failing run, the fix, and opens the pull request.
+        f.record(red, None, CheckResult::Fail, "mia");
+        let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(red));
+        f.repository
+            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .unwrap();
+
+        assert_eq!(
+            paused(merge(&f, repair, RiskLevel::Two).unwrap_err()),
+            Pause::RedTip { red }
+        );
+    }
+
+    #[test]
     fn one_commit_less_than_the_bound_lands() {
         let f = fixture("zero\n");
         let policy = land_policy(&f, "stemma-policy 1\nmax-unverified 3\nlevel 0 a.txt\n");
