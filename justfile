@@ -129,9 +129,21 @@ doc-lines:
     done < <(git diff --name-only --diff-filter=AM "$base" -- 'docs/*.tex' 'docs/*.md')
     exit $status
 
-# All CI checks: format, lint, documentation, line length, tests.
+# Fail when Git tracks a leftover of an editor or a patch tool (*.bak, *.orig, *.rej, *.swp).
 [group('Quality')]
-ci: format-check lint doc-check doc-lines test
+stray-files:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stray=$(git ls-files -- '*.bak' '*.orig' '*.rej' '*.swp')
+    if [ -n "$stray" ]; then
+        echo "stray files are tracked:" >&2
+        echo "$stray" >&2
+        exit 1
+    fi
+
+# All CI checks: format, lint, documentation, line length, stray files, tests.
+[group('Quality')]
+ci: format-check lint doc-check doc-lines stray-files test
 
 # Fuzz one strict reader, or the line merge, for SECONDS seconds: tree, commit, commit2, actor, index,
 # entry, journal, policy, or merge_lines.
