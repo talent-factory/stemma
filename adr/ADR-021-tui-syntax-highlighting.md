@@ -1,8 +1,8 @@
 # ADR-021: Syntax highlighting and themes of `diff --tui`
 
-**Status:** Proposed (STEMMA-251). The dependency is a level 2 change (ADR-004, rule 7: a new
-direct runtime dependency), so the human maintainer decides before the merge. ADR-016 chose the
-library of the interface and the crate `stemma-tui`; this ADR adds what colours the text.
+**Status:** Accepted by the human maintainer on 2026-11-22 (STEMMA-251). The dependency is a
+level 2 change (ADR-004, rule 7: a new direct runtime dependency). ADR-016 chose the library of
+the interface and the crate `stemma-tui`; this ADR adds what colours the text.
 
 ## Context
 
@@ -60,7 +60,7 @@ Candidates, measured on 2026-11-22 in a scratch crate against `deny.toml` (toolc
 
 ## Open Points
 
-- [ ] Confirmation by the human maintainer (level 2).
+- [x] Confirmation by the human maintainer (level 2), on 2026-11-22.
 - [ ] Moving to `tree-sitter-highlight` 0.27 once the workspace has Rust 1.90.
 - [ ] Not checked: the owners of the crates on crates.io, and the build on Windows (`--tui` is
       refused there, ADR-016).
