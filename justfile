@@ -244,6 +244,10 @@ release-check tag:
             echo "the notes of {{tag}} lack the section 'Stemma history'" >&2
             exit 1
         }
+        printf '%s\n' "$notes" | grep -qE '^anchor [0-9]+:' || {
+            echo "the section 'Stemma history' of {{tag}} has no line 'anchor <entry>:...'" >&2
+            exit 1
+        }
         if printf '%s\n' "$notes" | grep -qF 'Not part of this release'; then
             echo "the notes of {{tag}} still contain 'Not part of this release'" >&2
             exit 1
