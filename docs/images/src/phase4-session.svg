@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 818" font-family="Helvetica, Arial, sans-serif">
+<title>Die Sitzung der Phase 4: Daniel, der Agent und Ana</title>
+<rect x="0" y="0" width="840" height="818" fill="#FFFFFF"/>
+<text x="20" y="38" font-size="12" font-weight="bold" fill="#6B46C1">Eintrag</text>
+<text x="250" y="24" font-size="12" font-weight="bold" fill="#0F172A">Daniel</text>
+<text x="250" y="38" font-size="12" fill="#64748B">Owner</text>
+<line x1="250" y1="50" x2="250" y2="768" stroke="#E2E8F0" stroke-width="2"/>
+<text x="455" y="24" font-size="12" font-weight="bold" fill="#0F172A">Agent claude</text>
+<text x="455" y="38" font-size="12" fill="#64748B">Sponsor Daniel</text>
+<line x1="455" y1="50" x2="455" y2="768" stroke="#E2E8F0" stroke-width="2"/>
+<text x="660" y="24" font-size="12" font-weight="bold" fill="#0F172A">Ana</text>
+<text x="660" y="38" font-size="12" fill="#64748B">Reviewerin</text>
+<line x1="660" y1="50" x2="660" y2="768" stroke="#E2E8F0" stroke-width="2"/>
+<text x="20" y="82" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">10</text>
+<circle cx="250" cy="78" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="75" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">worktree add</text>
+<text x="264" y="89" font-size="12" fill="#64748B">Worktree des Agenten</text>
+<text x="20" y="122" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">11</text>
+<circle cx="455" cy="118" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="469" y="115" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">lease take</text>
+<text x="469" y="129" font-size="12" fill="#64748B">Lease auf agent-arbeit</text>
+<text x="20" y="162" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">12, 13</text>
+<circle cx="455" cy="158" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="469" y="155" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">track, commit</text>
+<text x="469" y="169" font-size="12" fill="#64748B">Commit auf agent-arbeit</text>
+<text x="20" y="202" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">14</text>
+<circle cx="455" cy="198" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="469" y="195" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">pr open</text>
+<text x="469" y="209" font-size="12" fill="#64748B">Pull Request 14</text>
+<text x="20" y="242" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">15</text>
+<circle cx="455" cy="238" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="469" y="235" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">check record</text>
+<text x="469" y="249" font-size="12" fill="#64748B">zählt nicht (Autor)</text>
+<text x="20" y="282" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">16, 17</text>
+<circle cx="660" cy="278" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="674" y="275" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">check, approve</text>
+<text x="674" y="289" font-size="12" fill="#64748B">Prüfung und Freigabe</text>
+<text x="20" y="322" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">18, 19</text>
+<circle cx="250" cy="318" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="315" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">pr merge 14</text>
+<text x="264" y="329" font-size="12" fill="#64748B">main bewegt, PR gemergt</text>
+<text x="20" y="362" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">20, 21</text>
+<circle cx="250" cy="358" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="355" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">switch --detach</text>
+<text x="264" y="369" font-size="12" fill="#64748B">dann switch main</text>
+<text x="20" y="402" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">23</text>
+<circle cx="455" cy="398" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="469" y="395" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">lease take</text>
+<text x="469" y="409" font-size="12" fill="#64748B">Lease von 1 Minute</text>
+<text x="20" y="442" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">24</text>
+<circle cx="250" cy="438" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="435" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">lease take</text>
+<text x="264" y="449" font-size="12" fill="#64748B">übernimmt die Abgelaufene</text>
+<text x="20" y="482" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">25</text>
+<circle cx="250" cy="478" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="475" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">lease override</text>
+<text x="264" y="489" font-size="12" fill="#64748B">nimmt die Lease des Agenten</text>
+<text x="20" y="522" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">34–36</text>
+<circle cx="250" cy="518" r="7" stroke="#B91C1C" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="515" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">pr merge 31</text>
+<text x="264" y="529" font-size="12" fill="#64748B">bricht ab, dann wiederholt</text>
+<text x="20" y="562" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">37</text>
+<circle cx="660" cy="558" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="674" y="555" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">check record</text>
+<text x="674" y="569" font-size="12" fill="#64748B">rot auf der Spitze</text>
+<text x="20" y="602" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">45</text>
+<circle cx="250" cy="598" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="595" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">pr open</text>
+<text x="264" y="609" font-size="12" fill="#64748B">wartet: Spitze rot</text>
+<text x="20" y="642" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">53</text>
+<circle cx="250" cy="638" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="635" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">pr open --repairs</text>
+<text x="264" y="649" font-size="12" fill="#64748B">Reparatur von main</text>
+<text x="20" y="682" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">54, 55</text>
+<circle cx="660" cy="678" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="674" y="675" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">check, approve</text>
+<text x="674" y="689" font-size="12" fill="#64748B">Prüfung und Freigabe</text>
+<text x="20" y="722" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#6B46C1">56, 57</text>
+<circle cx="250" cy="718" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
+<text x="264" y="715" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">pr merge 53</text>
+<text x="264" y="729" font-size="12" fill="#64748B">Reparatur landet</text>
+<text x="20" y="792" font-size="12" fill="#64748B">Ein Punkt steht für einen oder mehrere Einträge im Operation Log, auf der Spur des Akteurs. Rot: der Befehl bricht ab.</text>
+<text x="20" y="808" font-size="12" fill="#64748B">Die Einträge nennen sich im Log etwa lease-acquire, lease-takeover, lease-override, pr-open, check, pr-approve, gate-merge und pr-merge.</text>
+</svg>
