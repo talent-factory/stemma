@@ -353,7 +353,8 @@ impl Repository {
     /// `head` reaches and `main` does not.
     ///
     /// A writer is the author of such a commit, and the actor of the entry of the log that first
-    /// brought such a commit under a branch, whichever branch that was. A later move to a commit
+    /// brought such a commit under a branch, whichever branch that was and directly or through a
+    /// descendant of the commit. A later move to a commit
     /// that a branch reached before, such as a branch that a reviewer makes at the tip to look at
     /// it, wrote nothing and does not count. The author is a claim of whoever made the commit, and
     /// `update_branch` does not compare it with the actor; the actor of the entry is the one that
@@ -394,16 +395,23 @@ impl Repository {
                 .iter()
                 .filter_map(|(_, moved)| moved.after())
             {
-                if !brought.contains(new) || reached.contains(new) {
+                if reached.contains(new) {
                     continue;
                 }
-                if !authors.contains(change.actor()) {
+                // The commit may be one that the pull request does not bring, a descendant of
+                // one that it does: the walk finds the commits of the pull request below it. A
+                // commit that the store cannot read reaches only itself.
+                let below: Vec<CommitId> = match history::ancestors(store, *new, Parents::All, None)
+                {
+                    Ok(ancestors) => ancestors.into_iter().map(|(id, _)| id).collect(),
+                    Err(_) => vec![*new],
+                };
+                let first = below
+                    .iter()
+                    .any(|id| brought.contains(id) && !reached.contains(id));
+                reached.extend(below);
+                if first && !authors.contains(change.actor()) {
                     authors.push(change.actor().clone());
-                }
-                reached.insert(*new);
-                // A commit that the store cannot read is only itself reached: the safe side.
-                if let Ok(ancestors) = history::ancestors(store, *new, Parents::All, None) {
-                    reached.extend(ancestors.into_iter().map(|(id, _)| id));
                 }
             }
         }
@@ -1333,6 +1341,68 @@ mod tests {
             .unwrap();
         repository
             .update_branch(&operation, &feature(), Some(tip), new, &daniel(), &AllowAll)
+            .unwrap();
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// Mia moves a branch of her own to a commit above the one that the pull request brings, and
+    /// the owner then sets the branch of the pull request back to the lower one: she brought it
+    /// under a branch through its descendant.
+    #[test]
+    fn the_writer_who_moved_a_branch_to_a_descendant_may_not_approve_either() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let make = |parent: CommitId| {
+            let commit = crate::object::Commit::try_new(
+                tree,
+                vec![parent],
+                crate::change::sample_change(),
+                ana(),
+                1,
+                "more".to_owned(),
+            )
+            .unwrap();
+            repository.objects().put_commit(&commit).unwrap()
+        };
+        let lower = make(tip);
+        let upper = make(lower);
+        let operation = OperationName::try_new("commit").unwrap();
+        let scratch = BranchName::try_new("scratch").unwrap();
+        repository
+            .update_branch(&operation, &scratch, None, upper, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .update_branch(
+                &operation,
+                &feature(),
+                Some(tip),
+                lower,
+                &daniel(),
+                &AllowAll,
+            )
             .unwrap();
         let error = repository
             .approve_pull(number, &mia(), None, None, &AllowAll)
