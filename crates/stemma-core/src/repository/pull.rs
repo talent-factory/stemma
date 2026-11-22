@@ -189,7 +189,8 @@ impl Repository {
     /// - the pull request is open, and its branch still has the head that `actor` reviewed, which
     ///   is the tip when the call began;
     /// - `actor` is neither the opener, nor the author of a commit that the pull request brings,
-    ///   nor the actor of an entry that moved its branch to such a commit ([`self_approval`]);
+    ///   nor the actor of the entry of the log that first brought such a commit under a branch, a
+    ///   tag, or the working copy ([`self_approval`]);
     /// - where the repository has a `register`, the approval is signed: `signer` signs
     ///   [`pull::approval_payload`] with a key that the register holds for `actor`, and the
     ///   signature is checked before the entry is written. The proof is the file `proofs/<entry>`
@@ -353,8 +354,8 @@ impl Repository {
     /// `head` reaches and `main` does not.
     ///
     /// A writer is the author of such a commit, and the actor of the entry of the log that first
-    /// brought such a commit under a branch, whichever branch that was and directly or through a
-    /// descendant of the commit. A later move to a commit
+    /// brought such a commit under a branch, a tag, or the working copy, whichever it was and
+    /// directly or through a descendant of the commit. A later move to a commit
     /// that a branch reached before, such as a branch that a reviewer makes at the tip to look at
     /// it, wrote nothing and does not count. The author is a claim of whoever made the commit, and
     /// `update_branch` does not compare it with the actor; the actor of the entry is the one that
@@ -383,35 +384,40 @@ impl Repository {
             .map(|(id, _)| *id)
             .filter(|id| !known.contains(id))
             .collect();
-        // The entries are in order. A commit is reached once a branch moved to it or to a
-        // descendant; the entry that does so first is the one that brought it.
+        // The entries are in order. A commit is reached once a branch, a tag, or the working copy
+        // moved to it or to a descendant; the entry that does so first is the one that brought it.
         let mut reached: HashSet<CommitId> = HashSet::new();
         for entry in self.oplog().entries().map_err(PullError::Log)? {
             let Some(change) = entry.change() else {
                 continue;
             };
-            for new in change
+            let moved = change
                 .branches()
                 .iter()
-                .filter_map(|(_, moved)| moved.after())
-            {
-                if reached.contains(new) {
-                    continue;
+                .map(|(_, moved)| moved)
+                .chain(change.tags().iter().map(|(_, moved)| moved))
+                .chain(change.working_copy());
+            for new in moved.filter_map(|moved| moved.after()) {
+                // The walk goes down from `new` and stops at a commit that was reached before, so
+                // every commit is read once over the whole log. A commit that the store does not
+                // hold any more (a purge removed it, ADR-014) reaches only itself; any other
+                // failure of the walk refuses the approval.
+                let mut first = false;
+                let mut stack = vec![(*new, None)];
+                while let Some((id, child)) = stack.pop() {
+                    if reached.contains(&id) {
+                        continue;
+                    }
+                    reached.insert(id);
+                    first |= brought.contains(&id);
+                    match history::read_commit(store, id, child) {
+                        Ok(commit) => {
+                            stack.extend(commit.parents().iter().map(|&parent| (parent, Some(id))));
+                        }
+                        Err(HistoryError::Missing { .. }) => {}
+                        Err(error) => return Err(error.into()),
+                    }
                 }
-                // The commit may be one that the pull request does not bring, a descendant of
-                // one that it does: the walk finds the commits of the pull request below it. A
-                // commit that the store does not hold any more (a purge removed it, ADR-014)
-                // reaches only itself; any other failure of the walk refuses the approval.
-                let below: Vec<CommitId> = match history::ancestors(store, *new, Parents::All, None)
-                {
-                    Ok(ancestors) => ancestors.into_iter().map(|(id, _)| id).collect(),
-                    Err(HistoryError::Missing { .. }) => vec![*new],
-                    Err(error) => return Err(error.into()),
-                };
-                let first = below
-                    .iter()
-                    .any(|id| brought.contains(id) && !reached.contains(id));
-                reached.extend(below);
                 if first && !authors.contains(change.actor()) {
                     authors.push(change.actor().clone());
                 }
@@ -1492,6 +1498,48 @@ mod tests {
                 .unwrap_err(),
             PullError::SelfApproval { .. }
         ));
+    }
+
+    /// Mia reaches the commit only through a tag of hers; the owner then moves the branch of the
+    /// pull request to it. The tag is the first entry that brought the commit, so she is a writer.
+    #[test]
+    fn the_writer_who_tagged_the_commit_first_may_not_approve_either() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let tree = repository
+            .objects()
+            .get_commit(&tip)
+            .unwrap()
+            .unwrap()
+            .tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            vec![tip],
+            crate::change::sample_change(),
+            ana(),
+            1,
+            "more".to_owned(),
+        )
+        .unwrap();
+        let new = repository.objects().put_commit(&commit).unwrap();
+        let operation = OperationName::try_new("tag").unwrap();
+        let name = BranchName::try_new("looked-at").unwrap();
+        repository
+            .create_tag(&operation, &name, new.object_id(), &mia(), &AllowAll)
+            .unwrap();
+        let operation = OperationName::try_new("commit").unwrap();
+        repository
+            .update_branch(&operation, &feature(), Some(tip), new, &daniel(), &AllowAll)
+            .unwrap();
+        let error = repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap_err();
+        assert!(matches!(error, PullError::SelfApproval { .. }), "{error:?}");
     }
 
     /// A reviewer who only makes another branch at the tip, to look at it, wrote nothing.
