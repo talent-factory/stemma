@@ -40,13 +40,15 @@
 //!   name below it still works, which the mode `0o000` of a directory would stop.
 //!
 //! A path in a rule is compared as it is and, if that fails, as the file system names it
-//! (`fs::canonicalize`, repeated a few times if it fails for another reason than a missing name,
-//! so that a failure under load does not leave a rule in the wrong spelling), so `/var/...` and
-//! `/private/var/...` on macOS meet. A path is matched as a whole, never as a prefix of another
-//! name (`dir-1` does not meet `dir-10`). A path that does not
-//! exist yet is named by its longest existing prefix, so a rule may name a directory that the
-//! command creates. A rule that matches nothing is not reported: a test asserts the effect of
-//! the failure, not only that the command ran.
+//! (`fs::canonicalize`), so `/var/...` and `/private/var/...` on macOS meet.
+//! If that call fails for a reason other than a missing name or a denied search, it is repeated
+//! a few times, and a failure that lasts panics instead of leaving a rule that matches nothing.
+//! A rule path is compared with a path component by component, never as a text prefix
+//! (`dir-1` does not meet `dir-10`).
+//! A path that does not exist yet is named by its longest existing prefix, so a rule may name a
+//! directory that the command creates.
+//! A rule that matches nothing is not reported: a test asserts the effect of the failure, not
+//! only that the command ran.
 //!
 //! In a unit test, a guard arms the injection for the thread until it is dropped. A test of the
 //! program as a whole starts a process that no guard reaches; for it, the feature
@@ -94,13 +96,22 @@ mod armed {
         named_with(path, &|head| fs::canonicalize(head))
     }
 
-    /// How often a call of `canonicalize` that fails for another reason than a missing name is
-    /// repeated. A failure of that kind (a system under load, an interrupted call) must not
-    /// leave a rule in the spelling of the caller, which would not meet the spelling of the file
-    /// system (`/var/...` against `/private/var/...`) and make the rule do nothing (STEMMA-218).
+    /// The number of calls of `canonicalize` on one path (the first call and its repeats) before
+    /// a failure is given up. A failure for a reason other than a missing name or a denied
+    /// search (a system under load, an interrupted call) is probably short, and the walk up to
+    /// the parent would meet it again there. If every call failed, the rule would keep the
+    /// spelling of the caller, which does not meet the spelling of the file system (`/var/...`
+    /// against `/private/var/...`) and makes the rule do nothing (STEMMA-218).
     const CANONICALIZE_TRIES: usize = 4;
 
-    /// [`named`] with the call of `canonicalize` given, so that a test can make it fail.
+    /// The pause between two calls of `canonicalize` on one path.
+    const CANONICALIZE_PAUSE: std::time::Duration = std::time::Duration::from_millis(5);
+
+    /// [`named`] with `canonicalize` passed in, so that a test can make it fail. A call that
+    /// fails with `NotFound`, `NotADirectory`, or `PermissionDenied` is final and the walk goes
+    /// on with the parent. Any other failure is repeated; if it lasts for
+    /// [`CANONICALIZE_TRIES`] calls, this panics, because a rule that silently does nothing makes
+    /// a test pass or fail for the wrong reason.
     pub(super) fn named_with(
         path: &Path,
         canonicalize: &dyn Fn(&Path) -> io::Result<PathBuf>,
@@ -110,13 +121,20 @@ mod armed {
             loop {
                 match canonicalize(head) {
                     Err(error)
-                        if tries < CANONICALIZE_TRIES
-                            && !matches!(
-                                error.kind(),
-                                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                            ) =>
+                        if !matches!(
+                            error.kind(),
+                            io::ErrorKind::NotFound
+                                | io::ErrorKind::NotADirectory
+                                | io::ErrorKind::PermissionDenied
+                        ) =>
                     {
+                        assert!(
+                            tries < CANONICALIZE_TRIES,
+                            "{ENV}: cannot name `{}`: {error}",
+                            head.display()
+                        );
                         tries += 1;
+                        std::thread::sleep(CANONICALIZE_PAUSE);
                     }
                     result => return result,
                 }
@@ -572,33 +590,63 @@ pub(crate) fn set_permissions(path: &Path, permissions: fs::Permissions) -> io::
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::path::PathBuf;
+
     use super::armed::{named_with, parse, Rule};
     use super::*;
     use crate::testutil::TempDir;
 
     #[test]
     fn a_failed_canonicalize_is_repeated_and_the_rule_gets_the_name_of_the_file_system() {
-        use std::cell::Cell;
         let dir = TempDir::new();
         let file = dir.path().join("main");
         fs::write(&file, b"").unwrap();
         let real = fs::canonicalize(&file).unwrap();
-        let calls = Cell::new(0);
+        // Every path fails on its first call. Without a repeat, the walk up to the parent would
+        // fail there as well, up to the root, and the rule would keep the spelling of the caller.
+        let seen = RefCell::new(Vec::<PathBuf>::new());
         let flaky = |path: &Path| {
-            calls.set(calls.get() + 1);
-            if calls.get() <= 2 {
+            let first = !seen.borrow().iter().any(|seen| seen == path);
+            seen.borrow_mut().push(path.to_path_buf());
+            if first {
                 Err(io::Error::other("too many open files"))
             } else {
                 fs::canonicalize(path)
             }
         };
         assert_eq!(named_with(&file, &flaky), real);
-        assert_eq!(calls.get(), 3);
+        assert_eq!(*seen.borrow(), [file.clone(), file]);
+    }
+
+    #[test]
+    #[should_panic(expected = "STEMMA_FAULT: cannot name")]
+    fn a_failure_of_canonicalize_that_lasts_panics_and_leaves_no_silent_rule() {
+        let dir = TempDir::new();
+        let broken = |_: &Path| Err(io::Error::other("too many open files"));
+        let _ = named_with(dir.path(), &broken);
+    }
+
+    #[test]
+    fn a_denied_search_is_not_repeated_and_the_walk_goes_on_with_the_parent() {
+        let dir = TempDir::new();
+        let file = dir.path().join("main");
+        let seen = RefCell::new(Vec::<PathBuf>::new());
+        let denied = |path: &Path| {
+            seen.borrow_mut().push(path.to_path_buf());
+            if path == file {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else {
+                fs::canonicalize(path)
+            }
+        };
+        let real = fs::canonicalize(dir.path()).unwrap().join("main");
+        assert_eq!(named_with(&file, &denied), real);
+        assert_eq!(*seen.borrow(), [file, dir.path().to_path_buf()]);
     }
 
     #[test]
     fn a_missing_name_is_not_repeated() {
-        use std::cell::Cell;
         let dir = TempDir::new();
         let calls = Cell::new(0);
         let counting = |path: &Path| {
@@ -623,6 +671,7 @@ mod tests {
         assert!(read(&one.join("main")).is_err());
         assert!(read(&ten.join("main")).is_ok());
         let _guard = deny_reads_of(&one);
+        assert!(read_dir(&one).is_err());
         assert!(read_dir(&ten).is_ok());
     }
 
