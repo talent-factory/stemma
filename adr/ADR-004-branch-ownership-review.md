@@ -22,9 +22,9 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    voids them (STEMMA-227). An approval is the entry
    `pr-approve` (ADR-011). "No self-approval" means by identity: the reviewer is neither the
    opener of the pull request nor the author of a commit that it brings, and not the actor of a
-   log entry that moved a branch to such a commit: the author field is a claim of the writer and
-   nothing compares it with the actor (STEMMA-255). The writer and the
-   recount ask the same question, so an entry written by hand does not count.
+   log entry that moved its branch to such a commit: the author field is a claim of whoever made
+   the commit, and nothing compares it with the actor (STEMMA-255). The approving command and
+   the recount ask the same question, so an entry written by hand does not count.
 5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths.
    The policy file is itself level 3.
 6. Diff display is level 1, diff computation in the merge path is level 2.

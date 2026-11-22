@@ -188,8 +188,8 @@ impl Repository {
     ///
     /// - the pull request is open, and its branch still has the head that `actor` reviewed, which
     ///   is the tip when the call began;
-    /// - `actor` is neither the opener nor the author of a commit that the pull request brings
-    ///   ([`self_approval`]);
+    /// - `actor` is neither the opener, nor the author of a commit that the pull request brings,
+    ///   nor the actor of an entry that moved its branch to such a commit ([`self_approval`]);
     /// - where the repository has a `register`, the approval is signed: `signer` signs
     ///   [`pull::approval_payload`] with a key that the register holds for `actor`, and the
     ///   signature is checked before the entry is written. The proof is the file `proofs/<entry>`
@@ -241,7 +241,7 @@ impl Repository {
                 return Err(PullError::HeadMoved { number });
             }
         }
-        let authors = self.pull_authors(&head)?;
+        let authors = self.pull_authors(pull.branch(), &head)?;
         if let Some(reason) = self_approval(actor, pull.opener(), &authors) {
             return Err(PullError::SelfApproval { number, reason });
         }
@@ -302,7 +302,7 @@ impl Repository {
             return Err(PullError::NotOpen { number });
         }
         let head = self.branch_head(pull.branch())?;
-        let authors = self.pull_authors(&head)?;
+        let authors = self.pull_authors(pull.branch(), &head)?;
         let metadata = self.metadata_dir();
         let payload = pull::approval_payload(number, &head);
         let proof = |approval: &Approval| -> Result<(), String> {
@@ -353,11 +353,13 @@ impl Repository {
     /// `head` reaches and `main` does not.
     ///
     /// A writer is the author of such a commit, and the actor of every entry of the log that moved
-    /// a branch to such a commit. The author is a claim of whoever made the commit, and nothing
-    /// compares it with the actor; the actor of the entry is the one that the authorizer let in
-    /// (and, in an enforcing repository, whose signature the register accepts). So a commit under
-    /// a foreign author name still counts its real writer (ADR-004 rule 4, STEMMA-255).
-    fn pull_authors(&self, head: &CommitId) -> Result<Vec<Actor>, PullError> {
+    /// `branch`, the branch of the pull request, to such a commit. Moves of other branches do not
+    /// count: whoever only makes a branch at the tip to look at it wrote nothing. The author is a
+    /// claim of whoever made the commit, and `update_branch` does not compare it with the actor;
+    /// the actor of the entry is the one that the authorizer let in (in open mode that is a claim
+    /// as well, ADR-003). So a commit under a foreign author name still counts the actor that put
+    /// it on the branch (ADR-004 rule 4, STEMMA-255).
+    fn pull_authors(&self, branch: &BranchName, head: &CommitId) -> Result<Vec<Actor>, PullError> {
         let store = self.objects();
         let own = history::ancestors(store, *head, Parents::All, None)?;
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
@@ -383,10 +385,9 @@ impl Repository {
             let Some(change) = entry.change() else {
                 continue;
             };
-            let moved_to_brought = change
-                .branches()
-                .iter()
-                .any(|(_, moved)| moved.after().is_some_and(|new| brought.contains(new)));
+            let moved_to_brought = change.branches().iter().any(|(name, moved)| {
+                name == branch && moved.after().is_some_and(|new| brought.contains(new))
+            });
             if moved_to_brought && !authors.contains(change.actor()) {
                 authors.push(change.actor().clone());
             }
@@ -1219,7 +1220,8 @@ mod tests {
 
     /// STEMMA-255: the author of a commit is a claim of its writer. `update_branch` asks the
     /// authorizer about the actor and never compares the actor with the author, so a writer who
-    /// puts a foreign name into the field is no author of the change in the recount.
+    /// puts a foreign name into the field must still count as a writer of the change, in the
+    /// approval and in the recount.
     #[test]
     fn a_commit_under_a_foreign_author_name_does_not_let_its_writer_approve() {
         let dir = TempDir::new();
@@ -1250,14 +1252,58 @@ mod tests {
         repository
             .update_branch(&operation, &feature(), Some(tip), new, &mia(), &AllowAll)
             .unwrap();
-        // Mia wrote the change and must not approve it.
+        // Mia put the change on the branch and must not approve it.
+        let before = repository.oplog().entries().unwrap().len();
         let error = repository
             .approve_pull(number, &mia(), None, None, &AllowAll)
             .unwrap_err();
         assert!(
-            matches!(error, PullError::SelfApproval { .. }),
+            matches!(
+                error,
+                PullError::SelfApproval {
+                    reason: SelfApproval::Author,
+                    ..
+                }
+            ),
             "mia approved her own change: {error:?}"
         );
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        // An approval of hers that was written by hand does not count: the recount asks again.
+        let forged = PullEntry::approve(5, mia(), number, new).unwrap();
+        let lock = repository
+            .refs_store()
+            .lock_writer(&Allowed::granted())
+            .unwrap();
+        repository.append_pull(&lock, &forged).unwrap();
+        drop(lock);
+        let recount = repository.recount_approvals(number, None).unwrap();
+        assert_eq!(recount.count(), 0);
+        assert_eq!(
+            recount.void()[0].1,
+            pull::NotCounted::SelfApproval(SelfApproval::Author)
+        );
+    }
+
+    /// A reviewer who only makes another branch at the tip, to look at it, wrote nothing.
+    #[test]
+    fn a_reviewer_who_makes_another_branch_at_the_tip_may_approve() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let zoe = Actor::human("zoe").unwrap();
+        push_commit(&repository, &zoe);
+        let tip = repository.refs().branch(&feature()).unwrap().unwrap();
+        let look = BranchName::try_new("look").unwrap();
+        let operation = OperationName::try_new("branch").unwrap();
+        repository
+            .update_branch(&operation, &look, None, tip, &mia(), &AllowAll)
+            .unwrap();
+        repository
+            .approve_pull(number, &mia(), None, None, &AllowAll)
+            .unwrap();
     }
 
     #[test]

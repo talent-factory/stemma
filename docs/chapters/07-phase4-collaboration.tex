@@ -196,10 +196,10 @@ keine Signatur und damit keinen Zeitraum, in dem sich der Kopf bewegen könnte.
 \item Niemand gibt seine eigene Arbeit frei: Der Reviewer ist weder der Eröffner noch der Autor
 eines Commits, den der Pull Request mitbringt (das sind die Commits, die der Kopf erreicht und
 \type{main} nicht).
-Als Schreiber eines solchen Commits zählt auch der Akteur jedes Eintrags im Log, der einen Branch
-auf einen dieser Commits gesetzt hat: Das Feld \type{author} ist eine Angabe des Schreibers und
-nichts vergleicht es mit dem Akteur; der Akteur des Eintrags ist der, den der Authorizer
-zugelassen hat.
+Als Schreiber eines solchen Commits zählt auch der Akteur jedes Eintrags im Log, der den Branch
+des Pull Requests auf einen dieser Commits gesetzt hat: Das Feld \type{author} ist eine Angabe
+dessen, der den Commit gemacht hat, und nichts vergleicht es mit dem Akteur; der Akteur des
+Eintrags ist der, den der Authorizer zugelassen hat.
 Wer einen Commit unter fremdem Namen auf den Branch bringt, kann ihn deshalb nicht freigeben.
 Die Regel gilt für die Identität, also gelten Modell und Session eines Agenten nicht als anderer
 Reviewer.
