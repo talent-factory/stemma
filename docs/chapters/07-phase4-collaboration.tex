@@ -1117,9 +1117,8 @@ Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 
 \section[sec:phase4-workflows]{Die Abläufe der Phase im Zusammenhang}
 
-Die Abschnitte dieses Kapitels beschreiben die Teile der Zusammenarbeit einzeln.
-Dieser Abschnitt setzt sie zu einer Sitzung zusammen.
-Sie geht von der Sitzung aus \in{Kapitel}[chap:phase1] nach dem zweiten Commit aus:
+Dieser Abschnitt setzt die Teile der Zusammenarbeit zu einer Sitzung zusammen.
+Sie beginnt in dem Repository der Sitzung aus \in{Kapitel}[chap:phase1], nach dem zweiten Commit:
 Das Repository \type{notizen} hat auf \type{main} die Commits \quotation{Erste Fassung} und
 \quotation{Gruss erweitern}.
 Daniel nimmt es in den durchsetzenden Modus (\type{enforce}), legt das Register an und trägt den
@@ -1127,8 +1126,9 @@ Agenten \type{claude} mit seinem Schlüssel ein; Daniel ist sein Sponsor.
 Ana ist als zweite Person eingetragen und prüft.
 Das Programm hat noch keinen Befehl, der einen weiteren Menschen aufnimmt;
 der Owner hat seinen Eintrag in \type{.stemma-actors/register} von Hand ergänzt,
-in der Reihenfolge, die die Datei verlangt, und ihn wie jede Änderung des Registers committet
-(Einträge 1 bis 9):
+in der Reihenfolge, die die Datei verlangt, und ihn wie jede Änderung des Registers committet.
+Damit schreibt die Sitzung die Einträge 1 bis 9: die zwei Commits aus
+\in{Kapitel}[chap:phase1] und die Einrichtung des Registers.
 
 \starttyping
 $ stemma enforce --owner-key ../keys/daniel.pub
@@ -1142,12 +1142,20 @@ $ stemma register add-agent ../keys/claude.pub --agent claude \
 >     --sponsor daniel --cosign ../cosign.sig
 Added agent claude with sponsor human daniel to
   .stemma-actors/register; commit the file.
+$ stemma commit -m "Agent und Ana registriert"
+$ stemma op verify
+Checked 9 entries of the operation log: the hash chain holds.
+The actor register is valid, and 0 proofs of log entries hold against it.
+anchor 9:b3:675e…5a71
 \stoptyping
 
 Der Sponsor signiert den Eintrag des Agenten mit \type{register cosign};
 \type{add-agent} prüft die Signatur, ändert die Datei im Arbeitsverzeichnis und schreibt keinen
 Eintrag, bis \type{commit} die Datei festhält.
 Danach prüft \type{op verify} die Hash-Kette und das Register.
+Die Nummer eines Pull Requests ist die Nummer seines Eintrags \type{pr-open}.
+Die Einträge dazwischen gehören zu Schritten, die der Text nicht abdruckt:
+Branches und Commits für die späteren Beispiele sowie Prüfungen und Freigaben.
 Die Ausgaben stammen aus einem echten Lauf in einem frischen Verzeichnis;
 nur der Abbruch in \in{Abschnitt}[sec:workflow-crash] ist eingespritzt.
 Die IDs sind gekürzt und die Pfade stehen als \type{/home/daniel/...};
@@ -1169,7 +1177,9 @@ in der Sitzung nimmt der Agent sie mit \type{lease take}.
 Die Lease schützt darum heute die Eröffnung eines Pull Requests, nicht jeden Schreibvorgang.
 \type{pr merge} bekommt die Risikostufe von \type{--level}, die Policy leitet sie nicht ab;
 die Sitzung lässt den Standard 3 stehen.
-Das Gate prüft die Freigaben nicht; sie zählt \type{pr list}.
+Das Gate verlangt beim Merge keine Freigabe; \type{pr approve} prüft nur die Unabhängigkeit
+des Reviewers, und \type{pr list} zählt die Freigaben.
+Die Grenzen stehen in \in{Abschnitt}[sec:phase4-open].
 \stopinfobox
 
 \subsection[sec:workflow-pr]{Eine Änderung eines Agenten nach main bringen}
@@ -1228,7 +1238,8 @@ Dann kommen die Prüfung und die Freigabe.
 Eine Prüfung gilt für das Paar aus dem getesteten Commit und der Spitze von \type{main}, auf die
 er gelegt wurde; \type{--base main} nennt diese Spitze.
 Der Agent schreibt zuerst selbst ein grünes Ergebnis.
-Die Freigabe scheitert, und das Gate zählt das Ergebnis nicht:
+Die Freigabe durch den Agenten scheitert, und der Merge durch Daniel scheitert,
+weil das Gate das Ergebnis nicht zählt:
 
 \starttyping
 $ stemma check record agent-arbeit --base main --result pass --key ../keys/claude
@@ -1245,10 +1256,12 @@ stemma: no result of a check counts for pull request 14 at level 3 on the
   b3:8ca6…0cd7
 \stoptyping
 
-Beide Ablehnungen folgen aus der Unabhängigkeit.
-Auf Stufe 3 zählt eine Prüfung nur, wenn ihr Schreiber weder Eröffner noch Autor einer Änderung
-noch deren Sponsor ist (ADR-004).
-Daniel ist der Sponsor des Agenten, also zählt auch eine Prüfung von ihm nicht.
+Die erste Ablehnung ist das Verbot, die eigene Arbeit freizugeben; es gilt auf jeder Stufe.
+Die zweite folgt aus der Unabhängigkeit der Prüfung:
+Auf den Stufen 2 und 3 zählt eine Prüfung nur, wenn ihr Schreiber weder den Pull Request
+eröffnet noch einen Commit der Änderung geschrieben hat und kein Sponsor eines dieser Akteure ist
+(ADR-019).
+Das Ergebnis des Agenten zählt also nicht, und ein Ergebnis von Daniel als Sponsor ebenso wenig.
 Ein \type{check} und ein \type{pr-approve} schreiben eine Datei \type{.stemma/proofs/<Nummer>},
 und die Ablehnungen schreiben nichts: Das Log bleibt bei Eintrag 15.
 Ana prüft und gibt frei:
@@ -1281,7 +1294,8 @@ Der Working-Copy-Commit und das Arbeitsverzeichnis des Haupt-Worktrees bleiben a
 \type{src/lib.rs} fehlt, und \type{status} meldet ein sauberes Arbeitsverzeichnis.
 Ein \type{commit} lehnt ab, weil \type{main} und der Elternteil des Working-Copy-Commits
 auseinanderlaufen, und \type{rebase main} und \type{switch main} melden \quotation{Already up to
-date} und \quotation{Already on main}.
+date} und \quotation{Already on main}
+(in einem Probelauf geprüft, hier nicht abgedruckt).
 Den Haupt-Worktree zieht man nach, indem man HEAD von \type{main} löst und wieder setzt
 (\in{Abbildung}[fig:gate-catch-up]):
 
@@ -1307,8 +1321,8 @@ Beide schreiben je einen Eintrag (20 und 21) und lassen sich mit \type{op restor
 Einen eigenen Befehl dafür gibt es noch nicht (siehe \in{Abschnitt}[sec:phase4-open]).
 
 {\bf Die Garantien.}
-Nach einem Fehler vor dem Gate ändert sich \type{main} nicht, und das Log hat nur die Einträge,
-die der Befehl vor dem Fehler schrieb; die Ablehnungen oben lassen sich wiederholen.
+Scheitert ein Befehl vor dem Gate, bleibt \type{main} unverändert;
+die abgelehnten Aufrufe oben schreiben keinen Eintrag und lassen sich wiederholen.
 Nach einem Absturz mitten im Gate gilt \in{Abschnitt}[sec:workflow-crash].
 \in{Abbildung}[fig:pull-request-flow] zeigt den Ablauf als Ganzes.
 
@@ -1316,11 +1330,14 @@ Nach einem Absturz mitten im Gate gilt \in{Abschnitt}[sec:workflow-crash].
 
 {\bf Die Lage.}
 Ein Agent hält die Lease eines Branches und reagiert nicht mehr.
-Wer den Branch weiterführen will, wartet auf den Ablauf der Lease oder übernimmt sie.
-Der Branch \type{ueberarbeitung} zeigt den ersten Weg.
+Wer den Branch weiterführen will, wartet auf den Ablauf der Lease, danach übernimmt jeder
+Schreiber sie, oder er erzwingt die Übernahme als Owner.
+Der Branch \type{ueberarbeitung} zeigt das Warten.
 Der Agent nimmt seine Lease mit einer Minute und tut dann nichts mehr.
 Eine Übernahme vor dem Ablauf lehnt der Kern ab, nach dem Ablauf gelingt sie ohne Zutun des
-Inhabers:
+Inhabers; zwischen den beiden Aufrufen von \type{lease take} liegt die eine Minute.
+
+{\bf Die Befehle.}
 
 \starttyping
 $ stemma branch ueberarbeitung
@@ -1390,10 +1407,14 @@ Wer eine Lease mit \type{lease take} wiederholt, die er schon hält, verlängert
 
 {\bf Die Lage.}
 Der Branch \type{ergaenzung} hat eine geprüfte und freigegebene Änderung, und Daniel mergt sie.
+Die Branches \type{ergaenzung}, \type{naechste} und \type{reparatur} sind vorbereitet,
+mit je einem Commit; \type{ergaenzung} und \type{reparatur} ändern beide \type{README.md}.
 Mitten im Gate scheitert das Bewegen von \type{main}.
 Um das vorzuführen, lässt ein Testbau des Programms das Anlegen von Dateien im Verzeichnis der
 Branches scheitern (Variable \type{STEMMA_FAULT}, siehe Kapitel \in{}[chap:phase3]);
 ein Programm aus einem Release enthält sie nicht.
+
+{\bf Die Befehle.}
 
 \starttyping
 $ STEMMA_FAULT=write=.stemma/refs/heads stemma pr merge 31
@@ -1420,14 +1441,15 @@ und der Eintrag trägt die Zeile \type{! the move did not take effect}.
 Exit-Code 3 meldet einen Eintrag, der geschrieben ist, während der Rest nicht gelang.
 Der zweite Aufruf liest die Spitze neu, führt den Merge noch einmal aus und schreibt den Eintrag 35
 mit der Bewegung und den Eintrag 36 mit \type{pr-merge}.
-Der Merge-Commit hat darum eine andere ID als der des gescheiterten Versuchs;
+Der Squash-Commit hat darum eine andere ID als der des gescheiterten Versuchs;
 dessen Objekte bleiben unreferenziert im Speicher, bis ein Purge sie abräumt.
 \in{Abbildung}[fig:gate-crash] und \in{Abbildung}[fig:gate-pointers] zeigen die Absturzpunkte
 und den Reparaturweg, wenn der Prozess erst nach der Bewegung von \type{main} endet.
 
-Ein Merge, der die Tests bricht, ist ein anderer Fall: Das Gate hat ihn nicht erkannt,
-weil die Prüfung nach dem Merge rot ist.
-Ana schreibt für die Spitze von \type{main} ein rotes Ergebnis, ohne Basis.
+Ein Merge, der die Tests bricht, ist ein anderer Fall: Das Gate erkennt ihn nicht,
+weil die Prüfungen vor dem Merge grün waren; erst die Prüfung nach dem Merge ist rot.
+Ana schreibt für die Spitze von \type{main} ein rotes Ergebnis ohne Basis,
+denn die Spitze selbst ist der getestete Commit.
 Ab dann landet auf Stufe 2 und 3 nur noch eine erklärte Behebung:
 
 \starttyping
@@ -1464,8 +1486,12 @@ Ein offener Pull Request bleibt offen, bis \type{pr-merge} im Log steht, und der
 des Gates bucht einen Merge nach, dessen Bewegung schon stattgefunden hat.
 \type{op verify} bestätigt am Ende der Sitzung die Hash-Kette und die Beweise: Das Log hat
 57 Einträge, das Register ist gültig, und 11 Beweise halten gegen es.
-Das Log nach dem Abbruch ist also vollständig;
-was fehlt, ist nur ein Zeiger, den ein Aufruf nachholt.
+Nach einem Abbruch vor der Bewegung wiederholt der nächste Aufruf den Merge;
+nach einem Abbruch hinter ihr fehlt nur der Eintrag \type{pr-merge},
+den der Reparaturweg nachträgt.
+
+\in{Tabelle}[tab:phase4-workflow-effects] ordnet jedem Schritt der Sitzung zu, welche der vier
+Grössen er ändert.
 
 \startplacetable[title={Was die Schritte der Sitzung ändern},
   reference=tab:phase4-workflow-effects,location=split]
@@ -1547,7 +1573,6 @@ was fehlt, ist nur ein Zeiger, den ein Aufruf nachholt.
 \stopxtable
 \stopplacetable
 
-Die Tabelle (\in{Tabelle}[tab:phase4-workflow-effects]) fasst zusammen, was jeder Schritt ändert.
 
 \section[sec:phase4-open]{Offene Fragen}
 
