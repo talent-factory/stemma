@@ -28,7 +28,7 @@ die Lease gibt einem Akteur das Recht, einen Branch zu schreiben, und läuft von
 damit ein abgestürzter Agent den Branch nicht für immer sperrt
 (\in{Abschnitt}[sec:workflow-lease]).
 Heute schützt sie die Eröffnung eines Pull Requests; die übrigen schreibenden Befehle
-erwerben und erneuern sie noch nicht (\in{Abschnitt}[sec:phase4-open]).
+erwerben und erneuern sie noch nicht (\in{Abschnitt}[sec:workflow-pr]).
 Ein Agent, der seine eigene Änderung freigibt, prüft nichts;
 das Selbstfreigabeverbot schliesst den Eröffner und jeden Schreiber eines Commits
 der Änderung aus, und die Neuzählung prüft jede Freigabe noch einmal,
@@ -38,9 +38,10 @@ die Risikostufen legen fest, wie viele Freigaben ein Pfad verlangt
 und ab wann ein Mensch entscheidet (\in{Abschnitt}[sec:policy-file]).
 Ein Agent, der einen fehlschlagenden Test lockert statt den Code zu reparieren,
 fällt der Prüfung nicht auf, weil danach alles grün ist;
-darum hebt das Entfernen oder Abschwächen von Tests und Prüfungen die Stufe auf mindestens 2.
-Ein Schlüssel, der kompromittiert wurde, macht die Freigaben ungültig, die er signiert hat,
-und gehört er einem Sponsor, entzieht die Kaskade zugleich die Schlüssel seiner Agenten
+darum hebt das Entfernen oder Abschwächen von Tests und Zusicherungen die Stufe auf mindestens 2.
+Wird ein kompromittierter Schlüssel widerrufen, werden die Freigaben ungültig,
+die er signiert hat, und gehört er einem Sponsor,
+entzieht die Kaskade zugleich die Schlüssel seiner Agenten
 (\in{Abschnitt}[sec:register]).
 
 Die Agentenfunktionen von Phase~2 beantworten je ein Problem der Arbeit mit Agenten.
@@ -329,9 +330,10 @@ Ausschlussdatei (Abschnitt 5.4) \stopxcell
 \stopxrow
 \startxrow
 \startxcell Neuzählung der Freigaben: eine reine Funktion über die Freigaben im Log in der
-Reihenfolge der Einträge; eine Freigabe zählt, wenn sie den heutigen Kopf nennt, ihr Prüfer weder
-Eröffner noch Schreiber eines Commits der Änderung ist, ihr Beweis hält und ihre Identität
-nicht schon zählt; die Schreiber sind die Autoren und die Akteure der Einträge, die einen Commit
+Reihenfolge der Einträge; eine Freigabe zählt, wenn sie den heutigen Kopf nennt,
+ihr Reviewer weder Eröffner noch Schreiber eines Commits der Änderung ist, ihr Beweis hält
+und ihre Identität nicht schon zählt; die Schreiber sind die Autoren
+und die Akteure der Einträge, die einen Commit
 zuerst unter einen Branch, ein Tag oder den Working-Copy-Commit brachten, gefunden durch einen
 Durchlauf, der jeden Commit einmal liest; eine Freigabe, deren Eintrag vor der Eröffnung steht,
 zählt nie; Kosten $O(a\,(w+a))$ für $a$ Freigaben und $w$ Schreiber,
@@ -342,7 +344,7 @@ dazu eine Prüfung der Signatur je Freigabe und der Durchlauf für die Schreiber
 wie bei den Ausgängen weiter oben \stopxcell
 \stopxrow
 \startxrow
-\startxcell Domänentrennung der signierten Bytes: vor der Nutzlast stehen Kennung, Typ und Version
+\startxcell Domänentrennung der signierten Bytes: vor der Nutzlast stehen Präfix, Typ und Version
 in drei Zeilen, dazu ein einziger Namensraum für alle Beweise; eine Signatur für einen Typ oder
 eine Version gilt nie für einen anderen, und die Nutzlast beginnt nach dem dritten Zeilenumbruch,
 sodass die Trennung eindeutig ist; Kosten linear in der Länge der Nutzlast \stopxcell
@@ -352,9 +354,9 @@ sodass die Trennung eindeutig ist; Kosten linear in der Länge der Nutzlast \sto
 \type{ssh-keygen -Y sign} (ADR-003, ADR-020) \stopxcell
 \stopxrow
 \startxrow
-\startxcell Lease als Zustand mit träger Erneuerung: eine Datei je Branch mit Halter und Ablauf,
+\startxcell Lease als Zustand mit träger Erneuerung: eine Datei je Branch mit Inhaber und Ablauf,
 als Ganzes ersetzt; die Regel ist eine reine Funktion von Datei, Akteur und Zeit mit fünf Fällen;
-erneuert wird nur, wenn der Halter schreibt (heute nur bei \type{lease take}),
+erneuert wird nur, wenn der Inhaber schreibt (heute nur bei \type{lease take}),
 und der Ablauf wird nie früher als zuvor;
 kein Dienst beendet eine Lease, sie gilt nach dem Ablauf als frei; Kosten $O(1)$ \stopxcell
 \startxcell \type{claim}, \type{Lease::renewed} (\type{lease.rs}) \stopxcell
@@ -626,15 +628,15 @@ wenn die Regel nur den Namen des Autors prüft.
 Zeigen Sie, dass der Eintrag im Log den Fall schliesst.
 Warum zählt ein späteres Verschieben eines Branches auf einen Commit,
 den schon ein Branch erreichte, nicht als Schreiben,
-und welcher Ablauf des Prüfers wäre sonst unmöglich?
+und welcher Ablauf des Reviewers wäre sonst unmöglich?
 \item (DUA) Eine Freigabe signiert die Bytes \type{pull <Nummer>}, \type{commit <ID>}.
 Heute hat keine andere Nutzlast diese Bytes: Ein Eintrag des Logs signiert seinen Hash,
 eine Mitzeichnung des Sponsors Agent, Rolle und Sponsor.
 Nehmen Sie an, ein künftiger Typ hätte eine Nutzlast, die mit den Bytes einer Freigabe
 übereinstimmt, und zeigen Sie ohne Kopfzeile, was der Angreifer damit erreicht.
-Zeigen Sie dann, dass die Kopfzeile aus Kennung, Typ und Version den Fall schliesst
-(\in{Abschnitt}[sec:signatures]) und dass die Trennung der Nutzlast vom Kopf eindeutig ist,
-weil Kennung, Typ und Version keinen Zeilenumbruch enthalten.
+Zeigen Sie dann, dass die Kopfzeile aus Präfix, Typ und Version den Fall schliesst
+(\in{Abschnitt}[sec:signatures]) und dass die Trennung der Nutzlast von der Kopfzeile eindeutig ist,
+weil Präfix, Typ und Version keinen Zeilenumbruch enthalten.
 Typ und Version stehen in den signierten Bytes und nicht im SSHSIG-Namensraum.
 Nennen Sie einen Vorteil und einen Nachteil dieser Wahl.
 \item (DUA) Die Regel der Lease hat fünf Fälle (\in{Abschnitt}[sec:workflow-lease]).
@@ -903,7 +905,7 @@ statt auf eine Taste zu warten, die nie kommt.
 Die Phase 4 baut die Regeln, die das Projekt für Agenten braucht, in Stemma selbst:
 Lease, Freigaben, Risikostufen, das Merge-Gate.
 Das Projekt wendet sie auf sich selbst noch nicht an.
-Pull Requests laufen weiter über Git und GitHub, und der Mensch merget.
+Pull Requests laufen weiter über Git und GitHub, und der Mensch mergt.
 Was die Phase über die Arbeit mit Agenten zeigt, liegt deshalb in den Entscheidungen
 und in der Art, wie sie entstanden.
 

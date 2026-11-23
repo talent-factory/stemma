@@ -149,15 +149,16 @@ sie entsteht mit der ersten schreibenden Operation, sobald das Register mehr als
 
 {\bf Die Lease als Zustand mit träger Erneuerung.}
 Der Zustand eines Branches ist ein Tupel aus Inhaber, Zeitpunkt des Erwerbs und Ablauf;
-die Regel der Tabelle ist eine reine Funktion von diesem Tupel, dem Akteur und der Zeit.
+die Regel aus \in{Tabelle}[tab:lease-rule] ist eine reine Funktion von diesem Tupel,
+dem Akteur und der Zeit.
 Die Invariante lautet: Zu jeder Zeit hält höchstens ein Akteur eine gültige Lease eines Branches,
 und das Ablaufdatum wird durch keine Verlängerung früher, denn die Verlängerung nimmt das
 Maximum aus dem alten und dem neuen Ablauf.
 Sie gilt, weil die Prüfung und der Wechsel ein Schritt unter \type{refs.lock} sind
 und die Datei als Ganzes durch ein Umbenennen ersetzt wird:
 Kein Leser sieht eine halbe Datei, und nach einem Absturz liegt die alte ganz da.
-Die Lease endet durch die Zeit und nicht durch ein Ereignis, also braucht ein abgestürzter Agent
-keinen Dienst, der sie beendet.
+Die Lease endet auch durch die Zeit, nicht nur durch ein Ereignis wie die Rückgabe oder den
+Owner-Override, also braucht ein abgestürzter Agent keinen Dienst, der sie beendet.
 Dafür muss die Uhr der Akteure ungefähr stimmen:
 Weicht sie ab, hält ein Akteur die Lease eines anderen um die Abweichung früher oder später
 für abgelaufen, je nachdem, ob seine Uhr vor- oder nachgeht.
@@ -511,7 +512,8 @@ ausgeht, liefert die Suche einen Commit, der scheitert und dessen Vorgänger bes
 nicht unbedingt den ersten.
 Ein Fehler eines Laufs bricht die Suche ab.
 Das Verfahren ist die binäre Suche aus dem Kurs, über einen Verlauf statt über eine Tabelle,
-und dasselbe wie \type{git bisect} (\in{Tabelle}[tab:algorithms]).
+und dasselbe wie \type{git bisect}
+(Abschnitte 1.1 und 3.1 bei \cite[sedgewick2011algorithms]; \in{Tabelle}[tab:algorithms]).
 
 Das Gate hält keinen Zustand.
 Es liest die Schranken bei jedem Versuch neu aus dem Log und aus dem Verlauf von \type{main},
@@ -653,7 +655,7 @@ stemma-proof\n<Typ>\n<Version>\n<Nutzlast>
 \stoptyping
 
 Der Typ ist \type{log-entry}, \type{approval} oder \type{sponsorship}, die Version heute 1.
-Das Kennwort, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
+Das Präfix, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
 also beginnt die Nutzlast eindeutig nach dem dritten.
 Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Eintrag,
 und eine Signatur einer späteren Formatversion nie als Version 1.
@@ -783,8 +785,8 @@ die Stufe mit einer Zeile festzulegen.
 {\bf Die Auswertung.}
 Die Stufe einer Änderung ist das Maximum der Stufen aller Pfade, die sie berührt;
 ein Rename berührt den alten und den neuen Pfad, und eine Änderung ohne Pfad hat Stufe 0.
-Die Stufe eines Pfades ist das Maximum der Stufen der Zeilen, die ihn nennen, oder 2, wenn keine
-ihn nennt,
+Die Stufe eines Pfades ist das Maximum der Stufen der Zeilen, die ihn nennen, oder 2,
+wenn keine ihn nennt,
 und für die Policy-Datei und das Register mindestens 3, was keine Zeile senkt.
 Die Invariante: Eine zusätzliche Zeile senkt nie die Stufe eines Pfades, den schon eine Zeile
 nennt, und das Ergebnis hängt nicht von der Reihenfolge der Zeilen oder der Pfade ab,
