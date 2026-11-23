@@ -150,6 +150,20 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Ausschlussdatei | Ignore-Datei | `.stemmaignore` (ADR-012) |
 | Merge-Gate | Merge-Queue | The rule that decides whether a change lands on `main` (ADR-019) |
 | Prüfergebnis | Build-Status | A statement about one commit and the tip of `main` it was tested on (ADR-019) |
+| Prüfung, Lauf | Check, Build (in prose; `check` only as the command or entry) | A run of the tests on one commit; the run is one *Lauf*, its recorded outcome a *Prüfergebnis* |
+| geprüfte Spitze | | The newest commit of `main` that a finished run covered (ADR-019) |
+| letzte grüne Spitze | | The newest commit of `main` that a finished run covered with success (ADR-019) |
+| rote Spitze | | The oldest commit after the last green tip that a finished run covered with failure; only a repair lands meanwhile (ADR-019) |
+| Fenster ungeprüfter Commits | | The commits of `main` after the verified tip (ADR-019) |
+| Schranke | Limit, Grenze (for these three) | A rule of the gate that makes a change wait: the pause at a red tip, the window of unverified commits, the reservation (ADR-019) |
+| Reservierung | Reservation | The claim of a change of level 2 or 3 after `N` invalidated runs; all other changes wait (ADR-019) |
+| Pull Request | Merge Request, PR | The request of the write owner to merge a branch into `main`; the sequence of its entries in the operation log (ADR-004) |
+| Freigabe | Approval, Review (for the entry) | Entry `pr-approve`: a reviewer signs the head of a pull request (ADR-004) |
+| Kopf (eines Pull Requests) | Spitze (of the branch at approval) | The commit at the tip of the branch when the pull request was opened or approved; an approval binds it |
+| Risikostufe | Severity | A level from 0 to 3 that decides who must approve a change (ADR-004) |
+| Akteursregister, Register | Benutzerliste | The file `.stemma-actors/register` that binds identities to keys (ADR-003, ADR-004) |
+| Beweis | Token, Login | A signature of an entry by the key that the register binds to the actor (ADR-003) |
+| Branch | Zweig | A named pointer to a commit; a branch is checked out in one worktree at most |
 | sauberer Merge | trivialer Merge | A tree merge that returns one tree |
 | semantischer Konflikt | logischer Konflikt | Two changes that merge cleanly and break each other |
 | Spitze | Tip, Kopf | The commit that a branch points to |

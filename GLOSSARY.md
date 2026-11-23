@@ -134,6 +134,34 @@ closed. A run is invalidated when `main` moved while it ran. The reservation end
 duration of its last check run; at most one exists. The log has no start of a run, so the duration
 is the time since the entry before it, and a reservation lasts one hour at most. (Reservierung)
 
+**Check run**:
+One execution of the tests on one commit. Its recorded outcome is a check result; a run on the tip
+of `main` itself has no base. (Lauf)
+_Avoid_: Build
+
+**Last green tip**:
+The newest commit of `main` that a finished run covered with success. A later failed run on the
+same commit does not undo it; the gate then looks for the first red tip. (letzte grüne Spitze)
+
+**Red tip**:
+The oldest commit after the last green tip that a finished run covered with failure. While it is
+the newest verified commit, only a change that repairs it lands at level 2 or 3. (rote Spitze)
+_Avoid_: Broken main
+
+**Bound**:
+A rule of the merge gate that makes a change wait: the pause at a red tip, the window of unverified
+commits, and the reservation. The policy sets the values of the last two; changing them is level 3.
+(Schranke)
+_Avoid_: Limit
+
+**Approval**:
+The entry `pr-approve`: a reviewer signs the head of a pull request. It binds that head, so a new
+commit on the branch voids it, and a reviewer never approves their own work. (Freigabe)
+_Avoid_: Review (for the entry)
+
+**Head of a pull request**:
+The commit at the tip of the branch when the pull request was opened or approved. (Kopf)
+
 **Clean merge**:
 A tree merge that returns one tree, not a sum of several. (sauberer Merge)
 _Avoid_: Trivial merge

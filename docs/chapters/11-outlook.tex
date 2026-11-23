@@ -63,6 +63,9 @@ dazu die Befehle \type{lease}, \type{pr}, \type{check}, \type{register} und \typ
 Offen bleibt, wer den Schnellweg für triviale Änderungen nutzen darf.
 Die schreibenden Befehle erwerben und erneuern noch keine Lease,
 und die Befehle übergeben den Autorisierer des Registers noch nicht.
+Kein Befehl nimmt einen weiteren Menschen ins Register auf; der Owner ergänzt die Datei von Hand.
+Das Merge-Gate bewegt nur \type{main}; der Haupt-Worktree holt die Spitze mit
+\type{switch --detach main} und \type{switch main} nach, ein eigener Weg fehlt.
 Die Policy-Datei dieses Repositorys ist ein Entwurf ohne Signatur des Owners,
 \type{pr merge} leitet die Stufe nicht aus der Policy ab, und für eine ungültige Policy auf der
 Spitze von \type{main} gibt es keinen Reparaturweg.
