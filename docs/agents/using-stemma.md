@@ -4,8 +4,9 @@ How an agent calls `stemma` during a task: at the start, in between, and at the 
 The command line reference (`docs/chapters/12-cli-reference.tex`) is the source for what each
 command does and how it fails. This file says which commands to call, and when.
 
-It describes the state of phase 3: branches, `switch`, `merge`, `rebase`, and a second working
-copy per actor with `stemma worktree add`. Update this file when a later phase lands.
+It describes the state of phase 4: the commands of phase 3 (branches, `switch`, `merge`, `rebase`,
+a second working copy per actor with `stemma worktree add`) and the commands of collaboration
+(`enforce`, `register`, `lease`, `pr`, `check`). Update this file when a later phase lands.
 
 ## Which repository this is for
 
@@ -46,8 +47,17 @@ an intermediate state is to run a command.
    working copy fail with exit code 1: stop and report it.
 3. Note the number `N` of the newest log entry: `stemma op log -n 1 --json`; the field is
    `number`. `op restore` puts back the state *before* the entry it names, so the first entry
-   that the task writes, `N+1`, is the point to go back to (`op restore N+1`, see below).
-4. Optional: `stemma op verify` checks the whole log. It needs no actor. Keep the line
+   that the task writes, `N+1`, is the point to go back to (`op restore N+1`, see below). Entries of
+   `lease`, `pr`, and `check` are no restore points: `op restore` refuses them. If the task writes
+   one of those first, name the first entry of a snapshot or a commit instead.
+4. Find out whether the repository is enforcing: the file `.stemma-actors/register` exists in
+   the working copy and lists the identities. In a working copy made with `worktree add` the
+   marker `.stemma/enforcing` is not there, so do not test for it; if unsure, ask the human.
+   In an open repository (the case that the steps above assume) there is no lease and no
+   signing: `lease take` ends with exit code 1 and `--key` is not read.
+   `pr` and `check` work there as described in "Enforcing repositories".
+   Do not ask for the mode with `enforce`: it changes the repository.
+5. Optional: `stemma op verify` checks the whole log. It needs no actor. Keep the line
    `anchor <number>:<hash>` (if there is one) outside the repository, for example in the
    hand-over text, so that a later `op verify --anchor <number>:<hash>` can show that the log
    was not rewritten. The hash starts with `b3:` itself.
@@ -107,6 +117,81 @@ Exit code 3, by case (the table `tab:exit3` of the reference has all of them):
 With `--json`, a failure writes no JSON. An object before a non-zero code says what was made,
 not that the command worked.
 
+## Enforcing repositories (phase 4)
+
+A repository that began with `init --owner-key`, or that a human led there with `enforce`, has a
+register of actors (ADR-011) and signs approvals and check results.
+Everything above holds there too. This section adds what changes for an agent.
+The reference has the synopsis and the failures of each command
+(`docs/chapters/12-cli-reference.tex`); this file says which ones an agent calls.
+
+**State of the lease.** The lease is not yet wired into the write commands. `commit`, `track`,
+`switch`, `merge`, and `rebase` neither take nor renew a lease, and none of them checks one. Only
+`lease take`, `lease release`, `lease override`, and `pr open` touch it, and a lease exists only in
+an enforcing repository whose register lists more than one identity. So:
+
+- Do not expect the first `commit` on a branch to take the lease. It does not.
+- A lease is no protection against another writer yet. Keep to one actor per branch and one
+  working copy per actor, as above.
+- Where a lease exists (see the next bullet), take it by hand with `stemma lease take <branch>`
+  before `pr open` on that branch, because `pr open` refuses an actor who does not hold a valid
+  one (exit code 1). Do not take a lease on `main`: it changes only through a pull request.
+  The lease expires (60 minutes by default); `lease show <branch>` says who holds it and for how
+  long.
+  Give it back with `lease release <branch>` when the branch is done.
+- In an open repository, or one whose register lists a single identity, no lease applies:
+  `lease take` ends with exit code 1, and `pr open` asks for none. Go on without it.
+
+**What an agent calls, and when:**
+
+| Command | When the agent calls it |
+| ------- | ----------------------- |
+| `lease show <branch>` | Any time. It only reads. |
+| `lease take`, `lease release` | Around the work on its own branch, as above. |
+| `pr open <branch>` | When the task is done and the human asked for a pull request. `--reviewer` names identities of the register, which the human gives; an open repository has no register and takes none. |
+| `pr list` | To read the state of the pull requests. It only reads. |
+| `pr approve <n>` | Only when the human named the pull request as the review task. Not for a pull request that the agent opened or wrote a commit in (no self-approval, ADR-004). |
+| `check record <commit> --result pass\|fail` | After a test run of the agent, with the real result of that run. For levels 2 and 3 a result of the opener, of an author of the change, or of their agents and sponsors does not count for the gate (ADR-019), so a check of the agent on its own branch does not clear it; a failing result still counts, so report it. `check list` only reads. |
+| `pr close <n>` | Only for a pull request the agent opened itself and wants to withdraw; no instruction needed. |
+| `pr merge <n>` | Only on the instruction of the human. Never lower `--level` to get past the gate; without the option it is 3, the strictest. |
+
+An agent does not call `enforce` and `register`:
+
+- `enforce` accepts only a human actor, and the step has no way back.
+- `register add-key`, `retire`, `revoke`, and `add-agent` change the register file, a file of
+  level 3 (ADR-004): only a human with the role owner approves the change, and the entry of
+  another identity only an owner changes. `register cosign` needs a human sponsor and ends with
+  exit code 1 for an agent.
+- If the agent has no entry in the register, report it to the human: the sponsor runs
+  `register cosign`, and an owner runs `register add-agent`. If its key is no longer active, an
+  owner adds a new one with `register add-key --identity "agent <id>"`; `add-agent` fails for an
+  agent that already has an entry.
+
+**Signing (`--key`).** In an enforcing repository `pr approve` and `check record` sign the entry,
+and the option `--key KEYFILE` is required.
+It names the key of the actor for `ssh-keygen -Y sign`: the private key file, or the public key
+file if `ssh-agent` holds the private key. The key must be an active key of this actor in the
+register; the command tries it before it writes anything. The task gets the path from the
+human. The agent does not create keys, does not read the contents of a key file, never prints it
+into a log or a message, and never tracks it (`track` names files, so keep the key outside the
+working copy). In an open repository the option is not read.
+
+**Never `lease override`.** It takes a lease from another actor before it expires, and only a human
+with the role owner may do it (ADR-004). An agent never calls it, not even to get past a lease
+that another actor holds. If `lease take` or `pr open` says that someone else holds the lease,
+report holder and expiry to the human, or wait until it expires.
+
+**Exit codes of the new commands** (the sections of the reference have all cases):
+
+| Code | Where | What the agent does |
+| ---- | ----- | ------------------- |
+| 1 | `lease`, `pr`, `check` | Nothing was written. Typical causes: another actor holds the lease, the pull request is not open, self-approval, a missing or inactive key, no result of a check counts for the gate, or `Paused` from the merge gate. Fix the cause or report it; for `Paused` repeat after the next run changes the state. |
+| 3 | `pr`, `check`, `lease` | An entry is written, but a part is missing (a proof file, the move of `main`, the lease file). Do not repeat blindly. `pr merge` can be repeated: it repeats or completes the move. A repeated `pr approve` writes a second approval, which is meant to be. `check record` that says the proof is missing: the result does not count, so run it again; if it is only unclear whether the entry is saved, `check list` shows it. After `lease`, run `lease show <branch>`, then repeat `take` or `release` if the state is not what you wanted. |
+| 6 | `pr`, `lease`, `check` | The lock of the references is held. Wait, try a few times, then report. |
+
+Codes 2 and 5 are as in the table above. Any command of this section that ends with 5 means
+damage: stop and call the human.
+
 ## Conflicts
 
 A conflict after `merge`, `rebase`, or `switch` is data in the commit, not a failure: the exit
@@ -119,6 +204,7 @@ edited marker. Finish editing a conflicted file before you run a command that ta
 
 - `stemma op restore <N>`. It rewrites the working directory. Run `--dry-run` first. In this
   repository it also changes files that Git owns, so ask first.
+- `stemma pr merge`, and `pr approve` as the table in "Enforcing repositories" says.
 
 ## Never
 
@@ -127,6 +213,7 @@ edited marker. Finish editing a conflicted file before you run a command that ta
   purge.
 - `--take-over`. The program refuses it from an agent (ADR-004, ADR-010). If the working copy
   belongs to someone else, report it to the human.
+- `lease override`, `enforce`, and `register`: see "Enforcing repositories".
 
 ## No `stemma` in a Git worktree
 
@@ -168,6 +255,11 @@ does not take it away.
 
 ## Not yet there
 
-Phase 4 brings the agent identities and pull requests; phase 6 the API and the MCP server,
-with `--json` for `diff`, `op restore`, and `purge`.
+- The lease in the write commands. When `commit`, `track`, `switch`, `merge`, and `rebase` take
+  and renew it, the steps about `lease take` change.
+- The levels of the gate follow from the policy file. Until then `pr merge` takes the level from
+  `--level`, and the gate does not check the approvals.
+- Phase 6 brings the API and the MCP server, with `--json` for `diff`, `op restore`, and `purge`.
+  The commands of phase 4 have no `--json` form yet.
+
 This file changes with each of them.
